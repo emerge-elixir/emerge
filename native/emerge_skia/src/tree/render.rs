@@ -1,9 +1,13 @@
 //! Render an ElementTree into DrawCmds.
+//!
+//! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 use super::attrs::{Background, Color, Padding};
 use super::element::{ElementId, ElementKind, ElementTree};
 use crate::renderer::DrawCmd;
 
+/// Render the tree to draw commands.
+/// Reads from pre-scaled attrs (layout pass must run first).
 pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
     let Some(root) = tree.root.as_ref() else {
         return Vec::new();
@@ -24,6 +28,7 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         None => return,
     };
 
+    // Read from pre-scaled attrs
     let attrs = &element.attrs;
     let radius = attrs.border_radius.unwrap_or(0.0) as f32;
 
@@ -125,6 +130,7 @@ fn named_color(name: &str) -> u32 {
     }
 }
 
+/// Get text padding from pre-scaled attrs.
 fn text_padding(padding: Option<&Padding>) -> (f32, f32) {
     match padding {
         Some(Padding::Uniform(value)) => (*value as f32, *value as f32),

@@ -1,10 +1,11 @@
 //! Layout engine for Emerge element trees.
 //!
-//! Two-pass algorithm:
+//! Three-pass algorithm:
+//! 0. Scale: Apply scale factor to all attributes
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Length, Padding};
+use super::attrs::{AlignX, AlignY, Attrs, Length, Padding};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
@@ -22,7 +23,6 @@ impl Constraint {
     pub fn new(max_width: f32, max_height: f32) -> Self {
         Self { max_width, max_height }
     }
-
 }
 
 /// Intrinsic (natural) size computed during measurement pass.
@@ -66,26 +66,108 @@ impl TextMeasurer for SkiaTextMeasurer {
 // Layout Engine
 // =============================================================================
 
-/// Main layout function: measure and resolve the tree.
+/// Main layout function: scale, measure, and resolve the tree.
 pub fn layout_tree<M: TextMeasurer>(
     tree: &mut ElementTree,
     constraint: Constraint,
+    scale: f32,
     measurer: &M,
 ) {
     let Some(root_id) = tree.root.clone() else {
         return;
     };
 
-    // Pass 1: Measure (bottom-up)
+    // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
+    apply_scale_to_tree(tree, scale);
+
+    // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
     measure_element(tree, &root_id, measurer);
 
-    // Pass 2: Resolve (top-down)
+    // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(tree, &root_id, constraint, 0.0, 0.0);
 }
 
 /// Layout with default Skia text measurer.
-pub fn layout_tree_default(tree: &mut ElementTree, constraint: Constraint) {
-    layout_tree(tree, constraint, &SkiaTextMeasurer);
+pub fn layout_tree_default(tree: &mut ElementTree, constraint: Constraint, scale: f32) {
+    layout_tree(tree, constraint, scale, &SkiaTextMeasurer);
+}
+
+// =============================================================================
+// Pass 0: Scale Attributes
+// =============================================================================
+
+/// Apply scale factor to all elements, copying base_attrs to attrs with scaling.
+fn apply_scale_to_tree(tree: &mut ElementTree, scale: f32) {
+    for element in tree.nodes.values_mut() {
+        element.attrs = scale_attrs(&element.base_attrs, scale);
+    }
+}
+
+/// Scale all pixel-based attributes in an Attrs struct.
+fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
+    let scale_f64 = scale as f64;
+    Attrs {
+        width: attrs.width.as_ref().map(|l| scale_length(l, scale)),
+        height: attrs.height.as_ref().map(|l| scale_length(l, scale)),
+        padding: attrs.padding.as_ref().map(|p| scale_padding(p, scale)),
+        spacing: attrs.spacing.map(|s| s * scale_f64),
+        align_x: attrs.align_x,
+        align_y: attrs.align_y,
+        scrollbar_y: attrs.scrollbar_y,
+        scrollbar_x: attrs.scrollbar_x,
+        clip: attrs.clip,
+        clip_y: attrs.clip_y,
+        clip_x: attrs.clip_x,
+        background: attrs.background.clone(),
+        border_radius: attrs.border_radius.map(|r| r * scale_f64),
+        border_width: attrs.border_width.map(|w| w * scale_f64),
+        border_color: attrs.border_color.clone(),
+        font_size: attrs.font_size.map(|s| s * scale_f64),
+        font_color: attrs.font_color.clone(),
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
+        content: attrs.content.clone(),
+        above: attrs.above.clone(),
+        below: attrs.below.clone(),
+        on_left: attrs.on_left.clone(),
+        on_right: attrs.on_right.clone(),
+        in_front: attrs.in_front.clone(),
+        behind: attrs.behind.clone(),
+        snap_layout: attrs.snap_layout,
+        snap_text_metrics: attrs.snap_text_metrics,
+    }
+}
+
+/// Scale pixel values within a Length, recursively handling Minimum/Maximum.
+fn scale_length(length: &Length, scale: f32) -> Length {
+    let scale_f64 = scale as f64;
+    match length {
+        Length::Px(val) => Length::Px(*val * scale_f64),
+        Length::Minimum(min_px, inner) => {
+            Length::Minimum(*min_px * scale_f64, Box::new(scale_length(inner, scale)))
+        }
+        Length::Maximum(max_px, inner) => {
+            Length::Maximum(*max_px * scale_f64, Box::new(scale_length(inner, scale)))
+        }
+        Length::Fill => Length::Fill,
+        Length::Content => Length::Content,
+        Length::FillPortion(p) => Length::FillPortion(*p),
+    }
+}
+
+/// Scale padding values.
+fn scale_padding(padding: &Padding, scale: f32) -> Padding {
+    let scale_f64 = scale as f64;
+    match padding {
+        Padding::Uniform(val) => Padding::Uniform(*val * scale_f64),
+        Padding::Sides { top, right, bottom, left } => Padding::Sides {
+            top: *top * scale_f64,
+            right: *right * scale_f64,
+            bottom: *bottom * scale_f64,
+            left: *left * scale_f64,
+        },
+    }
 }
 
 // =============================================================================
@@ -93,6 +175,7 @@ pub fn layout_tree_default(tree: &mut ElementTree, constraint: Constraint) {
 // =============================================================================
 
 /// Measure an element and its children, computing intrinsic sizes.
+/// Reads from pre-scaled attrs.
 fn measure_element<M: TextMeasurer>(
     tree: &mut ElementTree,
     id: &ElementId,
@@ -114,6 +197,7 @@ fn measure_element<M: TextMeasurer>(
         return IntrinsicSize::default();
     };
 
+    // Read from pre-scaled attrs
     let attrs = &element.attrs;
     let padding = get_padding(attrs.padding.as_ref());
     let spacing = attrs.spacing.unwrap_or(0.0) as f32;
@@ -214,6 +298,7 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
 // =============================================================================
 
 /// Resolve an element's frame given constraints and position.
+/// Reads from pre-scaled attrs.
 fn resolve_element(
     tree: &mut ElementTree,
     id: &ElementId,
@@ -225,6 +310,7 @@ fn resolve_element(
         return;
     };
 
+    // Read from pre-scaled attrs
     let attrs = &element.attrs;
     let kind = element.kind;
     let child_ids = element.children.clone();
@@ -307,6 +393,7 @@ fn is_fill_length(length: Option<&Length>) -> bool {
 // =============================================================================
 
 /// Resolve children for El (single child container with alignment).
+/// Reads from pre-scaled attrs.
 fn resolve_el_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -350,6 +437,8 @@ fn resolve_el_children(
 }
 
 /// Resolve children for Row with fill distribution.
+/// Reads from pre-scaled attrs.
+#[allow(clippy::too_many_arguments)]
 fn resolve_row_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -363,7 +452,7 @@ fn resolve_row_children(
         return;
     }
 
-    // Categorize children as fill or fixed
+    // Categorize children as fill or fixed (attrs are pre-scaled)
     let mut fill_count = 0;
     let mut fixed_width = 0.0;
 
@@ -421,6 +510,8 @@ fn resolve_row_children(
 }
 
 /// Resolve children for Column with fill distribution.
+/// Reads from pre-scaled attrs.
+#[allow(clippy::too_many_arguments)]
 fn resolve_column_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -434,7 +525,7 @@ fn resolve_column_children(
         return;
     }
 
-    // Categorize children as fill or fixed
+    // Categorize children as fill or fixed (attrs are pre-scaled)
     let mut fill_count = 0;
     let mut fixed_height = 0.0;
 
@@ -492,6 +583,7 @@ fn resolve_column_children(
 }
 
 /// Resolve children for WrappedRow.
+/// Reads from pre-scaled attrs.
 fn resolve_wrapped_row_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -505,7 +597,7 @@ fn resolve_wrapped_row_children(
         return;
     }
 
-    // Build lines by wrapping
+    // Build lines by wrapping (attrs are pre-scaled)
     let mut lines: Vec<Vec<(ElementId, f32, f32)>> = Vec::new(); // (id, width, height)
     let mut current_line: Vec<(ElementId, f32, f32)> = Vec::new();
     let mut current_line_width = 0.0;
@@ -640,7 +732,7 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -663,7 +755,7 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -703,7 +795,7 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -744,7 +836,7 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -772,7 +864,7 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -794,7 +886,7 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -816,7 +908,7 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -856,7 +948,7 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(400.0, 600.0), &MockTextMeasurer);
+        layout_tree(&mut tree, Constraint::new(400.0, 600.0), 1.0, &MockTextMeasurer);
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -865,5 +957,65 @@ mod tests {
         // But c2 has max(100), so it gets clamped to 100px
         assert_eq!(c1_frame.width, 200.0);
         assert_eq!(c2_frame.width, 100.0);
+    }
+
+    #[test]
+    fn test_layout_with_scale() {
+        let mut tree = ElementTree::new();
+
+        // Element with width=100px, height=50px, padding=10px, font_size=16
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Px(100.0));
+        attrs.height = Some(Length::Px(50.0));
+        attrs.padding = Some(Padding::Uniform(10.0));
+        attrs.font_size = Some(16.0);
+
+        let el = make_element("root", ElementKind::El, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        // With scale=2.0, frame pixel values should double
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        // width: 100 * 2 = 200
+        // height: 50 * 2 = 100
+        assert_eq!(frame.width, 200.0);
+        assert_eq!(frame.height, 100.0);
+
+        // base_attrs should remain unchanged (original unscaled values)
+        assert_eq!(root.base_attrs.padding, Some(Padding::Uniform(10.0)));
+        assert_eq!(root.base_attrs.font_size, Some(16.0));
+
+        // attrs should be scaled (for render to read)
+        assert_eq!(root.attrs.padding, Some(Padding::Uniform(20.0)));
+        assert_eq!(root.attrs.font_size, Some(32.0));
+    }
+
+    #[test]
+    fn test_layout_scale_minimum_maximum() {
+        let mut tree = ElementTree::new();
+
+        // Element with width=minimum(100, fill), height=maximum(200, fill)
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Minimum(100.0, Box::new(Length::Fill)));
+        attrs.height = Some(Length::Maximum(200.0, Box::new(Length::Fill)));
+
+        let el = make_element("root", ElementKind::El, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        // With scale=2.0:
+        // width: minimum(200, fill) -> fill=800, clamped to min 200 -> 800
+        // height: maximum(400, fill) -> fill=600, clamped to max 400 -> 400
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        assert_eq!(frame.width, 800.0); // fill = 800, min 200 doesn't apply
+        assert_eq!(frame.height, 400.0); // fill = 600, clamped to max 400
     }
 }

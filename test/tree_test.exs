@@ -174,7 +174,7 @@ defmodule EmergeSkia.TreeTest do
     end
   end
 
-  describe "tree_layout/3" do
+  describe "tree_layout/4" do
     test "layouts single element with fixed size" do
       tree = Native.tree_new()
 
@@ -192,7 +192,7 @@ defmodule EmergeSkia.TreeTest do
       data = make_header(1) <> node_data
       assert {:ok, :ok} = Native.tree_upload(tree, data)
 
-      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 1
 
       [{frame_id, x, y, w, h}] = frames
@@ -245,7 +245,7 @@ defmodule EmergeSkia.TreeTest do
       data = make_header(3) <> row_node <> child1_node <> child2_node
       assert {:ok, :ok} = Native.tree_upload(tree, data)
 
-      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
 
       frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
@@ -306,7 +306,7 @@ defmodule EmergeSkia.TreeTest do
       data = make_header(3) <> col_node <> child1_node <> child2_node
       assert {:ok, :ok} = Native.tree_upload(tree, data)
 
-      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
 
       frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
@@ -320,5 +320,43 @@ defmodule EmergeSkia.TreeTest do
       assert c1_y == 0.0
       assert c2_y == 50.0
     end
+
+    test "applies scale factor to pixel values" do
+      tree = Native.tree_new()
+
+      id = :erlang.term_to_binary(:root)
+      # Element with width=100px, height=50px, padding=10px
+      attrs = attrs_with_size_and_padding(100.0, 50.0, 10.0)
+
+      node_data =
+        <<byte_size(id)::unsigned-32>> <>
+          id <>
+          <<4>> <>
+          <<byte_size(attrs)::unsigned-32>> <>
+          attrs <>
+          <<0::unsigned-16>>
+
+      data = make_header(1) <> node_data
+      assert {:ok, :ok} = Native.tree_upload(tree, data)
+
+      # With scale=2.0, width should be 200, height should be 100
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 2.0)
+      assert length(frames) == 1
+
+      [{_frame_id, x, y, w, h}] = frames
+      assert x == 0.0
+      assert y == 0.0
+      assert w == 200.0
+      assert h == 100.0
+    end
+  end
+
+  # Helper to create attrs with width, height, and uniform padding
+  defp attrs_with_size_and_padding(width, height, padding) do
+    # width (tag 1, variant 2=px), height (tag 2, variant 2=px), padding (tag 3, variant 0=uniform)
+    <<3::unsigned-16,
+      1, 2, width::float-64,
+      2, 2, height::float-64,
+      3, 0, padding::float-64>>
   end
 end

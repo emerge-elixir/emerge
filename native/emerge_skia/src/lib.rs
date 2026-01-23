@@ -142,13 +142,14 @@ fn renderer_upload(
     data: Binary,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<Atom, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
         *tree = decoded;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint);
+        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
         let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {
@@ -167,13 +168,14 @@ fn renderer_patch(
     data: Binary,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<Atom, String> {
     let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
         tree::patch::apply_patches(&mut tree, patches)?;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint);
+        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
         let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {
@@ -344,18 +346,20 @@ fn tree_clear(tree_res: ResourceArc<TreeResource>) -> Atom {
     atoms::ok()
 }
 
-/// Compute layout for the tree with the given constraints.
+/// Compute layout for the tree with the given constraints and scale factor.
 /// Returns list of {id_bytes, x, y, width, height} tuples for all elements.
+/// Scale is applied to all pixel-based attributes (px sizes, padding, spacing, etc.)
 #[rustler::nif]
 fn tree_layout<'a>(
     env: Env<'a>,
     tree_res: ResourceArc<TreeResource>,
     width: f64,
     height: f64,
+    scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
     if let Ok(mut tree) = tree_res.tree.lock() {
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint);
+        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
 
         // Collect all frames
         let mut frames = Vec::with_capacity(tree.len());

@@ -41,16 +41,18 @@ defmodule EmergeSkia.Native do
   def render(_renderer, _commands), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Upload a full EMRG tree, run layout, and render immediately.
+  Upload a full EMRG tree, run layout with scale factor, and render immediately.
+  Scale is applied to all pixel-based attributes.
   """
-  @spec renderer_upload(reference(), binary(), float(), float()) :: :ok | {:error, String.t()}
-  def renderer_upload(_renderer, _data, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_upload(reference(), binary(), float(), float(), float()) :: :ok | {:error, String.t()}
+  def renderer_upload(_renderer, _data, _width, _height, _scale), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Apply EMRG patches, run layout, and render immediately.
+  Apply EMRG patches, run layout with scale factor, and render immediately.
+  Scale is applied to all pixel-based attributes.
   """
-  @spec renderer_patch(reference(), binary(), float(), float()) :: :ok | {:error, String.t()}
-  def renderer_patch(_renderer, _data, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_patch(reference(), binary(), float(), float(), float()) :: :ok | {:error, String.t()}
+  def renderer_patch(_renderer, _data, _width, _height, _scale), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Measure text dimensions.
@@ -153,14 +155,17 @@ defmodule EmergeSkia.Native do
   def tree_clear(_tree), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Compute layout for the tree with given width/height constraints.
+  Compute layout for the tree with given width/height constraints and scale factor.
 
   Returns a list of `{id_binary, x, y, width, height}` tuples for all elements.
   The id_binary is the Erlang term_to_binary of the element ID.
+
+  Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
+  border radius, border width, font size). Use scale > 1.0 for high-DPI displays.
   """
-  @spec tree_layout(reference(), float(), float()) ::
+  @spec tree_layout(reference(), float(), float(), float()) ::
           {:ok, list({binary(), float(), float(), float(), float()})} | {:error, String.t()}
-  def tree_layout(_tree, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+  def tree_layout(_tree, _width, _height, _scale), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Decode an EMRG binary in Rust and re-encode it.

@@ -11,7 +11,8 @@ Multi-backend Skia renderer with:
 - Push-based input event delivery
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder
-- Two-pass layout engine (measurement + resolution)
+- Three-pass layout engine (scale + measurement + resolution)
+- Scale factor support for high-DPI displays
 - Tree-to-DrawCmd rendering
 
 ## Architecture
@@ -30,12 +31,12 @@ lib.rs (NIF entry, resources, registration)
     │
     └── tree/
         ├── mod.rs (public exports)
-        ├── element.rs (Element, ElementTree, Frame)
+        ├── element.rs (Element with base_attrs/attrs, ElementTree, Frame)
         ├── attrs.rs (Attrs, Length, Color, Background, etc.)
         ├── deserialize.rs (EMRG binary parser)
         ├── patch.rs (incremental tree updates)
-        ├── layout.rs (two-pass layout algorithm)
-        ├── render.rs (ElementTree → Vec<DrawCmd>)
+        ├── layout.rs (three-pass: scale → measure → resolve)
+        ├── render.rs (ElementTree → Vec<DrawCmd>, reads pre-scaled attrs)
         └── serialize.rs (ElementTree → EMRG binary)
 ```
 
@@ -137,13 +138,13 @@ Runtime-only attrs are not encoded (`scroll_x`, `scroll_y`, `scroll_max`, `scrol
 #### 4.3 Tree NIF Functions
 
 ```elixir
-tree_new()                        # Create empty tree resource
-tree_upload(tree, binary)         # Upload EMRG binary, replaces contents
-tree_patch(tree, binary)          # Apply incremental patches
-tree_layout(tree, width, height)  # Compute layout, returns frame tuples
-tree_node_count(tree)             # Get node count
-tree_is_empty(tree)               # Check if empty
-tree_clear(tree)                  # Clear all nodes
+tree_new()                              # Create empty tree resource
+tree_upload(tree, binary)               # Upload EMRG binary, replaces contents
+tree_patch(tree, binary)                # Apply incremental patches
+tree_layout(tree, width, height, scale) # Compute layout with scale factor
+tree_node_count(tree)                   # Get node count
+tree_is_empty(tree)                     # Check if empty
+tree_clear(tree)                        # Clear all nodes
 ```
 
 #### 4.4 Patch Operations
@@ -157,15 +158,40 @@ tree_clear(tree)                  # Clear all nodes
 
 ### Phase 5: Layout Engine ✓
 
-Two-pass layout algorithm in `layout.rs`:
-1. **Measurement pass** (bottom-up): Compute intrinsic sizes for all elements
-2. **Resolution pass** (top-down): Assign frames using constraints
+Three-pass layout algorithm in `layout.rs`:
+1. **Scale pass**: Apply scale factor to all pixel-based attributes
+2. **Measurement pass** (bottom-up): Compute intrinsic sizes for all elements
+3. **Resolution pass** (top-down): Assign frames using constraints
 
 Features:
 - Fill distribution for rows/columns
 - Alignment (align_x, align_y)
 - Padding and spacing
 - Wrapped row line breaking
+- **Scale factor support** (for high-DPI displays)
+
+#### Scaling Architecture
+
+Each Element stores two copies of attributes:
+- `base_attrs`: Original unscaled values (as received from Elixir)
+- `attrs`: Scaled values (used by layout and render)
+
+Scale is applied as Pass 0 before measurement, copying `base_attrs` → `attrs` with scaling:
+- Width/height when using `px()` (including inside minimum/maximum)
+- Padding (uniform and per-side)
+- Spacing
+- Border radius
+- Border width
+- Font size
+
+This architecture ensures:
+1. No cumulative scaling bugs (always scales from fresh `base_attrs`)
+2. Patches update `base_attrs` with unscaled values; next layout rescales correctly
+3. Render pass reads directly from pre-scaled `attrs` (no scaling logic needed)
+
+Usage: `tree_layout(tree, width, height, scale)` where `scale > 1.0` for high-DPI.
+
+Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical pixels.
 
 ### Phase 6: Tree Rendering ✓
 

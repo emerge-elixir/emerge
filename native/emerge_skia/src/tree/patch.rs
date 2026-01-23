@@ -200,7 +200,9 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
                 .get_mut(&id)
                 .ok_or_else(|| "SetAttrs: node not found".to_string())?;
             element.attrs_raw = attrs_raw.clone();
-            element.attrs = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            element.base_attrs = decoded.clone();
+            element.attrs = decoded;
         }
 
         Patch::SetChildren { id, children } => {

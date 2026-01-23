@@ -117,8 +117,8 @@ defmodule Demo do
     end
   end
 
-  def process_events(events, mouse_pos, event_log, size) do
-    Enum.reduce(events, {mouse_pos, event_log, size}, fn event, {pos, log, size} ->
+  def process_events(events, mouse_pos, event_log, size, scale) do
+    Enum.reduce(events, {mouse_pos, event_log, size, scale}, fn event, {pos, log, sz, sc} ->
       new_pos =
         case event do
           {:cursor_pos, {x, y}} -> {x, y}
@@ -126,10 +126,10 @@ defmodule Demo do
           _ -> pos
         end
 
-      new_size =
+      {new_size, new_scale} =
         case event do
-          {:resized, {w, h, _scale}} -> {w, h}
-          _ -> size
+          {:resized, {w, h, s}} -> {{w, h}, s}
+          _ -> {sz, sc}
         end
 
       new_log =
@@ -138,33 +138,33 @@ defmodule Demo do
           _ -> [format_event(event) | log]
         end
 
-      {new_pos, Enum.take(new_log, 20), new_size}
+      {new_pos, Enum.take(new_log, 20), new_size, new_scale}
     end)
   end
 
-  def run_loop(renderer, state, mouse_pos, event_log, size) do
+  def run_loop(renderer, state, mouse_pos, event_log, size, scale) do
     if EmergeSkia.running?(renderer) do
       receive do
         {:emerge_skia_event, first_event} ->
           remaining = drain_mailbox()
           all_events = [first_event | remaining]
 
-          {new_mouse_pos, new_log, new_size} =
-            process_events(all_events, mouse_pos, event_log, size)
+          {new_mouse_pos, new_log, new_size, new_scale} =
+            process_events(all_events, mouse_pos, event_log, size, scale)
 
           tree = build_tree(new_size, new_mouse_pos, new_log)
 
           {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
-          case EmergeSkia.Native.renderer_patch(renderer, patch_bin, elem(new_size, 0), elem(new_size, 1)) do
+          case EmergeSkia.Native.renderer_patch(renderer, patch_bin, elem(new_size, 0), elem(new_size, 1), new_scale) do
             :ok -> :ok
             {:ok, _} -> :ok
             {:error, reason} -> raise "renderer_patch failed: #{reason}"
           end
 
-          run_loop(renderer, next_state, new_mouse_pos, new_log, new_size)
+          run_loop(renderer, next_state, new_mouse_pos, new_log, new_size, new_scale)
       after
         100 ->
-          run_loop(renderer, state, mouse_pos, event_log, size)
+          run_loop(renderer, state, mouse_pos, event_log, size, scale)
       end
     end
   end
@@ -174,16 +174,17 @@ end
 IO.puts("Window opened! Move mouse, click, press keys. Close window to exit.")
 
 initial_size = {800.0, 600.0}
+initial_scale = 1.0
 initial_tree = Demo.build_tree(initial_size, {400.0, 300.0}, [])
 
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
-case EmergeSkia.Native.renderer_upload(renderer, full_bin, elem(initial_size, 0), elem(initial_size, 1)) do
+case EmergeSkia.Native.renderer_upload(renderer, full_bin, elem(initial_size, 0), elem(initial_size, 1), initial_scale) do
   :ok -> :ok
   {:ok, _} -> :ok
   {:error, reason} -> raise "renderer_upload failed: #{reason}"
 end
 
-Demo.run_loop(renderer, state, {400.0, 300.0}, [], initial_size)
+Demo.run_loop(renderer, state, {400.0, 300.0}, [], initial_size, initial_scale)
 
 IO.puts("Window closed. Demo complete!")

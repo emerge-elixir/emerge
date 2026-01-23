@@ -62,7 +62,10 @@ pub struct Element {
     /// Raw attributes as binary (EMRG format).
     pub attrs_raw: Vec<u8>,
 
-    /// Decoded attributes.
+    /// Original unscaled attributes (as received from Elixir).
+    pub base_attrs: Attrs,
+
+    /// Scaled attributes (populated by layout pass, used by render).
     pub attrs: Attrs,
 
     /// Child element IDs (order matters).
@@ -74,11 +77,13 @@ pub struct Element {
 
 impl Element {
     /// Create an element with decoded attributes.
+    /// The attrs are stored as base_attrs (original) and cloned to attrs (for scaling).
     pub fn with_attrs(id: ElementId, kind: ElementKind, attrs_raw: Vec<u8>, attrs: Attrs) -> Self {
         Self {
             id,
             kind,
             attrs_raw,
+            base_attrs: attrs.clone(),
             attrs,
             children: Vec::new(),
             frame: None,
