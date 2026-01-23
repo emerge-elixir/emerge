@@ -1,0 +1,19 @@
+[package]
+name = "emerge_skia"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "emerge_skia"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37"
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+gl = "0.14"
+
+# Support both X11 and Wayland
+skia-safe = { version = "0.91.1", default-features = false, features = ["x11", "wayland", "embed-freetype", "binary-cache"] }
