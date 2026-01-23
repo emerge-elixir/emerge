@@ -465,8 +465,8 @@ mod tests {
     #[test]
     fn test_nearby_position_calculations() {
         // Test Above: should be centered horizontally, positioned above
-        let parent = Frame { x: 100.0, y: 100.0, width: 200.0, height: 50.0 };
-        let nearby = Frame { x: 0.0, y: 0.0, width: 50.0, height: 20.0 };
+        let parent = Frame { x: 100.0, y: 100.0, width: 200.0, height: 50.0, content_width: 200.0, content_height: 50.0 };
+        let nearby = Frame { x: 0.0, y: 0.0, width: 50.0, height: 20.0, content_width: 50.0, content_height: 20.0 };
 
         // Above: x = 100 + (200 - 50) / 2 = 175, y = 100 - 20 = 80
         let (x, y) = match NearbyPosition::Above {

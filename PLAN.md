@@ -256,12 +256,12 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Nearby Positioning
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| above | ✅ | ❌ | ❌ | Stored as raw bytes |
-| below | ✅ | ❌ | ❌ | Stored as raw bytes |
-| onLeft | ✅ | ❌ | ❌ | Stored as raw bytes |
-| onRight | ✅ | ❌ | ❌ | Stored as raw bytes |
-| inFront | ✅ | ❌ | ❌ | Stored as raw bytes |
-| behindContent | ✅ | ❌ | ❌ | Stored as raw bytes |
+| above | ✅ | ✅ | ✅ | Centered horizontally above |
+| below | ✅ | ✅ | ✅ | Centered horizontally below |
+| onLeft | ✅ | ✅ | ✅ | Centered vertically left |
+| onRight | ✅ | ✅ | ✅ | Centered vertically right |
+| inFront | ✅ | ✅ | ✅ | Centered overlay |
+| behindContent | ✅ | ✅ | ✅ | Centered underlay |
 
 #### Background
 | Feature | Elixir API | Layout | Render | Notes |
@@ -342,19 +342,15 @@ Tasks:
 3. Update `render.rs` to use per-corner radius in DrawCmd
 4. Add `DrawCmd::RoundedRectCorners` variant for per-corner rendering
 
-### Phase 8 - Nearby Element Layout
+### Phase 8 - Nearby Element Layout ✓
 
-Current state: Nearby elements (above/below/on_left/on_right/in_front/behind) are stored as raw EMRG bytes but never decoded or positioned.
-
-Tasks:
-1. Decode nearby element bytes into ElementTree during layout
-2. Position `above` elements above parent's top edge
-3. Position `below` elements below parent's bottom edge
-4. Position `on_left` elements to left of parent's left edge
-5. Position `on_right` elements to right of parent's right edge
-6. Stack `in_front` elements at parent position (higher z-order)
-7. Stack `behind` elements at parent position (lower z-order)
-8. Update render pass to handle z-ordering
+Completed. Nearby elements are decoded from EMRG bytes, laid out relative to parent, and rendered with correct z-ordering:
+- `above`: Centered horizontally, positioned above parent
+- `below`: Centered horizontally, positioned below parent
+- `on_left`: Centered vertically, positioned left of parent
+- `on_right`: Centered vertically, positioned right of parent
+- `in_front`: Centered overlay (rendered last)
+- `behind`: Centered underlay (rendered first)
 
 ### Phase 9 - Transforms
 
@@ -386,6 +382,122 @@ Tasks:
 - `spaceEvenly` for justified distribution
 - Border shadows and glow effects
 - Background images
+
+---
+
+## Possible Improvements to Layout Engine
+
+Based on analysis of [taffy](https://github.com/DioxusLabs/taffy) layout engine. Focus is on elm-ui semantics, not CSS compatibility.
+
+### High Priority
+
+#### 1. FillPortion Proper Distribution ✓
+
+Implemented. `FillPortion(n)` now distributes space proportionally:
+- `fill` is equivalent to `fillPortion(1)`
+- Children with `fillPortion(2)` get twice the space of `fillPortion(1)`
+- Fixed-size children are subtracted first, remaining space distributed by portions
+
+#### 2. Layout Caching
+Taffy uses a 9-slot cache per node to avoid redundant calculations. Our implementation recalculates everything on every layout pass.
+
+```rust
+pub struct LayoutCache {
+    cached_size: Option<(Option<f32>, Option<f32>, IntrinsicSize)>,
+    generation: u32,  // Invalidation counter
+}
+```
+
+Benefit: Significant performance improvement for incremental updates.
+
+### Medium Priority
+
+#### 3. Pixel Rounding Pass
+Taffy rounds based on cumulative coordinates to prevent pixel gaps:
+
+```rust
+fn round_layout(tree: &mut ElementTree) {
+    for element in tree.nodes.values_mut() {
+        if let Some(frame) = &mut element.frame {
+            // Round edges, not dimensions (prevents gaps)
+            let left = frame.x.round();
+            let top = frame.y.round();
+            let right = (frame.x + frame.width).round();
+            let bottom = (frame.y + frame.height).round();
+            frame.x = left;
+            frame.y = top;
+            frame.width = right - left;
+            frame.height = bottom - top;
+        }
+    }
+}
+```
+
+Benefit: Crisp pixel-perfect rendering, eliminates hairline gaps.
+
+#### 4. Richer Constraint Type ✓
+
+Implemented. `AvailableSpace` enum provides more expressive constraints:
+
+```rust
+pub enum AvailableSpace {
+    Definite(f32),    // Fixed constraint (px or fill resolved)
+    MinContent,       // Shrink to minimum
+    MaxContent,       // Expand to content
+}
+
+pub struct Constraint {
+    pub width: AvailableSpace,
+    pub height: AvailableSpace,
+}
+```
+
+- `Constraint::new(w, h)` creates definite constraints (most common)
+- `Constraint::with_space()` allows content-based constraints
+- MinContent/MaxContent resolve to intrinsic sizes during layout
+
+#### 5. Content Size Tracking ✓
+
+Implemented. Frame now tracks actual content extent separately from visible size:
+
+```rust
+pub struct Frame {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,          // Visible frame size
+    pub height: f32,
+    pub content_width: f32,  // Actual content extent (for scroll calculations)
+    pub content_height: f32,
+}
+```
+
+- For elements with children, content_width/content_height reflects actual child layout
+- For scrollable elements (clip/scrollbar), frame stays fixed while content tracks overflow
+- For empty containers, content equals frame size
+
+### Low Priority
+
+#### 6. Separate Size Computation Mode
+Taffy has `RunMode::ComputeSize` for measuring without full layout:
+
+```rust
+pub enum LayoutMode {
+    FullLayout,      // Compute frames
+    MeasureOnly,     // Just compute sizes (faster)
+}
+```
+
+Benefit: Faster intrinsic size queries without side effects.
+
+### Not Recommended (Keep elm-ui Focus)
+
+These CSS features from taffy should **not** be added:
+- ❌ CSS Grid (elm-ui uses row/column composition)
+- ❌ Absolute/relative positioning (elm-ui uses above/below/inFront/behind)
+- ❌ Margin collapse (elm-ui uses spacing)
+- ❌ Flexbox shrink factors (elm-ui uses simpler model)
+- ❌ Complex percentage resolution (elm-ui percentages are rare)
+- ❌ Aspect ratio constraints (not in elm-ui)
 
 ---
 

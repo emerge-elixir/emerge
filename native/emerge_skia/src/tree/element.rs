@@ -44,10 +44,18 @@ impl ElementKind {
 /// Frame representing the computed layout bounds.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Frame {
+    /// X position relative to parent.
     pub x: f32,
+    /// Y position relative to parent.
     pub y: f32,
+    /// Visible width (may be smaller than content for scrollable areas).
     pub width: f32,
+    /// Visible height (may be smaller than content for scrollable areas).
     pub height: f32,
+    /// Actual content width (for scroll extent calculation).
+    pub content_width: f32,
+    /// Actual content height (for scroll extent calculation).
+    pub content_height: f32,
 }
 
 /// A single element in the UI tree.
