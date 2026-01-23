@@ -18,11 +18,13 @@ use skia_safe::Font;
 mod backend;
 mod input;
 mod renderer;
+mod tree;
 
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use input::InputHandler;
 use renderer::{DrawCmd, RenderState, get_default_typeface};
+use tree::ElementTree;
 
 // ============================================================================
 // Atoms
@@ -44,6 +46,11 @@ struct RendererResource {
     running_flag: Arc<AtomicBool>,
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
     input_handler: Arc<Mutex<InputHandler>>,
+}
+
+/// Resource for holding an element tree (for layout/rendering).
+struct TreeResource {
+    tree: Mutex<ElementTree>,
 }
 
 impl RendererResource {
@@ -209,12 +216,83 @@ fn render_to_pixels(
 }
 
 // ============================================================================
+// Tree NIF Functions
+// ============================================================================
+
+/// Create a new empty tree resource.
+#[rustler::nif]
+fn tree_new() -> ResourceArc<TreeResource> {
+    ResourceArc::new(TreeResource {
+        tree: Mutex::new(ElementTree::new()),
+    })
+}
+
+/// Upload a full tree from EMRG binary format.
+/// Replaces any existing tree contents.
+#[rustler::nif]
+fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
+    let decoded = tree::decode_tree(data.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        *tree = decoded;
+        Ok(atoms::ok())
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
+/// Apply patches to an existing tree.
+#[rustler::nif]
+fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
+    let patches = tree::decode_patches(data.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        tree::apply_patches(&mut tree, patches)?;
+        Ok(atoms::ok())
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
+/// Get the number of nodes in the tree.
+#[rustler::nif]
+fn tree_node_count(tree_res: ResourceArc<TreeResource>) -> usize {
+    if let Ok(tree) = tree_res.tree.lock() {
+        tree.len()
+    } else {
+        0
+    }
+}
+
+/// Check if the tree is empty.
+#[rustler::nif]
+fn tree_is_empty(tree_res: ResourceArc<TreeResource>) -> bool {
+    if let Ok(tree) = tree_res.tree.lock() {
+        tree.is_empty()
+    } else {
+        true
+    }
+}
+
+/// Clear the tree.
+#[rustler::nif]
+fn tree_clear(tree_res: ResourceArc<TreeResource>) -> Atom {
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        tree.clear();
+    }
+    atoms::ok()
+}
+
+// ============================================================================
 // NIF Registration
 // ============================================================================
 
 #[allow(non_local_definitions)]
 fn load(env: Env, _info: Term) -> bool {
     let _ = rustler::resource!(RendererResource, env);
+    let _ = rustler::resource!(TreeResource, env);
     true
 }
 

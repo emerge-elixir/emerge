@@ -98,4 +98,45 @@ defmodule EmergeSkia.Native do
   """
   @spec set_input_target(reference(), pid() | nil) :: :ok
   def set_input_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+
+  # ===========================================================================
+  # Tree Functions (Emerge Integration)
+  # ===========================================================================
+
+  @doc """
+  Create a new empty tree resource.
+  """
+  @spec tree_new() :: reference()
+  def tree_new, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Upload a full tree from EMRG binary format.
+  Replaces any existing tree contents.
+  """
+  @spec tree_upload(reference(), binary()) :: :ok | {:error, String.t()}
+  def tree_upload(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Apply patches to an existing tree.
+  """
+  @spec tree_patch(reference(), binary()) :: :ok | {:error, String.t()}
+  def tree_patch(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Get the number of nodes in the tree.
+  """
+  @spec tree_node_count(reference()) :: non_neg_integer()
+  def tree_node_count(_tree), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Check if the tree is empty.
+  """
+  @spec tree_is_empty(reference()) :: boolean()
+  def tree_is_empty(_tree), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Clear the tree.
+  """
+  @spec tree_clear(reference()) :: :ok
+  def tree_clear(_tree), do: :erlang.nif_error(:nif_not_loaded)
 end
