@@ -175,4 +175,83 @@ defmodule EmergeSkia.EmrgRoundtripTest do
 
     assert encoded_a == encoded_b
   end
+
+  test "nearby elements are preserved through roundtrip" do
+    # Create a tree with all nearby element types
+    nearby_el = el(
+      [
+        padding(4.0),
+        Emerge.UI.Background.color(:gray),
+        Emerge.UI.Font.size(10.0),
+        Emerge.UI.Font.color(:white)
+      ],
+      text("Nearby")
+    )
+
+    tree =
+      el(
+        [
+          width({:px, 100.0}),
+          height({:px, 50.0}),
+          above(nearby_el),
+          below(nearby_el),
+          on_left(nearby_el),
+          on_right(nearby_el),
+          in_front(nearby_el),
+          behind_content(nearby_el)
+        ],
+        text("Main")
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    normalized_decoded = normalize_tree(decoded)
+    normalized_assigned = normalize_tree(assigned)
+
+    assert normalized_decoded == normalized_assigned
+  end
+
+  test "nearby element named colors are preserved" do
+    # Test that named colors like :cyan are handled correctly
+    tree =
+      el(
+        [
+          width({:px, 100.0}),
+          height({:px, 50.0}),
+          Emerge.UI.Background.color(:cyan),
+          Emerge.UI.Font.color(:cyan)
+        ],
+        text("Cyan text")
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    # Verify colors are preserved
+    assert decoded.attrs[:background] == :cyan
+    # The text element is the child
+    [text_el] = decoded.children
+    assert text_el.attrs[:font_color] == :cyan
+  end
 end

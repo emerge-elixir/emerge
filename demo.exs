@@ -10,6 +10,8 @@ EmergeSkia.set_input_target(renderer, self())
 defmodule Demo do
   import Emerge.UI
 
+  alias Emerge.UI.{Font, Background, Border}
+
   @dark_bg {:color_rgba, {26, 26, 46, 255}}
   @blue {:color_rgba, {67, 97, 238, 255}}
   @purple {:color_rgba, {114, 9, 183, 255}}
@@ -55,58 +57,407 @@ defmodule Demo do
   end
 
   def build_tree({_width, _height}, {mx, my}, event_log) do
-    column([width(:fill), height(:fill), padding(20), spacing(20), Emerge.UI.Background.color(@dark_bg)], [
-      el(
-        [padding(16), Emerge.UI.Background.gradient(@blue, @purple, 90), Emerge.UI.Border.rounded(12)],
-        el([Emerge.UI.Font.size(26), Emerge.UI.Font.color(@light_text)], text("EmergeSkia Demo"))
-      ),
-      row([spacing(20), width(:fill)], [
+    column(
+      [
+        width(:fill),
+        height(:fill),
+        padding(20),
+        spacing(20),
+        Background.color(@dark_bg)
+      ],
+      [
         el(
-          [width(:fill), padding(16), Emerge.UI.Background.color(@event_bg), Emerge.UI.Border.rounded(12)],
-          column([spacing(6)], [
-            el([Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)], text("Direct Skia Rendering")),
-            el([Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)], text("No Scenic overhead")),
-            el([Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)], text("Minimal NIF surface")),
-            el([Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)], text("Rust layout + renderer"))
-          ])
+          [
+            padding(16),
+            Background.gradient(@blue, @purple, 90),
+            Border.rounded(12)
+          ],
+          el(
+            [Emerge.UI.Font.size(26), Emerge.UI.Font.color(@light_text)],
+            text("EmergeSkia Demo")
+          )
+        ),
+        row([spacing(20), width(:fill)], [
+          el(
+            [
+              width(:fill),
+              padding(16),
+              Emerge.UI.Background.color(@event_bg),
+              Emerge.UI.Border.rounded(12)
+            ],
+            column([spacing(6)], [
+              el(
+                [Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)],
+                text("Direct Skia Rendering")
+              ),
+              el(
+                [Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)],
+                text("No Scenic overhead")
+              ),
+              el(
+                [Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)],
+                text("Minimal NIF surface")
+              ),
+              el(
+                [Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)],
+                text("Rust layout + renderer")
+              )
+            ])
+          ),
+          el(
+            [
+              width(:fill),
+              padding(16),
+              Emerge.UI.Background.color(@event_bg),
+              Emerge.UI.Border.rounded(12)
+            ],
+            column([spacing(6)], [
+              el(
+                [Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)],
+                text("Mouse Position")
+              ),
+              el(
+                [Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)],
+                text("X: #{Float.round(mx, 1)}")
+              ),
+              el(
+                [Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)],
+                text("Y: #{Float.round(my, 1)}")
+              )
+            ])
+          )
+        ]),
+        row(
+          [width(:fill), padding(16), spacing(10)],
+          [
+            column(
+              [
+                width(:fill),
+                height(:fill),
+                padding(16),
+                Emerge.UI.Background.color(@event_bg),
+                Emerge.UI.Border.rounded(12),
+                spacing(8)
+              ],
+              [
+                el(
+                  [Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)],
+                  text("Input Event Log")
+                ),
+                column(
+                  [spacing(4)],
+                  event_log
+                  |> Enum.take(16)
+                  |> Enum.reverse()
+                  |> Enum.map(fn line ->
+                    el([Emerge.UI.Font.size(13), Emerge.UI.Font.color(@dim_text)], text(line))
+                  end)
+                )
+              ]
+            ),
+            main_content()
+          ]
         ),
         el(
-          [width(:fill), padding(16), Emerge.UI.Background.color(@event_bg), Emerge.UI.Border.rounded(12)],
-          column([spacing(6)], [
-            el([Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)], text("Mouse Position")),
-            el([Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)], text("X: #{Float.round(mx, 1)}")),
-            el([Emerge.UI.Font.size(14), Emerge.UI.Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}"))
-          ])
-        )
-      ]),
-      el(
-        [
-          width(:fill),
-          height(:fill),
-          padding(16),
-          Emerge.UI.Background.color(@event_bg),
-          Emerge.UI.Border.rounded(12)
-        ],
-        column([spacing(8)], [
-          el([Emerge.UI.Font.size(18), Emerge.UI.Font.color(@light_text)], text("Input Event Log")),
-          column(
-            [spacing(4)],
-            event_log
-            |> Enum.take(8)
-            |> Enum.map(fn line ->
-              el([Emerge.UI.Font.size(13), Emerge.UI.Font.color(@dim_text)], text(line))
-            end)
+          [padding(6), Emerge.UI.Background.color(@pink), Emerge.UI.Border.rounded(6)],
+          el(
+            [Emerge.UI.Font.size(12), Emerge.UI.Font.color(@light_text)],
+            text("Cursor: #{Float.round(mx, 1)}, #{Float.round(my, 1)}")
           )
-        ])
-      ),
-      el(
-        [padding(6), Emerge.UI.Background.color(@pink), Emerge.UI.Border.rounded(6)],
-        el(
-          [Emerge.UI.Font.size(12), Emerge.UI.Font.color(@light_text)],
-          text("Cursor: #{Float.round(mx, 1)}, #{Float.round(my, 1)}")
         )
-      )
-    ])
+      ]
+    )
+  end
+
+  def main_content() do
+    column(
+      [
+        width(fill()),
+        height(fill()),
+        spacing(15),
+        padding(20),
+        scroll_y(0),
+        scrollbar_y(),
+        clip_y(),
+        {:id, :main_content},
+        Background.color({:color_rgb, {35, 35, 55}}),
+        Border.rounded(8)
+      ],
+      [
+        el([Font.size(22), Font.color(:white), {:id, :welcome_title}], text("Welcome to Emerge")),
+        el(
+          [Font.size(14), Font.color({:color_rgb, {150, 150, 170}})],
+          text("An elm-ui inspired layout engine for Scenic")
+        ),
+
+        # Feature cards
+        row([width(fill()), spacing(15)], [
+          feature_card("Rows", "Horizontal layouts", {:color_rgb, {60, 60, 120}}),
+          feature_card("Columns", "Vertical layouts", {:color_rgb, {60, 90, 60}}),
+          feature_card("Nesting", "Compose layouts", {:color_rgb, {90, 60, 90}})
+        ]),
+
+        # Wrapped row demo
+        wrapped_row([width(fill()), spacing(8)], [
+          chip("Wrapped"),
+          chip("Row"),
+          chip("Auto"),
+          chip("Line"),
+          chip("Breaks"),
+          chip("With"),
+          chip("Spacing"),
+          chip("And"),
+          chip("Chips")
+        ]),
+
+        # Horizontal scroll demo
+        el(
+          [
+            width(fill()),
+            height(px(90)),
+            padding(10),
+            scroll_x(0),
+            scrollbar_x(),
+            clip_x(),
+            {:id, :horizontal_scroll},
+            Background.color({:color_rgb, {45, 45, 65}}),
+            Border.rounded(6)
+          ],
+          row([spacing(12)], [
+            chip("Horiz"),
+            chip("Scroll"),
+            chip("Example"),
+            chip("With"),
+            chip("Lots"),
+            chip("Of"),
+            chip("Chips"),
+            chip("To"),
+            chip("Move"),
+            chip("Around")
+          ])
+        ),
+
+        # Nested vertical scroll demo (inside main scroll)
+        el(
+          [
+            width(fill()),
+            height(px(120)),
+            padding(10),
+            scroll_y(0),
+            scrollbar_y(),
+            clip_y(),
+            {:id, :nested_scroll},
+            Background.color({:color_rgb, {45, 45, 65}}),
+            Border.rounded(6)
+          ],
+          column([spacing(6)], [
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 1")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 2")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 3")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 4")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 5")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 6")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 7")),
+            el([Font.size(12), Font.color(:white)], text("Nested scroll item 8"))
+          ])
+        ),
+
+        # Alignment demo
+        row([width(fill()), spacing(10)], [
+          el(
+            [
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Left")
+          ),
+          el(
+            [
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
+              center_x(),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Center")
+          ),
+          el(
+            [
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
+              align_right(),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Right")
+          )
+        ]),
+
+        # Text alignment inside wider elements
+        row([width(fill()), spacing(10)], [
+          el(
+            [
+              width(px(180)),
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
+              center_x(),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Centered text")
+          ),
+          el(
+            [
+              width(px(180)),
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
+              align_right(),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Right-aligned")
+          )
+        ]),
+
+        # Centered element with right-aligned text
+        row([width(fill())], [
+          el(
+            [
+              width(px(200)),
+              padding(10),
+              center_x(),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4)
+            ],
+            el(
+              [width(fill()), align_right(), Font.size(12), Font.color(:white)],
+              text("Centered box, right text")
+            )
+          )
+        ]),
+
+        # Alignment demo
+        el(
+          [
+            width(fill()),
+            height(px(80)),
+            padding(10),
+            Background.color({:color_rgb, {45, 45, 65}}),
+            Border.rounded(6)
+          ],
+          el(
+            [
+              width(fill()),
+              height(fill()),
+              center_x(),
+              center_y(),
+              Font.size(16),
+              Font.color(:cyan)
+            ],
+            text("Centered content")
+          )
+        ),
+        # Nearby positioning demo
+        el(
+          [
+            width(fill()),
+            height(px(140)),
+            padding(15),
+            Background.color({:color_rgb, {45, 45, 65}}),
+            Border.rounded(6)
+          ],
+          el(
+            [
+              width(px(140)),
+              height(px(60)),
+              center_x(),
+              center_y(),
+              Background.color({:color_rgb, {70, 70, 120}}),
+              Border.rounded(6),
+              above(
+                el(
+                  [
+                    padding(6),
+                    Background.color({:color_rgb, {90, 70, 70}}),
+                    Border.rounded(4),
+                    Font.size(12),
+                    Font.color(:white)
+                  ],
+                  text("Above")
+                )
+              ),
+              below(
+                el(
+                  [
+                    padding(6),
+                    Background.color({:color_rgb, {70, 90, 70}}),
+                    Border.rounded(4),
+                    Font.size(12),
+                    Font.color(:white)
+                  ],
+                  text("Below")
+                )
+              ),
+              on_left(
+                el(
+                  [
+                    padding(6),
+                    Background.color({:color_rgb, {70, 70, 90}}),
+                    Border.rounded(4),
+                    Font.size(12),
+                    Font.color(:white)
+                  ],
+                  text("Left")
+                )
+              ),
+              on_right(
+                el(
+                  [
+                    padding(6),
+                    Background.color({:color_rgb, {90, 90, 70}}),
+                    Border.rounded(4),
+                    Font.size(12),
+                    Font.color(:white)
+                  ],
+                  text("Right")
+                )
+              ),
+              behind_content(
+                el(
+                  [
+                    width(px(160)),
+                    height(px(70)),
+                    Background.color({:color_rgba, {200, 200, 255, 40}}),
+                    Border.rounded(8)
+                  ],
+                  none()
+                )
+              ),
+              in_front(
+                el(
+                  [
+                    padding(4),
+                    Background.color({:color_rgba, {0, 0, 0, 120}}),
+                    Border.rounded(4),
+                    Font.size(10),
+                    Font.color(:white)
+                  ],
+                  text("Front")
+                )
+              )
+            ],
+            text("Base")
+          )
+        )
+      ]
+    )
   end
 
   def drain_mailbox(acc \\ []) do
@@ -155,7 +506,14 @@ defmodule Demo do
           tree = build_tree(new_size, new_mouse_pos, new_log)
 
           {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
-          case EmergeSkia.Native.renderer_patch(renderer, patch_bin, elem(new_size, 0), elem(new_size, 1), new_scale) do
+
+          case EmergeSkia.Native.renderer_patch(
+                 renderer,
+                 patch_bin,
+                 elem(new_size, 0),
+                 elem(new_size, 1),
+                 new_scale
+               ) do
             :ok -> :ok
             {:ok, _} -> :ok
             {:error, reason} -> raise "renderer_patch failed: #{reason}"
@@ -169,6 +527,28 @@ defmodule Demo do
     end
   end
 
+  defp feature_card(title, description, bg_color) do
+    column(
+      [width(fill()), spacing(8), padding(15), Background.color(bg_color), Border.rounded(8)],
+      [
+        el([Font.size(16), Font.color(:white)], text(title)),
+        el([Font.size(12), Font.color({:color_rgb, {200, 200, 220}})], text(description))
+      ]
+    )
+  end
+
+  defp chip(label) do
+    el(
+      [
+        padding(6),
+        Background.color({:color_rgb, {55, 60, 90}}),
+        Border.rounded(12),
+        Font.size(11),
+        Font.color(:white)
+      ],
+      text(label)
+    )
+  end
 end
 
 IO.puts("Window opened! Move mouse, click, press keys. Close window to exit.")
@@ -179,7 +559,14 @@ initial_tree = Demo.build_tree(initial_size, {400.0, 300.0}, [])
 
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
-case EmergeSkia.Native.renderer_upload(renderer, full_bin, elem(initial_size, 0), elem(initial_size, 1), initial_scale) do
+
+case EmergeSkia.Native.renderer_upload(
+       renderer,
+       full_bin,
+       elem(initial_size, 0),
+       elem(initial_size, 1),
+       initial_scale
+     ) do
   :ok -> :ok
   {:ok, _} -> :ok
   {:error, reason} -> raise "renderer_upload failed: #{reason}"

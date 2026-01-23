@@ -350,11 +350,29 @@ fn resolve_element(
         }
 
         ElementKind::WrappedRow => {
-            resolve_wrapped_row_children(tree, &child_ids, content_x, content_y, content_width, content_height, spacing);
+            let actual_content_height = resolve_wrapped_row_children(tree, &child_ids, content_x, content_y, content_width, content_height, spacing);
+            // Update frame height if content height exceeds initial estimate (due to wrapping)
+            if actual_content_height > content_height {
+                let new_height = actual_content_height + padding.top + padding.bottom;
+                if let Some(element) = tree.get_mut(id)
+                    && let Some(ref mut frame) = element.frame
+                {
+                    frame.height = new_height;
+                }
+            }
         }
 
         ElementKind::Column => {
-            resolve_column_children(tree, &child_ids, content_x, content_y, content_width, content_height, spacing);
+            let actual_content_height = resolve_column_children(tree, &child_ids, content_x, content_y, content_width, content_height, spacing);
+            // Update frame height if content height exceeds initial estimate (e.g., due to wrapped_row children)
+            if actual_content_height > content_height {
+                let new_height = actual_content_height + padding.top + padding.bottom;
+                if let Some(element) = tree.get_mut(id)
+                    && let Some(ref mut frame) = element.frame
+                {
+                    frame.height = new_height;
+                }
+            }
         }
     }
 }
@@ -511,6 +529,7 @@ fn resolve_row_children(
 
 /// Resolve children for Column with fill distribution.
 /// Reads from pre-scaled attrs.
+/// Returns the actual content height after resolution.
 #[allow(clippy::too_many_arguments)]
 fn resolve_column_children(
     tree: &mut ElementTree,
@@ -520,9 +539,9 @@ fn resolve_column_children(
     content_width: f32,
     content_height: f32,
     spacing: f32,
-) {
+) -> f32 {
     if child_ids.is_empty() {
-        return;
+        return 0.0;
     }
 
     // Categorize children as fill or fixed (attrs are pre-scaled)
@@ -565,25 +584,43 @@ fn resolve_column_children(
         let child_constraint = Constraint::new(content_width, child_height);
         resolve_element(tree, child_id, child_constraint, content_x, current_y);
 
-        // Apply horizontal alignment
-        if let Some(child) = tree.get(child_id)
-            && let Some(frame) = &child.frame
-        {
+        // Get frame info for alignment and actual height (may differ from child_height for wrapped_row)
+        let (dx, actual_height) = {
+            let Some(child) = tree.get(child_id) else {
+                current_y += child_height + spacing;
+                continue;
+            };
+            let Some(frame) = &child.frame else {
+                current_y += child_height + spacing;
+                continue;
+            };
             let aligned_x = match align_x {
                 AlignX::Left => content_x,
                 AlignX::Center => content_x + (content_width - frame.width) / 2.0,
                 AlignX::Right => content_x + content_width - frame.width,
             };
-            let dx = aligned_x - frame.x;
-            shift_subtree(tree, child_id, dx, 0.0);
-        }
+            (aligned_x - frame.x, frame.height)
+        };
 
-        current_y += child_height + spacing;
+        // Apply horizontal alignment
+        shift_subtree(tree, child_id, dx, 0.0);
+
+        // Use actual height after resolution (important for wrapped_row)
+        current_y += actual_height + spacing;
+    }
+
+    // Return total content height (subtract trailing spacing)
+    let total_height = current_y - content_y;
+    if !child_ids.is_empty() {
+        total_height - spacing // Remove trailing spacing
+    } else {
+        0.0
     }
 }
 
 /// Resolve children for WrappedRow.
 /// Reads from pre-scaled attrs.
+/// Returns the actual content height after wrapping.
 fn resolve_wrapped_row_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -592,9 +629,9 @@ fn resolve_wrapped_row_children(
     content_width: f32,
     _content_height: f32,
     spacing: f32,
-) {
+) -> f32 {
     if child_ids.is_empty() {
-        return;
+        return 0.0;
     }
 
     // Build lines by wrapping (attrs are pre-scaled)
@@ -629,8 +666,9 @@ fn resolve_wrapped_row_children(
         lines.push(current_line);
     }
 
-    // Layout each line
+    // Layout each line and track total height
     let mut current_y = content_y;
+    let num_lines = lines.len();
 
     for line in lines {
         let line_height = line.iter().map(|(_, _, h)| *h).fold(0.0_f32, f32::max);
@@ -643,6 +681,14 @@ fn resolve_wrapped_row_children(
         }
 
         current_y += line_height + spacing;
+    }
+
+    // Return total content height (subtract trailing spacing)
+    let total_height = current_y - content_y;
+    if num_lines > 0 {
+        total_height - spacing // Remove trailing spacing
+    } else {
+        0.0
     }
 }
 
@@ -1017,5 +1063,228 @@ mod tests {
         let frame = root.frame.unwrap();
         assert_eq!(frame.width, 800.0); // fill = 800, min 200 doesn't apply
         assert_eq!(frame.height, 400.0); // fill = 600, clamped to max 400
+    }
+
+    #[test]
+    fn test_wrapped_row_height_with_wrapping() {
+        let mut tree = ElementTree::new();
+
+        // Create a wrapped row with 3 children, each 50px wide
+        // Container is 100px wide, so items should wrap:
+        // Line 1: child1, child2 (50 + 10 spacing + 50 = 110 > 100, so child2 wraps)
+        // Actually with 100px width: child1 (50) fits, child2 (50+10=60) would make 110, wraps
+        // Line 1: child1 (50px)
+        // Line 2: child2 (50px)
+        // Line 3: child3 (50px)
+        // Total height = 3 * 30 + 2 * 10 spacing = 110px
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(100.0));
+        row_attrs.spacing = Some(10.0);
+
+        let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+        // Children 50px wide, 30px tall each
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+        let child3 = make_element("c3", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+        let c3_id = child3.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+        tree.insert(child3);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        // Check wrapped row height
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        // With 100px width, children wrap: each on its own line
+        // 3 lines * 30px height + 2 * 10px spacing = 110px
+        assert_eq!(row_frame.height, 110.0);
+
+        // Check child positions
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+        let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+
+        // All children should be at x=0 (each on its own line)
+        assert_eq!(c1_frame.x, 0.0);
+        assert_eq!(c2_frame.x, 0.0);
+        assert_eq!(c3_frame.x, 0.0);
+
+        // Y positions: 0, 40 (30+10), 80 (30+10+30+10)
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.y, 40.0);
+        assert_eq!(c3_frame.y, 80.0);
+    }
+
+    #[test]
+    fn test_wrapped_row_two_items_per_line() {
+        let mut tree = ElementTree::new();
+
+        // Container 120px wide with 10px spacing
+        // Children 50px wide each
+        // Two children fit per line: 50 + 10 + 50 = 110 < 120
+        // With 4 children: 2 lines
+        // Total height = 2 * 30 + 1 * 10 spacing = 70px
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(120.0));
+        row_attrs.spacing = Some(10.0);
+
+        let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+        let children: Vec<_> = (0..4).map(|i| {
+            make_element(&format!("c{}", i), ElementKind::El, {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(50.0));
+                a.height = Some(Length::Px(30.0));
+                a
+            })
+        }).collect();
+
+        let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
+        let row_id = row.id.clone();
+        row.children = child_ids.clone();
+
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        for child in children {
+            tree.insert(child);
+        }
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        // Check wrapped row height: 2 lines * 30px + 1 * 10px spacing = 70px
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        assert_eq!(row_frame.height, 70.0);
+
+        // Check child positions
+        // Line 1: c0 at x=0, c1 at x=60
+        // Line 2: c2 at x=0, c3 at x=60
+        let c0_frame = tree.get(&child_ids[0]).unwrap().frame.unwrap();
+        let c1_frame = tree.get(&child_ids[1]).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&child_ids[2]).unwrap().frame.unwrap();
+        let c3_frame = tree.get(&child_ids[3]).unwrap().frame.unwrap();
+
+        assert_eq!(c0_frame.x, 0.0);
+        assert_eq!(c0_frame.y, 0.0);
+        assert_eq!(c1_frame.x, 60.0);
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.x, 0.0);
+        assert_eq!(c2_frame.y, 40.0);
+        assert_eq!(c3_frame.x, 60.0);
+        assert_eq!(c3_frame.y, 40.0);
+    }
+
+    #[test]
+    fn test_column_with_wrapped_row_pushes_siblings() {
+        let mut tree = ElementTree::new();
+
+        // Column containing:
+        // 1. A wrapped_row (100px wide, 3 children 50px each -> wraps to 3 lines = 110px tall)
+        // 2. An element (40px tall)
+        //
+        // The element should be pushed down by the wrapped_row's actual height (110px),
+        // not its initial intrinsic height (30px).
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(100.0));
+        col_attrs.spacing = Some(10.0);
+
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        // Wrapped row with 100px width constraint from parent
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Fill);
+        row_attrs.spacing = Some(10.0);
+
+        let mut wrapped_row = make_element("wrapped_row", ElementKind::WrappedRow, row_attrs);
+
+        // Three children that will each wrap to their own line
+        let chip1 = make_element("chip1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+        let chip2 = make_element("chip2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+        let chip3 = make_element("chip3", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        // Element below the wrapped row
+        let below_el = make_element("below", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(40.0));
+            a
+        });
+
+        let col_id = col.id.clone();
+        let row_id = wrapped_row.id.clone();
+        let chip1_id = chip1.id.clone();
+        let chip2_id = chip2.id.clone();
+        let chip3_id = chip3.id.clone();
+        let below_id = below_el.id.clone();
+
+        wrapped_row.children = vec![chip1_id.clone(), chip2_id.clone(), chip3_id.clone()];
+        col.children = vec![row_id.clone(), below_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(wrapped_row);
+        tree.insert(chip1);
+        tree.insert(chip2);
+        tree.insert(chip3);
+        tree.insert(below_el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        // Check wrapped_row height (3 lines * 30px + 2 * 10px spacing = 110px)
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        assert_eq!(row_frame.height, 110.0);
+        assert_eq!(row_frame.y, 0.0);
+
+        // Check that the element below is positioned after the wrapped_row
+        // y = wrapped_row.height (110) + spacing (10) = 120
+        let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+        assert_eq!(below_frame.y, 120.0);
+        assert_eq!(below_frame.height, 40.0);
+
+        // Column should encompass both children
+        let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+        // Total: 110 (wrapped_row) + 10 (spacing) + 40 (below) = 160
+        assert_eq!(col_frame.height, 160.0);
     }
 }
