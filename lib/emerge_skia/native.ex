@@ -139,4 +139,14 @@ defmodule EmergeSkia.Native do
   """
   @spec tree_clear(reference()) :: :ok
   def tree_clear(_tree), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Compute layout for the tree with given width/height constraints.
+
+  Returns a list of `{id_binary, x, y, width, height}` tuples for all elements.
+  The id_binary is the Erlang term_to_binary of the element ID.
+  """
+  @spec tree_layout(reference(), float(), float()) ::
+          {:ok, list({binary(), float(), float(), float(), float()})} | {:error, String.t()}
+  def tree_layout(_tree, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 end

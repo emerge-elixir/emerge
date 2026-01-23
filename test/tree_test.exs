@@ -173,4 +173,152 @@ defmodule EmergeSkia.TreeTest do
       assert Native.tree_node_count(tree) == 0
     end
   end
+
+  describe "tree_layout/3" do
+    test "layouts single element with fixed size" do
+      tree = Native.tree_new()
+
+      id = :erlang.term_to_binary(:root)
+      attrs = attrs_with_size(100.0, 50.0)
+
+      node_data =
+        <<byte_size(id)::unsigned-32>> <>
+          id <>
+          <<4>> <>
+          <<byte_size(attrs)::unsigned-32>> <>
+          attrs <>
+          <<0::unsigned-16>>
+
+      data = make_header(1) <> node_data
+      assert {:ok, :ok} = Native.tree_upload(tree, data)
+
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      assert length(frames) == 1
+
+      [{frame_id, x, y, w, h}] = frames
+      assert frame_id == id
+      assert x == 0.0
+      assert y == 0.0
+      assert w == 100.0
+      assert h == 50.0
+    end
+
+    test "layouts row with two children" do
+      tree = Native.tree_new()
+
+      row_id = :erlang.term_to_binary(:row)
+      child1_id = :erlang.term_to_binary(:c1)
+      child2_id = :erlang.term_to_binary(:c2)
+
+      row_attrs = attrs_with_spacing(10.0)
+      child_attrs = attrs_with_size(50.0, 30.0)
+
+      row_children =
+        <<byte_size(child1_id)::unsigned-32>> <> child1_id <>
+          <<byte_size(child2_id)::unsigned-32>> <> child2_id
+
+      row_node =
+        <<byte_size(row_id)::unsigned-32>> <>
+          row_id <>
+          <<1>> <>
+          <<byte_size(row_attrs)::unsigned-32>> <>
+          row_attrs <>
+          <<2::unsigned-16>> <>
+          row_children
+
+      child1_node =
+        <<byte_size(child1_id)::unsigned-32>> <>
+          child1_id <>
+          <<4>> <>
+          <<byte_size(child_attrs)::unsigned-32>> <>
+          child_attrs <>
+          <<0::unsigned-16>>
+
+      child2_node =
+        <<byte_size(child2_id)::unsigned-32>> <>
+          child2_id <>
+          <<4>> <>
+          <<byte_size(child_attrs)::unsigned-32>> <>
+          child_attrs <>
+          <<0::unsigned-16>>
+
+      data = make_header(3) <> row_node <> child1_node <> child2_node
+      assert {:ok, :ok} = Native.tree_upload(tree, data)
+
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      assert length(frames) == 3
+
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+
+      # Child 1 should be at x=0
+      {c1_x, _c1_y, c1_w, _c1_h} = frames_map[child1_id]
+      assert c1_x == 0.0
+      assert c1_w == 50.0
+
+      # Child 2 should be at x=60 (50 + 10 spacing)
+      {c2_x, _c2_y, c2_w, _c2_h} = frames_map[child2_id]
+      assert c2_x == 60.0
+      assert c2_w == 50.0
+    end
+
+    test "layouts column with fill children" do
+      tree = Native.tree_new()
+
+      col_id = :erlang.term_to_binary(:col)
+      child1_id = :erlang.term_to_binary(:c1)
+      child2_id = :erlang.term_to_binary(:c2)
+
+      # Column with fixed height
+      col_attrs = <<2::unsigned-16, 2, 2, 100.0::float-64, 1, 2, 50.0::float-64>>
+
+      # Children with fill height (tag=2, variant=0 for fill)
+      child_attrs = <<2::unsigned-16, 1, 2, 50.0::float-64, 2, 0>>
+
+      col_children =
+        <<byte_size(child1_id)::unsigned-32>> <> child1_id <>
+          <<byte_size(child2_id)::unsigned-32>> <> child2_id
+
+      col_node =
+        <<byte_size(col_id)::unsigned-32>> <>
+          col_id <>
+          <<3>> <>
+          <<byte_size(col_attrs)::unsigned-32>> <>
+          col_attrs <>
+          <<2::unsigned-16>> <>
+          col_children
+
+      child1_node =
+        <<byte_size(child1_id)::unsigned-32>> <>
+          child1_id <>
+          <<4>> <>
+          <<byte_size(child_attrs)::unsigned-32>> <>
+          child_attrs <>
+          <<0::unsigned-16>>
+
+      child2_node =
+        <<byte_size(child2_id)::unsigned-32>> <>
+          child2_id <>
+          <<4>> <>
+          <<byte_size(child_attrs)::unsigned-32>> <>
+          child_attrs <>
+          <<0::unsigned-16>>
+
+      data = make_header(3) <> col_node <> child1_node <> child2_node
+      assert {:ok, :ok} = Native.tree_upload(tree, data)
+
+      {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0)
+      assert length(frames) == 3
+
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+
+      # Both children should split the 100px height equally
+      {_c1_x, c1_y, _c1_w, c1_h} = frames_map[child1_id]
+      {_c2_x, c2_y, _c2_w, c2_h} = frames_map[child2_id]
+
+      assert c1_h == 50.0
+      assert c2_h == 50.0
+      assert c1_y == 0.0
+      assert c2_y == 50.0
+    end
+  end
 end

@@ -285,6 +285,40 @@ fn tree_clear(tree_res: ResourceArc<TreeResource>) -> Atom {
     atoms::ok()
 }
 
+/// Compute layout for the tree with the given constraints.
+/// Returns list of {id_bytes, x, y, width, height} tuples for all elements.
+#[rustler::nif]
+fn tree_layout(
+    env: Env,
+    tree_res: ResourceArc<TreeResource>,
+    width: f64,
+    height: f64,
+) -> Result<Vec<(Binary, f32, f32, f32, f32)>, String> {
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        let constraint = tree::Constraint::new(width as f32, height as f32);
+        tree::layout_tree_default(&mut tree, constraint);
+
+        // Collect all frames
+        let mut frames = Vec::with_capacity(tree.len());
+        for (id, element) in tree.nodes.iter() {
+            if let Some(frame) = element.frame {
+                let mut id_binary = NewBinary::new(env, id.0.len());
+                id_binary.as_mut_slice().copy_from_slice(&id.0);
+                frames.push((
+                    id_binary.into(),
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                ));
+            }
+        }
+        Ok(frames)
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
 // ============================================================================
 // NIF Registration
 // ============================================================================
