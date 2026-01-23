@@ -168,6 +168,8 @@ defmodule Emerge.AttrCodec do
   defp encode_length({:px, value}), do: <<2, encode_f64(value)::binary>>
   defp encode_length({:fill_portion, value}), do: <<3, encode_f64(value)::binary>>
   defp encode_length({:fill, value}), do: <<3, encode_f64(value)::binary>>
+  defp encode_length({:minimum, min_px, inner}), do: <<4, encode_f64(min_px)::binary, encode_length(inner)::binary>>
+  defp encode_length({:maximum, max_px, inner}), do: <<5, encode_f64(max_px)::binary, encode_length(inner)::binary>>
 
   defp decode_length(<<0, rest::binary>>), do: {:fill, rest}
   defp decode_length(<<1, rest::binary>>), do: {:content, rest}
@@ -178,6 +180,16 @@ defmodule Emerge.AttrCodec do
   defp decode_length(<<3, rest::binary>>) do
     {value, rest} = decode_f64(rest)
     {{:fill_portion, value}, rest}
+  end
+  defp decode_length(<<4, rest::binary>>) do
+    {min_px, rest} = decode_f64(rest)
+    {inner, rest} = decode_length(rest)
+    {{:minimum, min_px, inner}, rest}
+  end
+  defp decode_length(<<5, rest::binary>>) do
+    {max_px, rest} = decode_f64(rest)
+    {inner, rest} = decode_length(rest)
+    {{:maximum, max_px, inner}, rest}
   end
 
   defp encode_padding(value) when is_number(value) do

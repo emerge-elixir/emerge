@@ -198,6 +198,14 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
         Some(Length::Px(px)) => *px as f32,
         Some(Length::Content) | None => intrinsic,
         Some(Length::Fill) | Some(Length::FillPortion(_)) => intrinsic, // Will expand in resolve
+        Some(Length::Minimum(min_px, inner)) => {
+            let inner_size = resolve_intrinsic_length(Some(inner), intrinsic);
+            inner_size.max(*min_px as f32)
+        }
+        Some(Length::Maximum(max_px, inner)) => {
+            let inner_size = resolve_intrinsic_length(Some(inner), intrinsic);
+            inner_size.min(*max_px as f32)
+        }
     }
 }
 
@@ -272,6 +280,25 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
         Some(Length::Content) | None => intrinsic.min(constraint),
         Some(Length::Fill) => constraint,
         Some(Length::FillPortion(_)) => constraint, // Simplified: treat as fill
+        Some(Length::Minimum(min_px, inner)) => {
+            let inner_size = resolve_length(Some(inner), intrinsic, constraint);
+            inner_size.max(*min_px as f32)
+        }
+        Some(Length::Maximum(max_px, inner)) => {
+            let inner_size = resolve_length(Some(inner), intrinsic, constraint);
+            inner_size.min(*max_px as f32)
+        }
+    }
+}
+
+/// Check if a length is fill-based (expands to available space).
+fn is_fill_length(length: Option<&Length>) -> bool {
+    match length {
+        Some(Length::Fill) | Some(Length::FillPortion(_)) => true,
+        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
+            is_fill_length(Some(inner))
+        }
+        _ => false,
     }
 }
 
@@ -344,13 +371,10 @@ fn resolve_row_children(
         let Some(child) = tree.get(child_id) else { continue };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
 
-        match child.attrs.width.as_ref() {
-            Some(Length::Fill) | Some(Length::FillPortion(_)) => {
-                fill_count += 1;
-            }
-            _ => {
-                fixed_width += resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic);
-            }
+        if is_fill_length(child.attrs.width.as_ref()) {
+            fill_count += 1;
+        } else {
+            fixed_width += resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic);
         }
     }
 
@@ -366,10 +390,13 @@ fn resolve_row_children(
         let (child_width, align_y) = {
             let Some(child) = tree.get(child_id) else { continue };
             let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
-            let w = match child.attrs.width.as_ref() {
-                Some(Length::Fill) | Some(Length::FillPortion(_)) => fill_width,
-                _ => resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic),
+            let base_width = if is_fill_length(child.attrs.width.as_ref()) {
+                fill_width
+            } else {
+                resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic)
             };
+            // Apply min/max constraints on top of base width
+            let w = resolve_length(child.attrs.width.as_ref(), intrinsic, base_width);
             (w, child.attrs.align_y.unwrap_or_default())
         };
 
@@ -415,13 +442,10 @@ fn resolve_column_children(
         let Some(child) = tree.get(child_id) else { continue };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
 
-        match child.attrs.height.as_ref() {
-            Some(Length::Fill) | Some(Length::FillPortion(_)) => {
-                fill_count += 1;
-            }
-            _ => {
-                fixed_height += resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic);
-            }
+        if is_fill_length(child.attrs.height.as_ref()) {
+            fill_count += 1;
+        } else {
+            fixed_height += resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic);
         }
     }
 
@@ -437,10 +461,13 @@ fn resolve_column_children(
         let (child_height, align_x) = {
             let Some(child) = tree.get(child_id) else { continue };
             let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
-            let h = match child.attrs.height.as_ref() {
-                Some(Length::Fill) | Some(Length::FillPortion(_)) => fill_height,
-                _ => resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic),
+            let base_height = if is_fill_length(child.attrs.height.as_ref()) {
+                fill_height
+            } else {
+                resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic)
             };
+            // Apply min/max constraints on top of base height
+            let h = resolve_length(child.attrs.height.as_ref(), intrinsic, base_height);
             (h, child.attrs.align_x.unwrap_or_default())
         };
 
@@ -581,6 +608,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
+    use crate::tree::element::Element;
 
     struct MockTextMeasurer;
     impl TextMeasurer for MockTextMeasurer {
@@ -726,5 +754,116 @@ mod tests {
         assert_eq!(c2_frame.height, 50.0);
         assert_eq!(c1_frame.y, 0.0);
         assert_eq!(c2_frame.y, 50.0);
+    }
+
+    #[test]
+    fn test_layout_minimum_constraint() {
+        let mut tree = ElementTree::new();
+
+        // Element with width = minimum(200, fill())
+        // When constraint is 800px, fill() = 800px, but minimum clamps to at least 200px
+        // Result should be 800px (fill wins since 800 > 200)
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Minimum(200.0, Box::new(Length::Fill)));
+        attrs.height = Some(Length::Px(50.0));
+
+        let el = make_element("root", ElementKind::El, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        assert_eq!(frame.width, 800.0); // fill() = 800, 800 >= 200, so 800
+    }
+
+    #[test]
+    fn test_layout_minimum_constraint_enforced() {
+        let mut tree = ElementTree::new();
+
+        // Element with width = minimum(200, content)
+        // When content is small, minimum should enforce 200px
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Minimum(200.0, Box::new(Length::Content)));
+        attrs.height = Some(Length::Px(50.0));
+
+        let el = make_element("root", ElementKind::El, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        assert_eq!(frame.width, 200.0); // content = 0, minimum enforces 200
+    }
+
+    #[test]
+    fn test_layout_maximum_constraint() {
+        let mut tree = ElementTree::new();
+
+        // Element with width = maximum(300, fill())
+        // When constraint is 800px, fill() = 800px, but maximum clamps to 300px
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Maximum(300.0, Box::new(Length::Fill)));
+        attrs.height = Some(Length::Px(50.0));
+
+        let el = make_element("root", ElementKind::El, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        assert_eq!(frame.width, 300.0); // fill() = 800, clamped to max 300
+    }
+
+    #[test]
+    fn test_layout_row_with_max_width_child() {
+        let mut tree = ElementTree::new();
+
+        // Row with two children: one fill, one max(100, fill)
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Fill); // Row needs explicit fill to expand
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Maximum(100.0, Box::new(Length::Fill)));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(400.0, 600.0), &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+
+        // Both children are fill, so they split 400px = 200px each
+        // But c2 has max(100), so it gets clamped to 100px
+        assert_eq!(c1_frame.width, 200.0);
+        assert_eq!(c2_frame.width, 100.0);
     }
 }

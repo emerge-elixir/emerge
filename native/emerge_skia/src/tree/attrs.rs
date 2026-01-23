@@ -17,6 +17,10 @@ pub enum Length {
     Content,
     Px(f64),
     FillPortion(f64),
+    /// Minimum constraint: the resolved length must be at least this many pixels.
+    Minimum(f64, Box<Length>),
+    /// Maximum constraint: the resolved length must be at most this many pixels.
+    Maximum(f64, Box<Length>),
 }
 
 /// Padding specification.
@@ -295,6 +299,18 @@ fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
         1 => Ok(Length::Content),
         2 => Ok(Length::Px(cursor.read_f64()?)),
         3 => Ok(Length::FillPortion(cursor.read_f64()?)),
+        4 => {
+            // Minimum: min_px (f64) + inner length
+            let min_px = cursor.read_f64()?;
+            let inner = decode_length(cursor)?;
+            Ok(Length::Minimum(min_px, Box::new(inner)))
+        }
+        5 => {
+            // Maximum: max_px (f64) + inner length
+            let max_px = cursor.read_f64()?;
+            let inner = decode_length(cursor)?;
+            Ok(Length::Maximum(max_px, Box::new(inner)))
+        }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown length variant: {}",
             variant

@@ -9,8 +9,10 @@ Multi-backend Skia renderer with:
 - Wayland/X11 windowing
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
-- **NEW:** EMRG tree deserialization and patching
-- **NEW:** Elixir-side tree definition + EMRG encoder (no layout compute)
+- EMRG tree deserialization and patching
+- Elixir-side tree definition + EMRG encoder
+- Two-pass layout engine (measurement + resolution)
+- Tree-to-DrawCmd rendering
 
 ## Architecture
 
@@ -29,10 +31,12 @@ lib.rs (NIF entry, resources, registration)
     └── tree/
         ├── mod.rs (public exports)
         ├── element.rs (Element, ElementTree, Frame)
-        ├── attrs.rs (Attrs, Length, Color, etc.)
+        ├── attrs.rs (Attrs, Length, Color, Background, etc.)
         ├── deserialize.rs (EMRG binary parser)
         ├── patch.rs (incremental tree updates)
-        └── layout.rs (two-pass layout algorithm)
+        ├── layout.rs (two-pass layout algorithm)
+        ├── render.rs (ElementTree → Vec<DrawCmd>)
+        └── serialize.rs (ElementTree → EMRG binary)
 ```
 
 ---
@@ -150,3 +154,222 @@ tree_clear(tree)                  # Clear all nodes
 | 2 | SetChildren | id_len + id + count + child_ids |
 | 3 | InsertSubtree | parent_len + parent_id + index + tree_len + tree_bytes |
 | 4 | Remove | id_len + id |
+
+### Phase 5: Layout Engine ✓
+
+Two-pass layout algorithm in `layout.rs`:
+1. **Measurement pass** (bottom-up): Compute intrinsic sizes for all elements
+2. **Resolution pass** (top-down): Assign frames using constraints
+
+Features:
+- Fill distribution for rows/columns
+- Alignment (align_x, align_y)
+- Padding and spacing
+- Wrapped row line breaking
+
+### Phase 6: Tree Rendering ✓
+
+`render.rs` converts ElementTree to Vec<DrawCmd>:
+- Background (solid color, gradient)
+- Border (width, color, radius)
+- Clipping (clip, clip_x, clip_y)
+- Text with font metrics
+
+`serialize.rs` encodes ElementTree back to EMRG v2 binary format.
+
+---
+
+## Elm-UI Feature Implementation
+
+Goal: Implement elm-ui API one feature at a time until layout + rendering coverage is complete.
+
+### Feature Status
+
+#### Core Elements
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| text | ✅ | ✅ | ✅ | |
+| el | ✅ | ✅ | ✅ | |
+| row | ✅ | ✅ | ✅ | |
+| column | ✅ | ✅ | ✅ | |
+| wrappedRow | ✅ | ✅ | ✅ | |
+| none | ✅ | ✅ | ✅ | |
+| paragraph | ❌ | ❌ | ❌ | Inline text flow |
+| textColumn | ❌ | ❌ | ❌ | Multi-paragraph |
+
+#### Sizing
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| px | ✅ | ✅ | N/A | |
+| fill | ✅ | ✅ | N/A | |
+| fillPortion | ✅ | ✅ | N/A | |
+| shrink/content | ✅ | ✅ | N/A | |
+| minimum | ✅ | ✅ | N/A | **NEW** |
+| maximum | ✅ | ✅ | N/A | **NEW** |
+
+#### Spacing & Padding
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| padding (uniform) | ✅ | ✅ | N/A | |
+| paddingXY | ✅ | ✅ | N/A | |
+| paddingEach | ✅ | ✅ | N/A | |
+| spacing | ✅ | ✅ | N/A | |
+| spacingXY | ❌ | ❌ | N/A | Different H/V spacing |
+| spaceEvenly | ❌ | ❌ | N/A | Justify children |
+
+#### Alignment
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| centerX | ✅ | ✅ | N/A | |
+| centerY | ✅ | ✅ | N/A | |
+| alignLeft | ✅ | ✅ | N/A | |
+| alignRight | ✅ | ✅ | N/A | |
+| alignTop | ✅ | ✅ | N/A | |
+| alignBottom | ✅ | ✅ | N/A | |
+
+#### Nearby Positioning
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| above | ✅ | ❌ | ❌ | Stored as raw bytes |
+| below | ✅ | ❌ | ❌ | Stored as raw bytes |
+| onLeft | ✅ | ❌ | ❌ | Stored as raw bytes |
+| onRight | ✅ | ❌ | ❌ | Stored as raw bytes |
+| inFront | ✅ | ❌ | ❌ | Stored as raw bytes |
+| behindContent | ✅ | ❌ | ❌ | Stored as raw bytes |
+
+#### Background
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| color | ✅ | N/A | ✅ | |
+| gradient | ✅ | N/A | ✅ | Linear only |
+| image | ❌ | N/A | ❌ | |
+| tiled | ❌ | N/A | ❌ | |
+
+#### Border
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| width | ✅ | N/A | ✅ | |
+| color | ✅ | N/A | ✅ | |
+| rounded (uniform) | ✅ | N/A | ✅ | |
+| roundEach | ✅ | N/A | ⚠️ | Decodes but uses max() |
+| widthEach | ❌ | N/A | ❌ | Per-edge width |
+| dashed/dotted | ❌ | N/A | ❌ | |
+| shadow | ❌ | N/A | ❌ | |
+| glow | ❌ | N/A | ❌ | |
+
+#### Typography
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| Font.size | ✅ | ✅ | ✅ | |
+| Font.color | ✅ | N/A | ✅ | |
+| Font.family | ✅ | ❌ | ❌ | Stored but not used |
+| Font.bold | ✅ | ❌ | ❌ | Stored as string |
+| Font.italic | ✅ | ❌ | ❌ | Stored as string |
+| Font.strike | ❌ | N/A | ❌ | |
+| Font.underline | ❌ | N/A | ❌ | |
+| Font.letterSpacing | ❌ | ❌ | ❌ | |
+| Font.wordSpacing | ❌ | ❌ | ❌ | |
+| Font.alignLeft/Right/Center | ❌ | ❌ | ❌ | Text alignment |
+
+#### Transforms
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| moveUp/Down/Left/Right | ❌ | ❌ | ❌ | |
+| rotate | ❌ | ❌ | ❌ | |
+| scale | ❌ | ❌ | ❌ | |
+
+#### Effects
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| alpha/opacity | ❌ | N/A | ❌ | |
+
+#### Clipping & Scrolling
+| Feature | Elixir API | Layout | Render | Notes |
+|---------|------------|--------|--------|-------|
+| clip | ✅ | N/A | ✅ | |
+| clipX | ✅ | N/A | ✅ | |
+| clipY | ✅ | N/A | ✅ | |
+| scrollbarY | ✅ | ❌ | ❌ | Attr exists, no render |
+| scrollbarX | ✅ | ❌ | ❌ | Attr exists, no render |
+
+#### Input Elements
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Input.button | ❌ | |
+| Input.checkbox | ❌ | |
+| Input.text | ❌ | |
+| Input.multiline | ❌ | |
+| Input.slider | ❌ | |
+| Input.radio | ❌ | |
+
+---
+
+## Implementation Roadmap
+
+### Next Up: Phase 7 - Per-Corner Border Radius
+
+Current state: `border_radius` stores single f64, loses per-corner info.
+
+Tasks:
+1. Change `Attrs.border_radius` from `Option<f64>` to `Option<BorderRadius>` enum
+2. Add `BorderRadius::Uniform(f64)` and `BorderRadius::Corners { tl, tr, br, bl }`
+3. Update `render.rs` to use per-corner radius in DrawCmd
+4. Add `DrawCmd::RoundedRectCorners` variant for per-corner rendering
+
+### Phase 8 - Nearby Element Layout
+
+Current state: Nearby elements (above/below/on_left/on_right/in_front/behind) are stored as raw EMRG bytes but never decoded or positioned.
+
+Tasks:
+1. Decode nearby element bytes into ElementTree during layout
+2. Position `above` elements above parent's top edge
+3. Position `below` elements below parent's bottom edge
+4. Position `on_left` elements to left of parent's left edge
+5. Position `on_right` elements to right of parent's right edge
+6. Stack `in_front` elements at parent position (higher z-order)
+7. Stack `behind` elements at parent position (lower z-order)
+8. Update render pass to handle z-ordering
+
+### Phase 9 - Transforms
+
+Tasks:
+1. Add transform attributes: `move_x`, `move_y`, `rotate`, `scale`
+2. Apply transforms during render (translate, rotate, scale canvas)
+3. Add `alpha` attribute for opacity
+
+### Phase 10 - Font Rendering Improvements
+
+Tasks:
+1. Load font families by name (Font.family)
+2. Apply font weight (bold)
+3. Apply font style (italic)
+4. Text decoration (underline, strike)
+
+### Phase 11 - Scrollbars
+
+Tasks:
+1. Render scrollbar track and thumb
+2. Calculate thumb position/size from scroll offset and content size
+3. Handle scrollbar click/drag input
+
+### Phase 12 - Advanced Features
+
+- `paragraph` element for inline text flow
+- `textColumn` for multi-paragraph layouts
+- `spacingXY` for different H/V spacing
+- `spaceEvenly` for justified distribution
+- Border shadows and glow effects
+- Background images
+
+---
+
+## Length Encoding Reference
+
+| Variant | Tag | Format |
+|---------|-----|--------|
+| fill | 0 | (no data) |
+| content | 1 | (no data) |
+| px | 2 | f64 |
+| fill_portion | 3 | f64 |
+| minimum | 4 | f64 + inner length |
+| maximum | 5 | f64 + inner length |
