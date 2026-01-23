@@ -7,19 +7,12 @@
 //! - Patch application for incremental updates
 //! - Layout engine for computing element frames
 
-mod attrs;
-mod element;
-mod deserialize;
-mod layout;
-mod patch;
-mod render;
+#![allow(unused_imports)] // Re-exports are part of the public API even if unused internally.
 
-pub use attrs::{
-    Attrs, Length, Padding, AlignX, AlignY, Color, Background, Font, FontWeight, FontStyle,
-    decode_attrs,
-};
-pub use element::{Element, ElementId, ElementKind, ElementTree, Frame};
-pub use deserialize::decode_tree;
-pub use layout::{Constraint, layout_tree_default};
-pub use patch::{Patch, apply_patches, decode_patches};
-pub use render::render_tree;
+pub mod attrs;
+pub mod element;
+pub mod deserialize;
+pub mod layout;
+pub mod patch;
+pub mod render;
+pub mod serialize;

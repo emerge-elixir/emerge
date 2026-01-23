@@ -161,4 +161,10 @@ defmodule EmergeSkia.Native do
   @spec tree_layout(reference(), float(), float()) ::
           {:ok, list({binary(), float(), float(), float(), float()})} | {:error, String.t()}
   def tree_layout(_tree, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Decode an EMRG binary in Rust and re-encode it.
+  """
+  @spec tree_roundtrip(binary()) :: binary() | {:error, String.t()}
+  def tree_roundtrip(_data), do: :erlang.nif_error(:nif_not_loaded)
 end

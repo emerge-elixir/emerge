@@ -5,7 +5,7 @@
 //! 2. Resolution (top-down): Assign frames with constraints
 
 use super::attrs::{AlignX, AlignY, Length, Padding};
-use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
+use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
 // Layout Types
@@ -23,13 +23,6 @@ impl Constraint {
         Self { max_width, max_height }
     }
 
-    /// Create a constraint with infinite dimensions.
-    pub fn unbounded() -> Self {
-        Self {
-            max_width: f32::INFINITY,
-            max_height: f32::INFINITY,
-        }
-    }
 }
 
 /// Intrinsic (natural) size computed during measurement pass.
@@ -39,12 +32,7 @@ pub struct IntrinsicSize {
     pub height: f32,
 }
 
-/// Measured element with intrinsic size attached.
-#[derive(Clone, Debug)]
-struct MeasuredElement {
-    id: ElementId,
-    intrinsic: IntrinsicSize,
-}
+// MeasuredElement reserved for future layout caching.
 
 // =============================================================================
 // Text Measurement
@@ -301,13 +289,11 @@ fn resolve_el_children(
     content_height: f32,
 ) {
     for child_id in child_ids {
-        let (child_intrinsic, align_x, align_y) = {
+        let (align_x, align_y) = {
             let Some(child) = tree.get(child_id) else { continue };
-            let intrinsic = child.frame.map(|f| IntrinsicSize { width: f.width, height: f.height })
-                .unwrap_or_default();
             let ax = child.attrs.align_x.unwrap_or_default();
             let ay = child.attrs.align_y.unwrap_or_default();
-            (intrinsic, ax, ay)
+            (ax, ay)
         };
 
         let child_constraint = Constraint::new(content_width, content_height);
@@ -315,9 +301,8 @@ fn resolve_el_children(
         // Resolve child first to get final size
         resolve_element(tree, child_id, child_constraint, 0.0, 0.0);
 
-        // Get resolved size and apply alignment
-        let Some(child) = tree.get_mut(child_id) else { continue };
-        let Some(frame) = &mut child.frame else { continue };
+        let Some(child) = tree.get(child_id) else { continue };
+        let Some(frame) = &child.frame else { continue };
 
         let child_x = match align_x {
             AlignX::Left => content_x,
@@ -331,8 +316,9 @@ fn resolve_el_children(
             AlignY::Bottom => content_y + content_height - frame.height,
         };
 
-        frame.x = child_x;
-        frame.y = child_y;
+        let dx = child_x - frame.x;
+        let dy = child_y - frame.y;
+        shift_subtree(tree, child_id, dx, dy);
     }
 }
 
@@ -391,14 +377,16 @@ fn resolve_row_children(
         resolve_element(tree, child_id, child_constraint, current_x, content_y);
 
         // Apply vertical alignment
-        if let Some(child) = tree.get_mut(child_id) {
-            if let Some(frame) = &mut child.frame {
-                frame.y = match align_y {
-                    AlignY::Top => content_y,
-                    AlignY::Center => content_y + (content_height - frame.height) / 2.0,
-                    AlignY::Bottom => content_y + content_height - frame.height,
-                };
-            }
+        if let Some(child) = tree.get(child_id)
+            && let Some(frame) = &child.frame
+        {
+            let aligned_y = match align_y {
+                AlignY::Top => content_y,
+                AlignY::Center => content_y + (content_height - frame.height) / 2.0,
+                AlignY::Bottom => content_y + content_height - frame.height,
+            };
+            let dy = aligned_y - frame.y;
+            shift_subtree(tree, child_id, 0.0, dy);
         }
 
         current_x += child_width + spacing;
@@ -460,14 +448,16 @@ fn resolve_column_children(
         resolve_element(tree, child_id, child_constraint, content_x, current_y);
 
         // Apply horizontal alignment
-        if let Some(child) = tree.get_mut(child_id) {
-            if let Some(frame) = &mut child.frame {
-                frame.x = match align_x {
-                    AlignX::Left => content_x,
-                    AlignX::Center => content_x + (content_width - frame.width) / 2.0,
-                    AlignX::Right => content_x + content_width - frame.width,
-                };
-            }
+        if let Some(child) = tree.get(child_id)
+            && let Some(frame) = &child.frame
+        {
+            let aligned_x = match align_x {
+                AlignX::Left => content_x,
+                AlignX::Center => content_x + (content_width - frame.width) / 2.0,
+                AlignX::Right => content_x + content_width - frame.width,
+            };
+            let dx = aligned_x - frame.x;
+            shift_subtree(tree, child_id, dx, 0.0);
         }
 
         current_y += child_height + spacing;
@@ -481,7 +471,7 @@ fn resolve_wrapped_row_children(
     content_x: f32,
     content_y: f32,
     content_width: f32,
-    content_height: f32,
+    _content_height: f32,
     spacing: f32,
 ) {
     if child_ids.is_empty() {
@@ -565,6 +555,25 @@ fn get_padding(padding: Option<&Padding>) -> ResolvedPadding {
             }
         }
         None => ResolvedPadding { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
+    }
+}
+
+fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+
+    let child_ids = {
+        let Some(element) = tree.get_mut(id) else { return };
+        if let Some(frame) = &mut element.frame {
+            frame.x += dx;
+            frame.y += dy;
+        }
+        element.children.clone()
+    };
+
+    for child_id in child_ids {
+        shift_subtree(tree, &child_id, dx, dy);
     }
 }
 

@@ -8,7 +8,8 @@
 //!   - 4: remove - id_len(4) + id
 
 use super::deserialize::{decode_tree, DecodeError};
-use super::element::{Element, ElementId, ElementTree};
+use super::attrs::decode_attrs;
+use super::element::{ElementId, ElementTree};
 
 /// A single patch operation.
 #[derive(Debug, Clone)]
@@ -197,14 +198,15 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
         Patch::SetAttrs { id, attrs_raw } => {
             let element = tree
                 .get_mut(&id)
-                .ok_or_else(|| format!("SetAttrs: node not found"))?;
-            element.attrs_raw = attrs_raw;
+                .ok_or_else(|| "SetAttrs: node not found".to_string())?;
+            element.attrs_raw = attrs_raw.clone();
+            element.attrs = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
         }
 
         Patch::SetChildren { id, children } => {
             let element = tree
                 .get_mut(&id)
-                .ok_or_else(|| format!("SetChildren: node not found"))?;
+                .ok_or_else(|| "SetChildren: node not found".to_string())?;
             element.children = children;
         }
 
@@ -229,7 +231,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
                 Some(pid) => {
                     let parent = tree
                         .get_mut(&pid)
-                        .ok_or_else(|| format!("InsertSubtree: parent not found"))?;
+                        .ok_or_else(|| "InsertSubtree: parent not found".to_string())?;
 
                     // Insert at the specified index
                     let insert_idx = index.min(parent.children.len());

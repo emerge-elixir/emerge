@@ -1,7 +1,7 @@
 //! Render an ElementTree into DrawCmds.
 
-use super::attrs::{Background, Color};
-use super::element::{Element, ElementId, ElementKind, ElementTree};
+use super::attrs::{Background, Color, Padding};
+use super::element::{ElementId, ElementKind, ElementTree};
 use crate::renderer::DrawCmd;
 
 pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
@@ -64,18 +64,18 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         }
     }
 
-    if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color) {
-        if border_width > 0.0 {
-            commands.push(DrawCmd::Border(
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
-                radius,
-                border_width as f32,
-                color_to_u32(border_color),
-            ));
-        }
+    if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color)
+        && border_width > 0.0
+    {
+        commands.push(DrawCmd::Border(
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
+            radius,
+            border_width as f32,
+            color_to_u32(border_color),
+        ));
     }
 
     let clip = attrs.clip.unwrap_or(false) || attrs.clip_x.unwrap_or(false) || attrs.clip_y.unwrap_or(false);
@@ -83,13 +83,16 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         commands.push(DrawCmd::PushClip(frame.x, frame.y, frame.width, frame.height));
     }
 
-    if element.kind == ElementKind::Text {
-        if let Some(content) = attrs.content.as_deref() {
-            let font_size = attrs.font_size.unwrap_or(16.0) as f32;
-            let color = attrs.font_color.as_ref().map(color_to_u32).unwrap_or(0xFFFFFFFF);
-            let baseline_y = frame.y + font_size;
-            commands.push(DrawCmd::Text(frame.x, baseline_y, content.to_string(), font_size, color));
-        }
+    if element.kind == ElementKind::Text
+        && let Some(content) = attrs.content.as_deref()
+    {
+        let font_size = attrs.font_size.unwrap_or(16.0) as f32;
+        let color = attrs.font_color.as_ref().map(color_to_u32).unwrap_or(0xFFFFFFFF);
+        let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
+        let (ascent, _) = text_metrics(font_size);
+        let text_x = frame.x + padding_left;
+        let baseline_y = frame.y + padding_top + ascent;
+        commands.push(DrawCmd::Text(text_x, baseline_y, content.to_string(), font_size, color));
     }
 
     for child_id in &element.children {
@@ -120,4 +123,22 @@ fn named_color(name: &str) -> u32 {
         "grey" => 0x808080FF,
         _ => 0xFFFFFFFF,
     }
+}
+
+fn text_padding(padding: Option<&Padding>) -> (f32, f32) {
+    match padding {
+        Some(Padding::Uniform(value)) => (*value as f32, *value as f32),
+        Some(Padding::Sides { top, left, .. }) => (*left as f32, *top as f32),
+        None => (0.0, 0.0),
+    }
+}
+
+fn text_metrics(font_size: f32) -> (f32, f32) {
+    use crate::renderer::get_default_typeface;
+    use skia_safe::Font;
+
+    let typeface = get_default_typeface();
+    let font = Font::new(typeface, font_size);
+    let (_, metrics) = font.metrics();
+    (metrics.ascent.abs(), metrics.descent)
 }

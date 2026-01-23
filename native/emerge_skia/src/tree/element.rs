@@ -39,17 +39,6 @@ impl ElementKind {
         }
     }
 
-    /// Encode to the type tag byte.
-    pub fn to_tag(self) -> u8 {
-        match self {
-            Self::Row => 1,
-            Self::WrappedRow => 2,
-            Self::Column => 3,
-            Self::El => 4,
-            Self::Text => 5,
-            Self::None => 6,
-        }
-    }
 }
 
 /// Frame representing the computed layout bounds.
@@ -127,10 +116,6 @@ impl ElementTree {
         self.nodes.insert(element.id.clone(), element);
     }
 
-    /// Remove an element by ID.
-    pub fn remove(&mut self, id: &ElementId) -> Option<Element> {
-        self.nodes.remove(id)
-    }
 
     /// Check if tree is empty.
     pub fn is_empty(&self) -> bool {
@@ -148,14 +133,6 @@ impl ElementTree {
         self.nodes.clear();
     }
 
-    /// Iterate over children of an element.
-    pub fn children(&self, id: &ElementId) -> impl Iterator<Item = &Element> {
-        self.nodes
-            .get(id)
-            .into_iter()
-            .flat_map(|e| e.children.iter())
-            .filter_map(|child_id| self.nodes.get(child_id))
-    }
 }
 
 #[cfg(test)]
@@ -163,18 +140,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_element_kind_roundtrip() {
-        for kind in [
-            ElementKind::Row,
-            ElementKind::WrappedRow,
-            ElementKind::Column,
-            ElementKind::El,
-            ElementKind::Text,
-            ElementKind::None,
-        ] {
-            let tag = kind.to_tag();
-            let decoded = ElementKind::from_tag(tag).unwrap();
-            assert_eq!(kind, decoded);
-        }
+    fn test_element_kind_from_tag() {
+        assert_eq!(ElementKind::from_tag(1), Some(ElementKind::Row));
+        assert_eq!(ElementKind::from_tag(2), Some(ElementKind::WrappedRow));
+        assert_eq!(ElementKind::from_tag(3), Some(ElementKind::Column));
+        assert_eq!(ElementKind::from_tag(4), Some(ElementKind::El));
+        assert_eq!(ElementKind::from_tag(5), Some(ElementKind::Text));
+        assert_eq!(ElementKind::from_tag(6), Some(ElementKind::None));
+        assert_eq!(ElementKind::from_tag(7), None);
     }
 }

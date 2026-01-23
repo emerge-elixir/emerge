@@ -24,7 +24,10 @@ use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use input::InputHandler;
 use renderer::{DrawCmd, RenderState, get_default_typeface};
-use tree::ElementTree;
+use tree::element::ElementTree;
+
+type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
+type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
 // ============================================================================
 // Atoms
@@ -140,13 +143,13 @@ fn renderer_upload(
     width: f64,
     height: f64,
 ) -> Result<Atom, String> {
-    let decoded = tree::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+    let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
         *tree = decoded;
-        let constraint = tree::Constraint::new(width as f32, height as f32);
-        tree::layout_tree_default(&mut tree, constraint);
-        let commands = tree::render_tree(&tree);
+        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+        tree::layout::layout_tree_default(&mut tree, constraint);
+        let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {
             state.commands = commands;
@@ -165,13 +168,13 @@ fn renderer_patch(
     width: f64,
     height: f64,
 ) -> Result<Atom, String> {
-    let patches = tree::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
+    let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
-        tree::apply_patches(&mut tree, patches)?;
-        let constraint = tree::Constraint::new(width as f32, height as f32);
-        tree::layout_tree_default(&mut tree, constraint);
-        let commands = tree::render_tree(&tree);
+        tree::patch::apply_patches(&mut tree, patches)?;
+        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+        tree::layout::layout_tree_default(&mut tree, constraint);
+        let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {
             state.commands = commands;
@@ -287,7 +290,7 @@ fn tree_new() -> ResourceArc<TreeResource> {
 /// Replaces any existing tree contents.
 #[rustler::nif]
 fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
-    let decoded = tree::decode_tree(data.as_slice())
+    let decoded = tree::deserialize::decode_tree(data.as_slice())
         .map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
@@ -301,11 +304,11 @@ fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom
 /// Apply patches to an existing tree.
 #[rustler::nif]
 fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
-    let patches = tree::decode_patches(data.as_slice())
+    let patches = tree::patch::decode_patches(data.as_slice())
         .map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
-        tree::apply_patches(&mut tree, patches)?;
+        tree::patch::apply_patches(&mut tree, patches)?;
         Ok(atoms::ok())
     } else {
         Err("failed to lock tree".to_string())
@@ -344,15 +347,15 @@ fn tree_clear(tree_res: ResourceArc<TreeResource>) -> Atom {
 /// Compute layout for the tree with the given constraints.
 /// Returns list of {id_bytes, x, y, width, height} tuples for all elements.
 #[rustler::nif]
-fn tree_layout(
-    env: Env,
+fn tree_layout<'a>(
+    env: Env<'a>,
     tree_res: ResourceArc<TreeResource>,
     width: f64,
     height: f64,
-) -> Result<Vec<(Binary, f32, f32, f32, f32)>, String> {
+) -> Result<LayoutFrames<'a>, String> {
     if let Ok(mut tree) = tree_res.tree.lock() {
-        let constraint = tree::Constraint::new(width as f32, height as f32);
-        tree::layout_tree_default(&mut tree, constraint);
+        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+        tree::layout::layout_tree_default(&mut tree, constraint);
 
         // Collect all frames
         let mut frames = Vec::with_capacity(tree.len());
@@ -373,6 +376,16 @@ fn tree_layout(
     } else {
         Err("failed to lock tree".to_string())
     }
+}
+
+/// Round-trip EMRG binary: decode in Rust and re-encode.
+#[rustler::nif]
+fn tree_roundtrip<'a>(env: Env<'a>, data: Binary) -> Result<Binary<'a>, String> {
+    let tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+    let encoded = tree::serialize::encode_tree(&tree);
+    let mut binary = NewBinary::new(env, encoded.len());
+    binary.as_mut_slice().copy_from_slice(&encoded);
+    Ok(binary.into())
 }
 
 // ============================================================================

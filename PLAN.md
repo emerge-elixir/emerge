@@ -37,6 +37,13 @@ lib.rs (NIF entry, resources, registration)
 
 ---
 
+## Notes
+
+- Removed unused helpers to keep the codebase warning-free: `Constraint::unbounded`, `ElementKind::to_tag`,
+  `ElementTree::remove`, `ElementTree::children`, and the unused `MeasuredElement` stub.
+- Dropped module-wide re-exports in `tree/mod.rs`; consumers should import from submodules
+  (e.g. `tree::layout::Constraint`, `tree::patch::decode_patches`).
+
 ## Completed Phases
 
 ### Phase 1: Refactor ✓

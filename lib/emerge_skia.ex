@@ -104,7 +104,11 @@ defmodule EmergeSkia do
   def upload_tree(renderer, tree, width, height) do
     state = Emerge.diff_state_new()
     {full_bin, state, assigned} = Emerge.encode_full(state, tree)
-    :ok = Native.renderer_upload(renderer, full_bin, width, height)
+    case Native.renderer_upload(renderer, full_bin, width, height) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, reason} -> raise "renderer_upload failed: #{reason}"
+    end
     {state, assigned}
   end
 
@@ -115,7 +119,11 @@ defmodule EmergeSkia do
           {Emerge.DiffState.t(), Emerge.Element.t()}
   def patch_tree(renderer, state, tree, width, height) do
     {patch_bin, state, assigned} = Emerge.diff_state_update(state, tree)
-    :ok = Native.renderer_patch(renderer, patch_bin, width, height)
+    case Native.renderer_patch(renderer, patch_bin, width, height) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, reason} -> raise "renderer_patch failed: #{reason}"
+    end
     {state, assigned}
   end
 
