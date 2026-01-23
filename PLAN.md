@@ -1,309 +1,365 @@
 # PLAN.md
 
-Implementation plan for multi-backend architecture in emerge_skia.
+Implementation plan for emerge_skia - a Skia renderer for Elixir with Emerge layout integration.
 
 ## Current State
 
-Single monolithic `lib.rs` (~750 lines) combining:
-- Draw command decoding
-- Skia rendering
+Multi-backend Skia renderer with:
+- Draw command decoding and rendering
 - Wayland/X11 windowing (via winit/glutin)
-- NIF interface
+- Raster (offscreen CPU) backend
+- Push-based input event delivery
+- **NEW:** EMRG tree deserialization and layout engine
 
-No input event support, no backend abstraction.
-
-## Target Architecture
+## Architecture
 
 ```
-lib.rs (NIF entry, DrawCmd, command decoding)
+lib.rs (NIF entry, resources, registration)
     │
-    ▼
-renderer.rs (backend-agnostic SkiaRenderer)
+    ├── renderer.rs (DrawCmd, RenderState, font cache)
     │
-    ├── backend/wayland.rs (winit/glutin GL window)
-    ├── backend/drm.rs (direct framebuffer, evdev input)
-    └── backend/raster.rs (offscreen CPU surface)
+    ├── backend/
+    │   ├── wayland.rs (winit/glutin GL window)
+    │   ├── drm.rs (planned: direct framebuffer)
+    │   └── raster.rs (offscreen CPU surface)
     │
-input.rs (InputEvent enum, InputQueue, encoding)
+    ├── input.rs (InputEvent, InputHandler, push delivery)
+    │
+    └── tree/
+        ├── mod.rs (public exports)
+        ├── element.rs (Element, ElementTree, Frame)
+        ├── attrs.rs (Attrs, Length, Color, etc.)
+        ├── deserialize.rs (EMRG binary parser)
+        ├── patch.rs (incremental tree updates)
+        └── layout.rs (two-pass layout algorithm)
 ```
 
-## Phase 1: Refactor Current Code
+---
 
-**Goal:** Extract renderer and backend without changing functionality.
+## Completed Phases
 
-### 1.1 Create `renderer.rs`
+### Phase 1: Refactor ✓
 
-Extract from `lib.rs`:
-- `DrawCmd` enum and `Decoder` impl
-- `RendererState` struct
-- `SkiaRenderer` struct (rename from current impl)
-- `create_skia_surface()` function
-- `color_from_u32()` helper
-- `get_default_typeface()` and font cache
+Extracted renderer and backend modules from monolithic lib.rs.
 
-The renderer should be backend-agnostic:
-```rust
-pub struct Renderer {
-    surface: Surface,
-    gr_context: Option<DirectContext>,
-    source: SurfaceSource,  // GL or Raster
-}
+### Phase 2: Raster Backend ✓
 
-impl Renderer {
-    // For GPU backends (Wayland, DRM with GPU)
-    pub fn new_gl(dimensions, fb_info, gr_context, samples, stencil) -> Self;
+Offscreen CPU rendering via `render_to_pixels/3` NIF.
 
-    // For CPU backends (Raster)
-    pub fn from_surface(surface: Surface) -> Self;
+### Phase 3: Input Support ✓
 
-    pub fn render(&mut self, commands: &[DrawCmd]);
-    pub fn resize(&mut self, dimensions: (u32, u32));
-    pub fn surface_mut(&mut self) -> &mut Surface;
-}
+Push-based input events via `{:emerge_skia_event, event}` messages.
+
+Input event types:
+- `{:cursor_pos, x, y}`
+- `{:cursor_button, button, action, mods, x, y}`
+- `{:cursor_scroll, dx, dy, x, y}`
+- `{:key, key, scancode, action, mods}`
+- `{:codepoint, char, mods}`
+- `{:viewport_resize, width, height, scale}`
+- `{:focused, bool}`
+- `{:cursor_entered}` / `{:cursor_left}`
+
+### Phase 4: Emerge Tree Integration ✓
+
+#### 4.1 EMRG Binary Format (v2)
+
+Header:
+```
+"EMRG"            # 4 bytes magic
+version           # 1 byte (currently 2)
+node_count        # 4 bytes BE
 ```
 
-### 1.2 Create `backend/wayland.rs`
-
-Move from `lib.rs`:
-- `UserEvent` enum
-- `Env_` struct (rename to `GlEnv`)
-- `App` struct and `ApplicationHandler` impl
-- `create_window_and_renderer()` function
-- Event loop setup with `with_any_thread`
-
-Public interface:
-```rust
-pub fn run(
-    config: WaylandConfig,
-    render_state: Arc<Mutex<RendererState>>,
-    running_flag: Arc<AtomicBool>,
-    event_proxy_tx: Sender<EventLoopProxy<UserEvent>>,
-);
+Node record:
+```
+id_len            # 4 bytes BE
+id_bin            # Erlang term_to_binary
+type_tag          # 1 byte (row=1, wrapped_row=2, column=3, el=4, text=5, none=6)
+attrs_len         # 4 bytes BE
+attrs_bin         # Typed attribute block (see below)
+child_count       # 2 bytes BE
+children...       # Length-prefixed child IDs
 ```
 
-### 1.3 Update `lib.rs`
-
-Keep only:
-- NIF functions (`start`, `stop`, `render`, `measure_text`, `is_running`)
-- `RendererResource` struct
-- Module declarations and NIF registration
-- Atoms
-
-## Phase 2: Add Raster Backend ✓
-
-**Goal:** Offscreen rendering for testing/headless use.
-
-**Implementation Note:** Used a simplified synchronous API instead of stateful resource
-because Skia surfaces are not Send+Sync (can't be shared across threads safely).
-
-### 2.1 Create `backend/raster.rs` ✓
-
-Created `RasterBackend` struct with CPU-backed Skia surface:
-```rust
-pub struct RasterBackend { ... }
-
-impl RasterBackend {
-    pub fn new(config: &RasterConfig) -> Result<Self, String>;
-    pub fn render(&mut self, state: &RenderState) -> RasterFrame;
-}
-
-pub struct RasterFrame {
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,  // RGBA bytes
-}
+Attribute block:
+```
+attr_count        # 2 bytes BE
+attr_records...   # tag (1 byte) + value (varies)
 ```
 
-### 2.2 Add NIF function ✓
+#### 4.2 Attribute Tags
 
-Single synchronous function (simpler than stateful resource):
-```rust
-#[rustler::nif]
-fn render_to_pixels(env: Env, width: u32, height: u32, commands: Vec<DrawCmd>) -> NifResult<Binary>;
-```
+| Tag | Attribute | Value Encoding |
+|-----|-----------|----------------|
+| 1 | width | Length: 0=fill, 1=content, 2=px+f64, 3=fill_portion+f64 |
+| 2 | height | Length (same as width) |
+| 3 | padding | 0=uniform+f64, 1/2=sides+4×f64 |
+| 4 | spacing | f64 |
+| 5 | align_x | 0=left, 1=center, 2=right |
+| 6 | align_y | 0=top, 1=center, 2=bottom |
+| 7 | scrollbar_y | bool |
+| 8 | scrollbar_x | bool |
+| 9 | clip | bool |
+| 10 | clip_y | bool |
+| 11 | clip_x | bool |
+| 12 | background | 0=color, 1=gradient(color+color+f64) |
+| 13 | border_radius | f64 |
+| 14 | border_width | f64 |
+| 15 | border_color | Color |
+| 16 | font_size | f64 |
+| 17 | font_color | Color |
+| 18 | font | 0=atom, 1=string (u16 len + bytes) |
+| 19 | font_weight | 0-8 (thin to black) |
+| 20 | font_style | 0=normal, 1=italic, 2=oblique |
+| 21 | content | u16 len + UTF-8 bytes |
+| 22-27 | nearby (above/below/on_left/on_right/in_front/behind) | u32 len + EMRG subtree |
+| 28 | snap_layout | bool |
+| 29 | snap_text_metrics | bool |
 
-### 2.3 Elixir API ✓
+Color encoding: 0=rgb(3×u8), 1=rgba(4×u8), 2=named(u16 len + bytes)
+
+#### 4.3 Tree NIF Functions
 
 ```elixir
-@spec render_to_pixels(non_neg_integer(), non_neg_integer(), list()) :: binary()
-def render_to_pixels(width, height, commands)
+tree_new()                        # Create empty tree resource
+tree_upload(tree, binary)         # Upload EMRG binary, replaces contents
+tree_patch(tree, binary)          # Apply incremental patches
+tree_layout(tree, width, height)  # Compute layout, returns frame tuples
+tree_node_count(tree)             # Get node count
+tree_is_empty(tree)               # Check if empty
+tree_clear(tree)                  # Clear all nodes
 ```
 
-## Phase 3: Add Input Support ✓
+#### 4.4 Patch Operations
 
-**Goal:** Mouse/keyboard events for interactive UIs.
+| Tag | Operation | Format |
+|-----|-----------|--------|
+| 1 | SetAttrs | id_len + id + attr_len + attrs |
+| 2 | SetChildren | id_len + id + count + child_ids |
+| 3 | InsertSubtree | parent_len + parent_id + index + tree_len + tree_bytes |
+| 4 | Remove | id_len + id |
 
-**Implementation Note:** Input events are captured by the Wayland backend and stored in an
-`InputQueue` shared between the NIF and the backend thread. Events can be polled via
-`drain_input_events/1` or pushed to a process via `set_input_target/2` notifications.
+### Phase 5: Layout Engine ✓
 
-### 3.1 Create `input.rs` ✓
+Two-pass algorithm (Elm-UI style):
+
+#### Pass 1: Measurement (Bottom-Up)
+
+Computes intrinsic sizes by traversing children first:
+
+- **Text**: width from Skia font metrics, height = line height
+- **El**: max child size + padding
+- **Row**: sum of child widths + spacing + padding
+- **Column**: sum of child heights + spacing + padding
+- **WrappedRow**: same as row (wrapping happens in resolve)
+
+#### Pass 2: Resolution (Top-Down)
+
+Assigns frames given constraints:
+
+- **Length resolution**:
+  - `Content` → use intrinsic (clamped to constraint)
+  - `Fill` → expand to constraint
+  - `Px(n)` → fixed size
+  - `FillPortion(n)` → weighted share (simplified to equal distribution)
+
+- **Fill distribution** (rows/columns):
+  1. Separate children into fill vs fixed
+  2. Sum fixed sizes, subtract from available
+  3. Divide remaining equally among fill children
+
+- **Alignment**:
+  - `align_x`: left/center/right positioning in container
+  - `align_y`: top/center/bottom positioning in container
+
+- **WrappedRow**: builds lines by accumulating children until width exceeded
+
+#### Rust Types
 
 ```rust
-pub enum InputEvent {
-    CursorPos { x: f32, y: f32 },
-    CursorButton { button: MouseButton, action: Action, mods: Mods, x: f32, y: f32 },
-    CursorScroll { dx: f32, dy: f32, x: f32, y: f32 },
-    Key { key: Key, action: Action, mods: Mods },
-    Codepoint { char: char, mods: Mods },
-    ViewportResize { width: u32, height: u32, scale: f32 },
+pub struct Constraint {
+    pub max_width: f32,
+    pub max_height: f32,
 }
 
-pub struct InputQueue { ... }
+pub struct Frame {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+pub struct Attrs {
+    pub width: Option<Length>,
+    pub height: Option<Length>,
+    pub padding: Option<Padding>,
+    pub spacing: Option<f64>,
+    pub align_x: Option<AlignX>,
+    pub align_y: Option<AlignY>,
+    pub background: Option<Background>,
+    pub border_radius: Option<f64>,
+    pub border_width: Option<f64>,
+    pub border_color: Option<Color>,
+    pub font_size: Option<f64>,
+    pub font_color: Option<Color>,
+    pub content: Option<String>,
+    // ... and more
+}
 ```
 
-### 3.2 Update Wayland backend ✓
+---
 
-Added to `App`:
-- `input_queue: Arc<Mutex<InputQueue>>`
-- `current_mods: u8` for tracking modifier key state
-- Handle `WindowEvent::CursorMoved`, `MouseInput`, `MouseWheel`, `KeyboardInput`, `ModifiersChanged`, `Focused`, `CursorEntered`, `CursorLeft`
+## Remaining Phases
 
-### 3.3 Add NIF functions ✓
+### Phase 6: Tree Rendering
+
+**Goal:** Generate DrawCmd list from laid-out ElementTree.
+
+#### 6.1 Render traversal
+
+```rust
+fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
+    let mut commands = Vec::new();
+    if let Some(root_id) = &tree.root {
+        render_element(tree, root_id, &mut commands);
+    }
+    commands
+}
+
+fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd>) {
+    let element = tree.get(id)?;
+    let frame = element.frame?;
+    let attrs = &element.attrs;
+
+    // Background
+    if let Some(bg) = &attrs.background {
+        match bg {
+            Background::Color(c) => commands.push(DrawCmd::Rect { ... }),
+            Background::Gradient { from, to, angle } => commands.push(DrawCmd::Gradient { ... }),
+        }
+    }
+
+    // Border
+    if let Some(width) = attrs.border_width {
+        commands.push(DrawCmd::Border { ... });
+    }
+
+    // Text content
+    if element.kind == ElementKind::Text {
+        if let Some(content) = &attrs.content {
+            commands.push(DrawCmd::Text { ... });
+        }
+    }
+
+    // Clipping
+    if attrs.clip.unwrap_or(false) {
+        commands.push(DrawCmd::PushClip { ... });
+    }
+
+    // Render children
+    for child_id in &element.children {
+        render_element(tree, child_id, commands);
+    }
+
+    if attrs.clip.unwrap_or(false) {
+        commands.push(DrawCmd::PopClip);
+    }
+}
+```
+
+#### 6.2 NIF function
 
 ```rust
 #[rustler::nif]
-fn set_input_mask(renderer, mask: u32) -> Atom;
-
-#[rustler::nif]
-fn drain_input_events(renderer) -> Vec<InputEvent>;
-
-#[rustler::nif]
-fn set_input_target(renderer, pid: Option<LocalPid>) -> Atom;
+fn tree_render(tree_res: ResourceArc<TreeResource>) -> Vec<DrawCmd>;
 ```
 
-### 3.4 Elixir API ✓
+### Phase 7: Direct Tree Rendering
 
-```elixir
-# Input mask constants
-def input_mask_key/0, input_mask_codepoint/0, input_mask_cursor_pos/0, etc.
+**Goal:** Render tree directly to Skia surface (skip DrawCmd intermediate).
 
-# Functions
-def set_input_mask(renderer, mask)
-def drain_input_events(renderer)
-def set_input_target(renderer, pid)
+More efficient for large trees - avoid allocating command vector.
+
+```rust
+fn render_tree_direct(tree: &ElementTree, canvas: &Canvas) {
+    // Traverse and draw directly
+}
 ```
 
-## Phase 4: Add DRM Backend
+### Phase 8: Scrolling Support
+
+**Goal:** Handle scroll offsets and clip bounds.
+
+- Track `scroll_x`, `scroll_y` offsets per element
+- Compute `scroll_max` from content overflow
+- Apply scroll transform during rendering
+- Handle scroll input events
+
+### Phase 9: DRM Backend
 
 **Goal:** Direct framebuffer rendering for embedded/kiosk.
 
-### 4.1 Create `backend/drm.rs`
-
 Reference: `/workspace/scenic_driver_skia/native/scenic_driver_skia/src/drm_backend.rs`
 
-Components:
 - DRM device/connector/CRTC setup
 - GBM surface for Skia
+- evdev input handling
 - Page flipping
-- Optional hardware cursor
 
-### 4.2 Create `drm_input.rs`
-
-Reference: `/workspace/scenic_driver_skia/native/scenic_driver_skia/src/drm_input.rs`
-
-- evdev device enumeration
-- Keyboard/mouse event translation
-- Hotplug support
-
-### 4.3 Add dependencies to Cargo.toml
-
-```toml
-drm = "0.14"
-gbm = { version = "0.18", features = ["drm-support"] }
-evdev = "0.12"
-```
-
-### 4.4 NIF functions
-
-```rust
-#[rustler::nif]
-fn start_drm(config: DrmConfig) -> NifResult<ResourceArc<DrmResource>>;
-```
-
-## Phase 5: Unified Backend Selection
+### Phase 10: Unified Backend Selection
 
 **Goal:** Single `start/2` with backend option.
 
-### 5.1 Backend enum
-
 ```elixir
-@type backend :: :wayland | :drm | :raster
-@type config :: [
-  backend: backend(),
-  width: integer(),
-  height: integer(),
-  title: String.t(),  # wayland only
-  drm_device: String.t(),  # drm only, e.g. "/dev/dri/card0"
-]
-
 def start(config \\ [])
+# config: [backend: :wayland | :drm | :raster, width: int, height: int, ...]
 ```
 
-### 5.2 Rust side
+---
 
-```rust
-#[derive(NifTaggedEnum)]
-enum BackendConfig {
-    Wayland { width: u32, height: u32, title: String },
-    Drm { width: u32, height: u32, device: String },
-    Raster { width: u32, height: u32 },
-}
-
-#[rustler::nif]
-fn start(config: BackendConfig) -> NifResult<ResourceArc<RendererResource>>;
-```
-
-## File Structure (Final)
+## File Structure
 
 ```
 native/emerge_skia/src/
-├── lib.rs              # NIF entry, resource types, registration
-├── renderer.rs         # DrawCmd, SkiaRenderer, font cache
-├── input.rs            # InputEvent, InputQueue, encoding
+├── lib.rs              # NIF entry, resources, registration
+├── renderer.rs         # DrawCmd, RenderState, font cache
+├── input.rs            # InputEvent, InputHandler
 ├── backend/
 │   ├── mod.rs
 │   ├── wayland.rs      # winit/glutin windowed
-│   ├── drm.rs          # direct framebuffer
+│   ├── drm.rs          # direct framebuffer (planned)
 │   └── raster.rs       # offscreen CPU
-└── drm_input.rs        # evdev input for DRM backend
+└── tree/
+    ├── mod.rs          # Public exports
+    ├── element.rs      # Element, ElementTree, Frame, ElementKind
+    ├── attrs.rs        # Attrs, Length, Padding, Color, Background, etc.
+    ├── deserialize.rs  # EMRG binary format parser
+    ├── patch.rs        # Patch decoding and application
+    └── layout.rs       # Two-pass layout algorithm
 ```
 
-## Dependencies (Final Cargo.toml)
+## Testing
 
-```toml
-[dependencies]
-rustler = "0.37"
+- **Rust unit tests**: `cargo test` in native/emerge_skia/
+- **Elixir integration tests**: `mix test`
+- **Manual testing**: `mix run demo.exs`
 
-# Windowing (Wayland backend)
-winit = "0.30"
-glutin = "0.32"
-glutin-winit = "0.5"
-raw-window-handle = "0.6"
-gl = "0.14"
+Current test counts:
+- 20 Rust tests (attrs, deserialize, element, layout, patch)
+- 11 Elixir tests (tree operations, layout)
 
-# DRM backend
-drm = "0.14"
-gbm = { version = "0.18", features = ["drm-support"] }
-evdev = "0.12"
-libc = "0.2"
-
-# Skia
-skia-safe = { version = "0.91.1", default-features = false, features = [
-    "x11", "wayland", "embed-freetype", "binary-cache"
-] }
-```
-
-## Testing Strategy
-
-1. **Raster backend** - Unit tests with pixel comparison
-2. **Wayland backend** - Manual testing, CI with virtual framebuffer (Xvfb)
-3. **DRM backend** - Manual testing on target hardware
+---
 
 ## Milestones
 
-- [x] Phase 1: Refactor (renderer.rs, backend/wayland.rs)
+- [x] Phase 1: Refactor (renderer.rs, backend separation)
 - [x] Phase 2: Raster backend
-- [x] Phase 3: Input support
-- [ ] Phase 4: DRM backend
-- [ ] Phase 5: Unified API
+- [x] Phase 3: Input support (push-based)
+- [x] Phase 4: Emerge tree integration (EMRG deserialization)
+- [x] Phase 5: Layout engine (two-pass algorithm)
+- [ ] Phase 6: Tree rendering (DrawCmd generation)
+- [ ] Phase 7: Direct tree rendering (optimization)
+- [ ] Phase 8: Scrolling support
+- [ ] Phase 9: DRM backend
+- [ ] Phase 10: Unified backend selection
