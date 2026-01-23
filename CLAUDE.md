@@ -101,3 +101,7 @@ native/scenic_driver_skia/src/
 ```
 
 Key pattern: `Renderer` struct is backend-agnostic, backends provide the Skia `Surface` and handle input/display.
+
+## Git Commit Guidelines
+
+- Do NOT include `Co-Authored-By` lines in commit messages
