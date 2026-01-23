@@ -1,0 +1,377 @@
+defmodule Emerge.UI do
+  @moduledoc """
+  Elm-UI inspired layout primitives for Emerge.
+
+  ## Example
+
+      import Emerge.UI
+
+      el([width(fill()), height(px(100)), padding(20), Background.color(:navy)],
+        text("Hello World", [Font.size(24), Font.color(:white)])
+      )
+
+      row([spacing(20), padding(10)], [
+        el([width(fill())], text("Left")),
+        el([width(fill())], text("Right"))
+      ])
+
+      column([spacing(10), center_x()], [
+        text("Centered content")
+      ])
+  """
+
+  alias Emerge.Element
+
+  # ============================================
+  # LAYOUT ELEMENTS
+  # ============================================
+
+  @doc """
+  A container element. The fundamental building block.
+
+  Font styles (size, color) are passed down to text children.
+
+  ## Example
+
+      el([padding(10), Font.size(20), Font.color(:white)], text("Hello"))
+  """
+  def el(attrs, child) when is_list(attrs) do
+    parsed = parse_attrs(attrs)
+    {id, parsed} = Map.pop(parsed, :id)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = id || key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    # Pass font attributes down to text children
+    child = apply_font_to_text(child, parsed)
+
+    %Element{
+      type: :el,
+      id: id,
+      attrs: parsed,
+      children: [child]
+    }
+  end
+
+  def el(child), do: el([], child)
+
+  # Apply font attributes from parent el to text child
+  defp apply_font_to_text(%Element{type: :text, attrs: attrs} = text_el, parent_attrs) do
+    font_attrs =
+      parent_attrs
+      |> Map.take([
+        :font_size,
+        :font_color,
+        :font,
+        :font_weight,
+        :font_style,
+        :snap_layout,
+        :snap_text_metrics
+      ])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    merged = Map.merge(%{font_size: 16, font_color: :white}, Map.merge(attrs, font_attrs))
+    merged = Map.put(merged, :__attrs_hash, Emerge.Tree.attrs_hash(merged))
+
+    %{
+      text_el
+      | attrs: merged
+    }
+  end
+
+  defp apply_font_to_text(child, _parent_attrs), do: child
+
+  @doc """
+  A row lays out children horizontally.
+
+  ## Example
+
+      row([spacing(20)], [
+        el(text("A")),
+        el(text("B")),
+        el(text("C"))
+      ])
+  """
+  def row(attrs, children) when is_list(attrs) and is_list(children) do
+    parsed = parse_attrs(attrs)
+    {id, parsed} = Map.pop(parsed, :id)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = id || key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :row,
+      id: id,
+      attrs: parsed,
+      children: children
+    }
+  end
+
+  def row(children) when is_list(children), do: row([], children)
+
+  @doc """
+  A wrapped row lays out children horizontally and wraps onto new lines.
+
+  ## Example
+
+      wrapped_row([spacing(12)], [
+        el(text("One")),
+        el(text("Two")),
+        el(text("Three"))
+      ])
+  """
+  def wrapped_row(attrs, children) when is_list(attrs) and is_list(children) do
+    parsed = parse_attrs(attrs)
+    {id, parsed} = Map.pop(parsed, :id)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = id || key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :wrapped_row,
+      id: id,
+      attrs: parsed,
+      children: children
+    }
+  end
+
+  def wrapped_row(children) when is_list(children), do: wrapped_row([], children)
+
+  @doc """
+  A column lays out children vertically.
+
+  ## Example
+
+      column([spacing(10)], [
+        text("Line 1"),
+        text("Line 2")
+      ])
+  """
+  def column(attrs, children) when is_list(attrs) and is_list(children) do
+    parsed = parse_attrs(attrs)
+    {id, parsed} = Map.pop(parsed, :id)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = id || key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :column,
+      id: id,
+      attrs: parsed,
+      children: children
+    }
+  end
+
+  def column(children) when is_list(children), do: column([], children)
+
+  @doc """
+  A text element. Can only be used as a child of `el`.
+
+  To style text, apply Font attributes to the parent el:
+
+      el([Font.size(20), Font.color(:white)], text("Hello"))
+
+  ## Example
+
+      text("Hello")
+  """
+  def text(content) when is_binary(content) do
+    attrs = %{content: content}
+    attrs = Map.put(attrs, :__attrs_hash, Emerge.Tree.attrs_hash(attrs))
+
+    %Element{
+      type: :text,
+      attrs: attrs,
+      children: []
+    }
+  end
+
+  @doc """
+  An empty element that takes up no space.
+  """
+  def none do
+    %Element{type: :none, attrs: %{}, children: []}
+  end
+
+  # ============================================
+  # SIZE ATTRIBUTES
+  # ============================================
+
+  @doc "Provide a stable key for identity in lists."
+  def key(value), do: {:key, value}
+
+  @doc """
+  Assign a stable key to an element.
+
+  Useful when composing helpers that return elements without inline attrs.
+  """
+  def keyed(value, %Element{id: nil} = element), do: %{element | id: value}
+  def keyed(_value, %Element{} = element), do: element
+
+  @doc "Set width to a specific pixel value"
+  def width({:px, _} = val), do: {:width, val}
+  def width(:fill), do: {:width, :fill}
+  def width(:content), do: {:width, :content}
+  def width({:fill_portion, _} = val), do: {:width, val}
+
+  @doc "Set height to a specific pixel value"
+  def height({:px, _} = val), do: {:height, val}
+  def height(:fill), do: {:height, :fill}
+  def height(:content), do: {:height, :content}
+  def height({:fill_portion, _} = val), do: {:height, val}
+
+  @doc "Pixel size helper"
+  def px(n) when is_number(n), do: {:px, n}
+
+  @doc "Fill available space"
+  def fill, do: :fill
+
+  @doc "Fill a portion of available space (for weighted distribution)"
+  def fill_portion(n) when is_number(n), do: {:fill_portion, n}
+
+  @doc "Size to content"
+  def content, do: :content
+
+  # ============================================
+  # SPACING & PADDING
+  # ============================================
+
+  @doc "Uniform padding on all sides"
+  def padding(n) when is_number(n), do: {:padding, n}
+
+  @doc "Padding with vertical and horizontal values"
+  def padding_xy(x, y), do: {:padding, {y, x}}
+
+  @doc "Padding with individual values (top, right, bottom, left)"
+  def padding_each(top, right, bottom, left), do: {:padding, {top, right, bottom, left}}
+
+  @doc "Space between children in row/column"
+  def spacing(n) when is_number(n), do: {:spacing, n}
+
+  @doc "Enable vertical scrolling with an offset in pixels"
+  def scroll_y(offset \\ 0) when is_number(offset), do: {:scroll_y, offset}
+
+  @doc "Enable horizontal scrolling with an offset in pixels"
+  def scroll_x(offset \\ 0) when is_number(offset), do: {:scroll_x, offset}
+
+  @doc "Render a vertical scrollbar when content overflows"
+  def scrollbar_y, do: {:scrollbar_y, true}
+
+  @doc "Render a horizontal scrollbar when content overflows"
+  def scrollbar_x, do: {:scrollbar_x, true}
+
+  @doc "Clip content on both axes"
+  def clip, do: {:clip, true}
+
+  @doc "Clip content on the horizontal axis"
+  def clip_x, do: {:clip_x, true}
+
+  @doc "Clip content on the vertical axis"
+  def clip_y, do: {:clip_y, true}
+
+  # ============================================
+  # ALIGNMENT
+  # ============================================
+
+  @doc "Center horizontally within parent"
+  def center_x, do: {:align_x, :center}
+
+  @doc "Center vertically within parent"
+  def center_y, do: {:align_y, :center}
+
+  @doc "Align to the left"
+  def align_left, do: {:align_x, :left}
+
+  @doc "Align to the right"
+  def align_right, do: {:align_x, :right}
+
+  @doc "Align to the top"
+  def align_top, do: {:align_y, :top}
+
+  @doc "Align to the bottom"
+  def align_bottom, do: {:align_y, :bottom}
+
+  # ============================================
+  # NEARBY POSITIONING
+  # ============================================
+
+  @doc "Place an element above the current one without affecting layout flow"
+  def above(element), do: {:above, element}
+
+  @doc "Place an element below the current one without affecting layout flow"
+  def below(element), do: {:below, element}
+
+  @doc "Place an element on the left of the current one without affecting layout flow"
+  def on_left(element), do: {:on_left, element}
+
+  @doc "Place an element on the right of the current one without affecting layout flow"
+  def on_right(element), do: {:on_right, element}
+
+  @doc "Render an element in front of the current one"
+  def in_front(element), do: {:in_front, element}
+
+  @doc "Render an element behind the current one"
+  def behind_content(element), do: {:behind, element}
+
+  # ============================================
+  # ATTRIBUTE PARSING
+  # ============================================
+
+  defp parse_attrs(attrs) do
+    Enum.reduce(attrs, %{}, fn
+      {key, value}, acc -> Map.put(acc, key, value)
+      other, acc when is_map(other) -> Map.merge(acc, other)
+      _, acc -> acc
+    end)
+  end
+
+  # ============================================
+  # SUBMODULES
+  # ============================================
+
+  defmodule Background do
+    @moduledoc "Background styling attributes"
+
+    @doc "Set background color"
+    def color(c), do: {:background, c}
+
+    @doc "Set background gradient (linear)"
+    def gradient(from, to, angle \\ 0), do: {:background, {:gradient, from, to, angle}}
+  end
+
+  defmodule Border do
+    @moduledoc "Border styling attributes"
+
+    @doc "Set border radius (all corners)"
+    def rounded(r), do: {:border_radius, r}
+
+    @doc "Set individual corner radii"
+    def rounded_each(tl, tr, br, bl), do: {:border_radius, {tl, tr, br, bl}}
+
+    @doc "Set border width"
+    def width(w), do: {:border_width, w}
+
+    @doc "Set border color"
+    def color(c), do: {:border_color, c}
+  end
+
+  defmodule Font do
+    @moduledoc "Font styling attributes"
+
+    @doc "Set font size"
+    def size(s), do: {:font_size, s}
+
+    @doc "Set font color"
+    def color(c), do: {:font_color, c}
+
+    @doc "Set font family"
+    def family(f), do: {:font, f}
+
+    @doc "Bold text"
+    def bold, do: {:font_weight, :bold}
+
+    @doc "Italic text"
+    def italic, do: {:font_style, :italic}
+  end
+end

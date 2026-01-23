@@ -1,6 +1,6 @@
 # PLAN.md
 
-Implementation plan for emerge_skia - a Skia renderer for Elixir with Emerge layout integration.
+Implementation plan for emerge_skia - a Skia renderer for Elixir with EMRG tree integration.
 
 ## Current State
 
@@ -9,7 +9,8 @@ Multi-backend Skia renderer with:
 - Wayland/X11 windowing (via winit/glutin)
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
-- **NEW:** EMRG tree deserialization and layout engine
+- **NEW:** EMRG tree deserialization and patching
+- **NEW:** Elixir-side tree definition + EMRG encoder (no layout compute)
 
 ## Architecture
 
@@ -110,14 +111,17 @@ attr_records...   # tag (1 byte) + value (varies)
 | 16 | font_size | f64 |
 | 17 | font_color | Color |
 | 18 | font | 0=atom, 1=string (u16 len + bytes) |
-| 19 | font_weight | 0-8 (thin to black) |
-| 20 | font_style | 0=normal, 1=italic, 2=oblique |
+| 19 | font_weight | atom (u16 len + bytes) |
+| 20 | font_style | atom (u16 len + bytes) |
 | 21 | content | u16 len + UTF-8 bytes |
 | 22-27 | nearby (above/below/on_left/on_right/in_front/behind) | u32 len + EMRG subtree |
 | 28 | snap_layout | bool |
 | 29 | snap_text_metrics | bool |
 
 Color encoding: 0=rgb(3×u8), 1=rgba(4×u8), 2=named(u16 len + bytes)
+
+Runtime-only attrs are not encoded (`scroll_x`, `scroll_y`, `scroll_max`, `scroll_bounds`, `clip_bounds`,
+`clip_content`, `text_baseline_offset`, `scroll_capture`, `__layer`, `__attrs_hash`, `nearby_*`).
 
 #### 4.3 Tree NIF Functions
 
@@ -140,40 +144,10 @@ tree_clear(tree)                  # Clear all nodes
 | 3 | InsertSubtree | parent_len + parent_id + index + tree_len + tree_bytes |
 | 4 | Remove | id_len + id |
 
-### Phase 5: Layout Engine ✓
+### Phase 5: Layout Engine (Rust) ✓
 
-Two-pass algorithm (Elm-UI style):
-
-#### Pass 1: Measurement (Bottom-Up)
-
-Computes intrinsic sizes by traversing children first:
-
-- **Text**: width from Skia font metrics, height = line height
-- **El**: max child size + padding
-- **Row**: sum of child widths + spacing + padding
-- **Column**: sum of child heights + spacing + padding
-- **WrappedRow**: same as row (wrapping happens in resolve)
-
-#### Pass 2: Resolution (Top-Down)
-
-Assigns frames given constraints:
-
-- **Length resolution**:
-  - `Content` → use intrinsic (clamped to constraint)
-  - `Fill` → expand to constraint
-  - `Px(n)` → fixed size
-  - `FillPortion(n)` → weighted share (simplified to equal distribution)
-
-- **Fill distribution** (rows/columns):
-  1. Separate children into fill vs fixed
-  2. Sum fixed sizes, subtract from available
-  3. Divide remaining equally among fill children
-
-- **Alignment**:
-  - `align_x`: left/center/right positioning in container
-  - `align_y`: top/center/bottom positioning in container
-
-- **WrappedRow**: builds lines by accumulating children until width exceeded
+Layout is implemented in Rust (`native/emerge_skia/src/tree/layout.rs`).
+Elixir provides only the tree definition + EMRG encoder/patcher.
 
 #### Rust Types
 
