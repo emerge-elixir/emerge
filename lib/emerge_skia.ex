@@ -97,6 +97,29 @@ defmodule EmergeSkia do
   end
 
   @doc """
+  Upload a full EMRG tree, run layout, and render.
+  """
+  @spec upload_tree(renderer(), Emerge.Element.t(), float(), float()) ::
+          {Emerge.DiffState.t(), Emerge.Element.t()}
+  def upload_tree(renderer, tree, width, height) do
+    state = Emerge.diff_state_new()
+    {full_bin, state, assigned} = Emerge.encode_full(state, tree)
+    :ok = Native.renderer_upload(renderer, full_bin, width, height)
+    {state, assigned}
+  end
+
+  @doc """
+  Apply patches for a new tree, run layout, and render.
+  """
+  @spec patch_tree(renderer(), Emerge.DiffState.t(), Emerge.Element.t(), float(), float()) ::
+          {Emerge.DiffState.t(), Emerge.Element.t()}
+  def patch_tree(renderer, state, tree, width, height) do
+    {patch_bin, state, assigned} = Emerge.diff_state_update(state, tree)
+    :ok = Native.renderer_patch(renderer, patch_bin, width, height)
+    {state, assigned}
+  end
+
+  @doc """
   Measure text dimensions for layout purposes.
 
   Returns `{width, line_height, ascent, descent}` where:

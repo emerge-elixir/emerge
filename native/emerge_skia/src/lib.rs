@@ -46,6 +46,7 @@ struct RendererResource {
     running_flag: Arc<AtomicBool>,
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
     input_handler: Arc<Mutex<InputHandler>>,
+    tree: Mutex<ElementTree>,
 }
 
 /// Resource for holding an element tree (for layout/rendering).
@@ -107,6 +108,7 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
         running_flag,
         event_proxy: Mutex::new(Some(event_proxy)),
         input_handler,
+        tree: Mutex::new(ElementTree::new()),
     };
 
     Ok(ResourceArc::new(resource))
@@ -125,6 +127,60 @@ fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> At
     }
     renderer.request_redraw();
     atoms::ok()
+}
+
+// ============================================================================
+// Tree -> Layout -> Render Pipeline
+// ============================================================================
+
+#[rustler::nif]
+fn renderer_upload(
+    renderer: ResourceArc<RendererResource>,
+    data: Binary,
+    width: f64,
+    height: f64,
+) -> Result<Atom, String> {
+    let decoded = tree::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = renderer.tree.lock() {
+        *tree = decoded;
+        let constraint = tree::Constraint::new(width as f32, height as f32);
+        tree::layout_tree_default(&mut tree, constraint);
+        let commands = tree::render_tree(&tree);
+
+        if let Ok(mut state) = renderer.render_state.lock() {
+            state.commands = commands;
+        }
+        renderer.request_redraw();
+        Ok(atoms::ok())
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
+#[rustler::nif]
+fn renderer_patch(
+    renderer: ResourceArc<RendererResource>,
+    data: Binary,
+    width: f64,
+    height: f64,
+) -> Result<Atom, String> {
+    let patches = tree::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = renderer.tree.lock() {
+        tree::apply_patches(&mut tree, patches)?;
+        let constraint = tree::Constraint::new(width as f32, height as f32);
+        tree::layout_tree_default(&mut tree, constraint);
+        let commands = tree::render_tree(&tree);
+
+        if let Ok(mut state) = renderer.render_state.lock() {
+            state.commands = commands;
+        }
+        renderer.request_redraw();
+        Ok(atoms::ok())
+    } else {
+        Err("failed to lock tree".to_string())
+    }
 }
 
 #[rustler::nif]

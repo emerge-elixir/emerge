@@ -82,28 +82,12 @@ pub enum Font {
 }
 
 /// Font weight.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum FontWeight {
-    Thin,
-    ExtraLight,
-    Light,
-    #[default]
-    Normal,
-    Medium,
-    SemiBold,
-    Bold,
-    ExtraBold,
-    Black,
-}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FontWeight(pub String);
 
 /// Font style.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum FontStyle {
-    #[default]
-    Normal,
-    Italic,
-    Oblique,
-}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FontStyle(pub String);
 
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
@@ -420,35 +404,11 @@ fn decode_font(cursor: &mut AttrCursor) -> Result<Font, DecodeError> {
 }
 
 fn decode_font_weight(cursor: &mut AttrCursor) -> Result<FontWeight, DecodeError> {
-    let variant = cursor.read_u8()?;
-    match variant {
-        0 => Ok(FontWeight::Thin),
-        1 => Ok(FontWeight::ExtraLight),
-        2 => Ok(FontWeight::Light),
-        3 => Ok(FontWeight::Normal),
-        4 => Ok(FontWeight::Medium),
-        5 => Ok(FontWeight::SemiBold),
-        6 => Ok(FontWeight::Bold),
-        7 => Ok(FontWeight::ExtraBold),
-        8 => Ok(FontWeight::Black),
-        _ => Err(DecodeError::InvalidStructure(format!(
-            "unknown font_weight variant: {}",
-            variant
-        ))),
-    }
+    Ok(FontWeight(cursor.read_string_u16()?))
 }
 
 fn decode_font_style(cursor: &mut AttrCursor) -> Result<FontStyle, DecodeError> {
-    let variant = cursor.read_u8()?;
-    match variant {
-        0 => Ok(FontStyle::Normal),
-        1 => Ok(FontStyle::Italic),
-        2 => Ok(FontStyle::Oblique),
-        _ => Err(DecodeError::InvalidStructure(format!(
-            "unknown font_style variant: {}",
-            variant
-        ))),
-    }
+    Ok(FontStyle(cursor.read_string_u16()?))
 }
 
 #[cfg(test)]

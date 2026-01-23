@@ -41,6 +41,18 @@ defmodule EmergeSkia.Native do
   def render(_renderer, _commands), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Upload a full EMRG tree, run layout, and render immediately.
+  """
+  @spec renderer_upload(reference(), binary(), float(), float()) :: :ok | {:error, String.t()}
+  def renderer_upload(_renderer, _data, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Apply EMRG patches, run layout, and render immediately.
+  """
+  @spec renderer_patch(reference(), binary(), float(), float()) :: :ok | {:error, String.t()}
+  def renderer_patch(_renderer, _data, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Measure text dimensions.
 
   Returns `{width, line_height, ascent, descent}`.

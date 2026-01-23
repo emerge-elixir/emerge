@@ -5,17 +5,18 @@ IO.puts("Starting EmergeSkia demo...")
 
 {:ok, renderer} = EmergeSkia.start("EmergeSkia Demo", 800, 600)
 
-# Set up input handling - events will be sent directly to this process
 EmergeSkia.set_input_target(renderer, self())
 
 defmodule Demo do
-  @dark_bg 0x1a1a2eFF
-  @blue 0x4361eeFF
-  @purple 0x7209b7FF
-  @pink 0xf72585FF
-  @light_text 0xffffffFF
-  @dim_text 0xaaaaaaFF
-  @event_bg 0x2d2d44FF
+  import Emerge.UI
+
+  @dark_bg {:color_rgba, {26, 26, 46, 255}}
+  @blue {:color_rgba, {67, 97, 238, 255}}
+  @purple {:color_rgba, {114, 9, 183, 255}}
+  @pink {:color_rgba, {247, 37, 133, 255}}
+  @light_text {:color_rgba, {255, 255, 255, 255}}
+  @dim_text {:color_rgba, {170, 170, 170, 255}}
+  @event_bg {:color_rgba, {45, 45, 68, 255}}
 
   def format_event({:cursor_pos, {x, y}}) do
     "Mouse: #{Float.round(x, 1)}, #{Float.round(y, 1)}"
@@ -53,55 +54,49 @@ defmodule Demo do
     inspect(event)
   end
 
-  def render(renderer, mouse_pos, event_log) do
-    {mx, my} = mouse_pos
-
-    # Static UI elements
-    static_commands = [
-      # Background
-      {:rect, 0.0, 0.0, 800.0, 600.0, @dark_bg},
-
-      # Header bar with gradient
-      {:gradient, 0.0, 0.0, 800.0, 80.0, @blue, @purple, 90.0},
-
-      # Title text
-      {:text, 30.0, 50.0, "EmergeSkia Demo", 28.0, @light_text},
-
-      # Card 1
-      {:rounded_rect, 30.0, 120.0, 350.0, 180.0, 12.0, @event_bg},
-      {:text, 50.0, 160.0, "Direct Skia Rendering", 18.0, @light_text},
-      {:text, 50.0, 195.0, "No Scenic overhead", 14.0, @dim_text},
-      {:text, 50.0, 220.0, "Minimal NIF interface", 14.0, @dim_text},
-      {:text, 50.0, 245.0, "Push-based input events", 14.0, @dim_text},
-
-      # Card 2 - Mouse position display
-      {:rounded_rect, 420.0, 120.0, 350.0, 180.0, 12.0, @event_bg},
-      {:text, 440.0, 160.0, "Mouse Position", 18.0, @light_text},
-      {:text, 440.0, 200.0, "X: #{Float.round(mx, 1)}", 16.0, @dim_text},
-      {:text, 440.0, 230.0, "Y: #{Float.round(my, 1)}", 16.0, @dim_text},
-
-      # Event log area
-      {:rounded_rect, 30.0, 320.0, 740.0, 250.0, 12.0, @event_bg},
-      {:text, 50.0, 355.0, "Input Event Log", 18.0, @light_text},
-      {:border, 30.0, 320.0, 740.0, 250.0, 12.0, 2.0, 0x4361ee80},
-
-      # Mouse cursor indicator (small circle at cursor position)
-      {:rounded_rect, mx - 5, my - 5, 10.0, 10.0, 5.0, @pink}
-    ]
-
-    # Event log entries (show last 8 events)
-    event_commands =
-      event_log
-      |> Enum.take(8)
-      |> Enum.with_index()
-      |> Enum.map(fn {event_str, idx} ->
-        {:text, 50.0, 385.0 + idx * 22.0, event_str, 14.0, @dim_text}
-      end)
-
-    EmergeSkia.render(renderer, static_commands ++ event_commands)
+  def build_tree({width, height}, {mx, my}, event_log) do
+    column([width(:fill), height(:fill), padding(20), spacing(20), Background.color(@dark_bg)], [
+      el([padding(16), Background.gradient(@blue, @purple, 90), Border.rounded(12)],
+        el([Font.size(26), Font.color(@light_text)], text("EmergeSkia Demo"))
+      ),
+      row([spacing(20), width(:fill)], [
+        el([width(:fill), padding(16), Background.color(@event_bg), Border.rounded(12)],
+          column([spacing(6)], [
+            el([Font.size(18), Font.color(@light_text)], text("Direct Skia Rendering")),
+            el([Font.size(14), Font.color(@dim_text)], text("No Scenic overhead")),
+            el([Font.size(14), Font.color(@dim_text)], text("Minimal NIF surface")),
+            el([Font.size(14), Font.color(@dim_text)], text("Rust layout + renderer"))
+          ])
+        ),
+        el([width(:fill), padding(16), Background.color(@event_bg), Border.rounded(12)],
+          column([spacing(6)], [
+            el([Font.size(18), Font.color(@light_text)], text("Mouse Position")),
+            el([Font.size(14), Font.color(@dim_text)], text("X: #{Float.round(mx, 1)}")),
+            el([Font.size(14), Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}"))
+          ])
+        )
+      ]),
+      el([width(:fill), height(:fill), padding(16), Background.color(@event_bg), Border.rounded(12)],
+        column([spacing(8)], [
+          el([Font.size(18), Font.color(@light_text)], text("Input Event Log")),
+          column(
+            [spacing(4)],
+            event_log
+            |> Enum.take(8)
+            |> Enum.map(fn line ->
+              el([Font.size(13), Font.color(@dim_text)], text(line))
+            end)
+          )
+        ])
+      ),
+      el([padding(6), Background.color(@pink), Border.rounded(6)],
+        el([Font.size(12), Font.color(@light_text)],
+          text("Cursor: #{Float.round(mx, 1)}, #{Float.round(my, 1)}")
+        )
+      )
+    ])
   end
 
-  # Drain all pending input events from the mailbox
   def drain_mailbox(acc \\ []) do
     receive do
       {:emerge_skia_event, event} -> drain_mailbox([event | acc])
@@ -110,10 +105,8 @@ defmodule Demo do
     end
   end
 
-  # Process a batch of events, returning {new_mouse_pos, new_event_log}
-  def process_events(events, mouse_pos, event_log) do
-    Enum.reduce(events, {mouse_pos, event_log}, fn event, {pos, log} ->
-      # Update mouse position if it's a cursor event
+  def process_events(events, mouse_pos, event_log, size) do
+    Enum.reduce(events, {mouse_pos, event_log, size}, fn event, {pos, log, size} ->
       new_pos =
         case event do
           {:cursor_pos, {x, y}} -> {x, y}
@@ -121,36 +114,37 @@ defmodule Demo do
           _ -> pos
         end
 
-      # Add formatted event to log (skip cursor_pos to reduce noise)
+      new_size =
+        case event do
+          {:resized, {w, h, _scale}} -> {w, h}
+          _ -> size
+        end
+
       new_log =
         case event do
           {:cursor_pos, _} -> log
           _ -> [format_event(event) | log]
         end
 
-      {new_pos, Enum.take(new_log, 20)}
+      {new_pos, Enum.take(new_log, 20), new_size}
     end)
   end
 
-  def run_loop(renderer, mouse_pos, event_log) do
+  def run_loop(renderer, state, mouse_pos, event_log, size) do
     if EmergeSkia.running?(renderer) do
-      # Wait for at least one event
       receive do
         {:emerge_skia_event, first_event} ->
-          # Drain all remaining events from mailbox
           remaining = drain_mailbox()
           all_events = [first_event | remaining]
 
-          # Process all events at once
-          {new_mouse_pos, new_log} = process_events(all_events, mouse_pos, event_log)
+          {new_mouse_pos, new_log, new_size} = process_events(all_events, mouse_pos, event_log, size)
+          tree = build_tree(new_size, new_mouse_pos, new_log)
+          {state, _assigned} = EmergeSkia.patch_tree(renderer, state, tree, elem(new_size, 0), elem(new_size, 1))
 
-          # Re-render with updated state
-          render(renderer, new_mouse_pos, new_log)
-          run_loop(renderer, new_mouse_pos, new_log)
+          run_loop(renderer, state, new_mouse_pos, new_log, new_size)
       after
         100 ->
-          # Keep loop alive
-          run_loop(renderer, mouse_pos, event_log)
+          run_loop(renderer, state, mouse_pos, event_log, size)
       end
     end
   end
@@ -158,10 +152,10 @@ end
 
 IO.puts("Window opened! Move mouse, click, press keys. Close window to exit.")
 
-# Initial render
-Demo.render(renderer, {400.0, 300.0}, [])
+initial_size = {800.0, 600.0}
+initial_tree = Demo.build_tree(initial_size, {400.0, 300.0}, [])
+{state, _assigned} = EmergeSkia.upload_tree(renderer, initial_tree, elem(initial_size, 0), elem(initial_size, 1))
 
-# Run the event loop
-Demo.run_loop(renderer, {400.0, 300.0}, [])
+Demo.run_loop(renderer, state, {400.0, 300.0}, [], initial_size)
 
 IO.puts("Window closed. Demo complete!")
