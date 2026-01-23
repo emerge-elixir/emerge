@@ -48,7 +48,8 @@ defmodule Emerge.Reconcile do
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
 
-      assigned = %{element | id: id, children: child_elements}
+      attrs = normalize_nearby_attrs(element.attrs)
+      assigned = %{element | id: id, children: child_elements, attrs: attrs}
 
       patches =
         []
@@ -177,8 +178,9 @@ defmodule Emerge.Reconcile do
     child_vnodes = Enum.reverse(child_vnodes)
     child_elements = Enum.reverse(child_elements)
 
-    assigned = %{element | id: id, children: child_elements}
-    vnode = %VNode{id: id, kind: element.type, key: key, attrs: element.attrs, children: child_vnodes}
+    attrs = normalize_nearby_attrs(element.attrs)
+    assigned = %{element | id: id, children: child_elements, attrs: attrs}
+    vnode = %VNode{id: id, kind: element.type, key: key, attrs: assigned.attrs, children: child_vnodes}
     {vnode, assigned, seen}
   end
 
@@ -236,5 +238,26 @@ defmodule Emerge.Reconcile do
 
   defp make_id(parent_id, kind, local_identity) do
     :erlang.phash2({parent_id, kind, local_identity})
+  end
+
+  defp normalize_nearby_attrs(attrs) when is_map(attrs) do
+    attrs
+    |> normalize_nearby_attr(:above)
+    |> normalize_nearby_attr(:below)
+    |> normalize_nearby_attr(:on_left)
+    |> normalize_nearby_attr(:on_right)
+    |> normalize_nearby_attr(:in_front)
+    |> normalize_nearby_attr(:behind)
+  end
+
+  defp normalize_nearby_attr(attrs, key) do
+    case Map.get(attrs, key) do
+      %Element{} = element ->
+        {_vdom, assigned} = assign_ids(element)
+        Map.put(attrs, key, assigned)
+
+      _ ->
+        attrs
+    end
   end
 end

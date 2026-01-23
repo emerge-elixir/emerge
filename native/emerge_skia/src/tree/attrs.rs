@@ -261,7 +261,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_CLIP_Y => attrs.clip_y = Some(cursor.read_bool()?),
         TAG_CLIP_X => attrs.clip_x = Some(cursor.read_bool()?),
         TAG_BACKGROUND => attrs.background = Some(decode_background(cursor)?),
-        TAG_BORDER_RADIUS => attrs.border_radius = Some(cursor.read_f64()?),
+        TAG_BORDER_RADIUS => attrs.border_radius = Some(decode_radius(cursor)?),
         TAG_BORDER_WIDTH => attrs.border_width = Some(cursor.read_f64()?),
         TAG_BORDER_COLOR => attrs.border_color = Some(decode_color(cursor)?),
         TAG_FONT_SIZE => attrs.font_size = Some(cursor.read_f64()?),
@@ -316,6 +316,24 @@ fn decode_padding(cursor: &mut AttrCursor) -> Result<Padding, DecodeError> {
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown padding variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_radius(cursor: &mut AttrCursor) -> Result<f64, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(cursor.read_f64()?),
+        1 => {
+            let tl = cursor.read_f64()?;
+            let tr = cursor.read_f64()?;
+            let br = cursor.read_f64()?;
+            let bl = cursor.read_f64()?;
+            Ok(tl.max(tr).max(br).max(bl))
+        }
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown border_radius variant: {}",
             variant
         ))),
     }

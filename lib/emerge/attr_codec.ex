@@ -46,6 +46,10 @@ defmodule Emerge.AttrCodec do
     |> Map.to_list()
     |> Enum.map(fn {key, value} ->
       tag = Map.fetch!(@type_tag, key)
+      {tag, key, value}
+    end)
+    |> Enum.sort_by(fn {tag, _key, _value} -> tag end)
+    |> Enum.map(fn {tag, key, value} ->
       [<<tag::unsigned-8>>, encode_value(key, value)]
     end)
     |> then(fn encoded ->
@@ -299,7 +303,14 @@ defmodule Emerge.AttrCodec do
   end
 
   defp encode_element(%Element{} = element) do
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(element)
+    assigned =
+      if is_nil(element.id) do
+        {_vdom, assigned} = Emerge.Reconcile.assign_ids(element)
+        assigned
+      else
+        element
+      end
+
     encoded = Emerge.Serialization.encode_tree(assigned)
     <<byte_size(encoded)::unsigned-32, encoded::binary>>
   end
