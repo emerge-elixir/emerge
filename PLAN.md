@@ -212,6 +212,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Length API expansion (shrink alias, minimum/maximum) with layout coverage
 - Tests added for transforms, clipping, length encoding, and content sizing
 - Added spacingXY + spaceEvenly (space-between) support
+- Added event system design doc (on_click MVP)
 
 ---
 
@@ -466,6 +467,14 @@ pub struct Constraint {
 - `Constraint::with_space()` allows content-based constraints
 - MinContent/MaxContent resolve to intrinsic sizes during layout
 - MaxContent is now used to gate fill distribution when content-sized
+
+#### 5. Events System (MVP)
+
+- Add `on_click` as a presence flag in EMRG.
+- Rust builds a click registry post-layout (frame bounds, padding included).
+- Hit test on press/release, emit `{:emerge_skia_event, {element_id, :click}}`.
+- Elixir stores `{element_id => {pid, msg}}` and dispatches on event.
+- Tests: Rust hit-test + click tracking, Elixir encode/decode of on_click.
 
 #### 5. Content Size Tracking ✓
 

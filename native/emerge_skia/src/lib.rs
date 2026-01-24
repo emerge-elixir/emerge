@@ -22,7 +22,7 @@ mod tree;
 
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use input::InputHandler;
+use input::{InputHandler, build_click_registry};
 use renderer::{DrawCmd, RenderState, get_default_typeface};
 use tree::element::ElementTree;
 
@@ -150,6 +150,9 @@ fn renderer_upload(
         *tree = decoded;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
+        if let Ok(mut handler) = renderer.input_handler.lock() {
+            handler.set_event_registry(build_click_registry(&tree));
+        }
         let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {
@@ -176,6 +179,9 @@ fn renderer_patch(
         tree::patch::apply_patches(&mut tree, patches)?;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
+        if let Ok(mut handler) = renderer.input_handler.lock() {
+            handler.set_event_registry(build_click_registry(&tree));
+        }
         let commands = tree::render::render_tree(&tree);
 
         if let Ok(mut state) = renderer.render_state.lock() {

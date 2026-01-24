@@ -52,6 +52,10 @@ defmodule Demo do
     "Resize: #{w}x#{h} (scale: #{Float.round(scale, 2)})"
   end
 
+  def format_event({id_bin, :click}) when is_binary(id_bin) do
+    "Click: element #{inspect(:erlang.binary_to_term(id_bin))}"
+  end
+
   def format_event(event) do
     inspect(event)
   end
@@ -231,7 +235,7 @@ defmodule Demo do
               Background.color({:color_rgb, {70, 60, 90}}),
               Border.rounded(10),
               scale(1.06),
-              move_y(-4)
+              move_y(-14)
             ],
             column([spacing(4)], [
               el([Font.size(14), Font.color(:white)], text("Scale + move")),
@@ -638,8 +642,13 @@ defmodule Demo do
     end
   end
 
-  def process_events(events, mouse_pos, event_log, size, scale) do
+  def process_events(events, state, mouse_pos, event_log, size, scale) do
     Enum.reduce(events, {mouse_pos, event_log, size, scale}, fn event, {pos, log, sz, sc} ->
+      case event do
+        {id_bin, :click} -> Emerge.dispatch_click(state, id_bin)
+        _ -> :ok
+      end
+
       new_pos =
         case event do
           {:cursor_pos, {x, y}} -> {x, y}
@@ -671,7 +680,7 @@ defmodule Demo do
           all_events = [first_event | remaining]
 
           {new_mouse_pos, new_log, new_size, new_scale} =
-            process_events(all_events, mouse_pos, event_log, size, scale)
+            process_events(all_events, state, mouse_pos, event_log, size, scale)
 
           tree = build_tree(new_size, new_mouse_pos, new_log)
 
@@ -690,6 +699,26 @@ defmodule Demo do
           end
 
           run_loop(renderer, next_state, new_mouse_pos, new_log, new_size, new_scale)
+
+        {:feature_click, title} ->
+          new_log = Enum.take(["UI Click: #{title}" | event_log], 20)
+          tree = build_tree(size, mouse_pos, new_log)
+
+          {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
+
+          case EmergeSkia.Native.renderer_patch(
+                 renderer,
+                 patch_bin,
+                 elem(size, 0),
+                 elem(size, 1),
+                 scale
+               ) do
+            :ok -> :ok
+            {:ok, _} -> :ok
+            {:error, reason} -> raise "renderer_patch failed: #{reason}"
+          end
+
+          run_loop(renderer, next_state, mouse_pos, new_log, size, scale)
       after
         100 ->
           run_loop(renderer, state, mouse_pos, event_log, size, scale)
@@ -701,6 +730,7 @@ defmodule Demo do
     column(
       [
         width(fill()),
+        on_click({self(), {:feature_click, title}}),
         clip(),
         spacing(8),
         padding(15),

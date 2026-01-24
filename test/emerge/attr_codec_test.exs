@@ -88,6 +88,13 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode on_click presence" do
+    attrs = %{on_click: {self(), :clicked}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_click: true}
+  end
+
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()

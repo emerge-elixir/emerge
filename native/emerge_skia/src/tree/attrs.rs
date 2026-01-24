@@ -120,6 +120,7 @@ pub struct Attrs {
     pub scrollbar_x: Option<bool>,
     pub scroll_x: Option<f64>,
     pub scroll_y: Option<f64>,
+    pub on_click: Option<bool>,
     pub clip: Option<bool>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
@@ -194,6 +195,7 @@ const TAG_SPACING_XY: u8 = 36;
 const TAG_SPACE_EVENLY: u8 = 37;
 const TAG_SCROLL_X: u8 = 38;
 const TAG_SCROLL_Y: u8 = 39;
+const TAG_ON_CLICK: u8 = 40;
 
 // =============================================================================
 // Decoder
@@ -327,6 +329,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_SPACE_EVENLY => attrs.space_evenly = Some(cursor.read_bool()?),
         TAG_SCROLL_X => attrs.scroll_x = Some(cursor.read_f64()?),
         TAG_SCROLL_Y => attrs.scroll_y = Some(cursor.read_f64()?),
+        TAG_ON_CLICK => attrs.on_click = Some(cursor.read_bool()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -651,6 +654,14 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.scroll_x, Some(12.0));
         assert_eq!(attrs.scroll_y, Some(34.0));
+    }
+
+    #[test]
+    fn test_decode_on_click() {
+        // 1 attr, tag=40 (on_click), value=true
+        let data = [0, 1, 40, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_click, Some(true));
     }
 
     #[test]

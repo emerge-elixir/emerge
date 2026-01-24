@@ -174,6 +174,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         scrollbar_x: attrs.scrollbar_x,
         scroll_x: attrs.scroll_x.map(|v| v * scale_f64),
         scroll_y: attrs.scroll_y.map(|v| v * scale_f64),
+        on_click: attrs.on_click,
         clip: attrs.clip,
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,

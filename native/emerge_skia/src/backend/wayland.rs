@@ -6,9 +6,9 @@ use std::{
     ffi::CString,
     num::NonZeroU32,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
+        Arc, Mutex,
     },
 };
 
@@ -32,8 +32,7 @@ use winit::{
 };
 
 use crate::input::{
-    InputEvent, InputHandler,
-    ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, InputHandler, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::renderer::{RenderState, Renderer};
 
@@ -137,7 +136,7 @@ impl App {
     }
 
     fn send_input_event(&self, event: InputEvent) {
-        if let Ok(handler) = self.input_handler.lock() {
+        if let Ok(mut handler) = self.input_handler.lock() {
             handler.send_event(event);
         }
     }
@@ -258,9 +257,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.x as f32, pos.y as f32)
-                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
                 let (x, y) = if let Ok(queue) = self.input_handler.lock() {
                     queue.cursor_pos()
@@ -440,7 +437,13 @@ fn create_window_and_renderer(
     let num_samples = gl_config.num_samples() as usize;
     let stencil_size = gl_config.stencil_size() as usize;
 
-    let renderer = Renderer::new_gl((width, height), fb_info, gr_context, num_samples, stencil_size);
+    let renderer = Renderer::new_gl(
+        (width, height),
+        fb_info,
+        gr_context,
+        num_samples,
+        stencil_size,
+    );
 
     let env = GlEnv {
         gl_surface,

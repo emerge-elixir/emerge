@@ -324,6 +324,13 @@ defmodule Emerge.UI do
   def align_bottom, do: {:align_y, :bottom}
 
   # ============================================
+  # EVENTS
+  # ============================================
+
+  @doc "Register a click handler payload for this element"
+  def on_click({pid, _msg} = payload) when is_pid(pid), do: {:on_click, payload}
+
+  # ============================================
   # TRANSFORMS
   # ============================================
 

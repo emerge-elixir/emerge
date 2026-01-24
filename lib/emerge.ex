@@ -28,8 +28,17 @@ defmodule Emerge do
   @spec encode_full(DiffState.t(), Element.t()) :: {binary(), DiffState.t(), Element.t()}
   def encode_full(%DiffState{} = state, tree) do
     {vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    {Emerge.Serialization.encode_tree(assigned), %DiffState{state | tree: assigned, vdom: vdom},
-     assigned}
+
+    {
+      Emerge.Serialization.encode_tree(assigned),
+      %DiffState{
+        state
+        | tree: assigned,
+          vdom: vdom,
+          click_registry: DiffState.build_click_registry(assigned)
+      },
+      assigned
+    }
   end
 
   @doc """
@@ -42,5 +51,13 @@ defmodule Emerge do
   def encode_full_with_empty_patch(%DiffState{} = state, tree) do
     {full_bin, next_state, assigned} = encode_full(state, tree)
     {full_bin, <<>>, next_state, assigned}
+  end
+
+  @doc """
+  Dispatch a click event to the handler registered for an element id.
+  """
+  @spec dispatch_click(DiffState.t(), binary()) :: :ok
+  def dispatch_click(%DiffState{} = state, id_bin) when is_binary(id_bin) do
+    DiffState.dispatch_click(state, id_bin)
   end
 end
