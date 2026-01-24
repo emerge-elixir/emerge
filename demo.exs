@@ -128,12 +128,11 @@ defmodule Demo do
           )
         ]),
         row(
-          [width(:fill), padding(16), spacing(10)],
+          [width(:fill), spacing(10)],
           [
             column(
               [
                 width(:fill),
-                height(:fill),
                 padding(16),
                 Emerge.UI.Background.color(@event_bg),
                 Emerge.UI.Border.rounded(12),
@@ -173,7 +172,6 @@ defmodule Demo do
     column(
       [
         width(fill()),
-        height(fill()),
         spacing(15),
         padding(20),
         scroll_y(0),
@@ -279,6 +277,17 @@ defmodule Demo do
               padding(10),
               Background.color({:color_rgb, {55, 55, 80}}),
               Border.rounded(4),
+              align_left(),
+              Font.size(12),
+              Font.color(:white)
+            ],
+            text("Left 2")
+          ),
+          el(
+            [
+              padding(10),
+              Background.color({:color_rgb, {55, 55, 80}}),
+              Border.rounded(4),
               center_x(),
               Font.size(12),
               Font.color(:white)
@@ -370,7 +379,7 @@ defmodule Demo do
             width(fill()),
             height(px(140)),
             padding(15),
-            Background.color({:color_rgb, {45, 45, 65}}),
+            Background.color({:color_rgba, {45, 45, 65, 40}}),
             Border.rounded(6)
           ],
           el(
@@ -437,7 +446,7 @@ defmodule Demo do
                     Background.color({:color_rgba, {200, 200, 255, 40}}),
                     Border.rounded(8)
                   ],
-                  none()
+                  text("Behind")
                 )
               ),
               in_front(

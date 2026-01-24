@@ -34,7 +34,8 @@ defmodule Emerge.AttrCodec do
     in_front: 26,
     behind: 27,
     snap_layout: 28,
-    snap_text_metrics: 29
+    snap_text_metrics: 29,
+    text_align: 30
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -101,6 +102,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:behind, value), do: encode_element(value)
   defp encode_value(:snap_layout, value), do: encode_bool(value)
   defp encode_value(:snap_text_metrics, value), do: encode_bool(value)
+  defp encode_value(:text_align, value), do: encode_text_align(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -131,6 +133,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:behind, rest), do: decode_element(rest)
   defp decode_value(:snap_layout, rest), do: decode_bool(rest)
   defp decode_value(:snap_text_metrics, rest), do: decode_bool(rest)
+  defp decode_value(:text_align, rest), do: decode_text_align(rest)
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>
@@ -264,6 +267,14 @@ defmodule Emerge.AttrCodec do
   defp decode_align_y(<<0, rest::binary>>), do: {:top, rest}
   defp decode_align_y(<<1, rest::binary>>), do: {:center, rest}
   defp decode_align_y(<<2, rest::binary>>), do: {:bottom, rest}
+
+  defp encode_text_align(:left), do: <<0>>
+  defp encode_text_align(:center), do: <<1>>
+  defp encode_text_align(:right), do: <<2>>
+
+  defp decode_text_align(<<0, rest::binary>>), do: {:left, rest}
+  defp decode_text_align(<<1, rest::binary>>), do: {:center, rest}
+  defp decode_text_align(<<2, rest::binary>>), do: {:right, rest}
 
   defp encode_color({:color_rgb, {r, g, b}}), do: <<0, r::unsigned-8, g::unsigned-8, b::unsigned-8>>
   defp encode_color({:color_rgba, {r, g, b, a}}),

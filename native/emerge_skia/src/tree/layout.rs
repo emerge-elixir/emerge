@@ -182,6 +182,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         font: attrs.font.clone(),
         font_weight: attrs.font_weight.clone(),
         font_style: attrs.font_style.clone(),
+        text_align: attrs.text_align,
         content: attrs.content.clone(),
         above: attrs.above.clone(),
         below: attrs.below.clone(),
@@ -376,6 +377,8 @@ fn resolve_element(
 
     let padding = get_padding(attrs.padding.as_ref());
     let spacing = attrs.spacing.unwrap_or(0.0) as f32;
+    let align_x = attrs.align_x.unwrap_or_default();
+    let align_y = attrs.align_y.unwrap_or_default();
 
     // Check if this element is scrollable (clips content)
     let is_scrollable = attrs.clip.unwrap_or(false)
@@ -418,7 +421,11 @@ fn resolve_element(
 
         ElementKind::El => {
             if !child_ids.is_empty() {
-                let (actual_cw, actual_ch) = resolve_el_children(tree, &child_ids, content_x, content_y, content_width, content_height);
+                let (actual_cw, actual_ch) = resolve_el_children(
+                    tree, &child_ids, content_x, content_y,
+                    content_width, content_height,
+                    align_x, align_y,  // Pass parent alignment for child positioning
+                );
                 // Update content dimensions when there are children
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
@@ -524,6 +531,11 @@ fn get_fill_portion(length: Option<&Length>) -> f32 {
 /// Resolve children for El (single child container with alignment).
 /// Reads from pre-scaled attrs.
 /// Returns (actual_content_width, actual_content_height).
+///
+/// Alignment follows elm-ui semantics:
+/// - Parent's alignment (e.g., `el([centerX()], child)`) sets default for children
+/// - Child can override with its own alignment attribute
+#[allow(clippy::too_many_arguments)]
 fn resolve_el_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -531,6 +543,8 @@ fn resolve_el_children(
     content_y: f32,
     content_width: f32,
     content_height: f32,
+    parent_align_x: AlignX,
+    parent_align_y: AlignY,
 ) -> (f32, f32) {
     let mut max_child_width = 0.0_f32;
     let mut max_child_height = 0.0_f32;
@@ -538,8 +552,9 @@ fn resolve_el_children(
     for child_id in child_ids {
         let (align_x, align_y) = {
             let Some(child) = tree.get(child_id) else { continue };
-            let ax = child.attrs.align_x.unwrap_or_default();
-            let ay = child.attrs.align_y.unwrap_or_default();
+            // Child can override parent alignment, otherwise use parent's
+            let ax = child.attrs.align_x.unwrap_or(parent_align_x);
+            let ay = child.attrs.align_y.unwrap_or(parent_align_y);
             (ax, ay)
         };
 
@@ -575,8 +590,11 @@ fn resolve_el_children(
     (max_child_width, max_child_height)
 }
 
-/// Resolve children for Row with fill distribution.
-/// Reads from pre-scaled attrs.
+/// Resolve children for Row with fill distribution and self-alignment.
+/// Children with align_x position themselves within the row:
+/// - Left (default): laid out left-to-right from start
+/// - Right: positioned at right edge
+/// - Center: centered in remaining space
 /// Returns (actual_content_width, actual_content_height).
 #[allow(clippy::too_many_arguments)]
 fn resolve_row_children(
@@ -592,14 +610,13 @@ fn resolve_row_children(
         return (0.0, 0.0);
     }
 
-    // Categorize children: track total fill portions and fixed width
-    let mut total_portions = 0.0;
-    let mut fixed_width = 0.0;
+    // First pass: calculate fill_portion distribution
+    let mut total_portions = 0.0_f32;
+    let mut fixed_width = 0.0_f32;
 
     for child_id in child_ids {
         let Some(child) = tree.get(child_id) else { continue };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
-
         let portion = get_fill_portion(child.attrs.width.as_ref());
         if portion > 0.0 {
             total_portions += portion;
@@ -608,64 +625,159 @@ fn resolve_row_children(
         }
     }
 
-    // Calculate width per portion unit
+    // Calculate width per portion
     let total_spacing = spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_width - fixed_width - total_spacing).max(0.0);
     let width_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
 
-    // Position children
+    // Partition children by horizontal alignment and calculate widths
+    let mut left_children: Vec<ElementId> = Vec::new();
+    let mut center_children: Vec<ElementId> = Vec::new();
+    let mut right_children: Vec<ElementId> = Vec::new();
+
+    let mut child_widths: std::collections::HashMap<ElementId, f32> = std::collections::HashMap::new();
+    let mut total_left_width = 0.0_f32;
+    let mut total_center_width = 0.0_f32;
+    let mut total_right_width = 0.0_f32;
+
+    for child_id in child_ids {
+        let Some(child) = tree.get(child_id) else { continue };
+        let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
+        let portion = get_fill_portion(child.attrs.width.as_ref());
+        let base_width = if portion > 0.0 {
+            width_per_portion * portion
+        } else {
+            resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic)
+        };
+        // Apply min/max constraints
+        let width = resolve_length(child.attrs.width.as_ref(), intrinsic, base_width);
+        child_widths.insert(child_id.clone(), width);
+
+        match child.attrs.align_x.unwrap_or_default() {
+            AlignX::Left => {
+                left_children.push(child_id.clone());
+                total_left_width += width;
+            }
+            AlignX::Center => {
+                center_children.push(child_id.clone());
+                total_center_width += width;
+            }
+            AlignX::Right => {
+                right_children.push(child_id.clone());
+                total_right_width += width;
+            }
+        }
+    }
+
+    // Add spacing within each group
+    let left_spacing = if left_children.len() > 1 { spacing * (left_children.len() - 1) as f32 } else { 0.0 };
+    let center_spacing = if center_children.len() > 1 { spacing * (center_children.len() - 1) as f32 } else { 0.0 };
+    let right_spacing = if right_children.len() > 1 { spacing * (right_children.len() - 1) as f32 } else { 0.0 };
+
+    total_left_width += left_spacing;
+    total_center_width += center_spacing;
+    total_right_width += right_spacing;
+
+    // Position left-aligned children from left edge
     let mut current_x = content_x;
     let mut max_child_height = 0.0_f32;
 
-    for child_id in child_ids {
-        let (child_width, align_y) = {
-            let Some(child) = tree.get(child_id) else { continue };
-            let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
-            let portion = get_fill_portion(child.attrs.width.as_ref());
-            let base_width = if portion > 0.0 {
-                width_per_portion * portion
-            } else {
-                resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic)
-            };
-            // Apply min/max constraints on top of base width
-            let w = resolve_length(child.attrs.width.as_ref(), intrinsic, base_width);
-            (w, child.attrs.align_y.unwrap_or_default())
-        };
+    for child_id in &left_children {
+        let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
+        let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(child_width, content_height);
         resolve_element(tree, child_id, child_constraint, current_x, content_y);
 
-        // Apply vertical alignment and track max height
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
         {
             max_child_height = max_child_height.max(frame.content_height);
-
-            let aligned_y = match align_y {
-                AlignY::Top => content_y,
-                AlignY::Center => content_y + (content_height - frame.height) / 2.0,
-                AlignY::Bottom => content_y + content_height - frame.height,
-            };
-            let dy = aligned_y - frame.y;
-            shift_subtree(tree, child_id, 0.0, dy);
+            apply_vertical_alignment(tree, child_id, content_y, content_height, align_y);
         }
 
         current_x += child_width + spacing;
     }
 
-    // Total content width (subtract trailing spacing)
-    let total_width = current_x - content_x;
-    let actual_width = if !child_ids.is_empty() {
-        total_width - spacing
-    } else {
-        0.0
-    };
+    // Position right-aligned children from right edge
+    let mut right_x = content_x + content_width;
+    for child_id in right_children.iter().rev() {
+        let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
+        let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
-    (actual_width, max_child_height)
+        right_x -= child_width;
+        let child_constraint = Constraint::new(child_width, content_height);
+        resolve_element(tree, child_id, child_constraint, right_x, content_y);
+
+        if let Some(child) = tree.get(child_id)
+            && let Some(frame) = &child.frame
+        {
+            max_child_height = max_child_height.max(frame.content_height);
+            apply_vertical_alignment(tree, child_id, content_y, content_height, align_y);
+        }
+
+        right_x -= spacing;
+    }
+
+    // Position center-aligned children in the middle of remaining space
+    if !center_children.is_empty() {
+        let left_end = content_x + total_left_width;
+        let right_start = content_x + content_width - total_right_width;
+        let available_center = (right_start - left_end).max(0.0);
+        let center_start = left_end + (available_center - total_center_width) / 2.0;
+
+        let mut center_x = center_start.max(left_end);
+        for child_id in &center_children {
+            let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
+            let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
+
+            let child_constraint = Constraint::new(child_width, content_height);
+            resolve_element(tree, child_id, child_constraint, center_x, content_y);
+
+            if let Some(child) = tree.get(child_id)
+                && let Some(frame) = &child.frame
+            {
+                max_child_height = max_child_height.max(frame.content_height);
+                apply_vertical_alignment(tree, child_id, content_y, content_height, align_y);
+            }
+
+            center_x += child_width + spacing;
+        }
+    }
+
+    // Calculate actual content width used by all children
+    let total_child_width: f32 = child_widths.values().sum();
+    let total_spacing_used = if child_ids.len() > 1 { spacing * (child_ids.len() - 1) as f32 } else { 0.0 };
+    let actual_content_width = total_child_width + total_spacing_used;
+
+    (actual_content_width, max_child_height)
 }
 
-/// Resolve children for Column with fill distribution.
-/// Reads from pre-scaled attrs.
+/// Apply vertical alignment to a child element.
+fn apply_vertical_alignment(
+    tree: &mut ElementTree,
+    child_id: &ElementId,
+    content_y: f32,
+    content_height: f32,
+    align_y: AlignY,
+) {
+    if let Some(child) = tree.get(child_id)
+        && let Some(frame) = &child.frame
+    {
+        let aligned_y = match align_y {
+            AlignY::Top => content_y,
+            AlignY::Center => content_y + (content_height - frame.height) / 2.0,
+            AlignY::Bottom => content_y + content_height - frame.height,
+        };
+        let dy = aligned_y - frame.y;
+        if dy != 0.0 {
+            shift_subtree(tree, child_id, 0.0, dy);
+        }
+    }
+}
+
+/// Resolve children for Column with fill distribution and vertical self-alignment.
+/// Children are partitioned by align_y into top/center/bottom zones.
 /// Returns the actual content height after resolution.
 #[allow(clippy::too_many_arguments)]
 fn resolve_column_children(
@@ -681,14 +793,13 @@ fn resolve_column_children(
         return 0.0;
     }
 
-    // Categorize children: track total fill portions and fixed height
-    let mut total_portions = 0.0;
-    let mut fixed_height = 0.0;
+    // First pass: calculate fill_portion distribution
+    let mut total_portions = 0.0_f32;
+    let mut fixed_height = 0.0_f32;
 
     for child_id in child_ids {
         let Some(child) = tree.get(child_id) else { continue };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
-
         let portion = get_fill_portion(child.attrs.height.as_ref());
         if portion > 0.0 {
             total_portions += portion;
@@ -697,63 +808,169 @@ fn resolve_column_children(
         }
     }
 
-    // Calculate height per portion unit
+    // Calculate height per portion
     let total_spacing = spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_height - fixed_height - total_spacing).max(0.0);
     let height_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
 
-    // Position children
-    let mut current_y = content_y;
+    // Partition children by vertical alignment and calculate heights
+    let mut top_children: Vec<ElementId> = Vec::new();
+    let mut center_children: Vec<ElementId> = Vec::new();
+    let mut bottom_children: Vec<ElementId> = Vec::new();
+
+    let mut child_heights: std::collections::HashMap<ElementId, f32> = std::collections::HashMap::new();
+    let mut total_center_height = 0.0_f32;
 
     for child_id in child_ids {
-        let (child_height, align_x) = {
-            let Some(child) = tree.get(child_id) else { continue };
-            let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
-            let portion = get_fill_portion(child.attrs.height.as_ref());
-            let base_height = if portion > 0.0 {
-                height_per_portion * portion
-            } else {
-                resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic)
-            };
-            // Apply min/max constraints on top of base height
-            let h = resolve_length(child.attrs.height.as_ref(), intrinsic, base_height);
-            (h, child.attrs.align_x.unwrap_or_default())
+        let Some(child) = tree.get(child_id) else { continue };
+        let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
+        let portion = get_fill_portion(child.attrs.height.as_ref());
+        let base_height = if portion > 0.0 {
+            height_per_portion * portion
+        } else {
+            resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic)
         };
+        // Apply min/max constraints
+        let height = resolve_length(child.attrs.height.as_ref(), intrinsic, base_height);
+        child_heights.insert(child_id.clone(), height);
+
+        match child.attrs.align_y.unwrap_or_default() {
+            AlignY::Top => top_children.push(child_id.clone()),
+            AlignY::Center => {
+                center_children.push(child_id.clone());
+                total_center_height += height;
+            }
+            AlignY::Bottom => bottom_children.push(child_id.clone()),
+        }
+    }
+
+    // Add spacing within each group
+    let top_spacing = if top_children.len() > 1 { spacing * (top_children.len() - 1) as f32 } else { 0.0 };
+    let center_spacing = if center_children.len() > 1 { spacing * (center_children.len() - 1) as f32 } else { 0.0 };
+    let bottom_spacing = if bottom_children.len() > 1 { spacing * (bottom_children.len() - 1) as f32 } else { 0.0 };
+
+    total_center_height += center_spacing;
+
+    // Position top-aligned children from top edge
+    // Resolve each child and use actual height for positioning subsequent children
+    let mut current_y = content_y;
+    let mut max_child_width = 0.0_f32;
+    let mut actual_top_height = 0.0_f32;
+
+    for child_id in &top_children {
+        let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+        let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(content_width, child_height);
         resolve_element(tree, child_id, child_constraint, content_x, current_y);
 
-        // Get frame info for alignment and actual height (may differ from child_height for wrapped_row)
-        let (dx, actual_height) = {
-            let Some(child) = tree.get(child_id) else {
-                current_y += child_height + spacing;
-                continue;
-            };
-            let Some(frame) = &child.frame else {
-                current_y += child_height + spacing;
-                continue;
-            };
-            let aligned_x = match align_x {
-                AlignX::Left => content_x,
-                AlignX::Center => content_x + (content_width - frame.width) / 2.0,
-                AlignX::Right => content_x + content_width - frame.width,
-            };
-            (aligned_x - frame.x, frame.height)
-        };
+        // Get actual frame height (may differ from constraint for WrappedRow etc.)
+        let (actual_height, frame_content_width) = tree.get(child_id)
+            .and_then(|child| child.frame.as_ref())
+            .map(|frame| (frame.height, frame.content_width))
+            .unwrap_or((child_height, 0.0));
 
-        // Apply horizontal alignment
-        shift_subtree(tree, child_id, dx, 0.0);
+        max_child_width = max_child_width.max(frame_content_width);
+        apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
 
-        // Use actual height after resolution (important for wrapped_row)
+        actual_top_height += actual_height;
         current_y += actual_height + spacing;
     }
+    if !top_children.is_empty() {
+        actual_top_height += top_spacing;
+    }
 
-    // Return total content height (subtract trailing spacing)
-    let total_height = current_y - content_y;
-    if !child_ids.is_empty() {
-        total_height - spacing // Remove trailing spacing
-    } else {
-        0.0
+    // Position bottom-aligned children from bottom edge
+    let mut bottom_y = content_y + content_height;
+    let mut actual_bottom_height = 0.0_f32;
+    for child_id in bottom_children.iter().rev() {
+        let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+        let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+
+        bottom_y -= child_height;
+        let child_constraint = Constraint::new(content_width, child_height);
+        resolve_element(tree, child_id, child_constraint, content_x, bottom_y);
+
+        // Get actual frame height
+        let (actual_height, frame_content_width) = tree.get(child_id)
+            .and_then(|child| child.frame.as_ref())
+            .map(|frame| (frame.height, frame.content_width))
+            .unwrap_or((child_height, 0.0));
+
+        max_child_width = max_child_width.max(frame_content_width);
+
+        // Adjust position if actual height differs from constraint
+        let height_diff = actual_height - child_height;
+        if height_diff != 0.0 {
+            bottom_y -= height_diff;
+            shift_subtree(tree, child_id, 0.0, -height_diff);
+        }
+
+        apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+        actual_bottom_height += actual_height;
+        bottom_y -= spacing;
+    }
+    if !bottom_children.is_empty() {
+        actual_bottom_height += bottom_spacing;
+    }
+
+    // Position center-aligned children in the middle of remaining space
+    let mut actual_center_height = 0.0_f32;
+    if !center_children.is_empty() {
+        let top_end = content_y + actual_top_height;
+        let bottom_start = content_y + content_height - actual_bottom_height;
+        let available_center = (bottom_start - top_end).max(0.0);
+        let center_start = top_end + (available_center - total_center_height) / 2.0;
+
+        let mut center_y = center_start.max(top_end);
+        for child_id in &center_children {
+            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+
+            let child_constraint = Constraint::new(content_width, child_height);
+            resolve_element(tree, child_id, child_constraint, content_x, center_y);
+
+            let (actual_height, frame_content_width) = tree.get(child_id)
+                .and_then(|child| child.frame.as_ref())
+                .map(|frame| (frame.height, frame.content_width))
+                .unwrap_or((child_height, 0.0));
+
+            max_child_width = max_child_width.max(frame_content_width);
+            apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+            actual_center_height += actual_height;
+            center_y += actual_height + spacing;
+        }
+        if !center_children.is_empty() {
+            actual_center_height += center_spacing;
+        }
+    }
+
+    // Calculate actual content height used by all children (use actual heights)
+    actual_top_height + actual_center_height + actual_bottom_height
+}
+
+/// Apply horizontal alignment to a child element.
+fn apply_horizontal_alignment(
+    tree: &mut ElementTree,
+    child_id: &ElementId,
+    content_x: f32,
+    content_width: f32,
+    align_x: AlignX,
+) {
+    if let Some(child) = tree.get(child_id)
+        && let Some(frame) = &child.frame
+    {
+        let aligned_x = match align_x {
+            AlignX::Left => content_x,
+            AlignX::Center => content_x + (content_width - frame.width) / 2.0,
+            AlignX::Right => content_x + content_width - frame.width,
+        };
+        let dx = aligned_x - frame.x;
+        if dx != 0.0 {
+            shift_subtree(tree, child_id, dx, 0.0);
+        }
     }
 }
 
@@ -1902,5 +2119,457 @@ mod tests {
     fn test_available_space_from_f32() {
         let space: AvailableSpace = 100.0.into();
         assert_eq!(space, AvailableSpace::Definite(100.0));
+    }
+
+    #[test]
+    fn test_el_center_x_aligns_child() {
+        let mut tree = ElementTree::new();
+
+        // El with center_x alignment and a smaller child
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(50.0));
+        el_attrs.align_x = Some(AlignX::Center);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be centered horizontally: (200 - 80) / 2 = 60
+        assert_eq!(child_frame.x, 60.0);
+        // Child should be at top (default align_y is Top)
+        assert_eq!(child_frame.y, 0.0);
+    }
+
+    #[test]
+    fn test_el_center_y_aligns_child() {
+        let mut tree = ElementTree::new();
+
+        // El with center_y alignment and a smaller child
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(100.0));
+        el_attrs.align_y = Some(AlignY::Center);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(40.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be at left (default align_x is Left)
+        assert_eq!(child_frame.x, 0.0);
+        // Child should be centered vertically: (100 - 40) / 2 = 30
+        assert_eq!(child_frame.y, 30.0);
+    }
+
+    #[test]
+    fn test_el_center_both_axes() {
+        let mut tree = ElementTree::new();
+
+        // El with both center_x and center_y
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(100.0));
+        el_attrs.align_x = Some(AlignX::Center);
+        el_attrs.align_y = Some(AlignY::Center);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(40.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be centered: (200 - 80) / 2 = 60, (100 - 40) / 2 = 30
+        assert_eq!(child_frame.x, 60.0);
+        assert_eq!(child_frame.y, 30.0);
+    }
+
+    #[test]
+    fn test_el_align_right() {
+        let mut tree = ElementTree::new();
+
+        // El with align_right
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(50.0));
+        el_attrs.align_x = Some(AlignX::Right);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be right-aligned: 200 - 80 = 120
+        assert_eq!(child_frame.x, 120.0);
+    }
+
+    #[test]
+    fn test_el_align_bottom() {
+        let mut tree = ElementTree::new();
+
+        // El with align_bottom
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(100.0));
+        el_attrs.align_y = Some(AlignY::Bottom);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(40.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be bottom-aligned: 100 - 40 = 60
+        assert_eq!(child_frame.y, 60.0);
+    }
+
+    #[test]
+    fn test_child_alignment_overrides_parent() {
+        let mut tree = ElementTree::new();
+
+        // Parent has center_x, child has align_right - child should win
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(50.0));
+        el_attrs.align_x = Some(AlignX::Center);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Right);  // Child overrides parent
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Child should be right-aligned (override): 200 - 80 = 120
+        assert_eq!(child_frame.x, 120.0);
+    }
+
+    #[test]
+    fn test_el_with_padding_and_center() {
+        let mut tree = ElementTree::new();
+
+        // El with padding and center alignment
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(200.0));
+        el_attrs.height = Some(Length::Px(100.0));
+        el_attrs.padding = Some(Padding::Uniform(20.0));
+        el_attrs.align_x = Some(AlignX::Center);
+        el_attrs.align_y = Some(AlignY::Center);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(60.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+
+        let el_id = el.id.clone();
+        let child_id = child.id.clone();
+        el.children = vec![child_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+
+        // Content area: 200 - 40 = 160 width, 100 - 40 = 60 height
+        // Child centered in content area:
+        // x = 20 (padding) + (160 - 60) / 2 = 20 + 50 = 70
+        // y = 20 (padding) + (60 - 20) / 2 = 20 + 20 = 40
+        assert_eq!(child_frame.x, 70.0);
+        assert_eq!(child_frame.y, 40.0);
+    }
+
+    #[test]
+    fn test_row_self_alignment_zones() {
+        let mut tree = ElementTree::new();
+
+        // Row with 300px width, 3 children:
+        // - left-aligned child (50px)
+        // - center-aligned child (50px)
+        // - right-aligned child (50px)
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(300.0));
+        row_attrs.height = Some(Length::Px(50.0));
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let left_child = make_element("left", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Left);
+            a
+        });
+
+        let center_child = make_element("center", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Center);
+            a
+        });
+
+        let right_child = make_element("right", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Right);
+            a
+        });
+
+        let row_id = row.id.clone();
+        let left_id = left_child.id.clone();
+        let center_id = center_child.id.clone();
+        let right_id = right_child.id.clone();
+
+        row.children = vec![left_id.clone(), center_id.clone(), right_id.clone()];
+
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(left_child);
+        tree.insert(center_child);
+        tree.insert(right_child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let left_frame = tree.get(&left_id).unwrap().frame.unwrap();
+        let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
+        let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+
+        // Left child at x=0
+        assert_eq!(left_frame.x, 0.0);
+
+        // Right child at far right: 300 - 50 = 250
+        assert_eq!(right_frame.x, 250.0);
+
+        // Center child in the middle of remaining space
+        // Remaining space: 0+50 to 250 = 200px gap
+        // Center of gap: 50 + (200 - 50) / 2 = 50 + 75 = 125
+        assert_eq!(center_frame.x, 125.0);
+    }
+
+    #[test]
+    fn test_column_self_alignment_zones() {
+        let mut tree = ElementTree::new();
+
+        // Column with 300px height, 3 children:
+        // - top-aligned child (50px)
+        // - center-aligned child (50px)
+        // - bottom-aligned child (50px)
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(100.0));
+        col_attrs.height = Some(Length::Px(300.0));
+
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let top_child = make_element("top", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(50.0));
+            a.align_y = Some(AlignY::Top);
+            a
+        });
+
+        let center_child = make_element("center", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(50.0));
+            a.align_y = Some(AlignY::Center);
+            a
+        });
+
+        let bottom_child = make_element("bottom", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(50.0));
+            a.align_y = Some(AlignY::Bottom);
+            a
+        });
+
+        let col_id = col.id.clone();
+        let top_id = top_child.id.clone();
+        let center_id = center_child.id.clone();
+        let bottom_id = bottom_child.id.clone();
+
+        col.children = vec![top_id.clone(), center_id.clone(), bottom_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(top_child);
+        tree.insert(center_child);
+        tree.insert(bottom_child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let top_frame = tree.get(&top_id).unwrap().frame.unwrap();
+        let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
+        let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+
+        // Top child at y=0
+        assert_eq!(top_frame.y, 0.0);
+
+        // Bottom child at far bottom: 300 - 50 = 250
+        assert_eq!(bottom_frame.y, 250.0);
+
+        // Center child in the middle of remaining space
+        // Remaining space: 0+50 to 250 = 200px gap
+        // Center of gap: 50 + (200 - 50) / 2 = 50 + 75 = 125
+        assert_eq!(center_frame.y, 125.0);
+    }
+
+    #[test]
+    fn test_row_with_mixed_alignments_and_vertical() {
+        let mut tree = ElementTree::new();
+
+        // Row with children at different horizontal and vertical alignments
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(200.0));
+        row_attrs.height = Some(Length::Px(100.0));
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        // Left-aligned, top-aligned
+        let left_top = make_element("lt", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(40.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Left);
+            a.align_y = Some(AlignY::Top);
+            a
+        });
+
+        // Right-aligned, bottom-aligned
+        let right_bottom = make_element("rb", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(40.0));
+            a.height = Some(Length::Px(30.0));
+            a.align_x = Some(AlignX::Right);
+            a.align_y = Some(AlignY::Bottom);
+            a
+        });
+
+        let row_id = row.id.clone();
+        let lt_id = left_top.id.clone();
+        let rb_id = right_bottom.id.clone();
+
+        row.children = vec![lt_id.clone(), rb_id.clone()];
+
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(left_top);
+        tree.insert(right_bottom);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let lt_frame = tree.get(&lt_id).unwrap().frame.unwrap();
+        let rb_frame = tree.get(&rb_id).unwrap().frame.unwrap();
+
+        // Left-top: x=0, y=0
+        assert_eq!(lt_frame.x, 0.0);
+        assert_eq!(lt_frame.y, 0.0);
+
+        // Right-bottom: x=160 (200-40), y=70 (100-30)
+        assert_eq!(rb_frame.x, 160.0);
+        assert_eq!(rb_frame.y, 70.0);
     }
 }

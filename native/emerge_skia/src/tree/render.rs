@@ -2,7 +2,7 @@
 //!
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
-use super::attrs::{Background, Color, Padding};
+use super::attrs::{Background, Color, Padding, TextAlign};
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{layout_tree, Constraint, SkiaTextMeasurer};
@@ -101,8 +101,20 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         let font_size = attrs.font_size.unwrap_or(16.0) as f32;
         let color = attrs.font_color.as_ref().map(color_to_u32).unwrap_or(0xFFFFFFFF);
         let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
+        let padding_right = match attrs.padding.as_ref() {
+            Some(Padding::Uniform(v)) => *v as f32,
+            Some(Padding::Sides { right, .. }) => *right as f32,
+            None => 0.0,
+        };
         let (ascent, _) = text_metrics(font_size);
-        let text_x = frame.x + padding_left;
+        let text_width = measure_text_width(content, font_size);
+        let content_width = frame.width - padding_left - padding_right;
+        let text_align = attrs.text_align.unwrap_or_default();
+        let text_x = match text_align {
+            TextAlign::Left => frame.x + padding_left,
+            TextAlign::Center => frame.x + padding_left + (content_width - text_width) / 2.0,
+            TextAlign::Right => frame.x + frame.width - padding_right - text_width,
+        };
         let baseline_y = frame.y + padding_top + ascent;
         commands.push(DrawCmd::Text(text_x, baseline_y, content.to_string(), font_size, color));
     }
@@ -181,6 +193,16 @@ fn text_metrics(font_size: f32) -> (f32, f32) {
     let font = Font::new(typeface, font_size);
     let (_, metrics) = font.metrics();
     (metrics.ascent.abs(), metrics.descent)
+}
+
+fn measure_text_width(text: &str, font_size: f32) -> f32 {
+    use crate::renderer::get_default_typeface;
+    use skia_safe::Font;
+
+    let typeface = get_default_typeface();
+    let font = Font::new(typeface, font_size);
+    let (width, _bounds) = font.measure_str(text, None);
+    width
 }
 
 // =============================================================================
@@ -376,8 +398,20 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
             .map(color_to_u32)
             .unwrap_or(0xFFFFFFFF);
         let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
+        let padding_right = match attrs.padding.as_ref() {
+            Some(Padding::Uniform(v)) => *v as f32,
+            Some(Padding::Sides { right, .. }) => *right as f32,
+            None => 0.0,
+        };
         let (ascent, _) = text_metrics(font_size);
-        let text_x = frame.x + padding_left;
+        let text_width = measure_text_width(content, font_size);
+        let content_width = frame.width - padding_left - padding_right;
+        let text_align = attrs.text_align.unwrap_or_default();
+        let text_x = match text_align {
+            TextAlign::Left => frame.x + padding_left,
+            TextAlign::Center => frame.x + padding_left + (content_width - text_width) / 2.0,
+            TextAlign::Right => frame.x + frame.width - padding_right - text_width,
+        };
         let baseline_y = frame.y + padding_top + ascent;
         commands.push(DrawCmd::Text(
             text_x,

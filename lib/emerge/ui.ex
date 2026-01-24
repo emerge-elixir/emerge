@@ -395,5 +395,14 @@ defmodule Emerge.UI do
 
     @doc "Italic text"
     def italic, do: {:font_style, :italic}
+
+    @doc "Left-align text within element (default)"
+    def align_left, do: {:text_align, :left}
+
+    @doc "Right-align text within element"
+    def align_right, do: {:text_align, :right}
+
+    @doc "Center text within element"
+    def center, do: {:text_align, :center}
   end
 end

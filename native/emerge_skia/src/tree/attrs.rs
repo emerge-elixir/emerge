@@ -59,6 +59,15 @@ pub enum AlignY {
     Bottom,
 }
 
+/// Text alignment within element bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 /// Color value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Color {
@@ -116,6 +125,7 @@ pub struct Attrs {
     pub font: Option<Font>,
     pub font_weight: Option<FontWeight>,
     pub font_style: Option<FontStyle>,
+    pub text_align: Option<TextAlign>,
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
     pub snap_text_metrics: Option<bool>,
@@ -161,6 +171,7 @@ const TAG_IN_FRONT: u8 = 26;
 const TAG_BEHIND: u8 = 27;
 const TAG_SNAP_LAYOUT: u8 = 28;
 const TAG_SNAP_TEXT_METRICS: u8 = 29;
+const TAG_TEXT_ALIGN: u8 = 30;
 
 // =============================================================================
 // Decoder
@@ -282,6 +293,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_BEHIND => attrs.behind = Some(cursor.read_bytes_u32()?),
         TAG_SNAP_LAYOUT => attrs.snap_layout = Some(cursor.read_bool()?),
         TAG_SNAP_TEXT_METRICS => attrs.snap_text_metrics = Some(cursor.read_bool()?),
+        TAG_TEXT_ALIGN => attrs.text_align = Some(decode_text_align(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -376,6 +388,19 @@ fn decode_align_y(cursor: &mut AttrCursor) -> Result<AlignY, DecodeError> {
         2 => Ok(AlignY::Bottom),
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown align_y variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_text_align(cursor: &mut AttrCursor) -> Result<TextAlign, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(TextAlign::Left),
+        1 => Ok(TextAlign::Center),
+        2 => Ok(TextAlign::Right),
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown text_align variant: {}",
             variant
         ))),
     }
