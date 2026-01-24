@@ -132,6 +132,11 @@ pub struct Attrs {
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
     pub snap_text_metrics: Option<bool>,
+    pub move_x: Option<f64>,
+    pub move_y: Option<f64>,
+    pub rotate: Option<f64>,
+    pub scale: Option<f64>,
+    pub alpha: Option<f64>,
     // Nearby elements stored as raw EMRG bytes (decoded lazily)
     pub above: Option<Vec<u8>>,
     pub below: Option<Vec<u8>>,
@@ -175,6 +180,11 @@ const TAG_BEHIND: u8 = 27;
 const TAG_SNAP_LAYOUT: u8 = 28;
 const TAG_SNAP_TEXT_METRICS: u8 = 29;
 const TAG_TEXT_ALIGN: u8 = 30;
+const TAG_MOVE_X: u8 = 31;
+const TAG_MOVE_Y: u8 = 32;
+const TAG_ROTATE: u8 = 33;
+const TAG_SCALE: u8 = 34;
+const TAG_ALPHA: u8 = 35;
 
 // =============================================================================
 // Decoder
@@ -296,6 +306,11 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_SNAP_LAYOUT => attrs.snap_layout = Some(cursor.read_bool()?),
         TAG_SNAP_TEXT_METRICS => attrs.snap_text_metrics = Some(cursor.read_bool()?),
         TAG_TEXT_ALIGN => attrs.text_align = Some(decode_text_align(cursor)?),
+        TAG_MOVE_X => attrs.move_x = Some(cursor.read_f64()?),
+        TAG_MOVE_Y => attrs.move_y = Some(cursor.read_f64()?),
+        TAG_ROTATE => attrs.rotate = Some(cursor.read_f64()?),
+        TAG_SCALE => attrs.scale = Some(cursor.read_f64()?),
+        TAG_ALPHA => attrs.alpha = Some(cursor.read_f64()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",

@@ -48,6 +48,9 @@ pub enum DrawCmd {
     PushClip(f32, f32, f32, f32),
     PopClip,
     Translate(f32, f32),
+    Rotate(f32),
+    Scale(f32, f32),
+    SaveLayerAlpha(f32),
     Save,
     Restore,
 }
@@ -382,6 +385,20 @@ impl Renderer {
 
                 DrawCmd::Translate(x, y) => {
                     canvas.translate(Vector::new(*x, *y));
+                }
+
+                DrawCmd::Rotate(degrees) => {
+                    canvas.rotate(*degrees, None);
+                }
+
+                DrawCmd::Scale(x, y) => {
+                    canvas.scale((*x, *y));
+                }
+
+                DrawCmd::SaveLayerAlpha(alpha) => {
+                    let clamped = alpha.clamp(0.0, 1.0);
+                    let alpha_u8 = (clamped * 255.0).round() as u8;
+                    canvas.save_layer_alpha(None, alpha_u8.into());
                 }
 
                 DrawCmd::Save => {

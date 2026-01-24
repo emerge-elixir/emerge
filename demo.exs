@@ -209,6 +209,36 @@ defmodule Demo do
             )
           ])
         ),
+        row([width(fill()), spacing(12)], [
+          el(
+            [
+              width(fill()),
+              padding(12),
+              Background.color({:color_rgb, {50, 70, 90}}),
+              Border.rounded(10),
+              rotate(-6),
+              alpha(0.85)
+            ],
+            column([spacing(4)], [
+              el([Font.size(14), Font.color(:white)], text("Rotate + alpha")),
+              el([Font.size(11), Font.color({:color_rgb, {200, 220, 230}})], text("-6deg, 85%"))
+            ])
+          ),
+          el(
+            [
+              width(fill()),
+              padding(12),
+              Background.color({:color_rgb, {70, 60, 90}}),
+              Border.rounded(10),
+              scale(1.06),
+              move_y(-4)
+            ],
+            column([spacing(4)], [
+              el([Font.size(14), Font.color(:white)], text("Scale + move")),
+              el([Font.size(11), Font.color({:color_rgb, {220, 210, 235}})], text("1.06x, -4px"))
+            ])
+          )
+        ]),
 
         # Wrapped row demo
         wrapped_row([width(fill()), spacing(8)], [

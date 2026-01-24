@@ -34,6 +34,8 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
     let attrs = &element.attrs;
     let radius = attrs.border_radius.as_ref();
 
+    let transform_state = push_element_transform(commands, frame, attrs);
+
     // Render "behind" elements first (underlay)
     if let Some(behind_bytes) = &attrs.behind {
         render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
@@ -126,6 +128,8 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
     if let Some(in_front_bytes) = &attrs.in_front {
         render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
     }
+
+    pop_element_transform(commands, transform_state);
 }
 
 fn color_to_u32(color: &Color) -> u32 {
@@ -155,6 +159,68 @@ fn named_color(name: &str) -> u32 {
         "teal" => 0x008080FF,
         _ => 0xFFFFFFFF,
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TransformState {
+    active: bool,
+    has_alpha_layer: bool,
+}
+
+fn push_element_transform(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) -> TransformState {
+    let move_x = attrs.move_x.unwrap_or(0.0) as f32;
+    let move_y = attrs.move_y.unwrap_or(0.0) as f32;
+    let rotate = attrs.rotate.unwrap_or(0.0) as f32;
+    let scale = attrs.scale.unwrap_or(1.0) as f32;
+    let alpha = attrs.alpha.unwrap_or(1.0) as f32;
+
+    let has_translation = move_x != 0.0 || move_y != 0.0;
+    let has_rotation = rotate != 0.0;
+    let has_scale = (scale - 1.0).abs() > f32::EPSILON;
+    let has_alpha = alpha < 1.0;
+
+    if !(has_translation || has_rotation || has_scale || has_alpha) {
+        return TransformState::default();
+    }
+
+    commands.push(DrawCmd::Save);
+
+    if has_translation {
+        commands.push(DrawCmd::Translate(move_x, move_y));
+    }
+
+    if has_rotation || has_scale {
+        let center_x = frame.x + frame.width / 2.0;
+        let center_y = frame.y + frame.height / 2.0;
+        commands.push(DrawCmd::Translate(center_x, center_y));
+        if has_rotation {
+            commands.push(DrawCmd::Rotate(rotate));
+        }
+        if has_scale {
+            commands.push(DrawCmd::Scale(scale, scale));
+        }
+        commands.push(DrawCmd::Translate(-center_x, -center_y));
+    }
+
+    if has_alpha {
+        commands.push(DrawCmd::SaveLayerAlpha(alpha));
+    }
+
+    TransformState {
+        active: true,
+        has_alpha_layer: has_alpha,
+    }
+}
+
+fn pop_element_transform(commands: &mut Vec<DrawCmd>, state: TransformState) {
+    if !state.active {
+        return;
+    }
+
+    if state.has_alpha_layer {
+        commands.push(DrawCmd::Restore);
+    }
+    commands.push(DrawCmd::Restore);
 }
 
 fn push_background_rect(
@@ -390,6 +456,8 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
     let attrs = &element.attrs;
     let radius = attrs.border_radius.as_ref();
 
+    let transform_state = push_element_transform(commands, frame, attrs);
+
     // Render behind first
     if let Some(behind_bytes) = &attrs.behind {
         render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
@@ -499,6 +567,8 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
     if let Some(in_front_bytes) = &attrs.in_front {
         render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
     }
+
+    pop_element_transform(commands, transform_state);
 }
 
 #[cfg(test)]

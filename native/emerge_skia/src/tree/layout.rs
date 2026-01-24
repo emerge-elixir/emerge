@@ -192,6 +192,11 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         behind: attrs.behind.clone(),
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
+        move_x: attrs.move_x.map(|v| v * scale_f64),
+        move_y: attrs.move_y.map(|v| v * scale_f64),
+        rotate: attrs.rotate,
+        scale: attrs.scale,
+        alpha: attrs.alpha,
     }
 }
 

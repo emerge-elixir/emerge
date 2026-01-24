@@ -35,7 +35,12 @@ defmodule Emerge.AttrCodec do
     behind: 27,
     snap_layout: 28,
     snap_text_metrics: 29,
-    text_align: 30
+    text_align: 30,
+    move_x: 31,
+    move_y: 32,
+    rotate: 33,
+    scale: 34,
+    alpha: 35
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -103,6 +108,11 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:snap_layout, value), do: encode_bool(value)
   defp encode_value(:snap_text_metrics, value), do: encode_bool(value)
   defp encode_value(:text_align, value), do: encode_text_align(value)
+  defp encode_value(:move_x, value), do: encode_f64(value)
+  defp encode_value(:move_y, value), do: encode_f64(value)
+  defp encode_value(:rotate, value), do: encode_f64(value)
+  defp encode_value(:scale, value), do: encode_f64(value)
+  defp encode_value(:alpha, value), do: encode_f64(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -134,6 +144,11 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:snap_layout, rest), do: decode_bool(rest)
   defp decode_value(:snap_text_metrics, rest), do: decode_bool(rest)
   defp decode_value(:text_align, rest), do: decode_text_align(rest)
+  defp decode_value(:move_x, rest), do: decode_f64(rest)
+  defp decode_value(:move_y, rest), do: decode_f64(rest)
+  defp decode_value(:rotate, rest), do: decode_f64(rest)
+  defp decode_value(:scale, rest), do: decode_f64(rest)
+  defp decode_value(:alpha, rest), do: decode_f64(rest)
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>
@@ -142,7 +157,7 @@ defmodule Emerge.AttrCodec do
   defp decode_bool(<<1, rest::binary>>), do: {true, rest}
   defp decode_bool(<<0, rest::binary>>), do: {false, rest}
 
-  defp encode_f64(value) when is_integer(value), do: <<(value * 1.0)::float-64>>
+  defp encode_f64(value) when is_integer(value), do: <<value * 1.0::float-64>>
   defp encode_f64(value) when is_float(value), do: <<value::float-64>>
 
   defp decode_f64(<<value::float-64, rest::binary>>), do: {value, rest}
@@ -171,24 +186,32 @@ defmodule Emerge.AttrCodec do
   defp encode_length({:px, value}), do: <<2, encode_f64(value)::binary>>
   defp encode_length({:fill_portion, value}), do: <<3, encode_f64(value)::binary>>
   defp encode_length({:fill, value}), do: <<3, encode_f64(value)::binary>>
-  defp encode_length({:minimum, min_px, inner}), do: <<4, encode_f64(min_px)::binary, encode_length(inner)::binary>>
-  defp encode_length({:maximum, max_px, inner}), do: <<5, encode_f64(max_px)::binary, encode_length(inner)::binary>>
+
+  defp encode_length({:minimum, min_px, inner}),
+    do: <<4, encode_f64(min_px)::binary, encode_length(inner)::binary>>
+
+  defp encode_length({:maximum, max_px, inner}),
+    do: <<5, encode_f64(max_px)::binary, encode_length(inner)::binary>>
 
   defp decode_length(<<0, rest::binary>>), do: {:fill, rest}
   defp decode_length(<<1, rest::binary>>), do: {:content, rest}
+
   defp decode_length(<<2, rest::binary>>) do
     {value, rest} = decode_f64(rest)
     {{:px, value}, rest}
   end
+
   defp decode_length(<<3, rest::binary>>) do
     {value, rest} = decode_f64(rest)
     {{:fill_portion, value}, rest}
   end
+
   defp decode_length(<<4, rest::binary>>) do
     {min_px, rest} = decode_f64(rest)
     {inner, rest} = decode_length(rest)
     {{:minimum, min_px, inner}, rest}
   end
+
   defp decode_length(<<5, rest::binary>>) do
     {max_px, rest} = decode_f64(rest)
     {inner, rest} = decode_length(rest)
@@ -276,16 +299,21 @@ defmodule Emerge.AttrCodec do
   defp decode_text_align(<<1, rest::binary>>), do: {:center, rest}
   defp decode_text_align(<<2, rest::binary>>), do: {:right, rest}
 
-  defp encode_color({:color_rgb, {r, g, b}}), do: <<0, r::unsigned-8, g::unsigned-8, b::unsigned-8>>
+  defp encode_color({:color_rgb, {r, g, b}}),
+    do: <<0, r::unsigned-8, g::unsigned-8, b::unsigned-8>>
+
   defp encode_color({:color_rgba, {r, g, b, a}}),
     do: <<1, r::unsigned-8, g::unsigned-8, b::unsigned-8, a::unsigned-8>>
+
   defp encode_color(color) when is_atom(color), do: <<2, encode_atom(color)::binary>>
 
   defp decode_color(<<0, r::unsigned-8, g::unsigned-8, b::unsigned-8, rest::binary>>),
     do: {{:color_rgb, {r, g, b}}, rest}
 
-  defp decode_color(<<1, r::unsigned-8, g::unsigned-8, b::unsigned-8, a::unsigned-8, rest::binary>>),
-    do: {{:color_rgba, {r, g, b, a}}, rest}
+  defp decode_color(
+         <<1, r::unsigned-8, g::unsigned-8, b::unsigned-8, a::unsigned-8, rest::binary>>
+       ),
+       do: {{:color_rgba, {r, g, b, a}}, rest}
 
   defp decode_color(<<2, rest::binary>>) do
     {atom, rest} = decode_atom(rest)
