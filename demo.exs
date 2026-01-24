@@ -240,6 +240,102 @@ defmodule Demo do
           )
         ]),
 
+        # Sizing combos
+        column([width(fill()), spacing(10)], [
+          el([Font.size(14), Font.color({:color_rgb, {190, 190, 210}})], text("Sizing combos")),
+          row([width(fill()), spacing(12)], [
+            el(
+              [
+                width(shrink()),
+                padding(10),
+                Background.color({:color_rgb, {55, 70, 90}}),
+                Border.rounded(8),
+                clip()
+              ],
+              column([spacing(4)], [
+                el([Font.size(13), Font.color(:white)], text("Shrink")),
+                el(
+                  [Font.size(11), Font.color({:color_rgb, {210, 220, 230}})],
+                  text("Content sized")
+                )
+              ])
+            ),
+            el(
+              [
+                width(fill()),
+                padding(10),
+                Background.color({:color_rgb, {70, 80, 95}}),
+                Border.rounded(8),
+                clip()
+              ],
+              column([spacing(4)], [
+                el([Font.size(13), Font.color(:white)], text("Fill")),
+                el([Font.size(11), Font.color({:color_rgb, {220, 225, 235}})], text("Expands"))
+              ])
+            )
+          ]),
+          row([width(fill()), spacing(8)], [
+            el(
+              [
+                width(fill_portion(1)),
+                padding(8),
+                Background.color({:color_rgb, {65, 70, 100}}),
+                Border.rounded(8),
+                clip()
+              ],
+              el([Font.size(12), Font.color(:white)], text("Fill 1"))
+            ),
+            el(
+              [
+                width(fill_portion(2)),
+                padding(8),
+                Background.color({:color_rgb, {65, 80, 110}}),
+                Border.rounded(8),
+                clip()
+              ],
+              el([Font.size(12), Font.color(:white)], text("Fill 2"))
+            ),
+            el(
+              [
+                width(fill_portion(3)),
+                padding(8),
+                Background.color({:color_rgb, {65, 90, 120}}),
+                Border.rounded(8),
+                clip()
+              ],
+              el([Font.size(12), Font.color(:white)], text("Fill 3"))
+            )
+          ]),
+          row([width(fill()), spacing(12)], [
+            el(
+              [
+                width(minimum(140, shrink())),
+                padding(10),
+                Background.color({:color_rgb, {70, 65, 95}}),
+                Border.rounded(8),
+                clip()
+              ],
+              column([spacing(4)], [
+                el([Font.size(13), Font.color(:white)], text("Min + shrink")),
+                el([Font.size(11), Font.color({:color_rgb, {220, 220, 235}})], text(">= 140px"))
+              ])
+            ),
+            el(
+              [
+                width(maximum(180, fill())),
+                padding(10),
+                Background.color({:color_rgb, {85, 65, 95}}),
+                Border.rounded(8),
+                clip()
+              ],
+              column([spacing(4)], [
+                el([Font.size(13), Font.color(:white)], text("Max + fill")),
+                el([Font.size(11), Font.color({:color_rgb, {225, 215, 235}})], text("<= 180px"))
+              ])
+            )
+          ])
+        ]),
+
         # Wrapped row demo
         wrapped_row([width(fill()), spacing(8)], [
           chip("Wrapped"),
@@ -583,7 +679,14 @@ defmodule Demo do
 
   defp feature_card(title, description, bg_color) do
     column(
-      [width(fill()), clip(), spacing(8), padding(15), Background.color(bg_color), Border.rounded(8)],
+      [
+        width(fill()),
+        clip(),
+        spacing(8),
+        padding(15),
+        Background.color(bg_color),
+        Border.rounded(8)
+      ],
       [
         el([Font.size(16), Font.color(:white)], text(title)),
         el([Font.size(12), Font.color({:color_rgb, {200, 200, 220}})], text(description))
