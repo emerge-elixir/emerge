@@ -16,6 +16,10 @@ cargo clippy -- -D warnings     # Lint with warnings as errors
 cargo build --release           # Build release (mix compile does this automatically)
 ```
 
+## Testing Expectations
+
+- Always run `cargo test` and `mix test` after implementing changes.
+
 ## Architecture
 
 EmergeSkia is a minimal Skia renderer for Elixir, designed as a lightweight alternative to Scenic for the Emerge layout engine. It uses Rustler to bridge Elixir and Rust.

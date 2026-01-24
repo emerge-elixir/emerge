@@ -237,6 +237,9 @@ defmodule Emerge.UI do
   @doc "Size to content"
   def content, do: :content
 
+  @doc "Shrink to content"
+  def shrink, do: :content
+
   @doc """
   Minimum size constraint. The resolved length must be at least n pixels.
 

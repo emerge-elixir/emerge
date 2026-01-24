@@ -1185,6 +1185,36 @@ mod tests {
     }
 
     #[test]
+    fn test_layout_el_shrink_to_content() {
+        let mut tree = ElementTree::new();
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.width = Some(Length::Content);
+        parent_attrs.height = Some(Length::Content);
+        parent_attrs.padding = Some(Padding::Uniform(10.0));
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.content = Some("Hi".to_string());
+        child_attrs.font_size = Some(10.0);
+
+        let mut parent = make_element("root", ElementKind::El, parent_attrs);
+        let child = make_element("child", ElementKind::Text, child_attrs);
+        let root_id = parent.id.clone();
+        let child_id = child.id.clone();
+
+        parent.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(parent);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+
+        let frame = tree.get(&root_id).unwrap().frame.unwrap();
+        assert_eq!(frame.width, 36.0); // 2 chars * 8px + 20 padding
+        assert_eq!(frame.height, 30.0); // font_size 10 + 20 padding
+    }
+
+    #[test]
     fn test_layout_row() {
         let mut tree = ElementTree::new();
 
