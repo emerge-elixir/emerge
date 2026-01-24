@@ -583,7 +583,7 @@ defmodule Demo do
 
   defp feature_card(title, description, bg_color) do
     column(
-      [width(fill()), spacing(8), padding(15), Background.color(bg_color), Border.rounded(8)],
+      [width(fill()), clip(), spacing(8), padding(15), Background.color(bg_color), Border.rounded(8)],
       [
         el([Font.size(16), Font.color(:white)], text(title)),
         el([Font.size(12), Font.color({:color_rgb, {200, 200, 220}})], text(description))

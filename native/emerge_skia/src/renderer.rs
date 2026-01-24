@@ -35,7 +35,7 @@ mod cmd_atoms {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DrawCmd {
     Clear(u32),
     Rect(f32, f32, f32, f32, u32),

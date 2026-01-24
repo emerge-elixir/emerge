@@ -35,7 +35,12 @@ defmodule Emerge.AttrCodecTest do
       in_front: el(text("front")),
       behind: el(text("behind")),
       snap_layout: true,
-      snap_text_metrics: true
+      snap_text_metrics: true,
+      move_x: 12.5,
+      move_y: -8.0,
+      rotate: 45.0,
+      scale: 1.25,
+      alpha: 0.5
     }
 
     encoded = AttrCodec.encode_attrs(attrs)
@@ -49,6 +54,13 @@ defmodule Emerge.AttrCodecTest do
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
     assert decoded == %{width: :fill}
+  end
+
+  test "encode/decode transform attrs" do
+    attrs = %{move_x: 12.5, move_y: -4.0, rotate: 15.0, scale: 1.2, alpha: 0.0}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
   defp normalize_attrs(attrs) do

@@ -73,9 +73,9 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         );
     }
 
-    let clip = attrs.clip.unwrap_or(false) || attrs.clip_x.unwrap_or(false) || attrs.clip_y.unwrap_or(false);
-    if clip {
-        commands.push(DrawCmd::PushClip(frame.x, frame.y, frame.width, frame.height));
+    let clip_rect = overflow_clip_rect(frame, attrs);
+    if let Some((x, y, w, h)) = clip_rect {
+        commands.push(DrawCmd::PushClip(x, y, w, h));
     }
 
     if element.kind == ElementKind::Text
@@ -84,10 +84,10 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         let font_size = attrs.font_size.unwrap_or(16.0) as f32;
         let color = attrs.font_color.as_ref().map(color_to_u32).unwrap_or(0xFFFFFFFF);
         let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
-        let padding_right = match attrs.padding.as_ref() {
-            Some(Padding::Uniform(v)) => *v as f32,
-            Some(Padding::Sides { right, .. }) => *right as f32,
-            None => 0.0,
+        let (padding_right, _padding_bottom) = match attrs.padding.as_ref() {
+            Some(Padding::Uniform(v)) => (*v as f32, *v as f32),
+            Some(Padding::Sides { right, bottom, .. }) => (*right as f32, *bottom as f32),
+            None => (0.0, 0.0),
         };
         let (ascent, _) = text_metrics(font_size);
         let text_width = measure_text_width(content, font_size);
@@ -106,7 +106,7 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         render_element(tree, child_id, commands);
     }
 
-    if clip {
+    if clip_rect.is_some() {
         commands.push(DrawCmd::PopClip);
     }
 
@@ -159,6 +159,45 @@ fn named_color(name: &str) -> u32 {
         "teal" => 0x008080FF,
         _ => 0xFFFFFFFF,
     }
+}
+
+fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32, f32, f32, f32)> {
+    let clip_all = attrs.clip.unwrap_or(false);
+    let clip_x = attrs.clip_x.unwrap_or(false) || attrs.scrollbar_x.unwrap_or(false);
+    let clip_y = attrs.clip_y.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+
+    if !(clip_all || clip_x || clip_y) {
+        return None;
+    }
+
+    let (padding_left, padding_top, padding_right, padding_bottom) = match attrs.padding.as_ref() {
+        Some(Padding::Uniform(value)) => (*value as f32, *value as f32, *value as f32, *value as f32),
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
+        None => (0.0, 0.0, 0.0, 0.0),
+    };
+
+    let content_x = frame.x + padding_left;
+    let content_y = frame.y + padding_top;
+    let content_width = frame.width - padding_left - padding_right;
+    let content_height = frame.height - padding_top - padding_bottom;
+
+    let (x, width) = if clip_all || clip_x {
+        (content_x, content_width)
+    } else {
+        (frame.x, frame.width)
+    };
+    let (y, height) = if clip_all || clip_y {
+        (content_y, content_height)
+    } else {
+        (frame.y, frame.height)
+    };
+
+    Some((x, y, width.max(0.0), height.max(0.0)))
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -495,16 +534,9 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         );
     }
 
-    let clip = attrs.clip.unwrap_or(false)
-        || attrs.clip_x.unwrap_or(false)
-        || attrs.clip_y.unwrap_or(false);
-    if clip {
-        commands.push(DrawCmd::PushClip(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-        ));
+    let clip_rect = overflow_clip_rect(frame, attrs);
+    if let Some((x, y, w, h)) = clip_rect {
+        commands.push(DrawCmd::PushClip(x, y, w, h));
     }
 
     if element.kind == ElementKind::Text
@@ -517,10 +549,10 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
             .map(color_to_u32)
             .unwrap_or(0xFFFFFFFF);
         let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
-        let padding_right = match attrs.padding.as_ref() {
-            Some(Padding::Uniform(v)) => *v as f32,
-            Some(Padding::Sides { right, .. }) => *right as f32,
-            None => 0.0,
+        let (padding_right, _padding_bottom) = match attrs.padding.as_ref() {
+            Some(Padding::Uniform(v)) => (*v as f32, *v as f32),
+            Some(Padding::Sides { right, bottom, .. }) => (*right as f32, *bottom as f32),
+            None => (0.0, 0.0),
         };
         let (ascent, _) = text_metrics(font_size);
         let text_width = measure_text_width(content, font_size);
@@ -545,7 +577,7 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         render_tree_recursive(tree, child_id, commands);
     }
 
-    if clip {
+    if clip_rect.is_some() {
         commands.push(DrawCmd::PopClip);
     }
 
@@ -574,6 +606,8 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::attrs::Attrs;
+    use crate::tree::element::Element;
 
     #[test]
     fn test_named_colors() {
@@ -682,5 +716,180 @@ mod tests {
         };
         assert_eq!(x, 175.0);
         assert_eq!(y, 115.0);
+    }
+
+    fn build_tree_with_attrs(mut attrs: Attrs) -> ElementTree {
+        if attrs.background.is_none() {
+            attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        }
+
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        tree
+    }
+
+    #[test]
+    fn test_render_emits_translate_for_move() {
+        let mut attrs = Attrs::default();
+        attrs.move_x = Some(10.0);
+        attrs.move_y = Some(5.0);
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Save,
+                DrawCmd::Translate(10.0, 5.0),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Restore,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_emits_rotate_for_rotation() {
+        let mut attrs = Attrs::default();
+        attrs.rotate = Some(45.0);
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Save,
+                DrawCmd::Translate(50.0, 25.0),
+                DrawCmd::Rotate(45.0),
+                DrawCmd::Translate(-50.0, -25.0),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Restore,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_emits_scale_for_scale() {
+        let mut attrs = Attrs::default();
+        attrs.scale = Some(1.1);
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Save,
+                DrawCmd::Translate(50.0, 25.0),
+                DrawCmd::Scale(1.1, 1.1),
+                DrawCmd::Translate(-50.0, -25.0),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Restore,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_emits_alpha_layer() {
+        let mut attrs = Attrs::default();
+        attrs.alpha = Some(0.5);
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Save,
+                DrawCmd::SaveLayerAlpha(0.5),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Restore,
+                DrawCmd::Restore,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_skips_transform_when_default() {
+        let attrs = Attrs::default();
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert_eq!(commands, vec![DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)]);
+    }
+
+    #[test]
+    fn test_clip_uses_padded_content_box() {
+        let mut attrs = Attrs::default();
+        attrs.clip = Some(true);
+        attrs.padding = Some(Padding::Uniform(10.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 10.0, 80.0, 30.0)));
+    }
+
+    #[test]
+    fn test_clip_x_uses_padded_x_only() {
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.padding = Some(Padding::Uniform(10.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 0.0, 80.0, 50.0)));
+    }
+
+    #[test]
+    fn test_scrollbar_x_clips_x() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.padding = Some(Padding::Uniform(10.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 0.0, 80.0, 50.0)));
+    }
+
+    #[test]
+    fn test_no_clip_no_pushclip() {
+        let attrs = Attrs::default();
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        assert_eq!(overflow_clip_rect(frame, &attrs), None);
     }
 }

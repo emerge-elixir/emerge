@@ -605,4 +605,49 @@ mod tests {
         assert_eq!(attrs.clip, Some(true));
         assert_eq!(attrs.scrollbar_y, Some(false));
     }
+
+    #[test]
+    fn test_decode_move_x() {
+        // 1 attr, tag=31 (move_x), f64=12.5
+        let mut data = vec![0, 1, 31];
+        data.extend_from_slice(&12.5_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.move_x, Some(12.5));
+    }
+
+    #[test]
+    fn test_decode_move_y() {
+        // 1 attr, tag=32 (move_y), f64=-8.0
+        let mut data = vec![0, 1, 32];
+        data.extend_from_slice(&(-8.0_f64).to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.move_y, Some(-8.0));
+    }
+
+    #[test]
+    fn test_decode_rotate() {
+        // 1 attr, tag=33 (rotate), f64=45.0
+        let mut data = vec![0, 1, 33];
+        data.extend_from_slice(&45.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.rotate, Some(45.0));
+    }
+
+    #[test]
+    fn test_decode_scale() {
+        // 1 attr, tag=34 (scale), f64=1.25
+        let mut data = vec![0, 1, 34];
+        data.extend_from_slice(&1.25_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.scale, Some(1.25));
+    }
+
+    #[test]
+    fn test_decode_alpha() {
+        // 1 attr, tag=35 (alpha), f64=0.5
+        let mut data = vec![0, 1, 35];
+        data.extend_from_slice(&0.5_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.alpha, Some(0.5));
+    }
 }
