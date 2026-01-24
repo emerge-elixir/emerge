@@ -128,7 +128,7 @@ defmodule Demo do
           )
         ]),
         row(
-          [width(:fill), spacing(10)],
+          [width(:fill), height(:fill), spacing(10)],
           [
             column(
               [
@@ -172,11 +172,11 @@ defmodule Demo do
     column(
       [
         width(fill()),
+        height(fill()),
         spacing(15),
         padding(20),
         scroll_y(0),
         scrollbar_y(),
-        clip_y(),
         {:id, :main_content},
         Background.color({:color_rgb, {35, 35, 55}}),
         Border.rounded(8)
