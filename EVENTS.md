@@ -63,3 +63,39 @@ CursorUp   -> hit test -> if element_id == pressed_id -> emit :click
 - Mouse enter/leave/move tracking.
 - Other mouse events (down/up) and hover state.
 - Optional meta payloads for pointer position and modifiers.
+
+## Future-Proofing Plan
+
+1) Clip-aware hit testing
+- Maintain a clip stack while building the event registry.
+- Intersect clickable frames with active clip rects (padding-aware clip, rounded border clip).
+- Prevents clicks on visually clipped content.
+
+2) Scroll offset awareness
+- When content scrolling is implemented, offset child hit bounds by scroll_x/y.
+- Consider inheriting scroll offsets from ancestor scrollable containers.
+
+3) Optional pointer metadata
+- Extend event payloads to include `{x, y, button, mods}`.
+- Keep backward compatibility by allowing `{id, :click}` or `{id, {:click, meta}}`.
+
+4) Multiple input targets (optional)
+- Continue using a single target by default.
+- Add support for subtree-specific targets if needed.
+
+5) Hover and move events
+- Track `hovered_id` in Rust and emit enter/leave/move for the topmost hit.
+
+6) Multi-touch and gestures
+- Add pointer IDs to track multiple touches.
+- Leave gesture recognition in Elixir unless performance needs Rust.
+
+7) Registry invalidation
+- Rebuild registry on layout changes and any transforms that affect hit bounds.
+- Track a revision number to avoid stale hit regions.
+
+## Conclusions
+
+- The MVP is fast and deterministic: Rust handles hit testing; Elixir handles payloads.
+- Tradeoffs today: no clipping/scroll offset awareness, no metadata, no bubbling.
+- Primary risk: scrollable content will need scroll-offset hit testing to stay accurate.
