@@ -8,6 +8,10 @@ use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{layout_tree, Constraint, SkiaTextMeasurer};
 use crate::renderer::DrawCmd;
 
+const SCROLLBAR_THICKNESS: f32 = 6.0;
+const SCROLLBAR_MIN_LENGTH: f32 = 24.0;
+const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
+
 /// Render the tree to draw commands.
 /// Reads from pre-scaled attrs (layout pass must run first).
 pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
@@ -110,6 +114,8 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         commands.push(DrawCmd::PopClip);
     }
 
+    push_scrollbar_thumbs(commands, frame, attrs);
+
     // Render nearby positioned elements (above, below, on_left, on_right)
     if let Some(above_bytes) = &attrs.above {
         render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
@@ -198,6 +204,67 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
     };
 
     Some((x, y, width.max(0.0), height.max(0.0)))
+}
+
+fn push_scrollbar_thumbs(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) {
+    let thickness = SCROLLBAR_THICKNESS;
+    let radius = thickness / 2.0;
+
+    if attrs.scrollbar_y.unwrap_or(false) {
+        let viewport = frame.height;
+        let content = frame.content_height;
+        if content > viewport && viewport > 0.0 {
+            let thumb_len = (viewport * viewport / content)
+                .max(SCROLLBAR_MIN_LENGTH)
+                .min(viewport);
+            let scroll_offset = attrs.scroll_y.unwrap_or(0.0) as f32;
+            let scroll_range = (content - viewport).max(0.0);
+            let ratio = if scroll_range > 0.0 {
+                (scroll_offset / scroll_range).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let track_len = (viewport - thumb_len).max(0.0);
+            let thumb_y = frame.y + ratio * track_len;
+            let x = frame.x + frame.width - thickness;
+            commands.push(DrawCmd::RoundedRect(
+                x,
+                thumb_y,
+                thickness,
+                thumb_len,
+                radius,
+                SCROLLBAR_COLOR,
+            ));
+        }
+    }
+
+    if attrs.scrollbar_x.unwrap_or(false) {
+        let viewport = frame.width;
+        let content = frame.content_width;
+        if content > viewport && viewport > 0.0 {
+            let thumb_len = (viewport * viewport / content)
+                .max(SCROLLBAR_MIN_LENGTH)
+                .min(viewport);
+            let scroll_offset = attrs.scroll_x.unwrap_or(0.0) as f32;
+            let scroll_range = (content - viewport).max(0.0);
+            let ratio = if scroll_range > 0.0 {
+                (scroll_offset / scroll_range).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let track_len = (viewport - thumb_len).max(0.0);
+            let thumb_x = frame.x + ratio * track_len;
+            let y = frame.y + frame.height - thickness;
+            commands.push(DrawCmd::RoundedRect(
+                thumb_x,
+                y,
+                thumb_len,
+                thickness,
+                radius,
+                SCROLLBAR_COLOR,
+            ));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -581,6 +648,8 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         commands.push(DrawCmd::PopClip);
     }
 
+    push_scrollbar_thumbs(commands, frame, attrs);
+
     // Render nearby positioned elements
     if let Some(above_bytes) = &attrs.above {
         render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
@@ -740,6 +809,21 @@ mod tests {
         tree
     }
 
+    fn build_tree_with_frame(mut attrs: Attrs, frame: Frame) -> ElementTree {
+        if attrs.background.is_none() {
+            attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        }
+
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(frame);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        tree
+    }
+
     #[test]
     fn test_render_emits_translate_for_move() {
         let mut attrs = Attrs::default();
@@ -825,6 +909,60 @@ mod tests {
         let commands = render_tree(&tree);
 
         assert_eq!(commands, vec![DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)]);
+    }
+
+    #[test]
+    fn test_render_scrollbar_y_thumb() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(50.0);
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 150.0,
+        };
+        let tree = build_tree_with_frame(attrs, frame);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
+                DrawCmd::PopClip,
+                DrawCmd::RoundedRect(94.0, 13.0, 6.0, 24.0, 3.0, SCROLLBAR_COLOR),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_scrollbar_x_thumb() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(30.0);
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 40.0,
+            content_width: 160.0,
+            content_height: 40.0,
+        };
+        let tree = build_tree_with_frame(attrs, frame);
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF),
+                DrawCmd::PushClip(0.0, 0.0, 80.0, 40.0),
+                DrawCmd::PopClip,
+                DrawCmd::RoundedRect(15.0, 34.0, 40.0, 6.0, 3.0, SCROLLBAR_COLOR),
+            ]
+        );
     }
 
     #[test]

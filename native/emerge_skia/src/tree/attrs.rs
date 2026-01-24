@@ -118,6 +118,8 @@ pub struct Attrs {
     pub align_y: Option<AlignY>,
     pub scrollbar_y: Option<bool>,
     pub scrollbar_x: Option<bool>,
+    pub scroll_x: Option<f64>,
+    pub scroll_y: Option<f64>,
     pub clip: Option<bool>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
@@ -190,6 +192,8 @@ const TAG_SCALE: u8 = 34;
 const TAG_ALPHA: u8 = 35;
 const TAG_SPACING_XY: u8 = 36;
 const TAG_SPACE_EVENLY: u8 = 37;
+const TAG_SCROLL_X: u8 = 38;
+const TAG_SCROLL_Y: u8 = 39;
 
 // =============================================================================
 // Decoder
@@ -321,6 +325,8 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             attrs.spacing_y = Some(cursor.read_f64()?);
         }
         TAG_SPACE_EVENLY => attrs.space_evenly = Some(cursor.read_bool()?),
+        TAG_SCROLL_X => attrs.scroll_x = Some(cursor.read_f64()?),
+        TAG_SCROLL_Y => attrs.scroll_y = Some(cursor.read_f64()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -633,6 +639,18 @@ mod tests {
         let data = [0, 1, 37, 1];
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.space_evenly, Some(true));
+    }
+
+    #[test]
+    fn test_decode_scroll_offsets() {
+        // 2 attrs: scroll_x=12.0, scroll_y=34.0
+        let mut data = vec![0, 2, 38];
+        data.extend_from_slice(&12.0_f64.to_be_bytes());
+        data.push(39);
+        data.extend_from_slice(&34.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.scroll_x, Some(12.0));
+        assert_eq!(attrs.scroll_y, Some(34.0));
     }
 
     #[test]

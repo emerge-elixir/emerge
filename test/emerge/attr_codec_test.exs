@@ -50,7 +50,7 @@ defmodule Emerge.AttrCodecTest do
   end
 
   test "runtime attrs are stripped from encoding" do
-    attrs = %{width: :fill, scroll_x: 10, scroll_y: 5}
+    attrs = %{width: :fill, scroll_max: 10, scroll_bounds: {0, 0, 0, 0}}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
     assert decoded == %{width: :fill}
@@ -76,6 +76,13 @@ defmodule Emerge.AttrCodecTest do
 
   test "encode/decode spacing attributes" do
     attrs = %{spacing_xy: {12, 24}, space_evenly: true}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode scroll offsets" do
+    attrs = %{scroll_x: 18, scroll_y: 42}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
     assert normalize_attrs(decoded) == normalize_attrs(attrs)

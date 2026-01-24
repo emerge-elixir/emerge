@@ -42,7 +42,9 @@ defmodule Emerge.AttrCodec do
     scale: 34,
     alpha: 35,
     spacing_xy: 36,
-    space_evenly: 37
+    space_evenly: 37,
+    scroll_x: 38,
+    scroll_y: 39
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -117,6 +119,8 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:scale, value), do: encode_f64(value)
   defp encode_value(:alpha, value), do: encode_f64(value)
   defp encode_value(:space_evenly, value), do: encode_bool(value)
+  defp encode_value(:scroll_x, value), do: encode_f64(value)
+  defp encode_value(:scroll_y, value), do: encode_f64(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -155,6 +159,8 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:scale, rest), do: decode_f64(rest)
   defp decode_value(:alpha, rest), do: decode_f64(rest)
   defp decode_value(:space_evenly, rest), do: decode_bool(rest)
+  defp decode_value(:scroll_x, rest), do: decode_f64(rest)
+  defp decode_value(:scroll_y, rest), do: decode_f64(rest)
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>
