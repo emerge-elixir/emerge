@@ -46,6 +46,8 @@ pub enum DrawCmd {
     Text(f32, f32, String, f32, u32),
     Gradient(f32, f32, f32, f32, u32, u32, f32),
     PushClip(f32, f32, f32, f32),
+    PushClipRounded(f32, f32, f32, f32, f32),
+    PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
     PopClip,
     Translate(f32, f32),
     Rotate(f32),
@@ -377,6 +379,26 @@ impl Renderer {
                     canvas.save();
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
+                }
+
+                DrawCmd::PushClipRounded(x, y, w, h, radius) => {
+                    canvas.save();
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+                }
+
+                DrawCmd::PushClipRoundedCorners(x, y, w, h, tl, tr, br, bl) => {
+                    canvas.save();
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let radii = [
+                        Point::new(*tl, *tl),
+                        Point::new(*tr, *tr),
+                        Point::new(*br, *br),
+                        Point::new(*bl, *bl),
+                    ];
+                    let rrect = RRect::new_rect_radii(rect, &radii);
+                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
                 }
 
                 DrawCmd::PopClip => {

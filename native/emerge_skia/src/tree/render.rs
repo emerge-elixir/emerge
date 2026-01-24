@@ -114,7 +114,12 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         commands.push(DrawCmd::PopClip);
     }
 
-    push_scrollbar_thumbs(commands, frame, attrs);
+    if push_border_clip(commands, frame, attrs) {
+        push_scrollbar_thumbs(commands, frame, attrs);
+        commands.push(DrawCmd::PopClip);
+    } else {
+        push_scrollbar_thumbs(commands, frame, attrs);
+    }
 
     // Render nearby positioned elements (above, below, on_left, on_right)
     if let Some(above_bytes) = &attrs.above {
@@ -204,6 +209,35 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
     };
 
     Some((x, y, width.max(0.0), height.max(0.0)))
+}
+
+fn push_border_clip(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) -> bool {
+    match attrs.border_radius.as_ref() {
+        Some(BorderRadius::Uniform(value)) if *value > 0.0 => {
+            commands.push(DrawCmd::PushClipRounded(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *value as f32,
+            ));
+            true
+        }
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            commands.push(DrawCmd::PushClipRoundedCorners(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *tl as f32,
+                *tr as f32,
+                *br as f32,
+                *bl as f32,
+            ));
+            true
+        }
+        _ => false,
+    }
 }
 
 fn push_scrollbar_thumbs(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) {
@@ -648,7 +682,12 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         commands.push(DrawCmd::PopClip);
     }
 
-    push_scrollbar_thumbs(commands, frame, attrs);
+    if push_border_clip(commands, frame, attrs) {
+        push_scrollbar_thumbs(commands, frame, attrs);
+        commands.push(DrawCmd::PopClip);
+    } else {
+        push_scrollbar_thumbs(commands, frame, attrs);
+    }
 
     // Render nearby positioned elements
     if let Some(above_bytes) = &attrs.above {
@@ -916,6 +955,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(50.0);
+        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -930,10 +970,12 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::RoundedRect(0.0, 0.0, 100.0, 50.0, 8.0, 0x000000FF),
                 DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
                 DrawCmd::PopClip,
+                DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
                 DrawCmd::RoundedRect(94.0, 13.0, 6.0, 24.0, 3.0, SCROLLBAR_COLOR),
+                DrawCmd::PopClip,
             ]
         );
     }
@@ -943,6 +985,12 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_x = Some(true);
         attrs.scroll_x = Some(30.0);
+        attrs.border_radius = Some(BorderRadius::Corners {
+            tl: 4.0,
+            tr: 6.0,
+            br: 12.0,
+            bl: 8.0,
+        });
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -957,13 +1005,16 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                DrawCmd::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF),
+                DrawCmd::RoundedRectCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0, 0x000000FF),
                 DrawCmd::PushClip(0.0, 0.0, 80.0, 40.0),
                 DrawCmd::PopClip,
+                DrawCmd::PushClipRoundedCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0),
                 DrawCmd::RoundedRect(15.0, 34.0, 40.0, 6.0, 3.0, SCROLLBAR_COLOR),
+                DrawCmd::PopClip,
             ]
         );
     }
+
 
     #[test]
     fn test_clip_uses_padded_content_box() {
