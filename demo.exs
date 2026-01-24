@@ -336,6 +336,26 @@ defmodule Demo do
           ])
         ]),
 
+        # Spacing + spaceEvenly
+        column([width(fill()), spacing(10)], [
+          el(
+            [Font.size(14), Font.color({:color_rgb, {190, 190, 210}})],
+            text("Spacing + spaceEvenly")
+          ),
+          row([width(fill()), space_evenly()], [
+            chip("Space"),
+            chip("Between"),
+            chip("Items")
+          ]),
+          wrapped_row([width(fill()), spacing_xy(16, 18)], [
+            chip("Spacing"),
+            chip("X/Y"),
+            chip("Example"),
+            chip("Wrapped"),
+            chip("Row")
+          ])
+        ]),
+
         # Wrapped row demo
         wrapped_row([width(fill()), spacing(8)], [
           chip("Wrapped"),

@@ -40,7 +40,9 @@ defmodule Emerge.AttrCodec do
     move_y: 32,
     rotate: 33,
     scale: 34,
-    alpha: 35
+    alpha: 35,
+    spacing_xy: 36,
+    space_evenly: 37
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -82,6 +84,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:height, value), do: encode_length(value)
   defp encode_value(:padding, value), do: encode_padding(value)
   defp encode_value(:spacing, value), do: encode_f64(value)
+  defp encode_value(:spacing_xy, value), do: encode_spacing_xy(value)
   defp encode_value(:align_x, value), do: encode_align_x(value)
   defp encode_value(:align_y, value), do: encode_align_y(value)
   defp encode_value(:scrollbar_y, value), do: encode_bool(value)
@@ -113,11 +116,13 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:rotate, value), do: encode_f64(value)
   defp encode_value(:scale, value), do: encode_f64(value)
   defp encode_value(:alpha, value), do: encode_f64(value)
+  defp encode_value(:space_evenly, value), do: encode_bool(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
   defp decode_value(:padding, rest), do: decode_padding(rest)
   defp decode_value(:spacing, rest), do: decode_f64(rest)
+  defp decode_value(:spacing_xy, rest), do: decode_spacing_xy(rest)
   defp decode_value(:align_x, rest), do: decode_align_x(rest)
   defp decode_value(:align_y, rest), do: decode_align_y(rest)
   defp decode_value(:scrollbar_y, rest), do: decode_bool(rest)
@@ -149,6 +154,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:rotate, rest), do: decode_f64(rest)
   defp decode_value(:scale, rest), do: decode_f64(rest)
   defp decode_value(:alpha, rest), do: decode_f64(rest)
+  defp decode_value(:space_evenly, rest), do: decode_bool(rest)
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>
@@ -161,6 +167,16 @@ defmodule Emerge.AttrCodec do
   defp encode_f64(value) when is_float(value), do: <<value::float-64>>
 
   defp decode_f64(<<value::float-64, rest::binary>>), do: {value, rest}
+
+  defp encode_spacing_xy({x, y}) do
+    <<encode_f64(x)::binary, encode_f64(y)::binary>>
+  end
+
+  defp decode_spacing_xy(rest) do
+    {x, rest} = decode_f64(rest)
+    {y, rest} = decode_f64(rest)
+    {{x, y}, rest}
+  end
 
   defp encode_string(value) when is_binary(value) do
     <<byte_size(value)::unsigned-16, value::binary>>

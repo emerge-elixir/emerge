@@ -112,6 +112,8 @@ pub struct Attrs {
     pub height: Option<Length>,
     pub padding: Option<Padding>,
     pub spacing: Option<f64>,
+    pub spacing_x: Option<f64>,
+    pub spacing_y: Option<f64>,
     pub align_x: Option<AlignX>,
     pub align_y: Option<AlignY>,
     pub scrollbar_y: Option<bool>,
@@ -137,6 +139,7 @@ pub struct Attrs {
     pub rotate: Option<f64>,
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
+    pub space_evenly: Option<bool>,
     // Nearby elements stored as raw EMRG bytes (decoded lazily)
     pub above: Option<Vec<u8>>,
     pub below: Option<Vec<u8>>,
@@ -185,6 +188,8 @@ const TAG_MOVE_Y: u8 = 32;
 const TAG_ROTATE: u8 = 33;
 const TAG_SCALE: u8 = 34;
 const TAG_ALPHA: u8 = 35;
+const TAG_SPACING_XY: u8 = 36;
+const TAG_SPACE_EVENLY: u8 = 37;
 
 // =============================================================================
 // Decoder
@@ -311,6 +316,11 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ROTATE => attrs.rotate = Some(cursor.read_f64()?),
         TAG_SCALE => attrs.scale = Some(cursor.read_f64()?),
         TAG_ALPHA => attrs.alpha = Some(cursor.read_f64()?),
+        TAG_SPACING_XY => {
+            attrs.spacing_x = Some(cursor.read_f64()?);
+            attrs.spacing_y = Some(cursor.read_f64()?);
+        }
+        TAG_SPACE_EVENLY => attrs.space_evenly = Some(cursor.read_bool()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -604,6 +614,25 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.clip, Some(true));
         assert_eq!(attrs.scrollbar_y, Some(false));
+    }
+
+    #[test]
+    fn test_decode_spacing_xy() {
+        // 1 attr, tag=36 (spacing_xy), x=10.0, y=20.0
+        let mut data = vec![0, 1, 36];
+        data.extend_from_slice(&10.0_f64.to_be_bytes());
+        data.extend_from_slice(&20.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.spacing_x, Some(10.0));
+        assert_eq!(attrs.spacing_y, Some(20.0));
+    }
+
+    #[test]
+    fn test_decode_space_evenly() {
+        // 1 attr, tag=37 (space_evenly), value=true
+        let data = [0, 1, 37, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.space_evenly, Some(true));
     }
 
     #[test]

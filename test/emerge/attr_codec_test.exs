@@ -74,6 +74,13 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode spacing attributes" do
+    attrs = %{spacing_xy: {12, 24}, space_evenly: true}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()

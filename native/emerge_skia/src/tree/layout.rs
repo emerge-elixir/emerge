@@ -166,6 +166,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         height: attrs.height.as_ref().map(|l| scale_length(l, scale)),
         padding: attrs.padding.as_ref().map(|p| scale_padding(p, scale)),
         spacing: attrs.spacing.map(|s| s * scale_f64),
+        spacing_x: attrs.spacing_x.map(|s| s * scale_f64),
+        spacing_y: attrs.spacing_y.map(|s| s * scale_f64),
         align_x: attrs.align_x,
         align_y: attrs.align_y,
         scrollbar_y: attrs.scrollbar_y,
@@ -197,6 +199,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         rotate: attrs.rotate,
         scale: attrs.scale,
         alpha: attrs.alpha,
+        space_evenly: attrs.space_evenly,
     }
 }
 
@@ -275,7 +278,8 @@ fn measure_element<M: TextMeasurer>(
     // Read from pre-scaled attrs
     let attrs = &element.attrs;
     let padding = get_padding(attrs.padding.as_ref());
-    let spacing = attrs.spacing.unwrap_or(0.0) as f32;
+    let spacing_x = spacing_x(attrs);
+    let spacing_y = spacing_y(attrs);
 
     let intrinsic = match element.kind {
         ElementKind::Text => {
@@ -304,7 +308,7 @@ fn measure_element<M: TextMeasurer>(
         ElementKind::Row | ElementKind::WrappedRow => {
             // Row: sum widths + spacing + padding
             let total_spacing = if child_sizes.len() > 1 {
-                spacing * (child_sizes.len() - 1) as f32
+                spacing_x * (child_sizes.len() - 1) as f32
             } else {
                 0.0
             };
@@ -322,7 +326,7 @@ fn measure_element<M: TextMeasurer>(
         ElementKind::Column => {
             // Column: sum heights + spacing + padding
             let total_spacing = if child_sizes.len() > 1 {
-                spacing * (child_sizes.len() - 1) as f32
+                spacing_y * (child_sizes.len() - 1) as f32
             } else {
                 0.0
             };
@@ -388,14 +392,15 @@ fn resolve_element(
     };
 
     // Read from pre-scaled attrs
-    let attrs = &element.attrs;
+    let attrs = element.attrs.clone();
     let kind = element.kind;
     let child_ids = element.children.clone();
     let intrinsic = element.frame.map(|f| IntrinsicSize { width: f.width, height: f.height })
         .unwrap_or_default();
 
     let padding = get_padding(attrs.padding.as_ref());
-    let spacing = attrs.spacing.unwrap_or(0.0) as f32;
+    let spacing_x = spacing_x(&attrs);
+    let spacing_y = spacing_y(&attrs);
     let align_x = attrs.align_x.unwrap_or_default();
     let align_y = attrs.align_y.unwrap_or_default();
 
@@ -481,6 +486,7 @@ fn resolve_element(
         ElementKind::Row => {
             if !child_ids.is_empty() {
                 let allow_fill_width = available_width.is_definite();
+                let space_evenly = attrs.space_evenly.unwrap_or(false) && allow_fill_width;
                 let (actual_cw, actual_ch) = resolve_row_children(
                     tree,
                     &child_ids,
@@ -488,8 +494,9 @@ fn resolve_element(
                     content_y,
                     content_width,
                     content_height,
-                    spacing,
+                    spacing_x,
                     allow_fill_width,
+                    space_evenly,
                 );
                 // Update content dimensions when there are children
                 if let Some(element) = tree.get_mut(id)
@@ -503,7 +510,16 @@ fn resolve_element(
         }
 
         ElementKind::WrappedRow => {
-            let actual_content_height = resolve_wrapped_row_children(tree, &child_ids, content_x, content_y, content_width, content_height, spacing);
+            let actual_content_height = resolve_wrapped_row_children(
+                tree,
+                &child_ids,
+                content_x,
+                content_y,
+                content_width,
+                content_height,
+                spacing_x,
+                spacing_y,
+            );
             // Update frame height if content height exceeds initial estimate (due to wrapping)
             // For non-scrollable wrapped rows, expand the frame
             if actual_content_height > content_height && !is_scrollable {
@@ -524,6 +540,7 @@ fn resolve_element(
 
         ElementKind::Column => {
             let allow_fill_height = available_height.is_definite();
+            let space_evenly = attrs.space_evenly.unwrap_or(false) && allow_fill_height;
             let actual_content_height = resolve_column_children(
                 tree,
                 &child_ids,
@@ -531,8 +548,9 @@ fn resolve_element(
                 content_y,
                 content_width,
                 content_height,
-                spacing,
+                spacing_y,
                 allow_fill_height,
+                space_evenly,
             );
             // Update frame height if content height exceeds initial estimate (e.g., due to wrapped_row children)
             // For non-scrollable columns, expand the frame
@@ -677,6 +695,7 @@ fn resolve_row_children(
     content_height: f32,
     spacing: f32,
     allow_fill_width: bool,
+    space_evenly: bool,
 ) -> (f32, f32) {
     if child_ids.is_empty() {
         return (0.0, 0.0);
@@ -702,7 +721,8 @@ fn resolve_row_children(
     }
 
     // Calculate width per portion
-    let total_spacing = spacing * (child_ids.len().saturating_sub(1)) as f32;
+    let effective_spacing = if space_evenly { 0.0 } else { spacing };
+    let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_width - fixed_width - total_spacing).max(0.0);
     let width_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
 
@@ -749,10 +769,62 @@ fn resolve_row_children(
         }
     }
 
+    if space_evenly {
+        let mut max_child_height = 0.0_f32;
+        let mut current_x = content_x;
+        let gap_count = child_ids.len().saturating_sub(1) as f32;
+        let total_child_width: f32 = child_widths.values().sum();
+        let gap = if gap_count > 0.0 {
+            (content_width - total_child_width).max(0.0) / gap_count
+        } else {
+            0.0
+        };
+
+        for child_id in child_ids {
+            let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
+            let align_y = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_y.unwrap_or_default())
+                .unwrap_or_default();
+
+            let child_constraint = Constraint::new(child_width, content_height);
+            resolve_element(tree, child_id, child_constraint, current_x, content_y);
+
+            if let Some(child) = tree.get(child_id)
+                && let Some(frame) = &child.frame
+            {
+                max_child_height = max_child_height.max(frame.content_height);
+                apply_vertical_alignment(tree, child_id, content_y, content_height, align_y);
+            }
+
+            current_x += child_width + gap;
+        }
+
+        let actual_content_width = if gap_count > 0.0 {
+            total_child_width + gap * gap_count
+        } else {
+            total_child_width
+        };
+
+        return (actual_content_width, max_child_height);
+    }
+
     // Add spacing within each group
-    let left_spacing = if left_children.len() > 1 { spacing * (left_children.len() - 1) as f32 } else { 0.0 };
-    let center_spacing = if center_children.len() > 1 { spacing * (center_children.len() - 1) as f32 } else { 0.0 };
-    let right_spacing = if right_children.len() > 1 { spacing * (right_children.len() - 1) as f32 } else { 0.0 };
+    let left_spacing = if left_children.len() > 1 {
+        spacing * (left_children.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let center_spacing = if center_children.len() > 1 {
+        spacing * (center_children.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let right_spacing = if right_children.len() > 1 {
+        spacing * (right_children.len() - 1) as f32
+    } else {
+        0.0
+    };
 
     total_left_width += left_spacing;
     total_center_width += center_spacing;
@@ -827,7 +899,11 @@ fn resolve_row_children(
 
     // Calculate actual content width used by all children
     let total_child_width: f32 = child_widths.values().sum();
-    let total_spacing_used = if child_ids.len() > 1 { spacing * (child_ids.len() - 1) as f32 } else { 0.0 };
+    let total_spacing_used = if child_ids.len() > 1 {
+        spacing * (child_ids.len() - 1) as f32
+    } else {
+        0.0
+    };
     let actual_content_width = total_child_width + total_spacing_used;
 
     (actual_content_width, max_child_height)
@@ -869,6 +945,7 @@ fn resolve_column_children(
     content_height: f32,
     spacing: f32,
     allow_fill_height: bool,
+    space_evenly: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -894,7 +971,8 @@ fn resolve_column_children(
     }
 
     // Calculate height per portion
-    let total_spacing = spacing * (child_ids.len().saturating_sub(1)) as f32;
+    let effective_spacing = if space_evenly { 0.0 } else { spacing };
+    let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_height - fixed_height - total_spacing).max(0.0);
     let height_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
 
@@ -931,6 +1009,48 @@ fn resolve_column_children(
             }
             AlignY::Bottom => bottom_children.push(child_id.clone()),
         }
+    }
+
+    if space_evenly {
+        let mut current_y = content_y;
+        let gap_count = child_ids.len().saturating_sub(1) as f32;
+        let total_child_height: f32 = child_heights.values().sum();
+        let gap = if gap_count > 0.0 {
+            (content_height - total_child_height).max(0.0) / gap_count
+        } else {
+            0.0
+        };
+        let mut max_child_width = 0.0_f32;
+        let mut total_height = 0.0_f32;
+
+        for child_id in child_ids {
+            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_x.unwrap_or_default())
+                .unwrap_or_default();
+
+            let child_constraint = Constraint::new(content_width, child_height);
+            resolve_element(tree, child_id, child_constraint, content_x, current_y);
+
+            let (actual_height, frame_content_width) = tree
+                .get(child_id)
+                .and_then(|child| child.frame.as_ref())
+                .map(|frame| (frame.height, frame.content_width))
+                .unwrap_or((child_height, 0.0));
+
+            max_child_width = max_child_width.max(frame_content_width);
+            apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+            total_height += actual_height;
+            current_y += actual_height + gap;
+        }
+
+        if gap_count > 0.0 {
+            total_height += gap * gap_count;
+        }
+
+        return total_height.max(0.0);
     }
 
     // Add spacing within each group
@@ -1073,7 +1193,8 @@ fn resolve_wrapped_row_children(
     content_y: f32,
     content_width: f32,
     _content_height: f32,
-    spacing: f32,
+    spacing_x: f32,
+    spacing_y: f32,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -1093,7 +1214,7 @@ fn resolve_wrapped_row_children(
 
         // Check if we need to wrap
         let would_exceed = !current_line.is_empty()
-            && current_line_width + spacing + child_width > content_width;
+            && current_line_width + spacing_x + child_width > content_width;
 
         if would_exceed {
             lines.push(std::mem::take(&mut current_line));
@@ -1101,7 +1222,7 @@ fn resolve_wrapped_row_children(
         }
 
         if !current_line.is_empty() {
-            current_line_width += spacing;
+            current_line_width += spacing_x;
         }
         current_line_width += child_width;
         current_line.push((child_id.clone(), child_width, intrinsic_height));
@@ -1122,16 +1243,16 @@ fn resolve_wrapped_row_children(
         for (child_id, child_width, _) in &line {
             let child_constraint = Constraint::new(*child_width, line_height);
             resolve_element(tree, child_id, child_constraint, current_x, current_y);
-            current_x += child_width + spacing;
+            current_x += child_width + spacing_x;
         }
 
-        current_y += line_height + spacing;
+        current_y += line_height + spacing_y;
     }
 
     // Return total content height (subtract trailing spacing)
     let total_height = current_y - content_y;
     if num_lines > 0 {
-        total_height - spacing // Remove trailing spacing
+        total_height - spacing_y // Remove trailing spacing
     } else {
         0.0
     }
@@ -1166,6 +1287,20 @@ fn get_padding(padding: Option<&Padding>) -> ResolvedPadding {
         }
         None => ResolvedPadding { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
     }
+}
+
+fn spacing_x(attrs: &Attrs) -> f32 {
+    attrs
+        .spacing_x
+        .or(attrs.spacing)
+        .unwrap_or(0.0) as f32
+}
+
+fn spacing_y(attrs: &Attrs) -> f32 {
+    attrs
+        .spacing_y
+        .or(attrs.spacing)
+        .unwrap_or(0.0) as f32
 }
 
 fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
@@ -1370,6 +1505,281 @@ mod tests {
 
         assert_eq!(c1_frame.height, 12.0);
         assert_eq!(c2_frame.height, 14.0);
+    }
+
+    #[test]
+    fn test_layout_row_spacing_xy_uses_horizontal() {
+        let mut tree = ElementTree::new();
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.spacing_x = Some(12.0);
+        row_attrs.spacing_y = Some(30.0);
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(10.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(10.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(row_id);
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.x, 0.0);
+        assert_eq!(c2_frame.x, 22.0); // 10 + spacing_x 12
+    }
+
+    #[test]
+    fn test_layout_column_spacing_xy_uses_vertical() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.spacing_x = Some(5.0);
+        col_attrs.spacing_y = Some(14.0);
+
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(10.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(10.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+
+        let col_id = col.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        col.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(col_id);
+        tree.insert(col);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.y, 24.0); // 10 + spacing_y 14
+    }
+
+    #[test]
+    fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
+        let mut tree = ElementTree::new();
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(50.0));
+        row_attrs.spacing_x = Some(5.0);
+        row_attrs.spacing_y = Some(7.0);
+
+        let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(40.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(40.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(row_id);
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.y, 17.0); // 10 + spacing_y 7
+    }
+
+    #[test]
+    fn test_layout_row_space_evenly_distribution() {
+        let mut tree = ElementTree::new();
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(200.0));
+        row_attrs.height = Some(Length::Px(20.0));
+        row_attrs.space_evenly = Some(true);
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(20.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(20.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+        let child3 = make_element("c3", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(20.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+        let c3_id = child3.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+        tree.root = Some(row_id);
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+        tree.insert(child3);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 100.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+        let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.x, 0.0);
+        assert_eq!(c2_frame.x, 90.0);
+        assert_eq!(c3_frame.x, 180.0);
+    }
+
+    #[test]
+    fn test_layout_column_space_evenly_distribution() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(50.0));
+        col_attrs.height = Some(Length::Px(200.0));
+        col_attrs.space_evenly = Some(true);
+
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+        let child3 = make_element("c3", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(50.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+
+        let col_id = col.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+        let c3_id = child3.id.clone();
+
+        col.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+        tree.root = Some(col_id);
+        tree.insert(col);
+        tree.insert(child1);
+        tree.insert(child2);
+        tree.insert(child3);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 300.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+        let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.y, 90.0);
+        assert_eq!(c3_frame.y, 180.0);
+    }
+
+    #[test]
+    fn test_layout_row_space_evenly_ignored_for_content_parent() {
+        let mut tree = ElementTree::new();
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Content);
+        row_attrs.space_evenly = Some(true);
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(20.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(20.0));
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        row.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(row_id);
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 100.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.x, 0.0);
+        assert_eq!(c2_frame.x, 20.0);
     }
 
     #[test]

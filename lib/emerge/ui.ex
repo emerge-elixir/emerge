@@ -274,6 +274,12 @@ defmodule Emerge.UI do
   @doc "Space between children in row/column"
   def spacing(n) when is_number(n), do: {:spacing, n}
 
+  @doc "Spacing with horizontal and vertical values"
+  def spacing_xy(x, y) when is_number(x) and is_number(y), do: {:spacing_xy, {x, y}}
+
+  @doc "Distribute children with equal gaps between them"
+  def space_evenly, do: {:space_evenly, true}
+
   @doc "Enable vertical scrolling with an offset in pixels"
   def scroll_y(offset \\ 0) when is_number(offset), do: {:scroll_y, offset}
 
