@@ -211,6 +211,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Text alignment implemented (align left/center/right)
 - Length API expansion (shrink alias, minimum/maximum) with layout coverage
 - Tests added for transforms, clipping, length encoding, and content sizing
+- Added spacingXY + spaceEvenly (space-between) support
 
 ---
 
@@ -249,8 +250,8 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | paddingXY | ✅ | ✅ | N/A | |
 | paddingEach | ✅ | ✅ | N/A | |
 | spacing | ✅ | ✅ | N/A | |
-| spacingXY | ❌ | ❌ | N/A | Different H/V spacing |
-| spaceEvenly | ❌ | ❌ | N/A | Justify children |
+| spacingXY | ✅ | ✅ | N/A | Different H/V spacing |
+| spaceEvenly | ✅ | ✅ | N/A | Space-between gaps |
 
 #### Alignment
 | Feature | Elixir API | Layout | Render | Notes |

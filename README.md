@@ -15,6 +15,27 @@ tree = Emerge.UI.column([id: :root], [Emerge.UI.el(Emerge.UI.text("Hello"))])
 {patch_bin, state, _assigned} = Emerge.diff_state_update(state, tree)
 ```
 
+## Spacing & Distribution
+
+Use `spacing/1` for uniform gaps, `spacing_xy/2` to control horizontal vs vertical
+gaps, and `space_evenly/0` to distribute children with equal gaps between them
+(elm-ui "space-evenly" maps to `space-between`).
+
+```elixir
+row([width(fill()), space_evenly()], [
+  chip("One"),
+  chip("Two"),
+  chip("Three")
+])
+
+wrapped_row([width(fill()), spacing_xy(6, 14)], [
+  chip("Spacing"),
+  chip("X/Y"),
+  chip("Example"),
+  chip("Wrapped")
+])
+```
+
 ## Installation
 
 If [available in Hex](https://hex.pm/docs/publish), the package can be installed
