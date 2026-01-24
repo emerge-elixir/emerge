@@ -203,6 +203,15 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 
 `serialize.rs` encodes ElementTree back to EMRG v2 binary format.
 
+### Recent Updates (Post Phase 6)
+
+- Per-corner border radius support (attrs, renderer, and draw commands)
+- Transform attributes (move/rotate/scale) and alpha rendering
+- Padding-aware clipping for clip/scrollbar axes
+- Text alignment implemented (align left/center/right)
+- Length API expansion (shrink alias, minimum/maximum) with layout coverage
+- Tests added for transforms, clipping, length encoding, and content sizing
+
 ---
 
 ## Elm-UI Feature Implementation
@@ -277,7 +286,7 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | width | ✅ | N/A | ✅ | |
 | color | ✅ | N/A | ✅ | |
 | rounded (uniform) | ✅ | N/A | ✅ | |
-| roundEach | ✅ | N/A | ⚠️ | Decodes but uses max() |
+| roundEach | ✅ | N/A | ✅ | Per-corner rendering |
 | widthEach | ❌ | N/A | ❌ | Per-edge width |
 | dashed/dotted | ❌ | N/A | ❌ | |
 | shadow | ❌ | N/A | ❌ | |
@@ -295,19 +304,19 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | Font.underline | ❌ | N/A | ❌ | |
 | Font.letterSpacing | ❌ | ❌ | ❌ | |
 | Font.wordSpacing | ❌ | ❌ | ❌ | |
-| Font.alignLeft/Right/Center | ❌ | ❌ | ❌ | Text alignment |
+| Font.alignLeft/Right/Center | ✅ | ✅ | ✅ | Text alignment |
 
 #### Transforms
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| moveUp/Down/Left/Right | ❌ | ❌ | ❌ | |
-| rotate | ❌ | ❌ | ❌ | |
-| scale | ❌ | ❌ | ❌ | |
+| moveUp/Down/Left/Right | ✅ | ✅ | ✅ | move_x/move_y |
+| rotate | ✅ | ✅ | ✅ | |
+| scale | ✅ | ✅ | ✅ | |
 
 #### Effects
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| alpha/opacity | ❌ | N/A | ❌ | |
+| alpha/opacity | ✅ | N/A | ✅ | |
 
 #### Clipping & Scrolling
 | Feature | Elixir API | Layout | Render | Notes |
@@ -315,8 +324,8 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | clip | ✅ | N/A | ✅ | |
 | clipX | ✅ | N/A | ✅ | |
 | clipY | ✅ | N/A | ✅ | |
-| scrollbarY | ✅ | ❌ | ❌ | Attr exists, no render |
-| scrollbarX | ✅ | ❌ | ❌ | Attr exists, no render |
+| scrollbarY | ✅ | ❌ | ✅ | Clips to padded content |
+| scrollbarX | ✅ | ❌ | ✅ | Clips to padded content |
 
 #### Input Elements
 | Feature | Status | Notes |
@@ -455,6 +464,7 @@ pub struct Constraint {
 - `Constraint::new(w, h)` creates definite constraints (most common)
 - `Constraint::with_space()` allows content-based constraints
 - MinContent/MaxContent resolve to intrinsic sizes during layout
+- MaxContent is now used to gate fill distribution when content-sized
 
 #### 5. Content Size Tracking ✓
 
