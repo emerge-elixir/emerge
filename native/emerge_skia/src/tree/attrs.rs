@@ -80,11 +80,14 @@ pub enum Color {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Background {
     Color(Color),
-    Gradient {
-        from: Color,
-        to: Color,
-        angle: f64,
-    },
+    Gradient { from: Color, to: Color, angle: f64 },
+}
+
+/// Border radius specification.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BorderRadius {
+    Uniform(f64),
+    Corners { tl: f64, tr: f64, br: f64, bl: f64 },
 }
 
 /// Font specification.
@@ -117,7 +120,7 @@ pub struct Attrs {
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
-    pub border_radius: Option<f64>,
+    pub border_radius: Option<BorderRadius>,
     pub border_width: Option<f64>,
     pub border_color: Option<Color>,
     pub font_size: Option<f64>,
@@ -219,8 +222,7 @@ impl<'a> AttrCursor<'a> {
     fn read_f64(&mut self) -> Result<f64, DecodeError> {
         let bytes = self.read_bytes(8)?;
         Ok(f64::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 
@@ -340,7 +342,12 @@ fn decode_padding(cursor: &mut AttrCursor) -> Result<Padding, DecodeError> {
             let right = cursor.read_f64()?;
             let bottom = cursor.read_f64()?;
             let left = cursor.read_f64()?;
-            Ok(Padding::Sides { top, right, bottom, left })
+            Ok(Padding::Sides {
+                top,
+                right,
+                bottom,
+                left,
+            })
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown padding variant: {}",
@@ -349,16 +356,16 @@ fn decode_padding(cursor: &mut AttrCursor) -> Result<Padding, DecodeError> {
     }
 }
 
-fn decode_radius(cursor: &mut AttrCursor) -> Result<f64, DecodeError> {
+fn decode_radius(cursor: &mut AttrCursor) -> Result<BorderRadius, DecodeError> {
     let variant = cursor.read_u8()?;
     match variant {
-        0 => Ok(cursor.read_f64()?),
+        0 => Ok(BorderRadius::Uniform(cursor.read_f64()?)),
         1 => {
             let tl = cursor.read_f64()?;
             let tr = cursor.read_f64()?;
             let br = cursor.read_f64()?;
             let bl = cursor.read_f64()?;
-            Ok(tl.max(tr).max(br).max(bl))
+            Ok(BorderRadius::Corners { tl, tr, br, bl })
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown border_radius variant: {}",
@@ -508,6 +515,26 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_border_radius_corners() {
+        // 1 attr, tag=13 (border_radius), variant=1 (corners)
+        let mut data = vec![0, 1, 13, 1];
+        data.extend_from_slice(&4.0_f64.to_be_bytes());
+        data.extend_from_slice(&6.0_f64.to_be_bytes());
+        data.extend_from_slice(&8.0_f64.to_be_bytes());
+        data.extend_from_slice(&10.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.border_radius,
+            Some(BorderRadius::Corners {
+                tl: 4.0,
+                tr: 6.0,
+                br: 8.0,
+                bl: 10.0,
+            })
+        );
+    }
+
+    #[test]
     fn test_decode_align() {
         // 2 attrs: align_x=center, align_y=bottom
         let data = [0, 2, 5, 1, 6, 2];
@@ -521,7 +548,14 @@ mod tests {
         // 1 attr, tag=17 (font_color), variant=0 (rgb), r=255, g=128, b=64
         let data = [0, 1, 17, 0, 255, 128, 64];
         let attrs = decode_attrs(&data).unwrap();
-        assert_eq!(attrs.font_color, Some(Color::Rgb { r: 255, g: 128, b: 64 }));
+        assert_eq!(
+            attrs.font_color,
+            Some(Color::Rgb {
+                r: 255,
+                g: 128,
+                b: 64
+            })
+        );
     }
 
     #[test]
@@ -529,7 +563,15 @@ mod tests {
         // 1 attr, tag=15 (border_color), variant=1 (rgba), r=255, g=128, b=64, a=200
         let data = [0, 1, 15, 1, 255, 128, 64, 200];
         let attrs = decode_attrs(&data).unwrap();
-        assert_eq!(attrs.border_color, Some(Color::Rgba { r: 255, g: 128, b: 64, a: 200 }));
+        assert_eq!(
+            attrs.border_color,
+            Some(Color::Rgba {
+                r: 255,
+                g: 128,
+                b: 64,
+                a: 200
+            })
+        );
     }
 
     #[test]

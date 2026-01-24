@@ -10,8 +10,8 @@ use std::sync::OnceLock;
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
-    Color, ColorType, Font, FontMgr, FontStyle, Paint, PaintStyle, RRect, Rect, Shader, Surface,
-    TileMode, Typeface, Vector,
+    Color, ColorType, Font, FontMgr, FontStyle, Paint, PaintStyle, Point, RRect, Rect, Shader,
+    Surface, TileMode, Typeface, Vector,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
 
@@ -40,7 +40,9 @@ pub enum DrawCmd {
     Clear(u32),
     Rect(f32, f32, f32, f32, u32),
     RoundedRect(f32, f32, f32, f32, f32, u32),
+    RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Border(f32, f32, f32, f32, f32, f32, u32),
+    BorderCorners(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Text(f32, f32, String, f32, u32),
     Gradient(f32, f32, f32, f32, u32, u32, f32),
     PushClip(f32, f32, f32, f32),
@@ -284,9 +286,41 @@ impl Renderer {
                     canvas.draw_rrect(rrect, &paint);
                 }
 
+                DrawCmd::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, fill) => {
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let radii = [
+                        Point::new(*tl, *tl),
+                        Point::new(*tr, *tr),
+                        Point::new(*br, *br),
+                        Point::new(*bl, *bl),
+                    ];
+                    let rrect = RRect::new_rect_radii(rect, &radii);
+                    let mut paint = Paint::default();
+                    paint.set_color(color_from_u32(*fill));
+                    paint.set_anti_alias(true);
+                    canvas.draw_rrect(rrect, &paint);
+                }
+
                 DrawCmd::Border(x, y, w, h, radius, width, color) => {
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                    let mut paint = Paint::default();
+                    paint.set_color(color_from_u32(*color));
+                    paint.set_style(PaintStyle::Stroke);
+                    paint.set_stroke_width(*width);
+                    paint.set_anti_alias(true);
+                    canvas.draw_rrect(rrect, &paint);
+                }
+
+                DrawCmd::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color) => {
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let radii = [
+                        Point::new(*tl, *tl),
+                        Point::new(*tr, *tr),
+                        Point::new(*br, *br),
+                        Point::new(*bl, *bl),
+                    ];
+                    let rrect = RRect::new_rect_radii(rect, &radii);
                     let mut paint = Paint::default();
                     paint.set_color(color_from_u32(*color));
                     paint.set_style(PaintStyle::Stroke);

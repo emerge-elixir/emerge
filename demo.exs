@@ -194,6 +194,21 @@ defmodule Demo do
           feature_card("Columns", "Vertical layouts", {:color_rgb, {60, 90, 60}}),
           feature_card("Nesting", "Compose layouts", {:color_rgb, {90, 60, 90}})
         ]),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color({:color_rgb, {60, 50, 80}}),
+            Border.rounded_each(18, 6, 22, 10)
+          ],
+          column([spacing(6)], [
+            el([Font.size(16), Font.color(:white)], text("Per-corner radius")),
+            el(
+              [Font.size(12), Font.color({:color_rgb, {200, 200, 220}})],
+              text("Each corner can be different")
+            )
+          ])
+        ),
 
         # Wrapped row demo
         wrapped_row([width(fill()), spacing(8)], [

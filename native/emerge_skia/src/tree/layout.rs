@@ -174,7 +174,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),
-        border_radius: attrs.border_radius.map(|r| r * scale_f64),
+        border_radius: attrs.border_radius.as_ref().map(|r| scale_border_radius(r, scale_f64)),
         border_width: attrs.border_width.map(|w| w * scale_f64),
         border_color: attrs.border_color.clone(),
         font_size: attrs.font_size.map(|s| s * scale_f64),
@@ -192,6 +192,20 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         behind: attrs.behind.clone(),
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
+    }
+}
+
+fn scale_border_radius(radius: &super::attrs::BorderRadius, scale: f64) -> super::attrs::BorderRadius {
+    use super::attrs::BorderRadius;
+
+    match radius {
+        BorderRadius::Uniform(value) => BorderRadius::Uniform(*value * scale),
+        BorderRadius::Corners { tl, tr, br, bl } => BorderRadius::Corners {
+            tl: *tl * scale,
+            tr: *tr * scale,
+            br: *br * scale,
+            bl: *bl * scale,
+        },
     }
 }
 

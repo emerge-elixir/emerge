@@ -2,7 +2,7 @@
 //!
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
-use super::attrs::{Background, Color, Padding, TextAlign};
+use super::attrs::{Background, BorderRadius, Color, Padding, TextAlign};
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{layout_tree, Constraint, SkiaTextMeasurer};
@@ -32,7 +32,7 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
 
     // Read from pre-scaled attrs
     let attrs = &element.attrs;
-    let radius = attrs.border_radius.unwrap_or(0.0) as f32;
+    let radius = attrs.border_radius.as_ref();
 
     // Render "behind" elements first (underlay)
     if let Some(behind_bytes) = &attrs.behind {
@@ -43,24 +43,7 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         match background {
             Background::Color(color) => {
                 let fill = color_to_u32(color);
-                if radius > 0.0 {
-                    commands.push(DrawCmd::RoundedRect(
-                        frame.x,
-                        frame.y,
-                        frame.width,
-                        frame.height,
-                        radius,
-                        fill,
-                    ));
-                } else {
-                    commands.push(DrawCmd::Rect(
-                        frame.x,
-                        frame.y,
-                        frame.width,
-                        frame.height,
-                        fill,
-                    ));
-                }
+                push_background_rect(commands, frame, radius, fill);
             }
             Background::Gradient { from, to, angle } => {
                 commands.push(DrawCmd::Gradient(
@@ -79,15 +62,13 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
     if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color)
         && border_width > 0.0
     {
-        commands.push(DrawCmd::Border(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
+        push_border_rect(
+            commands,
+            frame,
             radius,
             border_width as f32,
             color_to_u32(border_color),
-        ));
+        );
     }
 
     let clip = attrs.clip.unwrap_or(false) || attrs.clip_x.unwrap_or(false) || attrs.clip_y.unwrap_or(false);
@@ -173,6 +154,95 @@ fn named_color(name: &str) -> u32 {
         "navy" => 0x000080FF,
         "teal" => 0x008080FF,
         _ => 0xFFFFFFFF,
+    }
+}
+
+fn push_background_rect(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    radius: Option<&BorderRadius>,
+    fill: u32,
+) {
+    match radius {
+        Some(BorderRadius::Uniform(value)) if *value > 0.0 => {
+            commands.push(DrawCmd::RoundedRect(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *value as f32,
+                fill,
+            ));
+        }
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            commands.push(DrawCmd::RoundedRectCorners(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *tl as f32,
+                *tr as f32,
+                *br as f32,
+                *bl as f32,
+                fill,
+            ));
+        }
+        _ => {
+            commands.push(DrawCmd::Rect(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                fill,
+            ));
+        }
+    }
+}
+
+fn push_border_rect(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    radius: Option<&BorderRadius>,
+    border_width: f32,
+    color: u32,
+) {
+    match radius {
+        Some(BorderRadius::Uniform(value)) if *value > 0.0 => {
+            commands.push(DrawCmd::Border(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *value as f32,
+                border_width,
+                color,
+            ));
+        }
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            commands.push(DrawCmd::BorderCorners(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                *tl as f32,
+                *tr as f32,
+                *br as f32,
+                *bl as f32,
+                border_width,
+                color,
+            ));
+        }
+        _ => {
+            commands.push(DrawCmd::Border(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                0.0,
+                border_width,
+                color,
+            ));
+        }
     }
 }
 
@@ -318,7 +388,7 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
     };
 
     let attrs = &element.attrs;
-    let radius = attrs.border_radius.unwrap_or(0.0) as f32;
+    let radius = attrs.border_radius.as_ref();
 
     // Render behind first
     if let Some(behind_bytes) = &attrs.behind {
@@ -329,24 +399,7 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         match background {
             Background::Color(color) => {
                 let fill = color_to_u32(color);
-                if radius > 0.0 {
-                    commands.push(DrawCmd::RoundedRect(
-                        frame.x,
-                        frame.y,
-                        frame.width,
-                        frame.height,
-                        radius,
-                        fill,
-                    ));
-                } else {
-                    commands.push(DrawCmd::Rect(
-                        frame.x,
-                        frame.y,
-                        frame.width,
-                        frame.height,
-                        fill,
-                    ));
-                }
+                push_background_rect(commands, frame, radius, fill);
             }
             Background::Gradient { from, to, angle } => {
                 commands.push(DrawCmd::Gradient(
@@ -365,15 +418,13 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
     if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color)
         && border_width > 0.0
     {
-        commands.push(DrawCmd::Border(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
+        push_border_rect(
+            commands,
+            frame,
             radius,
             border_width as f32,
             color_to_u32(border_color),
-        ));
+        );
     }
 
     let clip = attrs.clip.unwrap_or(false)
