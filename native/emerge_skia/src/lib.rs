@@ -22,7 +22,7 @@ mod tree;
 
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use input::{InputHandler, build_click_registry};
+use input::{InputHandler, build_event_registry};
 use renderer::{DrawCmd, RenderState, get_default_typeface};
 use tree::element::ElementTree;
 
@@ -49,7 +49,7 @@ struct RendererResource {
     running_flag: Arc<AtomicBool>,
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
     input_handler: Arc<Mutex<InputHandler>>,
-    tree: Mutex<ElementTree>,
+    tree: Arc<Mutex<ElementTree>>,
 }
 
 /// Resource for holding an element tree (for layout/rendering).
@@ -85,6 +85,10 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
     let render_state = Arc::new(Mutex::new(RenderState::default()));
     let running_flag = Arc::new(AtomicBool::new(true));
     let input_handler = Arc::new(Mutex::new(InputHandler::new()));
+    let tree = Arc::new(Mutex::new(ElementTree::new()));
+    if let Ok(mut handler) = input_handler.lock() {
+        handler.set_render_context(Arc::clone(&tree), Arc::clone(&render_state));
+    }
 
     let render_state_clone = Arc::clone(&render_state);
     let running_flag_clone = Arc::clone(&running_flag);
@@ -111,7 +115,7 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
         running_flag,
         event_proxy: Mutex::new(Some(event_proxy)),
         input_handler,
-        tree: Mutex::new(ElementTree::new()),
+        tree,
     };
 
     Ok(ResourceArc::new(resource))
@@ -151,7 +155,8 @@ fn renderer_upload(
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
         if let Ok(mut handler) = renderer.input_handler.lock() {
-            handler.set_event_registry(build_click_registry(&tree));
+            handler.apply_scroll_state(&mut tree);
+            handler.set_event_registry(build_event_registry(&tree));
         }
         let commands = tree::render::render_tree(&tree);
 
@@ -180,7 +185,8 @@ fn renderer_patch(
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
         if let Ok(mut handler) = renderer.input_handler.lock() {
-            handler.set_event_registry(build_click_registry(&tree));
+            handler.apply_scroll_state(&mut tree);
+            handler.set_event_registry(build_event_registry(&tree));
         }
         let commands = tree::render::render_tree(&tree);
 

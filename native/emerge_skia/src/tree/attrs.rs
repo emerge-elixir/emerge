@@ -120,6 +120,8 @@ pub struct Attrs {
     pub scrollbar_x: Option<bool>,
     pub scroll_x: Option<f64>,
     pub scroll_y: Option<f64>,
+    pub scroll_x_max: Option<f64>,
+    pub scroll_y_max: Option<f64>,
     pub on_click: Option<bool>,
     pub clip: Option<bool>,
     pub clip_y: Option<bool>,

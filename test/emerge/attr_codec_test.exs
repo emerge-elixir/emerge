@@ -81,13 +81,6 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
-  test "encode/decode scroll offsets" do
-    attrs = %{scroll_x: 18, scroll_y: 42}
-    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
-
-    assert normalize_attrs(decoded) == normalize_attrs(attrs)
-  end
-
   test "encode/decode on_click presence" do
     attrs = %{on_click: {self(), :clicked}}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()

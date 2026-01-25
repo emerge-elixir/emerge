@@ -10,6 +10,8 @@ defmodule Emerge.Tree do
         }
 
   @runtime_attrs [
+    :scroll_x,
+    :scroll_y,
     :scroll_max,
     :scroll_max_x,
     :scroll_bounds,
@@ -26,6 +28,8 @@ defmodule Emerge.Tree do
   ]
 
   @volatile_attrs [
+    :scroll_x,
+    :scroll_y,
     :scroll_max,
     :scroll_max_x,
     :scroll_bounds,

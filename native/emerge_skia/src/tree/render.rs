@@ -106,8 +106,22 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         commands.push(DrawCmd::Text(text_x, baseline_y, content.to_string(), font_size, color));
     }
 
+    let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+    let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
+    let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
+    let has_children = !element.children.is_empty();
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Save);
+        commands.push(DrawCmd::Translate(-scroll_x, -scroll_y));
+    }
+
     for child_id in &element.children {
         render_element(tree, child_id, commands);
+    }
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Restore);
     }
 
     if clip_rect.is_some() {
@@ -674,8 +688,22 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         ));
     }
 
+    let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+    let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
+    let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
+    let has_children = !element.children.is_empty();
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Save);
+        commands.push(DrawCmd::Translate(-scroll_x, -scroll_y));
+    }
+
     for child_id in &element.children {
         render_tree_recursive(tree, child_id, commands);
+    }
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Restore);
     }
 
     if clip_rect.is_some() {

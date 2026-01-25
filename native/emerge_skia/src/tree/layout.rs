@@ -174,6 +174,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         scrollbar_x: attrs.scrollbar_x,
         scroll_x: attrs.scroll_x.map(|v| v * scale_f64),
         scroll_y: attrs.scroll_y.map(|v| v * scale_f64),
+        scroll_x_max: attrs.scroll_x_max.map(|v| v * scale_f64),
+        scroll_y_max: attrs.scroll_y_max.map(|v| v * scale_f64),
         on_click: attrs.on_click,
         clip: attrs.clip,
         clip_y: attrs.clip_y,
@@ -407,12 +409,8 @@ fn resolve_element(
     let align_x = attrs.align_x.unwrap_or_default();
     let align_y = attrs.align_y.unwrap_or_default();
 
-    // Check if this element is scrollable (clips content)
-    let is_scrollable = attrs.clip.unwrap_or(false)
-        || attrs.clip_x.unwrap_or(false)
-        || attrs.clip_y.unwrap_or(false)
-        || attrs.scrollbar_x.unwrap_or(false)
-        || attrs.scrollbar_y.unwrap_or(false);
+    // Check if this element is scrollable (scrollbars only)
+    let is_scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
 
     // Resolve final dimensions
     // Use intrinsic size as default for content-based constraints
@@ -570,6 +568,23 @@ fn resolve_element(
             {
                 // Always track actual content height
                 frame.content_height = actual_content_height + padding.top + padding.bottom;
+            }
+        }
+    }
+
+    if is_scrollable {
+        if let Some(element) = tree.get_mut(id)
+            && let Some(ref mut frame) = element.frame
+        {
+            let max_x = (frame.content_width - frame.width).max(0.0);
+            let max_y = (frame.content_height - frame.height).max(0.0);
+            element.attrs.scroll_x_max = Some(max_x as f64);
+            element.attrs.scroll_y_max = Some(max_y as f64);
+            if element.attrs.scroll_x.is_none() {
+                element.attrs.scroll_x = Some(0.0);
+            }
+            if element.attrs.scroll_y.is_none() {
+                element.attrs.scroll_y = Some(0.0);
             }
         }
     }
@@ -2623,7 +2638,7 @@ mod tests {
         col_attrs.width = Some(Length::Px(100.0));
         col_attrs.height = Some(Length::Px(150.0));
         col_attrs.spacing = Some(10.0);
-        col_attrs.clip_y = Some(true); // Makes it scrollable
+        col_attrs.scrollbar_y = Some(true); // Makes it scrollable
 
         let mut col = make_element("col", ElementKind::Column, col_attrs);
 
@@ -2656,6 +2671,10 @@ mod tests {
 
         // Content height reflects actual content: 5 * 50 + 4 * 10 = 290px
         assert_eq!(col_frame.content_height, 290.0);
+
+        let col_attrs = &tree.get(&col_id).unwrap().attrs;
+        assert_eq!(col_attrs.scroll_y, Some(0.0));
+        assert_eq!(col_attrs.scroll_y_max, Some(140.0));
     }
 
     #[test]

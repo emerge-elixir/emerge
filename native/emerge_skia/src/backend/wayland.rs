@@ -93,6 +93,8 @@ struct App {
 }
 
 impl App {
+    const SCROLL_LINE_PIXELS: f32 = 30.0;
+
     fn handle_resize(&mut self, physical_size: winit::dpi::PhysicalSize<u32>) {
         if !self.running {
             return;
@@ -137,7 +139,12 @@ impl App {
 
     fn send_input_event(&self, event: InputEvent) {
         if let Ok(mut handler) = self.input_handler.lock() {
-            handler.send_event(event);
+            let needs_redraw = handler.send_event(event);
+            if needs_redraw {
+                if let Some(env) = self.env.as_ref() {
+                    env.window.request_redraw();
+                }
+            }
         }
     }
 
@@ -256,7 +263,9 @@ impl ApplicationHandler<UserEvent> for App {
             // Mouse scroll wheel
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (x * Self::SCROLL_LINE_PIXELS, y * Self::SCROLL_LINE_PIXELS)
+                    }
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
                 let (x, y) = if let Ok(queue) = self.input_handler.lock() {
