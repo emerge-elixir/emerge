@@ -530,23 +530,23 @@ impl EventProcessor {
 
         if dx != 0.0 {
             let flag = if dx > 0.0 {
-                EVENT_SCROLL_X_POS
-            } else {
                 EVENT_SCROLL_X_NEG
+            } else {
+                EVENT_SCROLL_X_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, -dx, 0.0);
+                changed |= apply_scroll_delta(tree, &id, dx, 0.0);
             }
         }
 
         if dy != 0.0 {
             let flag = if dy > 0.0 {
-                EVENT_SCROLL_Y_POS
-            } else {
                 EVENT_SCROLL_Y_NEG
+            } else {
+                EVENT_SCROLL_Y_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, 0.0, -dy);
+                changed |= apply_scroll_delta(tree, &id, 0.0, dy);
             }
         }
 
