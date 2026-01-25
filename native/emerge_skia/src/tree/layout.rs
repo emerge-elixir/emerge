@@ -589,19 +589,56 @@ fn resolve_element(
         }
     }
 
-    if is_scrollable {
-        if let Some(element) = tree.get_mut(id)
-            && let Some(ref mut frame) = element.frame
-        {
+    if let Some(element) = tree.get_mut(id) {
+        let scroll_x_enabled = element.attrs.scrollbar_x.unwrap_or(false);
+        let scroll_y_enabled = element.attrs.scrollbar_y.unwrap_or(false);
+
+        if !scroll_x_enabled {
+            element.attrs.scroll_x = None;
+            element.attrs.scroll_x_max = None;
+        }
+        if !scroll_y_enabled {
+            element.attrs.scroll_y = None;
+            element.attrs.scroll_y_max = None;
+        }
+
+        if (scroll_x_enabled || scroll_y_enabled) && element.frame.is_some() {
+            let frame = element.frame.unwrap();
             let max_x = (frame.content_width - frame.width).max(0.0);
             let max_y = (frame.content_height - frame.height).max(0.0);
-            element.attrs.scroll_x_max = Some(max_x as f64);
-            element.attrs.scroll_y_max = Some(max_y as f64);
-            if element.attrs.scroll_x.is_none() {
-                element.attrs.scroll_x = Some(0.0);
+            let prev_max_x = element.attrs.scroll_x_max.map(|v| v as f32).unwrap_or(max_x);
+            let prev_max_y = element.attrs.scroll_y_max.map(|v| v as f32).unwrap_or(max_y);
+            let prev_scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
+            let prev_scroll_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+
+            if scroll_x_enabled {
+                let delta_x = max_x - prev_max_x;
+                let at_end_x = prev_max_x > 0.0 && (prev_scroll_x - prev_max_x).abs() < 0.5;
+                let next_scroll_x = if max_x < prev_max_x {
+                    prev_scroll_x.min(max_x)
+                } else if at_end_x {
+                    prev_scroll_x + delta_x
+                } else {
+                    prev_scroll_x
+                }
+                .clamp(0.0, max_x);
+                element.attrs.scroll_x = Some(next_scroll_x as f64);
+                element.attrs.scroll_x_max = Some(max_x as f64);
             }
-            if element.attrs.scroll_y.is_none() {
-                element.attrs.scroll_y = Some(0.0);
+
+            if scroll_y_enabled {
+                let delta_y = max_y - prev_max_y;
+                let at_end_y = prev_max_y > 0.0 && (prev_scroll_y - prev_max_y).abs() < 0.5;
+                let next_scroll_y = if max_y < prev_max_y {
+                    prev_scroll_y.min(max_y)
+                } else if at_end_y {
+                    prev_scroll_y + delta_y
+                } else {
+                    prev_scroll_y
+                }
+                .clamp(0.0, max_y);
+                element.attrs.scroll_y = Some(next_scroll_y as f64);
+                element.attrs.scroll_y_max = Some(max_y as f64);
             }
         }
     }
@@ -2055,20 +2092,19 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(40.0);
+        attrs.height = Some(Length::Px(100.0));
 
         let mut root = make_element("root", ElementKind::Column, attrs);
         let root_id = root.id.clone();
-        root.frame = Some(Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 100.0,
-            content_width: 100.0,
-            content_height: 200.0,
-        });
+        let mut child_attrs = Attrs::default();
+        child_attrs.height = Some(Length::Px(200.0));
+        let child = make_element("child", ElementKind::El, child_attrs);
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
 
         tree.root = Some(root_id.clone());
         tree.insert(root);
+        tree.insert(child);
 
         layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
         let first = tree.get(&root_id).unwrap().attrs.scroll_y;
@@ -2077,6 +2113,100 @@ mod tests {
         layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
         let second = tree.get(&root_id).unwrap().attrs.scroll_y;
         assert_eq!(second, Some(40.0));
+    }
+
+    #[test]
+    fn test_layout_scroll_offset_clamps_when_max_shrinks() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.scrollbar_x = Some(true);
+        root_attrs.scroll_x = Some(60.0);
+        root_attrs.width = Some(Length::Fill);
+        root_attrs.height = Some(Length::Px(100.0));
+
+        let mut root = make_element("root", ElementKind::Row, root_attrs);
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.width = Some(Length::Px(200.0));
+        child_attrs.height = Some(Length::Px(50.0));
+        let child = make_element("child", ElementKind::El, child_attrs);
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        let first = tree.get(&root_id).unwrap();
+        assert_eq!(first.attrs.scroll_x_max, Some(100.0));
+        assert_eq!(first.attrs.scroll_x, Some(60.0));
+
+        layout_tree(&mut tree, Constraint::new(250.0, 100.0), 1.0, &MockTextMeasurer);
+        let second = tree.get(&root_id).unwrap();
+        assert_eq!(second.attrs.scroll_x_max, Some(0.0));
+        assert_eq!(second.attrs.scroll_x, Some(0.0));
+    }
+
+    #[test]
+    fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.scrollbar_x = Some(true);
+        root_attrs.scroll_x = Some(0.0);
+        root_attrs.width = Some(Length::Fill);
+        root_attrs.height = Some(Length::Px(100.0));
+
+        let mut root = make_element("root", ElementKind::Row, root_attrs);
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.width = Some(Length::Px(200.0));
+        child_attrs.height = Some(Length::Px(50.0));
+        let child = make_element("child", ElementKind::El, child_attrs);
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(&mut tree, Constraint::new(250.0, 100.0), 1.0, &MockTextMeasurer);
+        let first = tree.get(&root_id).unwrap();
+        assert_eq!(first.attrs.scroll_x_max, Some(0.0));
+        assert_eq!(first.attrs.scroll_x, Some(0.0));
+
+        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        let second = tree.get(&root_id).unwrap();
+        assert_eq!(second.attrs.scroll_x_max, Some(100.0));
+        assert_eq!(second.attrs.scroll_x, Some(0.0));
+    }
+
+    #[test]
+    fn test_layout_clears_scroll_when_scrollbar_disabled() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(false);
+        attrs.scroll_x = Some(30.0);
+        attrs.scroll_x_max = Some(80.0);
+        attrs.width = Some(Length::Px(100.0));
+        attrs.height = Some(Length::Px(100.0));
+
+        let root = make_element("root", ElementKind::El, attrs);
+        let root_id = root.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+
+        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        let root = tree.get(&root_id).unwrap();
+        assert_eq!(root.attrs.scroll_x, None);
+        assert_eq!(root.attrs.scroll_x_max, None);
     }
 
     #[test]
