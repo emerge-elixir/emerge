@@ -40,7 +40,7 @@ defmodule Emerge.Reconcile do
     local_identity = local_identity(key, index)
     id = make_id(parent_id, element.type, local_identity)
 
-    if old.kind != element.type do
+    if old.kind != element.type or old.id != id do
       {new_vnode, assigned, seen} = build_vnode(element, parent_id, index, seen)
       patches = [{:remove, old.id}, {:insert_subtree, parent_id, index, assigned}]
       {new_vnode, patches, assigned, seen}
@@ -57,7 +57,14 @@ defmodule Emerge.Reconcile do
         |> maybe_set_children(old, child_vnodes)
         |> Kernel.++(child_patches)
 
-      vnode = %VNode{id: id, kind: element.type, key: key, attrs: assigned.attrs, children: child_vnodes}
+      vnode = %VNode{
+        id: id,
+        kind: element.type,
+        key: key,
+        attrs: assigned.attrs,
+        children: child_vnodes
+      }
+
       {vnode, patches, assigned, seen}
     end
   end
@@ -81,13 +88,15 @@ defmodule Emerge.Reconcile do
     {child_vnodes, child_elements, patches, used_old_ids, seen} =
       Enum.with_index(new_children)
       |> Enum.reduce({[], [], [], MapSet.new(), seen}, fn {child, index},
-                                                          {vnodes, elements, patches, used_old_ids, seen} ->
+                                                          {vnodes, elements, patches,
+                                                           used_old_ids, seen} ->
         key = element_key(child)
 
         case match_keyed_child(old_by_key, old_children, key, index, child.type) do
           {:ok, old_child} when old_child.kind == child.type ->
             {vnode, child_patches, assigned, seen} =
               reconcile_node(old_child, child, parent_id, index, seen)
+
             {
               [vnode | vnodes],
               [assigned | elements],
@@ -99,6 +108,7 @@ defmodule Emerge.Reconcile do
           _ ->
             {vnode, assigned, seen} = build_vnode(child, parent_id, index, seen)
             insert = {:insert_subtree, parent_id, index, assigned}
+
             {
               [vnode | vnodes],
               [assigned | elements],
@@ -143,8 +153,9 @@ defmodule Emerge.Reconcile do
           %VNode{} = old_child ->
             {vnode, assigned, seen} = build_vnode(child, parent_id, index, seen)
             insert = {:insert_subtree, parent_id, index, assigned}
-            {[vnode | vnodes], [assigned | elements],
-             [insert, {:remove, old_child.id} | patches], seen}
+
+            {[vnode | vnodes], [assigned | elements], [insert, {:remove, old_child.id} | patches],
+             seen}
 
           nil ->
             {vnode, assigned, seen} = build_vnode(child, parent_id, index, seen)
@@ -180,7 +191,15 @@ defmodule Emerge.Reconcile do
 
     attrs = normalize_nearby_attrs(element.attrs)
     assigned = %{element | id: id, children: child_elements, attrs: attrs}
-    vnode = %VNode{id: id, kind: element.type, key: key, attrs: assigned.attrs, children: child_vnodes}
+
+    vnode = %VNode{
+      id: id,
+      kind: element.type,
+      key: key,
+      attrs: assigned.attrs,
+      children: child_vnodes
+    }
+
     {vnode, assigned, seen}
   end
 
