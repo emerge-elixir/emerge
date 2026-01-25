@@ -90,7 +90,10 @@ pub const ACTION_RELEASE: u8 = 0;
 pub const ACTION_PRESS: u8 = 1;
 
 pub const EVENT_CLICK: u8 = 0x01;
-pub const EVENT_SCROLL: u8 = 0x02;
+pub const EVENT_SCROLL_X_NEG: u8 = 0x02;
+pub const EVENT_SCROLL_X_POS: u8 = 0x04;
+pub const EVENT_SCROLL_Y_NEG: u8 = 0x08;
+pub const EVENT_SCROLL_Y_POS: u8 = 0x10;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Rect {
@@ -322,30 +325,38 @@ impl InputHandler {
             return None;
         };
 
-        let id = hit_test_with_flag(&self.event_registry, *x, *y, EVENT_SCROLL)?;
         let Some(tree) = self.tree.as_ref() else {
             return Some(false);
         };
 
         let mut tree_guard = tree.lock().ok()?;
-        let element = tree_guard.get_mut(&id)?;
-        let frame = element.frame?;
+        let mut changed = false;
 
-        let max_x = (frame.content_width - frame.width).max(0.0);
-        let max_y = (frame.content_height - frame.height).max(0.0);
-
-        let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
-        let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
-        let next_x = (current_x - dx).clamp(0.0, max_x);
-        let next_y = (current_y - dy).clamp(0.0, max_y);
-
-        if (next_x - current_x).abs() < f32::EPSILON && (next_y - current_y).abs() < f32::EPSILON {
-            return Some(false);
+        if *dx != 0.0 {
+            let flag = if *dx > 0.0 {
+                EVENT_SCROLL_X_NEG
+            } else {
+                EVENT_SCROLL_X_POS
+            };
+            if let Some(id) = hit_test_with_flag(&self.event_registry, *x, *y, flag) {
+                changed |= apply_scroll_delta(&mut tree_guard, &id, *dx, 0.0, &mut self.scroll_state);
+            }
         }
 
-        element.attrs.scroll_x = Some(next_x as f64);
-        element.attrs.scroll_y = Some(next_y as f64);
-        self.scroll_state.insert(id, (next_x, next_y));
+        if *dy != 0.0 {
+            let flag = if *dy > 0.0 {
+                EVENT_SCROLL_Y_NEG
+            } else {
+                EVENT_SCROLL_Y_POS
+            };
+            if let Some(id) = hit_test_with_flag(&self.event_registry, *x, *y, flag) {
+                changed |= apply_scroll_delta(&mut tree_guard, &id, 0.0, *dy, &mut self.scroll_state);
+            }
+        }
+
+        if !changed {
+            return Some(false);
+        }
 
         let commands = render_tree(&tree_guard);
         if let Some(render_state) = self.render_state.as_ref()
@@ -423,8 +434,25 @@ fn collect_event_nodes(
     if element.attrs.on_click.unwrap_or(false) {
         flags |= EVENT_CLICK;
     }
-    if element.attrs.scrollbar_x.unwrap_or(false) || element.attrs.scrollbar_y.unwrap_or(false) {
-        flags |= EVENT_SCROLL;
+    if element.attrs.scrollbar_x.unwrap_or(false) {
+        let scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
+        let scroll_x_max = element.attrs.scroll_x_max.unwrap_or(0.0) as f32;
+        if scroll_x > 0.0 {
+            flags |= EVENT_SCROLL_X_NEG;
+        }
+        if scroll_x < scroll_x_max {
+            flags |= EVENT_SCROLL_X_POS;
+        }
+    }
+    if element.attrs.scrollbar_y.unwrap_or(false) {
+        let scroll_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+        let scroll_y_max = element.attrs.scroll_y_max.unwrap_or(0.0) as f32;
+        if scroll_y > 0.0 {
+            flags |= EVENT_SCROLL_Y_NEG;
+        }
+        if scroll_y < scroll_y_max {
+            flags |= EVENT_SCROLL_Y_POS;
+        }
     }
 
     let mut next_clip = clip_rect;
@@ -553,6 +581,37 @@ fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u8) -> Optio
         return Some(node.id.clone());
     }
     None
+}
+
+fn apply_scroll_delta(
+    tree: &mut ElementTree,
+    id: &ElementId,
+    dx: f32,
+    dy: f32,
+    scroll_state: &mut HashMap<ElementId, (f32, f32)>,
+) -> bool {
+    let Some(element) = tree.get_mut(id) else {
+        return false;
+    };
+    let Some(frame) = element.frame else {
+        return false;
+    };
+
+    let max_x = (frame.content_width - frame.width).max(0.0);
+    let max_y = (frame.content_height - frame.height).max(0.0);
+    let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
+    let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+    let next_x = (current_x - dx).clamp(0.0, max_x);
+    let next_y = (current_y - dy).clamp(0.0, max_y);
+
+    if (next_x - current_x).abs() < f32::EPSILON && (next_y - current_y).abs() < f32::EPSILON {
+        return false;
+    }
+
+    element.attrs.scroll_x = Some(next_x as f64);
+    element.attrs.scroll_y = Some(next_y as f64);
+    scroll_state.insert(id.clone(), (next_x, next_y));
+    true
 }
 
 fn radii_from_border_radius(
@@ -872,6 +931,37 @@ mod tests {
     }
 
     #[test]
+    fn test_scroll_flags_respect_bounds() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.scrollbar_y = Some(true);
+        root_attrs.scroll_y = Some(0.0);
+        root_attrs.scroll_y_max = Some(20.0);
+        let root = make_element(
+            1,
+            root_attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 120.0,
+            },
+            Vec::new(),
+        );
+
+        tree.root = Some(ElementId::from_term_bytes(vec![1]));
+        tree.insert(root);
+
+        let registry = build_event_registry(&tree);
+        assert_eq!(registry.len(), 1);
+        assert!(registry[0].flags & EVENT_SCROLL_Y_NEG == 0);
+        assert!(registry[0].flags & EVENT_SCROLL_Y_POS != 0);
+    }
+
+    #[test]
     fn test_detect_click_press_release() {
         let mut handler = InputHandler::new();
         let registry = vec![EventNode {
@@ -882,7 +972,7 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
-            flags: EVENT_CLICK,
+            flags: EVENT_CLICK | EVENT_SCROLL_Y_NEG,
             self_rect: Rect {
                 x: 0.0,
                 y: 0.0,
