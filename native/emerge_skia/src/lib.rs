@@ -17,12 +17,14 @@ use skia_safe::Font;
 
 mod backend;
 mod input;
+mod events;
 mod renderer;
 mod tree;
 
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use input::{InputHandler, build_event_registry};
+use events::{build_event_registry, EventProcessor};
+use input::InputHandler;
 use renderer::{DrawCmd, RenderState, get_default_typeface};
 use tree::element::ElementTree;
 
@@ -50,6 +52,8 @@ struct RendererResource {
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
     input_handler: Arc<Mutex<InputHandler>>,
     tree: Arc<Mutex<ElementTree>>,
+    event_processor: Arc<Mutex<EventProcessor>>,
+    input_target: Arc<Mutex<Option<LocalPid>>>,
 }
 
 /// Resource for holding an element tree (for layout/rendering).
@@ -86,13 +90,13 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
     let running_flag = Arc::new(AtomicBool::new(true));
     let input_handler = Arc::new(Mutex::new(InputHandler::new()));
     let tree = Arc::new(Mutex::new(ElementTree::new()));
-    if let Ok(mut handler) = input_handler.lock() {
-        handler.set_render_context(Arc::clone(&tree), Arc::clone(&render_state));
-    }
+    let event_processor = Arc::new(Mutex::new(EventProcessor::new()));
 
     let render_state_clone = Arc::clone(&render_state);
     let running_flag_clone = Arc::clone(&running_flag);
     let input_handler_clone = Arc::clone(&input_handler);
+    let event_processor_clone = Arc::clone(&event_processor);
+    let event_processor_for_thread = Arc::clone(&event_processor);
 
     let (proxy_tx, proxy_rx) = mpsc::channel();
 
@@ -103,20 +107,47 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
     };
 
     thread::spawn(move || {
-        wayland::run(config, render_state_clone, running_flag_clone, input_handler_clone, proxy_tx);
+        wayland::run(
+            config,
+            render_state_clone,
+            running_flag_clone,
+            input_handler_clone,
+            event_processor_for_thread,
+            proxy_tx,
+        );
     });
 
     let event_proxy = proxy_rx
         .recv()
         .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
 
+    let input_target = Arc::new(Mutex::new(None));
     let resource = RendererResource {
         render_state,
         running_flag,
         event_proxy: Mutex::new(Some(event_proxy)),
         input_handler,
         tree,
+        event_processor: Arc::clone(&event_processor_clone),
+        input_target: Arc::clone(&input_target),
     };
+
+    let redraw = Arc::new({
+        let event_proxy = resource.event_proxy.lock().ok().and_then(|p| p.as_ref().cloned());
+        move || {
+            if let Some(proxy) = event_proxy.as_ref() {
+                let _ = proxy.send_event(UserEvent::Redraw);
+            }
+        }
+    });
+
+    EventProcessor::start_loop(
+        Arc::clone(&event_processor),
+        Arc::clone(&resource.tree),
+        Arc::clone(&resource.render_state),
+        Arc::clone(&resource.input_target),
+        redraw,
+    );
 
     Ok(ResourceArc::new(resource))
 }
@@ -154,9 +185,8 @@ fn renderer_upload(
         *tree = decoded;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
-        if let Ok(mut handler) = renderer.input_handler.lock() {
-            handler.apply_scroll_state(&mut tree);
-            handler.set_event_registry(build_event_registry(&tree));
+        if let Ok(mut processor) = renderer.event_processor.lock() {
+            processor.rebuild_registry(build_event_registry(&tree));
         }
         let commands = tree::render::render_tree(&tree);
 
@@ -184,9 +214,8 @@ fn renderer_patch(
         tree::patch::apply_patches(&mut tree, patches)?;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
         tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
-        if let Ok(mut handler) = renderer.input_handler.lock() {
-            handler.apply_scroll_state(&mut tree);
-            handler.set_event_registry(build_event_registry(&tree));
+        if let Ok(mut processor) = renderer.event_processor.lock() {
+            processor.rebuild_registry(build_event_registry(&tree));
         }
         let commands = tree::render::render_tree(&tree);
 
@@ -250,8 +279,8 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 /// `{:emerge_skia_event, event}` messages.
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
-    if let Ok(mut handler) = renderer.input_handler.lock() {
-        handler.set_target(pid);
+    if let Ok(mut target) = renderer.input_target.lock() {
+        *target = pid;
     }
     atoms::ok()
 }

@@ -7,18 +7,16 @@
 //!   - 3: insert_subtree - parent_len(4) + parent_id + index(2) + tree_len(4) + tree_bytes
 //!   - 4: remove - id_len(4) + id
 
-use super::deserialize::{decode_tree, DecodeError};
 use super::attrs::decode_attrs;
+use super::attrs::Attrs;
+use super::deserialize::{decode_tree, DecodeError};
 use super::element::{ElementId, ElementTree};
 
 /// A single patch operation.
 #[derive(Debug, Clone)]
 pub enum Patch {
     /// Update attributes for an existing node.
-    SetAttrs {
-        id: ElementId,
-        attrs_raw: Vec<u8>,
-    },
+    SetAttrs { id: ElementId, attrs_raw: Vec<u8> },
 
     /// Replace the children list for an existing node.
     SetChildren {
@@ -37,9 +35,7 @@ pub enum Patch {
     },
 
     /// Remove a node and its descendants.
-    Remove {
-        id: ElementId,
-    },
+    Remove { id: ElementId },
 }
 
 /// A cursor for reading patch binary data.
@@ -202,7 +198,9 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
             element.attrs_raw = attrs_raw.clone();
             let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
             element.base_attrs = decoded.clone();
-            element.attrs = decoded;
+            let mut merged = decoded;
+            preserve_runtime_attrs(&element.attrs, &mut merged);
+            element.attrs = merged;
         }
 
         Patch::SetChildren { id, children } => {
@@ -255,6 +253,21 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
     Ok(())
 }
 
+fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
+    if incoming.scroll_x.is_none() {
+        incoming.scroll_x = existing.scroll_x;
+    }
+    if incoming.scroll_y.is_none() {
+        incoming.scroll_y = existing.scroll_y;
+    }
+    if incoming.scroll_x_max.is_none() {
+        incoming.scroll_x_max = existing.scroll_x_max;
+    }
+    if incoming.scroll_y_max.is_none() {
+        incoming.scroll_y_max = existing.scroll_y_max;
+    }
+}
+
 /// Recursively remove a node and all its descendants.
 fn remove_subtree(tree: &mut ElementTree, id: &ElementId) {
     // First collect all descendant IDs
@@ -292,6 +305,8 @@ fn collect_descendants(tree: &ElementTree, id: &ElementId, acc: &mut Vec<Element
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::attrs::Attrs;
+    use crate::tree::element::{Element, ElementId, ElementKind};
 
     #[test]
     fn test_is_nil_term() {
@@ -306,5 +321,33 @@ mod tests {
         // Not nil
         let not_nil = vec![131, 100, 0, 4, 116, 101, 115, 116]; // :test
         assert!(!is_nil_term(&not_nil));
+    }
+
+    #[test]
+    fn test_preserve_runtime_attrs_on_patch() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.scroll_x = Some(12.0);
+        attrs.scroll_y = Some(34.0);
+        attrs.scroll_x_max = Some(50.0);
+        attrs.scroll_y_max = Some(60.0);
+
+        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.nodes.insert(id.clone(), element);
+
+        let patch = Patch::SetAttrs {
+            id: id.clone(),
+            attrs_raw: Vec::new(),
+        };
+
+        apply_patch(&mut tree, patch).unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.attrs.scroll_x, Some(12.0));
+        assert_eq!(updated.attrs.scroll_y, Some(34.0));
+        assert_eq!(updated.attrs.scroll_x_max, Some(50.0));
+        assert_eq!(updated.attrs.scroll_y_max, Some(60.0));
     }
 }

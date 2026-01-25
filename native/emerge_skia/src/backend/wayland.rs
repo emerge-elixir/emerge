@@ -31,6 +31,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+use crate::events::EventProcessor;
 use crate::input::{
     InputEvent, InputHandler, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
@@ -88,6 +89,7 @@ struct App {
     running_flag: Arc<AtomicBool>,
     render_state: Arc<Mutex<RenderState>>,
     input_handler: Arc<Mutex<InputHandler>>,
+    event_processor: Arc<Mutex<EventProcessor>>,
     window_size: (u32, u32),
     current_mods: u8,
 }
@@ -138,12 +140,11 @@ impl App {
     }
 
     fn send_input_event(&self, event: InputEvent) {
-        if let Ok(mut handler) = self.input_handler.lock() {
-            let needs_redraw = handler.send_event(event);
-            if needs_redraw {
-                if let Some(env) = self.env.as_ref() {
-                    env.window.request_redraw();
-                }
+        if let Ok(handler) = self.input_handler.lock()
+            && handler.accepts(&event)
+        {
+            if let Ok(mut processor) = self.event_processor.lock() {
+                processor.enqueue(event);
             }
         }
     }
@@ -476,6 +477,7 @@ pub fn run(
     render_state: Arc<Mutex<RenderState>>,
     running_flag: Arc<AtomicBool>,
     input_handler: Arc<Mutex<InputHandler>>,
+    event_processor: Arc<Mutex<EventProcessor>>,
     proxy_tx: Sender<EventLoopProxy<UserEvent>>,
 ) {
     // Allow running on non-main thread (required for NIF)
@@ -514,6 +516,7 @@ pub fn run(
         running_flag,
         render_state,
         input_handler,
+        event_processor,
         window_size: (size.width, size.height),
         current_mods: 0,
     };

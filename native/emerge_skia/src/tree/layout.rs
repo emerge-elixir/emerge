@@ -154,7 +154,24 @@ pub fn layout_tree_default(tree: &mut ElementTree, constraint: Constraint, scale
 /// Apply scale factor to all elements, copying base_attrs to attrs with scaling.
 fn apply_scale_to_tree(tree: &mut ElementTree, scale: f32) {
     for element in tree.nodes.values_mut() {
+        let previous = element.attrs.clone();
         element.attrs = scale_attrs(&element.base_attrs, scale);
+        preserve_runtime_attrs(&previous, &mut element.attrs);
+    }
+}
+
+fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
+    if incoming.scroll_x.is_none() {
+        incoming.scroll_x = existing.scroll_x;
+    }
+    if incoming.scroll_y.is_none() {
+        incoming.scroll_y = existing.scroll_y;
+    }
+    if incoming.scroll_x_max.is_none() {
+        incoming.scroll_x_max = existing.scroll_x_max;
+    }
+    if incoming.scroll_y_max.is_none() {
+        incoming.scroll_y_max = existing.scroll_y_max;
     }
 }
 
@@ -2029,6 +2046,37 @@ mod tests {
         // attrs should be scaled (for render to read)
         assert_eq!(root.attrs.padding, Some(Padding::Uniform(20.0)));
         assert_eq!(root.attrs.font_size, Some(32.0));
+    }
+
+    #[test]
+    fn test_layout_preserves_scroll_offsets() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(40.0);
+
+        let mut root = make_element("root", ElementKind::Column, attrs);
+        let root_id = root.id.clone();
+        root.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 200.0,
+        });
+
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+
+        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        let first = tree.get(&root_id).unwrap().attrs.scroll_y;
+        assert_eq!(first, Some(40.0));
+
+        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        let second = tree.get(&root_id).unwrap().attrs.scroll_y;
+        assert_eq!(second, Some(40.0));
     }
 
     #[test]
