@@ -9,6 +9,10 @@ Multi-backend Skia renderer with:
 - Wayland/X11 windowing
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
+- EventProcessor thread for hit testing, click/scroll dispatch, and redraws
+- Drag-scroll support with deadzone and finger-like direction
+- Scroll state preserved across layout/patch with resize-aware clamping
+- Clip- and rounded-corner-aware hit testing
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder
 - Three-pass layout engine (scale + measurement + resolution)
@@ -27,7 +31,8 @@ lib.rs (NIF entry, resources, registration)
     │   ├── drm.rs (planned: direct framebuffer)
     │   └── raster.rs (offscreen CPU surface)
     │
-    ├── input.rs (InputEvent, InputHandler, push delivery)
+    ├── input.rs (InputEvent + mask filter + encoder)
+    ├── events.rs (EventProcessor, event registry, hit-test, scroll/click dispatch)
     │
     └── tree/
         ├── mod.rs (public exports)
@@ -213,6 +218,13 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Tests added for transforms, clipping, length encoding, and content sizing
 - Added spacingXY + spaceEvenly (space-between) support
 - Added event system design doc (on_click MVP)
+- EventProcessor introduced; input loop now enqueues raw events
+- Click dispatch and hit testing moved to event processor
+- Drag-scroll with deadzone; finger-like drag direction
+- Directional scroll flags (per-axis can-scroll flags)
+- Scroll state preserved through layout scaling/patches
+- Resize handling: clamp scroll offsets when max shrinks; preserve start/end rules on grow
+- Hit testing respects clip padding and rounded corners
 
 ---
 
@@ -326,8 +338,8 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | clip | ✅ | N/A | ✅ | |
 | clipX | ✅ | N/A | ✅ | |
 | clipY | ✅ | N/A | ✅ | |
-| scrollbarY | ✅ | ❌ | ✅ | Clips to padded content |
-| scrollbarX | ✅ | ❌ | ✅ | Clips to padded content |
+| scrollbarY | ✅ | ✅ | ✅ | Clips to padded content; updates scroll max |
+| scrollbarX | ✅ | ✅ | ✅ | Clips to padded content; updates scroll max |
 
 #### Input Elements
 | Feature | Status | Notes |
@@ -343,15 +355,9 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 
 ## Implementation Roadmap
 
-### Next Up: Phase 7 - Per-Corner Border Radius
+### Phase 7 - Per-Corner Border Radius ✓
 
-Current state: `border_radius` stores single f64, loses per-corner info.
-
-Tasks:
-1. Change `Attrs.border_radius` from `Option<f64>` to `Option<BorderRadius>` enum
-2. Add `BorderRadius::Uniform(f64)` and `BorderRadius::Corners { tl, tr, br, bl }`
-3. Update `render.rs` to use per-corner radius in DrawCmd
-4. Add `DrawCmd::RoundedRectCorners` variant for per-corner rendering
+Completed. `border_radius` now supports uniform + per-corner values, and rendering respects corner-specific radii.
 
 ### Phase 8 - Nearby Element Layout ✓
 
@@ -378,12 +384,16 @@ Tasks:
 3. Apply font style (italic)
 4. Text decoration (underline, strike)
 
-### Phase 11 - Scrollbars
+### Phase 11 - Scrollbars (Partial)
 
-Tasks:
-1. Render scrollbar track and thumb
-2. Calculate thumb position/size from scroll offset and content size
-3. Handle scrollbar click/drag input
+Completed:
+- Thumb rendering and position/size from scroll state
+- Wheel + drag-scroll input (content drag; no scrollbar thumb drag yet)
+
+Remaining:
+1. Scrollbar track/thumb hit testing
+2. Thumb drag behavior + snapping
+3. Visual hover/active feedback (optional)
 
 ### Phase 12 - Advanced Features
 
@@ -468,13 +478,14 @@ pub struct Constraint {
 - MinContent/MaxContent resolve to intrinsic sizes during layout
 - MaxContent is now used to gate fill distribution when content-sized
 
-#### 5. Events System (MVP)
+#### 5. Events System ✓
 
-- Add `on_click` as a presence flag in EMRG.
-- Rust builds a click registry post-layout (frame bounds, padding included).
-- Hit test on press/release, emit `{:emerge_skia_event, {element_id, :click}}`.
-- Elixir stores `{element_id => {pid, msg}}` and dispatches on event.
-- Tests: Rust hit-test + click tracking, Elixir encode/decode of on_click.
+Implemented. Event processing now runs in `events.rs` via `EventProcessor`:
+- Registry built post-layout with clip + rounded-corner hit testing
+- Click detection on press/release with `{:emerge_skia_event, {element_id, :click}}`
+- Scroll handling via directional flags (per-axis can-scroll)
+- Drag-scroll with deadzone and finger-like direction
+- Input loop enqueues raw events; processor handles dispatch + redraw
 
 #### 5. Content Size Tracking ✓
 
@@ -494,6 +505,13 @@ pub struct Frame {
 - For elements with children, content_width/content_height reflects actual child layout
 - For scrollable elements (clip/scrollbar), frame stays fixed while content tracks overflow
 - For empty containers, content equals frame size
+
+### Scroll Behavior Rules
+
+- Scroll state is runtime-only and preserved across layout/patch.
+- When scroll max shrinks, offsets clamp toward the start (0).
+- When scroll max grows, end-anchoring applies only if the previous offset was at end; otherwise the offset is preserved and clamped.
+- When scrollbar_* is disabled, scroll_* and scroll_*_max are cleared.
 
 ### Low Priority
 
