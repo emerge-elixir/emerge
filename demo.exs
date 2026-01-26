@@ -82,7 +82,7 @@ defmodule Demo do
           menu_panel(current_page, event_log),
           content_panel(current_page)
         ]),
-        footer_bar(mx, my)
+        footer_bar(mx, my, event_log)
       ]
     )
   end
@@ -146,28 +146,8 @@ defmodule Demo do
             menu_item(label, page, current_page)
           end)
         ),
-        el([Font.size(12), Font.color(@dim_text)], text("Events")),
-        el(
-          [
-            width(fill()),
-            height(fill()),
-            padding(8),
-            scroll_y(0),
-            scrollbar_y(),
-            clip_y(),
-            Background.color({:color_rgb, {35, 35, 55}}),
-            Border.rounded(8)
-          ],
-          column(
-            [spacing(4)],
-            event_log
-            |> Enum.take(30)
-            |> Enum.reverse()
-            |> Enum.map(fn line ->
-              el([Font.size(11), Font.color(@dim_text)], text(line))
-            end)
-          )
-        )
+        el([Font.size(12), Font.color(@dim_text)], text("Navigation")),
+        el([Font.size(11), Font.color(@dim_text)], text("Click pages to switch"))
       ]
     )
   end
@@ -188,17 +168,40 @@ defmodule Demo do
     )
   end
 
-  defp footer_bar(mx, my) do
-    el(
-      [padding(8), Background.color(@pink), Border.rounded(8)],
-      row([spacing(10)], [
-        el([Font.size(12), Font.color(@light_text)], text("Cursor")),
-        el(
-          [Font.size(12), Font.color(@light_text)],
-          text("#{Float.round(mx, 1)}, #{Float.round(my, 1)}")
+  defp footer_bar(mx, my, event_log) do
+    row([width(fill()), spacing(12)], [
+      el(
+        [padding(8), Background.color(@pink), Border.rounded(8)],
+        row([spacing(10)], [
+          el([Font.size(12), Font.color(@light_text)], text("Cursor")),
+          el(
+            [Font.size(12), Font.color(@light_text)],
+            text("#{Float.round(mx, 1)}, #{Float.round(my, 1)}")
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          height(px(110)),
+          padding(8),
+          scroll_y(0),
+          scrollbar_y(),
+          clip_y(),
+          Background.color({:color_rgb, {35, 35, 55}}),
+          Border.rounded(8)
+        ],
+        column(
+          [spacing(4)],
+          event_log
+          |> Enum.take(8)
+          |> Enum.reverse()
+          |> Enum.map(fn line ->
+            el([Font.size(11), Font.color(@dim_text)], text(line))
+          end)
         )
-      ])
-    )
+      )
+    ])
   end
 
   defp render_page(current_page) do
