@@ -146,7 +146,8 @@ defmodule Demo do
       {"Transforms", :transforms},
       {"Events", :events},
       {"Unstable List", :unstable_list},
-      {"Nearby", :nearby}
+      {"Nearby", :nearby},
+      {"Fonts", :fonts}
     ]
 
     column(
@@ -230,6 +231,7 @@ defmodule Demo do
       :events -> page_events(last_move_label)
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
+      :fonts -> page_fonts()
       _ -> page_overview()
     end
   end
@@ -853,6 +855,104 @@ defmodule Demo do
           ],
           text("Base")
         )
+      )
+    ])
+  end
+
+  defp page_fonts() do
+    column([width(fill()), spacing(16)], [
+      section_title("Font Inheritance"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Fonts set on containers propagate to all text children")
+      ),
+      column(
+        [
+          width(fill()),
+          padding(12),
+          spacing(8),
+          Font.size(14),
+          Font.color({:color_rgb, {200, 220, 255}}),
+          Background.color({:color_rgb, {45, 45, 65}}),
+          Border.rounded(8)
+        ],
+        [
+          text("This text inherits font from column"),
+          text("No Font.size() or Font.color() here"),
+          row([spacing(8)], [
+            text("Row child 1"),
+            text("Row child 2"),
+            text("All inherited")
+          ])
+        ]
+      ),
+      section_title("Font Sizes"),
+      row([width(fill()), spacing(12), align_bottom()], [
+        el([Font.size(10), Font.color(:white)], text("10px")),
+        el([Font.size(12), Font.color(:white)], text("12px")),
+        el([Font.size(14), Font.color(:white)], text("14px")),
+        el([Font.size(16), Font.color(:white)], text("16px")),
+        el([Font.size(20), Font.color(:white)], text("20px")),
+        el([Font.size(24), Font.color(:white)], text("24px"))
+      ]),
+      section_title("Font Weight & Style"),
+      row([width(fill()), spacing(16)], [
+        el([Font.size(14), Font.color(:white)], text("Normal")),
+        el([Font.size(14), Font.color(:white), Font.bold()], text("Bold")),
+        el([Font.size(14), Font.color(:white), Font.italic()], text("Italic")),
+        el([Font.size(14), Font.color(:white), Font.bold(), Font.italic()], text("Bold Italic"))
+      ]),
+      section_title("Text Alignment"),
+      row([width(fill()), spacing(8)], [
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {55, 55, 80}}),
+            Border.rounded(4)
+          ],
+          el([width(fill()), Font.size(12), Font.color(:white), Font.align_left()], text("Left"))
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {55, 55, 80}}),
+            Border.rounded(4)
+          ],
+          el([width(fill()), Font.size(12), Font.color(:white), Font.center()], text("Center"))
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {55, 55, 80}}),
+            Border.rounded(4)
+          ],
+          el([width(fill()), Font.size(12), Font.color(:white), Font.align_right()], text("Right"))
+        )
+      ]),
+      section_title("Inheritance Override"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Child elements can override inherited font settings")
+      ),
+      column(
+        [
+          width(fill()),
+          padding(12),
+          spacing(8),
+          Font.size(14),
+          Font.color({:color_rgb, {180, 180, 200}}),
+          Background.color({:color_rgb, {50, 50, 70}}),
+          Border.rounded(8)
+        ],
+        [
+          text("Inherited: 14px, gray"),
+          el([Font.size(18), Font.color(:cyan)], text("Override: 18px, cyan")),
+          el([Font.bold()], text("Override: bold only")),
+          text("Back to inherited")
+        ]
       )
     ])
   end
