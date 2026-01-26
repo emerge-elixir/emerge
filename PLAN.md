@@ -118,7 +118,6 @@ attr_records...   # tag (1 byte) + value (varies)
 | 6 | align_y | 0=top, 1=center, 2=bottom |
 | 7 | scrollbar_y | bool |
 | 8 | scrollbar_x | bool |
-| 9 | clip | bool |
 | 10 | clip_y | bool |
 | 11 | clip_x | bool |
 | 12 | background | 0=color, 1=gradient(color+color+f64) |
@@ -203,7 +202,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 `render.rs` converts ElementTree to Vec<DrawCmd>:
 - Background (solid color, gradient)
 - Border (width, color, radius)
-- Clipping (clip, clip_x, clip_y)
+- Clipping (clip_x, clip_y)
 - Text with font metrics
 
 `serialize.rs` encodes ElementTree back to EMRG v2 binary format.
@@ -212,7 +211,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 
 - Per-corner border radius support (attrs, renderer, and draw commands)
 - Transform attributes (move/rotate/scale) and alpha rendering
-- Padding-aware clipping for clip/scrollbar axes
+- Padding-aware clipping for clip_x/clip_y and scrollbar axes
 - Text alignment implemented (align left/center/right)
 - Length API expansion (shrink alias, minimum/maximum) with layout coverage
 - Tests added for transforms, clipping, length encoding, and content sizing
@@ -335,7 +334,6 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Clipping & Scrolling
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| clip | ✅ | N/A | ✅ | |
 | clipX | ✅ | N/A | ✅ | |
 | clipY | ✅ | N/A | ✅ | |
 | scrollbarY | ✅ | ✅ | ✅ | Clips to padded content; updates scroll max |

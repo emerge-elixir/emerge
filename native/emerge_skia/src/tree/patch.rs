@@ -233,9 +233,11 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
                         .get_mut(&pid)
                         .ok_or_else(|| "InsertSubtree: parent not found".to_string())?;
 
-                    // Insert at the specified index
-                    let insert_idx = index.min(parent.children.len());
-                    parent.children.insert(insert_idx, subtree_root_id);
+                    if !parent.children.contains(&subtree_root_id) {
+                        // Insert at the specified index
+                        let insert_idx = index.min(parent.children.len());
+                        parent.children.insert(insert_idx, subtree_root_id);
+                    }
                 }
                 None => {
                     // Inserting as new root

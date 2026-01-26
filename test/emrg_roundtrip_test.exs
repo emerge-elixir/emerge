@@ -20,6 +20,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
   end
 
   defp normalize_attr_value(%Emerge.Element{} = element), do: normalize_tree(element)
+
   defp normalize_attr_value(%{type: type, id: id, attrs: attrs, children: children}) do
     %{
       type: type,
@@ -28,6 +29,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
       children: Enum.map(children, &normalize_attr_value/1)
     }
   end
+
   defp normalize_attr_value(value), do: value
 
   test "EMRG roundtrip through Rust preserves tree" do
@@ -62,16 +64,40 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                 Emerge.UI.Font.size(18.0),
                 Emerge.UI.Font.color(:white),
                 Emerge.UI.Font.family(:serif),
-                Emerge.UI.Font.bold,
-                Emerge.UI.Font.italic
+                Emerge.UI.Font.bold(),
+                Emerge.UI.Font.italic()
               ],
               text("Hello")
             )
           ),
           row([spacing(8.0), align_top(), width({:fill_portion, 2.0})], [
-            el([padding(6.0), Emerge.UI.Background.color(:red), Emerge.UI.Font.size(12.0), Emerge.UI.Font.color(:white)], text("A")),
-            el([padding(6.0), Emerge.UI.Background.color(:green), Emerge.UI.Font.size(12.0), Emerge.UI.Font.color(:white)], text("B")),
-            el([padding(6.0), Emerge.UI.Background.color(:blue), Emerge.UI.Font.size(12.0), Emerge.UI.Font.color(:white)], text("C"))
+            el(
+              [
+                padding(6.0),
+                Emerge.UI.Background.color(:red),
+                Emerge.UI.Font.size(12.0),
+                Emerge.UI.Font.color(:white)
+              ],
+              text("A")
+            ),
+            el(
+              [
+                padding(6.0),
+                Emerge.UI.Background.color(:green),
+                Emerge.UI.Font.size(12.0),
+                Emerge.UI.Font.color(:white)
+              ],
+              text("B")
+            ),
+            el(
+              [
+                padding(6.0),
+                Emerge.UI.Background.color(:blue),
+                Emerge.UI.Font.size(12.0),
+                Emerge.UI.Font.color(:white)
+              ],
+              text("C")
+            )
           ]),
           el(
             [
@@ -81,10 +107,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               Emerge.UI.Background.color({:color_rgb, {10, 20, 30}}),
               Emerge.UI.Border.rounded(6.0),
               scrollbar_x(),
-              scrollbar_y(),
-              clip(),
-              clip_x(),
-              clip_y()
+              scrollbar_y()
             ],
             el([Emerge.UI.Font.size(14.0), Emerge.UI.Font.color(:white)], text("Clipped"))
           ),
@@ -98,7 +121,10 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               Emerge.UI.Background.color({:color_rgba, {12, 34, 56, 78}}),
               Emerge.UI.Border.color({:color_rgb, {200, 210, 220}})
             ],
-            el([Emerge.UI.Font.size(12.0), Emerge.UI.Font.color(:white)], text("Align + tuple pad"))
+            el(
+              [Emerge.UI.Font.size(12.0), Emerge.UI.Font.color(:white)],
+              text("Align + tuple pad")
+            )
           ),
           el(
             [
@@ -117,15 +143,79 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               padding(4.0),
               center_x(),
               center_y(),
-              above(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Above"))),
-              below(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Below"))),
-              on_left(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Left"))),
-              on_right(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Right"))),
-              in_front(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Front"))),
-              behind_content(el([padding(2.0), Emerge.UI.Background.color(:gray), Emerge.UI.Font.size(10.0), Emerge.UI.Font.color(:white)], text("Behind")))
+              above(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Above")
+                )
+              ),
+              below(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Below")
+                )
+              ),
+              on_left(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Left")
+                )
+              ),
+              on_right(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Right")
+                )
+              ),
+              in_front(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Front")
+                )
+              ),
+              behind_content(
+                el(
+                  [
+                    padding(2.0),
+                    Emerge.UI.Background.color(:gray),
+                    Emerge.UI.Font.size(10.0),
+                    Emerge.UI.Font.color(:white)
+                  ],
+                  text("Behind")
+                )
+              )
             ],
             el(
-              [Emerge.UI.Font.size(16.0), Emerge.UI.Font.color(:white), Emerge.UI.Font.family("Fira Sans")],
+              [
+                Emerge.UI.Font.size(16.0),
+                Emerge.UI.Font.color(:white),
+                Emerge.UI.Font.family("Fira Sans")
+              ],
               text("Nearby")
             )
           )
@@ -178,15 +268,16 @@ defmodule EmergeSkia.EmrgRoundtripTest do
 
   test "nearby elements are preserved through roundtrip" do
     # Create a tree with all nearby element types
-    nearby_el = el(
-      [
-        padding(4.0),
-        Emerge.UI.Background.color(:gray),
-        Emerge.UI.Font.size(10.0),
-        Emerge.UI.Font.color(:white)
-      ],
-      text("Nearby")
-    )
+    nearby_el =
+      el(
+        [
+          padding(4.0),
+          Emerge.UI.Background.color(:gray),
+          Emerge.UI.Font.size(10.0),
+          Emerge.UI.Font.color(:white)
+        ],
+        text("Nearby")
+      )
 
     tree =
       el(

@@ -10,16 +10,16 @@ defmodule Emerge.PatchTest do
   test "diff detects attribute changes and inserts" do
     {old, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([padding(4), id: :item_a], text("a"))
+        column([key(:root)], [
+          el([padding(4), key(:item_a)], text("a"))
         ])
       )
 
     {new, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([padding(8), id: :item_a], text("a")),
-          el(text("b"))
+        column([key(:root)], [
+          el([padding(8), key(:item_a)], text("a")),
+          el([key(:item_b)], text("b"))
         ])
       )
 
@@ -40,16 +40,16 @@ defmodule Emerge.PatchTest do
   test "diff emits removes when ids disappear" do
     {old, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([id: :a], text("a")),
-          el([id: :b], text("b"))
+        column([key(:root)], [
+          el([key(:a)], text("a")),
+          el([key(:b)], text("b"))
         ])
       )
 
     {new, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([id: :a], text("a"))
+        column([key(:root)], [
+          el([key(:a)], text("a"))
         ])
       )
 
@@ -63,8 +63,8 @@ defmodule Emerge.PatchTest do
 
   test "encode produces a command stream" do
     layout =
-      column([id: :root], [
-        el([id: {:card, 1}], text("a"))
+      column([key(:root)], [
+        el([key({:card, 1})], text("a"))
       ])
 
     {layout, _state} = Tree.assign_ids(layout)
@@ -76,7 +76,7 @@ defmodule Emerge.PatchTest do
 
   test "decode returns patches for attrs, children, insert, remove" do
     {subtree, _state} =
-      Tree.assign_ids(el([id: :item_b], text("b")))
+      Tree.assign_ids(el([key(:item_b)], text("b")))
 
     patches = [
       {:set_attrs, 1, %{padding: 4}},
@@ -92,7 +92,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "decode preserves nil parent ids" do
-    {subtree, _state} = Tree.assign_ids(el([id: :item_x], text("x")))
+    {subtree, _state} = Tree.assign_ids(el([key(:item_x)], text("x")))
     binary = Patch.encode([{:insert_subtree, nil, 0, subtree}])
 
     assert [{:insert_subtree, nil, 0, decoded}] = Patch.decode(binary)
@@ -102,17 +102,17 @@ defmodule Emerge.PatchTest do
   test "encode/decode round trip for diffs" do
     {old, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([id: :a], text("a")),
-          el([id: :b], text("b"))
+        column([key(:root)], [
+          el([key(:a)], text("a")),
+          el([key(:b)], text("b"))
         ])
       )
 
     {new, _state} =
       Tree.assign_ids(
-        column([id: :root], [
-          el([padding(6), id: :a], text("a")),
-          el([id: :c], text("c"))
+        column([key(:root)], [
+          el([padding(6), key(:a)], text("a")),
+          el([key(:c)], text("c"))
         ])
       )
 
@@ -127,19 +127,19 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      column([id: :root], [
-        el([id: :a], text("one")),
-        el([id: :b], text("two"))
+      column([key(:root)], [
+        el([key(:a)], text("one")),
+        el([key(:b)], text("two"))
       ])
 
     {bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
     assert is_binary(bin1)
 
     layout2 =
-      column([id: :root], [
-        el([id: :a], text("one")),
-        el([id: :b], text("two")),
-        el([id: :c], text("three"))
+      column([key(:root)], [
+        el([key(:a)], text("one")),
+        el([key(:b)], text("two")),
+        el([key(:c)], text("three"))
       ])
 
     {bin2, _state, tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
@@ -156,7 +156,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -165,7 +165,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:c)], text("c")),
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
@@ -190,7 +190,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
@@ -198,7 +198,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -222,7 +222,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -231,7 +231,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:c)], text("c"))
       ])
@@ -254,7 +254,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
@@ -262,7 +262,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:a), padding(4)], text("a")),
         el([key(:b)], text("b"))
       ])
@@ -287,7 +287,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
@@ -302,7 +302,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -311,7 +311,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:c)], text("c")),
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
@@ -330,7 +330,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -339,7 +339,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      column([id: :root], [
+      column([key(:root)], [
         el([key(:c)], text("c")),
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
@@ -362,7 +362,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el(text("a")),
         el(text("b")),
         el(text("c"))
@@ -371,7 +371,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el(text("c")),
         el(text("a")),
         el(text("b"))
@@ -400,45 +400,26 @@ defmodule Emerge.PatchTest do
            end)
   end
 
-  test "mixed reorder emits set_children with insert/remove" do
+  test "mixed keyed/unkeyed reorder raises" do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el(text("u1")),
         el([key(:b)], text("b"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
-
-    layout2 =
-      row([id: :root], [
-        el(text("u1")),
-        el([key(:b)], text("b")),
-        el([key(:a)], text("a"))
-      ])
-
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
-
-    assert Enum.any?(patches, fn
-             {:set_children, id, _} when id == tree1.id -> true
-             _ -> false
-           end)
-
-    assert Enum.any?(patches, fn
-             {:insert_subtree, _, _, _} -> true
-             {:remove, _} -> true
-             _ -> false
-           end)
+    assert_raise ArgumentError, ~r/All siblings must have key/, fn ->
+      Emerge.DiffState.diff_and_encode(state, layout1)
+    end
   end
 
   test "insert with reordering existing nodes emits set_children" do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -447,7 +428,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:b)], text("b")),
         el([key(:a)], text("a")),
         el([key(:c)], text("c")),
@@ -493,7 +474,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -502,7 +483,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c")),
@@ -522,7 +503,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
@@ -531,7 +512,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:x)], text("x")),
@@ -552,7 +533,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c")),
@@ -562,7 +543,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:c)], text("c")),
         el([key(:d)], text("d")),
@@ -582,7 +563,7 @@ defmodule Emerge.PatchTest do
     state = Emerge.DiffState.new()
 
     layout1 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c")),
@@ -592,7 +573,7 @@ defmodule Emerge.PatchTest do
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
-      row([id: :root], [
+      row([key(:root)], [
         el([key(:b)], text("b")),
         el([key(:a)], text("a")),
         el([key(:x)], text("x")),
@@ -680,7 +661,7 @@ defmodule Emerge.PatchTest do
       ]
       |> maybe_add_scroll(scroll_y)
 
-    column([id: :root], [
+    column([key(:root)], [
       row([width(fill())], [
         column([width(px(120)), padding(6)], [
           el(text("Menu"))
@@ -694,7 +675,7 @@ defmodule Emerge.PatchTest do
   end
 
   defp maybe_add_scroll(attrs, nil), do: attrs
-  defp maybe_add_scroll(attrs, value), do: [scroll_y(value) | attrs]
+  defp maybe_add_scroll(attrs, value), do: [{:scroll_y, value} | attrs]
 
   defp unwrap_binary({:ok, bin}) when is_binary(bin), do: bin
   defp unwrap_binary(bin) when is_binary(bin), do: bin

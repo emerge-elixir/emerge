@@ -9,7 +9,12 @@ Rust-backed rendering with an Elixir tree API and EMRG encoding/patching.
 ## Elixir API (tree + EMRG)
 ```elixir
 state = Emerge.diff_state_new()
-tree = Emerge.UI.column([id: :root], [Emerge.UI.el(Emerge.UI.text("Hello"))])
+tree =
+  Emerge.UI.column([
+    Emerge.UI.key(:root)
+  ], [
+    Emerge.UI.el(Emerge.UI.text("Hello"))
+  ])
 
 {full_bin, state, _assigned} = Emerge.encode_full(state, tree)
 {patch_bin, state, _assigned} = Emerge.diff_state_update(state, tree)

@@ -128,7 +128,6 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
-    pub clip: Option<bool>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
@@ -171,7 +170,6 @@ const TAG_ALIGN_X: u8 = 5;
 const TAG_ALIGN_Y: u8 = 6;
 const TAG_SCROLLBAR_Y: u8 = 7;
 const TAG_SCROLLBAR_X: u8 = 8;
-const TAG_CLIP: u8 = 9;
 const TAG_CLIP_Y: u8 = 10;
 const TAG_CLIP_X: u8 = 11;
 const TAG_BACKGROUND: u8 = 12;
@@ -307,7 +305,6 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ALIGN_Y => attrs.align_y = Some(decode_align_y(cursor)?),
         TAG_SCROLLBAR_Y => attrs.scrollbar_y = Some(cursor.read_bool()?),
         TAG_SCROLLBAR_X => attrs.scrollbar_x = Some(cursor.read_bool()?),
-        TAG_CLIP => attrs.clip = Some(cursor.read_bool()?),
         TAG_CLIP_Y => attrs.clip_y = Some(cursor.read_bool()?),
         TAG_CLIP_X => attrs.clip_x = Some(cursor.read_bool()?),
         TAG_BACKGROUND => attrs.background = Some(decode_background(cursor)?),
@@ -635,10 +632,9 @@ mod tests {
 
     #[test]
     fn test_decode_bool() {
-        // 2 attrs: clip=true, scrollbar_y=false
-        let data = [0, 2, 9, 1, 7, 0];
+        // 1 attr: scrollbar_y=false
+        let data = [0, 1, 7, 0];
         let attrs = decode_attrs(&data).unwrap();
-        assert_eq!(attrs.clip, Some(true));
         assert_eq!(attrs.scrollbar_y, Some(false));
     }
 

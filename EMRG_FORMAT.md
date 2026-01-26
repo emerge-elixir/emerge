@@ -64,7 +64,6 @@ align_x           -> 5
 align_y           -> 6
 scrollbar_y       -> 7
 scrollbar_x       -> 8
-clip              -> 9
 clip_y            -> 10
 clip_x            -> 11
 background        -> 12

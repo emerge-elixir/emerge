@@ -199,7 +199,6 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_enter: attrs.on_mouse_enter,
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
-        clip: attrs.clip,
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),

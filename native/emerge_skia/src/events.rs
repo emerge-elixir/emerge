@@ -196,8 +196,7 @@ fn collect_event_nodes(
             });
         }
 
-        let clip_enabled = element.attrs.clip.unwrap_or(false)
-            || element.attrs.clip_x.unwrap_or(false)
+        let clip_enabled = element.attrs.clip_x.unwrap_or(false)
             || element.attrs.clip_y.unwrap_or(false)
             || element.attrs.scrollbar_x.unwrap_or(false)
             || element.attrs.scrollbar_y.unwrap_or(false);

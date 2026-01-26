@@ -37,9 +37,8 @@ defmodule Emerge.UI do
   """
   def el(attrs, child) when is_list(attrs) do
     parsed = parse_attrs(attrs)
-    {id, parsed} = Map.pop(parsed, :id)
     {key, parsed} = Map.pop(parsed, :key)
-    id = id || key
+    id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
 
     # Pass font attributes down to text children
@@ -95,9 +94,8 @@ defmodule Emerge.UI do
   """
   def row(attrs, children) when is_list(attrs) and is_list(children) do
     parsed = parse_attrs(attrs)
-    {id, parsed} = Map.pop(parsed, :id)
     {key, parsed} = Map.pop(parsed, :key)
-    id = id || key
+    id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
 
     %Element{
@@ -123,9 +121,8 @@ defmodule Emerge.UI do
   """
   def wrapped_row(attrs, children) when is_list(attrs) and is_list(children) do
     parsed = parse_attrs(attrs)
-    {id, parsed} = Map.pop(parsed, :id)
     {key, parsed} = Map.pop(parsed, :key)
-    id = id || key
+    id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
 
     %Element{
@@ -150,9 +147,8 @@ defmodule Emerge.UI do
   """
   def column(attrs, children) when is_list(attrs) and is_list(children) do
     parsed = parse_attrs(attrs)
-    {id, parsed} = Map.pop(parsed, :id)
     {key, parsed} = Map.pop(parsed, :key)
-    id = id || key
+    id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
 
     %Element{
@@ -198,16 +194,8 @@ defmodule Emerge.UI do
   # SIZE ATTRIBUTES
   # ============================================
 
-  @doc "Provide a stable key for identity in lists."
+  @doc "Provide a stable key for identity in lists (all siblings must have keys)."
   def key(value), do: {:key, value}
-
-  @doc """
-  Assign a stable key to an element.
-
-  Useful when composing helpers that return elements without inline attrs.
-  """
-  def keyed(value, %Element{id: nil} = element), do: %{element | id: value}
-  def keyed(_value, %Element{} = element), do: element
 
   @doc "Set width to a specific pixel value"
   def width({:px, _} = val), do: {:width, val}
@@ -280,20 +268,14 @@ defmodule Emerge.UI do
   @doc "Distribute children with equal gaps between them"
   def space_evenly, do: {:space_evenly, true}
 
-  @doc "Enable vertical scrolling with an offset in pixels"
-  def scroll_y(offset \\ 0) when is_number(offset), do: {:scroll_y, offset}
-
-  @doc "Enable horizontal scrolling with an offset in pixels"
-  def scroll_x(offset \\ 0) when is_number(offset), do: {:scroll_x, offset}
-
-  @doc "Render a vertical scrollbar when content overflows"
+  @doc "Render a vertical scrollbar when content overflows (implies clip_y)"
   def scrollbar_y, do: {:scrollbar_y, true}
 
-  @doc "Render a horizontal scrollbar when content overflows"
+  @doc "Render a horizontal scrollbar when content overflows (implies clip_x)"
   def scrollbar_x, do: {:scrollbar_x, true}
 
-  @doc "Clip content on both axes"
-  def clip, do: {:clip, true}
+  @doc "Clip content on both axes (helper for clip_x + clip_y)"
+  def clip, do: %{clip_x: true, clip_y: true}
 
   @doc "Clip content on the horizontal axis"
   def clip_x, do: {:clip_x, true}
@@ -391,11 +373,33 @@ defmodule Emerge.UI do
   # ============================================
 
   defp parse_attrs(attrs) do
-    Enum.reduce(attrs, %{}, fn
-      {key, value}, acc -> Map.put(acc, key, value)
-      other, acc when is_map(other) -> Map.merge(acc, other)
-      _, acc -> acc
-    end)
+    parsed =
+      Enum.reduce(attrs, %{}, fn
+        {key, value}, acc -> Map.put(acc, key, value)
+        other, acc when is_map(other) -> Map.merge(acc, other)
+        _, acc -> acc
+      end)
+
+    validate_scrollbar_clipping!(parsed)
+    parsed
+  end
+
+  defp validate_scrollbar_clipping!(attrs) do
+    if Map.get(attrs, :id) do
+      raise ArgumentError, "id is not supported; use key instead"
+    end
+
+    if Map.get(attrs, :clip) do
+      raise ArgumentError, "clip is not supported; use clip_x and clip_y"
+    end
+
+    if Map.get(attrs, :scrollbar_x) && Map.get(attrs, :clip_x) do
+      raise ArgumentError, "scrollbar_x implies clip_x; do not set clip_x with scrollbar_x"
+    end
+
+    if Map.get(attrs, :scrollbar_y) && Map.get(attrs, :clip_y) do
+      raise ArgumentError, "scrollbar_y implies clip_y; do not set clip_y with scrollbar_y"
+    end
   end
 
   # ============================================

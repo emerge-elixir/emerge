@@ -8,9 +8,9 @@ defmodule Emerge.SerializationTest do
 
   test "assign_ids assigns stable integer ids" do
     layout =
-      column([id: 10], [
-        el([id: 12], text("a")),
-        el(text("b"))
+      column([key(10)], [
+        el([key(12)], text("a")),
+        el([key(13)], text("b"))
       ])
 
     {tree, _state} = Tree.assign_ids(layout)
@@ -22,9 +22,9 @@ defmodule Emerge.SerializationTest do
 
   test "assign_ids is deterministic for the same tree" do
     layout =
-      row([id: :root], [
-        el([id: {:card, 1}], text("a")),
-        el([id: {:card, 2}], text("b"))
+      row([key(:root)], [
+        el([key({:card, 1})], text("a")),
+        el([key({:card, 2})], text("b"))
       ])
 
     {tree, _state} = Tree.assign_ids(layout)

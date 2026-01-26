@@ -70,9 +70,7 @@ defmodule Emerge.Reconcile do
   end
 
   defp reconcile_children(old_children, new_children, parent_id, seen) do
-    keyed? = Enum.any?(new_children, &has_key?/1)
-
-    if keyed? do
+    if keyed_children?(new_children) do
       reconcile_children_keyed(old_children, new_children, parent_id, seen)
     else
       reconcile_children_indexed(old_children, new_children, parent_id, seen)
@@ -112,7 +110,7 @@ defmodule Emerge.Reconcile do
             {
               [vnode | vnodes],
               [assigned | elements],
-              [insert | patches],
+              patches ++ [insert],
               used_old_ids,
               seen
             }
@@ -138,6 +136,23 @@ defmodule Emerge.Reconcile do
     Map.fetch(old_by_key, key)
   end
 
+  defp keyed_children?(children) do
+    key_count = Enum.count(children, &has_key?/1)
+    total_count = length(children)
+
+    cond do
+      key_count == 0 ->
+        false
+
+      key_count == total_count ->
+        true
+
+      true ->
+        raise ArgumentError,
+              "All siblings must have key when any key is provided"
+    end
+  end
+
   defp reconcile_children_indexed(old_children, new_children, parent_id, seen) do
     {child_vnodes, child_elements, patches, seen} =
       new_children
@@ -154,13 +169,17 @@ defmodule Emerge.Reconcile do
             {vnode, assigned, seen} = build_vnode(child, parent_id, index, seen)
             insert = {:insert_subtree, parent_id, index, assigned}
 
-            {[vnode | vnodes], [assigned | elements], [insert, {:remove, old_child.id} | patches],
-             seen}
+            {
+              [vnode | vnodes],
+              [assigned | elements],
+              patches ++ [{:remove, old_child.id}, insert],
+              seen
+            }
 
           nil ->
             {vnode, assigned, seen} = build_vnode(child, parent_id, index, seen)
             insert = {:insert_subtree, parent_id, index, assigned}
-            {[vnode | vnodes], [assigned | elements], [insert | patches], seen}
+            {[vnode | vnodes], [assigned | elements], patches ++ [insert], seen}
         end
       end)
 
@@ -177,6 +196,8 @@ defmodule Emerge.Reconcile do
     seen = ensure_unique_key!(seen, key)
     local_identity = local_identity(key, index)
     id = make_id(parent_id, element.type, local_identity)
+
+    _ = keyed_children?(element.children)
 
     {child_vnodes, child_elements, seen} =
       element.children

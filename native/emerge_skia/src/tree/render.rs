@@ -187,11 +187,10 @@ fn named_color(name: &str) -> u32 {
 }
 
 fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32, f32, f32, f32)> {
-    let clip_all = attrs.clip.unwrap_or(false);
     let clip_x = attrs.clip_x.unwrap_or(false) || attrs.scrollbar_x.unwrap_or(false);
     let clip_y = attrs.clip_y.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
 
-    if !(clip_all || clip_x || clip_y) {
+    if !(clip_x || clip_y) {
         return None;
     }
 
@@ -211,12 +210,12 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
     let content_width = frame.width - padding_left - padding_right;
     let content_height = frame.height - padding_top - padding_bottom;
 
-    let (x, width) = if clip_all || clip_x {
+    let (x, width) = if clip_x {
         (content_x, content_width)
     } else {
         (frame.x, frame.width)
     };
-    let (y, height) = if clip_all || clip_y {
+    let (y, height) = if clip_y {
         (content_y, content_height)
     } else {
         (frame.y, frame.height)
@@ -1047,7 +1046,8 @@ mod tests {
     #[test]
     fn test_clip_uses_padded_content_box() {
         let mut attrs = Attrs::default();
-        attrs.clip = Some(true);
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
         attrs.padding = Some(Padding::Uniform(10.0));
         let frame = Frame {
             x: 0.0,

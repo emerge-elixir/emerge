@@ -5,9 +5,10 @@ This document summarizes how Emerge assigns ids, builds patches, and serializes 
 ## Identity Model
 - Users build pure `Emerge.Element` trees (`row/column/el/text`).
 - Identity is derived from `parent_id + kind + local_identity`.
-- `local_identity` is `{:k, key}` when a key/id is provided, otherwise `{:i, index}`.
+- `local_identity` is `{:k, key}` when a key is provided, otherwise `{:i, index}`.
 - Ids are generated via a fast hash of `{parent_id, kind, local_identity}`.
-- Keys (via `key/1` or `id:`) must be unique across the whole tree; duplicates raise.
+- Keys (via `key/1`) must be unique across the whole tree; duplicates raise.
+- If any sibling has a key, all siblings must have keys.
 
 ### Practical Rules
 - Use keys for dynamic lists and reorderable children.

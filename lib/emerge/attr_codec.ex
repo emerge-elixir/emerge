@@ -14,7 +14,6 @@ defmodule Emerge.AttrCodec do
     align_y: 6,
     scrollbar_y: 7,
     scrollbar_x: 8,
-    clip: 9,
     clip_y: 10,
     clip_x: 11,
     background: 12,
@@ -97,7 +96,6 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:align_y, value), do: encode_align_y(value)
   defp encode_value(:scrollbar_y, value), do: encode_bool(value)
   defp encode_value(:scrollbar_x, value), do: encode_bool(value)
-  defp encode_value(:clip, value), do: encode_bool(value)
   defp encode_value(:clip_y, value), do: encode_bool(value)
   defp encode_value(:clip_x, value), do: encode_bool(value)
   defp encode_value(:background, value), do: encode_background(value)
@@ -143,7 +141,6 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:align_y, rest), do: decode_align_y(rest)
   defp decode_value(:scrollbar_y, rest), do: decode_bool(rest)
   defp decode_value(:scrollbar_x, rest), do: decode_bool(rest)
-  defp decode_value(:clip, rest), do: decode_bool(rest)
   defp decode_value(:clip_y, rest), do: decode_bool(rest)
   defp decode_value(:clip_x, rest), do: decode_bool(rest)
   defp decode_value(:background, rest), do: decode_background(rest)
