@@ -52,6 +52,8 @@ winit/glutin window (X11 or Wayland)
 - `SkiaRenderer` - wraps Skia surface/context, executes draw commands
 - `RendererResource` - NIF resource holding render state and event proxy
 - `App` - winit `ApplicationHandler` managing window events
+- `LayoutOutput` struct - bundles render commands + event registry, returned by `refresh()` and `layout_and_refresh_default()`
+- `refresh()` / `layout_and_refresh_default()` - produce both outputs after DOM/scroll changes
 
 ### Threading Model
 

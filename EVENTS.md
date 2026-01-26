@@ -90,9 +90,19 @@ CursorUp   -> hit test -> if element_id == pressed_id -> emit :click
 - Add pointer IDs to track multiple touches.
 - Leave gesture recognition in Elixir unless performance needs Rust.
 
-7) Registry invalidation
-- Rebuild registry on layout changes and any transforms that affect hit bounds.
-- Track a revision number to avoid stale hit regions.
+7) Registry invalidation (Implemented)
+
+The event registry must be rebuilt whenever scroll positions change, not just on layout changes.
+This is handled by `layout::refresh()` which produces both render commands AND event registry:
+
+```rust
+// After scroll changes in events.rs
+let output = refresh(&tree_guard);
+state.commands = output.commands;
+processor.rebuild_registry(output.event_registry);
+```
+
+Without rebuilding the registry, click positions would mismatch element locations after scrolling.
 
 ## Conclusions
 
