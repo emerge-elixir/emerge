@@ -41,9 +41,6 @@ defmodule Emerge.UI do
     id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
 
-    # Pass font attributes down to text children
-    child = apply_font_to_text(child, parsed)
-
     %Element{
       type: :el,
       id: id,
@@ -53,33 +50,6 @@ defmodule Emerge.UI do
   end
 
   def el(child), do: el([], child)
-
-  # Apply font attributes from parent el to text child
-  defp apply_font_to_text(%Element{type: :text, attrs: attrs} = text_el, parent_attrs) do
-    font_attrs =
-      parent_attrs
-      |> Map.take([
-        :font_size,
-        :font_color,
-        :font,
-        :font_weight,
-        :font_style,
-        :snap_layout,
-        :snap_text_metrics
-      ])
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-      |> Map.new()
-
-    merged = Map.merge(%{font_size: 16, font_color: :white}, Map.merge(attrs, font_attrs))
-    merged = Map.put(merged, :__attrs_hash, Emerge.Tree.attrs_hash(merged))
-
-    %{
-      text_el
-      | attrs: merged
-    }
-  end
-
-  defp apply_font_to_text(child, _parent_attrs), do: child
 
   @doc """
   A row lays out children horizontally.

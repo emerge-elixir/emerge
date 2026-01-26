@@ -148,6 +148,42 @@ defmodule EmergeSkia do
   end
 
   # ===========================================================================
+  # Font Loading
+  # ===========================================================================
+
+  @doc """
+  Load a font from a file path.
+
+  The font is registered by name and can be used with `Font.family/1` in elements.
+  Load different variants (bold, italic) with separate calls using appropriate weight/italic params.
+
+  ## Parameters
+  - `name` - Font family name to register (e.g., "my-font")
+  - `weight` - Font weight (100-900, 400=normal, 700=bold)
+  - `italic` - Whether this is an italic variant
+  - `path` - Path to the TTF font file
+
+  ## Example
+
+      # Load font variants
+      :ok = EmergeSkia.load_font_file("my-font", 400, false, "assets/fonts/MyFont-Regular.ttf")
+      :ok = EmergeSkia.load_font_file("my-font", 700, false, "assets/fonts/MyFont-Bold.ttf")
+      :ok = EmergeSkia.load_font_file("my-font", 400, true, "assets/fonts/MyFont-Italic.ttf")
+
+      # Use in elements
+      el([Font.family("my-font"), Font.size(16)], text("Hello"))
+      el([Font.family("my-font"), Font.bold()], text("Bold text"))
+  """
+  @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
+          :ok | {:error, term()}
+  def load_font_file(name, weight, italic, path) do
+    case File.read(path) do
+      {:ok, data} -> Native.load_font_nif(name, weight, italic, data)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # ===========================================================================
   # Raster Backend (Offscreen Rendering)
   # ===========================================================================
 

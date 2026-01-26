@@ -339,10 +339,9 @@ defmodule EmergeSkia.EmrgRoundtripTest do
 
     decoded = Emerge.Serialization.decode(roundtrip)
 
-    # Verify colors are preserved
+    # Verify colors are preserved on the parent element
     assert decoded.attrs[:background] == :cyan
-    # The text element is the child
-    [text_el] = decoded.children
-    assert text_el.attrs[:font_color] == :cyan
+    # Font color is inherited from parent during Rust rendering (not copied to text child)
+    assert decoded.attrs[:font_color] == :cyan
   end
 end

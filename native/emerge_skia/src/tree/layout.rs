@@ -5,7 +5,7 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Attrs, Length, Padding};
+use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, Padding, TextAlign};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
@@ -95,8 +95,12 @@ pub struct IntrinsicSize {
 
 /// Trait for measuring text dimensions.
 pub trait TextMeasurer {
-    /// Measure text and return (width, height).
+    /// Measure text and return (width, height) using the default font.
+    #[allow(dead_code)]
     fn measure(&self, text: &str, font_size: f32) -> (f32, f32);
+
+    /// Measure text with custom font and return (width, height).
+    fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
 }
 
 /// Default text measurer using Skia.
@@ -104,17 +108,135 @@ pub struct SkiaTextMeasurer;
 
 impl TextMeasurer for SkiaTextMeasurer {
     fn measure(&self, text: &str, font_size: f32) -> (f32, f32) {
-        use crate::renderer::get_default_typeface;
+        self.measure_with_font(text, font_size, "default", 400, false)
+    }
+
+    fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
+        use crate::renderer::get_typeface_with_fallback;
         use skia_safe::Font;
 
-        let typeface = get_default_typeface();
-        let font = Font::new(typeface, font_size);
+        let typeface = get_typeface_with_fallback(family, weight, italic);
+        let font = Font::new(&*typeface, font_size);
         let (width, _bounds) = font.measure_str(text, None);
         let (_, metrics) = font.metrics();
         let height = metrics.ascent.abs() + metrics.descent;
 
         (width, height)
     }
+}
+
+/// Font context inherited from ancestors during measurement and rendering.
+#[derive(Clone, Debug, Default)]
+pub struct FontContext {
+    pub font_family: Option<String>,
+    pub font_weight: Option<u16>,
+    pub font_italic: Option<bool>,
+    pub font_size: Option<f32>,
+    pub font_color: Option<u32>,
+    pub text_align: Option<TextAlign>,
+}
+
+impl FontContext {
+    /// Merge parent context with element's own attrs (element attrs win).
+    pub fn merge_with_attrs(&self, attrs: &Attrs) -> FontContext {
+        FontContext {
+            font_family: attrs
+                .font
+                .as_ref()
+                .map(|f| match f {
+                    Font::Atom(s) | Font::String(s) => s.clone(),
+                })
+                .or_else(|| self.font_family.clone()),
+            font_weight: attrs
+                .font_weight
+                .as_ref()
+                .map(|w| parse_weight(&w.0))
+                .or(self.font_weight),
+            font_italic: attrs
+                .font_style
+                .as_ref()
+                .map(|s| s.0 == "italic")
+                .or(self.font_italic),
+            font_size: attrs.font_size.map(|s| s as f32).or(self.font_size),
+            font_color: attrs.font_color.as_ref()
+                .map(color_to_u32)
+                .or(self.font_color),
+            text_align: attrs.text_align.or(self.text_align),
+        }
+    }
+}
+
+/// Convert a Color to u32 RGBA format.
+fn color_to_u32(color: &Color) -> u32 {
+    match color {
+        Color::Rgb { r, g, b } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF,
+        Color::Rgba { r, g, b, a } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32),
+        Color::Named(name) => named_color(name),
+    }
+}
+
+/// Map named colors to u32 RGBA values.
+fn named_color(name: &str) -> u32 {
+    match name {
+        "white" => 0xFFFFFFFF,
+        "black" => 0x000000FF,
+        "red" => 0xFF0000FF,
+        "green" => 0x00FF00FF,
+        "blue" => 0x0000FFFF,
+        "cyan" => 0x00FFFFFF,
+        "magenta" => 0xFF00FFFF,
+        "yellow" => 0xFFFF00FF,
+        "orange" => 0xFFA500FF,
+        "purple" => 0x800080FF,
+        "pink" => 0xFFC0CBFF,
+        "gray" | "grey" => 0x808080FF,
+        "navy" => 0x000080FF,
+        "teal" => 0x008080FF,
+        _ => 0xFFFFFFFF,
+    }
+}
+
+/// Parse font weight string to numeric value.
+fn parse_weight(w: &str) -> u16 {
+    match w {
+        "bold" => 700,
+        "normal" => 400,
+        "light" => 300,
+        "thin" => 100,
+        "medium" => 500,
+        "semibold" | "semi_bold" => 600,
+        "extrabold" | "extra_bold" => 800,
+        "black" => 900,
+        _ => w.parse().unwrap_or(400),
+    }
+}
+
+/// Extract font info using inherited context for missing values.
+pub fn font_info_with_inheritance(attrs: &Attrs, inherited: &FontContext) -> (String, u16, bool) {
+    let family = attrs
+        .font
+        .as_ref()
+        .map(|f| match f {
+            Font::Atom(s) | Font::String(s) => s.clone(),
+        })
+        .or_else(|| inherited.font_family.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    let weight = attrs
+        .font_weight
+        .as_ref()
+        .map(|w| parse_weight(&w.0))
+        .or(inherited.font_weight)
+        .unwrap_or(400);
+
+    let italic = attrs
+        .font_style
+        .as_ref()
+        .map(|s| s.0 == "italic")
+        .or(inherited.font_italic)
+        .unwrap_or(false);
+
+    (family, weight, italic)
 }
 
 // =============================================================================
@@ -136,10 +258,10 @@ pub fn layout_tree<M: TextMeasurer>(
     apply_scale_to_tree(tree, scale);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, &root_id, measurer);
+    measure_element(tree, &root_id, measurer, &FontContext::default());
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(tree, &root_id, constraint, 0.0, 0.0);
+    resolve_element(tree, &root_id, constraint, 0.0, 0.0, &FontContext::default());
 }
 
 /// Layout with default Skia text measurer.
@@ -279,13 +401,20 @@ fn scale_padding(padding: &Padding, scale: f32) -> Padding {
 // =============================================================================
 
 /// Measure an element and its children, computing intrinsic sizes.
-/// Reads from pre-scaled attrs.
+/// Reads from pre-scaled attrs. Inherits font context from ancestors.
 fn measure_element<M: TextMeasurer>(
     tree: &mut ElementTree,
     id: &ElementId,
     measurer: &M,
+    inherited: &FontContext,
 ) -> IntrinsicSize {
-    // First measure all children
+    // Get element's attrs to merge with inherited context
+    let element_context = tree
+        .get(id)
+        .map(|e| inherited.merge_with_attrs(&e.attrs))
+        .unwrap_or_else(|| inherited.clone());
+
+    // First measure all children with merged font context
     let child_ids: Vec<ElementId> = tree
         .get(id)
         .map(|e| e.children.clone())
@@ -293,7 +422,7 @@ fn measure_element<M: TextMeasurer>(
 
     let child_sizes: Vec<IntrinsicSize> = child_ids
         .iter()
-        .map(|child_id| measure_element(tree, child_id, measurer))
+        .map(|child_id| measure_element(tree, child_id, measurer, &element_context))
         .collect();
 
     // Now measure this element
@@ -310,8 +439,12 @@ fn measure_element<M: TextMeasurer>(
     let intrinsic = match element.kind {
         ElementKind::Text => {
             let content = attrs.content.as_deref().unwrap_or("");
-            let font_size = attrs.font_size.unwrap_or(16.0) as f32;
-            let (text_width, text_height) = measurer.measure(content, font_size);
+            // Use inherited font context for missing values
+            let font_size = attrs.font_size.map(|s| s as f32)
+                .or(inherited.font_size)
+                .unwrap_or(16.0);
+            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let (text_width, text_height) = measurer.measure_with_font(content, font_size, &family, weight, italic);
             IntrinsicSize {
                 width: text_width + padding.left + padding.right,
                 height: text_height + padding.top + padding.bottom,
@@ -412,6 +545,7 @@ fn resolve_element(
     constraint: Constraint,
     x: f32,
     y: f32,
+    inherited: &FontContext,
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -424,18 +558,31 @@ fn resolve_element(
     let intrinsic = element.frame.map(|f| IntrinsicSize { width: f.width, height: f.height })
         .unwrap_or_default();
 
+    // Merge inherited font context with this element's attrs
+    let element_context = inherited.merge_with_attrs(&attrs);
+
     let padding = get_padding(attrs.padding.as_ref());
     let spacing_x = spacing_x(&attrs);
     let spacing_y = spacing_y(&attrs);
     let align_x = attrs.align_x.unwrap_or_default();
     let align_y = attrs.align_y.unwrap_or_default();
 
+    let scroll_x_enabled = attrs.scrollbar_x.unwrap_or(false);
+    let scroll_y_enabled = attrs.scrollbar_y.unwrap_or(false);
     // Check if this element is scrollable (scrollbars only)
-    let is_scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+    let is_scrollable = scroll_x_enabled || scroll_y_enabled;
+
+    // For text elements with non-Left alignment (direct or inherited), fill width
+    let text_should_fill_width = kind == ElementKind::Text
+        && attrs.width.is_none()
+        && attrs.text_align.or(inherited.text_align).is_some_and(|a| a != TextAlign::Left);
 
     // Resolve final dimensions
     // Use intrinsic size as default for content-based constraints
-    let available_width = if is_content_length(attrs.width.as_ref()) {
+    let available_width = if text_should_fill_width {
+        // Text with alignment should fill available width
+        constraint.width
+    } else if is_content_length(attrs.width.as_ref()) {
         match attrs.width.as_ref() {
             Some(Length::Minimum(_, inner)) if is_content_length(Some(inner)) => {
                 AvailableSpace::MinContent
@@ -459,7 +606,13 @@ fn resolve_element(
     let effective_constraint = Constraint::with_space(available_width, available_height);
     let max_width = effective_constraint.max_width(intrinsic.width);
     let max_height = effective_constraint.max_height(intrinsic.height);
-    let width = resolve_length(attrs.width.as_ref(), intrinsic.width, max_width);
+
+    // For text with alignment, use Fill behavior for width
+    let width = if text_should_fill_width {
+        max_width
+    } else {
+        resolve_length(attrs.width.as_ref(), intrinsic.width, max_width)
+    };
     let height = resolve_length(attrs.height.as_ref(), intrinsic.height, max_height);
 
     // Update frame (content size will be updated after children are resolved)
@@ -493,6 +646,9 @@ fn resolve_element(
                     tree, &child_ids, content_x, content_y,
                     content_width, content_height,
                     align_x, align_y,  // Pass parent alignment for child positioning
+                    scroll_x_enabled,
+                    scroll_y_enabled,
+                    &element_context,
                 );
                 // Update content dimensions when there are children
                 if let Some(element) = tree.get_mut(id)
@@ -519,6 +675,7 @@ fn resolve_element(
                     spacing_x,
                     allow_fill_width,
                     space_evenly,
+                    &element_context,
                 );
                 // Update content dimensions when there are children
                 if let Some(element) = tree.get_mut(id)
@@ -541,6 +698,7 @@ fn resolve_element(
                 content_height,
                 spacing_x,
                 spacing_y,
+                &element_context,
             );
             // Update frame height if content height exceeds initial estimate (due to wrapping)
             // For non-scrollable wrapped rows, expand the frame
@@ -573,6 +731,8 @@ fn resolve_element(
                 spacing_y,
                 allow_fill_height,
                 space_evenly,
+                is_scrollable,
+                &element_context,
             );
             // Update frame height if content height exceeds initial estimate (e.g., due to wrapped_row children)
             // For non-scrollable columns, expand the frame
@@ -710,6 +870,9 @@ fn resolve_el_children(
     content_height: f32,
     parent_align_x: AlignX,
     parent_align_y: AlignY,
+    scroll_x_enabled: bool,
+    scroll_y_enabled: bool,
+    inherited: &FontContext,
 ) -> (f32, f32) {
     let mut max_child_width = 0.0_f32;
     let mut max_child_height = 0.0_f32;
@@ -726,14 +889,16 @@ fn resolve_el_children(
         let child_constraint = Constraint::new(content_width, content_height);
 
         // Resolve child first to get final size
-        resolve_element(tree, child_id, child_constraint, 0.0, 0.0);
+        resolve_element(tree, child_id, child_constraint, 0.0, 0.0, inherited);
 
         let Some(child) = tree.get(child_id) else { continue };
         let Some(frame) = &child.frame else { continue };
 
         // Track max child dimensions for content size
-        max_child_width = max_child_width.max(frame.content_width);
-        max_child_height = max_child_height.max(frame.content_height);
+        let child_content_width = if scroll_x_enabled { frame.width } else { frame.content_width };
+        let child_content_height = if scroll_y_enabled { frame.height } else { frame.content_height };
+        max_child_width = max_child_width.max(child_content_width);
+        max_child_height = max_child_height.max(child_content_height);
 
         let child_x = match align_x {
             AlignX::Left => content_x,
@@ -772,6 +937,7 @@ fn resolve_row_children(
     spacing: f32,
     allow_fill_width: bool,
     space_evenly: bool,
+    inherited: &FontContext,
 ) -> (f32, f32) {
     if child_ids.is_empty() {
         return (0.0, 0.0);
@@ -864,7 +1030,7 @@ fn resolve_row_children(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, current_x, content_y);
+            resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited);
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -915,7 +1081,7 @@ fn resolve_row_children(
         let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, current_x, content_y);
+        resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited);
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -935,7 +1101,7 @@ fn resolve_row_children(
 
         right_x -= child_width;
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, right_x, content_y);
+        resolve_element(tree, child_id, child_constraint, right_x, content_y, inherited);
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -960,7 +1126,7 @@ fn resolve_row_children(
             let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, center_x, content_y);
+            resolve_element(tree, child_id, child_constraint, center_x, content_y, inherited);
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -1010,6 +1176,8 @@ fn apply_vertical_alignment(
 
 /// Resolve children for Column with fill distribution and vertical self-alignment.
 /// Children are partitioned by align_y into top/center/bottom zones.
+/// For scrollable columns, bottom-aligned children are positioned after top content.
+/// For non-scrollable columns, bottom-aligned children are at the container bottom.
 /// Returns the actual content height after resolution.
 #[allow(clippy::too_many_arguments)]
 fn resolve_column_children(
@@ -1022,6 +1190,8 @@ fn resolve_column_children(
     spacing: f32,
     allow_fill_height: bool,
     space_evenly: bool,
+    is_scrollable: bool,
+    inherited: &FontContext,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -1107,7 +1277,7 @@ fn resolve_column_children(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, current_y);
+            resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited);
 
             let (actual_height, frame_content_width) = tree
                 .get(child_id)
@@ -1147,7 +1317,7 @@ fn resolve_column_children(
         let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(content_width, child_height);
-        resolve_element(tree, child_id, child_constraint, content_x, current_y);
+        resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited);
 
         // Get actual frame height (may differ from constraint for WrappedRow etc.)
         let (actual_height, frame_content_width) = tree.get(child_id)
@@ -1165,46 +1335,82 @@ fn resolve_column_children(
         actual_top_height += top_spacing;
     }
 
-    // Position bottom-aligned children from bottom edge
-    let mut bottom_y = content_y + content_height;
+    // Position bottom-aligned children
+    // For scrollable columns: position after top content (so you can scroll to see them)
+    // For non-scrollable columns: position at container bottom (traditional align_bottom behavior)
     let mut actual_bottom_height = 0.0_f32;
-    for child_id in bottom_children.iter().rev() {
-        let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-        let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
-        bottom_y -= child_height;
-        let child_constraint = Constraint::new(content_width, child_height);
-        resolve_element(tree, child_id, child_constraint, content_x, bottom_y);
+    if is_scrollable {
+        // Scrollable: position bottom children after top content, going down
+        let mut current_bottom_y = content_y + actual_top_height;
+        for child_id in &bottom_children {
+            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
-        // Get actual frame height
-        let (actual_height, frame_content_width) = tree.get(child_id)
-            .and_then(|child| child.frame.as_ref())
-            .map(|frame| (frame.height, frame.content_width))
-            .unwrap_or((child_height, 0.0));
+            let child_constraint = Constraint::new(content_width, child_height);
+            resolve_element(tree, child_id, child_constraint, content_x, current_bottom_y, inherited);
 
-        max_child_width = max_child_width.max(frame_content_width);
+            let (actual_height, frame_content_width) = tree.get(child_id)
+                .and_then(|child| child.frame.as_ref())
+                .map(|frame| (frame.height, frame.content_width))
+                .unwrap_or((child_height, 0.0));
 
-        // Adjust position if actual height differs from constraint
-        let height_diff = actual_height - child_height;
-        if height_diff != 0.0 {
-            bottom_y -= height_diff;
-            shift_subtree(tree, child_id, 0.0, -height_diff);
+            max_child_width = max_child_width.max(frame_content_width);
+            apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+            actual_bottom_height += actual_height;
+            current_bottom_y += actual_height + spacing;
         }
+        if !bottom_children.is_empty() {
+            actual_bottom_height += bottom_spacing;
+        }
+    } else {
+        // Non-scrollable: position from container bottom, going up
+        let mut bottom_y = content_y + content_height;
+        for child_id in bottom_children.iter().rev() {
+            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
-        apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+            bottom_y -= child_height;
+            let child_constraint = Constraint::new(content_width, child_height);
+            resolve_element(tree, child_id, child_constraint, content_x, bottom_y, inherited);
 
-        actual_bottom_height += actual_height;
-        bottom_y -= spacing;
-    }
-    if !bottom_children.is_empty() {
-        actual_bottom_height += bottom_spacing;
+            let (actual_height, frame_content_width) = tree.get(child_id)
+                .and_then(|child| child.frame.as_ref())
+                .map(|frame| (frame.height, frame.content_width))
+                .unwrap_or((child_height, 0.0));
+
+            max_child_width = max_child_width.max(frame_content_width);
+
+            // Adjust position if actual height differs from constraint
+            let height_diff = actual_height - child_height;
+            if height_diff != 0.0 {
+                bottom_y -= height_diff;
+                shift_subtree(tree, child_id, 0.0, -height_diff);
+            }
+
+            apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+            actual_bottom_height += actual_height;
+            bottom_y -= spacing;
+        }
+        if !bottom_children.is_empty() {
+            actual_bottom_height += bottom_spacing;
+        }
     }
 
     // Position center-aligned children in the middle of remaining space
+    // For scrollable columns, center children go between top and bottom (which are sequential)
+    // For non-scrollable columns, center children go in the gap between top-end and bottom-start
     let mut actual_center_height = 0.0_f32;
     if !center_children.is_empty() {
         let top_end = content_y + actual_top_height;
-        let bottom_start = content_y + content_height - actual_bottom_height;
+        let bottom_start = if is_scrollable {
+            // In scrollable, bottom children come after top, so center goes between
+            content_y + actual_top_height
+        } else {
+            content_y + content_height - actual_bottom_height
+        };
         let available_center = (bottom_start - top_end).max(0.0);
         let center_start = top_end + (available_center - total_center_height) / 2.0;
 
@@ -1214,7 +1420,7 @@ fn resolve_column_children(
             let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, center_y);
+            resolve_element(tree, child_id, child_constraint, content_x, center_y, inherited);
 
             let (actual_height, frame_content_width) = tree.get(child_id)
                 .and_then(|child| child.frame.as_ref())
@@ -1262,6 +1468,7 @@ fn apply_horizontal_alignment(
 /// Resolve children for WrappedRow.
 /// Reads from pre-scaled attrs.
 /// Returns the actual content height after wrapping.
+#[allow(clippy::too_many_arguments)]
 fn resolve_wrapped_row_children(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -1271,6 +1478,7 @@ fn resolve_wrapped_row_children(
     _content_height: f32,
     spacing_x: f32,
     spacing_y: f32,
+    inherited: &FontContext,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -1318,7 +1526,7 @@ fn resolve_wrapped_row_children(
 
         for (child_id, child_width, _) in &line {
             let child_constraint = Constraint::new(*child_width, line_height);
-            resolve_element(tree, child_id, child_constraint, current_x, current_y);
+            resolve_element(tree, child_id, child_constraint, current_x, current_y, inherited);
             current_x += child_width + spacing_x;
         }
 
@@ -1452,6 +1660,10 @@ mod tests {
     struct MockTextMeasurer;
     impl TextMeasurer for MockTextMeasurer {
         fn measure(&self, text: &str, font_size: f32) -> (f32, f32) {
+            self.measure_with_font(text, font_size, "default", 400, false)
+        }
+
+        fn measure_with_font(&self, text: &str, font_size: f32, _family: &str, _weight: u16, _italic: bool) -> (f32, f32) {
             // Simple mock: 8px per char, height = font_size
             (text.len() as f32 * 8.0, font_size)
         }
@@ -2941,6 +3153,67 @@ mod tests {
         // Content size reflects the child's dimensions
         assert_eq!(el_frame.content_width, 80.0);
         assert_eq!(el_frame.content_height, 60.0);
+    }
+
+    #[test]
+    fn test_scrollable_el_uses_child_frame_height_for_content() {
+        let mut tree = ElementTree::new();
+
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(100.0));
+        el_attrs.height = Some(Length::Px(30.0));
+        el_attrs.scrollbar_y = Some(true);
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.spacing = Some(10.0);
+
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let top = make_element("top", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+
+        let bottom = make_element("bottom", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(80.0));
+            a.height = Some(Length::Px(20.0));
+            a.align_y = Some(AlignY::Bottom);
+            a
+        });
+
+        let el_id = el.id.clone();
+        let col_id = col.id.clone();
+        let top_id = top.id.clone();
+        let bottom_id = bottom.id.clone();
+
+        col.children = vec![top_id.clone(), bottom_id.clone()];
+        el.children = vec![col_id.clone()];
+
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(col);
+        tree.insert(top);
+        tree.insert(bottom);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
+        let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+
+        // Column uses its own content height (missing spacing between groups).
+        assert_eq!(col_frame.height, 50.0);
+        assert_eq!(col_frame.content_height, 40.0);
+
+        // Scrollable parent should size content from child frame height.
+        assert_eq!(el_frame.content_height, 50.0);
+
+        let el_attrs = &tree.get(&el_id).unwrap().attrs;
+        assert_eq!(el_attrs.scroll_y_max, Some(20.0));
     }
 
     #[test]

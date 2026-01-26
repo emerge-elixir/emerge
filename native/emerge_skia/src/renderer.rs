@@ -6,12 +6,13 @@
 //! - `Renderer` struct that executes draw commands on a Skia surface
 //! - Font cache for text rendering
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
-    Color, ColorType, Font, FontMgr, FontStyle, Paint, PaintStyle, Point, RRect, Rect, Shader,
-    Surface, TileMode, Typeface, Vector,
+    Color, ColorType, Font, FontMgr, Paint, PaintStyle, Point, RRect, Rect, Shader, Surface,
+    TileMode, Typeface, Vector,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
 
@@ -44,6 +45,8 @@ pub enum DrawCmd {
     Border(f32, f32, f32, f32, f32, f32, u32),
     BorderCorners(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Text(f32, f32, String, f32, u32),
+    /// Text with custom font: x, y, text, font_size, color, family, weight, italic
+    TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
     Gradient(f32, f32, f32, f32, u32, u32, f32),
     PushClip(f32, f32, f32, f32),
     PushClipRounded(f32, f32, f32, f32, f32),
@@ -163,17 +166,117 @@ impl Default for RenderState {
 // Font Cache
 // ============================================================================
 
-static DEFAULT_TYPEFACE: OnceLock<Typeface> = OnceLock::new();
+// Embedded default fonts (Inter, OFL licensed)
+static DEFAULT_FONT_REGULAR: &[u8] = include_bytes!("fonts/Inter-Regular.ttf");
+static DEFAULT_FONT_BOLD: &[u8] = include_bytes!("fonts/Inter-Bold.ttf");
+static DEFAULT_FONT_ITALIC: &[u8] = include_bytes!("fonts/Inter-Italic.ttf");
 
-pub fn get_default_typeface() -> &'static Typeface {
-    DEFAULT_TYPEFACE.get_or_init(|| {
+/// Key for looking up fonts in the cache.
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+pub struct FontKey {
+    pub family: String,
+    pub weight: u16,   // 100-900, 400=normal, 700=bold
+    pub italic: bool,
+}
+
+impl FontKey {
+    pub fn new(family: impl Into<String>, weight: u16, italic: bool) -> Self {
+        Self {
+            family: family.into(),
+            weight,
+            italic,
+        }
+    }
+
+    pub fn default_regular() -> Self {
+        Self::new("default", 400, false)
+    }
+
+    pub fn default_bold() -> Self {
+        Self::new("default", 700, false)
+    }
+
+    pub fn default_italic() -> Self {
+        Self::new("default", 400, true)
+    }
+}
+
+impl Default for FontKey {
+    fn default() -> Self {
+        Self::default_regular()
+    }
+}
+
+static FONT_CACHE: OnceLock<Mutex<HashMap<FontKey, Arc<Typeface>>>> = OnceLock::new();
+
+fn get_font_cache() -> &'static Mutex<HashMap<FontKey, Arc<Typeface>>> {
+    FONT_CACHE.get_or_init(|| {
+        let mut cache = HashMap::new();
         let font_mgr = FontMgr::new();
-        font_mgr
-            .match_family_style("sans-serif", FontStyle::normal())
-            .or_else(|| font_mgr.match_family_style("DejaVu Sans", FontStyle::normal()))
-            .or_else(|| font_mgr.match_family_style("", FontStyle::normal()))
-            .expect("No fonts available on system")
+
+        // Load embedded default fonts
+        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_REGULAR, 0) {
+            cache.insert(FontKey::default_regular(), Arc::new(tf));
+        }
+        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD, 0) {
+            cache.insert(FontKey::default_bold(), Arc::new(tf));
+        }
+        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_ITALIC, 0) {
+            cache.insert(FontKey::default_italic(), Arc::new(tf));
+        }
+
+        Mutex::new(cache)
     })
+}
+
+/// Get a typeface from the cache by key.
+pub fn get_typeface(key: &FontKey) -> Option<Arc<Typeface>> {
+    let cache = get_font_cache().lock().ok()?;
+    cache.get(key).cloned()
+}
+
+/// Get a typeface with fallback to default if not found.
+pub fn get_typeface_with_fallback(family: &str, weight: u16, italic: bool) -> Arc<Typeface> {
+    // Try exact match
+    let key = FontKey::new(family, weight, italic);
+    if let Some(tf) = get_typeface(&key) {
+        return tf;
+    }
+
+    // Try same family with normal weight/style
+    let key = FontKey::new(family, 400, false);
+    if let Some(tf) = get_typeface(&key) {
+        return tf;
+    }
+
+    // Try default with requested weight/style
+    let key = FontKey::new("default", weight, italic);
+    if let Some(tf) = get_typeface(&key) {
+        return tf;
+    }
+
+    // Fall back to default regular
+    get_typeface(&FontKey::default_regular()).expect("embedded default font must exist")
+}
+
+/// Load a font from binary data and register it in the cache.
+pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result<(), String> {
+    let font_mgr = FontMgr::new();
+    let typeface = font_mgr
+        .new_from_data(data, 0)
+        .ok_or_else(|| "Invalid font data".to_string())?;
+
+    let cache = get_font_cache();
+    let mut cache = cache.lock().map_err(|_| "Font cache lock poisoned")?;
+
+    cache.insert(FontKey::new(family, weight, italic), Arc::new(typeface));
+
+    Ok(())
+}
+
+/// Get the default typeface (for backward compatibility).
+pub fn get_default_typeface() -> Arc<Typeface> {
+    get_typeface_with_fallback("default", 400, false)
 }
 
 // ============================================================================
@@ -267,6 +370,7 @@ impl Renderer {
         canvas.clear(state.clear_color);
 
         let typeface = get_default_typeface();
+        let typeface = typeface.as_ref();
 
         for cmd in &state.commands {
             match cmd {
@@ -336,6 +440,15 @@ impl Renderer {
 
                 DrawCmd::Text(x, y, text, font_size, fill) => {
                     let font = Font::new(typeface, *font_size);
+                    let mut paint = Paint::default();
+                    paint.set_color(color_from_u32(*fill));
+                    paint.set_anti_alias(true);
+                    canvas.draw_str(text, (*x, *y), &font, &paint);
+                }
+
+                DrawCmd::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
+                    let tf = get_typeface_with_fallback(family, *weight, *italic);
+                    let font = Font::new(&*tf, *font_size);
                     let mut paint = Paint::default();
                     paint.set_color(color_from_u32(*fill));
                     paint.set_anti_alias(true);

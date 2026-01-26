@@ -68,6 +68,23 @@ defmodule EmergeSkia.Native do
   def measure_text(_text, _font_size), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Load a font from binary data and register it with a name.
+
+  ## Parameters
+  - `name` - Font family name to register (e.g., "my-font")
+  - `weight` - Font weight (100-900, 400=normal, 700=bold)
+  - `italic` - Whether this is an italic variant
+  - `data` - Binary font data (TTF file contents)
+
+  ## Example
+      {:ok, data} = File.read("fonts/MyFont-Bold.ttf")
+      :ok = EmergeSkia.Native.load_font_nif("my-font", 700, false, data)
+  """
+  @spec load_font_nif(String.t(), non_neg_integer(), boolean(), binary()) ::
+          :ok | {:error, String.t()}
+  def load_font_nif(_name, _weight, _italic, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Check if the renderer is still running.
   """
   @spec is_running(reference()) :: boolean()

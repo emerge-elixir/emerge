@@ -26,7 +26,7 @@ use backend::wayland::{self, UserEvent, WaylandConfig};
 use events::EventProcessor;
 use tree::layout::layout_and_refresh_default;
 use input::InputHandler;
-use renderer::{DrawCmd, RenderState, get_default_typeface};
+use renderer::{DrawCmd, RenderState, get_default_typeface, load_font};
 use tree::element::ElementTree;
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
@@ -231,7 +231,7 @@ fn renderer_patch(
 #[rustler::nif]
 fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
     let typeface = get_default_typeface();
-    let font = Font::new(typeface, font_size);
+    let font = Font::new(&*typeface, font_size);
 
     let (width, _bounds) = font.measure_str(&text, None);
     let (_, metrics) = font.metrics();
@@ -241,6 +241,18 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
     let line_height = ascent + descent;
 
     (width, line_height, ascent, descent)
+}
+
+/// Load a font from binary data and register it with a name.
+///
+/// - `name`: Family name to register (e.g., "my-font")
+/// - `weight`: Font weight (100-900, 400=normal, 700=bold)
+/// - `italic`: Whether this is an italic variant
+/// - `data`: Binary font data (TTF file contents)
+#[rustler::nif(schedule = "DirtyIo")]
+fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<Atom, String> {
+    load_font(&name, weight as u16, italic, data.as_slice())?;
+    Ok(atoms::ok())
 }
 
 #[rustler::nif]
