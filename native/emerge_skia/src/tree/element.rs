@@ -146,6 +146,33 @@ impl ElementTree {
         self.nodes.clear();
     }
 
+    /// Apply scroll delta to an element. Returns true if scroll changed.
+    pub fn apply_scroll(&mut self, id: &ElementId, dx: f32, dy: f32) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+        let Some(frame) = element.frame else {
+            return false;
+        };
+
+        // Clamp to bounds
+        let max_x = (frame.content_width - frame.width).max(0.0);
+        let max_y = (frame.content_height - frame.height).max(0.0);
+        let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
+        let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+        let next_x = (current_x - dx).clamp(0.0, max_x);
+        let next_y = (current_y - dy).clamp(0.0, max_y);
+
+        if (next_x - current_x).abs() < f32::EPSILON
+            && (next_y - current_y).abs() < f32::EPSILON
+        {
+            return false;
+        }
+
+        element.attrs.scroll_x = Some(next_x as f64);
+        element.attrs.scroll_y = Some(next_y as f64);
+        true
+    }
 }
 
 #[cfg(test)]

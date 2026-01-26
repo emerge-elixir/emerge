@@ -23,7 +23,8 @@ mod tree;
 
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use events::{build_event_registry, EventProcessor};
+use events::EventProcessor;
+use tree::layout::layout_and_refresh_default;
 use input::InputHandler;
 use renderer::{DrawCmd, RenderState, get_default_typeface};
 use tree::element::ElementTree;
@@ -184,14 +185,13 @@ fn renderer_upload(
     if let Ok(mut tree) = renderer.tree.lock() {
         *tree = decoded;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
-        if let Ok(mut processor) = renderer.event_processor.lock() {
-            processor.rebuild_registry(build_event_registry(&tree));
-        }
-        let commands = tree::render::render_tree(&tree);
+        let output = layout_and_refresh_default(&mut tree, constraint, scale as f32);
 
+        if let Ok(mut processor) = renderer.event_processor.lock() {
+            processor.rebuild_registry(output.event_registry);
+        }
         if let Ok(mut state) = renderer.render_state.lock() {
-            state.commands = commands;
+            state.commands = output.commands;
         }
         renderer.request_redraw();
         Ok(atoms::ok())
@@ -213,14 +213,13 @@ fn renderer_patch(
     if let Ok(mut tree) = renderer.tree.lock() {
         tree::patch::apply_patches(&mut tree, patches)?;
         let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
-        if let Ok(mut processor) = renderer.event_processor.lock() {
-            processor.rebuild_registry(build_event_registry(&tree));
-        }
-        let commands = tree::render::render_tree(&tree);
+        let output = layout_and_refresh_default(&mut tree, constraint, scale as f32);
 
+        if let Ok(mut processor) = renderer.event_processor.lock() {
+            processor.rebuild_registry(output.event_registry);
+        }
         if let Ok(mut state) = renderer.render_state.lock() {
-            state.commands = commands;
+            state.commands = output.commands;
         }
         renderer.request_redraw();
         Ok(atoms::ok())
@@ -344,6 +343,22 @@ fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom
     }
 }
 
+#[rustler::nif]
+fn tree_upload_roundtrip<'a>(
+    env: Env<'a>,
+    tree_res: ResourceArc<TreeResource>,
+    data: Binary,
+) -> Result<Binary<'a>, String> {
+    let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        *tree = decoded;
+        Ok(encode_tree_binary(env, &tree))
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
 /// Apply patches to an existing tree.
 #[rustler::nif]
 fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
@@ -353,6 +368,22 @@ fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom,
     if let Ok(mut tree) = tree_res.tree.lock() {
         tree::patch::apply_patches(&mut tree, patches)?;
         Ok(atoms::ok())
+    } else {
+        Err("failed to lock tree".to_string())
+    }
+}
+
+#[rustler::nif]
+fn tree_patch_roundtrip<'a>(
+    env: Env<'a>,
+    tree_res: ResourceArc<TreeResource>,
+    data: Binary,
+) -> Result<Binary<'a>, String> {
+    let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
+
+    if let Ok(mut tree) = tree_res.tree.lock() {
+        tree::patch::apply_patches(&mut tree, patches)?;
+        Ok(encode_tree_binary(env, &tree))
     } else {
         Err("failed to lock tree".to_string())
     }
@@ -427,10 +458,14 @@ fn tree_layout<'a>(
 #[rustler::nif]
 fn tree_roundtrip<'a>(env: Env<'a>, data: Binary) -> Result<Binary<'a>, String> {
     let tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-    let encoded = tree::serialize::encode_tree(&tree);
+    Ok(encode_tree_binary(env, &tree))
+}
+
+fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
+    let encoded = tree::serialize::encode_tree(tree);
     let mut binary = NewBinary::new(env, encoded.len());
     binary.as_mut_slice().copy_from_slice(&encoded);
-    Ok(binary.into())
+    binary.into()
 }
 
 // ============================================================================

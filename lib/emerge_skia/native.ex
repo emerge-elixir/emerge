@@ -13,7 +13,8 @@ defmodule EmergeSkia.Native do
 
   Returns a renderer resource that can be used with other functions.
   """
-  @spec start(String.t(), non_neg_integer(), non_neg_integer()) :: {:ok, reference()} | {:error, term()}
+  @spec start(String.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, reference()} | {:error, term()}
   def start(_title, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -44,15 +45,19 @@ defmodule EmergeSkia.Native do
   Upload a full EMRG tree, run layout with scale factor, and render immediately.
   Scale is applied to all pixel-based attributes.
   """
-  @spec renderer_upload(reference(), binary(), float(), float(), float()) :: :ok | {:error, String.t()}
-  def renderer_upload(_renderer, _data, _width, _height, _scale), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_upload(reference(), binary(), float(), float(), float()) ::
+          :ok | {:error, String.t()}
+  def renderer_upload(_renderer, _data, _width, _height, _scale),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Apply EMRG patches, run layout with scale factor, and render immediately.
   Scale is applied to all pixel-based attributes.
   """
-  @spec renderer_patch(reference(), binary(), float(), float(), float()) :: :ok | {:error, String.t()}
-  def renderer_patch(_renderer, _data, _width, _height, _scale), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_patch(reference(), binary(), float(), float(), float()) ::
+          :ok | {:error, String.t()}
+  def renderer_patch(_renderer, _data, _width, _height, _scale),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Measure text dimensions.
@@ -131,10 +136,22 @@ defmodule EmergeSkia.Native do
   def tree_upload(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Upload a full tree and return the encoded EMRG binary.
+  """
+  @spec tree_upload_roundtrip(reference(), binary()) :: {:ok, binary()} | {:error, String.t()}
+  def tree_upload_roundtrip(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Apply patches to an existing tree.
   """
   @spec tree_patch(reference(), binary()) :: :ok | {:error, String.t()}
   def tree_patch(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Apply patches to an existing tree and return the encoded EMRG binary.
+  """
+  @spec tree_patch_roundtrip(reference(), binary()) :: {:ok, binary()} | {:error, String.t()}
+  def tree_patch_roundtrip(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get the number of nodes in the tree.

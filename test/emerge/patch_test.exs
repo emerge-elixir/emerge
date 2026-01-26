@@ -5,6 +5,7 @@ defmodule Emerge.PatchTest do
 
   alias Emerge.Patch
   alias Emerge.Tree
+  alias Emerge.UI.{Background, Border, Font}
 
   test "diff detects attribute changes and inserts" do
     {old, _state} =
@@ -24,10 +25,11 @@ defmodule Emerge.PatchTest do
 
     patches = Patch.diff(old, new)
 
-    assert {:set_attrs, _id, _} = Enum.find(patches, fn
-      {:set_attrs, id, _} when is_integer(id) -> true
-      _ -> false
-    end)
+    assert {:set_attrs, _id, _} =
+             Enum.find(patches, fn
+               {:set_attrs, id, _} when is_integer(id) -> true
+               _ -> false
+             end)
 
     assert Enum.any?(patches, fn
              {:insert_subtree, _parent, _index, _} -> true
@@ -52,6 +54,7 @@ defmodule Emerge.PatchTest do
       )
 
     patches = Patch.diff(old, new)
+
     assert Enum.any?(patches, fn
              {:remove, id} when is_integer(id) -> true
              _ -> false
@@ -460,6 +463,32 @@ defmodule Emerge.PatchTest do
            end)
   end
 
+  test "stateful patch roundtrip matches full tree" do
+    tree_a = demo_tree(40.0)
+    tree_b = demo_tree(nil)
+
+    {tree_a, _state} = Tree.assign_ids(tree_a)
+    {tree_b, _state} = Tree.assign_ids(tree_b)
+
+    bin_a = Emerge.Serialization.encode_tree(tree_a)
+    bin_b = Emerge.Serialization.encode_tree(tree_b)
+
+    patches = Patch.diff(tree_a, tree_b)
+    patch_bin = Patch.encode(patches)
+
+    tree = EmergeSkia.Native.tree_new()
+
+    upload_roundtrip = unwrap_binary(EmergeSkia.Native.tree_upload_roundtrip(tree, bin_a))
+    expected_upload = unwrap_binary(EmergeSkia.Native.tree_roundtrip(bin_a))
+
+    assert upload_roundtrip == expected_upload
+
+    patch_roundtrip = unwrap_binary(EmergeSkia.Native.tree_patch_roundtrip(tree, patch_bin))
+    expected = unwrap_binary(EmergeSkia.Native.tree_roundtrip(bin_b))
+
+    assert patch_roundtrip == expected
+  end
+
   test "insert preserving existing order skips set_children" do
     state = Emerge.DiffState.new()
 
@@ -596,8 +625,10 @@ defmodule Emerge.PatchTest do
 
   defp normalize_patch({:set_attrs, id, attrs}), do: {:set_attrs, id, normalize_attrs(attrs)}
   defp normalize_patch({:set_children, id, children}), do: {:set_children, id, children}
+
   defp normalize_patch({:insert_subtree, parent, index, subtree}),
     do: {:insert_subtree, parent, index, normalize_element(subtree)}
+
   defp normalize_patch({:remove, id}), do: {:remove, id}
 
   defp normalize_element(%Emerge.Element{} = element) do
@@ -636,4 +667,36 @@ defmodule Emerge.PatchTest do
   defp normalize_value({a, b}), do: {normalize_value(a), normalize_value(b)}
 
   defp normalize_value(value), do: value
+
+  defp demo_tree(scroll_y) do
+    content_attrs =
+      [
+        width(fill()),
+        height(fill()),
+        padding(8),
+        scrollbar_y(),
+        Background.color({:color_rgb, {40, 40, 60}}),
+        Border.rounded(6)
+      ]
+      |> maybe_add_scroll(scroll_y)
+
+    column([id: :root], [
+      row([width(fill())], [
+        column([width(px(120)), padding(6)], [
+          el(text("Menu"))
+        ]),
+        column(content_attrs, [
+          el([Font.size(14), Font.color(:white)], text("Page")),
+          el([Font.size(12), Font.color({:color_rgb, {180, 180, 200}})], text("Content"))
+        ])
+      ])
+    ])
+  end
+
+  defp maybe_add_scroll(attrs, nil), do: attrs
+  defp maybe_add_scroll(attrs, value), do: [scroll_y(value) | attrs]
+
+  defp unwrap_binary({:ok, bin}) when is_binary(bin), do: bin
+  defp unwrap_binary(bin) when is_binary(bin), do: bin
+  defp unwrap_binary(other), do: flunk("expected binary, got #{inspect(other)}")
 end

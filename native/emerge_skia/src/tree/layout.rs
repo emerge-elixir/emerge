@@ -1394,6 +1394,51 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
     }
 }
 
+// =============================================================================
+// Layout Output (combined render + event registry)
+// =============================================================================
+
+use super::render::render_tree;
+use crate::events::{build_event_registry, EventNode};
+use crate::renderer::DrawCmd;
+
+/// Output of layout refresh: both render commands and event registry.
+pub struct LayoutOutput {
+    pub commands: Vec<DrawCmd>,
+    pub event_registry: Vec<EventNode>,
+}
+
+/// After DOM/scroll changes, produce new outputs without re-running layout.
+/// Use this when only scroll positions changed (not structure).
+pub fn refresh(tree: &ElementTree) -> LayoutOutput {
+    LayoutOutput {
+        commands: render_tree(tree),
+        event_registry: build_event_registry(tree),
+    }
+}
+
+/// Full layout (for structure changes) followed by refresh.
+#[allow(dead_code)]
+pub fn layout_and_refresh<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    measurer: &M,
+) -> LayoutOutput {
+    layout_tree(tree, constraint, scale, measurer);
+    refresh(tree)
+}
+
+/// Full layout with default Skia text measurer, followed by refresh.
+pub fn layout_and_refresh_default(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+) -> LayoutOutput {
+    layout_tree_default(tree, constraint, scale);
+    refresh(tree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

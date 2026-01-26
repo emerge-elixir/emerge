@@ -8,7 +8,7 @@ use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 use crate::input::{InputEvent, EVENT_CLICK, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS};
 use crate::renderer::RenderState;
 use crate::tree::element::{ElementId, ElementTree};
-use crate::tree::render::render_tree;
+use crate::tree::layout::refresh;
 
 const EVENT_POLL_SLEEP: Duration = Duration::from_millis(2);
 const DRAG_DEADZONE: f32 = 10.0;
@@ -267,30 +267,6 @@ pub fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u8) -> O
     None
 }
 
-pub fn apply_scroll_delta(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) -> bool {
-    let Some(element) = tree.get_mut(id) else {
-        return false;
-    };
-    let Some(frame) = element.frame else {
-        return false;
-    };
-
-    let max_x = (frame.content_width - frame.width).max(0.0);
-    let max_y = (frame.content_height - frame.height).max(0.0);
-    let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
-    let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
-    let next_x = (current_x - dx).clamp(0.0, max_x);
-    let next_y = (current_y - dy).clamp(0.0, max_y);
-
-    if (next_x - current_x).abs() < f32::EPSILON && (next_y - current_y).abs() < f32::EPSILON {
-        return false;
-    }
-
-    element.attrs.scroll_x = Some(next_x as f64);
-    element.attrs.scroll_y = Some(next_y as f64);
-    true
-}
-
 fn radii_from_border_radius(
     radius: Option<&crate::tree::attrs::BorderRadius>,
 ) -> Option<CornerRadii> {
@@ -420,10 +396,10 @@ impl EventProcessor {
                     if let Some(pid) = target.lock().ok().and_then(|t| *t) {
                         send_input_event(pid, &event);
                     }
-                    if let Some(clicked_id) = guard.detect_click(&event) {
-                        if let Some(pid) = target.lock().ok().and_then(|t| *t) {
-                            send_element_event(pid, &clicked_id, click());
-                        }
+                    if let Some(clicked_id) = guard.detect_click(&event)
+                        && let Some(pid) = target.lock().ok().and_then(|t| *t)
+                    {
+                        send_element_event(pid, &clicked_id, click());
                     }
 
                     if let Some(changed) = guard.handle_drag_scroll(&event, &mut tree_guard) {
@@ -437,9 +413,14 @@ impl EventProcessor {
             }
 
             if needs_redraw {
-                let commands = render_tree(&tree_guard);
+                // Refresh produces both render commands AND event registry
+                let output = refresh(&tree_guard);
                 if let Ok(mut state) = render_state.lock() {
-                    state.commands = commands;
+                    state.commands = output.commands;
+                }
+                // Rebuild event registry so clicks match new scroll positions
+                if let Ok(mut guard) = processor.lock() {
+                    guard.rebuild_registry(output.event_registry);
                 }
                 redraw();
             }
@@ -535,7 +516,7 @@ impl EventProcessor {
                 EVENT_SCROLL_X_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, dx, 0.0);
+                changed |= tree.apply_scroll(&id, dx, 0.0);
             }
         }
 
@@ -546,7 +527,7 @@ impl EventProcessor {
                 EVENT_SCROLL_Y_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, 0.0, dy);
+                changed |= tree.apply_scroll(&id, 0.0, dy);
             }
         }
 
@@ -567,7 +548,7 @@ impl EventProcessor {
                 EVENT_SCROLL_X_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, *dx, 0.0);
+                changed |= tree.apply_scroll(&id, *dx, 0.0);
             }
         }
 
@@ -578,7 +559,7 @@ impl EventProcessor {
                 EVENT_SCROLL_Y_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= apply_scroll_delta(tree, &id, 0.0, *dy);
+                changed |= tree.apply_scroll(&id, 0.0, *dy);
             }
         }
 
