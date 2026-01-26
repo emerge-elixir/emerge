@@ -45,7 +45,12 @@ defmodule Emerge.AttrCodec do
     space_evenly: 37,
     scroll_x: 38,
     scroll_y: 39,
-    on_click: 40
+    on_click: 40,
+    on_mouse_down: 41,
+    on_mouse_up: 42,
+    on_mouse_enter: 43,
+    on_mouse_leave: 44,
+    on_mouse_move: 45
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -123,6 +128,11 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:scroll_x, value), do: encode_f64(value)
   defp encode_value(:scroll_y, value), do: encode_f64(value)
   defp encode_value(:on_click, _value), do: encode_bool(true)
+  defp encode_value(:on_mouse_down, _value), do: encode_bool(true)
+  defp encode_value(:on_mouse_up, _value), do: encode_bool(true)
+  defp encode_value(:on_mouse_enter, _value), do: encode_bool(true)
+  defp encode_value(:on_mouse_leave, _value), do: encode_bool(true)
+  defp encode_value(:on_mouse_move, _value), do: encode_bool(true)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -164,6 +174,11 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:scroll_x, rest), do: decode_f64(rest)
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
   defp decode_value(:on_click, rest), do: decode_bool(rest)
+  defp decode_value(:on_mouse_down, rest), do: decode_bool(rest)
+  defp decode_value(:on_mouse_up, rest), do: decode_bool(rest)
+  defp decode_value(:on_mouse_enter, rest), do: decode_bool(rest)
+  defp decode_value(:on_mouse_leave, rest), do: decode_bool(rest)
+  defp decode_value(:on_mouse_move, rest), do: decode_bool(rest)
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>

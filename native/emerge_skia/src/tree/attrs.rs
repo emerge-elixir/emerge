@@ -123,6 +123,11 @@ pub struct Attrs {
     pub scroll_x_max: Option<f64>,
     pub scroll_y_max: Option<f64>,
     pub on_click: Option<bool>,
+    pub on_mouse_down: Option<bool>,
+    pub on_mouse_up: Option<bool>,
+    pub on_mouse_enter: Option<bool>,
+    pub on_mouse_leave: Option<bool>,
+    pub on_mouse_move: Option<bool>,
     pub clip: Option<bool>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
@@ -198,6 +203,11 @@ const TAG_SPACE_EVENLY: u8 = 37;
 const TAG_SCROLL_X: u8 = 38;
 const TAG_SCROLL_Y: u8 = 39;
 const TAG_ON_CLICK: u8 = 40;
+const TAG_ON_MOUSE_DOWN: u8 = 41;
+const TAG_ON_MOUSE_UP: u8 = 42;
+const TAG_ON_MOUSE_ENTER: u8 = 43;
+const TAG_ON_MOUSE_LEAVE: u8 = 44;
+const TAG_ON_MOUSE_MOVE: u8 = 45;
 
 // =============================================================================
 // Decoder
@@ -332,6 +342,11 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_SCROLL_X => attrs.scroll_x = Some(cursor.read_f64()?),
         TAG_SCROLL_Y => attrs.scroll_y = Some(cursor.read_f64()?),
         TAG_ON_CLICK => attrs.on_click = Some(cursor.read_bool()?),
+        TAG_ON_MOUSE_DOWN => attrs.on_mouse_down = Some(cursor.read_bool()?),
+        TAG_ON_MOUSE_UP => attrs.on_mouse_up = Some(cursor.read_bool()?),
+        TAG_ON_MOUSE_ENTER => attrs.on_mouse_enter = Some(cursor.read_bool()?),
+        TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
+        TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -664,6 +679,17 @@ mod tests {
         let data = [0, 1, 40, 1];
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_click, Some(true));
+    }
+
+    #[test]
+    fn test_decode_mouse_events() {
+        let data = [0, 5, 41, 1, 42, 1, 43, 1, 44, 1, 45, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_mouse_down, Some(true));
+        assert_eq!(attrs.on_mouse_up, Some(true));
+        assert_eq!(attrs.on_mouse_enter, Some(true));
+        assert_eq!(attrs.on_mouse_leave, Some(true));
+        assert_eq!(attrs.on_mouse_move, Some(true));
     }
 
     #[test]

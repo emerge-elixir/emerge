@@ -56,6 +56,16 @@ defmodule Demo do
     "Click: element #{inspect(:erlang.binary_to_term(id_bin))}"
   end
 
+  def format_event({id_bin, event}) when is_binary(id_bin) and is_atom(event) do
+    label =
+      event
+      |> Atom.to_string()
+      |> String.replace("_", " ")
+      |> String.capitalize()
+
+    "Event: #{label} on #{inspect(:erlang.binary_to_term(id_bin))}"
+  end
+
   def format_event(event) do
     inspect(event)
   end
@@ -67,7 +77,14 @@ defmodule Demo do
     |> String.capitalize()
   end
 
-  def build_tree({_width, _height}, {mx, my}, event_log, current_page) do
+  def build_tree(
+        {_width, _height},
+        {mx, my},
+        event_log,
+        current_page,
+        hovered_menu,
+        last_move_label
+      ) do
     column(
       [
         width(:fill),
@@ -79,8 +96,8 @@ defmodule Demo do
       [
         header_section(mx, my),
         row([width(:fill), height(:fill), spacing(16)], [
-          menu_panel(current_page, event_log),
-          content_panel(current_page)
+          menu_panel(current_page, hovered_menu, event_log),
+          content_panel(current_page, last_move_label)
         ]),
         footer_bar(mx, my, event_log)
       ]
@@ -119,13 +136,14 @@ defmodule Demo do
     ])
   end
 
-  defp menu_panel(current_page, event_log) do
+  defp menu_panel(current_page, hovered_menu, _event_log) do
     menu_items = [
       {"Overview", :overview},
       {"Layout", :layout},
       {"Scroll", :scroll},
       {"Alignment", :alignment},
       {"Transforms", :transforms},
+      {"Events", :events},
       {"Nearby", :nearby}
     ]
 
@@ -143,7 +161,7 @@ defmodule Demo do
         column(
           [spacing(8)],
           Enum.map(menu_items, fn {label, page} ->
-            menu_item(label, page, current_page)
+            menu_item(label, page, current_page, hovered_menu)
           end)
         ),
         el([Font.size(12), Font.color(@dim_text)], text("Navigation")),
@@ -152,7 +170,7 @@ defmodule Demo do
     )
   end
 
-  defp content_panel(current_page) do
+  defp content_panel(current_page, last_move_label) do
     el(
       [
         width(fill()),
@@ -164,7 +182,7 @@ defmodule Demo do
         Background.color({:color_rgb, {35, 35, 55}}),
         Border.rounded(12)
       ],
-      render_page(current_page)
+      render_page(current_page, last_move_label)
     )
   end
 
@@ -204,13 +222,14 @@ defmodule Demo do
     ])
   end
 
-  defp render_page(current_page) do
+  defp render_page(current_page, last_move_label) do
     case current_page do
       :overview -> page_overview()
       :layout -> page_layout()
       :scroll -> page_scroll()
       :alignment -> page_alignment()
       :transforms -> page_transforms()
+      :events -> page_events(last_move_label)
       :nearby -> page_nearby()
       _ -> page_overview()
     end
@@ -461,6 +480,31 @@ defmodule Demo do
           el([Font.size(12), Font.color(:white)], text("Nested scroll item 7")),
           el([Font.size(12), Font.color(:white)], text("Nested scroll item 8"))
         ])
+      )
+    ])
+  end
+
+  defp page_events(last_move_label) do
+    move_label = last_move_label || "None"
+
+    column([width(fill()), spacing(16)], [
+      section_title("Mouse Events"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Hover, press, and move inside the cards.")
+      ),
+      row([width(fill()), spacing(12)], [
+        event_card("Mouse Down", :mouse_down, {:color_rgb, {70, 70, 110}}),
+        event_card("Mouse Up", :mouse_up, {:color_rgb, {70, 90, 90}})
+      ]),
+      row([width(fill()), spacing(12)], [
+        event_card("Mouse Enter", :mouse_enter, {:color_rgb, {85, 65, 100}}),
+        event_card("Mouse Leave", :mouse_leave, {:color_rgb, {90, 70, 60}})
+      ]),
+      event_card("Mouse Move", :mouse_move, {:color_rgb, {60, 80, 110}}),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Last move target: #{move_label}")
       )
     ])
   end
@@ -741,10 +785,18 @@ defmodule Demo do
     el([Font.size(16), Font.color(@light_text)], text(label))
   end
 
-  defp menu_item(label, page, current_page) do
+  defp menu_item(label, page, current_page, hovered_menu) do
     active = page == current_page
-    bg = if active, do: @blue, else: {:color_rgb, {45, 45, 65}}
-    text_color = if active, do: @light_text, else: @dim_text
+    hovered = page == hovered_menu
+
+    bg =
+      cond do
+        active -> @blue
+        hovered -> {:color_rgb, {70, 70, 100}}
+        true -> {:color_rgb, {45, 45, 65}}
+      end
+
+    text_color = if active or hovered, do: @light_text, else: @dim_text
 
     el(
       [
@@ -752,76 +804,349 @@ defmodule Demo do
         padding(10),
         Background.color(bg),
         Border.rounded(10),
-        on_click({self(), {:demo_nav, page}})
+        on_click({self(), {:demo_nav, page}}),
+        on_mouse_enter({self(), {:menu_hover, page}}),
+        on_mouse_leave({self(), {:menu_hover_clear, page}})
       ],
       el([Font.size(12), Font.color(text_color)], text(label))
     )
   end
 
-  def drain_mailbox(acc \\ []) do
+  defp drain_events(acc \\ []) do
     receive do
-      {:emerge_skia_event, event} -> drain_mailbox([event | acc])
+      {:emerge_skia_event, _} = message -> drain_events([message | acc])
+      {:demo_event, _, _} = message -> drain_events([message | acc])
+      {:demo_nav, _} = message -> drain_events([message | acc])
+      {:feature_click, _} = message -> drain_events([message | acc])
+      {:menu_hover, _} = message -> drain_events([message | acc])
+      {:menu_hover_clear, _} = message -> drain_events([message | acc])
     after
       0 -> Enum.reverse(acc)
     end
   end
 
-  def process_events(events, state, mouse_pos, event_log, size, scale) do
-    Enum.reduce(events, {mouse_pos, event_log, size, scale}, fn event, {pos, log, sz, sc} ->
-      case event do
-        {id_bin, :click} -> Emerge.dispatch_click(state, id_bin)
-        _ -> :ok
-      end
+  defp render_update(renderer, state, tree, {width, height}, scale) do
+    {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
 
-      new_pos =
-        case event do
-          {:cursor_pos, {x, y}} -> {x, y}
-          {:cursor_button, {_, _, _, {x, y}}} -> {x, y}
-          _ -> pos
-        end
-
-      {new_size, new_scale} =
-        case event do
-          {:resized, {w, h, s}} -> {{w, h}, s}
-          _ -> {sz, sc}
-        end
-
-      new_log =
-        case event do
-          {:cursor_pos, _} -> log
-          _ -> [format_event(event) | log]
-        end
-
-      {new_pos, Enum.take(new_log, 20), new_size, new_scale}
-    end)
+    case EmergeSkia.Native.renderer_patch(renderer, patch_bin, width, height, scale) do
+      :ok -> next_state
+      {:ok, _} -> next_state
+      {:error, reason} -> raise "renderer_patch failed: #{reason}"
+    end
   end
 
-  def run_loop(renderer, state, mouse_pos, event_log, size, scale, current_page) do
-    if EmergeSkia.running?(renderer) do
-      receive do
-        {:emerge_skia_event, first_event} ->
-          remaining = drain_mailbox()
-          all_events = [first_event | remaining]
+  defp handle_event(
+         renderer,
+         state,
+         mouse_pos,
+         event_log,
+         size,
+         scale,
+         current_page,
+         hovered_menu,
+         last_move_label
+       ) do
+    receive do
+      {:emerge_skia_event, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
 
-          {new_mouse_pos, new_log, new_size, new_scale} =
-            process_events(all_events, state, mouse_pos, event_log, size, scale)
+      {:demo_event, _, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
 
-          tree = build_tree(new_size, new_mouse_pos, new_log, current_page)
+      {:demo_nav, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
 
-          {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
+      {:feature_click, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
 
-          case EmergeSkia.Native.renderer_patch(
-                 renderer,
-                 patch_bin,
-                 elem(new_size, 0),
-                 elem(new_size, 1),
-                 new_scale
-               ) do
-            :ok -> :ok
-            {:ok, _} -> :ok
-            {:error, reason} -> raise "renderer_patch failed: #{reason}"
+      {:menu_hover, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
+
+      {:menu_hover_clear, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label
+        )
+    after
+      100 -> :timeout
+    end
+  end
+
+  defp process_event_batch(
+         events,
+         renderer,
+         state,
+         mouse_pos,
+         event_log,
+         size,
+         scale,
+         current_page,
+         hovered_menu,
+         last_move_label
+       ) do
+    {next_state, needs_render} =
+      Enum.reduce(
+        events,
+        {
+          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label},
+          false
+        },
+        fn message, {acc, dirty} ->
+          {next_acc, changed} = process_event(message, state, acc)
+          {next_acc, dirty or changed}
+        end
+      )
+
+    {new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered, new_move} = next_state
+
+    if needs_render do
+      tree =
+        build_tree(
+          new_size,
+          new_mouse_pos,
+          new_log,
+          new_page,
+          new_hovered,
+          new_move
+        )
+
+      next_state = render_update(renderer, state, tree, new_size, new_scale)
+
+      {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered,
+       new_move}
+    else
+      {:ok, state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered, new_move}
+    end
+  end
+
+  defp process_event(
+         {:emerge_skia_event, event},
+         state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label} =
+      case event do
+        {id_bin, event_type} when is_binary(id_bin) and is_atom(event_type) ->
+          case Emerge.lookup_event(state, id_bin, event_type) do
+            {:ok, {pid, msg}} when pid == self() ->
+              {next_state, _changed} =
+                process_event(
+                  msg,
+                  state,
+                  {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+                )
+
+              next_state
+
+            _ ->
+              Emerge.dispatch_event(state, id_bin, event_type)
+              {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
           end
 
+        _ ->
+          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+      end
+
+    new_mouse_pos =
+      case event do
+        {:cursor_pos, {x, y}} -> {x, y}
+        {:cursor_button, {_, _, _, {x, y}}} -> {x, y}
+        _ -> mouse_pos
+      end
+
+    {new_size, new_scale} =
+      case event do
+        {:resized, {w, h, s}} -> {{w, h}, s}
+        _ -> {size, scale}
+      end
+
+    new_log =
+      case event do
+        {:cursor_pos, _} -> event_log
+        {_, :mouse_move} -> event_log
+        _ -> [format_event(event) | event_log]
+      end
+      |> Enum.take(20)
+
+    changed =
+      new_mouse_pos != mouse_pos or new_log != event_log or new_size != size or
+        new_scale != scale
+
+    {{new_mouse_pos, new_log, new_size, new_scale, current_page, hovered_menu, last_move_label},
+     changed}
+  end
+
+  defp process_event(
+         {:feature_click, title},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    new_log = Enum.take(["UI Click: #{title}" | event_log], 20)
+
+    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, last_move_label},
+     new_log != event_log}
+  end
+
+  defp process_event(
+         {:demo_nav, page},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    new_log = Enum.take(["Navigate: #{format_page(page)}" | event_log], 20)
+    new_page = page
+    changed = new_log != event_log or new_page != current_page
+
+    {{mouse_pos, new_log, size, scale, new_page, hovered_menu, last_move_label}, changed}
+  end
+
+  defp process_event(
+         {:menu_hover, page},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    new_hovered = page
+    changed = new_hovered != hovered_menu
+
+    {{mouse_pos, event_log, size, scale, current_page, new_hovered, last_move_label}, changed}
+  end
+
+  defp process_event(
+         {:menu_hover_clear, page},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    new_hovered = if hovered_menu == page, do: nil, else: hovered_menu
+    changed = new_hovered != hovered_menu
+
+    {{mouse_pos, event_log, size, scale, current_page, new_hovered, last_move_label}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, label, event},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label}
+       ) do
+    {new_log, new_move_label} =
+      case event do
+        :mouse_move ->
+          if label == last_move_label do
+            {event_log, last_move_label}
+          else
+            entry = "Move: #{label}"
+            {Enum.take([entry | event_log], 20), label}
+          end
+
+        _ ->
+          entry = "#{String.capitalize(format_event_label(event))}: #{label}"
+          {Enum.take([entry | event_log], 20), last_move_label}
+      end
+
+    changed = new_log != event_log or new_move_label != last_move_label
+
+    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, new_move_label}, changed}
+  end
+
+  def run_loop(
+        renderer,
+        state,
+        mouse_pos,
+        event_log,
+        size,
+        scale,
+        current_page,
+        hovered_menu,
+        last_move_label
+      ) do
+    if EmergeSkia.running?(renderer) do
+      case handle_event(
+             renderer,
+             state,
+             mouse_pos,
+             event_log,
+             size,
+             scale,
+             current_page,
+             hovered_menu,
+             last_move_label
+           ) do
+        :timeout ->
+          run_loop(
+            renderer,
+            state,
+            mouse_pos,
+            event_log,
+            size,
+            scale,
+            current_page,
+            hovered_menu,
+            last_move_label
+          )
+
+        {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered,
+         new_move_label} ->
           run_loop(
             renderer,
             next_state,
@@ -829,51 +1154,10 @@ defmodule Demo do
             new_log,
             new_size,
             new_scale,
-            current_page
+            new_page,
+            new_hovered,
+            new_move_label
           )
-
-        {:feature_click, title} ->
-          new_log = Enum.take(["UI Click: #{title}" | event_log], 20)
-          tree = build_tree(size, mouse_pos, new_log, current_page)
-
-          {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
-
-          case EmergeSkia.Native.renderer_patch(
-                 renderer,
-                 patch_bin,
-                 elem(size, 0),
-                 elem(size, 1),
-                 scale
-               ) do
-            :ok -> :ok
-            {:ok, _} -> :ok
-            {:error, reason} -> raise "renderer_patch failed: #{reason}"
-          end
-
-          run_loop(renderer, next_state, mouse_pos, new_log, size, scale, current_page)
-
-        {:demo_nav, page} ->
-          new_log = Enum.take(["Navigate: #{format_page(page)}" | event_log], 20)
-          tree = build_tree(size, mouse_pos, new_log, page)
-
-          {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
-
-          case EmergeSkia.Native.renderer_patch(
-                 renderer,
-                 patch_bin,
-                 elem(size, 0),
-                 elem(size, 1),
-                 scale
-               ) do
-            :ok -> :ok
-            {:ok, _} -> :ok
-            {:error, reason} -> raise "renderer_patch failed: #{reason}"
-          end
-
-          run_loop(renderer, next_state, mouse_pos, new_log, size, scale, page)
-      after
-        100 ->
-          run_loop(renderer, state, mouse_pos, event_log, size, scale, current_page)
       end
     end
   end
@@ -896,6 +1180,45 @@ defmodule Demo do
     )
   end
 
+  defp event_card(label, event, bg_color) do
+    el(
+      [
+        width(fill()),
+        padding(14),
+        Background.color(bg_color),
+        Border.rounded(8),
+        event_attr(event, label)
+      ],
+      column([spacing(6)], [
+        el([Font.size(14), Font.color(:white)], text(label)),
+        el(
+          [Font.size(11), Font.color({:color_rgb, {210, 210, 230}})],
+          text("Triggers #{format_event_label(event)}")
+        )
+      ])
+    )
+  end
+
+  defp event_attr(:mouse_down, label),
+    do: on_mouse_down({self(), {:demo_event, label, :mouse_down}})
+
+  defp event_attr(:mouse_up, label), do: on_mouse_up({self(), {:demo_event, label, :mouse_up}})
+
+  defp event_attr(:mouse_enter, label),
+    do: on_mouse_enter({self(), {:demo_event, label, :mouse_enter}})
+
+  defp event_attr(:mouse_leave, label),
+    do: on_mouse_leave({self(), {:demo_event, label, :mouse_leave}})
+
+  defp event_attr(:mouse_move, label),
+    do: on_mouse_move({self(), {:demo_event, label, :mouse_move}})
+
+  defp format_event_label(event) do
+    event
+    |> Atom.to_string()
+    |> String.replace("_", " ")
+  end
+
   defp chip(label) do
     el(
       [
@@ -914,7 +1237,7 @@ IO.puts("Window opened! Move mouse, click, press keys. Close window to exit.")
 
 initial_size = {800.0, 600.0}
 initial_scale = 1.0
-initial_tree = Demo.build_tree(initial_size, {400.0, 300.0}, [], :overview)
+initial_tree = Demo.build_tree(initial_size, {400.0, 300.0}, [], :overview, nil, nil)
 
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
@@ -931,6 +1254,16 @@ case EmergeSkia.Native.renderer_upload(
   {:error, reason} -> raise "renderer_upload failed: #{reason}"
 end
 
-Demo.run_loop(renderer, state, {400.0, 300.0}, [], initial_size, initial_scale, :overview)
+Demo.run_loop(
+  renderer,
+  state,
+  {400.0, 300.0},
+  [],
+  initial_size,
+  initial_scale,
+  :overview,
+  nil,
+  nil
+)
 
 IO.puts("Window closed. Demo complete!")

@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 
-use crate::input::{InputEvent, EVENT_CLICK, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS};
+use crate::input::{
+    InputEvent, EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE,
+    EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
+};
 use crate::renderer::RenderState;
 use crate::tree::element::{ElementId, ElementTree};
 use crate::tree::layout::refresh;
@@ -17,6 +20,7 @@ pub struct EventProcessor {
     queue: VecDeque<InputEvent>,
     registry: Vec<EventNode>,
     pressed_id: Option<ElementId>,
+    hovered_id: Option<ElementId>,
     drag_start: Option<(f32, f32)>,
     drag_last_pos: Option<(f32, f32)>,
     drag_active: bool,
@@ -80,7 +84,7 @@ pub(crate) struct ClipContext {
 pub struct EventNode {
     pub id: ElementId,
     pub hit_rect: Rect,
-    pub flags: u8,
+    pub flags: u16,
     pub self_rect: Rect,
     pub self_radii: Option<CornerRadii>,
     pub clip_rect: Option<Rect>,
@@ -109,9 +113,24 @@ fn collect_event_nodes(
         return;
     };
 
-    let mut flags = 0u8;
+    let mut flags = 0u16;
     if element.attrs.on_click.unwrap_or(false) {
         flags |= EVENT_CLICK;
+    }
+    if element.attrs.on_mouse_down.unwrap_or(false) {
+        flags |= EVENT_MOUSE_DOWN;
+    }
+    if element.attrs.on_mouse_up.unwrap_or(false) {
+        flags |= EVENT_MOUSE_UP;
+    }
+    if element.attrs.on_mouse_enter.unwrap_or(false) {
+        flags |= EVENT_MOUSE_ENTER;
+    }
+    if element.attrs.on_mouse_leave.unwrap_or(false) {
+        flags |= EVENT_MOUSE_LEAVE;
+    }
+    if element.attrs.on_mouse_move.unwrap_or(false) {
+        flags |= EVENT_MOUSE_MOVE;
     }
     if element.attrs.scrollbar_x.unwrap_or(false) {
         let scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -244,7 +263,7 @@ fn collect_event_nodes(
     }
 }
 
-pub fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u8) -> Option<ElementId> {
+pub fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u16) -> Option<ElementId> {
     for node in registry.iter().rev() {
         if node.flags & flag == 0 {
             continue;
@@ -350,6 +369,7 @@ impl EventProcessor {
             queue: VecDeque::new(),
             registry: Vec::new(),
             pressed_id: None,
+            hovered_id: None,
             drag_start: None,
             drag_last_pos: None,
             drag_active: false,
@@ -393,13 +413,22 @@ impl EventProcessor {
             let mut needs_redraw = false;
             for event in drained {
                 if let Ok(mut guard) = processor.lock() {
-                    if let Some(pid) = target.lock().ok().and_then(|t| *t) {
+                    let pid = target.lock().ok().and_then(|t| *t);
+                    if let Some(pid) = pid {
                         send_input_event(pid, &event);
-                    }
-                    if let Some(clicked_id) = guard.detect_click(&event)
-                        && let Some(pid) = target.lock().ok().and_then(|t| *t)
-                    {
-                        send_element_event(pid, &clicked_id, click());
+
+                        if let Some(clicked_id) = guard.detect_click(&event) {
+                            send_element_event(pid, &clicked_id, click());
+                        }
+
+                        if let Some((mouse_id, mouse_event)) = guard.detect_mouse_button_event(&event)
+                        {
+                            send_element_event(pid, &mouse_id, mouse_event);
+                        }
+
+                        for (hover_id, hover_event) in guard.handle_hover_event(&event) {
+                            send_element_event(pid, &hover_id, hover_event);
+                        }
                     }
 
                     if let Some(changed) = guard.handle_drag_scroll(&event, &mut tree_guard) {
@@ -471,6 +500,84 @@ impl EventProcessor {
         }
 
         None
+    }
+
+    fn detect_mouse_button_event(&self, event: &InputEvent) -> Option<(ElementId, Atom)> {
+        let InputEvent::CursorButton {
+            button,
+            action,
+            x,
+            y,
+            ..
+        } = event
+        else {
+            return None;
+        };
+
+        if button != "left" {
+            return None;
+        }
+
+        let (flag, event_atom) = match *action {
+            crate::input::ACTION_PRESS => (EVENT_MOUSE_DOWN, mouse_down()),
+            crate::input::ACTION_RELEASE => (EVENT_MOUSE_UP, mouse_up()),
+            _ => return None,
+        };
+
+        let hit = hit_test_with_flag(&self.registry, *x, *y, flag)?;
+        Some((hit, event_atom))
+    }
+
+    fn handle_hover_event(&mut self, event: &InputEvent) -> Vec<(ElementId, Atom)> {
+        let mut emitted = Vec::new();
+
+        match event {
+            InputEvent::CursorPos { x, y } => {
+                let hover_mask = EVENT_MOUSE_ENTER | EVENT_MOUSE_LEAVE | EVENT_MOUSE_MOVE;
+                let hit = hit_test_with_flag(&self.registry, *x, *y, hover_mask);
+
+                if hit != self.hovered_id {
+                    if let Some(previous) = self.hovered_id.take() {
+                        if self.node_has_flag(&previous, EVENT_MOUSE_LEAVE) {
+                            emitted.push((previous, mouse_leave()));
+                        }
+                    }
+
+                    if let Some(new_id) = hit.clone() {
+                        if self.node_has_flag(&new_id, EVENT_MOUSE_ENTER) {
+                            emitted.push((new_id.clone(), mouse_enter()));
+                        }
+                    }
+
+                    self.hovered_id = hit;
+                }
+
+                if let Some(current) = self.hovered_id.as_ref() {
+                    if self.node_has_flag(current, EVENT_MOUSE_MOVE) {
+                        emitted.push((current.clone(), mouse_move()));
+                    }
+                }
+            }
+            InputEvent::CursorEntered { entered } => {
+                if !*entered {
+                    if let Some(previous) = self.hovered_id.take() {
+                        if self.node_has_flag(&previous, EVENT_MOUSE_LEAVE) {
+                            emitted.push((previous, mouse_leave()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        emitted
+    }
+
+    fn node_has_flag(&self, id: &ElementId, flag: u16) -> bool {
+        self.registry
+            .iter()
+            .find(|node| node.id == *id)
+            .is_some_and(|node| node.flags & flag != 0)
     }
 
     fn handle_drag_scroll(
@@ -587,6 +694,11 @@ fn send_input_event(pid: LocalPid, event: &InputEvent) {
 rustler::atoms! {
     emerge_skia_event,
     click,
+    mouse_down,
+    mouse_up,
+    mouse_enter,
+    mouse_leave,
+    mouse_move,
 }
 
 #[cfg(test)]
@@ -807,6 +919,7 @@ mod tests {
                 clip_radii: None,
             }],
             pressed_id: None,
+            hovered_id: None,
             drag_start: None,
             drag_last_pos: None,
             drag_active: false,

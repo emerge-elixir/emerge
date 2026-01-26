@@ -83,11 +83,16 @@ pub const MOD_META: u8 = 0x08;
 pub const ACTION_RELEASE: u8 = 0;
 pub const ACTION_PRESS: u8 = 1;
 
-pub const EVENT_CLICK: u8 = 0x01;
-pub const EVENT_SCROLL_X_NEG: u8 = 0x02;
-pub const EVENT_SCROLL_X_POS: u8 = 0x04;
-pub const EVENT_SCROLL_Y_NEG: u8 = 0x08;
-pub const EVENT_SCROLL_Y_POS: u8 = 0x10;
+pub const EVENT_CLICK: u16 = 0x0001;
+pub const EVENT_SCROLL_X_NEG: u16 = 0x0002;
+pub const EVENT_SCROLL_X_POS: u16 = 0x0004;
+pub const EVENT_SCROLL_Y_NEG: u16 = 0x0008;
+pub const EVENT_SCROLL_Y_POS: u16 = 0x0010;
+pub const EVENT_MOUSE_DOWN: u16 = 0x0020;
+pub const EVENT_MOUSE_UP: u16 = 0x0040;
+pub const EVENT_MOUSE_ENTER: u16 = 0x0080;
+pub const EVENT_MOUSE_LEAVE: u16 = 0x0100;
+pub const EVENT_MOUSE_MOVE: u16 = 0x0200;
 
 // ============================================================================
 // Atoms

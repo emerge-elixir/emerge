@@ -40,28 +40,30 @@ CursorUp   -> hit test -> if element_id == pressed_id -> emit :click
 ## Rust Responsibilities
 
 - Build an event registry after layout:
-  - `EventNode { element_id, hit_rect, z_index }`
+  - `EventNode { element_id, hit_rect, flags }`
 - Hit test pointer events against `hit_rect`.
-- Track `pressed_id` for click detection.
+- Track `pressed_id` for click detection and `hovered_id` for hover state.
 - Emit events to the input target process as:
-  `{:emerge_skia_event, {element_id, :click}}`.
+  `{:emerge_skia_event, {element_id, :click}}` or
+  `{:emerge_skia_event, {element_id, :mouse_down}}`.
 
 ## Elixir Responsibilities
 
-- Track `{element_id => {pid, msg}}` for `on_click` attributes.
-- Encode `on_click` as a presence flag in EMRG.
+- Track `{element_id => %{event => {pid, msg}}}` for event attributes.
+- Encode event attributes as presence flags in EMRG.
 - When Rust emits an event, look up `element_id` and dispatch the stored message.
 
 ## MVP Scope
 
-- Only `on_click` (no meta, no payloads in Rust).
+- `on_click`, `on_mouse_down`, `on_mouse_up`, `on_mouse_enter`, `on_mouse_leave`, `on_mouse_move`.
+- Mouse down/up fire only for the left button.
+- No meta, no payloads in Rust.
 - No bubbling/propagation.
 - No double-click support.
 
 ## Future Extensions
 
-- Mouse enter/leave/move tracking.
-- Other mouse events (down/up) and hover state.
+- Optional pointer metadata in element events.
 - Optional meta payloads for pointer position and modifiers.
 
 ## Future-Proofing Plan

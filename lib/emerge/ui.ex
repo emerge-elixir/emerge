@@ -330,6 +330,21 @@ defmodule Emerge.UI do
   @doc "Register a click handler payload for this element"
   def on_click({pid, _msg} = payload) when is_pid(pid), do: {:on_click, payload}
 
+  @doc "Register a mouse down handler payload for this element"
+  def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
+
+  @doc "Register a mouse up handler payload for this element"
+  def on_mouse_up({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_up, payload}
+
+  @doc "Register a mouse enter handler payload for this element"
+  def on_mouse_enter({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_enter, payload}
+
+  @doc "Register a mouse leave handler payload for this element"
+  def on_mouse_leave({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_leave, payload}
+
+  @doc "Register a mouse move handler payload for this element"
+  def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
+
   # ============================================
   # TRANSFORMS
   # ============================================

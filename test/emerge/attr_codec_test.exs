@@ -88,6 +88,26 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == %{on_click: true}
   end
 
+  test "encode/decode mouse event presence" do
+    attrs = %{
+      on_mouse_down: {self(), :down},
+      on_mouse_up: {self(), :up},
+      on_mouse_enter: {self(), :enter},
+      on_mouse_leave: {self(), :leave},
+      on_mouse_move: {self(), :move}
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{
+             on_mouse_down: true,
+             on_mouse_up: true,
+             on_mouse_enter: true,
+             on_mouse_leave: true,
+             on_mouse_move: true
+           }
+  end
+
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()

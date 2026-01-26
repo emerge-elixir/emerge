@@ -35,7 +35,7 @@ defmodule Emerge do
         state
         | tree: assigned,
           vdom: vdom,
-          click_registry: DiffState.build_click_registry(assigned)
+          event_registry: DiffState.build_event_registry(assigned)
       },
       assigned
     }
@@ -59,5 +59,23 @@ defmodule Emerge do
   @spec dispatch_click(DiffState.t(), binary()) :: :ok
   def dispatch_click(%DiffState{} = state, id_bin) when is_binary(id_bin) do
     DiffState.dispatch_click(state, id_bin)
+  end
+
+  @doc """
+  Dispatch an element event to the handler registered for an element id.
+  """
+  @spec dispatch_event(DiffState.t(), binary(), atom()) :: :ok
+  def dispatch_event(%DiffState{} = state, id_bin, event)
+      when is_binary(id_bin) and is_atom(event) do
+    DiffState.dispatch_event(state, id_bin, event)
+  end
+
+  @doc """
+  Lookup the handler payload for an element event.
+  """
+  @spec lookup_event(DiffState.t(), binary(), atom()) :: {:ok, {pid(), term()}} | :error
+  def lookup_event(%DiffState{} = state, id_bin, event)
+      when is_binary(id_bin) and is_atom(event) do
+    DiffState.lookup_event(state, id_bin, event)
   end
 end
