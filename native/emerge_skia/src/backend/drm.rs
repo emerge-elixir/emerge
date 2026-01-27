@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use drm::ClientCapability;
 use drm::Device as BasicDevice;
 use drm::control::{
-    self, AtomicCommitFlags, Device as ControlDevice, Event, PlaneType, ResourceHandles, atomic,
+    self, AtomicCommitFlags, Device as ControlDevice, PlaneType, ResourceHandles, atomic,
     connector, crtc, framebuffer, plane, property,
 };
 use gbm::{
@@ -494,19 +494,6 @@ fn add_plane_geometry(
         property::Value::UnsignedRange(height as u64),
     );
     Ok(())
-}
-
-fn wait_for_page_flip(card: &Card) -> Result<(), String> {
-    loop {
-        let events = card
-            .receive_events()
-            .map_err(|e| format!("failed to read DRM events: {e}"))?;
-        for event in events {
-            if matches!(event, Event::PageFlip(_)) {
-                return Ok(());
-            }
-        }
-    }
 }
 
 fn is_ebusy(err: &str) -> bool {
@@ -1130,7 +1117,7 @@ pub fn run(
                 }
             }
             last_cursor = cursor;
-            if dirty.load(Ordering::Relaxed) {
+            if dirty.swap(false, Ordering::Relaxed) {
                 let mut frame_version = None;
                 if let Ok(state) = render_state.lock() {
                     let version = state.render_version;
@@ -1177,10 +1164,7 @@ pub fn run(
                     break;
                 }
 
-                if let Err(e) = card.atomic_commit(
-                    AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
-                    flip_req,
-                ) {
+                if let Err(e) = card.atomic_commit(AtomicCommitFlags::empty(), flip_req) {
                     let err = e.to_string();
                     if is_ebusy(&err) {
                         if log_render {
@@ -1188,15 +1172,9 @@ pub fn run(
                         }
                         dirty.store(true, Ordering::Relaxed);
                         drop(next_bo);
-                        std::thread::sleep(Duration::from_millis(2));
                         continue;
                     }
                     eprintln!("DRM backend unavailable: {err}");
-                    break;
-                }
-                dirty.store(false, Ordering::Relaxed);
-                if let Err(e) = wait_for_page_flip(&card) {
-                    eprintln!("DRM backend unavailable: {e}");
                     break;
                 }
                 if log_render {
