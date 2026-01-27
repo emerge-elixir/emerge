@@ -1,9 +1,43 @@
 # Demo script for EmergeSkia
 # Run with: mix run demo.exs
+# Example DRM: mix run demo.exs -- --backend drm --card /dev/dri/card0 --input-log --render-log
 
-IO.puts("Starting EmergeSkia demo...")
+argv =
+  case System.argv() do
+    ["--" | rest] -> rest
+    other -> other
+  end
 
-{:ok, renderer} = EmergeSkia.start("EmergeSkia Demo", 800, 600)
+{cli_opts, _rest, _invalid} =
+  OptionParser.parse(argv,
+    switches: [
+      backend: :string,
+      card: :string,
+      width: :integer,
+      height: :integer,
+      input_log: :boolean,
+      render_log: :boolean
+    ],
+    aliases: [b: :backend, c: :card, w: :width, h: :height, i: :input_log, r: :render_log]
+  )
+
+backend = Keyword.get(cli_opts, :backend, "wayland")
+width = Keyword.get(cli_opts, :width, 1920)
+height = Keyword.get(cli_opts, :height, 1080)
+card = Keyword.get(cli_opts, :card)
+input_log = Keyword.get(cli_opts, :input_log, false)
+render_log = Keyword.get(cli_opts, :render_log, false)
+
+start_opts = [backend: backend, title: "EmergeSkia Demo", width: width, height: height]
+
+start_opts = if card, do: Keyword.put(start_opts, :drm_card, card), else: start_opts
+start_opts = if input_log, do: Keyword.put(start_opts, :input_log, true), else: start_opts
+start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else: start_opts
+
+startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backend=#{backend}"
+IO.puts("Starting EmergeSkia demo..." <> startup_detail)
+
+{:ok, renderer} = EmergeSkia.start(start_opts)
 
 EmergeSkia.set_input_target(renderer, self())
 
@@ -86,6 +120,8 @@ defmodule Demo do
         last_move_label,
         unstable_items
       ) do
+    render_seq = Process.get(:render_seq, 0)
+
     column(
       [
         width(:fill),
@@ -95,7 +131,7 @@ defmodule Demo do
         Background.color(@dark_bg)
       ],
       [
-        header_section(mx, my),
+        header_section(mx, my, render_seq),
         row([width(:fill), height(:fill), spacing(16)], [
           menu_panel(current_page, hovered_menu, event_log),
           content_panel(current_page, last_move_label, unstable_items)
@@ -105,7 +141,7 @@ defmodule Demo do
     )
   end
 
-  defp header_section(mx, my) do
+  defp header_section(mx, my, render_seq) do
     row([width(:fill), spacing(16)], [
       el(
         [
@@ -131,7 +167,8 @@ defmodule Demo do
         column([spacing(4)], [
           el([Font.size(14), Font.color(@light_text)], text("Live Input")),
           el([Font.size(12), Font.color(@dim_text)], text("X: #{Float.round(mx, 1)}")),
-          el([Font.size(12), Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}"))
+          el([Font.size(12), Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}")),
+          el([Font.size(12), Font.color(@dim_text)], text("Render: #{render_seq}"))
         ])
       )
     ])
@@ -929,7 +966,10 @@ defmodule Demo do
             Background.color({:color_rgb, {55, 55, 80}}),
             Border.rounded(4)
           ],
-          el([width(fill()), Font.size(12), Font.color(:white), Font.align_right()], text("Right"))
+          el(
+            [width(fill()), Font.size(12), Font.color(:white), Font.align_right()],
+            text("Right")
+          )
         )
       ]),
       section_title("Inheritance Override"),
@@ -1179,6 +1219,16 @@ defmodule Demo do
          last_move_label,
          unstable_items
        ) do
+    batch_last_cursor =
+      Enum.reduce(events, nil, fn message, acc ->
+        case message do
+          {:emerge_skia_event, {:cursor_pos, {x, y}}} -> {x, y}
+          _ -> acc
+        end
+      end)
+
+    IO.puts("demo batch size=#{length(events)} last_cursor=#{inspect(batch_last_cursor)}")
+
     {next_state, needs_render} =
       Enum.reduce(
         events,
@@ -1197,6 +1247,9 @@ defmodule Demo do
       next_state
 
     if needs_render do
+      render_seq = Process.get(:render_seq, 0) + 1
+      Process.put(:render_seq, render_seq)
+
       tree =
         build_tree(
           new_size,
@@ -1207,6 +1260,8 @@ defmodule Demo do
           new_move,
           new_unstable
         )
+
+      IO.puts("demo render_seq=#{render_seq} mouse_pos=#{inspect(new_mouse_pos)}")
 
       next_state = render_update(renderer, state, tree, new_size, new_scale)
 
@@ -1224,6 +1279,14 @@ defmodule Demo do
          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
           unstable_items}
        ) do
+    case event do
+      {:cursor_pos, {x, y}} ->
+        IO.puts("demo event cursor_pos=#{Float.round(x, 2)},#{Float.round(y, 2)}")
+
+      _ ->
+        :ok
+    end
+
     {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
      unstable_items} =
       case event do
@@ -1609,10 +1672,11 @@ defmodule Demo do
   end
 end
 
-IO.puts("Window opened! Move mouse, click, press keys. Close window to exit.")
+Process.put(:render_seq, 0)
 
-initial_size = {800.0, 600.0}
+initial_size = {width * 1.0, height * 1.0}
 initial_scale = 1.0
+initial_mouse = {elem(initial_size, 0) / 2, elem(initial_size, 1) / 2}
 
 initial_unstable_items = [
   %{
@@ -1691,7 +1755,7 @@ initial_unstable_items = [
 ]
 
 initial_tree =
-  Demo.build_tree(initial_size, {400.0, 300.0}, [], :overview, nil, nil, initial_unstable_items)
+  Demo.build_tree(initial_size, initial_mouse, [], :overview, nil, nil, initial_unstable_items)
 
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
@@ -1711,7 +1775,7 @@ end
 Demo.run_loop(
   renderer,
   state,
-  {400.0, 300.0},
+  initial_mouse,
   [],
   initial_size,
   initial_scale,
