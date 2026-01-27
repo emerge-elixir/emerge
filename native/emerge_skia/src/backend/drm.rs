@@ -84,6 +84,22 @@ fn mode_distance(mode: &control::Mode, requested: (u32, u32)) -> i64 {
     dx * dx + dy * dy
 }
 
+fn mode_area(mode: &control::Mode) -> i64 {
+    let (width, height) = mode.size();
+    width as i64 * height as i64
+}
+
+fn mode_is_preferred(mode: &control::Mode) -> bool {
+    mode.mode_type().contains(control::ModeTypeFlags::PREFERRED)
+}
+
+fn preferred_size(modes: &[control::Mode]) -> Option<(u32, u32)> {
+    modes.iter().find(|mode| mode_is_preferred(mode)).map(|mode| {
+        let (width, height) = mode.size();
+        (width as u32, height as u32)
+    })
+}
+
 fn choose_mode(
     modes: &[control::Mode],
     requested: Option<(u32, u32)>,
@@ -92,20 +108,28 @@ fn choose_mode(
         .first()
         .cloned()
         .ok_or_else(|| "connector has no modes".to_string())?;
-    let Some(requested) = requested else {
-        return Ok(first);
-    };
 
+    let target_size = requested.or_else(|| preferred_size(modes));
     let mut best = first;
-    let mut best_score = mode_distance(&best, requested);
+    let mut best_score = score_mode(&best, target_size);
+
     for mode in modes.iter().skip(1) {
-        let score = mode_distance(mode, requested);
+        let score = score_mode(mode, target_size);
         if score < best_score {
             best = *mode;
             best_score = score;
         }
     }
+
     Ok(best)
+}
+
+fn score_mode(mode: &control::Mode, target_size: Option<(u32, u32)>) -> (i64, i32, i32, i64) {
+    let distance = target_size.map(|size| mode_distance(mode, size)).unwrap_or(0);
+    let refresh = -(mode.vrefresh() as i32);
+    let preferred = if mode_is_preferred(mode) { 0 } else { 1 };
+    let area = -mode_area(mode);
+    (distance, refresh, preferred, area)
 }
 
 fn first_connected_connector(
