@@ -8,9 +8,11 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
-        Arc, Mutex,
+        Arc,
     },
 };
+
+use crossbeam_channel::Receiver;
 
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
@@ -31,9 +33,9 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use crate::events::EventProcessor;
+use crate::actors::{EventMsg, RenderMsg};
 use crate::input::{
-    InputEvent, InputHandler, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::renderer::{RenderState, Renderer};
 
@@ -87,11 +89,12 @@ struct App {
     renderer: Option<Renderer>,
     running: bool,
     running_flag: Arc<AtomicBool>,
-    render_state: Arc<Mutex<RenderState>>,
-    input_handler: Arc<Mutex<InputHandler>>,
-    event_processor: Arc<Mutex<EventProcessor>>,
+    render_state: RenderState,
+    render_rx: Receiver<RenderMsg>,
+    event_tx: crossbeam_channel::Sender<EventMsg>,
     window_size: (u32, u32),
     current_mods: u8,
+    cursor_pos: (f32, f32),
 }
 
 impl App {
@@ -113,38 +116,47 @@ impl App {
             env.window.request_redraw();
         }
 
-        // Send resize event
         if let Some(env) = &self.env {
             let scale = env.window.scale_factor() as f32;
-            self.send_input_event(InputEvent::Resized {
-                width: w,
-                height: h,
-                scale_factor: scale,
-            });
+            let _ = self
+                .event_tx
+                .send(EventMsg::InputEvent(InputEvent::Resized {
+                    width: w,
+                    height: h,
+                    scale_factor: scale,
+                }));
         }
     }
 
     fn redraw(&mut self) {
         if let (Some(env), Some(renderer)) = (self.env.as_mut(), self.renderer.as_mut()) {
-            if let Ok(state) = self.render_state.try_lock() {
-                renderer.render(&state);
-                env.gl_surface
-                    .swap_buffers(&env.gl_context)
-                    .expect("swap_buffers failed");
-            } else {
-                env.window.request_redraw();
-            }
+            renderer.render(&self.render_state);
+            env.gl_surface
+                .swap_buffers(&env.gl_context)
+                .expect("swap_buffers failed");
         }
     }
 
     fn send_input_event(&self, event: InputEvent) {
-        if let Ok(handler) = self.input_handler.lock()
-            && handler.accepts(&event)
-        {
-            if let Ok(mut processor) = self.event_processor.lock() {
-                processor.enqueue(event);
+        let _ = self.event_tx.send(EventMsg::InputEvent(event));
+    }
+
+    fn drain_render_commands(&mut self) -> bool {
+        let mut updated = false;
+        while let Ok(msg) = self.render_rx.try_recv() {
+            match msg {
+                RenderMsg::Commands { commands, version } => {
+                    self.render_state.commands = commands;
+                    self.render_state.render_version = version;
+                    updated = true;
+                }
+                RenderMsg::Stop => {
+                    self.running = false;
+                }
+                RenderMsg::CursorUpdate { .. } => {}
             }
         }
+        updated
     }
 
     fn mouse_button_name(button: MouseButton) -> &'static str {
@@ -209,6 +221,33 @@ impl App {
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
 
+    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Stop => {
+                self.running = false;
+                self.running_flag.store(false, Ordering::Relaxed);
+                event_loop.exit();
+            }
+            UserEvent::Redraw => {
+                if self.running
+                    && self.drain_render_commands()
+                    && let Some(env) = &self.env
+                {
+                    env.window.request_redraw();
+                }
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self.running
+            && self.drain_render_commands()
+            && let Some(env) = &self.env
+        {
+            env.window.request_redraw();
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
@@ -233,9 +272,7 @@ impl ApplicationHandler<UserEvent> for App {
             // Mouse cursor movement
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
-                if let Ok(mut queue) = self.input_handler.lock() {
-                    queue.set_cursor_pos(x, y);
-                }
+                self.cursor_pos = (x, y);
                 self.send_input_event(InputEvent::CursorPos { x, y });
             }
 
@@ -245,11 +282,7 @@ impl ApplicationHandler<UserEvent> for App {
                     ElementState::Pressed => ACTION_PRESS,
                     ElementState::Released => ACTION_RELEASE,
                 };
-                let (x, y) = if let Ok(queue) = self.input_handler.lock() {
-                    queue.cursor_pos()
-                } else {
-                    (0.0, 0.0)
-                };
+                let (x, y) = self.cursor_pos;
                 self.send_input_event(InputEvent::CursorButton {
                     button: Self::mouse_button_name(button).to_string(),
                     action,
@@ -261,11 +294,7 @@ impl ApplicationHandler<UserEvent> for App {
 
             // Mouse scroll wheel
             WindowEvent::MouseWheel { delta, .. } => {
-                let (cursor_x, cursor_y) = if let Ok(queue) = self.input_handler.lock() {
-                    queue.cursor_pos()
-                } else {
-                    (0.0, 0.0)
-                };
+                let (cursor_x, cursor_y) = self.cursor_pos;
                 let event = match delta {
                     winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
                         InputEvent::CursorScrollLines {
@@ -275,14 +304,12 @@ impl ApplicationHandler<UserEvent> for App {
                             y: cursor_y,
                         }
                     }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        InputEvent::CursorScroll {
-                            dx: pos.x as f32,
-                            dy: pos.y as f32,
-                            x: cursor_x,
-                            y: cursor_y,
-                        }
-                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => InputEvent::CursorScroll {
+                        dx: pos.x as f32,
+                        dy: pos.y as f32,
+                        x: cursor_x,
+                        y: cursor_y,
+                    },
                 };
                 self.send_input_event(event);
             }
@@ -336,20 +363,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Stop => {
-                self.running = false;
-                self.running_flag.store(false, Ordering::Relaxed);
-                event_loop.exit();
-            }
-            UserEvent::Redraw => {
-                if self.running {
-                    self.redraw();
-                }
-            }
-        }
-    }
+    // user_event handled earlier
 }
 
 // ============================================================================
@@ -484,10 +498,9 @@ fn create_window_and_renderer(
 /// or `running_flag` is set to false.
 pub fn run(
     config: WaylandConfig,
-    render_state: Arc<Mutex<RenderState>>,
     running_flag: Arc<AtomicBool>,
-    input_handler: Arc<Mutex<InputHandler>>,
-    event_processor: Arc<Mutex<EventProcessor>>,
+    event_tx: crossbeam_channel::Sender<EventMsg>,
+    render_rx: Receiver<RenderMsg>,
     proxy_tx: Sender<EventLoopProxy<UserEvent>>,
 ) {
     // Allow running on non-main thread (required for NIF)
@@ -524,11 +537,12 @@ pub fn run(
         renderer: Some(renderer),
         running: true,
         running_flag,
-        render_state,
-        input_handler,
-        event_processor,
+        render_state: RenderState::default(),
+        render_rx,
+        event_tx,
         window_size: (size.width, size.height),
         current_mods: 0,
+        cursor_pos: (0.0, 0.0),
     };
 
     app.redraw();

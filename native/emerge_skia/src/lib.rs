@@ -10,12 +10,15 @@ use std::{
         mpsc,
     },
     thread,
-    time::Instant,
+    time::Duration,
 };
+
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::Font;
 
+mod actors;
 mod backend;
 mod cursor;
 mod drm_input;
@@ -24,13 +27,14 @@ mod events;
 mod renderer;
 mod tree;
 
+use actors::{EventMsg, RenderMsg, TreeMsg};
 use backend::drm;
+use drm_input::DrmInput;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use cursor::CursorState;
 use events::EventProcessor;
 use tree::layout::layout_and_refresh_default;
-use input::InputHandler;
+use input::{InputEvent, InputHandler};
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font};
 use tree::element::ElementTree;
 
@@ -59,18 +63,40 @@ enum BackendKind {
 }
 
 struct RendererResource {
-    render_state: Arc<Mutex<RenderState>>,
     running_flag: Arc<AtomicBool>,
     backend: BackendKind,
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
-    dirty_flag: Option<Arc<AtomicBool>>,
-    stop_flag: Option<Arc<AtomicBool>>,
+    stop_flag: Arc<AtomicBool>,
+    tree_tx: Sender<TreeMsg>,
+    event_tx: Sender<EventMsg>,
+    render_tx: RenderSender,
+    cursor_tx: Option<Sender<RenderMsg>>,
     render_counter: Arc<AtomicU64>,
     log_render: bool,
-    input_handler: Arc<Mutex<InputHandler>>,
-    tree: Arc<Mutex<ElementTree>>,
-    event_processor: Arc<Mutex<EventProcessor>>,
-    input_target: Arc<Mutex<Option<LocalPid>>>,
+    log_input: bool,
+}
+
+#[derive(Clone)]
+struct RenderSender {
+    tx: Sender<RenderMsg>,
+    drop_rx: Receiver<RenderMsg>,
+    log_render: bool,
+}
+
+impl RenderSender {
+    fn send_latest(&self, msg: RenderMsg) {
+        match self.tx.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(msg)) => {
+                let _ = self.drop_rx.try_recv();
+                let _ = self.tx.try_send(msg);
+                if self.log_render {
+                    eprintln!("render queue overwrite");
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
 }
 
 /// Resource for holding an element tree (for layout/rendering).
@@ -79,24 +105,14 @@ struct TreeResource {
 }
 
 impl RendererResource {
-    fn request_redraw(&self) {
-        match self.backend {
-            BackendKind::Wayland => {
-                if let Ok(guard) = self.event_proxy.lock()
-                    && let Some(proxy) = guard.as_ref()
-                {
-                    let _ = proxy.send_event(UserEvent::Redraw);
-                }
-            }
-            BackendKind::Drm => {
-                if let Some(dirty) = &self.dirty_flag {
-                    dirty.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-    }
-
     fn stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        send_tree(&self.tree_tx, TreeMsg::Stop, self.log_render);
+        send_event(&self.event_tx, EventMsg::Stop, self.log_input);
+        self.render_tx.send_latest(RenderMsg::Stop);
+        if let Some(cursor_tx) = &self.cursor_tx {
+            let _ = cursor_tx.send(RenderMsg::Stop);
+        }
         match self.backend {
             BackendKind::Wayland => {
                 if let Ok(guard) = self.event_proxy.lock()
@@ -106,12 +122,35 @@ impl RendererResource {
                 }
             }
             BackendKind::Drm => {
-                if let Some(stop_flag) = &self.stop_flag {
-                    stop_flag.store(true, Ordering::Relaxed);
-                }
                 self.running_flag.store(false, Ordering::Relaxed);
             }
         }
+    }
+}
+
+fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
+    match tree_tx.try_send(msg) {
+        Ok(()) => {}
+        Err(TrySendError::Full(msg)) => {
+            if log_render {
+                eprintln!("tree channel full, blocking send");
+            }
+            let _ = tree_tx.send(msg);
+        }
+        Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
+    match event_tx.try_send(msg) {
+        Ok(()) => {}
+        Err(TrySendError::Full(msg)) => {
+            if log_input {
+                eprintln!("event channel full, blocking send");
+            }
+            let _ = event_tx.send(msg);
+        }
+        Err(TrySendError::Disconnected(_)) => {}
     }
 }
 
@@ -132,131 +171,391 @@ struct StartConfig {
     render_log: bool,
 }
 
-fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResource>> {
-    let render_state = Arc::new(Mutex::new(RenderState::default()));
-    let running_flag = Arc::new(AtomicBool::new(true));
-    let render_counter = Arc::new(AtomicU64::new(0));
-    let input_handler = Arc::new(Mutex::new(InputHandler::new()));
-    let tree = Arc::new(Mutex::new(ElementTree::new()));
-    let event_processor = Arc::new(Mutex::new(EventProcessor::new()));
+fn spawn_tree_actor(
+    tree_rx: Receiver<TreeMsg>,
+    render_sender: RenderSender,
+    event_tx: Sender<EventMsg>,
+    render_counter: Arc<AtomicU64>,
+    log_input: bool,
+    wayland_proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut tree = ElementTree::new();
+        let mut width = 1.0f32;
+        let mut height = 1.0f32;
+        let mut scale = 1.0f32;
 
-    let input_target = Arc::new(Mutex::new(None));
+        while let Ok(msg) = tree_rx.recv() {
+
+            let mut messages = vec![msg];
+            while let Ok(next) = tree_rx.try_recv() {
+                messages.push(next);
+            }
+
+            let mut scroll_acc = std::collections::HashMap::new();
+            let mut changed = false;
+
+            for message in messages {
+                match message {
+                    TreeMsg::Stop => return,
+                    TreeMsg::UploadTree {
+                        bytes,
+                        width: new_width,
+                        height: new_height,
+                        scale: new_scale,
+                    } => match tree::deserialize::decode_tree(&bytes) {
+                        Ok(decoded) => {
+                            tree = decoded;
+                            width = new_width.max(1.0);
+                            height = new_height.max(1.0);
+                            scale = new_scale;
+                            changed = true;
+                        }
+                        Err(err) => {
+                            eprintln!("tree upload failed: {err}");
+                        }
+                    },
+                    TreeMsg::PatchTree {
+                        bytes,
+                        width: new_width,
+                        height: new_height,
+                        scale: new_scale,
+                    } => {
+                        let patches = match tree::patch::decode_patches(&bytes) {
+                            Ok(patches) => patches,
+                            Err(err) => {
+                                eprintln!("tree patch decode failed: {err}");
+                                continue;
+                            }
+                        };
+                        if let Err(err) = tree::patch::apply_patches(&mut tree, patches) {
+                            eprintln!("tree patch apply failed: {err}");
+                            continue;
+                        }
+                        width = new_width.max(1.0);
+                        height = new_height.max(1.0);
+                        scale = new_scale;
+                        changed = true;
+                    }
+                    TreeMsg::ScrollRequest { element_id, dx, dy } => {
+                        let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
+                        entry.0 += dx;
+                        entry.1 += dy;
+                        changed = true;
+                    }
+                }
+            }
+
+            for (id, (dx, dy)) in scroll_acc {
+                changed |= tree.apply_scroll(&id, dx, dy);
+            }
+
+            if !changed {
+                continue;
+            }
+
+            let constraint = tree::layout::Constraint::new(width, height);
+            let output = layout_and_refresh_default(&mut tree, constraint, scale);
+            send_event(
+                &event_tx,
+                EventMsg::RegistryUpdate {
+                    registry: output.event_registry,
+                },
+                log_input,
+            );
+
+            let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            render_sender.send_latest(RenderMsg::Commands {
+                commands: output.commands,
+                version,
+            });
+
+            if let Some(proxy) = wayland_proxy.as_ref() {
+                let _ = proxy.send_event(UserEvent::Redraw);
+            }
+        }
+    })
+}
+
+fn process_input_events(
+    events: &mut Vec<InputEvent>,
+    processor: &mut EventProcessor,
+    input_handler: &mut InputHandler,
+    target: &Option<LocalPid>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+) {
+    if events.is_empty() {
+        return;
+    }
+
+    let mut coalesced = Vec::new();
+    let mut last_cursor: Option<InputEvent> = None;
+    let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
+
+    for event in events.drain(..) {
+        let event = event.normalize_scroll();
+        match event {
+            InputEvent::CursorPos { .. } => {
+                last_cursor = Some(event);
+            }
+            InputEvent::CursorScroll { dx, dy, x, y } => {
+                scroll_acc = Some(match scroll_acc {
+                    Some((acc_dx, acc_dy, _, _)) => (acc_dx + dx, acc_dy + dy, x, y),
+                    None => (dx, dy, x, y),
+                });
+            }
+            other => coalesced.push(other),
+        }
+    }
+
+    if let Some((dx, dy, x, y)) = scroll_acc {
+        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
+    }
+    if let Some(cursor) = last_cursor {
+        coalesced.push(cursor);
+    }
+
+    for event in coalesced {
+        if !input_handler.accepts(&event) {
+            continue;
+        }
+
+        if let InputEvent::CursorPos { x, y } = &event {
+            input_handler.set_cursor_pos(*x, *y);
+        }
+
+        if let Some(pid) = target.as_ref() {
+            let pid = *pid;
+            events::send_input_event(pid, &event);
+
+            if let Some(clicked_id) = processor.detect_click(&event) {
+                events::send_element_event(pid, &clicked_id, events::click_atom());
+            }
+
+            if let Some((mouse_id, mouse_event)) = processor.detect_mouse_button_event(&event) {
+                events::send_element_event(pid, &mouse_id, mouse_event);
+            }
+
+            for (hover_id, hover_event) in processor.handle_hover_event(&event) {
+                events::send_element_event(pid, &hover_id, hover_event);
+            }
+        } else {
+            processor.detect_click(&event);
+            processor.detect_mouse_button_event(&event);
+            processor.handle_hover_event(&event);
+        }
+
+        for (id, dx, dy) in processor.scroll_requests(&event) {
+            send_tree(
+                tree_tx,
+                TreeMsg::ScrollRequest {
+                    element_id: id,
+                    dx,
+                    dy,
+                },
+                log_render,
+            );
+        }
+    }
+}
+
+fn spawn_event_actor(
+    event_rx: Receiver<EventMsg>,
+    tree_tx: Sender<TreeMsg>,
+    log_render: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut processor = EventProcessor::new();
+        let mut input_handler = InputHandler::new();
+        let mut target: Option<LocalPid> = None;
+
+        while let Ok(msg) = event_rx.recv() {
+
+            let mut messages = vec![msg];
+            while let Ok(next) = event_rx.try_recv() {
+                messages.push(next);
+            }
+
+            let mut pending_inputs = Vec::new();
+
+            for message in messages {
+                match message {
+                    EventMsg::InputEvent(event) => pending_inputs.push(event),
+                    EventMsg::RegistryUpdate { registry } => {
+                        process_input_events(
+                            &mut pending_inputs,
+                            &mut processor,
+                            &mut input_handler,
+                            &target,
+                            &tree_tx,
+                            log_render,
+                        );
+                        processor.rebuild_registry(registry);
+                    }
+                    EventMsg::SetInputMask(mask) => {
+                        process_input_events(
+                            &mut pending_inputs,
+                            &mut processor,
+                            &mut input_handler,
+                            &target,
+                            &tree_tx,
+                            log_render,
+                        );
+                        input_handler.set_mask(mask);
+                    }
+                    EventMsg::SetInputTarget(pid) => {
+                        process_input_events(
+                            &mut pending_inputs,
+                            &mut processor,
+                            &mut input_handler,
+                            &target,
+                            &tree_tx,
+                            log_render,
+                        );
+                        target = pid;
+                    }
+                    EventMsg::Stop => return,
+                }
+            }
+
+            process_input_events(
+                &mut pending_inputs,
+                &mut processor,
+                &mut input_handler,
+                &target,
+                &tree_tx,
+                log_render,
+            );
+        }
+    })
+}
+
+fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResource>> {
+    let running_flag = Arc::new(AtomicBool::new(true));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let render_counter = Arc::new(AtomicU64::new(0));
 
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
     let log_render = config.render_log;
-    let (backend, event_proxy, dirty_flag, stop_flag) = match config.backend {
-        BackendKind::Wayland => {
-            let render_state_clone = Arc::clone(&render_state);
-            let running_flag_clone = Arc::clone(&running_flag);
-            let input_handler_clone = Arc::clone(&input_handler);
-            let event_processor_for_thread = Arc::clone(&event_processor);
 
+    let (tree_tx, tree_rx) = bounded(512);
+    let (event_tx, event_rx) = bounded(4096);
+    let (render_tx, render_rx) = bounded(1);
+    let render_sender = RenderSender {
+        tx: render_tx,
+        drop_rx: render_rx.clone(),
+        log_render,
+    };
+    let (cursor_tx, cursor_rx) = bounded(1024);
+
+    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render);
+
+    let (backend, event_proxy) = match config.backend {
+        BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
+            let running_flag_clone = Arc::clone(&running_flag);
+            let event_tx_clone = event_tx.clone();
             let config = WaylandConfig {
                 title: config.title,
                 width: config.width,
                 height: config.height,
             };
+
             thread::spawn(move || {
-                wayland::run(
-                    config,
-                    render_state_clone,
-                    running_flag_clone,
-                    input_handler_clone,
-                    event_processor_for_thread,
-                    proxy_tx,
-                );
+                wayland::run(config, running_flag_clone, event_tx_clone, render_rx, proxy_tx);
             });
 
-            let event_proxy = proxy_rx
+            let proxy = proxy_rx
                 .recv()
                 .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
-            (BackendKind::Wayland, Some(event_proxy), None, None)
+
+            spawn_tree_actor(
+                tree_rx,
+                render_sender.clone(),
+                event_tx.clone(),
+                Arc::clone(&render_counter),
+                log_input,
+                Some(proxy.clone()),
+            );
+
+            (BackendKind::Wayland, Some(proxy))
         }
         BackendKind::Drm => {
-            let stop_flag = Arc::new(AtomicBool::new(false));
-            let dirty_flag = Arc::new(AtomicBool::new(false));
-            let cursor_state = Arc::new(Mutex::new(CursorState::new()));
-            let render_state_clone = Arc::clone(&render_state);
+            let (screen_tx, screen_rx) = bounded(1);
+            let event_tx_clone = event_tx.clone();
+            let cursor_tx_clone = cursor_tx.clone();
+            let stop_clone = Arc::clone(&stop_flag);
+            let input_log = log_input;
+
+            thread::spawn(move || {
+                let mut input = DrmInput::new(
+                    (config.width, config.height),
+                    screen_rx,
+                    event_tx_clone,
+                    cursor_tx_clone,
+                    input_log,
+                );
+                while !stop_clone.load(Ordering::Relaxed) {
+                    input.poll();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            });
+
             let running_flag_clone = Arc::clone(&running_flag);
-            let render_counter_clone = Arc::clone(&render_counter);
-            let input_handler_clone = Arc::clone(&input_handler);
-            let event_processor_clone = Arc::clone(&event_processor);
             let stop_for_thread = Arc::clone(&stop_flag);
-            let dirty_for_thread = Arc::clone(&dirty_flag);
+            let render_counter_clone = Arc::clone(&render_counter);
+            let event_tx_clone = event_tx.clone();
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
-                cursor_state: Arc::clone(&cursor_state),
                 card_path: config.drm_card,
                 hw_cursor: config.drm_hw_cursor,
-                input_log: config.drm_input_log,
-                render_log: config.render_log,
+                render_log: log_render,
             };
 
             thread::spawn(move || {
                 drm::run(
                     stop_for_thread,
-                    dirty_for_thread,
-                    render_state_clone,
-                    input_handler_clone,
-                    event_processor_clone,
                     running_flag_clone,
+                    render_rx,
+                    cursor_rx,
+                    event_tx_clone,
+                    screen_tx,
                     render_counter_clone,
                     drm_config,
                 );
             });
 
-            (
-                BackendKind::Drm,
+            spawn_tree_actor(
+                tree_rx,
+                render_sender.clone(),
+                event_tx.clone(),
+                Arc::clone(&render_counter),
+                log_input,
                 None,
-                Some(Arc::clone(&dirty_flag)),
-                Some(Arc::clone(&stop_flag)),
-            )
+            );
+
+            (BackendKind::Drm, None)
         }
     };
 
     let resource = RendererResource {
-        render_state,
         running_flag,
         backend,
         event_proxy: Mutex::new(event_proxy),
-        dirty_flag: dirty_flag.clone(),
-        stop_flag: stop_flag.clone(),
+        stop_flag,
+        tree_tx,
+        event_tx,
+        render_tx: render_sender,
+        cursor_tx: if matches!(backend, BackendKind::Drm) {
+            Some(cursor_tx)
+        } else {
+            None
+        },
         render_counter,
         log_render,
-        input_handler,
-        tree,
-        event_processor: Arc::clone(&event_processor),
-        input_target: Arc::clone(&input_target),
-    };
-
-    let redraw: Arc<dyn Fn() + Send + Sync> = match backend {
-        BackendKind::Wayland => {
-            let event_proxy = resource.event_proxy.lock().ok().and_then(|p| p.as_ref().cloned());
-            Arc::new(move || {
-                if let Some(proxy) = event_proxy.as_ref() {
-                    let _ = proxy.send_event(UserEvent::Redraw);
-                }
-            })
-        }
-        BackendKind::Drm => {
-            let dirty_flag = dirty_flag.clone();
-            Arc::new(move || {
-                if let Some(dirty) = dirty_flag.as_ref() {
-                    dirty.store(true, Ordering::Relaxed);
-                }
-            })
-        }
-    };
-
-    EventProcessor::start_loop(
-        Arc::clone(&event_processor),
-        Arc::clone(&resource.tree),
-        Arc::clone(&resource.render_state),
-        Arc::clone(&resource.input_target),
-        redraw,
         log_input,
-    );
+    };
 
     Ok(ResourceArc::new(resource))
 }
@@ -276,6 +575,7 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
 }
 
 #[rustler::nif]
+#[allow(clippy::too_many_arguments)]
 fn start_opts(
     backend: String,
     title: String,
@@ -317,15 +617,14 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
 
 #[rustler::nif]
 fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
-    if let Ok(mut state) = renderer.render_state.lock() {
-        let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        state.commands = commands;
-        state.render_version = version;
-        if renderer.log_render {
-            eprintln!("renderer_render version={version}");
-        }
+    let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    renderer.render_tx.send_latest(RenderMsg::Commands { commands, version });
+    if renderer.backend == BackendKind::Wayland
+        && let Ok(guard) = renderer.event_proxy.lock()
+        && let Some(proxy) = guard.as_ref()
+    {
+        let _ = proxy.send_event(UserEvent::Redraw);
     }
-    renderer.request_redraw();
     atoms::ok()
 }
 
@@ -333,7 +632,7 @@ fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> At
 // Tree -> Layout -> Render Pipeline
 // ============================================================================
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(
     renderer: ResourceArc<RendererResource>,
     data: Binary,
@@ -341,38 +640,21 @@ fn renderer_upload(
     height: f64,
     scale: f64,
 ) -> Result<Atom, String> {
-    let log_render = renderer.log_render;
-    let start = if log_render { Some(Instant::now()) } else { None };
-    let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = renderer.tree.lock() {
-        *tree = decoded;
-        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        let output = layout_and_refresh_default(&mut tree, constraint, scale as f32);
-
-        if let Ok(mut processor) = renderer.event_processor.lock() {
-            processor.rebuild_registry(output.event_registry);
-        }
-        if let Ok(mut state) = renderer.render_state.lock() {
-            let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            state.commands = output.commands;
-            state.render_version = version;
-            if log_render {
-                let elapsed = start.map(|t| t.elapsed()).unwrap_or_default();
-                eprintln!(
-                    "renderer_upload version={version} elapsed_ms={}",
-                    elapsed.as_secs_f64() * 1000.0
-                );
-            }
-        }
-        renderer.request_redraw();
-        Ok(atoms::ok())
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let bytes = data.as_slice().to_vec();
+    send_tree(
+        &renderer.tree_tx,
+        TreeMsg::UploadTree {
+            bytes,
+            width: width as f32,
+            height: height as f32,
+            scale: scale as f32,
+        },
+        renderer.log_render,
+    );
+    Ok(atoms::ok())
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_patch(
     renderer: ResourceArc<RendererResource>,
     data: Binary,
@@ -380,35 +662,18 @@ fn renderer_patch(
     height: f64,
     scale: f64,
 ) -> Result<Atom, String> {
-    let log_render = renderer.log_render;
-    let start = if log_render { Some(Instant::now()) } else { None };
-    let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = renderer.tree.lock() {
-        tree::patch::apply_patches(&mut tree, patches)?;
-        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        let output = layout_and_refresh_default(&mut tree, constraint, scale as f32);
-
-        if let Ok(mut processor) = renderer.event_processor.lock() {
-            processor.rebuild_registry(output.event_registry);
-        }
-        if let Ok(mut state) = renderer.render_state.lock() {
-            let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            state.commands = output.commands;
-            state.render_version = version;
-            if log_render {
-                let elapsed = start.map(|t| t.elapsed()).unwrap_or_default();
-                eprintln!(
-                    "renderer_patch version={version} elapsed_ms={}",
-                    elapsed.as_secs_f64() * 1000.0
-                );
-            }
-        }
-        renderer.request_redraw();
-        Ok(atoms::ok())
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let bytes = data.as_slice().to_vec();
+    send_tree(
+        &renderer.tree_tx,
+        TreeMsg::PatchTree {
+            bytes,
+            width: width as f32,
+            height: height as f32,
+            scale: scale as f32,
+        },
+        renderer.log_render,
+    );
+    Ok(atoms::ok())
 }
 
 #[rustler::nif]
@@ -461,9 +726,11 @@ fn is_running(renderer: ResourceArc<RendererResource>) -> bool {
 /// - 0xFF: All events
 #[rustler::nif]
 fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
-    if let Ok(mut handler) = renderer.input_handler.lock() {
-        handler.set_mask(mask);
-    }
+    send_event(
+        &renderer.event_tx,
+        EventMsg::SetInputMask(mask),
+        renderer.log_input,
+    );
     atoms::ok()
 }
 
@@ -473,9 +740,11 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 /// `{:emerge_skia_event, event}` messages.
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
-    if let Ok(mut target) = renderer.input_target.lock() {
-        *target = pid;
-    }
+    send_event(
+        &renderer.event_tx,
+        EventMsg::SetInputTarget(pid),
+        renderer.log_input,
+    );
     atoms::ok()
 }
 

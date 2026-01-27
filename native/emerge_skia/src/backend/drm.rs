@@ -5,7 +5,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -24,10 +24,11 @@ use glutin_egl_sys::egl::types::{EGLConfig, EGLContext, EGLDisplay, EGLSurface, 
 use libloading::Library;
 use skia_safe::{Color, Paint, PaintStyle, gpu::gl::FramebufferInfo};
 
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::actors::{EventMsg, RenderMsg};
 use crate::cursor::CursorState;
-use crate::drm_input::DrmInput;
-use crate::events::EventProcessor;
-use crate::input::{InputEvent, InputHandler};
+use crate::input::InputEvent;
 use crate::renderer::{RenderState, Renderer};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
@@ -670,13 +671,6 @@ fn framebuffer_for_bo(
     Ok(framebuffer)
 }
 
-fn cursor_snapshot(cursor_state: &Arc<Mutex<CursorState>>) -> CursorState {
-    cursor_state
-        .lock()
-        .map(|state| *state)
-        .unwrap_or_else(|_| CursorState::new())
-}
-
 fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_size: (u32, u32)) {
     let (width, height) = screen_size;
     let x = cursor_pos.0.clamp(0.0, width.saturating_sub(1) as f32);
@@ -701,40 +695,19 @@ fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_
 #[derive(Clone)]
 pub struct DrmRunConfig {
     pub requested_size: Option<(u32, u32)>,
-    pub cursor_state: Arc<Mutex<CursorState>>,
     pub card_path: Option<String>,
     pub hw_cursor: bool,
-    pub input_log: bool,
     pub render_log: bool,
 }
 
-fn send_input_event(
-    input_handler: &Arc<Mutex<InputHandler>>,
-    event_processor: &Arc<Mutex<EventProcessor>>,
-    event: InputEvent,
-) {
-    let accepts = if let Ok(handler) = input_handler.lock() {
-        handler.accepts(&event)
-    } else {
-        false
-    };
-
-    if !accepts {
-        return;
-    }
-
-    if let Ok(mut processor) = event_processor.lock() {
-        processor.enqueue(event);
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     stop: Arc<AtomicBool>,
-    dirty: Arc<AtomicBool>,
-    render_state: Arc<Mutex<RenderState>>,
-    input_handler: Arc<Mutex<InputHandler>>,
-    event_processor: Arc<Mutex<EventProcessor>>,
     running_flag: Arc<AtomicBool>,
+    render_rx: Receiver<RenderMsg>,
+    cursor_rx: Receiver<RenderMsg>,
+    event_tx: Sender<EventMsg>,
+    screen_tx: Sender<(u32, u32)>,
     render_counter: Arc<AtomicU64>,
     config: DrmRunConfig,
 ) {
@@ -766,29 +739,6 @@ pub fn run(
             return;
         }
     };
-
-    let screen_size = Arc::new(Mutex::new(
-        config.requested_size.unwrap_or((800, 600)),
-    ));
-    let input_screen_size = Arc::clone(&screen_size);
-    let input_handler_clone = Arc::clone(&input_handler);
-    let event_processor_clone = Arc::clone(&event_processor);
-    let cursor_state_clone = Arc::clone(&config.cursor_state);
-    let input_stop = Arc::clone(&stop);
-    let input_log = config.input_log;
-    std::thread::spawn(move || {
-        let mut input = DrmInput::new(
-            input_screen_size,
-            input_handler_clone,
-            event_processor_clone,
-            cursor_state_clone,
-            input_log,
-        );
-        while !input_stop.load(Ordering::Relaxed) {
-            input.poll();
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    });
 
     let log_render = config.render_log;
     let mut last_dimensions: Option<(u32, u32)> = None;
@@ -866,9 +816,7 @@ pub fn run(
 
         let (width, height) = mode.size();
         let dimensions = (width as u32, height as u32);
-        if let Ok(mut size) = screen_size.lock() {
-            *size = dimensions;
-        }
+        let _ = screen_tx.send(dimensions);
         if !logged_mode_info {
             println!(
                 "DRM mode: {}x{} @ {}Hz",
@@ -879,15 +827,11 @@ pub fn run(
             logged_mode_info = true;
         }
         if last_dimensions != Some(dimensions) {
-            send_input_event(
-                &input_handler,
-                &event_processor,
-                InputEvent::Resized {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    scale_factor: 1.0,
-                },
-            );
+            let _ = event_tx.send(EventMsg::InputEvent(InputEvent::Resized {
+                width: dimensions.0,
+                height: dimensions.1,
+                scale_factor: 1.0,
+            }));
             last_dimensions = Some(dimensions);
         }
 
@@ -979,21 +923,8 @@ pub fn run(
 
         let mut framebuffer_cache: HashMap<u32, framebuffer::Handle> = HashMap::new();
 
-        let mut frame_version = None;
-        if let Ok(state) = render_state.lock() {
-            let version = state.render_version;
-            frame_version = Some(version);
-            renderer.render(&state);
-            if log_render {
-                let latest = render_counter.load(Ordering::Relaxed);
-                let delta = latest.saturating_sub(version);
-                eprintln!("drm render version={version} latest={latest} delta={delta}");
-            }
-        }
-        let mut cursor = cursor_snapshot(&config.cursor_state);
-        if cursor_plane.is_none() && cursor.visible {
-            draw_software_cursor(&mut renderer, cursor.pos, dimensions);
-        }
+        let mut render_state = RenderState::default();
+        renderer.render(&render_state);
 
         if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) } == egl::FALSE {
             eprintln!("DRM backend unavailable: eglSwapBuffers failed");
@@ -1046,23 +977,15 @@ pub fn run(
             continue;
         }
         if log_render {
-            if let Some(version) = frame_version {
-                eprintln!("drm present version={version}");
-            }
+            eprintln!("drm present version={}", render_state.render_version);
         }
 
         let mut current_bo = Some(bo);
-        let mut last_cursor = cursor;
-        let cursor_plane_error = cursor_plane
-            .as_ref()
-            .and_then(|plane| update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err());
-        if let Some(err) = cursor_plane_error
-            && !is_ebusy(&err)
-        {
-            eprintln!("DRM cursor update failed: {err}");
-            cursor_plane = None;
-            dirty.store(true, Ordering::Relaxed);
-        }
+        let mut pending_render = true;
+        let mut cursor_pos = (0.0, 0.0);
+        let mut cursor_visible = true;
+        let mut last_cursor_pos = cursor_pos;
+        let mut last_cursor_visible = cursor_visible;
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
 
@@ -1094,43 +1017,67 @@ pub fn run(
                 next_hotplug_check = Instant::now() + hotplug_interval;
             }
 
-            cursor = cursor_snapshot(&config.cursor_state);
-            if cursor_plane.is_some() {
-                if cursor.visible != last_cursor.visible || cursor.pos != last_cursor.pos {
-                    let cursor_plane_error = cursor_plane.as_ref().and_then(|plane| {
-                        update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err()
-                    });
-                    if let Some(err) = cursor_plane_error
-                        && !is_ebusy(&err)
-                    {
-                        eprintln!("DRM cursor update failed: {err}");
-                        cursor_plane = None;
-                        dirty.store(true, Ordering::Relaxed);
+            while let Ok(msg) = render_rx.try_recv() {
+                match msg {
+                    RenderMsg::Commands { commands, version } => {
+                        render_state.commands = commands;
+                        render_state.render_version = version;
+                        pending_render = true;
+                        if log_render {
+                            let latest = render_counter.load(Ordering::Relaxed);
+                            let delta = latest.saturating_sub(version);
+                            eprintln!("drm render version={version} latest={latest} delta={delta}");
+                        }
                     }
-                }
-            } else {
-                if cursor.visible && cursor.pos != last_cursor.pos {
-                    dirty.store(true, Ordering::Relaxed);
-                }
-                if cursor.visible != last_cursor.visible {
-                    dirty.store(true, Ordering::Relaxed);
+                    RenderMsg::CursorUpdate { pos, visible } => {
+                        cursor_pos = pos;
+                        cursor_visible = visible;
+                    }
+                    RenderMsg::Stop => {
+                        running_flag.store(false, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
-            last_cursor = cursor;
-            if dirty.swap(false, Ordering::Relaxed) {
-                let mut frame_version = None;
-                if let Ok(state) = render_state.lock() {
-                    let version = state.render_version;
-                    frame_version = Some(version);
-                    renderer.render(&state);
-                    if log_render {
-                        let latest = render_counter.load(Ordering::Relaxed);
-                        let delta = latest.saturating_sub(version);
-                        eprintln!("drm render version={version} latest={latest} delta={delta}");
-                    }
+
+            while let Ok(msg) = cursor_rx.try_recv() {
+                if let RenderMsg::CursorUpdate { pos, visible } = msg {
+                    cursor_pos = pos;
+                    cursor_visible = visible;
                 }
-                if cursor_plane.is_none() && cursor.visible {
-                    draw_software_cursor(&mut renderer, cursor.pos, dimensions);
+            }
+
+            if cursor_plane.is_some() && (cursor_visible != last_cursor_visible || cursor_pos != last_cursor_pos) {
+                let cursor = crate::cursor::CursorState { pos: cursor_pos, visible: cursor_visible };
+                let cursor_plane_error = cursor_plane.as_ref().and_then(|plane| {
+                    update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err()
+                });
+                if let Some(err) = cursor_plane_error
+                    && !is_ebusy(&err)
+                {
+                    eprintln!("DRM cursor update failed: {err}");
+                    cursor_plane = None;
+                    pending_render = true;
+                }
+            }
+
+            if cursor_plane.is_none() {
+                if cursor_visible && cursor_pos != last_cursor_pos {
+                    pending_render = true;
+                }
+                if cursor_visible != last_cursor_visible {
+                    pending_render = true;
+                }
+            }
+
+            last_cursor_pos = cursor_pos;
+            last_cursor_visible = cursor_visible;
+
+            if pending_render {
+                let frame_version = render_state.render_version;
+                renderer.render(&render_state);
+                if cursor_plane.is_none() && cursor_visible {
+                    draw_software_cursor(&mut renderer, cursor_pos, dimensions);
                 }
 
                 if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) }
@@ -1170,21 +1117,20 @@ pub fn run(
                         if log_render {
                             eprintln!("drm flip EBUSY, retrying fresh frame");
                         }
-                        dirty.store(true, Ordering::Relaxed);
                         drop(next_bo);
+                        pending_render = true;
                         continue;
                     }
                     eprintln!("DRM backend unavailable: {err}");
                     break;
                 }
                 if log_render {
-                    if let Some(version) = frame_version {
-                        eprintln!("drm present version={version}");
-                    }
+                    eprintln!("drm present version={frame_version}");
                 }
 
                 drop(current_bo.take());
                 current_bo = Some(next_bo);
+                pending_render = false;
             }
             std::thread::sleep(Duration::from_millis(4));
         }

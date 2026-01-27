@@ -1,18 +1,15 @@
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-
 use evdev::{
     AbsoluteAxisType, Device, InputEventKind, Key, PropType, RelativeAxisType, Synchronization,
 };
 use libc::input_absinfo;
 
-use crate::cursor::CursorState;
-use crate::events::EventProcessor;
-use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, InputHandler, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
-};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
+
+use crate::actors::{EventMsg, RenderMsg};
+use crate::input::{ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT};
 
 struct InputDevice {
     device: Device,
@@ -58,19 +55,19 @@ pub struct DrmInput {
     cursor_pos: (f32, f32),
     modifiers: Modifiers,
     caps_lock: bool,
-    screen_size: Arc<Mutex<(u32, u32)>>,
-    input_handler: Arc<Mutex<InputHandler>>,
-    event_processor: Arc<Mutex<EventProcessor>>,
-    cursor_state: Arc<Mutex<CursorState>>,
+    screen_size: (u32, u32),
+    screen_rx: Receiver<(u32, u32)>,
+    event_tx: Sender<EventMsg>,
+    cursor_tx: Sender<RenderMsg>,
     log_enabled: bool,
 }
 
 impl DrmInput {
     pub fn new(
-        screen_size: Arc<Mutex<(u32, u32)>>,
-        input_handler: Arc<Mutex<InputHandler>>,
-        event_processor: Arc<Mutex<EventProcessor>>,
-        cursor_state: Arc<Mutex<CursorState>>,
+        screen_size: (u32, u32),
+        screen_rx: Receiver<(u32, u32)>,
+        event_tx: Sender<EventMsg>,
+        cursor_tx: Sender<RenderMsg>,
         log_enabled: bool,
     ) -> Self {
         let devices = enumerate_devices(log_enabled);
@@ -80,15 +77,18 @@ impl DrmInput {
             modifiers: Modifiers::default(),
             caps_lock: false,
             screen_size,
-            input_handler,
-            event_processor,
-            cursor_state,
+            screen_rx,
+            event_tx,
+            cursor_tx,
             log_enabled,
         }
     }
 
     pub fn poll(&mut self) {
-        let screen_size = self.current_screen_size();
+        while let Ok(size) = self.screen_rx.try_recv() {
+            self.screen_size = size;
+        }
+        let screen_size = self.screen_size;
         for idx in 0..self.devices.len() {
             let events = {
                 let device = &mut self.devices[idx];
@@ -133,13 +133,6 @@ impl DrmInput {
         }
     }
 
-    fn current_screen_size(&self) -> (u32, u32) {
-        self.screen_size
-            .lock()
-            .map(|size| *size)
-            .unwrap_or((0, 0))
-    }
-
     fn handle_key_event(&mut self, key: Key, value: i32) {
         let pressed = value != 0;
         self.update_modifiers(key, pressed);
@@ -173,10 +166,10 @@ impl DrmInput {
             mods,
         });
 
-        if pressed {
-            if let Some(codepoint) = key_to_codepoint(key_kind, self.modifiers, self.caps_lock) {
-                self.push_input(InputEvent::Codepoint { codepoint, mods });
-            }
+        if pressed
+            && let Some(codepoint) = key_to_codepoint(key_kind, self.modifiers, self.caps_lock)
+        {
+            self.push_input(InputEvent::Codepoint { codepoint, mods });
         }
     }
 
@@ -237,12 +230,10 @@ impl DrmInput {
 
     fn set_cursor_pos(&mut self, x: f32, y: f32) {
         self.cursor_pos = (x, y);
-        if let Ok(mut cursor) = self.cursor_state.lock() {
-            cursor.pos = (x, y);
-        }
-        if let Ok(mut handler) = self.input_handler.lock() {
-            handler.set_cursor_pos(x, y);
-        }
+        let _ = self.cursor_tx.try_send(RenderMsg::CursorUpdate {
+            pos: (x, y),
+            visible: true,
+        });
     }
 
     fn update_modifiers(&mut self, key: Key, pressed: bool) {
@@ -256,24 +247,20 @@ impl DrmInput {
     }
 
     fn push_input(&self, event: InputEvent) {
-        let accepts = if let Ok(handler) = self.input_handler.lock() {
-            handler.accepts(&event)
-        } else {
-            false
-        };
-
-        if !accepts {
-            return;
+        if self.log_enabled && let InputEvent::CursorPos { x, y } = &event {
+            eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
         }
 
-        if self.log_enabled {
-            if let InputEvent::CursorPos { x, y } = &event {
-                eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
+        let msg = EventMsg::InputEvent(event);
+        match self.event_tx.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(msg)) => {
+                if self.log_enabled {
+                    eprintln!("event channel full, blocking send");
+                }
+                let _ = self.event_tx.send(msg);
             }
-        }
-
-        if let Ok(mut processor) = self.event_processor.lock() {
-            processor.enqueue(event);
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 }

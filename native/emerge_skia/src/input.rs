@@ -143,11 +143,6 @@ impl InputHandler {
         self.cursor_pos = (x, y);
     }
 
-    /// Get current cursor position
-    pub fn cursor_pos(&self) -> (f32, f32) {
-        self.cursor_pos
-    }
-
     /// Set the input mask for filtering events
     pub fn set_mask(&mut self, mask: u32) {
         self.mask = mask;
@@ -182,7 +177,6 @@ impl Default for InputHandler {
 // Send Event to Elixir
 // ============================================================================
 
-/// Send an input event to the target pid as {:emerge_skia_event, event}
 // ============================================================================
 // Encoder Implementation
 // ============================================================================
