@@ -6,23 +6,28 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
+    time::Instant,
 };
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::Font;
 
 mod backend;
+mod cursor;
+mod drm_input;
 mod input;
 mod events;
 mod renderer;
 mod tree;
 
+use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
+use cursor::CursorState;
 use events::EventProcessor;
 use tree::layout::layout_and_refresh_default;
 use input::InputHandler;
@@ -47,10 +52,21 @@ mod atoms {
 // NIF Resource
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendKind {
+    Wayland,
+    Drm,
+}
+
 struct RendererResource {
     render_state: Arc<Mutex<RenderState>>,
     running_flag: Arc<AtomicBool>,
+    backend: BackendKind,
     event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
+    dirty_flag: Option<Arc<AtomicBool>>,
+    stop_flag: Option<Arc<AtomicBool>>,
+    render_counter: Arc<AtomicU64>,
+    log_render: bool,
     input_handler: Arc<Mutex<InputHandler>>,
     tree: Arc<Mutex<ElementTree>>,
     event_processor: Arc<Mutex<EventProcessor>>,
@@ -64,18 +80,37 @@ struct TreeResource {
 
 impl RendererResource {
     fn request_redraw(&self) {
-        if let Ok(guard) = self.event_proxy.lock()
-            && let Some(proxy) = guard.as_ref()
-        {
-            let _ = proxy.send_event(UserEvent::Redraw);
+        match self.backend {
+            BackendKind::Wayland => {
+                if let Ok(guard) = self.event_proxy.lock()
+                    && let Some(proxy) = guard.as_ref()
+                {
+                    let _ = proxy.send_event(UserEvent::Redraw);
+                }
+            }
+            BackendKind::Drm => {
+                if let Some(dirty) = &self.dirty_flag {
+                    dirty.store(true, Ordering::Relaxed);
+                }
+            }
         }
     }
 
     fn stop(&self) {
-        if let Ok(guard) = self.event_proxy.lock()
-            && let Some(proxy) = guard.as_ref()
-        {
-            let _ = proxy.send_event(UserEvent::Stop);
+        match self.backend {
+            BackendKind::Wayland => {
+                if let Ok(guard) = self.event_proxy.lock()
+                    && let Some(proxy) = guard.as_ref()
+                {
+                    let _ = proxy.send_event(UserEvent::Stop);
+                }
+            }
+            BackendKind::Drm => {
+                if let Some(stop_flag) = &self.stop_flag {
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+                self.running_flag.store(false, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -85,62 +120,134 @@ impl RendererResource {
 // NIF Functions
 // ============================================================================
 
-#[rustler::nif]
-fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<RendererResource>> {
+#[derive(Clone, Debug)]
+struct StartConfig {
+    backend: BackendKind,
+    title: String,
+    width: u32,
+    height: u32,
+    drm_card: Option<String>,
+    drm_hw_cursor: bool,
+    drm_input_log: bool,
+    render_log: bool,
+}
+
+fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResource>> {
     let render_state = Arc::new(Mutex::new(RenderState::default()));
     let running_flag = Arc::new(AtomicBool::new(true));
+    let render_counter = Arc::new(AtomicU64::new(0));
     let input_handler = Arc::new(Mutex::new(InputHandler::new()));
     let tree = Arc::new(Mutex::new(ElementTree::new()));
     let event_processor = Arc::new(Mutex::new(EventProcessor::new()));
 
-    let render_state_clone = Arc::clone(&render_state);
-    let running_flag_clone = Arc::clone(&running_flag);
-    let input_handler_clone = Arc::clone(&input_handler);
-    let event_processor_clone = Arc::clone(&event_processor);
-    let event_processor_for_thread = Arc::clone(&event_processor);
+    let input_target = Arc::new(Mutex::new(None));
 
-    let (proxy_tx, proxy_rx) = mpsc::channel();
+    let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
+    let log_render = config.render_log;
+    let (backend, event_proxy, dirty_flag, stop_flag) = match config.backend {
+        BackendKind::Wayland => {
+            let render_state_clone = Arc::clone(&render_state);
+            let running_flag_clone = Arc::clone(&running_flag);
+            let input_handler_clone = Arc::clone(&input_handler);
+            let event_processor_for_thread = Arc::clone(&event_processor);
 
-    let config = WaylandConfig {
-        title,
-        width,
-        height,
+            let (proxy_tx, proxy_rx) = mpsc::channel();
+            let config = WaylandConfig {
+                title: config.title,
+                width: config.width,
+                height: config.height,
+            };
+            thread::spawn(move || {
+                wayland::run(
+                    config,
+                    render_state_clone,
+                    running_flag_clone,
+                    input_handler_clone,
+                    event_processor_for_thread,
+                    proxy_tx,
+                );
+            });
+
+            let event_proxy = proxy_rx
+                .recv()
+                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
+            (BackendKind::Wayland, Some(event_proxy), None, None)
+        }
+        BackendKind::Drm => {
+            let stop_flag = Arc::new(AtomicBool::new(false));
+            let dirty_flag = Arc::new(AtomicBool::new(false));
+            let cursor_state = Arc::new(Mutex::new(CursorState::new()));
+            let render_state_clone = Arc::clone(&render_state);
+            let running_flag_clone = Arc::clone(&running_flag);
+            let render_counter_clone = Arc::clone(&render_counter);
+            let input_handler_clone = Arc::clone(&input_handler);
+            let event_processor_clone = Arc::clone(&event_processor);
+            let stop_for_thread = Arc::clone(&stop_flag);
+            let dirty_for_thread = Arc::clone(&dirty_flag);
+            let drm_config = drm::DrmRunConfig {
+                requested_size: Some((config.width, config.height)),
+                cursor_state: Arc::clone(&cursor_state),
+                card_path: config.drm_card,
+                hw_cursor: config.drm_hw_cursor,
+                input_log: config.drm_input_log,
+                render_log: config.render_log,
+            };
+
+            thread::spawn(move || {
+                drm::run(
+                    stop_for_thread,
+                    dirty_for_thread,
+                    render_state_clone,
+                    input_handler_clone,
+                    event_processor_clone,
+                    running_flag_clone,
+                    render_counter_clone,
+                    drm_config,
+                );
+            });
+
+            (
+                BackendKind::Drm,
+                None,
+                Some(Arc::clone(&dirty_flag)),
+                Some(Arc::clone(&stop_flag)),
+            )
+        }
     };
 
-    thread::spawn(move || {
-        wayland::run(
-            config,
-            render_state_clone,
-            running_flag_clone,
-            input_handler_clone,
-            event_processor_for_thread,
-            proxy_tx,
-        );
-    });
-
-    let event_proxy = proxy_rx
-        .recv()
-        .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
-
-    let input_target = Arc::new(Mutex::new(None));
     let resource = RendererResource {
         render_state,
         running_flag,
-        event_proxy: Mutex::new(Some(event_proxy)),
+        backend,
+        event_proxy: Mutex::new(event_proxy),
+        dirty_flag: dirty_flag.clone(),
+        stop_flag: stop_flag.clone(),
+        render_counter,
+        log_render,
         input_handler,
         tree,
-        event_processor: Arc::clone(&event_processor_clone),
+        event_processor: Arc::clone(&event_processor),
         input_target: Arc::clone(&input_target),
     };
 
-    let redraw = Arc::new({
-        let event_proxy = resource.event_proxy.lock().ok().and_then(|p| p.as_ref().cloned());
-        move || {
-            if let Some(proxy) = event_proxy.as_ref() {
-                let _ = proxy.send_event(UserEvent::Redraw);
-            }
+    let redraw: Arc<dyn Fn() + Send + Sync> = match backend {
+        BackendKind::Wayland => {
+            let event_proxy = resource.event_proxy.lock().ok().and_then(|p| p.as_ref().cloned());
+            Arc::new(move || {
+                if let Some(proxy) = event_proxy.as_ref() {
+                    let _ = proxy.send_event(UserEvent::Redraw);
+                }
+            })
         }
-    });
+        BackendKind::Drm => {
+            let dirty_flag = dirty_flag.clone();
+            Arc::new(move || {
+                if let Some(dirty) = dirty_flag.as_ref() {
+                    dirty.store(true, Ordering::Relaxed);
+                }
+            })
+        }
+    };
 
     EventProcessor::start_loop(
         Arc::clone(&event_processor),
@@ -148,9 +255,58 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
         Arc::clone(&resource.render_state),
         Arc::clone(&resource.input_target),
         redraw,
+        log_input,
     );
 
     Ok(ResourceArc::new(resource))
+}
+
+#[rustler::nif]
+fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<RendererResource>> {
+    start_with_config(StartConfig {
+        backend: BackendKind::Wayland,
+        title,
+        width,
+        height,
+        drm_card: None,
+        drm_hw_cursor: true,
+        drm_input_log: false,
+        render_log: false,
+    })
+}
+
+#[rustler::nif]
+fn start_opts(
+    backend: String,
+    title: String,
+    width: u32,
+    height: u32,
+    drm_card: Option<String>,
+    hw_cursor: bool,
+    input_log: bool,
+    render_log: bool,
+) -> NifResult<ResourceArc<RendererResource>> {
+    let backend = backend.to_lowercase();
+    let backend = match backend.as_str() {
+        "drm" => BackendKind::Drm,
+        "wayland" | "x11" => BackendKind::Wayland,
+        other => {
+            return Err(rustler::Error::Term(Box::new(format!(
+                "unsupported backend: {other}"
+            ))));
+        }
+    };
+
+    start_with_config(StartConfig {
+        backend,
+        title,
+        width,
+        height,
+        drm_card,
+        drm_hw_cursor: hw_cursor,
+        drm_input_log: input_log,
+        render_log,
+    })
 }
 
 #[rustler::nif]
@@ -162,7 +318,12 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
 #[rustler::nif]
 fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
     if let Ok(mut state) = renderer.render_state.lock() {
+        let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
         state.commands = commands;
+        state.render_version = version;
+        if renderer.log_render {
+            eprintln!("renderer_render version={version}");
+        }
     }
     renderer.request_redraw();
     atoms::ok()
@@ -180,6 +341,8 @@ fn renderer_upload(
     height: f64,
     scale: f64,
 ) -> Result<Atom, String> {
+    let log_render = renderer.log_render;
+    let start = if log_render { Some(Instant::now()) } else { None };
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
@@ -191,7 +354,16 @@ fn renderer_upload(
             processor.rebuild_registry(output.event_registry);
         }
         if let Ok(mut state) = renderer.render_state.lock() {
+            let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
             state.commands = output.commands;
+            state.render_version = version;
+            if log_render {
+                let elapsed = start.map(|t| t.elapsed()).unwrap_or_default();
+                eprintln!(
+                    "renderer_upload version={version} elapsed_ms={}",
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
         }
         renderer.request_redraw();
         Ok(atoms::ok())
@@ -208,6 +380,8 @@ fn renderer_patch(
     height: f64,
     scale: f64,
 ) -> Result<Atom, String> {
+    let log_render = renderer.log_render;
+    let start = if log_render { Some(Instant::now()) } else { None };
     let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = renderer.tree.lock() {
@@ -219,7 +393,16 @@ fn renderer_patch(
             processor.rebuild_registry(output.event_registry);
         }
         if let Ok(mut state) = renderer.render_state.lock() {
+            let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
             state.commands = output.commands;
+            state.render_version = version;
+            if log_render {
+                let elapsed = start.map(|t| t.elapsed()).unwrap_or_default();
+                eprintln!(
+                    "renderer_patch version={version} elapsed_ms={}",
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
         }
         renderer.request_redraw();
         Ok(atoms::ok())

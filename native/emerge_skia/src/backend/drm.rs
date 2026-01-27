@@ -1,0 +1,1190 @@
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::raw::c_void;
+use std::ptr;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant};
+
+use drm::ClientCapability;
+use drm::Device as BasicDevice;
+use drm::control::{
+    self, AtomicCommitFlags, Device as ControlDevice, Event, PlaneType, ResourceHandles, atomic,
+    connector, crtc, framebuffer, plane, property,
+};
+use gbm::{
+    AsRaw, BufferObject, BufferObjectFlags, Device as GbmDevice, Format as GbmFormat, Surface,
+};
+use glutin_egl_sys::egl;
+use glutin_egl_sys::egl::types::{EGLConfig, EGLContext, EGLDisplay, EGLSurface, EGLenum, EGLint};
+use libloading::Library;
+use skia_safe::{Color, Paint, PaintStyle, gpu::gl::FramebufferInfo};
+
+use crate::cursor::CursorState;
+use crate::drm_input::DrmInput;
+use crate::events::EventProcessor;
+use crate::input::{InputEvent, InputHandler};
+use crate::renderer::{RenderState, Renderer};
+
+const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
+
+struct Card(File);
+
+impl AsFd for Card {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsRawFd for Card {
+    fn as_raw_fd(&self) -> i32 {
+        self.0.as_raw_fd()
+    }
+}
+
+impl BasicDevice for Card {}
+impl ControlDevice for Card {}
+
+struct EglState {
+    egl: egl::Egl,
+    _egl_lib: Library,
+    display: EGLDisplay,
+    _context: EGLContext,
+    surface: EGLSurface,
+}
+
+struct CursorPlane {
+    handle: plane::Handle,
+    props: HashMap<String, property::Info>,
+    fb: framebuffer::Handle,
+    _bo: BufferObject<()>,
+    size: (u32, u32),
+}
+
+fn open_card(card_path: Option<&str>) -> Result<Card, String> {
+    let card_path = card_path.unwrap_or("/dev/dri/card0");
+
+    let fd = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(card_path)
+        .map_err(|e| format!("failed to open {card_path}: {e}"))?;
+
+    Ok(Card(fd))
+}
+
+fn mode_distance(mode: &control::Mode, requested: (u32, u32)) -> i64 {
+    let (width, height) = mode.size();
+    let dx = width as i64 - requested.0 as i64;
+    let dy = height as i64 - requested.1 as i64;
+    dx * dx + dy * dy
+}
+
+fn choose_mode(
+    modes: &[control::Mode],
+    requested: Option<(u32, u32)>,
+) -> Result<control::Mode, String> {
+    let first = modes
+        .first()
+        .cloned()
+        .ok_or_else(|| "connector has no modes".to_string())?;
+    let Some(requested) = requested else {
+        return Ok(first);
+    };
+
+    let mut best = first;
+    let mut best_score = mode_distance(&best, requested);
+    for mode in modes.iter().skip(1) {
+        let score = mode_distance(mode, requested);
+        if score < best_score {
+            best = *mode;
+            best_score = score;
+        }
+    }
+    Ok(best)
+}
+
+fn first_connected_connector(
+    card: &Card,
+    resources: &ResourceHandles,
+    requested: Option<(u32, u32)>,
+) -> Result<(connector::Handle, control::Mode, crtc::Handle), String> {
+    for handle in resources.connectors() {
+        let info = card
+            .get_connector(*handle, false)
+            .map_err(|e| format!("failed to read connector {handle:?}: {e}"))?;
+
+        if info.state() != connector::State::Connected {
+            continue;
+        }
+
+        let mode = choose_mode(info.modes(), requested)
+            .map_err(|err| format!("connector {handle:?} {err}"))?;
+
+        let crtc = resources
+            .crtcs()
+            .first()
+            .copied()
+            .ok_or_else(|| "no available CRTCs".to_string())?;
+
+        return Ok((*handle, mode, crtc));
+    }
+
+    Err("no connected DRM connectors found".into())
+}
+
+fn is_primary_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
+    let props = card
+        .get_properties(plane)
+        .map_err(|e| format!("failed to get plane properties: {e}"))?;
+    for (&id, &val) in props.iter() {
+        let info = card
+            .get_property(id)
+            .map_err(|e| format!("failed to read property info: {e}"))?;
+        if info
+            .name()
+            .to_str()
+            .map(|name| name == "type")
+            .unwrap_or(false)
+        {
+            return Ok(val == (PlaneType::Primary as u32).into());
+        }
+    }
+    Ok(false)
+}
+
+fn is_cursor_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
+    let props = card
+        .get_properties(plane)
+        .map_err(|e| format!("failed to get plane properties: {e}"))?;
+    for (&id, &val) in props.iter() {
+        let info = card
+            .get_property(id)
+            .map_err(|e| format!("failed to read property info: {e}"))?;
+        if info
+            .name()
+            .to_str()
+            .map(|name| name == "type")
+            .unwrap_or(false)
+        {
+            return Ok(val == (PlaneType::Cursor as u32).into());
+        }
+    }
+    Ok(false)
+}
+
+fn find_primary_plane(
+    card: &Card,
+    resources: &ResourceHandles,
+    crtc_handle: crtc::Handle,
+) -> Result<plane::Handle, String> {
+    let planes = card
+        .plane_handles()
+        .map_err(|e| format!("could not list planes: {e}"))?;
+    let mut compatible = Vec::new();
+    let mut primary = Vec::new();
+
+    for plane in planes {
+        let info = card
+            .get_plane(plane)
+            .map_err(|e| format!("failed to read plane info: {e}"))?;
+        let compatible_crtcs = resources.filter_crtcs(info.possible_crtcs());
+        if !compatible_crtcs.contains(&crtc_handle) {
+            continue;
+        }
+        compatible.push(plane);
+        if is_primary_plane(card, plane)? {
+            primary.push(plane);
+        }
+    }
+
+    primary
+        .first()
+        .copied()
+        .or_else(|| compatible.first().copied())
+        .ok_or_else(|| "no compatible planes found".to_string())
+}
+
+fn find_cursor_plane(
+    card: &Card,
+    resources: &ResourceHandles,
+    crtc_handle: crtc::Handle,
+) -> Result<Option<plane::Handle>, String> {
+    let planes = card
+        .plane_handles()
+        .map_err(|e| format!("could not list planes: {e}"))?;
+    let mut compatible = Vec::new();
+
+    for plane in planes {
+        let info = card
+            .get_plane(plane)
+            .map_err(|e| format!("failed to read plane info: {e}"))?;
+        let compatible_crtcs = resources.filter_crtcs(info.possible_crtcs());
+        if !compatible_crtcs.contains(&crtc_handle) {
+            continue;
+        }
+        if is_cursor_plane(card, plane)? {
+            compatible.push(plane);
+        }
+    }
+
+    Ok(compatible.first().copied())
+}
+
+fn prop_handle(props: &HashMap<String, property::Info>, name: &str) -> Result<property::Handle, String> {
+    props
+        .get(name)
+        .map(|info| info.handle())
+        .ok_or_else(|| format!("missing property {name}"))
+}
+
+fn draw_cursor_bitmap(size: u32) -> Vec<u8> {
+    let mut data = vec![0u8; (size * size * 4) as usize];
+
+    for y in 0..size {
+        for x in 0..size {
+            let mut a = 0;
+            let mut r = 0;
+            let mut g = 0;
+            let mut b = 0;
+            let white = (x < 2 && y < 18) || (y < 2 && x < 18) || (x == y && x < 18);
+            let outline =
+                (x == 2 && y < 18) || (y == 2 && x < 18) || ((x == y) && x < 18 && x > 0);
+            if white {
+                a = 255;
+                r = 255;
+                g = 255;
+                b = 255;
+            }
+            if outline {
+                a = 255;
+                r = 0;
+                g = 0;
+                b = 0;
+            }
+
+            let idx = ((y * size + x) * 4) as usize;
+            data[idx] = b;
+            data[idx + 1] = g;
+            data[idx + 2] = r;
+            data[idx + 3] = a;
+        }
+    }
+
+    data
+}
+
+fn create_cursor_plane<T: AsFd>(
+    card: &Card,
+    gbm_device: &GbmDevice<T>,
+    resources: &ResourceHandles,
+    crtc_handle: crtc::Handle,
+) -> Result<Option<CursorPlane>, String> {
+    let Some(handle) = find_cursor_plane(card, resources, crtc_handle)? else {
+        return Ok(None);
+    };
+    let props = card
+        .get_properties(handle)
+        .and_then(|props| props.as_hashmap(card))
+        .map_err(|e| format!("failed to read cursor plane properties: {e}"))?;
+
+    let size = (64, 64);
+    let mut bo = gbm_device
+        .create_buffer_object(
+            size.0,
+            size.1,
+            GbmFormat::Argb8888,
+            BufferObjectFlags::CURSOR | BufferObjectFlags::WRITE | BufferObjectFlags::LINEAR,
+        )
+        .map_err(|e| format!("failed to create cursor bo: {e}"))?;
+
+    let data = draw_cursor_bitmap(size.0);
+    bo.write(&data)
+        .map_err(|e| format!("failed to write cursor bo: {e}"))?;
+
+    let fb = card
+        .add_framebuffer(&bo, 32, 32)
+        .map_err(|e| format!("failed to create cursor fb: {e}"))?;
+
+    Ok(Some(CursorPlane {
+        handle,
+        props,
+        fb,
+        _bo: bo,
+        size,
+    }))
+}
+
+fn update_cursor_plane(
+    card: &Card,
+    crtc_handle: crtc::Handle,
+    plane: &CursorPlane,
+    cursor: CursorState,
+    screen_size: (u32, u32),
+) -> Result<(), String> {
+    let mut req = atomic::AtomicModeReq::new();
+    if cursor.visible {
+        let (screen_w, screen_h) = screen_size;
+        let min_x = -(plane.size.0 as i64) + 1;
+        let min_y = -(plane.size.1 as i64) + 1;
+        let max_x = screen_w.saturating_sub(1) as i64;
+        let max_y = screen_h.saturating_sub(1) as i64;
+        let x = (cursor.pos.0.round() as i64).clamp(min_x, max_x);
+        let y = (cursor.pos.1.round() as i64).clamp(min_y, max_y);
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "FB_ID")?,
+            property::Value::Framebuffer(Some(plane.fb)),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_ID")?,
+            property::Value::CRTC(Some(crtc_handle)),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_X")?,
+            property::Value::SignedRange(x),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_Y")?,
+            property::Value::SignedRange(y),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_W")?,
+            property::Value::UnsignedRange(plane.size.0 as u64),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_H")?,
+            property::Value::UnsignedRange(plane.size.1 as u64),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "SRC_X")?,
+            property::Value::UnsignedRange(0),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "SRC_Y")?,
+            property::Value::UnsignedRange(0),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "SRC_W")?,
+            property::Value::UnsignedRange((plane.size.0 as u64) << 16),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "SRC_H")?,
+            property::Value::UnsignedRange((plane.size.1 as u64) << 16),
+        );
+    } else {
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "FB_ID")?,
+            property::Value::Framebuffer(None),
+        );
+        req.add_property(
+            plane.handle,
+            prop_handle(&plane.props, "CRTC_ID")?,
+            property::Value::CRTC(None),
+        );
+    }
+
+    card.atomic_commit(AtomicCommitFlags::NONBLOCK, req)
+        .map_err(|e| format!("cursor plane commit failed: {e}"))
+}
+
+fn add_plane_properties(
+    req: &mut atomic::AtomicModeReq,
+    plane: plane::Handle,
+    plane_props: &HashMap<String, property::Info>,
+    crtc_handle: crtc::Handle,
+    fb: framebuffer::Handle,
+) -> Result<(), String> {
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "FB_ID")?,
+        property::Value::Framebuffer(Some(fb)),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_ID")?,
+        property::Value::CRTC(Some(crtc_handle)),
+    );
+    Ok(())
+}
+
+fn add_plane_geometry(
+    req: &mut atomic::AtomicModeReq,
+    plane: plane::Handle,
+    plane_props: &HashMap<String, property::Info>,
+    mode: &control::Mode,
+) -> Result<(), String> {
+    let (width, height) = mode.size();
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "SRC_X")?,
+        property::Value::UnsignedRange(0),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "SRC_Y")?,
+        property::Value::UnsignedRange(0),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "SRC_W")?,
+        property::Value::UnsignedRange((width as u64) << 16),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "SRC_H")?,
+        property::Value::UnsignedRange((height as u64) << 16),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_X")?,
+        property::Value::SignedRange(0),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_Y")?,
+        property::Value::SignedRange(0),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_W")?,
+        property::Value::UnsignedRange(width as u64),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_H")?,
+        property::Value::UnsignedRange(height as u64),
+    );
+    Ok(())
+}
+
+fn wait_for_page_flip(card: &Card) -> Result<(), String> {
+    loop {
+        let events = card
+            .receive_events()
+            .map_err(|e| format!("failed to read DRM events: {e}"))?;
+        for event in events {
+            if matches!(event, Event::PageFlip(_)) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn is_ebusy(err: &str) -> bool {
+    err.contains("Device or resource busy") || err.contains("EBUSY")
+}
+
+fn load_egl() -> Result<(Library, egl::Egl), String> {
+    let lib = unsafe { Library::new("libEGL.so.1") }
+        .map_err(|e| format!("failed to load libEGL: {e}"))?;
+    let get_proc = unsafe {
+        lib.get::<unsafe extern "system" fn(*const std::ffi::c_char) -> *const c_void>(
+            b"eglGetProcAddress\0",
+        )
+        .map_err(|e| format!("failed to load eglGetProcAddress: {e}"))?
+    };
+
+    let egl = egl::Egl::load_with(|name| unsafe {
+        let symbol = CString::new(name).expect("egl symbol");
+        let ptr = get_proc(symbol.as_ptr());
+        if !ptr.is_null() {
+            return ptr;
+        }
+        let raw = format!("{name}\0");
+        lib.get::<*const c_void>(raw.as_bytes())
+            .map(|s| *s)
+            .unwrap_or(ptr::null())
+    });
+
+    Ok((lib, egl))
+}
+
+fn egl_get_platform_display(egl: &egl::Egl, display_ptr: *mut c_void) -> EGLDisplay {
+    if egl.GetPlatformDisplayEXT.is_loaded() {
+        unsafe { egl.GetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null()) }
+    } else if egl.GetPlatformDisplay.is_loaded() {
+        unsafe { egl.GetPlatformDisplay(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null()) }
+    } else {
+        unsafe { egl.GetDisplay(display_ptr as egl::EGLNativeDisplayType) }
+    }
+}
+
+fn init_egl(
+    egl: &egl::Egl,
+    gbm_device_ptr: *mut c_void,
+    gbm_surface_ptr: *mut c_void,
+) -> Result<(EGLDisplay, EGLContext, EGLSurface), String> {
+    let display = egl_get_platform_display(egl, gbm_device_ptr);
+    if display == egl::NO_DISPLAY {
+        return Err("failed to get EGL display".to_string());
+    }
+
+    let mut major: EGLint = 0;
+    let mut minor: EGLint = 0;
+    if unsafe { egl.Initialize(display, &mut major, &mut minor) } == egl::FALSE {
+        return Err("failed to initialize EGL".to_string());
+    }
+
+    if unsafe { egl.BindAPI(egl::OPENGL_ES_API) } == egl::FALSE {
+        return Err("failed to bind EGL OpenGL ES API".to_string());
+    }
+
+    let config_attribs: [EGLint; 13] = [
+        egl::SURFACE_TYPE as EGLint,
+        egl::WINDOW_BIT as EGLint,
+        egl::RENDERABLE_TYPE as EGLint,
+        egl::OPENGL_ES2_BIT as EGLint,
+        egl::RED_SIZE as EGLint,
+        8,
+        egl::GREEN_SIZE as EGLint,
+        8,
+        egl::BLUE_SIZE as EGLint,
+        8,
+        egl::ALPHA_SIZE as EGLint,
+        8,
+        egl::NONE as EGLint,
+    ];
+
+    let mut config: EGLConfig = ptr::null();
+    let mut num_configs: EGLint = 0;
+    if unsafe {
+        egl.ChooseConfig(
+            display,
+            config_attribs.as_ptr(),
+            &mut config,
+            1,
+            &mut num_configs,
+        )
+    } == egl::FALSE
+        || num_configs == 0
+    {
+        return Err("failed to choose EGL config".to_string());
+    }
+
+    let context_attribs: [EGLint; 3] = [
+        egl::CONTEXT_CLIENT_VERSION as EGLint,
+        2,
+        egl::NONE as EGLint,
+    ];
+    let context =
+        unsafe { egl.CreateContext(display, config, egl::NO_CONTEXT, context_attribs.as_ptr()) };
+    if context == egl::NO_CONTEXT {
+        return Err("failed to create EGL context".to_string());
+    }
+
+    let surface = unsafe {
+        egl.CreateWindowSurface(
+            display,
+            config,
+            gbm_surface_ptr as egl::EGLNativeWindowType,
+            ptr::null(),
+        )
+    };
+    if surface == egl::NO_SURFACE {
+        return Err("failed to create EGL surface".to_string());
+    }
+
+    if unsafe { egl.MakeCurrent(display, surface, surface, context) } == egl::FALSE {
+        return Err("failed to make EGL context current".to_string());
+    }
+
+    unsafe {
+        egl.SwapInterval(display, 1);
+    }
+
+    Ok((display, context, surface))
+}
+
+fn create_renderer(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<Renderer, String> {
+    gl::load_with(|s| unsafe {
+        let symbol = CString::new(s).expect("gl symbol");
+        egl.GetProcAddress(symbol.as_ptr()) as *const _
+    });
+
+    let interface = skia_safe::gpu::gl::Interface::new_load_with(|name| unsafe {
+        if name == "eglGetCurrentDisplay" {
+            return ptr::null();
+        }
+        let symbol = CString::new(name).expect("egl symbol");
+        egl.GetProcAddress(symbol.as_ptr()) as *const _
+    })
+    .ok_or_else(|| "could not create Skia GL interface".to_string())?;
+
+    let gr_context = skia_safe::gpu::direct_contexts::make_gl(interface, None)
+        .ok_or_else(|| "make_gl failed: could not create Skia direct context".to_string())?;
+
+    let fb_info = {
+        let mut fboid: i32 = 0;
+        unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
+
+        FramebufferInfo {
+            fboid: fboid as u32,
+            format: skia_safe::gpu::gl::Format::RGBA8.into(),
+            ..Default::default()
+        }
+    };
+
+    Ok(Renderer::new_gl(dimensions, fb_info, gr_context, 0, 0))
+}
+
+fn framebuffer_for_bo(
+    card: &Card,
+    cache: &mut HashMap<u32, framebuffer::Handle>,
+    bo: &BufferObject<()>,
+) -> Result<framebuffer::Handle, String> {
+    let handle = unsafe { bo.handle().u32_ };
+    if let Some(existing) = cache.get(&handle).copied() {
+        return Ok(existing);
+    }
+
+    let framebuffer = card
+        .add_framebuffer(bo, 24, 32)
+        .map_err(|e| format!("failed to create framebuffer: {e}"))?;
+    cache.insert(handle, framebuffer);
+    Ok(framebuffer)
+}
+
+fn cursor_snapshot(cursor_state: &Arc<Mutex<CursorState>>) -> CursorState {
+    cursor_state
+        .lock()
+        .map(|state| *state)
+        .unwrap_or_else(|_| CursorState::new())
+}
+
+fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_size: (u32, u32)) {
+    let (width, height) = screen_size;
+    let x = cursor_pos.0.clamp(0.0, width.saturating_sub(1) as f32);
+    let y = cursor_pos.1.clamp(0.0, height.saturating_sub(1) as f32);
+
+    let canvas = renderer.surface_mut().canvas();
+    let mut fill = Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_color(Color::from_argb(240, 255, 255, 255));
+    canvas.draw_circle((x, y), 4.0, &fill);
+
+    let mut stroke = Paint::default();
+    stroke.set_anti_alias(true);
+    stroke.set_style(PaintStyle::Stroke);
+    stroke.set_stroke_width(1.0);
+    stroke.set_color(Color::from_argb(200, 0, 0, 0));
+    canvas.draw_circle((x, y), 4.0, &stroke);
+
+    renderer.flush();
+}
+
+#[derive(Clone)]
+pub struct DrmRunConfig {
+    pub requested_size: Option<(u32, u32)>,
+    pub cursor_state: Arc<Mutex<CursorState>>,
+    pub card_path: Option<String>,
+    pub hw_cursor: bool,
+    pub input_log: bool,
+    pub render_log: bool,
+}
+
+fn send_input_event(
+    input_handler: &Arc<Mutex<InputHandler>>,
+    event_processor: &Arc<Mutex<EventProcessor>>,
+    event: InputEvent,
+) {
+    let accepts = if let Ok(handler) = input_handler.lock() {
+        handler.accepts(&event)
+    } else {
+        false
+    };
+
+    if !accepts {
+        return;
+    }
+
+    if let Ok(mut processor) = event_processor.lock() {
+        processor.enqueue(event);
+    }
+}
+
+pub fn run(
+    stop: Arc<AtomicBool>,
+    dirty: Arc<AtomicBool>,
+    render_state: Arc<Mutex<RenderState>>,
+    input_handler: Arc<Mutex<InputHandler>>,
+    event_processor: Arc<Mutex<EventProcessor>>,
+    running_flag: Arc<AtomicBool>,
+    render_counter: Arc<AtomicU64>,
+    config: DrmRunConfig,
+) {
+    let card = match open_card(config.card_path.as_deref()) {
+        Ok(card) => card,
+        Err(e) => {
+            eprintln!("DRM backend unavailable: {e}");
+            running_flag.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    if let Err(e) = card.set_client_capability(ClientCapability::UniversalPlanes, true) {
+        eprintln!("DRM backend unavailable: {e}");
+        running_flag.store(false, Ordering::Relaxed);
+        return;
+    }
+    if let Err(e) = card.set_client_capability(ClientCapability::Atomic, true) {
+        eprintln!("DRM backend unavailable: {e}");
+        running_flag.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let gbm_device = match GbmDevice::new(card.as_fd()) {
+        Ok(device) => device,
+        Err(e) => {
+            eprintln!("DRM backend unavailable: {e}");
+            running_flag.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    let screen_size = Arc::new(Mutex::new(
+        config.requested_size.unwrap_or((800, 600)),
+    ));
+    let input_screen_size = Arc::clone(&screen_size);
+    let input_handler_clone = Arc::clone(&input_handler);
+    let event_processor_clone = Arc::clone(&event_processor);
+    let cursor_state_clone = Arc::clone(&config.cursor_state);
+    let input_stop = Arc::clone(&stop);
+    let input_log = config.input_log;
+    std::thread::spawn(move || {
+        let mut input = DrmInput::new(
+            input_screen_size,
+            input_handler_clone,
+            event_processor_clone,
+            cursor_state_clone,
+            input_log,
+        );
+        while !input_stop.load(Ordering::Relaxed) {
+            input.poll();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+
+    let log_render = config.render_log;
+    let mut last_dimensions: Option<(u32, u32)> = None;
+    let hotplug_interval = Duration::from_millis(750);
+    let mut logged_cursor_info = false;
+    let mut logged_mode_info = false;
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            running_flag.store(false, Ordering::Relaxed);
+            break;
+        }
+
+        let resources = match card.resource_handles() {
+            Ok(handles) => handles,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let (connector, mode, crtc_handle) =
+            match first_connected_connector(&card, &resources, config.requested_size) {
+                Ok(values) => values,
+                Err(e) => {
+                    eprintln!("DRM backend unavailable: {e}");
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
+            };
+
+        let plane = match find_primary_plane(&card, &resources, crtc_handle) {
+            Ok(handle) => handle,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let con_props = match card
+            .get_properties(connector)
+            .and_then(|props| props.as_hashmap(&card))
+        {
+            Ok(props) => props,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        let crtc_props = match card
+            .get_properties(crtc_handle)
+            .and_then(|props| props.as_hashmap(&card))
+        {
+            Ok(props) => props,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        let plane_props = match card
+            .get_properties(plane)
+            .and_then(|props| props.as_hashmap(&card))
+        {
+            Ok(props) => props,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let (width, height) = mode.size();
+        let dimensions = (width as u32, height as u32);
+        if let Ok(mut size) = screen_size.lock() {
+            *size = dimensions;
+        }
+        if !logged_mode_info {
+            println!(
+                "DRM mode: {}x{} @ {}Hz",
+                dimensions.0,
+                dimensions.1,
+                mode.vrefresh()
+            );
+            logged_mode_info = true;
+        }
+        if last_dimensions != Some(dimensions) {
+            send_input_event(
+                &input_handler,
+                &event_processor,
+                InputEvent::Resized {
+                    width: dimensions.0,
+                    height: dimensions.1,
+                    scale_factor: 1.0,
+                },
+            );
+            last_dimensions = Some(dimensions);
+        }
+
+        let mut cursor_plane = if config.hw_cursor {
+            match create_cursor_plane(&card, &gbm_device, &resources, crtc_handle) {
+                Ok(plane) => plane,
+                Err(e) => {
+                    eprintln!("DRM cursor setup failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if !logged_cursor_info {
+            if config.hw_cursor {
+                if cursor_plane.is_some() {
+                    println!("DRM cursor: hardware plane enabled");
+                } else {
+                    println!("DRM cursor: hardware unavailable, using software");
+                }
+            } else {
+                println!("DRM cursor: hardware disabled, using software");
+            }
+            logged_cursor_info = true;
+        }
+
+        let gbm_surface: Surface<()> = match gbm_device.create_surface(
+            dimensions.0,
+            dimensions.1,
+            GbmFormat::Xrgb8888,
+            BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING,
+        ) {
+            Ok(surface) => surface,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let (egl_lib, egl_api) = match load_egl() {
+            Ok(values) => values,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let (display, context, surface) = match init_egl(
+            &egl_api,
+            gbm_device.as_raw() as *mut c_void,
+            gbm_surface.as_raw() as *mut c_void,
+        ) {
+            Ok(values) => values,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let egl_state = EglState {
+            egl: egl_api,
+            _egl_lib: egl_lib,
+            display,
+            _context: context,
+            surface,
+        };
+
+        let mut renderer = match create_renderer(&egl_state.egl, dimensions) {
+            Ok(renderer) => renderer,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let mode_blob = match card.create_property_blob(&mode) {
+            Ok(blob) => blob,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let mut framebuffer_cache: HashMap<u32, framebuffer::Handle> = HashMap::new();
+
+        let mut frame_version = None;
+        if let Ok(state) = render_state.lock() {
+            let version = state.render_version;
+            frame_version = Some(version);
+            renderer.render(&state);
+            if log_render {
+                let latest = render_counter.load(Ordering::Relaxed);
+                let delta = latest.saturating_sub(version);
+                eprintln!("drm render version={version} latest={latest} delta={delta}");
+            }
+        }
+        let mut cursor = cursor_snapshot(&config.cursor_state);
+        if cursor_plane.is_none() && cursor.visible {
+            draw_software_cursor(&mut renderer, cursor.pos, dimensions);
+        }
+
+        if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) } == egl::FALSE {
+            eprintln!("DRM backend unavailable: eglSwapBuffers failed");
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+
+        let bo = match unsafe { gbm_surface.lock_front_buffer() } {
+            Ok(bo) => bo,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let fb = match framebuffer_for_bo(&card, &mut framebuffer_cache, &bo) {
+            Ok(fb) => fb,
+            Err(e) => {
+                eprintln!("DRM backend unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+
+        let mut atomic_req = atomic::AtomicModeReq::new();
+        if let Err(e) = (|| -> Result<(), String> {
+            atomic_req.add_property(
+                connector,
+                prop_handle(&con_props, "CRTC_ID")?,
+                property::Value::CRTC(Some(crtc_handle)),
+            );
+            atomic_req.add_property(crtc_handle, prop_handle(&crtc_props, "MODE_ID")?, mode_blob);
+            atomic_req.add_property(
+                crtc_handle,
+                prop_handle(&crtc_props, "ACTIVE")?,
+                property::Value::Boolean(true),
+            );
+            add_plane_properties(&mut atomic_req, plane, &plane_props, crtc_handle, fb)?;
+            add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
+        })() {
+            eprintln!("DRM backend unavailable: {e}");
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+
+        if let Err(e) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
+            eprintln!("DRM backend unavailable: {e}");
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        if log_render {
+            if let Some(version) = frame_version {
+                eprintln!("drm present version={version}");
+            }
+        }
+
+        let mut current_bo = Some(bo);
+        let mut last_cursor = cursor;
+        let cursor_plane_error = cursor_plane
+            .as_ref()
+            .and_then(|plane| update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err());
+        if let Some(err) = cursor_plane_error
+            && !is_ebusy(&err)
+        {
+            eprintln!("DRM cursor update failed: {err}");
+            cursor_plane = None;
+            dirty.store(true, Ordering::Relaxed);
+        }
+
+        let mut next_hotplug_check = Instant::now() + hotplug_interval;
+
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                running_flag.store(false, Ordering::Relaxed);
+                return;
+            }
+
+            if Instant::now() >= next_hotplug_check {
+                let resources = match card.resource_handles() {
+                    Ok(handles) => handles,
+                    Err(_) => break,
+                };
+                let next = first_connected_connector(&card, &resources, config.requested_size);
+                match next {
+                    Ok((next_connector, next_mode, next_crtc)) => {
+                        let next_dimensions = next_mode.size();
+                        let next_dimensions = (next_dimensions.0 as u32, next_dimensions.1 as u32);
+                        if next_connector != connector
+                            || next_crtc != crtc_handle
+                            || next_dimensions != dimensions
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                next_hotplug_check = Instant::now() + hotplug_interval;
+            }
+
+            cursor = cursor_snapshot(&config.cursor_state);
+            if cursor_plane.is_some() {
+                if cursor.visible != last_cursor.visible || cursor.pos != last_cursor.pos {
+                    let cursor_plane_error = cursor_plane.as_ref().and_then(|plane| {
+                        update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err()
+                    });
+                    if let Some(err) = cursor_plane_error
+                        && !is_ebusy(&err)
+                    {
+                        eprintln!("DRM cursor update failed: {err}");
+                        cursor_plane = None;
+                        dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+            } else {
+                if cursor.visible && cursor.pos != last_cursor.pos {
+                    dirty.store(true, Ordering::Relaxed);
+                }
+                if cursor.visible != last_cursor.visible {
+                    dirty.store(true, Ordering::Relaxed);
+                }
+            }
+            last_cursor = cursor;
+            if dirty.load(Ordering::Relaxed) {
+                let mut frame_version = None;
+                if let Ok(state) = render_state.lock() {
+                    let version = state.render_version;
+                    frame_version = Some(version);
+                    renderer.render(&state);
+                    if log_render {
+                        let latest = render_counter.load(Ordering::Relaxed);
+                        let delta = latest.saturating_sub(version);
+                        eprintln!("drm render version={version} latest={latest} delta={delta}");
+                    }
+                }
+                if cursor_plane.is_none() && cursor.visible {
+                    draw_software_cursor(&mut renderer, cursor.pos, dimensions);
+                }
+
+                if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) }
+                    == egl::FALSE
+                {
+                    eprintln!("DRM backend unavailable: eglSwapBuffers failed");
+                    break;
+                }
+
+                let next_bo = match unsafe { gbm_surface.lock_front_buffer() } {
+                    Ok(bo) => bo,
+                    Err(e) => {
+                        eprintln!("DRM backend unavailable: {e}");
+                        break;
+                    }
+                };
+
+                let next_fb = match framebuffer_for_bo(&card, &mut framebuffer_cache, &next_bo) {
+                    Ok(fb) => fb,
+                    Err(e) => {
+                        eprintln!("DRM backend unavailable: {e}");
+                        break;
+                    }
+                };
+
+                let mut flip_req = atomic::AtomicModeReq::new();
+                if let Err(e) =
+                    add_plane_properties(&mut flip_req, plane, &plane_props, crtc_handle, next_fb)
+                {
+                    eprintln!("DRM backend unavailable: {e}");
+                    break;
+                }
+
+                if let Err(e) = card.atomic_commit(
+                    AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
+                    flip_req,
+                ) {
+                    let err = e.to_string();
+                    if is_ebusy(&err) {
+                        if log_render {
+                            eprintln!("drm flip EBUSY, retrying fresh frame");
+                        }
+                        dirty.store(true, Ordering::Relaxed);
+                        drop(next_bo);
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    eprintln!("DRM backend unavailable: {err}");
+                    break;
+                }
+                dirty.store(false, Ordering::Relaxed);
+                if let Err(e) = wait_for_page_flip(&card) {
+                    eprintln!("DRM backend unavailable: {e}");
+                    break;
+                }
+                if log_render {
+                    if let Some(version) = frame_version {
+                        eprintln!("drm present version={version}");
+                    }
+                }
+
+                drop(current_bo.take());
+                current_bo = Some(next_bo);
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+    }
+}
