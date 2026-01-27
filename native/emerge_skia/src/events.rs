@@ -1,23 +1,13 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-
 use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 
 use crate::input::{
     InputEvent, EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE,
     EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
 };
-use crate::renderer::RenderState;
 use crate::tree::element::{ElementId, ElementTree};
-use crate::tree::layout::refresh;
-
-const EVENT_POLL_SLEEP: Duration = Duration::from_millis(2);
 const DRAG_DEADZONE: f32 = 10.0;
 
 pub struct EventProcessor {
-    queue: VecDeque<InputEvent>,
     registry: Vec<EventNode>,
     pressed_id: Option<ElementId>,
     hovered_id: Option<ElementId>,
@@ -270,15 +260,15 @@ pub fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u16) -> 
         if !node.hit_rect.contains(x, y) {
             continue;
         }
-        if let (Some(rect), Some(radii)) = (node.clip_rect, node.clip_radii) {
-            if !point_in_rounded_rect(rect, radii, x, y) {
-                continue;
-            }
+        if let (Some(rect), Some(radii)) = (node.clip_rect, node.clip_radii)
+            && !point_in_rounded_rect(rect, radii, x, y)
+        {
+            continue;
         }
-        if let Some(radii) = node.self_radii {
-            if !point_in_rounded_rect(node.self_rect, radii, x, y) {
-                continue;
-            }
+        if let Some(radii) = node.self_radii
+            && !point_in_rounded_rect(node.self_rect, radii, x, y)
+        {
+            continue;
         }
         return Some(node.id.clone());
     }
@@ -365,7 +355,6 @@ fn point_in_rounded_rect(rect: Rect, radii: CornerRadii, x: f32, y: f32) -> bool
 impl EventProcessor {
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
             registry: Vec::new(),
             pressed_id: None,
             hovered_id: None,
@@ -376,123 +365,11 @@ impl EventProcessor {
         }
     }
 
-    pub fn enqueue(&mut self, event: InputEvent) {
-        let event = event.normalize_scroll();
-        match &event {
-            InputEvent::CursorPos { .. } => {
-                self.queue
-                    .retain(|e| !matches!(e, InputEvent::CursorPos { .. }));
-            }
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                if let Some(last) = self.queue.back_mut() {
-                    if let InputEvent::CursorScroll {
-                        dx: last_dx,
-                        dy: last_dy,
-                        x: last_x,
-                        y: last_y,
-                    } = last
-                    {
-                        *last_dx += *dx;
-                        *last_dy += *dy;
-                        *last_x = *x;
-                        *last_y = *y;
-                        return;
-                    }
-                }
-            }
-            _ => {}
-        }
-        self.queue.push_back(event);
-    }
-
     pub fn rebuild_registry(&mut self, registry: Vec<EventNode>) {
         self.registry = registry;
     }
 
-    pub fn start_loop(
-        processor: Arc<Mutex<EventProcessor>>,
-        tree: Arc<Mutex<ElementTree>>,
-        render_state: Arc<Mutex<RenderState>>,
-        target: Arc<Mutex<Option<LocalPid>>>,
-        redraw: Arc<dyn Fn() + Send + Sync>,
-        log_cursor: bool,
-    ) {
-        thread::spawn(move || loop {
-            let mut drained = Vec::new();
-            if let Ok(mut guard) = processor.lock() {
-                while let Some(event) = guard.queue.pop_front() {
-                    drained.push(event);
-                }
-            }
-
-            if drained.is_empty() {
-                thread::sleep(EVENT_POLL_SLEEP);
-                continue;
-            }
-
-            let mut needs_redraw = false;
-            for event in drained {
-                let needs_tree = matches!(event, InputEvent::CursorScroll { .. } | InputEvent::CursorPos { .. });
-                let tree_guard = if needs_tree { tree.lock().ok() } else { None };
-
-                if let Ok(mut guard) = processor.lock() {
-                    let pid = target.lock().ok().and_then(|t| *t);
-                    if let Some(pid) = pid {
-                        if log_cursor {
-                            if let InputEvent::CursorPos { x, y } = &event {
-                                eprintln!("events dispatch cursor_pos x={x:.2} y={y:.2}");
-                            }
-                        }
-                        send_input_event(pid, &event);
-
-                        if let Some(clicked_id) = guard.detect_click(&event) {
-                            send_element_event(pid, &clicked_id, click());
-                        }
-
-                        if let Some((mouse_id, mouse_event)) = guard.detect_mouse_button_event(&event)
-                        {
-                            send_element_event(pid, &mouse_id, mouse_event);
-                        }
-
-                        for (hover_id, hover_event) in guard.handle_hover_event(&event) {
-                            send_element_event(pid, &hover_id, hover_event);
-                        }
-                    }
-
-                    if needs_tree {
-                        if let Some(mut tree_guard) = tree_guard {
-                            if let Some(changed) =
-                                guard.handle_drag_scroll(&event, &mut tree_guard)
-                            {
-                                needs_redraw |= changed;
-                            }
-
-                            if let Some(changed) = guard.handle_scroll(&event, &mut tree_guard) {
-                                needs_redraw |= changed;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if needs_redraw {
-                if let Ok(tree_guard) = tree.lock() {
-                    // Refresh produces both render commands AND event registry
-                    let output = refresh(&tree_guard);
-                    if let Ok(mut state) = render_state.lock() {
-                        state.commands = output.commands;
-                    }
-                    // Rebuild event registry so clicks match new scroll positions
-                    if let Ok(mut guard) = processor.lock() {
-                        guard.rebuild_registry(output.event_registry);
-                    }
-                    redraw();
-                }
-            }
-        });
-    }
-
-    fn detect_click(&mut self, event: &InputEvent) -> Option<ElementId> {
+    pub(crate) fn detect_click(&mut self, event: &InputEvent) -> Option<ElementId> {
         let InputEvent::CursorButton {
             button,
             action,
@@ -538,7 +415,7 @@ impl EventProcessor {
         None
     }
 
-    fn detect_mouse_button_event(&self, event: &InputEvent) -> Option<(ElementId, Atom)> {
+    pub(crate) fn detect_mouse_button_event(&self, event: &InputEvent) -> Option<(ElementId, Atom)> {
         let InputEvent::CursorButton {
             button,
             action,
@@ -564,7 +441,7 @@ impl EventProcessor {
         Some((hit, event_atom))
     }
 
-    fn handle_hover_event(&mut self, event: &InputEvent) -> Vec<(ElementId, Atom)> {
+    pub(crate) fn handle_hover_event(&mut self, event: &InputEvent) -> Vec<(ElementId, Atom)> {
         let mut emitted = Vec::new();
 
         match event {
@@ -573,34 +450,33 @@ impl EventProcessor {
                 let hit = hit_test_with_flag(&self.registry, *x, *y, hover_mask);
 
                 if hit != self.hovered_id {
-                    if let Some(previous) = self.hovered_id.take() {
-                        if self.node_has_flag(&previous, EVENT_MOUSE_LEAVE) {
-                            emitted.push((previous, mouse_leave()));
-                        }
+                    if let Some(previous) = self.hovered_id.take()
+                        && self.node_has_flag(&previous, EVENT_MOUSE_LEAVE)
+                    {
+                        emitted.push((previous, mouse_leave()));
                     }
 
-                    if let Some(new_id) = hit.clone() {
-                        if self.node_has_flag(&new_id, EVENT_MOUSE_ENTER) {
-                            emitted.push((new_id.clone(), mouse_enter()));
-                        }
+                    if let Some(new_id) = hit.clone()
+                        && self.node_has_flag(&new_id, EVENT_MOUSE_ENTER)
+                    {
+                        emitted.push((new_id.clone(), mouse_enter()));
                     }
 
                     self.hovered_id = hit;
                 }
 
-                if let Some(current) = self.hovered_id.as_ref() {
-                    if self.node_has_flag(current, EVENT_MOUSE_MOVE) {
-                        emitted.push((current.clone(), mouse_move()));
-                    }
+                if let Some(current) = self.hovered_id.as_ref()
+                    && self.node_has_flag(current, EVENT_MOUSE_MOVE)
+                {
+                    emitted.push((current.clone(), mouse_move()));
                 }
             }
             InputEvent::CursorEntered { entered } => {
-                if !*entered {
-                    if let Some(previous) = self.hovered_id.take() {
-                        if self.node_has_flag(&previous, EVENT_MOUSE_LEAVE) {
-                            emitted.push((previous, mouse_leave()));
-                        }
-                    }
+                if !*entered
+                    && let Some(previous) = self.hovered_id.take()
+                    && self.node_has_flag(&previous, EVENT_MOUSE_LEAVE)
+                {
+                    emitted.push((previous, mouse_leave()));
                 }
             }
             _ => {}
@@ -616,17 +492,20 @@ impl EventProcessor {
             .is_some_and(|node| node.flags & flag != 0)
     }
 
-    fn handle_drag_scroll(
-        &mut self,
-        event: &InputEvent,
-        tree: &mut ElementTree,
-    ) -> Option<bool> {
+    pub fn scroll_requests(&mut self, event: &InputEvent) -> Vec<(ElementId, f32, f32)> {
+        let mut requests = Vec::new();
+        requests.extend(self.handle_drag_scroll_requests(event));
+        requests.extend(self.handle_scroll_requests(event));
+        requests
+    }
+
+    fn handle_drag_scroll_requests(&mut self, event: &InputEvent) -> Vec<(ElementId, f32, f32)> {
         let InputEvent::CursorPos { x, y } = event else {
-            return None;
+            return Vec::new();
         };
 
         let Some((start_x, start_y)) = self.drag_start else {
-            return None;
+            return Vec::new();
         };
 
         let last_pos = self.drag_last_pos.unwrap_or((start_x, start_y));
@@ -638,7 +517,7 @@ impl EventProcessor {
             let total_dy = y - start_y;
             let distance = (total_dx * total_dx + total_dy * total_dy).sqrt();
             if distance < DRAG_DEADZONE {
-                return Some(false);
+                return Vec::new();
             }
             self.drag_active = true;
             self.drag_consumed = true;
@@ -647,10 +526,10 @@ impl EventProcessor {
         self.drag_last_pos = Some((*x, *y));
 
         if dx == 0.0 && dy == 0.0 {
-            return Some(false);
+            return Vec::new();
         }
 
-        let mut changed = false;
+        let mut requests = Vec::new();
 
         if dx != 0.0 {
             let flag = if dx > 0.0 {
@@ -659,7 +538,7 @@ impl EventProcessor {
                 EVENT_SCROLL_X_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= tree.apply_scroll(&id, dx, 0.0);
+                requests.push((id, dx, 0.0));
             }
         }
 
@@ -670,19 +549,18 @@ impl EventProcessor {
                 EVENT_SCROLL_Y_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= tree.apply_scroll(&id, 0.0, dy);
+                requests.push((id, 0.0, dy));
             }
         }
 
-        Some(changed)
+        requests
     }
 
-    fn handle_scroll(&mut self, event: &InputEvent, tree: &mut ElementTree) -> Option<bool> {
+    fn handle_scroll_requests(&mut self, event: &InputEvent) -> Vec<(ElementId, f32, f32)> {
         let InputEvent::CursorScroll { dx, dy, x, y } = event else {
-            return None;
+            return Vec::new();
         };
-
-        let mut changed = false;
+        let mut requests = Vec::new();
 
         if *dx != 0.0 {
             let flag = if *dx > 0.0 {
@@ -691,7 +569,7 @@ impl EventProcessor {
                 EVENT_SCROLL_X_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= tree.apply_scroll(&id, *dx, 0.0);
+                requests.push((id, *dx, 0.0));
             }
         }
 
@@ -702,15 +580,15 @@ impl EventProcessor {
                 EVENT_SCROLL_Y_POS
             };
             if let Some(id) = hit_test_with_flag(&self.registry, *x, *y, flag) {
-                changed |= tree.apply_scroll(&id, 0.0, *dy);
+                requests.push((id, 0.0, *dy));
             }
         }
 
-        Some(changed)
+        requests
     }
 }
 
-fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
+pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
         let mut bin = OwnedBinary::new(element_id.0.len()).unwrap();
@@ -720,7 +598,7 @@ fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
     });
 }
 
-fn send_input_event(pid: LocalPid, event: &InputEvent) {
+pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
         (emerge_skia_event(), event).encode(inner_env)
@@ -735,6 +613,10 @@ rustler::atoms! {
     mouse_enter,
     mouse_leave,
     mouse_move,
+}
+
+pub(crate) fn click_atom() -> Atom {
+    click()
 }
 
 #[cfg(test)]
@@ -933,12 +815,11 @@ mod tests {
 
     #[test]
     fn test_drag_deadzone_suppresses_click() {
-        let mut processor = EventProcessor {
-            queue: VecDeque::new(),
-            registry: vec![EventNode {
-                id: ElementId::from_term_bytes(vec![1]),
-                hit_rect: Rect {
-                    x: 0.0,
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![EventNode {
+            id: ElementId::from_term_bytes(vec![1]),
+            hit_rect: Rect {
+                x: 0.0,
                     y: 0.0,
                     width: 100.0,
                     height: 100.0,
@@ -950,17 +831,10 @@ mod tests {
                     width: 100.0,
                     height: 100.0,
                 },
-                self_radii: None,
-                clip_rect: None,
-                clip_radii: None,
-            }],
-            pressed_id: None,
-            hovered_id: None,
-            drag_start: None,
-            drag_last_pos: None,
-            drag_active: false,
-            drag_consumed: false,
-        };
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            }];
 
         let press = InputEvent::CursorButton {
             button: "left".to_string(),
@@ -979,7 +853,7 @@ mod tests {
         };
 
         assert_eq!(processor.detect_click(&press), None);
-        assert_eq!(processor.handle_drag_scroll(&move_event, &mut ElementTree::new()), Some(false));
+        assert!(processor.scroll_requests(&move_event).is_empty());
         assert_eq!(processor.detect_click(&release), None);
     }
 }

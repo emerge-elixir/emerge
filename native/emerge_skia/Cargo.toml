@@ -20,6 +20,7 @@ glutin_egl_sys = "0.7"
 libloading = "0.8"
 evdev = "0.12"
 libc = "0.2"
+crossbeam-channel = "0.5"
 
 # Support both X11 and Wayland
 skia-safe = { version = "0.91.1", default-features = false, features = ["x11", "wayland", "embed-freetype", "binary-cache"] }

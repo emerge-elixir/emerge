@@ -855,7 +855,7 @@ fn get_fill_portion(length: Option<&Length>) -> f32 {
 
 /// Resolve children for El (single child container with alignment).
 /// Reads from pre-scaled attrs.
-/// Returns (actual_content_width, actual_content_height).
+///   Returns (actual_content_width, actual_content_height).
 ///
 /// Alignment follows elm-ui semantics:
 /// - Parent's alignment (e.g., `el([centerX()], child)`) sets default for children
@@ -925,7 +925,7 @@ fn resolve_el_children(
 /// - Left (default): laid out left-to-right from start
 /// - Right: positioned at right edge
 /// - Center: centered in remaining space
-/// Returns (actual_content_width, actual_content_height).
+///   Returns (actual_content_width, actual_content_height).
 #[allow(clippy::too_many_arguments)]
 fn resolve_row_children(
     tree: &mut ElementTree,
