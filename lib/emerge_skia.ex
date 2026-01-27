@@ -46,12 +46,74 @@ defmodule EmergeSkia do
 
   ## Options
 
+  - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`)
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
+  - `drm_card` - DRM device path (default: `/dev/dri/card0`)
+  - `hw_cursor` - Enable hardware cursor when available (default: true)
+  - `input_log` - Log DRM input devices on startup (default: false)
+  - `render_log` - Log DRM render/present diagnostics (default: false)
   """
-  @spec start(String.t(), non_neg_integer(), non_neg_integer()) :: {:ok, renderer()} | {:error, term()}
-  def start(title \\ "Emerge", width \\ 800, height \\ 600) do
+  @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
+  def start(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      opts = Keyword.new(opts)
+      backend = Keyword.get(opts, :backend, :wayland)
+      title = Keyword.get(opts, :title, "Emerge")
+      width = Keyword.get(opts, :width, 800)
+      height = Keyword.get(opts, :height, 600)
+      drm_card = Keyword.get(opts, :drm_card)
+      hw_cursor = Keyword.get(opts, :hw_cursor, true)
+      input_log = Keyword.get(opts, :input_log, false)
+      render_log = Keyword.get(opts, :render_log, false)
+
+      backend =
+        case backend do
+          value when is_atom(value) -> Atom.to_string(value)
+          value when is_binary(value) -> value
+          _ -> raise ArgumentError, "backend must be an atom or string"
+        end
+
+      drm_card = if is_nil(drm_card), do: nil, else: to_string(drm_card)
+
+      case Native.start_opts(
+             backend,
+             title,
+             width,
+             height,
+             drm_card,
+             hw_cursor,
+             input_log,
+             render_log
+           ) do
+        ref when is_reference(ref) -> {:ok, ref}
+        error -> {:error, error}
+      end
+    else
+      start(List.to_string(opts), 800, 600)
+    end
+  end
+
+  @spec start(String.t()) :: {:ok, renderer()} | {:error, term()}
+  def start(title) when is_binary(title) do
+    start(title, 800, 600)
+  end
+
+  @spec start() :: {:ok, renderer()} | {:error, term()}
+  def start do
+    start("Emerge", 800, 600)
+  end
+
+  @spec start(String.t(), non_neg_integer()) :: {:ok, renderer()} | {:error, term()}
+  def start(title, width) when is_binary(title) and is_integer(width) do
+    start(title, width, 600)
+  end
+
+  @spec start(String.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, renderer()} | {:error, term()}
+  def start(title, width, height)
+      when is_binary(title) and is_integer(width) and is_integer(height) do
     case Native.start(title, width, height) do
       ref when is_reference(ref) -> {:ok, ref}
       error -> {:error, error}
@@ -107,11 +169,13 @@ defmodule EmergeSkia do
   def upload_tree(renderer, tree, width, height, scale \\ 1.0) do
     state = Emerge.diff_state_new()
     {full_bin, state, assigned} = Emerge.encode_full(state, tree)
+
     case Native.renderer_upload(renderer, full_bin, width, height, scale) do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, reason} -> raise "renderer_upload failed: #{reason}"
     end
+
     {state, assigned}
   end
 
@@ -121,15 +185,24 @@ defmodule EmergeSkia do
   Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
   border radius, border width, font size). Use scale > 1.0 for high-DPI displays.
   """
-  @spec patch_tree(renderer(), Emerge.DiffState.t(), Emerge.Element.t(), float(), float(), float()) ::
+  @spec patch_tree(
+          renderer(),
+          Emerge.DiffState.t(),
+          Emerge.Element.t(),
+          float(),
+          float(),
+          float()
+        ) ::
           {Emerge.DiffState.t(), Emerge.Element.t()}
   def patch_tree(renderer, state, tree, width, height, scale \\ 1.0) do
     {patch_bin, state, assigned} = Emerge.diff_state_update(state, tree)
+
     case Native.renderer_patch(renderer, patch_bin, width, height, scale) do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
     end
+
     {state, assigned}
   end
 
@@ -239,7 +312,7 @@ defmodule EmergeSkia do
   @spec rgba(0..255, 0..255, 0..255, 0..255) :: color()
   def rgba(r, g, b, a) do
     import Bitwise
-    (r <<< 24) ||| (g <<< 16) ||| (b <<< 8) ||| a
+    r <<< 24 ||| g <<< 16 ||| b <<< 8 ||| a
   end
 
   # ===========================================================================

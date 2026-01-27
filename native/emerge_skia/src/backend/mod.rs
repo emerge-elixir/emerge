@@ -4,3 +4,4 @@
 
 pub mod raster;
 pub mod wayland;
+pub mod drm;

@@ -30,6 +30,9 @@ pub enum InputEvent {
     /// Mouse scroll wheel
     CursorScroll { dx: f32, dy: f32, x: f32, y: f32 },
 
+    /// Mouse scroll wheel (line delta, normalized later)
+    CursorScrollLines { dx: f32, dy: f32, x: f32, y: f32 },
+
     /// Keyboard key pressed/released
     Key { key: String, action: u8, mods: u8 },
 
@@ -82,6 +85,8 @@ pub const MOD_META: u8 = 0x08;
 
 pub const ACTION_RELEASE: u8 = 0;
 pub const ACTION_PRESS: u8 = 1;
+
+pub const SCROLL_LINE_PIXELS: f32 = 30.0;
 
 pub const EVENT_CLICK: u16 = 0x0001;
 pub const EVENT_SCROLL_X_NEG: u16 = 0x0002;
@@ -155,7 +160,9 @@ impl InputHandler {
             InputEvent::Codepoint { .. } => INPUT_MASK_CODEPOINT,
             InputEvent::CursorPos { .. } => INPUT_MASK_CURSOR_POS,
             InputEvent::CursorButton { .. } => INPUT_MASK_CURSOR_BUTTON,
-            InputEvent::CursorScroll { .. } => INPUT_MASK_CURSOR_SCROLL,
+            InputEvent::CursorScroll { .. } | InputEvent::CursorScrollLines { .. } => {
+                INPUT_MASK_CURSOR_SCROLL
+            }
             InputEvent::CursorEntered { .. } => INPUT_MASK_CURSOR_ENTER,
             InputEvent::Resized { .. } => INPUT_MASK_RESIZE,
             InputEvent::Focused { .. } => INPUT_MASK_FOCUS,
@@ -181,6 +188,18 @@ impl Default for InputHandler {
 // ============================================================================
 
 impl InputEvent {
+    pub fn normalize_scroll(self) -> InputEvent {
+        match self {
+            InputEvent::CursorScrollLines { dx, dy, x, y } => InputEvent::CursorScroll {
+                dx: dx * SCROLL_LINE_PIXELS,
+                dy: dy * SCROLL_LINE_PIXELS,
+                x,
+                y,
+            },
+            other => other,
+        }
+    }
+
     fn mods_to_terms<'a>(env: Env<'a>, mods: u8) -> Vec<Term<'a>> {
         let mut terms = Vec::new();
         if mods & MOD_SHIFT != 0 {
@@ -219,6 +238,12 @@ impl Encoder for InputEvent {
 
             InputEvent::CursorScroll { dx, dy, x, y } => {
                 (cursor_scroll(), ((*dx, *dy), (*x, *y))).encode(env)
+            }
+
+            InputEvent::CursorScrollLines { dx, dy, x, y } => {
+                let dx = *dx * SCROLL_LINE_PIXELS;
+                let dy = *dy * SCROLL_LINE_PIXELS;
+                (cursor_scroll(), ((dx, dy), (*x, *y))).encode(env)
             }
 
             InputEvent::Key {

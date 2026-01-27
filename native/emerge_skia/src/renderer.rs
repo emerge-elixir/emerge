@@ -151,6 +151,7 @@ impl<'a> Decoder<'a> for DrawCmd {
 pub struct RenderState {
     pub commands: Vec<DrawCmd>,
     pub clear_color: Color,
+    pub render_version: u64,
 }
 
 impl Default for RenderState {
@@ -158,6 +159,7 @@ impl Default for RenderState {
         Self {
             commands: Vec::new(),
             clear_color: Color::WHITE,
+            render_version: 0,
         }
     }
 }
@@ -546,6 +548,13 @@ impl Renderer {
             }
         }
 
+        if let Some(gr) = self.gr_context.as_mut() {
+            gr.flush_and_submit();
+        }
+    }
+
+    /// Flush the GPU context after manual drawing.
+    pub fn flush(&mut self) {
         if let Some(gr) = self.gr_context.as_mut() {
             gr.flush_and_submit();
         }

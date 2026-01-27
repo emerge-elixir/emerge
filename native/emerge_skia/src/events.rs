@@ -377,6 +377,31 @@ impl EventProcessor {
     }
 
     pub fn enqueue(&mut self, event: InputEvent) {
+        let event = event.normalize_scroll();
+        match &event {
+            InputEvent::CursorPos { .. } => {
+                self.queue
+                    .retain(|e| !matches!(e, InputEvent::CursorPos { .. }));
+            }
+            InputEvent::CursorScroll { dx, dy, x, y } => {
+                if let Some(last) = self.queue.back_mut() {
+                    if let InputEvent::CursorScroll {
+                        dx: last_dx,
+                        dy: last_dy,
+                        x: last_x,
+                        y: last_y,
+                    } = last
+                    {
+                        *last_dx += *dx;
+                        *last_dy += *dy;
+                        *last_x = *x;
+                        *last_y = *y;
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
         self.queue.push_back(event);
     }
 
@@ -390,6 +415,7 @@ impl EventProcessor {
         render_state: Arc<Mutex<RenderState>>,
         target: Arc<Mutex<Option<LocalPid>>>,
         redraw: Arc<dyn Fn() + Send + Sync>,
+        log_cursor: bool,
     ) {
         thread::spawn(move || loop {
             let mut drained = Vec::new();
@@ -404,16 +430,16 @@ impl EventProcessor {
                 continue;
             }
 
-            let Some(mut tree_guard) = tree.lock().ok() else {
-                thread::sleep(EVENT_POLL_SLEEP);
-                continue;
-            };
-
             let mut needs_redraw = false;
             for event in drained {
                 if let Ok(mut guard) = processor.lock() {
                     let pid = target.lock().ok().and_then(|t| *t);
                     if let Some(pid) = pid {
+                        if log_cursor {
+                            if let InputEvent::CursorPos { x, y } = &event {
+                                eprintln!("events dispatch cursor_pos x={x:.2} y={y:.2}");
+                            }
+                        }
                         send_input_event(pid, &event);
 
                         if let Some(clicked_id) = guard.detect_click(&event) {
@@ -430,27 +456,36 @@ impl EventProcessor {
                         }
                     }
 
-                    if let Some(changed) = guard.handle_drag_scroll(&event, &mut tree_guard) {
-                        needs_redraw |= changed;
-                    }
+                    if matches!(event, InputEvent::CursorScroll { .. } | InputEvent::CursorPos { .. })
+                    {
+                        if let Ok(mut tree_guard) = tree.lock() {
+                            if let Some(changed) =
+                                guard.handle_drag_scroll(&event, &mut tree_guard)
+                            {
+                                needs_redraw |= changed;
+                            }
 
-                    if let Some(changed) = guard.handle_scroll(&event, &mut tree_guard) {
-                        needs_redraw |= changed;
+                            if let Some(changed) = guard.handle_scroll(&event, &mut tree_guard) {
+                                needs_redraw |= changed;
+                            }
+                        }
                     }
                 }
             }
 
             if needs_redraw {
-                // Refresh produces both render commands AND event registry
-                let output = refresh(&tree_guard);
-                if let Ok(mut state) = render_state.lock() {
-                    state.commands = output.commands;
+                if let Ok(tree_guard) = tree.lock() {
+                    // Refresh produces both render commands AND event registry
+                    let output = refresh(&tree_guard);
+                    if let Ok(mut state) = render_state.lock() {
+                        state.commands = output.commands;
+                    }
+                    // Rebuild event registry so clicks match new scroll positions
+                    if let Ok(mut guard) = processor.lock() {
+                        guard.rebuild_registry(output.event_registry);
+                    }
+                    redraw();
                 }
-                // Rebuild event registry so clicks match new scroll positions
-                if let Ok(mut guard) = processor.lock() {
-                    guard.rebuild_registry(output.event_registry);
-                }
-                redraw();
             }
         });
     }
