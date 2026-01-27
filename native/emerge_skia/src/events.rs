@@ -432,6 +432,9 @@ impl EventProcessor {
 
             let mut needs_redraw = false;
             for event in drained {
+                let needs_tree = matches!(event, InputEvent::CursorScroll { .. } | InputEvent::CursorPos { .. });
+                let tree_guard = if needs_tree { tree.lock().ok() } else { None };
+
                 if let Ok(mut guard) = processor.lock() {
                     let pid = target.lock().ok().and_then(|t| *t);
                     if let Some(pid) = pid {
@@ -456,9 +459,8 @@ impl EventProcessor {
                         }
                     }
 
-                    if matches!(event, InputEvent::CursorScroll { .. } | InputEvent::CursorPos { .. })
-                    {
-                        if let Ok(mut tree_guard) = tree.lock() {
+                    if needs_tree {
+                        if let Some(mut tree_guard) = tree_guard {
                             if let Some(changed) =
                                 guard.handle_drag_scroll(&event, &mut tree_guard)
                             {
