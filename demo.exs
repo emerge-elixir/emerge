@@ -41,6 +41,9 @@ IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
 EmergeSkia.set_input_target(renderer, self())
 
+Process.put(:log_input, input_log)
+Process.put(:log_render, render_log)
+
 defmodule Demo do
   import Emerge.UI
 
@@ -121,6 +124,14 @@ defmodule Demo do
         unstable_items
       ) do
     render_seq = Process.get(:render_seq, 0)
+    log_render = Process.get(:log_render, false)
+
+    render_rows =
+      if log_render do
+        [el([Font.size(12), Font.color(@dim_text)], text("Render: #{render_seq}"))]
+      else
+        []
+      end
 
     column(
       [
@@ -131,7 +142,7 @@ defmodule Demo do
         Background.color(@dark_bg)
       ],
       [
-        header_section(mx, my, render_seq),
+        header_section(mx, my, render_rows),
         row([width(:fill), height(:fill), spacing(16)], [
           menu_panel(current_page, hovered_menu, event_log),
           content_panel(current_page, last_move_label, unstable_items)
@@ -141,7 +152,7 @@ defmodule Demo do
     )
   end
 
-  defp header_section(mx, my, render_seq) do
+  defp header_section(mx, my, render_rows) do
     row([width(:fill), spacing(16)], [
       el(
         [
@@ -164,12 +175,14 @@ defmodule Demo do
           Background.color(@event_bg),
           Border.rounded(12)
         ],
-        column([spacing(4)], [
-          el([Font.size(14), Font.color(@light_text)], text("Live Input")),
-          el([Font.size(12), Font.color(@dim_text)], text("X: #{Float.round(mx, 1)}")),
-          el([Font.size(12), Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}")),
-          el([Font.size(12), Font.color(@dim_text)], text("Render: #{render_seq}"))
-        ])
+        column(
+          [spacing(4)],
+          [
+            el([Font.size(14), Font.color(@light_text)], text("Live Input")),
+            el([Font.size(12), Font.color(@dim_text)], text("X: #{Float.round(mx, 1)}")),
+            el([Font.size(12), Font.color(@dim_text)], text("Y: #{Float.round(my, 1)}"))
+          ] ++ render_rows
+        )
       )
     ])
   end
@@ -1219,15 +1232,20 @@ defmodule Demo do
          last_move_label,
          unstable_items
        ) do
-    batch_last_cursor =
-      Enum.reduce(events, nil, fn message, acc ->
-        case message do
-          {:emerge_skia_event, {:cursor_pos, {x, y}}} -> {x, y}
-          _ -> acc
-        end
-      end)
+    log_input = Process.get(:log_input, false)
+    log_render = Process.get(:log_render, false)
 
-    IO.puts("demo batch size=#{length(events)} last_cursor=#{inspect(batch_last_cursor)}")
+    if log_input do
+      batch_last_cursor =
+        Enum.reduce(events, nil, fn message, acc ->
+          case message do
+            {:emerge_skia_event, {:cursor_pos, {x, y}}} -> {x, y}
+            _ -> acc
+          end
+        end)
+
+      IO.puts("demo batch size=#{length(events)} last_cursor=#{inspect(batch_last_cursor)}")
+    end
 
     {next_state, needs_render} =
       Enum.reduce(
@@ -1261,7 +1279,9 @@ defmodule Demo do
           new_unstable
         )
 
-      IO.puts("demo render_seq=#{render_seq} mouse_pos=#{inspect(new_mouse_pos)}")
+      if log_render do
+        IO.puts("demo render_seq=#{render_seq} mouse_pos=#{inspect(new_mouse_pos)}")
+      end
 
       next_state = render_update(renderer, state, tree, new_size, new_scale)
 
@@ -1279,12 +1299,14 @@ defmodule Demo do
          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
           unstable_items}
        ) do
-    case event do
-      {:cursor_pos, {x, y}} ->
-        IO.puts("demo event cursor_pos=#{Float.round(x, 2)},#{Float.round(y, 2)}")
+    if Process.get(:log_input, false) do
+      case event do
+        {:cursor_pos, {x, y}} ->
+          IO.puts("demo event cursor_pos=#{Float.round(x, 2)},#{Float.round(y, 2)}")
 
-      _ ->
-        :ok
+        _ ->
+          :ok
+      end
     end
 
     {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
