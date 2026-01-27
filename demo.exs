@@ -44,6 +44,24 @@ EmergeSkia.set_input_target(renderer, self())
 Process.put(:log_input, input_log)
 Process.put(:log_render, render_log)
 
+demo_pid = self()
+
+clock_now = fn ->
+  NaiveDateTime.local_now()
+  |> NaiveDateTime.truncate(:second)
+  |> Calendar.strftime("%H:%M:%S")
+end
+
+Process.put(:clock_time, clock_now.())
+
+clock_loop = fn loop ->
+  send(demo_pid, {:clock_tick, clock_now.()})
+  Process.sleep(1000)
+  loop.(loop)
+end
+
+spawn(fn -> clock_loop.(clock_loop) end)
+
 defmodule Demo do
   import Emerge.UI
 
@@ -125,6 +143,7 @@ defmodule Demo do
       ) do
     render_seq = Process.get(:render_seq, 0)
     log_render = Process.get(:log_render, false)
+    clock_time = Process.get(:clock_time, "--:--:--")
 
     render_rows =
       if log_render do
@@ -132,6 +151,8 @@ defmodule Demo do
       else
         []
       end
+
+    clock_row = el([Font.size(12), Font.color(@dim_text)], text("Clock: #{clock_time}"))
 
     column(
       [
@@ -142,7 +163,7 @@ defmodule Demo do
         Background.color(@dark_bg)
       ],
       [
-        header_section(mx, my, render_rows),
+        header_section(mx, my, [clock_row | render_rows]),
         row([width(:fill), height(:fill), spacing(16)], [
           menu_panel(current_page, hovered_menu, event_log),
           content_panel(current_page, last_move_label, unstable_items)
@@ -1049,6 +1070,7 @@ defmodule Demo do
       {:feature_click, _} = message -> drain_events([message | acc])
       {:menu_hover, _} = message -> drain_events([message | acc])
       {:menu_hover_clear, _} = message -> drain_events([message | acc])
+      {:clock_tick, _} = message -> drain_events([message | acc])
       :scramble_unstable = message -> drain_events([message | acc])
       {:unstable_row_click, _} = message -> drain_events([message | acc])
       {:unstable_child_click, _, _} = message -> drain_events([message | acc])
@@ -1156,6 +1178,21 @@ defmodule Demo do
         )
 
       {:menu_hover_clear, _} = message ->
+        process_event_batch(
+          [message | drain_events()],
+          renderer,
+          state,
+          mouse_pos,
+          event_log,
+          size,
+          scale,
+          current_page,
+          hovered_menu,
+          last_move_label,
+          unstable_items
+        )
+
+      {:clock_tick, _} = message ->
         process_event_batch(
           [message | drain_events()],
           renderer,
@@ -1364,6 +1401,18 @@ defmodule Demo do
 
     {{new_mouse_pos, new_log, new_size, new_scale, current_page, hovered_menu, last_move_label,
       unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:clock_tick, time_string},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
+          unstable_items}
+       ) do
+    Process.put(:clock_time, time_string)
+
+    {{mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
+      unstable_items}, true}
   end
 
   defp process_event(
