@@ -6,7 +6,7 @@ use super::attrs::{Attrs, Background, BorderRadius, Color, Font, FontStyle, Font
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{font_info_with_inheritance, layout_tree, Constraint, FontContext, SkiaTextMeasurer};
-use crate::renderer::{DrawCmd, get_typeface_with_fallback};
+use crate::renderer::{DrawCmd, make_font_with_style};
 
 const SCROLLBAR_THICKNESS: f32 = 6.0;
 const SCROLLBAR_MIN_LENGTH: f32 = 24.0;
@@ -492,8 +492,7 @@ fn text_padding(padding: Option<&Padding>) -> (f32, f32) {
 fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
     use skia_safe::Font;
 
-    let typeface = get_typeface_with_fallback(family, weight, italic);
-    let font = Font::new(&*typeface, font_size);
+    let font = make_font_with_style(family, weight, italic, font_size);
     let (_, metrics) = font.metrics();
     (metrics.ascent.abs(), metrics.descent)
 }
@@ -501,8 +500,7 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
 fn measure_text_width_with_font(text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> f32 {
     use skia_safe::Font;
 
-    let typeface = get_typeface_with_fallback(family, weight, italic);
-    let font = Font::new(&*typeface, font_size);
+    let font = make_font_with_style(family, weight, italic, font_size);
     let (width, _bounds) = font.measure_str(text, None);
     width
 }

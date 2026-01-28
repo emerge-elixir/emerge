@@ -6,8 +6,9 @@
 //! - `Renderer` struct that executes draw commands on a Skia surface
 //! - Font cache for text rendering
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
@@ -172,6 +173,7 @@ impl Default for RenderState {
 static DEFAULT_FONT_REGULAR: &[u8] = include_bytes!("fonts/Inter-Regular.ttf");
 static DEFAULT_FONT_BOLD: &[u8] = include_bytes!("fonts/Inter-Bold.ttf");
 static DEFAULT_FONT_ITALIC: &[u8] = include_bytes!("fonts/Inter-Italic.ttf");
+static DEFAULT_FONT_BOLD_ITALIC: &[u8] = include_bytes!("fonts/Inter-BoldItalic.ttf");
 
 /// Key for looking up fonts in the cache.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -201,6 +203,10 @@ impl FontKey {
     pub fn default_italic() -> Self {
         Self::new("default", 400, true)
     }
+
+    pub fn default_bold_italic() -> Self {
+        Self::new("default", 700, true)
+    }
 }
 
 impl Default for FontKey {
@@ -210,6 +216,8 @@ impl Default for FontKey {
 }
 
 static FONT_CACHE: OnceLock<Mutex<HashMap<FontKey, Arc<Typeface>>>> = OnceLock::new();
+static SYNTHETIC_LOGGED: OnceLock<Mutex<HashSet<FontKey>>> = OnceLock::new();
+static RENDER_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn get_font_cache() -> &'static Mutex<HashMap<FontKey, Arc<Typeface>>> {
     FONT_CACHE.get_or_init(|| {
@@ -226,9 +234,20 @@ fn get_font_cache() -> &'static Mutex<HashMap<FontKey, Arc<Typeface>>> {
         if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_ITALIC, 0) {
             cache.insert(FontKey::default_italic(), Arc::new(tf));
         }
+        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD_ITALIC, 0) {
+            cache.insert(FontKey::default_bold_italic(), Arc::new(tf));
+        }
 
         Mutex::new(cache)
     })
+}
+
+fn get_synthetic_log_cache() -> &'static Mutex<HashSet<FontKey>> {
+    SYNTHETIC_LOGGED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn set_render_log_enabled(enabled: bool) {
+    RENDER_LOG_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 /// Get a typeface from the cache by key.
@@ -237,28 +256,68 @@ pub fn get_typeface(key: &FontKey) -> Option<Arc<Typeface>> {
     cache.get(key).cloned()
 }
 
-/// Get a typeface with fallback to default if not found.
-pub fn get_typeface_with_fallback(family: &str, weight: u16, italic: bool) -> Arc<Typeface> {
-    // Try exact match
-    let key = FontKey::new(family, weight, italic);
-    if let Some(tf) = get_typeface(&key) {
-        return tf;
+fn resolve_typeface_with_fallback(
+    family: &str,
+    weight: u16,
+    italic: bool,
+) -> (Arc<Typeface>, bool) {
+    let requested = FontKey::new(family, weight, italic);
+    if let Some(tf) = get_typeface(&requested) {
+        return (tf, true);
     }
 
-    // Try same family with normal weight/style
+    let default_requested = FontKey::new("default", weight, italic);
+    if let Some(tf) = get_typeface(&default_requested) {
+        return (tf, true);
+    }
+
     let key = FontKey::new(family, 400, false);
     if let Some(tf) = get_typeface(&key) {
-        return tf;
+        return (tf, false);
     }
 
-    // Try default with requested weight/style
-    let key = FontKey::new("default", weight, italic);
-    if let Some(tf) = get_typeface(&key) {
-        return tf;
+    let fallback = FontKey::default_regular();
+    let tf = get_typeface(&fallback).expect("embedded default font must exist");
+    (tf, false)
+}
+
+pub fn make_font_with_style(
+    family: &str,
+    weight: u16,
+    italic: bool,
+    size: f32,
+) -> Font {
+    let (typeface, exact) = resolve_typeface_with_fallback(family, weight, italic);
+    let mut font = Font::new(&*typeface, size);
+
+    if !exact {
+        if weight >= 600 {
+            font.set_embolden(true);
+        }
+        if italic {
+            font.set_skew_x(-0.25);
+        }
+
+        if RENDER_LOG_ENABLED.load(Ordering::Relaxed) {
+            let key = FontKey::new(family, weight, italic);
+            if let Ok(mut cache) = get_synthetic_log_cache().lock() {
+                if cache.insert(key) {
+                    eprintln!(
+                        "synthetic font style applied family={} weight={} italic={}",
+                        family, weight, italic
+                    );
+                }
+            }
+        }
     }
 
-    // Fall back to default regular
-    get_typeface(&FontKey::default_regular()).expect("embedded default font must exist")
+    font
+}
+
+/// Get a typeface with fallback to default if not found.
+pub fn get_typeface_with_fallback(family: &str, weight: u16, italic: bool) -> Arc<Typeface> {
+    let (tf, _exact) = resolve_typeface_with_fallback(family, weight, italic);
+    tf
 }
 
 /// Load a font from binary data and register it in the cache.
@@ -449,8 +508,7 @@ impl Renderer {
                 }
 
                 DrawCmd::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
-                    let tf = get_typeface_with_fallback(family, *weight, *italic);
-                    let font = Font::new(&*tf, *font_size);
+                    let font = make_font_with_style(family, *weight, *italic, *font_size);
                     let mut paint = Paint::default();
                     paint.set_color(color_from_u32(*fill));
                     paint.set_anti_alias(true);

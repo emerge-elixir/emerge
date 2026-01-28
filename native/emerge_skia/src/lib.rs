@@ -35,7 +35,7 @@ use backend::wayland::{self, UserEvent, WaylandConfig};
 use events::EventProcessor;
 use tree::layout::layout_and_refresh_default;
 use input::{InputEvent, InputHandler};
-use renderer::{DrawCmd, RenderState, get_default_typeface, load_font};
+use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
@@ -438,6 +438,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
     let log_render = config.render_log;
+    set_render_log_enabled(log_render);
 
     let (tree_tx, tree_rx) = bounded(512);
     let (event_tx, event_rx) = bounded(4096);
