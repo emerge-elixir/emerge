@@ -112,11 +112,9 @@ impl TextMeasurer for SkiaTextMeasurer {
     }
 
     fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
-        use crate::renderer::get_typeface_with_fallback;
-        use skia_safe::Font;
+        use crate::renderer::make_font_with_style;
 
-        let typeface = get_typeface_with_fallback(family, weight, italic);
-        let font = Font::new(&*typeface, font_size);
+        let font = make_font_with_style(family, weight, italic, font_size);
         let (width, _bounds) = font.measure_str(text, None);
         let (_, metrics) = font.metrics();
         let height = metrics.ascent.abs() + metrics.descent;
