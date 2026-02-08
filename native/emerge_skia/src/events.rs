@@ -6,7 +6,15 @@ use crate::input::{
     InputEvent,
 };
 use crate::tree::element::{ElementId, ElementTree};
-use crate::tree::scrollbar::{self, ScrollbarAxis, ScrollbarMetrics};
+use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
+
+mod scrollbar;
+use scrollbar::{
+    ScrollbarDragState, ScrollbarHitArea, ScrollbarInteraction, ScrollbarThumbHover, axis_coord,
+    hit_test_scrollbar, scroll_from_pointer, scrollbar_node_from_metrics, thumb_hover_from_hit,
+};
+pub use scrollbar::{ScrollbarHoverRequest, ScrollbarNode, ScrollbarThumbDragRequest};
+
 const DRAG_DEADZONE: f32 = 10.0;
 
 pub struct EventProcessor {
@@ -18,9 +26,7 @@ pub struct EventProcessor {
     drag_last_pos: Option<(f32, f32)>,
     drag_active: bool,
     drag_consumed: bool,
-    scrollbar_drag: Option<ScrollbarDragState>,
-    button_captured_by_scrollbar: bool,
-    suppress_mouse_button_event: bool,
+    scrollbar_interaction: ScrollbarInteraction,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -87,62 +93,6 @@ pub struct EventNode {
     pub clip_radii: Option<CornerRadii>,
     pub scrollbar_x: Option<ScrollbarNode>,
     pub scrollbar_y: Option<ScrollbarNode>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ScrollbarNode {
-    pub track_rect: Rect,
-    pub thumb_rect: Rect,
-    pub track_start: f32,
-    pub track_len: f32,
-    pub thumb_start: f32,
-    pub thumb_len: f32,
-    pub scroll_offset: f32,
-    pub scroll_range: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScrollbarHitArea {
-    Thumb,
-    Track,
-}
-
-#[derive(Clone, Debug)]
-struct ScrollbarHit {
-    id: ElementId,
-    axis: ScrollbarAxis,
-    area: ScrollbarHitArea,
-    node: ScrollbarNode,
-}
-
-#[derive(Clone, Debug)]
-struct ScrollbarDragState {
-    id: ElementId,
-    axis: ScrollbarAxis,
-    track_start: f32,
-    track_len: f32,
-    thumb_len: f32,
-    pointer_offset: f32,
-    scroll_range: f32,
-    current_scroll: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ScrollbarThumbHover {
-    id: ElementId,
-    axis: ScrollbarAxis,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum ScrollbarThumbDragRequest {
-    X { element_id: ElementId, dx: f32 },
-    Y { element_id: ElementId, dy: f32 },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum ScrollbarHoverRequest {
-    X { element_id: ElementId, hovered: bool },
-    Y { element_id: ElementId, hovered: bool },
 }
 
 pub fn build_event_registry(tree: &ElementTree) -> Vec<EventNode> {
@@ -237,9 +187,9 @@ fn collect_event_nodes(
             .map(|radii| clamp_radii(adjusted_rect, radii));
         let clip_radii = active_clip_rect
             .and_then(|rect| active_clip_radii.map(|radii| clamp_radii(rect, radii)));
-        let scrollbar_x = scrollbar::horizontal_metrics(frame, &element.attrs)
+        let scrollbar_x = tree_scrollbar::horizontal_metrics(frame, &element.attrs)
             .map(|metrics| scrollbar_node_from_metrics(metrics, offset_x, offset_y));
-        let scrollbar_y = scrollbar::vertical_metrics(frame, &element.attrs)
+        let scrollbar_y = tree_scrollbar::vertical_metrics(frame, &element.attrs)
             .map(|metrics| scrollbar_node_from_metrics(metrics, offset_x, offset_y));
 
         if flags != 0 && visible_rect.width > 0.0 && visible_rect.height > 0.0 {
@@ -357,152 +307,6 @@ fn point_hits_node(node: &EventNode, x: f32, y: f32) -> bool {
     true
 }
 
-fn scrollbar_node_from_metrics(
-    metrics: ScrollbarMetrics,
-    offset_x: f32,
-    offset_y: f32,
-) -> ScrollbarNode {
-    ScrollbarNode {
-        track_rect: Rect {
-            x: metrics.track_x - offset_x,
-            y: metrics.track_y - offset_y,
-            width: metrics.track_width,
-            height: metrics.track_height,
-        },
-        thumb_rect: Rect {
-            x: metrics.thumb_x - offset_x,
-            y: metrics.thumb_y - offset_y,
-            width: metrics.thumb_width,
-            height: metrics.thumb_height,
-        },
-        track_start: metrics.track_start
-            - match metrics.axis {
-                ScrollbarAxis::X => offset_x,
-                ScrollbarAxis::Y => offset_y,
-            },
-        track_len: metrics.track_len,
-        thumb_start: metrics.thumb_start
-            - match metrics.axis {
-                ScrollbarAxis::X => offset_x,
-                ScrollbarAxis::Y => offset_y,
-            },
-        thumb_len: metrics.thumb_len,
-        scroll_offset: metrics.scroll_offset,
-        scroll_range: metrics.scroll_range,
-    }
-}
-
-fn hit_test_scrollbar(registry: &[EventNode], x: f32, y: f32) -> Option<ScrollbarHit> {
-    for node in registry.iter().rev() {
-        if !point_hits_node(node, x, y) {
-            continue;
-        }
-
-        if let Some(scrollbar) = node.scrollbar_y
-            && scrollbar.thumb_rect.contains(x, y)
-        {
-            return Some(ScrollbarHit {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::Y,
-                area: ScrollbarHitArea::Thumb,
-                node: scrollbar,
-            });
-        }
-
-        if let Some(scrollbar) = node.scrollbar_x
-            && scrollbar.thumb_rect.contains(x, y)
-        {
-            return Some(ScrollbarHit {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::X,
-                area: ScrollbarHitArea::Thumb,
-                node: scrollbar,
-            });
-        }
-
-        if let Some(scrollbar) = node.scrollbar_y
-            && scrollbar.track_rect.contains(x, y)
-        {
-            return Some(ScrollbarHit {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::Y,
-                area: ScrollbarHitArea::Track,
-                node: scrollbar,
-            });
-        }
-
-        if let Some(scrollbar) = node.scrollbar_x
-            && scrollbar.track_rect.contains(x, y)
-        {
-            return Some(ScrollbarHit {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::X,
-                area: ScrollbarHitArea::Track,
-                node: scrollbar,
-            });
-        }
-    }
-
-    None
-}
-
-fn hit_test_scrollbar_thumb(registry: &[EventNode], x: f32, y: f32) -> Option<ScrollbarThumbHover> {
-    for node in registry.iter().rev() {
-        if !point_hits_node(node, x, y) {
-            continue;
-        }
-
-        if let Some(scrollbar) = node.scrollbar_y
-            && scrollbar.thumb_rect.contains(x, y)
-        {
-            return Some(ScrollbarThumbHover {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::Y,
-            });
-        }
-
-        if let Some(scrollbar) = node.scrollbar_x
-            && scrollbar.thumb_rect.contains(x, y)
-        {
-            return Some(ScrollbarThumbHover {
-                id: node.id.clone(),
-                axis: ScrollbarAxis::X,
-            });
-        }
-    }
-
-    None
-}
-
-fn axis_coord(axis: ScrollbarAxis, x: f32, y: f32) -> f32 {
-    match axis {
-        ScrollbarAxis::X => x,
-        ScrollbarAxis::Y => y,
-    }
-}
-
-fn scroll_from_pointer(
-    pointer_axis: f32,
-    track_start: f32,
-    track_len: f32,
-    pointer_offset: f32,
-    scroll_range: f32,
-) -> f32 {
-    if track_len <= 0.0 || scroll_range <= 0.0 {
-        return 0.0;
-    }
-
-    let min = track_start;
-    let max = track_start + track_len;
-    let next_thumb_start = (pointer_axis - pointer_offset).clamp(min, max);
-    let ratio = if track_len > 0.0 {
-        (next_thumb_start - track_start) / track_len
-    } else {
-        0.0
-    };
-    (ratio * scroll_range).clamp(0.0, scroll_range)
-}
-
 fn radii_from_border_radius(
     radius: Option<&crate::tree::attrs::BorderRadius>,
 ) -> Option<CornerRadii> {
@@ -594,9 +398,7 @@ impl EventProcessor {
             drag_last_pos: None,
             drag_active: false,
             drag_consumed: false,
-            scrollbar_drag: None,
-            button_captured_by_scrollbar: false,
-            suppress_mouse_button_event: false,
+            scrollbar_interaction: ScrollbarInteraction::default(),
         }
     }
 
@@ -619,8 +421,8 @@ impl EventProcessor {
         }
 
         let Some((drag_id, drag_axis)) = self
-            .scrollbar_drag
-            .as_ref()
+            .scrollbar_interaction
+            .dragging()
             .map(|drag| (drag.id.clone(), drag.axis))
         else {
             return;
@@ -638,7 +440,7 @@ impl EventProcessor {
 
         match maybe_scrollbar {
             Some(scrollbar) => {
-                if let Some(drag) = self.scrollbar_drag.as_mut() {
+                if let Some(drag) = self.scrollbar_interaction.dragging_mut() {
                     drag.track_start = scrollbar.track_start;
                     drag.track_len = scrollbar.track_len;
                     drag.thumb_len = scrollbar.thumb_len;
@@ -648,7 +450,7 @@ impl EventProcessor {
                 }
             }
             None => {
-                self.scrollbar_drag = None;
+                self.scrollbar_interaction.clear();
             }
         }
     }
@@ -671,8 +473,7 @@ impl EventProcessor {
 
         if *action == crate::input::ACTION_PRESS {
             if hit_test_scrollbar(&self.registry, *x, *y).is_some() {
-                self.button_captured_by_scrollbar = true;
-                self.suppress_mouse_button_event = true;
+                self.scrollbar_interaction.mark_captured();
                 self.pressed_id = None;
                 self.drag_start = None;
                 self.drag_last_pos = None;
@@ -681,8 +482,7 @@ impl EventProcessor {
                 return None;
             }
 
-            self.button_captured_by_scrollbar = false;
-            self.suppress_mouse_button_event = false;
+            self.scrollbar_interaction.clear();
             let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK);
             self.pressed_id = hit;
             self.drag_start = Some((*x, *y));
@@ -693,9 +493,12 @@ impl EventProcessor {
         }
 
         if *action == crate::input::ACTION_RELEASE {
-            let consumed_by_scrollbar = self.button_captured_by_scrollbar;
-            self.button_captured_by_scrollbar = false;
-            self.suppress_mouse_button_event = consumed_by_scrollbar;
+            let consumed_by_scrollbar = self.scrollbar_interaction.is_captured();
+            if consumed_by_scrollbar {
+                self.scrollbar_interaction.suppress_release();
+            } else {
+                self.scrollbar_interaction.clear();
+            }
 
             let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK);
             let pressed = self.pressed_id.take();
@@ -736,9 +539,20 @@ impl EventProcessor {
             return None;
         }
 
-        if self.suppress_mouse_button_event {
-            self.suppress_mouse_button_event = false;
-            return None;
+        match *action {
+            crate::input::ACTION_PRESS => {
+                if self.scrollbar_interaction.is_captured()
+                    || hit_test_scrollbar(&self.registry, *x, *y).is_some()
+                {
+                    return None;
+                }
+            }
+            crate::input::ACTION_RELEASE => {
+                if self.scrollbar_interaction.take_release_suppression() {
+                    return None;
+                }
+            }
+            _ => return None,
         }
 
         let (flag, event_atom) = match *action {
@@ -802,7 +616,10 @@ impl EventProcessor {
             .is_some_and(|node| node.flags & flag != 0)
     }
 
-    pub fn scrollbar_thumb_drag_requests(&mut self, event: &InputEvent) -> Vec<ScrollbarThumbDragRequest> {
+    pub fn scrollbar_thumb_drag_requests(
+        &mut self,
+        event: &InputEvent,
+    ) -> Vec<ScrollbarThumbDragRequest> {
         let mut requests = Vec::new();
         requests.extend(self.handle_scrollbar_button_requests(event));
         requests.extend(self.handle_scrollbar_drag_requests(event));
@@ -831,7 +648,10 @@ impl EventProcessor {
         requests
     }
 
-    fn next_scrollbar_thumb_hover(&self, event: &InputEvent) -> Option<Option<ScrollbarThumbHover>> {
+    fn next_scrollbar_thumb_hover(
+        &self,
+        event: &InputEvent,
+    ) -> Option<Option<ScrollbarThumbHover>> {
         match event {
             InputEvent::CursorPos { x, y } => Some(self.current_scrollbar_thumb_hover(*x, *y)),
             InputEvent::CursorButton {
@@ -841,7 +661,8 @@ impl EventProcessor {
                 y,
                 ..
             } if button == "left"
-                && (*action == crate::input::ACTION_PRESS || *action == crate::input::ACTION_RELEASE) =>
+                && (*action == crate::input::ACTION_PRESS
+                    || *action == crate::input::ACTION_RELEASE) =>
             {
                 Some(self.current_scrollbar_thumb_hover(*x, *y))
             }
@@ -851,13 +672,13 @@ impl EventProcessor {
     }
 
     fn current_scrollbar_thumb_hover(&self, x: f32, y: f32) -> Option<ScrollbarThumbHover> {
-        if let Some(drag) = self.scrollbar_drag.as_ref() {
+        if let Some(drag) = self.scrollbar_interaction.dragging() {
             return Some(ScrollbarThumbHover {
                 id: drag.id.clone(),
                 axis: drag.axis,
             });
         }
-        hit_test_scrollbar_thumb(&self.registry, x, y)
+        hit_test_scrollbar(&self.registry, x, y).and_then(thumb_hover_from_hit)
     }
 
     fn hover_request(hover: ScrollbarThumbHover, hovered: bool) -> ScrollbarHoverRequest {
@@ -900,7 +721,7 @@ impl EventProcessor {
         }
 
         if *action == crate::input::ACTION_RELEASE {
-            self.scrollbar_drag = None;
+            self.scrollbar_interaction.clear();
             return Vec::new();
         }
 
@@ -912,7 +733,6 @@ impl EventProcessor {
             return Vec::new();
         };
 
-        self.button_captured_by_scrollbar = true;
         self.drag_consumed = true;
 
         let pointer_axis = axis_coord(hit.axis, *x, *y);
@@ -934,7 +754,7 @@ impl EventProcessor {
             }
         };
 
-        self.scrollbar_drag = Some(ScrollbarDragState {
+        self.scrollbar_interaction.set_dragging(ScrollbarDragState {
             id: hit.id.clone(),
             axis: hit.axis,
             track_start: hit.node.track_start,
@@ -967,7 +787,7 @@ impl EventProcessor {
             return Vec::new();
         };
 
-        let Some(state) = self.scrollbar_drag.as_ref() else {
+        let Some(state) = self.scrollbar_interaction.dragging() else {
             return Vec::new();
         };
 
@@ -980,7 +800,7 @@ impl EventProcessor {
         let current_scroll = state.current_scroll;
 
         if !self.registry.iter().any(|node| node.id == id) {
-            self.scrollbar_drag = None;
+            self.scrollbar_interaction.clear();
             return Vec::new();
         }
 
@@ -997,7 +817,7 @@ impl EventProcessor {
             return Vec::new();
         }
 
-        if let Some(state) = self.scrollbar_drag.as_mut() {
+        if let Some(state) = self.scrollbar_interaction.dragging_mut() {
             state.current_scroll = target_scroll;
         }
 
@@ -1030,7 +850,7 @@ impl EventProcessor {
     }
 
     fn handle_drag_scroll_requests(&mut self, event: &InputEvent) -> Vec<(ElementId, f32, f32)> {
-        if self.scrollbar_drag.is_some() || self.button_captured_by_scrollbar {
+        if self.scrollbar_interaction.blocks_content_drag() {
             return Vec::new();
         }
 
@@ -1232,7 +1052,10 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
-            flags: EVENT_SCROLL_X_NEG | EVENT_SCROLL_X_POS | EVENT_SCROLL_Y_NEG | EVENT_SCROLL_Y_POS,
+            flags: EVENT_SCROLL_X_NEG
+                | EVENT_SCROLL_X_POS
+                | EVENT_SCROLL_Y_NEG
+                | EVENT_SCROLL_Y_POS,
             self_rect: Rect {
                 x: 0.0,
                 y: 0.0,

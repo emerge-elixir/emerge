@@ -9,6 +9,9 @@ EmergeSkia.
   request generation.
 - Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
 - EMRG encodes event attributes as presence flags only (no payloads).
+- Scrollbar-specific hit testing and interaction state live in
+  `native/emerge_skia/src/events/scrollbar.rs` and are coordinated by
+  `EventProcessor`.
 
 ## End-to-End Event Flow
 
@@ -72,6 +75,9 @@ block listeners behind them.
 - Directional scroll flags are computed from current offset vs max offset.
 - EventProcessor converts pointer movement/wheel deltas into scroll requests to
   the tree actor.
+- Scrollbar track/thumb hit testing and thumb drag are implemented (track click
+  snaps thumb to cursor, then drag continues from that point).
+- Scrollbar hover emits axis-specific hover updates for thumb styling.
 - After scroll changes, layout/render output and event registry are refreshed to
   keep hit testing aligned with visible content.
 
@@ -96,8 +102,7 @@ block listeners behind them.
 - No double-click semantics.
 - Element events do not include pointer metadata payloads.
 - Right/middle buttons are not mapped to element-level down/up events.
-- Scrollbar thumb hit testing and thumb drag are not implemented yet (content
-  drag and wheel scrolling are implemented).
+- No distinct scrollbar active/pressed visual state beyond hover width changes.
 
 ## Possible Extensions
 

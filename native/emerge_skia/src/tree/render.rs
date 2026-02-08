@@ -595,7 +595,7 @@ fn render_nearby_element(
     shift_nearby_tree(&mut nearby_tree, offset_x, offset_y);
 
     // Render the nearby tree
-    render_tree_recursive(&nearby_tree, &root_id, commands, &FontContext::default());
+    render_element(&nearby_tree, &root_id, commands, &FontContext::default());
 }
 
 /// Shift all frames in a nearby tree by the given offset.
@@ -608,175 +608,12 @@ fn shift_nearby_tree(tree: &mut ElementTree, offset_x: f32, offset_y: f32) {
     }
 }
 
-/// Recursively render a tree (used for nearby elements).
-fn render_tree_recursive(
-    tree: &ElementTree,
-    id: &ElementId,
-    commands: &mut Vec<DrawCmd>,
-    inherited: &FontContext,
-) {
-    let Some(element) = tree.get(id) else {
-        return;
-    };
-
-    let frame = match element.frame {
-        Some(frame) => frame,
-        None => return,
-    };
-
-    let attrs = &element.attrs;
-    let radius = attrs.border_radius.as_ref();
-
-    // Merge inherited font context with this element's attrs
-    let element_context = inherited.merge_with_attrs(attrs);
-
-    let transform_state = push_element_transform(commands, frame, attrs);
-
-    // Render behind first
-    if let Some(behind_bytes) = &attrs.behind {
-        render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
-    }
-
-    if let Some(background) = &attrs.background {
-        match background {
-            Background::Color(color) => {
-                let fill = color_to_u32(color);
-                push_background_rect(commands, frame, radius, fill);
-            }
-            Background::Gradient { from, to, angle } => {
-                commands.push(DrawCmd::Gradient(
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    color_to_u32(from),
-                    color_to_u32(to),
-                    *angle as f32,
-                ));
-            }
-        }
-    }
-
-    if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color)
-        && border_width > 0.0
-    {
-        push_border_rect(
-            commands,
-            frame,
-            radius,
-            border_width as f32,
-            color_to_u32(border_color),
-        );
-    }
-
-    let clip_rect = overflow_clip_rect(frame, attrs);
-    if let Some((x, y, w, h)) = clip_rect {
-        commands.push(DrawCmd::PushClip(x, y, w, h));
-    }
-
-    if element.kind == ElementKind::Text
-        && let Some(content) = attrs.content.as_deref()
-    {
-        // Use inherited font context for missing values
-        let font_size = attrs
-            .font_size
-            .map(|s| s as f32)
-            .or(inherited.font_size)
-            .unwrap_or(16.0);
-        let color = attrs
-            .font_color
-            .as_ref()
-            .map(color_to_u32)
-            .or(inherited.font_color)
-            .unwrap_or(0xFFFFFFFF);
-        let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
-        let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
-        let (padding_right, _padding_bottom) = match attrs.padding.as_ref() {
-            Some(Padding::Uniform(v)) => (*v as f32, *v as f32),
-            Some(Padding::Sides { right, bottom, .. }) => (*right as f32, *bottom as f32),
-            None => (0.0, 0.0),
-        };
-        let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
-        let text_width = measure_text_width_with_font(content, font_size, &family, weight, italic);
-        let content_width = frame.width - padding_left - padding_right;
-        let text_align = attrs
-            .text_align
-            .or(inherited.text_align)
-            .unwrap_or_default();
-        let text_x = match text_align {
-            TextAlign::Left => frame.x + padding_left,
-            TextAlign::Center => frame.x + padding_left + (content_width - text_width) / 2.0,
-            TextAlign::Right => frame.x + frame.width - padding_right - text_width,
-        };
-        let baseline_y = frame.y + padding_top + ascent;
-        commands.push(DrawCmd::TextWithFont(
-            text_x,
-            baseline_y,
-            content.to_string(),
-            font_size,
-            color,
-            family,
-            weight,
-            italic,
-        ));
-    }
-
-    let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
-    let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
-    let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
-    let has_children = !element.children.is_empty();
-
-    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
-        commands.push(DrawCmd::Save);
-        commands.push(DrawCmd::Translate(-scroll_x, -scroll_y));
-    }
-
-    for child_id in &element.children {
-        render_tree_recursive(tree, child_id, commands, &element_context);
-    }
-
-    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
-        commands.push(DrawCmd::Restore);
-    }
-
-    if clip_rect.is_some() {
-        commands.push(DrawCmd::PopClip);
-    }
-
-    if push_border_clip(commands, frame, attrs) {
-        push_scrollbar_thumbs(commands, frame, attrs);
-        commands.push(DrawCmd::PopClip);
-    } else {
-        push_scrollbar_thumbs(commands, frame, attrs);
-    }
-
-    // Render nearby positioned elements
-    if let Some(above_bytes) = &attrs.above {
-        render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
-    }
-    if let Some(below_bytes) = &attrs.below {
-        render_nearby_element(below_bytes, frame, NearbyPosition::Below, commands);
-    }
-    if let Some(on_left_bytes) = &attrs.on_left {
-        render_nearby_element(on_left_bytes, frame, NearbyPosition::OnLeft, commands);
-    }
-    if let Some(on_right_bytes) = &attrs.on_right {
-        render_nearby_element(on_right_bytes, frame, NearbyPosition::OnRight, commands);
-    }
-
-    // Render in_front last
-    if let Some(in_front_bytes) = &attrs.in_front {
-        render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
-    }
-
-    pop_element_transform(commands, transform_state);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
     use crate::tree::element::Element;
+    use crate::tree::serialize::encode_tree;
 
     #[test]
     fn test_named_colors() {
@@ -945,6 +782,42 @@ mod tests {
         tree.root = Some(id);
         tree.insert(element);
         tree
+    }
+
+    fn encode_nearby_el(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
+        fn attrs_raw(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&3_u16.to_be_bytes());
+
+            raw.push(1);
+            raw.push(2);
+            raw.extend_from_slice(&width.to_be_bytes());
+
+            raw.push(2);
+            raw.push(2);
+            raw.extend_from_slice(&height.to_be_bytes());
+
+            raw.push(12);
+            raw.push(0);
+            raw.push(0);
+            raw.push(rgb.0);
+            raw.push(rgb.1);
+            raw.push(rgb.2);
+
+            raw
+        }
+
+        let id = ElementId::from_term_bytes(vec![77]);
+        let element = Element::with_attrs(
+            id.clone(),
+            ElementKind::El,
+            attrs_raw(width, height, rgb),
+            Attrs::default(),
+        );
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        encode_tree(&tree)
     }
 
     #[test]
@@ -1127,6 +1000,72 @@ mod tests {
             3.5,
             SCROLLBAR_COLOR,
         )));
+    }
+
+    #[test]
+    fn test_render_nearby_behind_and_in_front_order() {
+        let behind = encode_nearby_el(20.0, 10.0, (255, 0, 0));
+        let in_front = encode_nearby_el(20.0, 10.0, (0, 0, 255));
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.behind = Some(behind);
+        attrs.in_front = Some(in_front);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(40.0, 20.0, 20.0, 10.0, 0xFF0000FF),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(40.0, 20.0, 20.0, 10.0, 0x0000FFFF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_nearby_above_below_order_after_parent() {
+        let above = encode_nearby_el(20.0, 10.0, (0, 255, 0));
+        let below = encode_nearby_el(20.0, 10.0, (255, 255, 0));
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.above = Some(above);
+        attrs.below = Some(below);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(40.0, -10.0, 20.0, 10.0, 0x00FF00FF),
+                DrawCmd::Rect(40.0, 50.0, 20.0, 10.0, 0xFFFF00FF),
+            ]
+        );
     }
 
     #[test]
