@@ -28,7 +28,7 @@ lib.rs (NIF entry, resources, registration)
     │
     ├── backend/
     │   ├── wayland.rs (windowed)
-    │   ├── drm.rs (planned: direct framebuffer)
+    │   ├── drm.rs (direct KMS/DRM backend)
     │   └── raster.rs (offscreen CPU surface)
     │
     ├── input.rs (InputEvent + mask filter + encoder)
@@ -69,14 +69,14 @@ Offscreen CPU rendering via `render_to_pixels/3` NIF.
 Push-based input events via `{:emerge_skia_event, event}` messages.
 
 Input event types:
-- `{:cursor_pos, x, y}`
-- `{:cursor_button, button, action, mods, x, y}`
-- `{:cursor_scroll, dx, dy, x, y}`
-- `{:key, key, scancode, action, mods}`
-- `{:codepoint, char, mods}`
-- `{:viewport_resize, width, height, scale}`
+- `{:cursor_pos, {x, y}}`
+- `{:cursor_button, {button, action, mods, {x, y}}}`
+- `{:cursor_scroll, {{dx, dy}, {x, y}}}`
+- `{:key, {key, action, mods}}`
+- `{:codepoint, {char, mods}}`
+- `{:resized, {width, height, scale}}`
 - `{:focused, bool}`
-- `{:cursor_entered}` / `{:cursor_left}`
+- `{:cursor_entered, entered}`
 
 ### Phase 4: Emerge Tree Integration ✓
 
@@ -110,7 +110,7 @@ attr_records...   # tag (1 byte) + value (varies)
 
 | Tag | Attribute | Value Encoding |
 |-----|-----------|----------------|
-| 1 | width | Length: 0=fill, 1=content, 2=px+f64, 3=fill_portion+f64 |
+| 1 | width | Length: 0=fill, 1=content, 2=px+f64, 3=fill_portion+f64, 4=minimum, 5=maximum |
 | 2 | height | Length (same as width) |
 | 3 | padding | 0=uniform+f64, 1/2=sides+4×f64 |
 | 4 | spacing | f64 |
@@ -121,7 +121,7 @@ attr_records...   # tag (1 byte) + value (varies)
 | 10 | clip_y | bool |
 | 11 | clip_x | bool |
 | 12 | background | 0=color, 1=gradient(color+color+f64) |
-| 13 | border_radius | f64 |
+| 13 | border_radius | 0=uniform+f64, 1=corners+4×f64 |
 | 14 | border_width | f64 |
 | 15 | border_color | Color |
 | 16 | font_size | f64 |
@@ -133,11 +133,19 @@ attr_records...   # tag (1 byte) + value (varies)
 | 22-27 | nearby (above/below/on_left/on_right/in_front/behind) | u32 len + EMRG subtree |
 | 28 | snap_layout | bool |
 | 29 | snap_text_metrics | bool |
+| 30 | text_align | 0=left, 1=center, 2=right |
+| 31-35 | move_x/move_y/rotate/scale/alpha | f64 |
+| 36 | spacing_xy | f64 x + f64 y |
+| 37 | space_evenly | bool |
+| 38 | scroll_x | f64 (runtime, typically stripped from Elixir encoding) |
+| 39 | scroll_y | f64 (runtime, typically stripped from Elixir encoding) |
+| 40-45 | on_click/on_mouse_* | bool (presence flag) |
 
 Color encoding: 0=rgb(3×u8), 1=rgba(4×u8), 2=named(u16 len + bytes)
 
-Runtime-only attrs are not encoded (`scroll_x`, `scroll_y`, `scroll_max`, `scroll_bounds`, `clip_bounds`,
-`clip_content`, `text_baseline_offset`, `scroll_capture`, `__layer`, `__attrs_hash`, `nearby_*`).
+Runtime-only attrs are not encoded (`scroll_x`, `scroll_y`, `scroll_max`, `scroll_max_x`,
+`scroll_bounds`, `scroll_clip_bounds`, `clip_bounds`, `clip_content`, `text_baseline_offset`,
+`scroll_capture`, `__layer`, `nearby_behind`, `nearby_in_front`, `nearby_outside`, `__attrs_hash`).
 
 #### 4.3 Tree NIF Functions
 
@@ -216,7 +224,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Length API expansion (shrink alias, minimum/maximum) with layout coverage
 - Tests added for transforms, clipping, length encoding, and content sizing
 - Added spacingXY + spaceEvenly (space-between) support
-- Added event system design doc (on_click MVP)
+- Element event system implemented (`on_click` + `on_mouse_*`) with clip/rounded/scroll-aware hit testing
 - EventProcessor introduced; input loop now enqueues raw events
 - Click dispatch and hit testing moved to event processor
 - Drag-scroll with deadzone; finger-like drag direction
@@ -310,9 +318,9 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 |---------|------------|--------|--------|-------|
 | Font.size | ✅ | ✅ | ✅ | |
 | Font.color | ✅ | N/A | ✅ | |
-| Font.family | ✅ | ❌ | ❌ | Stored but not used |
-| Font.bold | ✅ | ❌ | ❌ | Stored as string |
-| Font.italic | ✅ | ❌ | ❌ | Stored as string |
+| Font.family | ✅ | ✅ | ✅ | Family inheritance + fallback |
+| Font.bold | ✅ | ✅ | ✅ | Weight mapping with synthetic fallback |
+| Font.italic | ✅ | ✅ | ✅ | Italic mapping with synthetic fallback |
 | Font.strike | ❌ | N/A | ❌ | |
 | Font.underline | ❌ | N/A | ❌ | |
 | Font.letterSpacing | ❌ | ❌ | ❌ | |
@@ -322,7 +330,7 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Transforms
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| moveUp/Down/Left/Right | ✅ | ✅ | ✅ | move_x/move_y |
+| move_x / move_y | ✅ | ✅ | ✅ | Equivalent to elm-ui move helpers |
 | rotate | ✅ | ✅ | ✅ | |
 | scale | ✅ | ✅ | ✅ | |
 
@@ -367,20 +375,26 @@ Completed. Nearby elements are decoded from EMRG bytes, laid out relative to par
 - `in_front`: Centered overlay (rendered last)
 - `behind`: Centered underlay (rendered first)
 
-### Phase 9 - Transforms
+### Phase 9 - Transforms ✓
 
-Tasks:
-1. Add transform attributes: `move_x`, `move_y`, `rotate`, `scale`
-2. Apply transforms during render (translate, rotate, scale canvas)
-3. Add `alpha` attribute for opacity
+Completed.
 
-### Phase 10 - Font Rendering Improvements
+- Transform attrs are encoded/decoded: `move_x`, `move_y`, `rotate`, `scale`.
+- Render pipeline applies translate/rotate/scale around element center.
+- `alpha` opacity is supported via layer alpha.
 
-Tasks:
-1. Load font families by name (Font.family)
-2. Apply font weight (bold)
-3. Apply font style (italic)
-4. Text decoration (underline, strike)
+### Phase 10 - Font Rendering Improvements (Partial)
+
+Completed:
+
+1. Load font families by name (`Font.family`)
+2. Apply font weight (`Font.bold`)
+3. Apply font style (`Font.italic`)
+
+Remaining:
+
+1. Text decoration (`underline`, `strike`)
+2. Letter/word spacing controls
 
 ### Phase 11 - Scrollbars (Partial)
 
@@ -397,8 +411,6 @@ Remaining:
 
 - `paragraph` element for inline text flow
 - `textColumn` for multi-paragraph layouts
-- `spacingXY` for different H/V spacing
-- `spaceEvenly` for justified distribution
 - Border shadows and glow effects
 - Background images
 
