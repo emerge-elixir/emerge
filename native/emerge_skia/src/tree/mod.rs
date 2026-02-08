@@ -10,9 +10,10 @@
 #![allow(unused_imports)] // Re-exports are part of the public API even if unused internally.
 
 pub mod attrs;
-pub mod element;
 pub mod deserialize;
+pub mod element;
 pub mod layout;
 pub mod patch;
 pub mod render;
+pub mod scrollbar;
 pub mod serialize;

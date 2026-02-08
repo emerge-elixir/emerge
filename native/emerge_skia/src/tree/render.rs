@@ -2,14 +2,17 @@
 //!
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
-use super::attrs::{Attrs, Background, BorderRadius, Color, Font, FontStyle, FontWeight, Padding, TextAlign};
+use super::attrs::{
+    Attrs, Background, BorderRadius, Color, Font, FontStyle, FontWeight, Padding, TextAlign,
+};
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
-use super::layout::{font_info_with_inheritance, layout_tree, Constraint, FontContext, SkiaTextMeasurer};
+use super::layout::{
+    Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance, layout_tree,
+};
+use super::scrollbar;
 use crate::renderer::{DrawCmd, make_font_with_style};
 
-const SCROLLBAR_THICKNESS: f32 = 6.0;
-const SCROLLBAR_MIN_LENGTH: f32 = 24.0;
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 
 /// Render the tree to draw commands.
@@ -24,7 +27,12 @@ pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
     commands
 }
 
-fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd>, inherited: &FontContext) {
+fn render_element(
+    tree: &ElementTree,
+    id: &ElementId,
+    commands: &mut Vec<DrawCmd>,
+    inherited: &FontContext,
+) {
     let Some(element) = tree.get(id) else {
         return;
     };
@@ -89,10 +97,14 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         && let Some(content) = attrs.content.as_deref()
     {
         // Use inherited font context for missing values
-        let font_size = attrs.font_size.map(|s| s as f32)
+        let font_size = attrs
+            .font_size
+            .map(|s| s as f32)
             .or(inherited.font_size)
             .unwrap_or(16.0);
-        let color = attrs.font_color.as_ref()
+        let color = attrs
+            .font_color
+            .as_ref()
             .map(color_to_u32)
             .or(inherited.font_color)
             .unwrap_or(0xFFFFFFFF);
@@ -106,7 +118,8 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
         let text_width = measure_text_width_with_font(content, font_size, &family, weight, italic);
         let content_width = frame.width - padding_left - padding_right;
-        let text_align = attrs.text_align
+        let text_align = attrs
+            .text_align
             .or(inherited.text_align)
             .unwrap_or_default();
         let text_x = match text_align {
@@ -116,8 +129,14 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
         };
         let baseline_y = frame.y + padding_top + ascent;
         commands.push(DrawCmd::TextWithFont(
-            text_x, baseline_y, content.to_string(), font_size, color,
-            family, weight, italic,
+            text_x,
+            baseline_y,
+            content.to_string(),
+            font_size,
+            color,
+            family,
+            weight,
+            italic,
         ));
     }
 
@@ -174,8 +193,12 @@ fn render_element(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd
 
 fn color_to_u32(color: &Color) -> u32 {
     match color {
-        Color::Rgb { r, g, b } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF,
-        Color::Rgba { r, g, b, a } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32),
+        Color::Rgb { r, g, b } => {
+            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF
+        }
+        Color::Rgba { r, g, b, a } => {
+            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32)
+        }
         Color::Named(name) => named_color(name),
     }
 }
@@ -210,7 +233,9 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
     }
 
     let (padding_left, padding_top, padding_right, padding_bottom) = match attrs.padding.as_ref() {
-        Some(Padding::Uniform(value)) => (*value as f32, *value as f32, *value as f32, *value as f32),
+        Some(Padding::Uniform(value)) => {
+            (*value as f32, *value as f32, *value as f32, *value as f32)
+        }
         Some(Padding::Sides {
             top,
             right,
@@ -239,7 +264,11 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
     Some((x, y, width.max(0.0), height.max(0.0)))
 }
 
-fn push_border_clip(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) -> bool {
+fn push_border_clip(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &super::attrs::Attrs,
+) -> bool {
     match attrs.border_radius.as_ref() {
         Some(BorderRadius::Uniform(value)) if *value > 0.0 => {
             commands.push(DrawCmd::PushClipRounded(
@@ -269,63 +298,26 @@ fn push_border_clip(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::at
 }
 
 fn push_scrollbar_thumbs(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) {
-    let thickness = SCROLLBAR_THICKNESS;
-    let radius = thickness / 2.0;
-
-    if attrs.scrollbar_y.unwrap_or(false) {
-        let viewport = frame.height;
-        let content = frame.content_height;
-        if content > viewport && viewport > 0.0 {
-            let thumb_len = (viewport * viewport / content)
-                .max(SCROLLBAR_MIN_LENGTH)
-                .min(viewport);
-            let scroll_offset = attrs.scroll_y.unwrap_or(0.0) as f32;
-            let scroll_range = (content - viewport).max(0.0);
-            let ratio = if scroll_range > 0.0 {
-                (scroll_offset / scroll_range).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let track_len = (viewport - thumb_len).max(0.0);
-            let thumb_y = frame.y + ratio * track_len;
-            let x = frame.x + frame.width - thickness;
-            commands.push(DrawCmd::RoundedRect(
-                x,
-                thumb_y,
-                thickness,
-                thumb_len,
-                radius,
-                SCROLLBAR_COLOR,
-            ));
-        }
+    if let Some(metrics) = scrollbar::vertical_metrics(frame, attrs) {
+        commands.push(DrawCmd::RoundedRect(
+            metrics.thumb_x,
+            metrics.thumb_y,
+            metrics.thumb_width,
+            metrics.thumb_height,
+            metrics.thumb_width / 2.0,
+            SCROLLBAR_COLOR,
+        ));
     }
 
-    if attrs.scrollbar_x.unwrap_or(false) {
-        let viewport = frame.width;
-        let content = frame.content_width;
-        if content > viewport && viewport > 0.0 {
-            let thumb_len = (viewport * viewport / content)
-                .max(SCROLLBAR_MIN_LENGTH)
-                .min(viewport);
-            let scroll_offset = attrs.scroll_x.unwrap_or(0.0) as f32;
-            let scroll_range = (content - viewport).max(0.0);
-            let ratio = if scroll_range > 0.0 {
-                (scroll_offset / scroll_range).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let track_len = (viewport - thumb_len).max(0.0);
-            let thumb_x = frame.x + ratio * track_len;
-            let y = frame.y + frame.height - thickness;
-            commands.push(DrawCmd::RoundedRect(
-                thumb_x,
-                y,
-                thumb_len,
-                thickness,
-                radius,
-                SCROLLBAR_COLOR,
-            ));
-        }
+    if let Some(metrics) = scrollbar::horizontal_metrics(frame, attrs) {
+        commands.push(DrawCmd::RoundedRect(
+            metrics.thumb_x,
+            metrics.thumb_y,
+            metrics.thumb_width,
+            metrics.thumb_height,
+            metrics.thumb_height / 2.0,
+            SCROLLBAR_COLOR,
+        ));
     }
 }
 
@@ -335,7 +327,11 @@ struct TransformState {
     has_alpha_layer: bool,
 }
 
-fn push_element_transform(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) -> TransformState {
+fn push_element_transform(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &super::attrs::Attrs,
+) -> TransformState {
     let move_x = attrs.move_x.unwrap_or(0.0) as f32;
     let move_y = attrs.move_y.unwrap_or(0.0) as f32;
     let rotate = attrs.rotate.unwrap_or(0.0) as f32;
@@ -497,14 +493,19 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
     (metrics.ascent.abs(), metrics.descent)
 }
 
-fn measure_text_width_with_font(text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> f32 {
+fn measure_text_width_with_font(
+    text: &str,
+    font_size: f32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+) -> f32 {
     use skia_safe::Font;
 
     let font = make_font_with_style(family, weight, italic, font_size);
     let (width, _bounds) = font.measure_str(text, None);
     width
 }
-
 
 // =============================================================================
 // Nearby Element Rendering
@@ -608,7 +609,12 @@ fn shift_nearby_tree(tree: &mut ElementTree, offset_x: f32, offset_y: f32) {
 }
 
 /// Recursively render a tree (used for nearby elements).
-fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<DrawCmd>, inherited: &FontContext) {
+fn render_tree_recursive(
+    tree: &ElementTree,
+    id: &ElementId,
+    commands: &mut Vec<DrawCmd>,
+    inherited: &FontContext,
+) {
     let Some(element) = tree.get(id) else {
         return;
     };
@@ -672,10 +678,14 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         && let Some(content) = attrs.content.as_deref()
     {
         // Use inherited font context for missing values
-        let font_size = attrs.font_size.map(|s| s as f32)
+        let font_size = attrs
+            .font_size
+            .map(|s| s as f32)
             .or(inherited.font_size)
             .unwrap_or(16.0);
-        let color = attrs.font_color.as_ref()
+        let color = attrs
+            .font_color
+            .as_ref()
             .map(color_to_u32)
             .or(inherited.font_color)
             .unwrap_or(0xFFFFFFFF);
@@ -689,7 +699,8 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
         let text_width = measure_text_width_with_font(content, font_size, &family, weight, italic);
         let content_width = frame.width - padding_left - padding_right;
-        let text_align = attrs.text_align
+        let text_align = attrs
+            .text_align
             .or(inherited.text_align)
             .unwrap_or_default();
         let text_x = match text_align {
@@ -699,8 +710,14 @@ fn render_tree_recursive(tree: &ElementTree, id: &ElementId, commands: &mut Vec<
         };
         let baseline_y = frame.y + padding_top + ascent;
         commands.push(DrawCmd::TextWithFont(
-            text_x, baseline_y, content.to_string(), font_size, color,
-            family, weight, italic,
+            text_x,
+            baseline_y,
+            content.to_string(),
+            font_size,
+            color,
+            family,
+            weight,
+            italic,
         ));
     }
 
@@ -791,11 +808,20 @@ mod tests {
     #[test]
     fn test_color_to_u32() {
         // Test RGB color
-        let rgb = Color::Rgb { r: 255, g: 128, b: 64 };
+        let rgb = Color::Rgb {
+            r: 255,
+            g: 128,
+            b: 64,
+        };
         assert_eq!(color_to_u32(&rgb), 0xFF8040FF);
 
         // Test RGBA color
-        let rgba = Color::Rgba { r: 255, g: 128, b: 64, a: 200 };
+        let rgba = Color::Rgba {
+            r: 255,
+            g: 128,
+            b: 64,
+            a: 200,
+        };
         assert_eq!(color_to_u32(&rgba), 0xFF8040C8);
 
         // Test named color
@@ -806,8 +832,22 @@ mod tests {
     #[test]
     fn test_nearby_position_calculations() {
         // Test Above: should be centered horizontally, positioned above
-        let parent = Frame { x: 100.0, y: 100.0, width: 200.0, height: 50.0, content_width: 200.0, content_height: 50.0 };
-        let nearby = Frame { x: 0.0, y: 0.0, width: 50.0, height: 20.0, content_width: 50.0, content_height: 20.0 };
+        let parent = Frame {
+            x: 100.0,
+            y: 100.0,
+            width: 200.0,
+            height: 50.0,
+            content_width: 200.0,
+            content_height: 50.0,
+        };
+        let nearby = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 50.0,
+            height: 20.0,
+            content_width: 50.0,
+            content_height: 20.0,
+        };
 
         // Above: x = 100 + (200 - 50) / 2 = 175, y = 100 - 20 = 80
         let (x, y) = match NearbyPosition::Above {
@@ -991,7 +1031,10 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert_eq!(commands, vec![DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)]);
+        assert_eq!(
+            commands,
+            vec![DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)]
+        );
     }
 
     #[test]
@@ -1018,7 +1061,7 @@ mod tests {
                 DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
                 DrawCmd::PopClip,
                 DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
-                DrawCmd::RoundedRect(94.0, 13.0, 6.0, 24.0, 3.0, SCROLLBAR_COLOR),
+                DrawCmd::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR),
                 DrawCmd::PopClip,
             ]
         );
@@ -1053,12 +1096,38 @@ mod tests {
                 DrawCmd::PushClip(0.0, 0.0, 80.0, 40.0),
                 DrawCmd::PopClip,
                 DrawCmd::PushClipRoundedCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0),
-                DrawCmd::RoundedRect(15.0, 34.0, 40.0, 6.0, 3.0, SCROLLBAR_COLOR),
+                DrawCmd::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR),
                 DrawCmd::PopClip,
             ]
         );
     }
 
+    #[test]
+    fn test_render_scrollbar_hover_uses_wider_thumb() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(50.0);
+        attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 150.0,
+        };
+        let tree = build_tree_with_frame(attrs, frame);
+        let commands = render_tree(&tree);
+
+        assert!(commands.contains(&DrawCmd::RoundedRect(
+            93.0,
+            13.0,
+            7.0,
+            24.0,
+            3.5,
+            SCROLLBAR_COLOR,
+        )));
+    }
 
     #[test]
     fn test_clip_uses_padded_content_box() {
@@ -1075,7 +1144,10 @@ mod tests {
             content_height: 50.0,
         };
 
-        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 10.0, 80.0, 30.0)));
+        assert_eq!(
+            overflow_clip_rect(frame, &attrs),
+            Some((10.0, 10.0, 80.0, 30.0))
+        );
     }
 
     #[test]
@@ -1092,7 +1164,10 @@ mod tests {
             content_height: 50.0,
         };
 
-        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 0.0, 80.0, 50.0)));
+        assert_eq!(
+            overflow_clip_rect(frame, &attrs),
+            Some((10.0, 0.0, 80.0, 50.0))
+        );
     }
 
     #[test]
@@ -1109,7 +1184,10 @@ mod tests {
             content_height: 50.0,
         };
 
-        assert_eq!(overflow_clip_rect(frame, &attrs), Some((10.0, 0.0, 80.0, 50.0)));
+        assert_eq!(
+            overflow_clip_rect(frame, &attrs),
+            Some((10.0, 0.0, 80.0, 50.0))
+        );
     }
 
     #[test]

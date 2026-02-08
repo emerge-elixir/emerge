@@ -24,6 +24,22 @@ pub enum TreeMsg {
         dx: f32,
         dy: f32,
     },
+    ScrollbarThumbDragX {
+        element_id: ElementId,
+        dx: f32,
+    },
+    ScrollbarThumbDragY {
+        element_id: ElementId,
+        dy: f32,
+    },
+    SetScrollbarXHover {
+        element_id: ElementId,
+        hovered: bool,
+    },
+    SetScrollbarYHover {
+        element_id: ElementId,
+        hovered: bool,
+    },
     Stop,
 }
 
