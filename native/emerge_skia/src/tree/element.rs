@@ -1,7 +1,7 @@
 //! Element types for Emerge UI trees.
 
-use std::collections::HashMap;
 use super::attrs::{Attrs, ScrollbarHoverAxis};
+use std::collections::HashMap;
 
 /// Unique identifier for an element, derived from Erlang term.
 /// Stored as the raw bytes of the serialized Erlang term for exact matching.
@@ -38,7 +38,6 @@ impl ElementKind {
             _ => None,
         }
     }
-
 }
 
 /// Frame representing the computed layout bounds.
@@ -109,6 +108,12 @@ pub struct ElementTree {
     pub nodes: HashMap<ElementId, Element>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollAxis {
+    X,
+    Y,
+}
+
 impl ElementTree {
     pub fn new() -> Self {
         Self::default()
@@ -128,7 +133,6 @@ impl ElementTree {
     pub fn insert(&mut self, element: Element) {
         self.nodes.insert(element.id.clone(), element);
     }
-
 
     /// Check if tree is empty.
     pub fn is_empty(&self) -> bool {
@@ -160,27 +164,25 @@ impl ElementTree {
 
     /// Apply horizontal scroll delta to an element. Returns true if scroll changed.
     pub fn apply_scroll_x(&mut self, id: &ElementId, dx: f32) -> bool {
-        let Some(element) = self.get_mut(id) else {
-            return false;
-        };
-        let Some(frame) = element.frame else {
-            return false;
-        };
-
-        let max_x = (frame.content_width - frame.width).max(0.0);
-        let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
-        let next_x = (current_x - dx).clamp(0.0, max_x);
-
-        if (next_x - current_x).abs() < f32::EPSILON {
-            return false;
-        }
-
-        element.attrs.scroll_x = Some(next_x as f64);
-        true
+        self.apply_scroll_axis(id, dx, ScrollAxis::X)
     }
 
     /// Apply vertical scroll delta to an element. Returns true if scroll changed.
     pub fn apply_scroll_y(&mut self, id: &ElementId, dy: f32) -> bool {
+        self.apply_scroll_axis(id, dy, ScrollAxis::Y)
+    }
+
+    /// Set horizontal scrollbar thumb hover state. Returns true when state changes.
+    pub fn set_scrollbar_x_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
+        self.set_scrollbar_hover_axis(id, ScrollbarHoverAxis::X, hovered)
+    }
+
+    /// Set vertical scrollbar thumb hover state. Returns true when state changes.
+    pub fn set_scrollbar_y_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
+        self.set_scrollbar_hover_axis(id, ScrollbarHoverAxis::Y, hovered)
+    }
+
+    fn apply_scroll_axis(&mut self, id: &ElementId, delta: f32, axis: ScrollAxis) -> bool {
         let Some(element) = self.get_mut(id) else {
             return false;
         };
@@ -188,57 +190,54 @@ impl ElementTree {
             return false;
         };
 
-        let max_y = (frame.content_height - frame.height).max(0.0);
-        let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
-        let next_y = (current_y - dy).clamp(0.0, max_y);
+        let (current, max) = match axis {
+            ScrollAxis::X => (
+                element.attrs.scroll_x.unwrap_or(0.0) as f32,
+                (frame.content_width - frame.width).max(0.0),
+            ),
+            ScrollAxis::Y => (
+                element.attrs.scroll_y.unwrap_or(0.0) as f32,
+                (frame.content_height - frame.height).max(0.0),
+            ),
+        };
+        let next = (current - delta).clamp(0.0, max);
 
-        if (next_y - current_y).abs() < f32::EPSILON {
+        if (next - current).abs() < f32::EPSILON {
             return false;
         }
 
-        element.attrs.scroll_y = Some(next_y as f64);
+        match axis {
+            ScrollAxis::X => element.attrs.scroll_x = Some(next as f64),
+            ScrollAxis::Y => element.attrs.scroll_y = Some(next as f64),
+        }
         true
     }
 
-    /// Set horizontal scrollbar thumb hover state. Returns true when state changes.
-    pub fn set_scrollbar_x_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
+    fn set_scrollbar_hover_axis(
+        &mut self,
+        id: &ElementId,
+        axis: ScrollbarHoverAxis,
+        hovered: bool,
+    ) -> bool {
         let Some(element) = self.get_mut(id) else {
             return false;
         };
 
         let current = element.attrs.scrollbar_hover_axis;
-        if hovered {
-            if !element.attrs.scrollbar_x.unwrap_or(false) || current == Some(ScrollbarHoverAxis::X) {
-                return false;
-            }
-            element.attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
-            return true;
-        }
-
-        if current == Some(ScrollbarHoverAxis::X) {
-            element.attrs.scrollbar_hover_axis = None;
-            return true;
-        }
-
-        false
-    }
-
-    /// Set vertical scrollbar thumb hover state. Returns true when state changes.
-    pub fn set_scrollbar_y_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
-        let Some(element) = self.get_mut(id) else {
-            return false;
+        let axis_enabled = match axis {
+            ScrollbarHoverAxis::X => element.attrs.scrollbar_x.unwrap_or(false),
+            ScrollbarHoverAxis::Y => element.attrs.scrollbar_y.unwrap_or(false),
         };
 
-        let current = element.attrs.scrollbar_hover_axis;
         if hovered {
-            if !element.attrs.scrollbar_y.unwrap_or(false) || current == Some(ScrollbarHoverAxis::Y) {
+            if !axis_enabled || current == Some(axis) {
                 return false;
             }
-            element.attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+            element.attrs.scrollbar_hover_axis = Some(axis);
             return true;
         }
 
-        if current == Some(ScrollbarHoverAxis::Y) {
+        if current == Some(axis) {
             element.attrs.scrollbar_hover_axis = None;
             return true;
         }
@@ -327,5 +326,59 @@ mod tests {
 
         assert!(!tree.apply_scroll_x(&id, 0.0));
         assert!(!tree.apply_scroll_y(&id, 0.0));
+    }
+
+    #[test]
+    fn test_apply_scroll_axis_helpers_clamp_to_bounds() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scrollbar_y = Some(true);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 180.0,
+            content_height: 170.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.apply_scroll_x(&id, -500.0));
+        assert!(tree.apply_scroll_y(&id, -500.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(80.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(70.0));
+
+        assert!(tree.apply_scroll_x(&id, 500.0));
+        assert!(tree.apply_scroll_y(&id, 500.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(0.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(0.0));
+    }
+
+    #[test]
+    fn test_set_scrollbar_hover_axis_noop_when_axis_disabled() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let attrs = Attrs::default();
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 100.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(!tree.set_scrollbar_x_hover(&id, true));
+        assert!(!tree.set_scrollbar_y_hover(&id, true));
+        assert_eq!(tree.get(&id).unwrap().attrs.scrollbar_hover_axis, None);
     }
 }

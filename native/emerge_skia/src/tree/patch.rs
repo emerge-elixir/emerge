@@ -7,8 +7,7 @@
 //!   - 3: insert_subtree - parent_len(4) + parent_id + index(2) + tree_len(4) + tree_bytes
 //!   - 4: remove - id_len(4) + id
 
-use super::attrs::decode_attrs;
-use super::attrs::Attrs;
+use super::attrs::{decode_attrs, preserve_runtime_scroll_attrs, Attrs};
 use super::deserialize::{decode_tree, DecodeError};
 use super::element::{ElementId, ElementTree};
 
@@ -199,7 +198,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
             let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
             element.base_attrs = decoded.clone();
             let mut merged = decoded;
-            preserve_runtime_attrs(&element.attrs, &mut merged);
+            preserve_runtime_scroll_attrs(&element.attrs, &mut merged);
             element.attrs = merged;
         }
 
@@ -253,34 +252,6 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
-    if incoming.scroll_x.is_none() {
-        incoming.scroll_x = existing.scroll_x;
-    }
-    if incoming.scroll_y.is_none() {
-        incoming.scroll_y = existing.scroll_y;
-    }
-    if incoming.scroll_x_max.is_none() {
-        incoming.scroll_x_max = existing.scroll_x_max;
-    }
-    if incoming.scroll_y_max.is_none() {
-        incoming.scroll_y_max = existing.scroll_y_max;
-    }
-    if incoming.scrollbar_hover_axis.is_none() {
-        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
-    }
-    if !incoming.scrollbar_x.unwrap_or(false)
-        && incoming.scrollbar_hover_axis == Some(crate::tree::attrs::ScrollbarHoverAxis::X)
-    {
-        incoming.scrollbar_hover_axis = None;
-    }
-    if !incoming.scrollbar_y.unwrap_or(false)
-        && incoming.scrollbar_hover_axis == Some(crate::tree::attrs::ScrollbarHoverAxis::Y)
-    {
-        incoming.scrollbar_hover_axis = None;
-    }
 }
 
 /// Recursively remove a node and all its descendants.
@@ -366,6 +337,34 @@ mod tests {
         assert_eq!(updated.attrs.scroll_y, Some(34.0));
         assert_eq!(updated.attrs.scroll_x_max, Some(50.0));
         assert_eq!(updated.attrs.scroll_y_max, Some(60.0));
+        assert_eq!(updated.attrs.scrollbar_hover_axis, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_attrs_on_patch_when_axis_present() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.scroll_x = Some(12.0);
+        attrs.scroll_y = Some(34.0);
+        attrs.scroll_x_max = Some(50.0);
+        attrs.scroll_y_max = Some(60.0);
+        attrs.scrollbar_y = Some(true);
+        attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
+
+        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.nodes.insert(id.clone(), element);
+
+        let patch = Patch::SetAttrs {
+            id: id.clone(),
+            attrs_raw: vec![0, 1, 7, 1],
+        };
+
+        apply_patch(&mut tree, patch).unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.attrs.scrollbar_y, Some(true));
         assert_eq!(
             updated.attrs.scrollbar_hover_axis,
             Some(crate::tree::attrs::ScrollbarHoverAxis::Y)

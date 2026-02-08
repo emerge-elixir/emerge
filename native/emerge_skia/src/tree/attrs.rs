@@ -166,6 +166,39 @@ pub struct Attrs {
     pub behind: Option<Vec<u8>>,
 }
 
+/// Preserve runtime-only scrollbar fields across attr replacement.
+pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
+    if incoming.scroll_x.is_none() {
+        incoming.scroll_x = existing.scroll_x;
+    }
+    if incoming.scroll_y.is_none() {
+        incoming.scroll_y = existing.scroll_y;
+    }
+    if incoming.scroll_x_max.is_none() {
+        incoming.scroll_x_max = existing.scroll_x_max;
+    }
+    if incoming.scroll_y_max.is_none() {
+        incoming.scroll_y_max = existing.scroll_y_max;
+    }
+    if incoming.scrollbar_hover_axis.is_none() {
+        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
+    }
+
+    normalize_scrollbar_hover_axis(incoming);
+}
+
+fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
+    match attrs.scrollbar_hover_axis {
+        Some(ScrollbarHoverAxis::X) if !attrs.scrollbar_x.unwrap_or(false) => {
+            attrs.scrollbar_hover_axis = None;
+        }
+        Some(ScrollbarHoverAxis::Y) if !attrs.scrollbar_y.unwrap_or(false) => {
+            attrs.scrollbar_hover_axis = None;
+        }
+        _ => {}
+    }
+}
+
 // =============================================================================
 // Attribute Tags
 // =============================================================================
@@ -739,5 +772,102 @@ mod tests {
         data.extend_from_slice(&0.5_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.alpha, Some(0.5));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_copies_missing_values() {
+        let mut existing = Attrs::default();
+        existing.scroll_x = Some(11.0);
+        existing.scroll_y = Some(22.0);
+        existing.scroll_x_max = Some(110.0);
+        existing.scroll_y_max = Some(220.0);
+        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+
+        let mut incoming = Attrs::default();
+        incoming.scrollbar_x = Some(true);
+        incoming.scrollbar_y = Some(true);
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.scroll_x, Some(11.0));
+        assert_eq!(incoming.scroll_y, Some(22.0));
+        assert_eq!(incoming.scroll_x_max, Some(110.0));
+        assert_eq!(incoming.scroll_y_max, Some(220.0));
+        assert_eq!(incoming.scrollbar_hover_axis, Some(ScrollbarHoverAxis::Y));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_keeps_incoming_values() {
+        let mut existing = Attrs::default();
+        existing.scroll_x = Some(11.0);
+        existing.scroll_y = Some(22.0);
+        existing.scroll_x_max = Some(110.0);
+        existing.scroll_y_max = Some(220.0);
+        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
+
+        let mut incoming = Attrs::default();
+        incoming.scrollbar_x = Some(true);
+        incoming.scrollbar_y = Some(true);
+        incoming.scroll_x = Some(1.0);
+        incoming.scroll_y = Some(2.0);
+        incoming.scroll_x_max = Some(3.0);
+        incoming.scroll_y_max = Some(4.0);
+        incoming.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.scroll_x, Some(1.0));
+        assert_eq!(incoming.scroll_y, Some(2.0));
+        assert_eq!(incoming.scroll_x_max, Some(3.0));
+        assert_eq!(incoming.scroll_y_max, Some(4.0));
+        assert_eq!(incoming.scrollbar_hover_axis, Some(ScrollbarHoverAxis::Y));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_invalid_hover_axis() {
+        let mut existing = Attrs::default();
+        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
+
+        let mut incoming = Attrs::default();
+        incoming.scrollbar_x = Some(false);
+        incoming.scrollbar_y = Some(true);
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.scrollbar_hover_axis, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_is_idempotent() {
+        let mut existing = Attrs::default();
+        existing.scroll_x = Some(7.0);
+        existing.scroll_y = Some(9.0);
+        existing.scroll_x_max = Some(30.0);
+        existing.scroll_y_max = Some(40.0);
+        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+
+        let mut incoming = Attrs::default();
+        incoming.scrollbar_x = Some(true);
+        incoming.scrollbar_y = Some(true);
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        let after_first = (
+            incoming.scroll_x,
+            incoming.scroll_y,
+            incoming.scroll_x_max,
+            incoming.scroll_y_max,
+            incoming.scrollbar_hover_axis,
+        );
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        let after_second = (
+            incoming.scroll_x,
+            incoming.scroll_y,
+            incoming.scroll_x_max,
+            incoming.scroll_y_max,
+            incoming.scrollbar_hover_axis,
+        );
+
+        assert_eq!(after_first, after_second);
     }
 }

@@ -945,16 +945,15 @@ impl EventProcessor {
             current_scroll: target_scroll,
         });
 
-        if hit.area == ScrollbarHitArea::Track {
-            if let Some(request) = Self::scrollbar_drag_request(
+        if hit.area == ScrollbarHitArea::Track
+            && let Some(request) = Self::scrollbar_drag_request(
                 &hit.id,
                 hit.axis,
                 hit.node.scroll_offset,
                 target_scroll,
             )
-            {
-                return vec![request];
-            }
+        {
+            return vec![request];
         }
 
         Vec::new()
