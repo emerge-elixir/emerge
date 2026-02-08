@@ -34,7 +34,7 @@ Patches are encoded into a compact binary stream:
 - Ids are stored as `term_to_binary` with a length prefix.
 - `insert_subtree` embeds a full subtree serialization.
 - Runtime-only attributes (e.g., `scroll_x`, `scroll_y`) are stripped from `:set_attrs`.
-- Attribute values use the typed encodings described in `EMRG_FORMAT.md`.
+- Attribute values use the typed v2 attribute block encodings described in `EMRG_FORMAT.md`.
 
 ## Full Tree Serialization
 `Emerge.Serialization.encode_tree/1` produces:
@@ -42,7 +42,7 @@ Patches are encoded into a compact binary stream:
 - Per node:
   - id (length + term binary)
   - type tag
-  - attrs (length + term binary)
+  - attrs (length + typed attribute block)
   - child ids (count + length-prefixed term binaries)
 
 Decoding rebuilds the tree by id references.

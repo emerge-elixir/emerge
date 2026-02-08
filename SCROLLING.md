@@ -1,53 +1,63 @@
-# Scrolling Plan
+# Scrolling Behavior
 
-This document captures the scrolling implementation plan and how it integrates
-with the unified event registry.
+This document describes the current scrolling behavior and runtime flow.
 
-## Goals
+## Overview
 
-- Keep scrolling state and render loop on the Rust side.
-- Use the shared event registry for scroll hit testing.
-- Keep Elixir informed later via events (not in MVP).
+- Scroll state is owned in Rust.
+- Scroll hit testing uses the same event registry used for click/hover.
+- Elixir does not receive per-element scroll updates by default.
 
-## Event Registry (Unified)
+## Scroll Input Sources
+
+- Wheel input (`CursorScroll`) produces per-axis scroll requests.
+- Content drag (`CursorPos` during active press) produces scroll requests after
+  a drag deadzone.
+- Drag follows finger-like direction (pointer movement and content movement are
+  aligned by request sign handling).
+
+## Unified Registry Usage
+
+The same registry powers click, hover, and scroll:
+
+- Nodes are traversed in reverse for topmost-hit behavior.
+- Scroll hit tests use directional flags (`can scroll +/- on each axis`).
+- Flag filtering runs before geometric checks.
+
+## Runtime Flow
 
 ```
-EventNode {
-  id: ElementId,
-  hit_rect: Rect,        // frame bounds (padding included)
-  flags: EventFlags,
-}
+CursorScroll / drag CursorPos
+  -> EventProcessor::scroll_requests
+  -> TreeMsg::ScrollRequest {id, dx, dy}
+  -> tree.apply_scroll(id, dx, dy)
+  -> layout_and_refresh_default(tree, constraint, scale)
+  -> EventMsg::RegistryUpdate
+  -> redraw
 ```
 
-- Nodes are stored in render traversal order.
-- Hit testing scans from the end for topmost hits.
-- We filter by event flag **before** hit testing so non-listeners do not block.
+This keeps render output and hit bounds synchronized after every scroll change.
 
-## Scroll Flow
+## Runtime State and Clamping
 
-```
-CursorScroll -> hit_test_with_flag(SCROLL) -> update scroll_x/y
-             -> render_tree -> request redraw
-```
+- Offsets: `scroll_x`, `scroll_y`
+- Maxima: `scroll_x_max`, `scroll_y_max` (computed from `content - viewport`)
+- Clamping: offsets are always clamped to `[0, max]`
 
-## Runtime State
+Layout rules:
 
-- `scroll_x` / `scroll_y` live in Rust runtime attrs.
-- Layout computes `scroll_x_max` / `scroll_y_max` from content size.
-- Scroll values are clamped to max values.
+- If max shrinks, offset clamps toward start.
+- If max grows and previous offset was at end, end anchoring is preserved.
+- If scrollbar axis is disabled, scroll offset and max for that axis are cleared.
 
 ## Rendering
 
-- Background/border are static.
-- Children render inside a translate of `(-scroll_x, -scroll_y)`.
-- Content is clipped to the padding-aware content rect.
+- Child content renders under `Translate(-scroll_x, -scroll_y)` when scrollable.
+- Clip rects are padding-aware.
+- Scrollbar thumbs render from viewport/content ratio and current offset.
+- Thumb hit testing and thumb drag are not implemented yet.
 
-## Click + Scroll Registry Use
+## Current Limits and Next Steps
 
-- `CLICK` and `SCROLL` flags share the same registry.
-- Click hit tests use `CLICK`; scroll hit tests use `SCROLL`.
-
-## Future Extensions
-
-- Scroll offset-aware hit bounds for child elements.
-- Optional scroll events back to Elixir for informational updates.
+- No built-in scroll telemetry events back to Elixir.
+- No scrollbar thumb interactions yet (track/thumb hit testing + drag).

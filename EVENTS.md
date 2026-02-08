@@ -1,113 +1,107 @@
 # Events System
 
-This document describes the retained-mode event architecture for EmergeSkia.
-The goal is to route input events to the correct element using `element_id`,
-while keeping payload mapping on the Elixir side.
+This document describes the current retained-mode event architecture for
+EmergeSkia.
 
 ## Overview
 
-- Rust owns hit testing and click tracking.
-- Elixir owns event payload mapping (`{pid, msg}`) keyed by `element_id`.
-- EMRG encodes event flags (presence only), not payloads.
+- Rust owns hit testing, pointer state, hover state, click detection, and scroll
+  request generation.
+- Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
+- EMRG encodes event attributes as presence flags only (no payloads).
 
-## Event Flow
-
-The renderer already holds the layout tree. On each tree upload/patch, Rust
-builds a registry of clickable elements with their hit bounds. Input events are
-then routed using this registry.
-
-Sequence (simplified):
+## End-to-End Event Flow
 
 ```
-Wayland/Winit -> Rust InputHandler -> EventRegistry hit test
-                                   -> {:emerge_skia_event, {element_id, :click}}
-                                   -> Elixir receives -> lookup element_id
-                                   -> send {pid, msg}
+Backend input (Wayland/DRM)
+  -> InputEvent
+  -> Event actor
+       -> sends raw input event to target pid
+       -> EventProcessor uses registry for hit testing
+            -> emits element event {:emerge_skia_event, {element_id_bin, event_atom}}
+  -> Elixir looks up element_id_bin + event_atom
+  -> Elixir dispatches stored {pid, msg}
 ```
 
-## Click Tracking
+Notes:
 
-`on_click` is generated on press+release inside the same element.
-The hit area is the element frame (padding included).
+- Raw input events and element events are both delivered as
+  `{:emerge_skia_event, ...}`.
+- `element_id_bin` is the `term_to_binary` payload for the element id.
 
-Sequence:
+## Event Registry
 
-```
-CursorDown -> hit test -> pressed_id = element_id
-CursorUp   -> hit test -> if element_id == pressed_id -> emit :click
-```
+After each tree upload, patch, or scroll-driven update, Rust rebuilds the event
+registry from the current tree.
 
-## Rust Responsibilities
+Each node stores:
 
-- Build an event registry after layout:
-  - `EventNode { element_id, hit_rect, flags }`
-- Hit test pointer events against `hit_rect`.
-- Track `pressed_id` for click detection and `hovered_id` for hover state.
-- Emit events to the input target process as:
-  `{:emerge_skia_event, {element_id, :click}}` or
-  `{:emerge_skia_event, {element_id, :mouse_down}}`.
+- target id
+- hit rectangle
+- event flags
+- self rounded-corner data
+- active clip rectangle and clip rounded-corner data
+
+Registry order follows render traversal order. Hit testing scans in reverse, so
+topmost elements win.
+
+## Hit Testing Behavior
+
+Current hit testing is:
+
+- clip-aware (including inherited clip intersections)
+- padding-aware for clip regions
+- rounded-corner-aware (self and active clip)
+- scroll-offset-aware for descendants of scrollable containers
+
+Flag filtering happens before geometric checks, so non-listener nodes do not
+block listeners behind them.
+
+## Click, Hover, and Button Behavior
+
+- `on_click` is emitted on left-button press+release on the same element.
+- `on_mouse_down` and `on_mouse_up` are emitted for left button only.
+- Hover state tracks topmost hit and emits `:mouse_enter`, `:mouse_leave`, and
+  `:mouse_move` based on listener flags.
+- A drag deadzone suppresses click when pointer movement exceeds the threshold
+  during a press.
+
+## Scroll-Related Event Behavior
+
+- Wheel and drag scrolling both use the same registry.
+- Directional scroll flags are computed from current offset vs max offset.
+- EventProcessor converts pointer movement/wheel deltas into scroll requests to
+  the tree actor.
+- After scroll changes, layout/render output and event registry are refreshed to
+  keep hit testing aligned with visible content.
 
 ## Elixir Responsibilities
 
-- Track `{element_id => %{event => {pid, msg}}}` for event attributes.
-- Encode event attributes as presence flags in EMRG.
-- When Rust emits an event, look up `element_id` and dispatch the stored message.
+- Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff state.
+- Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`).
+- On Rust element events, resolve and forward stored payloads.
 
-## MVP Scope
+## Supported Element Events
 
-- `on_click`, `on_mouse_down`, `on_mouse_up`, `on_mouse_enter`, `on_mouse_leave`, `on_mouse_move`.
-- Mouse down/up fire only for the left button.
-- No meta, no payloads in Rust.
-- No bubbling/propagation.
-- No double-click support.
+- `:click`
+- `:mouse_down`
+- `:mouse_up`
+- `:mouse_enter`
+- `:mouse_leave`
+- `:mouse_move`
 
-## Future Extensions
+## Current Limits
 
-- Optional pointer metadata in element events.
-- Optional meta payloads for pointer position and modifiers.
+- No bubbling/capture propagation.
+- No double-click semantics.
+- Element events do not include pointer metadata payloads.
+- Right/middle buttons are not mapped to element-level down/up events.
+- Scrollbar thumb hit testing and thumb drag are not implemented yet (content
+  drag and wheel scrolling are implemented).
 
-## Future-Proofing Plan
+## Possible Extensions
 
-1) Clip-aware hit testing
-- Maintain a clip stack while building the event registry.
-- Intersect clickable frames with active clip rects (padding-aware clip, rounded border clip).
-- Prevents clicks on visually clipped content.
-
-2) Scroll offset awareness
-- When content scrolling is implemented, offset child hit bounds by scroll_x/y.
-- Consider inheriting scroll offsets from ancestor scrollable containers.
-
-3) Optional pointer metadata
-- Extend event payloads to include `{x, y, button, mods}`.
-- Keep backward compatibility by allowing `{id, :click}` or `{id, {:click, meta}}`.
-
-4) Multiple input targets (optional)
-- Continue using a single target by default.
-- Add support for subtree-specific targets if needed.
-
-5) Hover and move events
-- Track `hovered_id` in Rust and emit enter/leave/move for the topmost hit.
-
-6) Multi-touch and gestures
-- Add pointer IDs to track multiple touches.
-- Leave gesture recognition in Elixir unless performance needs Rust.
-
-7) Registry invalidation (Implemented)
-
-The event registry must be rebuilt whenever scroll positions change, not just on layout changes.
-This is handled by `layout::refresh()` which produces both render commands AND event registry:
-
-```rust
-// After scroll changes in events.rs
-let output = refresh(&tree_guard);
-state.commands = output.commands;
-processor.rebuild_registry(output.event_registry);
-```
-
-Without rebuilding the registry, click positions would mismatch element locations after scrolling.
-
-## Conclusions
-
-- The MVP is fast and deterministic: Rust handles hit testing; Elixir handles payloads.
-- Tradeoffs today: no clipping/scroll offset awareness, no metadata, no bubbling.
-- Primary risk: scrollable content will need scroll-offset hit testing to stay accurate.
+- Optional metadata payloads for element events (position/modifiers/button).
+- Optional bubbling/capture model.
+- Optional multiple input targets.
+- Multi-touch pointer ids and gesture hooks.
