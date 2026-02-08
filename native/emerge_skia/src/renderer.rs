@@ -300,13 +300,13 @@ pub fn make_font_with_style(
 
         if RENDER_LOG_ENABLED.load(Ordering::Relaxed) {
             let key = FontKey::new(family, weight, italic);
-            if let Ok(mut cache) = get_synthetic_log_cache().lock() {
-                if cache.insert(key) {
-                    eprintln!(
-                        "synthetic font style applied family={} weight={} italic={}",
-                        family, weight, italic
-                    );
-                }
+            if let Ok(mut cache) = get_synthetic_log_cache().lock()
+                && cache.insert(key)
+            {
+                eprintln!(
+                    "synthetic font style applied family={} weight={} italic={}",
+                    family, weight, italic
+                );
             }
         }
     }

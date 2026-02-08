@@ -5,7 +5,7 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, Padding, TextAlign};
+use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, Padding, TextAlign, preserve_runtime_scroll_attrs};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
@@ -276,35 +276,7 @@ fn apply_scale_to_tree(tree: &mut ElementTree, scale: f32) {
     for element in tree.nodes.values_mut() {
         let previous = element.attrs.clone();
         element.attrs = scale_attrs(&element.base_attrs, scale);
-        preserve_runtime_attrs(&previous, &mut element.attrs);
-    }
-}
-
-fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
-    if incoming.scroll_x.is_none() {
-        incoming.scroll_x = existing.scroll_x;
-    }
-    if incoming.scroll_y.is_none() {
-        incoming.scroll_y = existing.scroll_y;
-    }
-    if incoming.scroll_x_max.is_none() {
-        incoming.scroll_x_max = existing.scroll_x_max;
-    }
-    if incoming.scroll_y_max.is_none() {
-        incoming.scroll_y_max = existing.scroll_y_max;
-    }
-    if incoming.scrollbar_hover_axis.is_none() {
-        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
-    }
-    if !incoming.scrollbar_x.unwrap_or(false)
-        && incoming.scrollbar_hover_axis == Some(super::attrs::ScrollbarHoverAxis::X)
-    {
-        incoming.scrollbar_hover_axis = None;
-    }
-    if !incoming.scrollbar_y.unwrap_or(false)
-        && incoming.scrollbar_hover_axis == Some(super::attrs::ScrollbarHoverAxis::Y)
-    {
-        incoming.scrollbar_hover_axis = None;
+        preserve_runtime_scroll_attrs(&previous, &mut element.attrs);
     }
 }
 
@@ -778,8 +750,9 @@ fn resolve_element(
             element.attrs.scroll_y_max = None;
         }
 
-        if (scroll_x_enabled || scroll_y_enabled) && element.frame.is_some() {
-            let frame = element.frame.unwrap();
+        if (scroll_x_enabled || scroll_y_enabled)
+            && let Some(frame) = element.frame
+        {
             let max_x = (frame.content_width - frame.width).max(0.0);
             let max_y = (frame.content_height - frame.height).max(0.0);
             let prev_max_x = element.attrs.scroll_x_max.map(|v| v as f32).unwrap_or(max_x);
