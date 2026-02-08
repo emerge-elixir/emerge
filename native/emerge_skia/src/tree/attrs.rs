@@ -105,6 +105,13 @@ pub struct FontWeight(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontStyle(pub String);
 
+/// Runtime hover axis for scrollbar thumb styling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollbarHoverAxis {
+    X,
+    Y,
+}
+
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
 pub struct Attrs {
@@ -118,6 +125,7 @@ pub struct Attrs {
     pub align_y: Option<AlignY>,
     pub scrollbar_y: Option<bool>,
     pub scrollbar_x: Option<bool>,
+    pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
     pub scroll_x: Option<f64>,
     pub scroll_y: Option<f64>,
     pub scroll_x_max: Option<f64>,

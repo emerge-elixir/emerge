@@ -1,7 +1,7 @@
 //! Element types for Emerge UI trees.
 
 use std::collections::HashMap;
-use super::attrs::Attrs;
+use super::attrs::{Attrs, ScrollbarHoverAxis};
 
 /// Unique identifier for an element, derived from Erlang term.
 /// Stored as the raw bytes of the serialized Erlang term for exact matching.
@@ -148,6 +148,18 @@ impl ElementTree {
 
     /// Apply scroll delta to an element. Returns true if scroll changed.
     pub fn apply_scroll(&mut self, id: &ElementId, dx: f32, dy: f32) -> bool {
+        let mut changed = false;
+        if dx != 0.0 {
+            changed |= self.apply_scroll_x(id, dx);
+        }
+        if dy != 0.0 {
+            changed |= self.apply_scroll_y(id, dy);
+        }
+        changed
+    }
+
+    /// Apply horizontal scroll delta to an element. Returns true if scroll changed.
+    pub fn apply_scroll_x(&mut self, id: &ElementId, dx: f32) -> bool {
         let Some(element) = self.get_mut(id) else {
             return false;
         };
@@ -155,23 +167,83 @@ impl ElementTree {
             return false;
         };
 
-        // Clamp to bounds
         let max_x = (frame.content_width - frame.width).max(0.0);
-        let max_y = (frame.content_height - frame.height).max(0.0);
         let current_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
-        let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
         let next_x = (current_x - dx).clamp(0.0, max_x);
-        let next_y = (current_y - dy).clamp(0.0, max_y);
 
-        if (next_x - current_x).abs() < f32::EPSILON
-            && (next_y - current_y).abs() < f32::EPSILON
-        {
+        if (next_x - current_x).abs() < f32::EPSILON {
             return false;
         }
 
         element.attrs.scroll_x = Some(next_x as f64);
+        true
+    }
+
+    /// Apply vertical scroll delta to an element. Returns true if scroll changed.
+    pub fn apply_scroll_y(&mut self, id: &ElementId, dy: f32) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+        let Some(frame) = element.frame else {
+            return false;
+        };
+
+        let max_y = (frame.content_height - frame.height).max(0.0);
+        let current_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+        let next_y = (current_y - dy).clamp(0.0, max_y);
+
+        if (next_y - current_y).abs() < f32::EPSILON {
+            return false;
+        }
+
         element.attrs.scroll_y = Some(next_y as f64);
         true
+    }
+
+    /// Set horizontal scrollbar thumb hover state. Returns true when state changes.
+    pub fn set_scrollbar_x_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+
+        let current = element.attrs.scrollbar_hover_axis;
+        if hovered {
+            if !element.attrs.scrollbar_x.unwrap_or(false) || current == Some(ScrollbarHoverAxis::X) {
+                return false;
+            }
+            element.attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
+            return true;
+        }
+
+        if current == Some(ScrollbarHoverAxis::X) {
+            element.attrs.scrollbar_hover_axis = None;
+            return true;
+        }
+
+        false
+    }
+
+    /// Set vertical scrollbar thumb hover state. Returns true when state changes.
+    pub fn set_scrollbar_y_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+
+        let current = element.attrs.scrollbar_hover_axis;
+        if hovered {
+            if !element.attrs.scrollbar_y.unwrap_or(false) || current == Some(ScrollbarHoverAxis::Y) {
+                return false;
+            }
+            element.attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+            return true;
+        }
+
+        if current == Some(ScrollbarHoverAxis::Y) {
+            element.attrs.scrollbar_hover_axis = None;
+            return true;
+        }
+
+        false
     }
 }
 
@@ -188,5 +260,72 @@ mod tests {
         assert_eq!(ElementKind::from_tag(5), Some(ElementKind::Text));
         assert_eq!(ElementKind::from_tag(6), Some(ElementKind::None));
         assert_eq!(ElementKind::from_tag(7), None);
+    }
+
+    #[test]
+    fn test_scrollbar_hover_axis_is_tri_state() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scrollbar_y = Some(true);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 200.0,
+            content_height: 200.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.set_scrollbar_x_hover(&id, true));
+        assert_eq!(
+            tree.get(&id).unwrap().attrs.scrollbar_hover_axis,
+            Some(ScrollbarHoverAxis::X)
+        );
+
+        assert!(tree.set_scrollbar_y_hover(&id, true));
+        assert_eq!(
+            tree.get(&id).unwrap().attrs.scrollbar_hover_axis,
+            Some(ScrollbarHoverAxis::Y)
+        );
+
+        assert!(!tree.set_scrollbar_x_hover(&id, false));
+        assert!(tree.set_scrollbar_y_hover(&id, false));
+        assert_eq!(tree.get(&id).unwrap().attrs.scrollbar_hover_axis, None);
+    }
+
+    #[test]
+    fn test_apply_scroll_axis_helpers() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scrollbar_y = Some(true);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 200.0,
+            content_height: 200.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.apply_scroll_x(&id, -30.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(30.0));
+
+        assert!(tree.apply_scroll_y(&id, -25.0));
+        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(25.0));
+
+        assert!(!tree.apply_scroll_x(&id, 0.0));
+        assert!(!tree.apply_scroll_y(&id, 0.0));
     }
 }

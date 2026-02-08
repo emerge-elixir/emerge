@@ -32,7 +32,7 @@ use backend::drm;
 use drm_input::DrmInput;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use events::EventProcessor;
+use events::{EventProcessor, ScrollbarHoverRequest, ScrollbarThumbDragRequest};
 use tree::layout::layout_and_refresh_default;
 use input::{InputEvent, InputHandler};
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
@@ -193,6 +193,10 @@ fn spawn_tree_actor(
             }
 
             let mut scroll_acc = std::collections::HashMap::new();
+            let mut thumb_drag_x_acc = std::collections::HashMap::new();
+            let mut thumb_drag_y_acc = std::collections::HashMap::new();
+            let mut hover_x_state = std::collections::HashMap::new();
+            let mut hover_y_state = std::collections::HashMap::new();
             let mut changed = false;
 
             for message in messages {
@@ -241,13 +245,42 @@ fn spawn_tree_actor(
                         let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
                         entry.0 += dx;
                         entry.1 += dy;
-                        changed = true;
+                    }
+                    TreeMsg::ScrollbarThumbDragX { element_id, dx } => {
+                        let entry = thumb_drag_x_acc.entry(element_id).or_insert(0.0);
+                        *entry += dx;
+                    }
+                    TreeMsg::ScrollbarThumbDragY { element_id, dy } => {
+                        let entry = thumb_drag_y_acc.entry(element_id).or_insert(0.0);
+                        *entry += dy;
+                    }
+                    TreeMsg::SetScrollbarXHover { element_id, hovered } => {
+                        hover_x_state.insert(element_id, hovered);
+                    }
+                    TreeMsg::SetScrollbarYHover { element_id, hovered } => {
+                        hover_y_state.insert(element_id, hovered);
                     }
                 }
             }
 
             for (id, (dx, dy)) in scroll_acc {
                 changed |= tree.apply_scroll(&id, dx, dy);
+            }
+
+            for (id, dx) in thumb_drag_x_acc {
+                changed |= tree.apply_scroll_x(&id, dx);
+            }
+
+            for (id, dy) in thumb_drag_y_acc {
+                changed |= tree.apply_scroll_y(&id, dy);
+            }
+
+            for (id, hovered) in hover_x_state {
+                changed |= tree.set_scrollbar_x_hover(&id, hovered);
+            }
+
+            for (id, hovered) in hover_y_state {
+                changed |= tree.set_scrollbar_y_hover(&id, hovered);
             }
 
             if !changed {
@@ -346,6 +379,25 @@ fn process_input_events(
             processor.handle_hover_event(&event);
         }
 
+        for request in processor.scrollbar_thumb_drag_requests(&event) {
+            match request {
+                ScrollbarThumbDragRequest::X { element_id, dx } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::ScrollbarThumbDragX { element_id, dx },
+                        log_render,
+                    );
+                }
+                ScrollbarThumbDragRequest::Y { element_id, dy } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::ScrollbarThumbDragY { element_id, dy },
+                        log_render,
+                    );
+                }
+            }
+        }
+
         for (id, dx, dy) in processor.scroll_requests(&event) {
             send_tree(
                 tree_tx,
@@ -356,6 +408,25 @@ fn process_input_events(
                 },
                 log_render,
             );
+        }
+
+        for request in processor.scrollbar_hover_requests(&event) {
+            match request {
+                ScrollbarHoverRequest::X { element_id, hovered } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::SetScrollbarXHover { element_id, hovered },
+                        log_render,
+                    );
+                }
+                ScrollbarHoverRequest::Y { element_id, hovered } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::SetScrollbarYHover { element_id, hovered },
+                        log_render,
+                    );
+                }
+            }
         }
     }
 }

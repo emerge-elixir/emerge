@@ -293,6 +293,19 @@ fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
     if incoming.scroll_y_max.is_none() {
         incoming.scroll_y_max = existing.scroll_y_max;
     }
+    if incoming.scrollbar_hover_axis.is_none() {
+        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
+    }
+    if !incoming.scrollbar_x.unwrap_or(false)
+        && incoming.scrollbar_hover_axis == Some(super::attrs::ScrollbarHoverAxis::X)
+    {
+        incoming.scrollbar_hover_axis = None;
+    }
+    if !incoming.scrollbar_y.unwrap_or(false)
+        && incoming.scrollbar_hover_axis == Some(super::attrs::ScrollbarHoverAxis::Y)
+    {
+        incoming.scrollbar_hover_axis = None;
+    }
 }
 
 /// Scale all pixel-based attributes in an Attrs struct.
@@ -309,6 +322,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         align_y: attrs.align_y,
         scrollbar_y: attrs.scrollbar_y,
         scrollbar_x: attrs.scrollbar_x,
+        scrollbar_hover_axis: attrs.scrollbar_hover_axis,
         scroll_x: attrs.scroll_x.map(|v| v * scale_f64),
         scroll_y: attrs.scroll_y.map(|v| v * scale_f64),
         scroll_x_max: attrs.scroll_x_max.map(|v| v * scale_f64),

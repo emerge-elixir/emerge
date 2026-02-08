@@ -268,6 +268,19 @@ fn preserve_runtime_attrs(existing: &Attrs, incoming: &mut Attrs) {
     if incoming.scroll_y_max.is_none() {
         incoming.scroll_y_max = existing.scroll_y_max;
     }
+    if incoming.scrollbar_hover_axis.is_none() {
+        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
+    }
+    if !incoming.scrollbar_x.unwrap_or(false)
+        && incoming.scrollbar_hover_axis == Some(crate::tree::attrs::ScrollbarHoverAxis::X)
+    {
+        incoming.scrollbar_hover_axis = None;
+    }
+    if !incoming.scrollbar_y.unwrap_or(false)
+        && incoming.scrollbar_hover_axis == Some(crate::tree::attrs::ScrollbarHoverAxis::Y)
+    {
+        incoming.scrollbar_hover_axis = None;
+    }
 }
 
 /// Recursively remove a node and all its descendants.
@@ -333,6 +346,8 @@ mod tests {
         attrs.scroll_y = Some(34.0);
         attrs.scroll_x_max = Some(50.0);
         attrs.scroll_y_max = Some(60.0);
+        attrs.scrollbar_y = Some(true);
+        attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
 
         let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
@@ -351,5 +366,9 @@ mod tests {
         assert_eq!(updated.attrs.scroll_y, Some(34.0));
         assert_eq!(updated.attrs.scroll_x_max, Some(50.0));
         assert_eq!(updated.attrs.scroll_y_max, Some(60.0));
+        assert_eq!(
+            updated.attrs.scrollbar_hover_axis,
+            Some(crate::tree::attrs::ScrollbarHoverAxis::Y)
+        );
     }
 }
