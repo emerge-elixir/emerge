@@ -13,6 +13,8 @@ This document describes the current scrolling behavior and runtime flow.
 - Wheel input (`CursorScroll`) produces per-axis scroll requests.
 - Content drag (`CursorPos` during active press) produces scroll requests after
   a drag deadzone.
+- Scrollbar track and thumb pointer input produce axis-specific thumb-drag
+  requests (`ScrollbarThumbDragX/Y`) with snap-to-cursor track behavior.
 - Drag follows finger-like direction (pointer movement and content movement are
   aligned by request sign handling).
 
@@ -31,6 +33,14 @@ CursorScroll / drag CursorPos
   -> EventProcessor::scroll_requests
   -> TreeMsg::ScrollRequest {id, dx, dy}
   -> tree.apply_scroll(id, dx, dy)
+  -> layout_and_refresh_default(tree, constraint, scale)
+  -> EventMsg::RegistryUpdate
+  -> redraw
+
+Scrollbar thumb/track input
+  -> EventProcessor::scrollbar_thumb_drag_requests
+  -> TreeMsg::ScrollbarThumbDragX/Y
+  -> tree.apply_scroll_x/y
   -> layout_and_refresh_default(tree, constraint, scale)
   -> EventMsg::RegistryUpdate
   -> redraw
@@ -55,9 +65,10 @@ Layout rules:
 - Child content renders under `Translate(-scroll_x, -scroll_y)` when scrollable.
 - Clip rects are padding-aware.
 - Scrollbar thumbs render from viewport/content ratio and current offset.
-- Thumb hit testing and thumb drag are not implemented yet.
+- Thumb hover state is axis-specific (`none | x | y`) and widens thumb thickness
+  for hovered axis.
 
 ## Current Limits and Next Steps
 
 - No built-in scroll telemetry events back to Elixir.
-- No scrollbar thumb interactions yet (track/thumb hit testing + drag).
+- No dedicated active/pressed thumb styling beyond hover state.

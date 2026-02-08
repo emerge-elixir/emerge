@@ -10,6 +10,7 @@ Multi-backend Skia renderer with:
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
 - EventProcessor thread for hit testing, click/scroll dispatch, and redraws
+- Scrollbar track/thumb hit testing, drag snapping, and axis-specific hover state
 - Drag-scroll support with deadzone and finger-like direction
 - Scroll state preserved across layout/patch with resize-aware clamping
 - Clip- and rounded-corner-aware hit testing
@@ -32,7 +33,8 @@ lib.rs (NIF entry, resources, registration)
     │   └── raster.rs (offscreen CPU surface)
     │
     ├── input.rs (InputEvent + mask filter + encoder)
-    ├── events.rs (EventProcessor, event registry, hit-test, scroll/click dispatch)
+    ├── events.rs (EventProcessor, event registry, hit-test, event/scroll dispatch)
+    │   └── events/scrollbar.rs (scrollbar interaction state machine + hit helpers)
     │
     └── tree/
         ├── mod.rs (public exports)
@@ -42,6 +44,7 @@ lib.rs (NIF entry, resources, registration)
         ├── patch.rs (incremental tree updates)
         ├── layout.rs (three-pass: scale → measure → resolve)
         ├── render.rs (ElementTree → Vec<DrawCmd>, reads pre-scaled attrs)
+        ├── scrollbar.rs (scrollbar geometry/metrics shared by render + events)
         └── serialize.rs (ElementTree → EMRG binary)
 ```
 
@@ -396,16 +399,19 @@ Remaining:
 1. Text decoration (`underline`, `strike`)
 2. Letter/word spacing controls
 
-### Phase 11 - Scrollbars (Partial)
+### Phase 11 - Scrollbars ✓
 
 Completed:
-- Thumb rendering and position/size from scroll state
-- Wheel + drag-scroll input (content drag; no scrollbar thumb drag yet)
 
-Remaining:
-1. Scrollbar track/thumb hit testing
-2. Thumb drag behavior + snapping
-3. Visual hover/active feedback (optional)
+1. Thumb rendering and position/size from scroll state
+2. Wheel + content drag-scroll input with deadzone
+3. Scrollbar track/thumb hit testing
+4. Thumb drag behavior with snap-to-cursor track press
+5. Axis-specific scrollbar hover state (`none | x | y`) with hover width styling
+
+Optional follow-ups:
+
+1. Distinct pressed/active thumb visual treatment
 
 ### Phase 12 - Advanced Features
 
@@ -495,6 +501,8 @@ Implemented. Event processing now runs in `events.rs` via `EventProcessor`:
 - Click detection on press/release with `{:emerge_skia_event, {element_id, :click}}`
 - Scroll handling via directional flags (per-axis can-scroll)
 - Drag-scroll with deadzone and finger-like direction
+- Scrollbar module extraction (`events/scrollbar.rs`) for typed scrollbar hit/drag state
+- Track/thumb hit testing + thumb drag with snap-to-cursor behavior
 - Input loop enqueues raw events; processor handles dispatch + redraw
 
 #### 5. Content Size Tracking ✓
