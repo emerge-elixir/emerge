@@ -5,8 +5,8 @@ EmergeSkia.
 
 ## Overview
 
-- Rust owns hit testing, pointer state, hover state, click detection, and scroll
-  request generation.
+- Rust owns hit testing, pointer state, hover state, click detection, scroll
+  request generation, and `mouse_over` style activation.
 - Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
 - EMRG encodes event attributes as presence flags only (no payloads).
 - Scrollbar-specific hit testing and interaction state live in
@@ -69,6 +69,18 @@ block listeners behind them.
 - A drag deadzone suppresses click when pointer movement exceeds the threshold
   during a press.
 
+## mouse_over Styling Behavior
+
+- `mouse_over` is a style attribute, not an emitted element event.
+- EventProcessor hit tests for the topmost node with `mouse_over` and sends
+  tree requests as the active element changes.
+- Tree updates use `TreeMsg::SetMouseOverActive { element_id, active }`.
+- Layout applies `mouse_over` decorative attrs when runtime
+  `mouse_over_active` is true.
+- Supported decorative attrs in `mouse_over` are: `background`,
+  `border_color`, `font_color`, `font_size`, `move_x`, `move_y`, `rotate`,
+  `scale`, and `alpha`.
+
 ## Scroll-Related Event Behavior
 
 - Wheel and drag scrolling both use the same registry.
@@ -85,6 +97,7 @@ block listeners behind them.
 
 - Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff state.
 - Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`).
+- Encode `mouse_over` as a typed decorative attr block (no payload routing).
 - On Rust element events, resolve and forward stored payloads.
 
 ## Supported Element Events
@@ -95,6 +108,9 @@ block listeners behind them.
 - `:mouse_enter`
 - `:mouse_leave`
 - `:mouse_move`
+
+`mouse_over` does not emit an element event; it is applied as runtime styling in
+Rust.
 
 ## Current Limits
 

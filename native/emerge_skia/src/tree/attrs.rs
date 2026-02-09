@@ -112,6 +112,20 @@ pub enum ScrollbarHoverAxis {
     Y,
 }
 
+/// Decorative attributes to apply while mouse is over an element.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MouseOverAttrs {
+    pub background: Option<Background>,
+    pub border_color: Option<Color>,
+    pub font_color: Option<Color>,
+    pub font_size: Option<f64>,
+    pub move_x: Option<f64>,
+    pub move_y: Option<f64>,
+    pub rotate: Option<f64>,
+    pub scale: Option<f64>,
+    pub alpha: Option<f64>,
+}
+
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
 pub struct Attrs {
@@ -136,6 +150,8 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
+    pub mouse_over: Option<MouseOverAttrs>,
+    pub mouse_over_active: Option<bool>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
@@ -182,6 +198,13 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
     }
     if incoming.scrollbar_hover_axis.is_none() {
         incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
+    }
+    if incoming.mouse_over_active.is_none() {
+        incoming.mouse_over_active = existing.mouse_over_active;
+    }
+
+    if incoming.mouse_over.is_none() {
+        incoming.mouse_over_active = None;
     }
 
     normalize_scrollbar_hover_axis(incoming);
@@ -247,6 +270,7 @@ const TAG_ON_MOUSE_UP: u8 = 42;
 const TAG_ON_MOUSE_ENTER: u8 = 43;
 const TAG_ON_MOUSE_LEAVE: u8 = 44;
 const TAG_ON_MOUSE_MOVE: u8 = 45;
+const TAG_MOUSE_OVER: u8 = 46;
 
 // =============================================================================
 // Decoder
@@ -385,6 +409,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_ENTER => attrs.on_mouse_enter = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
+        TAG_MOUSE_OVER => attrs.mouse_over = Some(decode_mouse_over_attrs(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -393,6 +418,48 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         }
     }
     Ok(())
+}
+
+fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, DecodeError> {
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+    let mut out = MouseOverAttrs::default();
+
+    if nested.remaining() == 0 {
+        return Ok(out);
+    }
+
+    let attr_count = nested.read_u16_be()? as usize;
+
+    for _ in 0..attr_count {
+        let tag = nested.read_u8()?;
+        match tag {
+            TAG_BACKGROUND => out.background = Some(decode_background(&mut nested)?),
+            TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
+            TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
+            TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
+            TAG_MOVE_X => out.move_x = Some(nested.read_f64()?),
+            TAG_MOVE_Y => out.move_y = Some(nested.read_f64()?),
+            TAG_ROTATE => out.rotate = Some(nested.read_f64()?),
+            TAG_SCALE => out.scale = Some(nested.read_f64()?),
+            TAG_ALPHA => out.alpha = Some(nested.read_f64()?),
+            _ => {
+                return Err(DecodeError::InvalidStructure(format!(
+                    "mouse_over supports decorative attrs only, got tag: {}",
+                    tag
+                )));
+            }
+        }
+    }
+
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(format!(
+            "mouse_over has {} trailing bytes",
+            nested.remaining()
+        )));
+    }
+
+    Ok(out)
 }
 
 fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
@@ -775,6 +842,35 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_mouse_over_attrs() {
+        // nested: attr_count=2, font_color=rgb(1,2,3), alpha=0.5
+        let nested = vec![0, 2, 17, 0, 1, 2, 3, 35, 0x3F, 0xE0, 0, 0, 0, 0, 0, 0];
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let mouse_over = attrs.mouse_over.unwrap();
+        assert_eq!(mouse_over.alpha, Some(0.5));
+        assert_eq!(mouse_over.font_color, Some(Color::Rgb { r: 1, g: 2, b: 3 }));
+    }
+
+    #[test]
+    fn test_decode_mouse_over_rejects_non_decorative_tag() {
+        // nested: attr_count=1, width=fill (tag 1) -> invalid in mouse_over
+        let nested = vec![0, 1, 1, 0];
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let err = decode_attrs(&data).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("mouse_over supports decorative attrs only")
+        );
+    }
+
+    #[test]
     fn test_preserve_runtime_scroll_attrs_copies_missing_values() {
         let mut existing = Attrs::default();
         existing.scroll_x = Some(11.0);
@@ -869,5 +965,38 @@ mod tests {
         );
 
         assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_mouse_over_active() {
+        let mut existing = Attrs::default();
+        existing.mouse_over = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_over_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        incoming.mouse_over = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_over_active, Some(true));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_mouse_over_active_without_mouse_over() {
+        let mut existing = Attrs::default();
+        existing.mouse_over = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_over_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_over_active, None);
     }
 }

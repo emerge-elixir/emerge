@@ -107,6 +107,7 @@ on_mouse_up       -> 42
 on_mouse_enter    -> 43
 on_mouse_leave    -> 44
 on_mouse_move     -> 45
+mouse_over        -> 46
 ```
 
 ## Attribute Value Encodings (current)
@@ -193,6 +194,24 @@ u16 len + bytes
 u32 len + EMRG subtree bytes
 ```
 
+### Mouse Over (`mouse_over`)
+```
+u32 len + nested typed attr block
+```
+
+The nested block uses the same format as an attribute block (`attr_count` +
+`attr_records`) but only allows decorative attrs:
+
+- `background`
+- `border_color`
+- `font_color`
+- `font_size`
+- `move_x`
+- `move_y`
+- `rotate`
+- `scale`
+- `alpha`
+
 ### Numeric attrs (`spacing`, `move_x`, `move_y`, `rotate`, `scale`, `alpha`, `scroll_x`, `scroll_y`)
 ```
 f64
@@ -214,6 +233,9 @@ f64 x + f64 y
 For event attributes (`on_click`, `on_mouse_*`), Elixir encodes presence as
 `true`.
 
+`mouse_over` is not a presence flag; it stores the nested decorative attr block
+defined above.
+
 ## Decoding
 - All nodes are read into a map keyed by id.
 - The first node in the stream is the root.
@@ -230,7 +252,8 @@ For event attributes (`on_click`, `on_mouse_*`), Elixir encodes presence as
 - `attrs_bin` is now a compact list of tagged attribute records.
 - Runtime-only attrs are excluded from encoding: `scroll_x`, `scroll_y`, `scroll_max`,
   `scroll_max_x`, `scroll_bounds`, `scroll_clip_bounds`, `clip_bounds`, `clip_content`,
-  `text_baseline_offset`, `scroll_capture`, `__layer`, `__attrs_hash`, and `nearby_*`.
+  `text_baseline_offset`, `scroll_capture`, `mouse_over_active`, `__layer`, `__attrs_hash`, and
+  `nearby_*`.
 - Attribute tags and value encodings are fixed in this spec (see above).
 
 ## Internal / runtime (not encoded in EMRG)
@@ -244,6 +267,7 @@ For event attributes (`on_click`, `on_mouse_*`), Elixir encodes presence as
 - `:clip_content`
 - `:text_baseline_offset`
 - `:scroll_capture`
+- `:mouse_over_active`
 - `:__layer`
 - `:nearby_behind`
 - `:nearby_in_front`

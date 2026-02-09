@@ -14,6 +14,7 @@ Multi-backend Skia renderer with:
 - Drag-scroll support with deadzone and finger-like direction
 - Scroll state preserved across layout/patch with resize-aware clamping
 - Clip- and rounded-corner-aware hit testing
+- Declarative `mouse_over` styling with runtime active-state application
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder
 - Three-pass layout engine (scale + measurement + resolution)
@@ -143,12 +144,14 @@ attr_records...   # tag (1 byte) + value (varies)
 | 38 | scroll_x | f64 (runtime, typically stripped from Elixir encoding) |
 | 39 | scroll_y | f64 (runtime, typically stripped from Elixir encoding) |
 | 40-45 | on_click/on_mouse_* | bool (presence flag) |
+| 46 | mouse_over | u32 len + nested decorative attr block |
 
 Color encoding: 0=rgb(3×u8), 1=rgba(4×u8), 2=named(u16 len + bytes)
 
 Runtime-only attrs are not encoded (`scroll_x`, `scroll_y`, `scroll_max`, `scroll_max_x`,
 `scroll_bounds`, `scroll_clip_bounds`, `clip_bounds`, `clip_content`, `text_baseline_offset`,
-`scroll_capture`, `__layer`, `nearby_behind`, `nearby_in_front`, `nearby_outside`, `__attrs_hash`).
+`scroll_capture`, `mouse_over_active`, `__layer`, `nearby_behind`, `nearby_in_front`,
+`nearby_outside`, `__attrs_hash`).
 
 #### 4.3 Tree NIF Functions
 
@@ -228,6 +231,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Tests added for transforms, clipping, length encoding, and content sizing
 - Added spacingXY + spaceEvenly (space-between) support
 - Element event system implemented (`on_click` + `on_mouse_*`) with clip/rounded/scroll-aware hit testing
+- Added declarative `mouse_over` hover styling (Rust-applied, decorative attrs only)
 - EventProcessor introduced; input loop now enqueues raw events
 - Click dispatch and hit testing moved to event processor
 - Drag-scroll with deadzone; finger-like drag direction
@@ -503,6 +507,7 @@ Implemented. Event processing now runs in `events.rs` via `EventProcessor`:
 - Drag-scroll with deadzone and finger-like direction
 - Scrollbar module extraction (`events/scrollbar.rs`) for typed scrollbar hit/drag state
 - Track/thumb hit testing + thumb drag with snap-to-cursor behavior
+- `mouse_over` activation via `TreeMsg::SetMouseOverActive { element_id, active }`
 - Input loop enqueues raw events; processor handles dispatch + redraw
 
 #### 5. Content Size Tracking ✓

@@ -2,8 +2,8 @@ use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 
 use crate::input::{
     EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE,
-    EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
-    InputEvent,
+    EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS,
+    EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS, InputEvent,
 };
 use crate::tree::element::{ElementId, ElementTree};
 use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
@@ -21,6 +21,7 @@ pub struct EventProcessor {
     registry: Vec<EventNode>,
     pressed_id: Option<ElementId>,
     hovered_id: Option<ElementId>,
+    mouse_over_active_id: Option<ElementId>,
     hovered_scrollbar_thumb: Option<ScrollbarThumbHover>,
     drag_start: Option<(f32, f32)>,
     drag_last_pos: Option<(f32, f32)>,
@@ -95,6 +96,11 @@ pub struct EventNode {
     pub scrollbar_y: Option<ScrollbarNode>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MouseOverRequest {
+    SetMouseOverActive { element_id: ElementId, active: bool },
+}
+
 pub fn build_event_registry(tree: &ElementTree) -> Vec<EventNode> {
     let Some(root) = tree.root.as_ref() else {
         return Vec::new();
@@ -135,6 +141,9 @@ fn collect_event_nodes(
     }
     if element.attrs.on_mouse_move.unwrap_or(false) {
         flags |= EVENT_MOUSE_MOVE;
+    }
+    if element.attrs.mouse_over.is_some() {
+        flags |= EVENT_MOUSE_OVER_STYLE;
     }
     if element.attrs.scrollbar_x.unwrap_or(false) {
         let scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -393,6 +402,7 @@ impl EventProcessor {
             registry: Vec::new(),
             pressed_id: None,
             hovered_id: None,
+            mouse_over_active_id: None,
             hovered_scrollbar_thumb: None,
             drag_start: None,
             drag_last_pos: None,
@@ -645,6 +655,63 @@ impl EventProcessor {
         if let Some(next) = next_hover {
             requests.push(Self::hover_request(next, true));
         }
+        requests
+    }
+
+    pub fn mouse_over_requests(&mut self, event: &InputEvent) -> Vec<MouseOverRequest> {
+        let next_active = match event {
+            InputEvent::CursorPos { x, y } => Some(hit_test_with_flag(
+                &self.registry,
+                *x,
+                *y,
+                EVENT_MOUSE_OVER_STYLE,
+            )),
+            InputEvent::CursorButton {
+                button,
+                action,
+                x,
+                y,
+                ..
+            } if button == "left"
+                && (*action == crate::input::ACTION_PRESS
+                    || *action == crate::input::ACTION_RELEASE) =>
+            {
+                Some(hit_test_with_flag(
+                    &self.registry,
+                    *x,
+                    *y,
+                    EVENT_MOUSE_OVER_STYLE,
+                ))
+            }
+            InputEvent::CursorEntered { entered } if !*entered => Some(None),
+            _ => None,
+        };
+
+        let Some(next_active) = next_active else {
+            return Vec::new();
+        };
+
+        if self.mouse_over_active_id == next_active {
+            return Vec::new();
+        }
+
+        let previous = self.mouse_over_active_id.clone();
+        self.mouse_over_active_id = next_active.clone();
+
+        let mut requests = Vec::with_capacity(2);
+        if let Some(id) = previous {
+            requests.push(MouseOverRequest::SetMouseOverActive {
+                element_id: id,
+                active: false,
+            });
+        }
+        if let Some(id) = next_active {
+            requests.push(MouseOverRequest::SetMouseOverActive {
+                element_id: id,
+                active: true,
+            });
+        }
+
         requests
     }
 
@@ -1108,6 +1175,30 @@ mod tests {
         }
     }
 
+    fn make_mouse_over_node(id: u8, x: f32, y: f32, width: f32, height: f32) -> EventNode {
+        EventNode {
+            id: ElementId::from_term_bytes(vec![id]),
+            hit_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            flags: EVENT_MOUSE_OVER_STYLE,
+            self_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            scrollbar_x: None,
+            scrollbar_y: None,
+        }
+    }
+
     #[test]
     fn test_build_event_registry_order() {
         let mut tree = ElementTree::new();
@@ -1467,6 +1558,70 @@ mod tests {
             ScrollbarHoverRequest::X {
                 element_id: ElementId::from_term_bytes(vec![1]),
                 hovered: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_mouse_over_requests_activate_and_deactivate() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_mouse_over_node(1, 0.0, 0.0, 100.0, 100.0)];
+
+        let enter = InputEvent::CursorPos { x: 10.0, y: 10.0 };
+        let leave = InputEvent::CursorEntered { entered: false };
+
+        let first = processor.mouse_over_requests(&enter);
+        assert_eq!(
+            first,
+            vec![MouseOverRequest::SetMouseOverActive {
+                element_id: ElementId::from_term_bytes(vec![1]),
+                active: true,
+            }]
+        );
+
+        assert!(processor.mouse_over_requests(&enter).is_empty());
+
+        let second = processor.mouse_over_requests(&leave);
+        assert_eq!(
+            second,
+            vec![MouseOverRequest::SetMouseOverActive {
+                element_id: ElementId::from_term_bytes(vec![1]),
+                active: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_mouse_over_requests_switch_target() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_mouse_over_node(1, 0.0, 0.0, 40.0, 40.0),
+            make_mouse_over_node(2, 50.0, 0.0, 40.0, 40.0),
+        ];
+
+        let first = processor.mouse_over_requests(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert_eq!(
+            first,
+            vec![MouseOverRequest::SetMouseOverActive {
+                element_id: ElementId::from_term_bytes(vec![1]),
+                active: true,
+            }]
+        );
+
+        let second = processor.mouse_over_requests(&InputEvent::CursorPos { x: 60.0, y: 10.0 });
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            second[0],
+            MouseOverRequest::SetMouseOverActive {
+                element_id: ElementId::from_term_bytes(vec![1]),
+                active: false,
+            }
+        );
+        assert_eq!(
+            second[1],
+            MouseOverRequest::SetMouseOverActive {
+                element_id: ElementId::from_term_bytes(vec![2]),
+                active: true,
             }
         );
     }

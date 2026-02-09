@@ -40,6 +40,10 @@ pub enum TreeMsg {
         element_id: ElementId,
         hovered: bool,
     },
+    SetMouseOverActive {
+        element_id: ElementId,
+        active: bool,
+    },
     Stop,
 }
 

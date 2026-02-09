@@ -5,7 +5,7 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, Padding, TextAlign, preserve_runtime_scroll_attrs};
+use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding, TextAlign, preserve_runtime_scroll_attrs};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
@@ -254,6 +254,7 @@ pub fn layout_tree<M: TextMeasurer>(
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
     apply_scale_to_tree(tree, scale);
+    apply_mouse_over_styles(tree);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
     measure_element(tree, &root_id, measurer, &FontContext::default());
@@ -305,6 +306,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_enter: attrs.on_mouse_enter,
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
+        mouse_over: attrs.mouse_over.as_ref().map(|hover| scale_mouse_over_attrs(hover, scale_f64)),
+        mouse_over_active: attrs.mouse_over_active,
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),
@@ -332,6 +335,60 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         scale: attrs.scale,
         alpha: attrs.alpha,
         space_evenly: attrs.space_evenly,
+    }
+}
+
+fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs {
+    MouseOverAttrs {
+        background: attrs.background.clone(),
+        border_color: attrs.border_color.clone(),
+        font_color: attrs.font_color.clone(),
+        font_size: attrs.font_size.map(|v| v * scale),
+        move_x: attrs.move_x.map(|v| v * scale),
+        move_y: attrs.move_y.map(|v| v * scale),
+        rotate: attrs.rotate,
+        scale: attrs.scale,
+        alpha: attrs.alpha,
+    }
+}
+
+fn apply_mouse_over_styles(tree: &mut ElementTree) {
+    for element in tree.nodes.values_mut() {
+        if !element.attrs.mouse_over_active.unwrap_or(false) {
+            continue;
+        }
+
+        let Some(mouse_over) = element.attrs.mouse_over.clone() else {
+            continue;
+        };
+
+        if let Some(background) = mouse_over.background {
+            element.attrs.background = Some(background);
+        }
+        if let Some(border_color) = mouse_over.border_color {
+            element.attrs.border_color = Some(border_color);
+        }
+        if let Some(font_color) = mouse_over.font_color {
+            element.attrs.font_color = Some(font_color);
+        }
+        if let Some(font_size) = mouse_over.font_size {
+            element.attrs.font_size = Some(font_size);
+        }
+        if let Some(move_x) = mouse_over.move_x {
+            element.attrs.move_x = Some(move_x);
+        }
+        if let Some(move_y) = mouse_over.move_y {
+            element.attrs.move_y = Some(move_y);
+        }
+        if let Some(rotate) = mouse_over.rotate {
+            element.attrs.rotate = Some(rotate);
+        }
+        if let Some(scale) = mouse_over.scale {
+            element.attrs.scale = Some(scale);
+        }
+        if let Some(alpha) = mouse_over.alpha {
+            element.attrs.alpha = Some(alpha);
+        }
     }
 }
 
@@ -3695,5 +3752,49 @@ mod tests {
         // Right-bottom: x=160 (200-40), y=70 (100-30)
         assert_eq!(rb_frame.x, 160.0);
         assert_eq!(rb_frame.y, 70.0);
+    }
+
+    #[test]
+    fn test_mouse_over_styles_are_applied_in_layout_pass() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Px(100.0));
+        attrs.height = Some(Length::Px(40.0));
+        attrs.background = Some(crate::tree::attrs::Background::Color(
+            crate::tree::attrs::Color::Rgb { r: 10, g: 20, b: 30 },
+        ));
+        attrs.mouse_over = Some(MouseOverAttrs {
+            background: Some(crate::tree::attrs::Background::Color(
+                crate::tree::attrs::Color::Rgb { r: 200, g: 100, b: 50 },
+            )),
+            font_size: Some(22.0),
+            move_x: Some(5.0),
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        attrs.mouse_over_active = Some(true);
+
+        let root = make_element("root", ElementKind::El, attrs);
+        let root_id = root.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+
+        let updated = tree.get(&root_id).unwrap();
+        assert_eq!(updated.attrs.font_size, Some(22.0));
+        assert_eq!(updated.attrs.move_x, Some(5.0));
+        assert_eq!(updated.attrs.alpha, Some(0.5));
+        assert_eq!(
+            updated.attrs.background,
+            Some(crate::tree::attrs::Background::Color(
+                crate::tree::attrs::Color::Rgb {
+                    r: 200,
+                    g: 100,
+                    b: 50
+                }
+            ))
+        );
     }
 }

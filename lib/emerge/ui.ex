@@ -22,6 +22,18 @@ defmodule Emerge.UI do
 
   alias Emerge.Element
 
+  @mouse_over_decorative_keys MapSet.new([
+                                :background,
+                                :border_color,
+                                :font_color,
+                                :font_size,
+                                :move_x,
+                                :move_y,
+                                :rotate,
+                                :scale,
+                                :alpha
+                              ])
+
   # ============================================
   # LAYOUT ELEMENTS
   # ============================================
@@ -297,6 +309,9 @@ defmodule Emerge.UI do
   @doc "Register a mouse move handler payload for this element"
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
 
+  @doc "Apply decorative attributes while pointer is over the element"
+  def mouse_over(attrs) when is_list(attrs), do: {:mouse_over, parse_mouse_over_attrs(attrs)}
+
   # ============================================
   # TRANSFORMS
   # ============================================
@@ -351,7 +366,53 @@ defmodule Emerge.UI do
       end)
 
     validate_scrollbar_clipping!(parsed)
+    validate_mouse_over_payload!(parsed)
     parsed
+  end
+
+  defp parse_mouse_over_attrs(attrs) do
+    parsed =
+      Enum.reduce(attrs, %{}, fn
+        {key, value}, acc -> Map.put(acc, key, value)
+        other, acc when is_map(other) -> Map.merge(acc, other)
+        _, acc -> acc
+      end)
+
+    validate_mouse_over_attrs!(parsed)
+    parsed
+  end
+
+  defp validate_mouse_over_payload!(attrs) do
+    case Map.get(attrs, :mouse_over) do
+      nil ->
+        :ok
+
+      mouse_over_attrs when is_map(mouse_over_attrs) ->
+        validate_mouse_over_attrs!(mouse_over_attrs)
+
+      other ->
+        raise ArgumentError,
+              "mouse_over must be a list/map of decorative attributes, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_mouse_over_attrs!(attrs) do
+    allowed =
+      @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
+
+    Enum.each(attrs, fn {key, _value} ->
+      cond do
+        key == :mouse_over ->
+          raise ArgumentError, "mouse_over does not support nested mouse_over"
+
+        MapSet.member?(@mouse_over_decorative_keys, key) ->
+          :ok
+
+        true ->
+          raise ArgumentError,
+                "mouse_over only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+      end
+    end)
   end
 
   defp validate_scrollbar_clipping!(attrs) do

@@ -22,21 +22,21 @@ mod actors;
 mod backend;
 mod cursor;
 mod drm_input;
-mod input;
 mod events;
+mod input;
 mod renderer;
 mod tree;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
 use backend::drm;
-use drm_input::DrmInput;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
-use events::{EventProcessor, ScrollbarHoverRequest, ScrollbarThumbDragRequest};
-use tree::layout::layout_and_refresh_default;
+use drm_input::DrmInput;
+use events::{EventProcessor, MouseOverRequest, ScrollbarHoverRequest, ScrollbarThumbDragRequest};
 use input::{InputEvent, InputHandler};
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
+use tree::layout::layout_and_refresh_default;
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
@@ -154,7 +154,6 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
     }
 }
 
-
 // ============================================================================
 // NIF Functions
 // ============================================================================
@@ -186,7 +185,6 @@ fn spawn_tree_actor(
         let mut scale = 1.0f32;
 
         while let Ok(msg) = tree_rx.recv() {
-
             let mut messages = vec![msg];
             while let Ok(next) = tree_rx.try_recv() {
                 messages.push(next);
@@ -197,6 +195,7 @@ fn spawn_tree_actor(
             let mut thumb_drag_y_acc = std::collections::HashMap::new();
             let mut hover_x_state = std::collections::HashMap::new();
             let mut hover_y_state = std::collections::HashMap::new();
+            let mut mouse_over_active_state = std::collections::HashMap::new();
             let mut changed = false;
 
             for message in messages {
@@ -254,11 +253,20 @@ fn spawn_tree_actor(
                         let entry = thumb_drag_y_acc.entry(element_id).or_insert(0.0);
                         *entry += dy;
                     }
-                    TreeMsg::SetScrollbarXHover { element_id, hovered } => {
+                    TreeMsg::SetScrollbarXHover {
+                        element_id,
+                        hovered,
+                    } => {
                         hover_x_state.insert(element_id, hovered);
                     }
-                    TreeMsg::SetScrollbarYHover { element_id, hovered } => {
+                    TreeMsg::SetScrollbarYHover {
+                        element_id,
+                        hovered,
+                    } => {
                         hover_y_state.insert(element_id, hovered);
+                    }
+                    TreeMsg::SetMouseOverActive { element_id, active } => {
+                        mouse_over_active_state.insert(element_id, active);
                     }
                 }
             }
@@ -281,6 +289,10 @@ fn spawn_tree_actor(
 
             for (id, hovered) in hover_y_state {
                 changed |= tree.set_scrollbar_y_hover(&id, hovered);
+            }
+
+            for (id, active) in mouse_over_active_state {
+                changed |= tree.set_mouse_over_active(&id, active);
             }
 
             if !changed {
@@ -412,17 +424,41 @@ fn process_input_events(
 
         for request in processor.scrollbar_hover_requests(&event) {
             match request {
-                ScrollbarHoverRequest::X { element_id, hovered } => {
+                ScrollbarHoverRequest::X {
+                    element_id,
+                    hovered,
+                } => {
                     send_tree(
                         tree_tx,
-                        TreeMsg::SetScrollbarXHover { element_id, hovered },
+                        TreeMsg::SetScrollbarXHover {
+                            element_id,
+                            hovered,
+                        },
                         log_render,
                     );
                 }
-                ScrollbarHoverRequest::Y { element_id, hovered } => {
+                ScrollbarHoverRequest::Y {
+                    element_id,
+                    hovered,
+                } => {
                     send_tree(
                         tree_tx,
-                        TreeMsg::SetScrollbarYHover { element_id, hovered },
+                        TreeMsg::SetScrollbarYHover {
+                            element_id,
+                            hovered,
+                        },
+                        log_render,
+                    );
+                }
+            }
+        }
+
+        for request in processor.mouse_over_requests(&event) {
+            match request {
+                MouseOverRequest::SetMouseOverActive { element_id, active } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::SetMouseOverActive { element_id, active },
                         log_render,
                     );
                 }
@@ -442,7 +478,6 @@ fn spawn_event_actor(
         let mut target: Option<LocalPid> = None;
 
         while let Ok(msg) = event_rx.recv() {
-
             let mut messages = vec![msg];
             while let Ok(next) = event_rx.try_recv() {
                 messages.push(next);
@@ -535,7 +570,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             };
 
             thread::spawn(move || {
-                wayland::run(config, running_flag_clone, event_tx_clone, render_rx, proxy_tx);
+                wayland::run(
+                    config,
+                    running_flag_clone,
+                    event_tx_clone,
+                    render_rx,
+                    proxy_tx,
+                );
             });
 
             let proxy = proxy_rx
@@ -690,7 +731,9 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
 #[rustler::nif]
 fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
     let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    renderer.render_tx.send_latest(RenderMsg::Commands { commands, version });
+    renderer
+        .render_tx
+        .send_latest(RenderMsg::Commands { commands, version });
     if renderer.backend == BackendKind::Wayland
         && let Ok(guard) = renderer.event_proxy.lock()
         && let Some(proxy) = guard.as_ref()
@@ -836,8 +879,7 @@ fn render_to_pixels(
     commands: Vec<DrawCmd>,
 ) -> NifResult<Binary> {
     let config = RasterConfig { width, height };
-    let mut backend = RasterBackend::new(&config)
-        .map_err(|e| rustler::Error::Term(Box::new(e)))?;
+    let mut backend = RasterBackend::new(&config).map_err(|e| rustler::Error::Term(Box::new(e)))?;
 
     let state = RenderState {
         commands,
@@ -868,8 +910,7 @@ fn tree_new() -> ResourceArc<TreeResource> {
 /// Replaces any existing tree contents.
 #[rustler::nif]
 fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
-    let decoded = tree::deserialize::decode_tree(data.as_slice())
-        .map_err(|e| e.to_string())?;
+    let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
         *tree = decoded;
@@ -898,8 +939,7 @@ fn tree_upload_roundtrip<'a>(
 /// Apply patches to an existing tree.
 #[rustler::nif]
 fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
-    let patches = tree::patch::decode_patches(data.as_slice())
-        .map_err(|e| e.to_string())?;
+    let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
         tree::patch::apply_patches(&mut tree, patches)?;
