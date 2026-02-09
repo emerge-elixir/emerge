@@ -107,6 +107,38 @@ defmodule Emerge.AttrCodecTest do
            }
   end
 
+  test "encode/decode mouse_over decorative attrs" do
+    attrs = %{
+      mouse_over: %{
+        background: {:color_rgb, {20, 30, 40}},
+        border_color: {:color_rgba, {10, 20, 30, 255}},
+        font_color: :white,
+        font_size: 22,
+        move_x: 5,
+        move_y: -2,
+        rotate: 12,
+        scale: 1.1,
+        alpha: 0.75
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "mouse_over rejects non-decorative attrs" do
+    assert_raise ArgumentError, ~r/mouse_over only supports decorative attributes/, fn ->
+      AttrCodec.encode_attrs(%{mouse_over: %{width: :fill}})
+    end
+  end
+
+  test "mouse_over rejects nested mouse_over" do
+    assert_raise ArgumentError, ~r/mouse_over does not support nested mouse_over/, fn ->
+      AttrCodec.encode_attrs(%{mouse_over: %{mouse_over: %{alpha: 0.5}}})
+    end
+  end
+
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()

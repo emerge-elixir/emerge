@@ -49,8 +49,21 @@ defmodule Emerge.AttrCodec do
     on_mouse_up: 42,
     on_mouse_enter: 43,
     on_mouse_leave: 44,
-    on_mouse_move: 45
+    on_mouse_move: 45,
+    mouse_over: 46
   }
+
+  @mouse_over_decorative_keys MapSet.new([
+                                :background,
+                                :border_color,
+                                :font_color,
+                                :font_size,
+                                :move_x,
+                                :move_y,
+                                :rotate,
+                                :scale,
+                                :alpha
+                              ])
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
 
@@ -131,6 +144,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:on_mouse_enter, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_leave, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_move, _value), do: encode_bool(true)
+  defp encode_value(:mouse_over, value), do: encode_mouse_over(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -176,6 +190,37 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:on_mouse_enter, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_leave, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_move, rest), do: decode_bool(rest)
+  defp decode_value(:mouse_over, rest), do: decode_mouse_over(rest)
+
+  defp encode_mouse_over(value) when is_map(value) do
+    validate_mouse_over_attrs!(value)
+    encoded = encode_attrs(value)
+    <<byte_size(encoded)::unsigned-32, encoded::binary>>
+  end
+
+  defp decode_mouse_over(<<len::unsigned-32, rest::binary>>) do
+    <<attrs_bin::binary-size(len), rest::binary>> = rest
+    {decode_attrs(attrs_bin), rest}
+  end
+
+  defp validate_mouse_over_attrs!(attrs) when is_map(attrs) do
+    allowed =
+      @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
+
+    Enum.each(attrs, fn {key, _value} ->
+      cond do
+        key == :mouse_over ->
+          raise ArgumentError, "mouse_over does not support nested mouse_over"
+
+        MapSet.member?(@mouse_over_decorative_keys, key) ->
+          :ok
+
+        true ->
+          raise ArgumentError,
+                "mouse_over only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+      end
+    end)
+  end
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>

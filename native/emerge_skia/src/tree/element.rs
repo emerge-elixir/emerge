@@ -1,5 +1,7 @@
 //! Element types for Emerge UI trees.
 
+#[cfg(test)]
+use super::attrs::MouseOverAttrs;
 use super::attrs::{Attrs, ScrollbarHoverAxis};
 use std::collections::HashMap;
 
@@ -180,6 +182,28 @@ impl ElementTree {
     /// Set vertical scrollbar thumb hover state. Returns true when state changes.
     pub fn set_scrollbar_y_hover(&mut self, id: &ElementId, hovered: bool) -> bool {
         self.set_scrollbar_hover_axis(id, ScrollbarHoverAxis::Y, hovered)
+    }
+
+    /// Set mouse_over active state. Returns true when state changes.
+    pub fn set_mouse_over_active(&mut self, id: &ElementId, active: bool) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+
+        if element.attrs.mouse_over.is_none() {
+            if element.attrs.mouse_over_active.take().is_some() {
+                return true;
+            }
+            return false;
+        }
+
+        let current = element.attrs.mouse_over_active.unwrap_or(false);
+        if current == active {
+            return false;
+        }
+
+        element.attrs.mouse_over_active = Some(active);
+        true
     }
 
     fn apply_scroll_axis(&mut self, id: &ElementId, delta: f32, axis: ScrollAxis) -> bool {
@@ -380,5 +404,58 @@ mod tests {
         assert!(!tree.set_scrollbar_x_hover(&id, true));
         assert!(!tree.set_scrollbar_y_hover(&id, true));
         assert_eq!(tree.get(&id).unwrap().attrs.scrollbar_hover_axis, None);
+    }
+
+    #[test]
+    fn test_set_mouse_over_active_requires_mouse_over_attrs() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 100.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(!tree.set_mouse_over_active(&id, true));
+        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, None);
+    }
+
+    #[test]
+    fn test_set_mouse_over_active_toggles_state() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs {
+            alpha: Some(0.6),
+            ..Default::default()
+        });
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 100.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.set_mouse_over_active(&id, true));
+        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(true));
+
+        assert!(!tree.set_mouse_over_active(&id, true));
+
+        assert!(tree.set_mouse_over_active(&id, false));
+        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(false));
     }
 }

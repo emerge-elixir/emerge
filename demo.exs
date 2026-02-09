@@ -53,6 +53,7 @@ clock_now = fn ->
 end
 
 Process.put(:clock_time, clock_now.())
+Process.put(:hover_manual_active, false)
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -137,7 +138,6 @@ defmodule Demo do
         {mx, my},
         event_log,
         current_page,
-        hovered_menu,
         last_move_label,
         unstable_items
       ) do
@@ -165,7 +165,7 @@ defmodule Demo do
       [
         header_section(mx, my, [clock_row | render_rows]),
         row([width(:fill), height(:fill), spacing(16)], [
-          menu_panel(current_page, hovered_menu, event_log),
+          menu_panel(current_page),
           content_panel(current_page, last_move_label, unstable_items)
         ]),
         footer_bar(mx, my, event_log)
@@ -208,7 +208,7 @@ defmodule Demo do
     ])
   end
 
-  defp menu_panel(current_page, hovered_menu, _event_log) do
+  defp menu_panel(current_page) do
     menu_items = [
       {"Overview", :overview},
       {"Layout", :layout},
@@ -216,6 +216,7 @@ defmodule Demo do
       {"Alignment", :alignment},
       {"Transforms", :transforms},
       {"Events", :events},
+      {"Hover", :hover},
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
       {"Fonts", :fonts}
@@ -235,7 +236,7 @@ defmodule Demo do
         column(
           [spacing(8)],
           Enum.map(menu_items, fn {label, page} ->
-            menu_item(label, page, current_page, hovered_menu)
+            menu_item(label, page, current_page)
           end)
         ),
         el([Font.size(12), Font.color(@dim_text)], text("Navigation")),
@@ -300,6 +301,7 @@ defmodule Demo do
       :alignment -> page_alignment()
       :transforms -> page_transforms()
       :events -> page_events(last_move_label)
+      :hover -> page_hover()
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
       :fonts -> page_fonts()
@@ -569,6 +571,99 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text("Last move target: #{move_label}")
+      )
+    ])
+  end
+
+  defp page_hover() do
+    manual_active = Process.get(:hover_manual_active, false)
+
+    column([width(fill()), spacing(16)], [
+      section_title("Hover"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Compare event-driven hover state with declarative mouse_over styling.")
+      ),
+      row([width(fill()), spacing(16)], [
+        hover_showcase_event_panel(manual_active),
+        hover_showcase_mouse_over_panel()
+      ])
+    ])
+  end
+
+  defp hover_showcase_event_panel(active) do
+    bg = if active, do: {:color_rgb, {88, 72, 122}}, else: {:color_rgb, {58, 52, 82}}
+    border = if active, do: {:color_rgb, {188, 154, 250}}, else: {:color_rgb, {120, 112, 150}}
+    title_color = if active, do: @light_text, else: {:color_rgb, {220, 210, 240}}
+    state_text = if active, do: "state: hovered", else: "state: idle"
+
+    column([width(fill()), spacing(10)], [
+      el([Font.size(14), Font.color(@light_text)], text("on_mouse_enter / on_mouse_leave")),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text("Hover events are sent to Elixir, which toggles local state and re-renders styles.")
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          Background.color(bg),
+          Border.rounded(10),
+          Border.width(1),
+          Border.color(border),
+          move_y(if(active, do: -2, else: 0)),
+          on_mouse_enter({self(), {:demo_event, :hover_manual, :mouse_enter}}),
+          on_mouse_leave({self(), {:demo_event, :hover_manual, :mouse_leave}})
+        ],
+        column([spacing(6)], [
+          el([Font.size(13), Font.color(title_color)], text("Event-managed hover")),
+          el([Font.size(11), Font.color(title_color)], text(state_text)),
+          el(
+            [Font.size(10), Font.color({:color_rgb, {225, 215, 245}})],
+            text("Behavior is explicit and can trigger arbitrary app logic.")
+          )
+        ])
+      )
+    ])
+  end
+
+  defp hover_showcase_mouse_over_panel() do
+    column([width(fill()), spacing(10)], [
+      el([Font.size(14), Font.color(@light_text)], text("mouse_over")),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text("Styles live on the element. Rust tracks hover and applies decorative attrs.")
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          Background.color({:color_rgb, {52, 70, 84}}),
+          Border.rounded(10),
+          Border.width(1),
+          Border.color({:color_rgb, {102, 124, 150}}),
+          mouse_over([
+            Background.color({:color_rgb, {86, 112, 140}}),
+            Border.color({:color_rgb, {168, 210, 250}}),
+            Font.color(@light_text),
+            move_y(-2),
+            scale(1.02)
+          ])
+        ],
+        column([spacing(6)], [
+          el(
+            [Font.size(13), Font.color({:color_rgb, {210, 222, 240}})],
+            text("Declarative hover style")
+          ),
+          el(
+            [Font.size(11), Font.color({:color_rgb, {190, 206, 228}})],
+            text("No enter/leave handlers or hover state in Elixir.")
+          ),
+          el(
+            [Font.size(10), Font.color({:color_rgb, {214, 228, 246}})],
+            text("Best when hover only changes visual decoration.")
+          )
+        ])
       )
     ])
   end
@@ -1035,18 +1130,23 @@ defmodule Demo do
     el([Font.size(16), Font.color(@light_text)], text(label))
   end
 
-  defp menu_item(label, page, current_page, hovered_menu) do
+  defp menu_item(label, page, current_page) do
     active = page == current_page
-    hovered = page == hovered_menu
 
-    bg =
-      cond do
-        active -> @blue
-        hovered -> {:color_rgb, {70, 70, 100}}
-        true -> {:color_rgb, {45, 45, 65}}
+    bg = if active, do: @blue, else: {:color_rgb, {45, 45, 65}}
+    text_color = if active, do: @light_text, else: @dim_text
+
+    hover_attrs =
+      if active do
+        []
+      else
+        [
+          mouse_over([
+            Background.color({:color_rgb, {70, 70, 100}}),
+            Font.color(@light_text)
+          ])
+        ]
       end
-
-    text_color = if active or hovered, do: @light_text, else: @dim_text
 
     el(
       [
@@ -1054,10 +1154,8 @@ defmodule Demo do
         padding(10),
         Background.color(bg),
         Border.rounded(10),
-        on_click({self(), {:demo_nav, page}}),
-        on_mouse_enter({self(), {:menu_hover, page}}),
-        on_mouse_leave({self(), {:menu_hover_clear, page}})
-      ],
+        on_click({self(), {:demo_nav, page}})
+      ] ++ hover_attrs,
       el([Font.size(12), Font.color(text_color)], text(label))
     )
   end
@@ -1068,8 +1166,6 @@ defmodule Demo do
       {:demo_event, _, _} = message -> drain_events([message | acc])
       {:demo_nav, _} = message -> drain_events([message | acc])
       {:feature_click, _} = message -> drain_events([message | acc])
-      {:menu_hover, _} = message -> drain_events([message | acc])
-      {:menu_hover_clear, _} = message -> drain_events([message | acc])
       {:clock_tick, _} = message -> drain_events([message | acc])
       :scramble_unstable = message -> drain_events([message | acc])
       {:unstable_row_click, _} = message -> drain_events([message | acc])
@@ -1097,7 +1193,6 @@ defmodule Demo do
          size,
          scale,
          current_page,
-         hovered_menu,
          last_move_label,
          unstable_items
        ) do
@@ -1112,7 +1207,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1127,7 +1221,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1142,7 +1235,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1157,37 +1249,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
-          last_move_label,
-          unstable_items
-        )
-
-      {:menu_hover, _} = message ->
-        process_event_batch(
-          [message | drain_events()],
-          renderer,
-          state,
-          mouse_pos,
-          event_log,
-          size,
-          scale,
-          current_page,
-          hovered_menu,
-          last_move_label,
-          unstable_items
-        )
-
-      {:menu_hover_clear, _} = message ->
-        process_event_batch(
-          [message | drain_events()],
-          renderer,
-          state,
-          mouse_pos,
-          event_log,
-          size,
-          scale,
-          current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1202,7 +1263,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1217,7 +1277,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1232,7 +1291,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1247,7 +1305,6 @@ defmodule Demo do
           size,
           scale,
           current_page,
-          hovered_menu,
           last_move_label,
           unstable_items
         )
@@ -1265,7 +1322,6 @@ defmodule Demo do
          size,
          scale,
          current_page,
-         hovered_menu,
          last_move_label,
          unstable_items
        ) do
@@ -1288,8 +1344,7 @@ defmodule Demo do
       Enum.reduce(
         events,
         {
-          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-           unstable_items},
+          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items},
           false
         },
         fn message, {acc, dirty} ->
@@ -1298,7 +1353,7 @@ defmodule Demo do
         end
       )
 
-    {new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered, new_move, new_unstable} =
+    {new_mouse_pos, new_log, new_size, new_scale, new_page, new_move, new_unstable} =
       next_state
 
     if needs_render do
@@ -1311,7 +1366,6 @@ defmodule Demo do
           new_mouse_pos,
           new_log,
           new_page,
-          new_hovered,
           new_move,
           new_unstable
         )
@@ -1322,19 +1376,17 @@ defmodule Demo do
 
       next_state = render_update(renderer, state, tree, new_size, new_scale)
 
-      {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered,
-       new_move, new_unstable}
-    else
-      {:ok, state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered, new_move,
+      {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_move,
        new_unstable}
+    else
+      {:ok, state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_move, new_unstable}
     end
   end
 
   defp process_event(
          {:emerge_skia_event, event},
          state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     if Process.get(:log_input, false) do
       case event do
@@ -1346,8 +1398,7 @@ defmodule Demo do
       end
     end
 
-    {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-     unstable_items} =
+    {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items} =
       case event do
         {id_bin, event_type} when is_binary(id_bin) and is_atom(event_type) ->
           case Emerge.lookup_event(state, id_bin, event_type) do
@@ -1356,7 +1407,7 @@ defmodule Demo do
                 process_event(
                   msg,
                   state,
-                  {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
+                  {mouse_pos, event_log, size, scale, current_page, last_move_label,
                    unstable_items}
                 )
 
@@ -1365,13 +1416,11 @@ defmodule Demo do
             _ ->
               Emerge.dispatch_event(state, id_bin, event_type)
 
-              {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-               unstable_items}
+              {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
           end
 
         _ ->
-          {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-           unstable_items}
+          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
       end
 
     new_mouse_pos =
@@ -1399,79 +1448,64 @@ defmodule Demo do
       new_mouse_pos != mouse_pos or new_log != event_log or new_size != size or
         new_scale != scale
 
-    {{new_mouse_pos, new_log, new_size, new_scale, current_page, hovered_menu, last_move_label,
-      unstable_items}, changed}
+    {{new_mouse_pos, new_log, new_size, new_scale, current_page, last_move_label, unstable_items},
+     changed}
   end
 
   defp process_event(
          {:clock_tick, time_string},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     Process.put(:clock_time, time_string)
 
-    {{mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-      unstable_items}, true}
+    {{mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}, true}
   end
 
   defp process_event(
          {:feature_click, title},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     new_log = Enum.take(["UI Click: #{title}" | event_log], 20)
 
-    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, last_move_label,
-      unstable_items}, new_log != event_log}
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items},
+     new_log != event_log}
   end
 
   defp process_event(
          {:demo_nav, page},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     new_log = Enum.take(["Navigate: #{format_page(page)}" | event_log], 20)
     new_page = page
     changed = new_log != event_log or new_page != current_page
 
-    {{mouse_pos, new_log, size, scale, new_page, hovered_menu, last_move_label, unstable_items},
-     changed}
+    {{mouse_pos, new_log, size, scale, new_page, last_move_label, unstable_items}, changed}
   end
 
   defp process_event(
-         {:menu_hover, page},
+         {:demo_event, :hover_manual, hover_event},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
-       ) do
-    new_hovered = page
-    changed = new_hovered != hovered_menu
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       )
+       when hover_event in [:mouse_enter, :mouse_leave] do
+    active = hover_event == :mouse_enter
+    previous = Process.get(:hover_manual_active, false)
+    Process.put(:hover_manual_active, active)
 
-    {{mouse_pos, event_log, size, scale, current_page, new_hovered, last_move_label,
-      unstable_items}, changed}
-  end
+    entry = if active, do: "Manual hover: enter", else: "Manual hover: leave"
+    new_log = Enum.take([entry | event_log], 20)
+    changed = previous != active or new_log != event_log
 
-  defp process_event(
-         {:menu_hover_clear, page},
-         _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
-       ) do
-    new_hovered = if hovered_menu == page, do: nil, else: hovered_menu
-    changed = new_hovered != hovered_menu
-
-    {{mouse_pos, event_log, size, scale, current_page, new_hovered, last_move_label,
-      unstable_items}, changed}
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
 
   defp process_event(
          {:demo_event, label, event},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     {new_log, new_move_label} =
       case event do
@@ -1490,29 +1524,25 @@ defmodule Demo do
 
     changed = new_log != event_log or new_move_label != last_move_label
 
-    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, new_move_label,
-      unstable_items}, changed}
+    {{mouse_pos, new_log, size, scale, current_page, new_move_label, unstable_items}, changed}
   end
 
   defp process_event(
          :scramble_unstable,
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     {new_items, child_assignments} = scramble_unstable_items(unstable_items)
     new_log = Enum.take(["Scramble: unstable list" | event_log], 20)
     changed = new_items != unstable_items or new_log != event_log or child_assignments > 0
 
-    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, last_move_label, new_items},
-     changed}
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, new_items}, changed}
   end
 
   defp process_event(
          {:unstable_row_click, label},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     {new_items, next_count} =
       update_unstable_item(unstable_items, label, fn item ->
@@ -1523,15 +1553,13 @@ defmodule Demo do
     new_log = Enum.take(["Unstable row: #{label} (#{next_count})" | event_log], 20)
     changed = new_items != unstable_items or new_log != event_log
 
-    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, last_move_label, new_items},
-     changed}
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, new_items}, changed}
   end
 
   defp process_event(
          {:unstable_child_click, parent_label, child_label},
          _state,
-         {mouse_pos, event_log, size, scale, current_page, hovered_menu, last_move_label,
-          unstable_items}
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
     {new_items, child_count} = update_unstable_child(unstable_items, child_label)
 
@@ -1539,8 +1567,7 @@ defmodule Demo do
     new_log = Enum.take([entry | event_log], 20)
     changed = new_items != unstable_items or new_log != event_log
 
-    {{mouse_pos, new_log, size, scale, current_page, hovered_menu, last_move_label, new_items},
-     changed}
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, new_items}, changed}
   end
 
   defp update_unstable_item(items, label, updater) do
@@ -1623,7 +1650,6 @@ defmodule Demo do
         size,
         scale,
         current_page,
-        hovered_menu,
         last_move_label,
         unstable_items
       ) do
@@ -1636,7 +1662,6 @@ defmodule Demo do
              size,
              scale,
              current_page,
-             hovered_menu,
              last_move_label,
              unstable_items
            ) do
@@ -1649,13 +1674,12 @@ defmodule Demo do
             size,
             scale,
             current_page,
-            hovered_menu,
             last_move_label,
             unstable_items
           )
 
-        {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_hovered,
-         new_move_label, new_unstable_items} ->
+        {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_move_label,
+         new_unstable_items} ->
           run_loop(
             renderer,
             next_state,
@@ -1664,7 +1688,6 @@ defmodule Demo do
             new_size,
             new_scale,
             new_page,
-            new_hovered,
             new_move_label,
             new_unstable_items
           )
@@ -1826,7 +1849,7 @@ initial_unstable_items = [
 ]
 
 initial_tree =
-  Demo.build_tree(initial_size, initial_mouse, [], :overview, nil, nil, initial_unstable_items)
+  Demo.build_tree(initial_size, initial_mouse, [], :overview, nil, initial_unstable_items)
 
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
@@ -1851,7 +1874,6 @@ Demo.run_loop(
   initial_size,
   initial_scale,
   :overview,
-  nil,
   nil,
   initial_unstable_items
 )

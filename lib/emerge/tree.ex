@@ -21,6 +21,7 @@ defmodule Emerge.Tree do
     :text_baseline_offset,
     :__layer,
     :scroll_capture,
+    :mouse_over_active,
     :nearby_behind,
     :nearby_in_front,
     :nearby_outside,
@@ -39,6 +40,7 @@ defmodule Emerge.Tree do
     :text_baseline_offset,
     :__layer,
     :scroll_capture,
+    :mouse_over_active,
     :__attrs_hash
   ]
 
