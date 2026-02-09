@@ -50,7 +50,11 @@ defmodule Emerge.AttrCodec do
     on_mouse_enter: 43,
     on_mouse_leave: 44,
     on_mouse_move: 45,
-    mouse_over: 46
+    mouse_over: 46,
+    font_underline: 47,
+    font_strike: 48,
+    font_letter_spacing: 49,
+    font_word_spacing: 50
   }
 
   @mouse_over_decorative_keys MapSet.new([
@@ -58,6 +62,10 @@ defmodule Emerge.AttrCodec do
                                 :border_color,
                                 :font_color,
                                 :font_size,
+                                :font_underline,
+                                :font_strike,
+                                :font_letter_spacing,
+                                :font_word_spacing,
                                 :move_x,
                                 :move_y,
                                 :rotate,
@@ -145,6 +153,10 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:on_mouse_leave, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_move, _value), do: encode_bool(true)
   defp encode_value(:mouse_over, value), do: encode_mouse_over(value)
+  defp encode_value(:font_underline, value), do: encode_bool(value)
+  defp encode_value(:font_strike, value), do: encode_bool(value)
+  defp encode_value(:font_letter_spacing, value), do: encode_f64(value)
+  defp encode_value(:font_word_spacing, value), do: encode_f64(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -191,6 +203,10 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:on_mouse_leave, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_move, rest), do: decode_bool(rest)
   defp decode_value(:mouse_over, rest), do: decode_mouse_over(rest)
+  defp decode_value(:font_underline, rest), do: decode_bool(rest)
+  defp decode_value(:font_strike, rest), do: decode_bool(rest)
+  defp decode_value(:font_letter_spacing, rest), do: decode_f64(rest)
+  defp decode_value(:font_word_spacing, rest), do: decode_f64(rest)
 
   defp encode_mouse_over(value) when is_map(value) do
     validate_mouse_over_attrs!(value)

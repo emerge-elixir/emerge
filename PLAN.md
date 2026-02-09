@@ -145,6 +145,10 @@ attr_records...   # tag (1 byte) + value (varies)
 | 39 | scroll_y | f64 (runtime, typically stripped from Elixir encoding) |
 | 40-45 | on_click/on_mouse_* | bool (presence flag) |
 | 46 | mouse_over | u32 len + nested decorative attr block |
+| 47 | font_underline | bool |
+| 48 | font_strike | bool |
+| 49 | font_letter_spacing | f64 |
+| 50 | font_word_spacing | f64 |
 
 Color encoding: 0=rgb(3×u8), 1=rgba(4×u8), 2=named(u16 len + bytes)
 
@@ -201,6 +205,7 @@ Scale is applied as Pass 0 before measurement, copying `base_attrs` → `attrs` 
 - Border radius
 - Border width
 - Font size
+- Font letter/word spacing
 
 This architecture ensures:
 1. No cumulative scaling bugs (always scales from fresh `base_attrs`)
@@ -232,6 +237,7 @@ Example: With `scale=2.0`, an element with `width(px(100))` becomes 200 physical
 - Added spacingXY + spaceEvenly (space-between) support
 - Element event system implemented (`on_click` + `on_mouse_*`) with clip/rounded/scroll-aware hit testing
 - Added declarative `mouse_over` hover styling (Rust-applied, decorative attrs only)
+- Added text decoration + spacing attrs (`underline`, `strike`, `letterSpacing`, `wordSpacing`) with inheritance and mouse_over support
 - EventProcessor introduced; input loop now enqueues raw events
 - Click dispatch and hit testing moved to event processor
 - Drag-scroll with deadzone; finger-like drag direction
@@ -328,10 +334,10 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | Font.family | ✅ | ✅ | ✅ | Family inheritance + fallback |
 | Font.bold | ✅ | ✅ | ✅ | Weight mapping with synthetic fallback |
 | Font.italic | ✅ | ✅ | ✅ | Italic mapping with synthetic fallback |
-| Font.strike | ❌ | N/A | ❌ | |
-| Font.underline | ❌ | N/A | ❌ | |
-| Font.letterSpacing | ❌ | ❌ | ❌ | |
-| Font.wordSpacing | ❌ | ❌ | ❌ | |
+| Font.strike | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
+| Font.underline | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
+| Font.letterSpacing | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
+| Font.wordSpacing | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
 | Font.alignLeft/Right/Center | ✅ | ✅ | ✅ | Text alignment |
 
 #### Transforms
@@ -390,18 +396,15 @@ Completed.
 - Render pipeline applies translate/rotate/scale around element center.
 - `alpha` opacity is supported via layer alpha.
 
-### Phase 10 - Font Rendering Improvements (Partial)
+### Phase 10 - Font Rendering Improvements ✓
 
 Completed:
 
 1. Load font families by name (`Font.family`)
 2. Apply font weight (`Font.bold`)
 3. Apply font style (`Font.italic`)
-
-Remaining:
-
-1. Text decoration (`underline`, `strike`)
-2. Letter/word spacing controls
+4. Text decoration (`underline`, `strike`)
+5. Letter/word spacing controls
 
 ### Phase 11 - Scrollbars ✓
 

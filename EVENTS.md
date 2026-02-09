@@ -78,8 +78,9 @@ block listeners behind them.
 - Layout applies `mouse_over` decorative attrs when runtime
   `mouse_over_active` is true.
 - Supported decorative attrs in `mouse_over` are: `background`,
-  `border_color`, `font_color`, `font_size`, `move_x`, `move_y`, `rotate`,
-  `scale`, and `alpha`.
+  `border_color`, `font_color`, `font_size`, `font_underline`,
+  `font_strike`, `font_letter_spacing`, `font_word_spacing`, `move_x`,
+  `move_y`, `rotate`, `scale`, and `alpha`.
 
 ## Scroll-Related Event Behavior
 

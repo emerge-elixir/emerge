@@ -108,6 +108,24 @@ fn render_element(
             .map(color_to_u32)
             .or(inherited.font_color)
             .unwrap_or(0xFFFFFFFF);
+        let underline = attrs
+            .font_underline
+            .or(inherited.font_underline)
+            .unwrap_or(false);
+        let strike = attrs
+            .font_strike
+            .or(inherited.font_strike)
+            .unwrap_or(false);
+        let letter_spacing = attrs
+            .font_letter_spacing
+            .map(|v| v as f32)
+            .or(inherited.font_letter_spacing)
+            .unwrap_or(0.0);
+        let word_spacing = attrs
+            .font_word_spacing
+            .map(|v| v as f32)
+            .or(inherited.font_word_spacing)
+            .unwrap_or(0.0);
         let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
         let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
         let (padding_right, _padding_bottom) = match attrs.padding.as_ref() {
@@ -116,7 +134,15 @@ fn render_element(
             None => (0.0, 0.0),
         };
         let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
-        let text_width = measure_text_width_with_font(content, font_size, &family, weight, italic);
+        let text_width = measure_text_width_with_font(
+            content,
+            font_size,
+            &family,
+            weight,
+            italic,
+            letter_spacing,
+            word_spacing,
+        );
         let content_width = frame.width - padding_left - padding_right;
         let text_align = attrs
             .text_align
@@ -128,16 +154,61 @@ fn render_element(
             TextAlign::Right => frame.x + frame.width - padding_right - text_width,
         };
         let baseline_y = frame.y + padding_top + ascent;
-        commands.push(DrawCmd::TextWithFont(
-            text_x,
-            baseline_y,
-            content.to_string(),
-            font_size,
-            color,
-            family,
-            weight,
-            italic,
-        ));
+
+        if letter_spacing == 0.0 && word_spacing == 0.0 {
+            commands.push(DrawCmd::TextWithFont(
+                text_x,
+                baseline_y,
+                content.to_string(),
+                font_size,
+                color,
+                family.clone(),
+                weight,
+                italic,
+            ));
+        } else {
+            let measure_font = make_font_with_style(&family, weight, italic, font_size);
+            let mut cursor_x = text_x;
+            let mut chars = content.chars().peekable();
+
+            while let Some(ch) = chars.next() {
+                let glyph = ch.to_string();
+                commands.push(DrawCmd::TextWithFont(
+                    cursor_x,
+                    baseline_y,
+                    glyph.clone(),
+                    font_size,
+                    color,
+                    family.clone(),
+                    weight,
+                    italic,
+                ));
+
+                let (glyph_width, _bounds) = measure_font.measure_str(&glyph, None);
+                cursor_x += glyph_width;
+
+                if chars.peek().is_some() {
+                    cursor_x += letter_spacing;
+                    if ch.is_whitespace() {
+                        cursor_x += word_spacing;
+                    }
+                }
+            }
+        }
+
+        if underline || strike {
+            let thickness = (font_size * 0.06).max(1.0);
+            if text_width > 0.0 {
+                if underline {
+                    let y = baseline_y + font_size * 0.08 - thickness / 2.0;
+                    commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
+                }
+                if strike {
+                    let y = baseline_y - font_size * 0.3 - thickness / 2.0;
+                    commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
+                }
+            }
+        }
     }
 
     let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
@@ -499,12 +570,37 @@ fn measure_text_width_with_font(
     family: &str,
     weight: u16,
     italic: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
 ) -> f32 {
-    use skia_safe::Font;
-
     let font = make_font_with_style(family, weight, italic, font_size);
-    let (width, _bounds) = font.measure_str(text, None);
-    width
+
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    if letter_spacing == 0.0 && word_spacing == 0.0 {
+        let (width, _bounds) = font.measure_str(text, None);
+        return width;
+    }
+
+    let mut total = 0.0;
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        let glyph = ch.to_string();
+        let (glyph_width, _bounds) = font.measure_str(&glyph, None);
+        total += glyph_width;
+
+        if chars.peek().is_some() {
+            total += letter_spacing;
+            if ch.is_whitespace() {
+                total += word_spacing;
+            }
+        }
+    }
+
+    total
 }
 
 // =============================================================================
@@ -667,6 +763,88 @@ mod tests {
     }
 
     #[test]
+    fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("Decorated".to_string());
+        attrs.font_size = Some(18.0);
+        attrs.font_color = Some(Color::Rgb { r: 1, g: 2, b: 3 });
+        attrs.font_underline = Some(true);
+        attrs.font_strike = Some(true);
+
+        let tree = build_text_tree_with_frame(
+            attrs,
+            Frame {
+                x: 10.0,
+                y: 20.0,
+                width: 220.0,
+                height: 40.0,
+                content_width: 220.0,
+                content_height: 40.0,
+            },
+        );
+
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| {
+            matches!(
+                cmd,
+                DrawCmd::TextWithFont(_, _, content, _, _, _, _, _) if content == "Decorated"
+            )
+        }));
+
+        let decoration_rects: Vec<(f32, f32, f32, f32)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::Rect(x, y, w, h, color) if *color == 0x010203FF => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(decoration_rects.len(), 2);
+        assert!(decoration_rects.iter().all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
+    }
+
+    #[test]
+    fn test_render_text_with_spacing_emits_per_glyph_commands() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("A A".to_string());
+        attrs.font_size = Some(16.0);
+        attrs.font_letter_spacing = Some(4.0);
+        attrs.font_word_spacing = Some(6.0);
+
+        let tree = build_text_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 40.0,
+                content_width: 200.0,
+                content_height: 40.0,
+            },
+        );
+
+        let commands = render_tree(&tree);
+
+        let text_cmds: Vec<(f32, String)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::TextWithFont(x, _y, text, _size, _fill, _family, _weight, _italic) => {
+                    Some((*x, text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text_cmds.len(), 3);
+        assert_eq!(text_cmds[0].1, "A");
+        assert_eq!(text_cmds[1].1, " ");
+        assert_eq!(text_cmds[2].1, "A");
+        assert!(text_cmds[0].0 < text_cmds[1].0);
+        assert!(text_cmds[1].0 < text_cmds[2].0);
+    }
+
+    #[test]
     fn test_nearby_position_calculations() {
         // Test Above: should be centered horizontally, positioned above
         let parent = Frame {
@@ -776,6 +954,17 @@ mod tests {
 
         let id = ElementId::from_term_bytes(vec![1]);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(frame);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        tree
+    }
+
+    fn build_text_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
+        let id = ElementId::from_term_bytes(vec![2]);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::Text, Vec::new(), attrs);
         element.frame = Some(frame);
 
         let mut tree = ElementTree::new();

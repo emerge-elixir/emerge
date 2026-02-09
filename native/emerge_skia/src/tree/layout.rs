@@ -131,6 +131,10 @@ pub struct FontContext {
     pub font_italic: Option<bool>,
     pub font_size: Option<f32>,
     pub font_color: Option<u32>,
+    pub font_underline: Option<bool>,
+    pub font_strike: Option<bool>,
+    pub font_letter_spacing: Option<f32>,
+    pub font_word_spacing: Option<f32>,
     pub text_align: Option<TextAlign>,
 }
 
@@ -159,9 +163,52 @@ impl FontContext {
             font_color: attrs.font_color.as_ref()
                 .map(color_to_u32)
                 .or(self.font_color),
+            font_underline: attrs.font_underline.or(self.font_underline),
+            font_strike: attrs.font_strike.or(self.font_strike),
+            font_letter_spacing: attrs.font_letter_spacing.map(|s| s as f32).or(self.font_letter_spacing),
+            font_word_spacing: attrs.font_word_spacing.map(|s| s as f32).or(self.font_word_spacing),
             text_align: attrs.text_align.or(self.text_align),
         }
     }
+}
+
+fn measure_text_width_with_spacing<M: TextMeasurer>(
+    measurer: &M,
+    text: &str,
+    font_size: f32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    spacing: (f32, f32),
+) -> f32 {
+    let (letter_spacing, word_spacing) = spacing;
+
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    if letter_spacing == 0.0 && word_spacing == 0.0 {
+        return measurer.measure_with_font(text, font_size, family, weight, italic).0;
+    }
+
+    let mut total = 0.0;
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        let glyph = ch.to_string();
+        let (glyph_width, _glyph_height) =
+            measurer.measure_with_font(&glyph, font_size, family, weight, italic);
+        total += glyph_width;
+
+        if chars.peek().is_some() {
+            total += letter_spacing;
+            if ch.is_whitespace() {
+                total += word_spacing;
+            }
+        }
+    }
+
+    total
 }
 
 /// Convert a Color to u32 RGBA format.
@@ -319,6 +366,10 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         font: attrs.font.clone(),
         font_weight: attrs.font_weight.clone(),
         font_style: attrs.font_style.clone(),
+        font_underline: attrs.font_underline,
+        font_strike: attrs.font_strike,
+        font_letter_spacing: attrs.font_letter_spacing.map(|s| s * scale_f64),
+        font_word_spacing: attrs.font_word_spacing.map(|s| s * scale_f64),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
         above: attrs.above.clone(),
@@ -344,6 +395,10 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
         border_color: attrs.border_color.clone(),
         font_color: attrs.font_color.clone(),
         font_size: attrs.font_size.map(|v| v * scale),
+        font_underline: attrs.font_underline,
+        font_strike: attrs.font_strike,
+        font_letter_spacing: attrs.font_letter_spacing.map(|v| v * scale),
+        font_word_spacing: attrs.font_word_spacing.map(|v| v * scale),
         move_x: attrs.move_x.map(|v| v * scale),
         move_y: attrs.move_y.map(|v| v * scale),
         rotate: attrs.rotate,
@@ -373,6 +428,18 @@ fn apply_mouse_over_styles(tree: &mut ElementTree) {
         }
         if let Some(font_size) = mouse_over.font_size {
             element.attrs.font_size = Some(font_size);
+        }
+        if let Some(font_underline) = mouse_over.font_underline {
+            element.attrs.font_underline = Some(font_underline);
+        }
+        if let Some(font_strike) = mouse_over.font_strike {
+            element.attrs.font_strike = Some(font_strike);
+        }
+        if let Some(font_letter_spacing) = mouse_over.font_letter_spacing {
+            element.attrs.font_letter_spacing = Some(font_letter_spacing);
+        }
+        if let Some(font_word_spacing) = mouse_over.font_word_spacing {
+            element.attrs.font_word_spacing = Some(font_word_spacing);
         }
         if let Some(move_x) = mouse_over.move_x {
             element.attrs.move_x = Some(move_x);
@@ -485,7 +552,27 @@ fn measure_element<M: TextMeasurer>(
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
             let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
-            let (text_width, text_height) = measurer.measure_with_font(content, font_size, &family, weight, italic);
+            let letter_spacing = attrs
+                .font_letter_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_letter_spacing)
+                .unwrap_or(0.0);
+            let word_spacing = attrs
+                .font_word_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_word_spacing)
+                .unwrap_or(0.0);
+            let text_width = measure_text_width_with_spacing(
+                measurer,
+                content,
+                font_size,
+                &family,
+                weight,
+                italic,
+                (letter_spacing, word_spacing),
+            );
+            let (_width, text_height) =
+                measurer.measure_with_font(content, font_size, &family, weight, italic);
             IntrinsicSize {
                 width: text_width + padding.left + padding.right,
                 height: text_height + padding.top + padding.bottom,
@@ -1765,6 +1852,30 @@ mod tests {
     }
 
     #[test]
+    fn test_layout_text_letter_and_word_spacing() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.content = Some("a b".to_string());
+        attrs.font_size = Some(10.0);
+        attrs.font_letter_spacing = Some(2.0);
+        attrs.font_word_spacing = Some(3.0);
+
+        let el = make_element("text", ElementKind::Text, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        let frame = root.frame.unwrap();
+        // 3 chars * 8 + letter spacing (2 gaps * 2) + word spacing (1 gap * 3)
+        assert_eq!(frame.width, 31.0);
+        assert_eq!(frame.height, 10.0);
+    }
+
+    #[test]
     fn test_layout_el_shrink_to_content() {
         let mut tree = ElementTree::new();
 
@@ -2386,6 +2497,30 @@ mod tests {
         // attrs should be scaled (for render to read)
         assert_eq!(root.attrs.padding, Some(Padding::Uniform(20.0)));
         assert_eq!(root.attrs.font_size, Some(32.0));
+    }
+
+    #[test]
+    fn test_layout_with_scale_scales_font_spacing() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.content = Some("a b".to_string());
+        attrs.font_size = Some(10.0);
+        attrs.font_letter_spacing = Some(2.0);
+        attrs.font_word_spacing = Some(3.0);
+
+        let el = make_element("root", ElementKind::Text, attrs);
+        let root_id = el.id.clone();
+        tree.root = Some(root_id.clone());
+        tree.insert(el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+
+        let root = tree.get(&root_id).unwrap();
+        assert_eq!(root.base_attrs.font_letter_spacing, Some(2.0));
+        assert_eq!(root.base_attrs.font_word_spacing, Some(3.0));
+        assert_eq!(root.attrs.font_letter_spacing, Some(4.0));
+        assert_eq!(root.attrs.font_word_spacing, Some(6.0));
     }
 
     #[test]
@@ -3769,6 +3904,10 @@ mod tests {
                 crate::tree::attrs::Color::Rgb { r: 200, g: 100, b: 50 },
             )),
             font_size: Some(22.0),
+            font_underline: Some(true),
+            font_strike: Some(true),
+            font_letter_spacing: Some(3.0),
+            font_word_spacing: Some(4.0),
             move_x: Some(5.0),
             alpha: Some(0.5),
             ..Default::default()
@@ -3784,6 +3923,10 @@ mod tests {
 
         let updated = tree.get(&root_id).unwrap();
         assert_eq!(updated.attrs.font_size, Some(22.0));
+        assert_eq!(updated.attrs.font_underline, Some(true));
+        assert_eq!(updated.attrs.font_strike, Some(true));
+        assert_eq!(updated.attrs.font_letter_spacing, Some(3.0));
+        assert_eq!(updated.attrs.font_word_spacing, Some(4.0));
         assert_eq!(updated.attrs.move_x, Some(5.0));
         assert_eq!(updated.attrs.alpha, Some(0.5));
         assert_eq!(

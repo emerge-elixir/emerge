@@ -119,6 +119,10 @@ pub struct MouseOverAttrs {
     pub border_color: Option<Color>,
     pub font_color: Option<Color>,
     pub font_size: Option<f64>,
+    pub font_underline: Option<bool>,
+    pub font_strike: Option<bool>,
+    pub font_letter_spacing: Option<f64>,
+    pub font_word_spacing: Option<f64>,
     pub move_x: Option<f64>,
     pub move_y: Option<f64>,
     pub rotate: Option<f64>,
@@ -163,6 +167,10 @@ pub struct Attrs {
     pub font: Option<Font>,
     pub font_weight: Option<FontWeight>,
     pub font_style: Option<FontStyle>,
+    pub font_underline: Option<bool>,
+    pub font_strike: Option<bool>,
+    pub font_letter_spacing: Option<f64>,
+    pub font_word_spacing: Option<f64>,
     pub text_align: Option<TextAlign>,
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
@@ -271,6 +279,10 @@ const TAG_ON_MOUSE_ENTER: u8 = 43;
 const TAG_ON_MOUSE_LEAVE: u8 = 44;
 const TAG_ON_MOUSE_MOVE: u8 = 45;
 const TAG_MOUSE_OVER: u8 = 46;
+const TAG_FONT_UNDERLINE: u8 = 47;
+const TAG_FONT_STRIKE: u8 = 48;
+const TAG_FONT_LETTER_SPACING: u8 = 49;
+const TAG_FONT_WORD_SPACING: u8 = 50;
 
 // =============================================================================
 // Decoder
@@ -410,6 +422,10 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
         TAG_MOUSE_OVER => attrs.mouse_over = Some(decode_mouse_over_attrs(cursor)?),
+        TAG_FONT_UNDERLINE => attrs.font_underline = Some(cursor.read_bool()?),
+        TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
+        TAG_FONT_LETTER_SPACING => attrs.font_letter_spacing = Some(cursor.read_f64()?),
+        TAG_FONT_WORD_SPACING => attrs.font_word_spacing = Some(cursor.read_f64()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -438,6 +454,10 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
             TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
             TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
             TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
+            TAG_FONT_UNDERLINE => out.font_underline = Some(nested.read_bool()?),
+            TAG_FONT_STRIKE => out.font_strike = Some(nested.read_bool()?),
+            TAG_FONT_LETTER_SPACING => out.font_letter_spacing = Some(nested.read_f64()?),
+            TAG_FONT_WORD_SPACING => out.font_word_spacing = Some(nested.read_f64()?),
             TAG_MOVE_X => out.move_x = Some(nested.read_f64()?),
             TAG_MOVE_Y => out.move_y = Some(nested.read_f64()?),
             TAG_ROTATE => out.rotate = Some(nested.read_f64()?),
@@ -797,6 +817,21 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_font_decoration_and_spacing() {
+        // 4 attrs: underline=true, strike=true, letter_spacing=1.5, word_spacing=3.0
+        let mut data = vec![0, 4, 47, 1, 48, 1, 49];
+        data.extend_from_slice(&1.5_f64.to_be_bytes());
+        data.push(50);
+        data.extend_from_slice(&3.0_f64.to_be_bytes());
+
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.font_underline, Some(true));
+        assert_eq!(attrs.font_strike, Some(true));
+        assert_eq!(attrs.font_letter_spacing, Some(1.5));
+        assert_eq!(attrs.font_word_spacing, Some(3.0));
+    }
+
+    #[test]
     fn test_decode_move_x() {
         // 1 attr, tag=31 (move_x), f64=12.5
         let mut data = vec![0, 1, 31];
@@ -856,6 +891,26 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_mouse_over_font_decoration_and_spacing() {
+        // nested: underline=true, strike=true, letter_spacing=2.0, word_spacing=4.0
+        let mut nested = vec![0, 4, 47, 1, 48, 1, 49];
+        nested.extend_from_slice(&2.0_f64.to_be_bytes());
+        nested.push(50);
+        nested.extend_from_slice(&4.0_f64.to_be_bytes());
+
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let mouse_over = attrs.mouse_over.unwrap();
+        assert_eq!(mouse_over.font_underline, Some(true));
+        assert_eq!(mouse_over.font_strike, Some(true));
+        assert_eq!(mouse_over.font_letter_spacing, Some(2.0));
+        assert_eq!(mouse_over.font_word_spacing, Some(4.0));
+    }
+
+    #[test]
     fn test_decode_mouse_over_rejects_non_decorative_tag() {
         // nested: attr_count=1, width=fill (tag 1) -> invalid in mouse_over
         let nested = vec![0, 1, 1, 0];
@@ -864,10 +919,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("mouse_over supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("mouse_over supports decorative attrs only"));
     }
 
     #[test]

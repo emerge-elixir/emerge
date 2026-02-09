@@ -27,6 +27,10 @@ defmodule Emerge.UI do
                                 :border_color,
                                 :font_color,
                                 :font_size,
+                                :font_underline,
+                                :font_strike,
+                                :font_letter_spacing,
+                                :font_word_spacing,
                                 :move_x,
                                 :move_y,
                                 :rotate,
@@ -480,6 +484,18 @@ defmodule Emerge.UI do
 
     @doc "Italic text"
     def italic, do: {:font_style, :italic}
+
+    @doc "Underline text"
+    def underline, do: {:font_underline, true}
+
+    @doc "Strike-through text"
+    def strike, do: {:font_strike, true}
+
+    @doc "Extra spacing between letters"
+    def letter_spacing(value) when is_number(value), do: {:font_letter_spacing, value}
+
+    @doc "Extra spacing between words"
+    def word_spacing(value) when is_number(value), do: {:font_word_spacing, value}
 
     @doc "Left-align text within element (default)"
     def align_left, do: {:text_align, :left}

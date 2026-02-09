@@ -108,6 +108,10 @@ on_mouse_enter    -> 43
 on_mouse_leave    -> 44
 on_mouse_move     -> 45
 mouse_over        -> 46
+font_underline    -> 47
+font_strike       -> 48
+font_letter_spacing -> 49
+font_word_spacing -> 50
 ```
 
 ## Attribute Value Encodings (current)
@@ -206,15 +210,25 @@ The nested block uses the same format as an attribute block (`attr_count` +
 - `border_color`
 - `font_color`
 - `font_size`
+- `font_underline`
+- `font_strike`
+- `font_letter_spacing`
+- `font_word_spacing`
 - `move_x`
 - `move_y`
 - `rotate`
 - `scale`
 - `alpha`
 
-### Numeric attrs (`spacing`, `move_x`, `move_y`, `rotate`, `scale`, `alpha`, `scroll_x`, `scroll_y`)
+### Numeric attrs (`spacing`, `move_x`, `move_y`, `rotate`, `scale`, `alpha`, `scroll_x`, `scroll_y`, `font_letter_spacing`, `font_word_spacing`)
 ```
 f64
+```
+
+### Font Decoration Bools (`font_underline`, `font_strike`)
+```
+0 -> false
+1 -> true
 ```
 
 ### Spacing XY (`spacing_xy`)
