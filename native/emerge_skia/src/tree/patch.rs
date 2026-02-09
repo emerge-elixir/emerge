@@ -370,4 +370,28 @@ mod tests {
             Some(crate::tree::attrs::ScrollbarHoverAxis::Y)
         );
     }
+
+    #[test]
+    fn test_patch_clears_mouse_over_active_when_mouse_over_removed() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(crate::tree::attrs::MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(true);
+
+        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.nodes.insert(id.clone(), element);
+
+        let patch = Patch::SetAttrs {
+            id: id.clone(),
+            attrs_raw: Vec::new(),
+        };
+
+        apply_patch(&mut tree, patch).unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.attrs.mouse_over, None);
+        assert_eq!(updated.attrs.mouse_over_active, None);
+    }
 }
