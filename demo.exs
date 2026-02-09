@@ -646,6 +646,10 @@ defmodule Demo do
             Background.color({:color_rgb, {86, 112, 140}}),
             Border.color({:color_rgb, {168, 210, 250}}),
             Font.color(@light_text),
+            Font.underline(),
+            Font.strike(),
+            Font.letter_spacing(1.4),
+            Font.word_spacing(2.5),
             move_y(-2),
             scale(1.02)
           ])
@@ -661,7 +665,7 @@ defmodule Demo do
           ),
           el(
             [Font.size(10), Font.color({:color_rgb, {214, 228, 246}})],
-            text("Best when hover only changes visual decoration.")
+            text("This hover also toggles underline/strike and letter/word spacing.")
           )
         ])
       )
@@ -1067,6 +1071,90 @@ defmodule Demo do
         el([Font.size(14), Font.color(:white), Font.bold()], text("Bold")),
         el([Font.size(14), Font.color(:white), Font.italic()], text("Italic")),
         el([Font.size(14), Font.color(:white), Font.bold(), Font.italic()], text("Bold Italic"))
+      ]),
+      section_title("Text Decoration & Spacing"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Underline/strike and letter/word spacing can be inherited or applied per element")
+      ),
+      row([width(fill()), spacing(10)], [
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {54, 70, 90}}),
+            Border.rounded(6),
+            Font.size(13),
+            Font.color(:white),
+            Font.underline()
+          ],
+          text("Underline")
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {72, 62, 88}}),
+            Border.rounded(6),
+            Font.size(13),
+            Font.color(:white),
+            Font.strike()
+          ],
+          text("Strike")
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {70, 80, 62}}),
+            Border.rounded(6),
+            Font.size(13),
+            Font.color(:white),
+            Font.underline(),
+            Font.strike()
+          ],
+          text("Underline + Strike")
+        )
+      ]),
+      row([width(fill()), spacing(10)], [
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {45, 60, 82}}),
+            Border.rounded(6),
+            Font.size(12),
+            Font.color(:white),
+            Font.letter_spacing(2.5)
+          ],
+          text("LETTER SPACING")
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {56, 74, 66}}),
+            Border.rounded(6),
+            Font.size(12),
+            Font.color(:white),
+            Font.word_spacing(5)
+          ],
+          text("word spacing demo")
+        ),
+        el(
+          [
+            width(fill()),
+            padding(8),
+            Background.color({:color_rgb, {75, 62, 62}}),
+            Border.rounded(6),
+            Font.size(12),
+            Font.color(:white),
+            Font.underline(),
+            Font.letter_spacing(1.5),
+            Font.word_spacing(3)
+          ],
+          text("combined spacing")
+        )
       ]),
       section_title("Text Alignment"),
       row([width(fill()), spacing(8)], [
