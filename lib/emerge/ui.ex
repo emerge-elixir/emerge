@@ -38,6 +38,8 @@ defmodule Emerge.UI do
                                 :alpha
                               ])
 
+  @override_warning_store_key :emerge_ui_override_warnings
+
   # ============================================
   # LAYOUT ELEMENTS
   # ============================================
@@ -167,7 +169,9 @@ defmodule Emerge.UI do
   def text_column(attrs, children) when is_list(attrs) and is_list(children) do
     defaults = [width(fill()), height(content())]
 
-    parsed = parse_attrs(defaults ++ attrs)
+    default_attrs = parse_attrs(defaults, warn_overrides: false)
+    user_attrs = parse_attrs(attrs)
+    parsed = Map.merge(default_attrs, user_attrs)
     {key, parsed} = Map.pop(parsed, :key)
     id = key
     parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
@@ -429,12 +433,21 @@ defmodule Emerge.UI do
   # ATTRIBUTE PARSING
   # ============================================
 
-  defp parse_attrs(attrs) do
+  defp parse_attrs(attrs, opts \\ []) do
+    warn_overrides = Keyword.get(opts, :warn_overrides, true)
+
     parsed =
       Enum.reduce(attrs, %{}, fn
-        {key, value}, acc -> Map.put(acc, key, value)
-        other, acc when is_map(other) -> Map.merge(acc, other)
-        _, acc -> acc
+        {key, value}, acc ->
+          put_attr(acc, key, value, warn_overrides)
+
+        other, acc when is_map(other) ->
+          Enum.reduce(other, acc, fn
+            {key, value}, map_acc -> put_attr(map_acc, key, value, warn_overrides)
+          end)
+
+        _, acc ->
+          acc
       end)
 
     validate_scrollbar_clipping!(parsed)
@@ -452,6 +465,34 @@ defmodule Emerge.UI do
 
     validate_mouse_over_attrs!(parsed)
     parsed
+  end
+
+  defp put_attr(acc, key, value, warn_overrides) do
+    if warn_overrides do
+      maybe_warn_override(acc, key, value)
+    end
+
+    Map.put(acc, key, value)
+  end
+
+  defp maybe_warn_override(acc, key, value) do
+    case Map.fetch(acc, key) do
+      {:ok, prev_value} when prev_value != value ->
+        signature = {:attrs, key, prev_value, value}
+        warned = Process.get(@override_warning_store_key, MapSet.new())
+
+        if !MapSet.member?(warned, signature) do
+          Process.put(@override_warning_store_key, MapSet.put(warned, signature))
+
+          IO.warn(
+            "Emerge.UI attribute #{inspect(key)} is set multiple times with different values " <>
+              "(#{inspect(prev_value)} -> #{inspect(value)}); last value wins"
+          )
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   defp validate_mouse_over_payload!(attrs) do

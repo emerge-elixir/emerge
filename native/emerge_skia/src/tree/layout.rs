@@ -900,7 +900,7 @@ fn resolve_element<M: TextMeasurer>(
             }
         }
 
-        ElementKind::Column | ElementKind::TextColumn => {
+        ElementKind::Column => {
             let allow_fill_height = available_height.is_definite();
             let space_evenly = attrs.space_evenly.unwrap_or(false) && allow_fill_height;
             let mut actual_content_height = resolve_column_children(
@@ -955,16 +955,47 @@ fn resolve_element<M: TextMeasurer>(
             }
         }
 
+        ElementKind::TextColumn => {
+            let actual_content_height = resolve_text_column_children(
+                tree,
+                &child_ids,
+                content_x,
+                content_y,
+                content_width,
+                spacing_x,
+                spacing_y,
+                &element_context,
+                measurer,
+            );
+
+            if actual_content_height > content_height && !is_scrollable {
+                let new_height = actual_content_height + padding.top + padding.bottom;
+                if let Some(element) = tree.get_mut(id)
+                    && let Some(ref mut frame) = element.frame
+                {
+                    frame.height = new_height;
+                    frame.content_height = new_height;
+                }
+            } else if let Some(element) = tree.get_mut(id)
+                && let Some(ref mut frame) = element.frame
+            {
+                frame.content_height = actual_content_height + padding.top + padding.bottom;
+            }
+        }
+
         ElementKind::Paragraph => {
+            let mut paragraph_floats = Vec::new();
             let (fragments, actual_content_height) = resolve_paragraph_children(
                 tree,
                 &child_ids,
                 content_x,
                 content_y,
                 content_width,
+                spacing_x,
                 spacing_y,
                 &element_context,
                 measurer,
+                &mut paragraph_floats,
             );
 
             // Store fragments on the paragraph element
@@ -1701,6 +1732,352 @@ fn resolve_column_children<M: TextMeasurer>(
     actual_top_height + actual_center_height + actual_bottom_height + inter_zone_spacing
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FlowFloat {
+    side: AlignX,
+    x: f32,
+    width: f32,
+    top: f32,
+    bottom: f32,
+}
+
+fn prune_flow_floats(active_floats: &mut Vec<FlowFloat>, y: f32) {
+    active_floats.retain(|flow_float| flow_float.bottom > y + 0.001);
+}
+
+fn max_flow_float_bottom(active_floats: &[FlowFloat]) -> Option<f32> {
+    active_floats
+        .iter()
+        .map(|flow_float| flow_float.bottom)
+        .max_by(|a, b| a.total_cmp(b))
+}
+
+fn max_flow_float_bottom_for_side(active_floats: &[FlowFloat], side: AlignX) -> Option<f32> {
+    active_floats
+        .iter()
+        .filter(|flow_float| flow_float.side == side)
+        .map(|flow_float| flow_float.bottom)
+        .max_by(|a, b| a.total_cmp(b))
+}
+
+fn next_flow_float_bottom(active_floats: &[FlowFloat], y: f32) -> Option<f32> {
+    active_floats
+        .iter()
+        .filter(|flow_float| flow_float.bottom > y + 0.001)
+        .map(|flow_float| flow_float.bottom)
+        .min_by(|a, b| a.total_cmp(b))
+}
+
+fn flow_line_bounds(
+    content_x: f32,
+    content_width: f32,
+    line_y: f32,
+    line_height: f32,
+    spacing_x: f32,
+    active_floats: &[FlowFloat],
+) -> (f32, f32) {
+    let mut left = content_x;
+    let mut right = content_x + content_width;
+    let line_bottom = line_y + line_height.max(1.0);
+
+    for flow_float in active_floats {
+        let overlaps_line = flow_float.bottom > line_y && flow_float.top < line_bottom;
+        if !overlaps_line {
+            continue;
+        }
+
+        match flow_float.side {
+            AlignX::Left => {
+                let candidate = (flow_float.x + flow_float.width + spacing_x).min(content_x + content_width);
+                left = left.max(candidate);
+            }
+            AlignX::Right => {
+                let candidate = (flow_float.x - spacing_x).max(content_x);
+                right = right.min(candidate);
+            }
+            AlignX::Center => {}
+        }
+    }
+
+    (left, right.max(left))
+}
+
+#[allow(clippy::too_many_arguments, unused_assignments)]
+fn place_flow_float<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_id: &ElementId,
+    side: AlignX,
+    desired_y: f32,
+    content_x: f32,
+    content_width: f32,
+    spacing_x: f32,
+    inherited: &FontContext,
+    measurer: &M,
+    active_floats: &[FlowFloat],
+) -> Option<FlowFloat> {
+    let (desired_width, desired_height) = {
+        let child = tree.get(child_id)?;
+        let intrinsic_width = child.frame.map(|frame| frame.width).unwrap_or(0.0);
+        let intrinsic_height = child.frame.map(|frame| frame.height).unwrap_or(0.0);
+
+        let width = resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic_width)
+            .max(0.0)
+            .min(content_width);
+        let height = resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic_height).max(0.0);
+        (width, height)
+    };
+
+    let mut float_y = desired_y;
+    if let Some(side_bottom) = max_flow_float_bottom_for_side(active_floats, side) {
+        float_y = float_y.max(side_bottom);
+    }
+
+    let mut line_left = content_x;
+    let mut line_right = content_x + content_width;
+    loop {
+        let (left, right) = flow_line_bounds(
+            content_x,
+            content_width,
+            float_y,
+            desired_height.max(1.0),
+            spacing_x,
+            active_floats,
+        );
+        line_left = left;
+        line_right = right;
+
+        let available_width = (line_right - line_left).max(0.0);
+        if desired_width <= available_width + 0.001 {
+            break;
+        }
+
+        let Some(next_y) = next_flow_float_bottom(active_floats, float_y) else {
+            break;
+        };
+
+        if next_y <= float_y + 0.001 {
+            break;
+        }
+
+        float_y = next_y;
+    }
+
+    let float_x = match side {
+        AlignX::Left => line_left,
+        AlignX::Right => (line_right - desired_width).max(line_left),
+        AlignX::Center => line_left,
+    };
+
+    let child_constraint = Constraint::new(desired_width.max(0.0), desired_height.max(0.0));
+    resolve_element(
+        tree,
+        child_id,
+        child_constraint,
+        float_x,
+        float_y,
+        inherited,
+        measurer,
+    );
+
+    let mut frame = tree.get(child_id).and_then(|child| child.frame)?;
+
+    if matches!(side, AlignX::Left | AlignX::Right) {
+        let (left, right) = flow_line_bounds(
+            content_x,
+            content_width,
+            frame.y,
+            frame.height.max(1.0),
+            spacing_x,
+            active_floats,
+        );
+
+        let target_x = match side {
+            AlignX::Left => left,
+            AlignX::Right => (right - frame.width).max(left),
+            AlignX::Center => frame.x,
+        };
+
+        let dx = target_x - frame.x;
+        if dx != 0.0 {
+            shift_subtree(tree, child_id, dx, 0.0);
+            frame.x += dx;
+        }
+    }
+
+    Some(FlowFloat {
+        side,
+        x: frame.x,
+        width: frame.width,
+        top: frame.y,
+        bottom: frame.y + frame.height,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_paragraph_with_flow<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_id: &ElementId,
+    x: f32,
+    y: f32,
+    width: f32,
+    inherited: &FontContext,
+    measurer: &M,
+    active_floats: &mut Vec<FlowFloat>,
+) {
+    let child_constraint = Constraint::new(width, f32::MAX);
+    resolve_element(tree, child_id, child_constraint, x, y, inherited, measurer);
+
+    let (child_ids, attrs, frame) = {
+        let Some(child) = tree.get(child_id) else { return };
+        (child.children.clone(), child.attrs.clone(), child.frame)
+    };
+    let Some(frame) = frame else {
+        return;
+    };
+
+    let padding = get_padding(attrs.padding.as_ref());
+    let content_x = frame.x + padding.left;
+    let content_y = frame.y + padding.top;
+    let content_width = (frame.width - padding.left - padding.right).max(0.0);
+    let content_height = (frame.height - padding.top - padding.bottom).max(0.0);
+    let spacing_x = spacing_x(&attrs);
+    let spacing_y = spacing_y(&attrs);
+    let is_scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+    let element_context = inherited.merge_with_attrs(&attrs);
+
+    let (fragments, actual_content_height) = resolve_paragraph_children(
+        tree,
+        &child_ids,
+        content_x,
+        content_y,
+        content_width,
+        spacing_x,
+        spacing_y,
+        &element_context,
+        measurer,
+        active_floats,
+    );
+
+    if let Some(element) = tree.get_mut(child_id) {
+        element.attrs.paragraph_fragments = Some(fragments);
+    }
+
+    if actual_content_height > content_height && !is_scrollable {
+        let new_height = actual_content_height + padding.top + padding.bottom;
+        if let Some(element) = tree.get_mut(child_id)
+            && let Some(ref mut child_frame) = element.frame
+        {
+            child_frame.height = new_height;
+            child_frame.content_height = new_height;
+        }
+    } else if let Some(element) = tree.get_mut(child_id)
+        && let Some(ref mut child_frame) = element.frame
+    {
+        child_frame.content_height = actual_content_height + padding.top + padding.bottom;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_text_column_children<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content_x: f32,
+    content_y: f32,
+    content_width: f32,
+    spacing_x: f32,
+    spacing_y: f32,
+    inherited: &FontContext,
+    measurer: &M,
+) -> f32 {
+    if child_ids.is_empty() {
+        return 0.0;
+    }
+
+    let mut active_floats: Vec<FlowFloat> = Vec::new();
+    let mut next_flow_y = content_y;
+    let mut max_bottom = content_y;
+    let mut has_prior_child = false;
+
+    for child_id in child_ids {
+        if has_prior_child {
+            next_flow_y += spacing_y;
+        }
+        has_prior_child = true;
+
+        prune_flow_floats(&mut active_floats, next_flow_y);
+
+        let (kind, child_align_x) = {
+            let Some(child) = tree.get(child_id) else { continue };
+            (child.kind, child.attrs.align_x)
+        };
+
+        if let Some(side) = child_align_x
+            && matches!(side, AlignX::Left | AlignX::Right)
+        {
+            if let Some(flow_float) = place_flow_float(
+                tree,
+                child_id,
+                side,
+                next_flow_y,
+                content_x,
+                content_width,
+                spacing_x,
+                inherited,
+                measurer,
+                &active_floats,
+            ) {
+                max_bottom = max_bottom.max(flow_float.bottom);
+                active_floats.push(flow_float);
+            }
+            continue;
+        }
+
+        let mut child_y = next_flow_y;
+        if kind != ElementKind::Paragraph
+            && let Some(float_bottom) = max_flow_float_bottom(&active_floats)
+        {
+            child_y = child_y.max(float_bottom);
+            prune_flow_floats(&mut active_floats, child_y);
+        }
+
+        if kind == ElementKind::Paragraph {
+            resolve_paragraph_with_flow(
+                tree,
+                child_id,
+                content_x,
+                child_y,
+                content_width,
+                inherited,
+                measurer,
+                &mut active_floats,
+            );
+        } else {
+            let child_constraint = Constraint::new(content_width, f32::MAX);
+            resolve_element(tree, child_id, child_constraint, content_x, child_y, inherited, measurer);
+        }
+
+        let align_x = tree
+            .get(child_id)
+            .map(|child| child.attrs.align_x.unwrap_or_default())
+            .unwrap_or_default();
+        apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
+
+        let child_bottom = tree
+            .get(child_id)
+            .and_then(|child| child.frame.as_ref())
+            .map(|frame| frame.y + frame.height)
+            .unwrap_or(child_y);
+
+        next_flow_y = child_bottom;
+        max_bottom = max_bottom.max(child_bottom);
+        if let Some(float_bottom) = max_flow_float_bottom(&active_floats) {
+            max_bottom = max_bottom.max(float_bottom);
+        }
+    }
+
+    (max_bottom - content_y).max(0.0)
+}
+
 /// Apply horizontal alignment to a child element.
 fn apply_horizontal_alignment(
     tree: &mut ElementTree,
@@ -1840,23 +2217,79 @@ fn extract_inline_text(
 
 /// Resolve paragraph children by word-wrapping text content.
 /// Returns (fragments, total_content_height).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unused_assignments)]
 fn resolve_paragraph_children<M: TextMeasurer>(
-    tree: &ElementTree,
+    tree: &mut ElementTree,
     child_ids: &[ElementId],
     content_x: f32,
     content_y: f32,
     content_width: f32,
+    spacing_x: f32,
     spacing_y: f32,
     inherited: &FontContext,
     measurer: &M,
+    active_floats: &mut Vec<FlowFloat>,
 ) -> (Vec<TextFragment>, f32) {
+    let incoming_float_count = active_floats.len();
     let mut fragments = Vec::new();
-    let mut cursor_x = content_x;
     let mut cursor_y = content_y;
+    let mut local_float_bottom = content_y;
     let mut line_height: f32 = 0.0;
 
+    prune_flow_floats(active_floats, cursor_y);
+    let (mut line_left, mut line_right) =
+        flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+    let mut cursor_x = line_left;
+
     for child_id in child_ids {
+        let float_side = tree
+            .get(child_id)
+            .and_then(|child| child.attrs.align_x)
+            .filter(|side| matches!(side, AlignX::Left | AlignX::Right));
+
+        if let Some(side) = float_side {
+            if line_height > 0.0 && cursor_x > line_left + 0.001 {
+                cursor_y += line_height + spacing_y;
+                line_height = 0.0;
+                prune_flow_floats(active_floats, cursor_y);
+                (line_left, line_right) =
+                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                cursor_x = line_left;
+            }
+
+            if let Some(flow_float) = place_flow_float(
+                tree,
+                child_id,
+                side,
+                cursor_y,
+                content_x,
+                content_width,
+                spacing_x,
+                inherited,
+                measurer,
+                active_floats,
+            ) {
+                local_float_bottom = local_float_bottom.max(flow_float.bottom);
+                active_floats.push(flow_float);
+            }
+
+            (line_left, line_right) = flow_line_bounds(
+                content_x,
+                content_width,
+                cursor_y,
+                line_height.max(1.0),
+                spacing_x,
+                active_floats,
+            );
+            if line_height == 0.0 {
+                cursor_x = line_left;
+            } else if cursor_x < line_left {
+                cursor_x = line_left;
+            }
+
+            continue;
+        }
+
         let Some((content, font_ctx)) = extract_inline_text(tree, child_id, inherited) else {
             continue;
         };
@@ -1885,17 +2318,66 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
         // Add leading space if content starts with whitespace
         if starts_with_space && !words.is_empty() {
+            (line_left, line_right) = flow_line_bounds(
+                content_x,
+                content_width,
+                cursor_y,
+                line_height.max(text_height).max(1.0),
+                spacing_x,
+                active_floats,
+            );
+            if cursor_x < line_left {
+                cursor_x = line_left;
+            }
+            if cursor_x > line_left + 0.001 && cursor_x + space_width > line_right {
+                cursor_y += line_height + spacing_y;
+                line_height = 0.0;
+                prune_flow_floats(active_floats, cursor_y);
+                (line_left, line_right) =
+                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                cursor_x = line_left;
+            }
             cursor_x += space_width;
         }
 
         for (i, word) in words.iter().enumerate() {
             let (word_width, _) = measurer.measure_with_font(word, font_size, &family, weight, italic);
 
-            // Wrap if word doesn't fit and we're not at line start
-            if cursor_x > content_x && cursor_x + word_width > content_x + content_width {
-                cursor_y += line_height + spacing_y;
-                cursor_x = content_x;
-                line_height = 0.0;
+            loop {
+                prune_flow_floats(active_floats, cursor_y);
+                (line_left, line_right) = flow_line_bounds(
+                    content_x,
+                    content_width,
+                    cursor_y,
+                    line_height.max(text_height).max(1.0),
+                    spacing_x,
+                    active_floats,
+                );
+
+                if cursor_x < line_left {
+                    cursor_x = line_left;
+                }
+
+                let available_width = (line_right - line_left).max(0.0);
+                if available_width <= 0.001
+                    && let Some(next_y) = next_flow_float_bottom(active_floats, cursor_y)
+                    && next_y > cursor_y + 0.001
+                {
+                    cursor_y = next_y;
+                    line_height = 0.0;
+                    cursor_x = content_x;
+                    continue;
+                }
+
+                // Wrap if word doesn't fit and we're not at line start
+                if cursor_x > line_left + 0.001 && cursor_x + word_width > line_right {
+                    cursor_y += line_height + spacing_y;
+                    line_height = 0.0;
+                    cursor_x = content_x;
+                    continue;
+                }
+
+                break;
             }
 
             fragments.push(TextFragment {
@@ -1917,21 +2399,70 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
             // Add space after word (unless last word)
             if i < words.len() - 1 {
-                cursor_x += space_width;
+                (line_left, line_right) = flow_line_bounds(
+                    content_x,
+                    content_width,
+                    cursor_y,
+                    line_height.max(1.0),
+                    spacing_x,
+                    active_floats,
+                );
+
+                if cursor_x < line_left {
+                    cursor_x = line_left;
+                }
+
+                if cursor_x > line_left + 0.001 && cursor_x + space_width > line_right {
+                    cursor_y += line_height + spacing_y;
+                    line_height = 0.0;
+                    prune_flow_floats(active_floats, cursor_y);
+                    (line_left, line_right) =
+                        flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                    cursor_x = line_left;
+                } else {
+                    cursor_x += space_width;
+                }
             }
         }
 
         // Add trailing space if content ends with whitespace
         if ends_with_space && !words.is_empty() {
+            (line_left, line_right) = flow_line_bounds(
+                content_x,
+                content_width,
+                cursor_y,
+                line_height.max(1.0),
+                spacing_x,
+                active_floats,
+            );
+
+            if cursor_x < line_left {
+                cursor_x = line_left;
+            }
+            if cursor_x > line_left + 0.001 && cursor_x + space_width > line_right {
+                cursor_y += line_height + spacing_y;
+                line_height = 0.0;
+                prune_flow_floats(active_floats, cursor_y);
+                (line_left, line_right) =
+                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                cursor_x = line_left;
+            }
             cursor_x += space_width;
         }
     }
 
-    let total_height = if line_height > 0.0 {
-        cursor_y - content_y + line_height
+    if active_floats.len() > incoming_float_count {
+        for flow_float in active_floats.iter().skip(incoming_float_count) {
+            local_float_bottom = local_float_bottom.max(flow_float.bottom);
+        }
+    }
+
+    let text_bottom = if line_height > 0.0 {
+        cursor_y + line_height
     } else {
-        0.0
+        content_y
     };
+    let total_height = (text_bottom.max(local_float_bottom) - content_y).max(0.0);
 
     (fragments, total_height)
 }
@@ -4689,6 +5220,114 @@ mod tests {
         assert_eq!(fragments[2].text, "CC");
         assert_eq!(fragments[2].x, 0.0);
         assert_eq!(fragments[2].y, 16.0);
+    }
+
+    #[test]
+    fn test_paragraph_align_left_float_wraps_then_releases_width() {
+        let mut float_attrs = Attrs::default();
+        float_attrs.align_x = Some(AlignX::Left);
+        float_attrs.width = Some(Length::Px(24.0));
+        float_attrs.height = Some(Length::Px(40.0));
+
+        let (mut tree, para_id, child_ids) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(80.0));
+                a
+            },
+            vec![
+                ("float", ElementKind::El, float_attrs),
+                ("t", ElementKind::Text, text_attrs("AA BB CC DD EE FF GG HH")),
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let float_frame = tree.get(&child_ids[0]).unwrap().frame.unwrap();
+        assert_eq!(float_frame.x, 0.0);
+        assert_eq!(float_frame.y, 0.0);
+        assert_eq!(float_frame.width, 24.0);
+        assert_eq!(float_frame.height, 40.0);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert!(!fragments.is_empty());
+
+        let first_fragment = &fragments[0];
+        assert_eq!(first_fragment.text, "AA");
+        assert_eq!(first_fragment.x, 24.0);
+        assert_eq!(first_fragment.y, 0.0);
+
+        let released = fragments
+            .iter()
+            .find(|fragment| fragment.text == "GG")
+            .expect("expected GG fragment after float expires");
+        assert_eq!(released.x, 0.0);
+        assert!(released.y >= 40.0);
+    }
+
+    #[test]
+    fn test_text_column_non_paragraph_child_clears_below_active_floats() {
+        let mut tree = ElementTree::new();
+
+        let mut text_col_attrs = Attrs::default();
+        text_col_attrs.width = Some(Length::Px(80.0));
+        text_col_attrs.spacing_y = Some(8.0);
+        let mut text_col = make_element("text_col", ElementKind::TextColumn, text_col_attrs);
+
+        let mut float_attrs = Attrs::default();
+        float_attrs.align_x = Some(AlignX::Left);
+        float_attrs.width = Some(Length::Px(24.0));
+        float_attrs.height = Some(Length::Px(40.0));
+        let float_el = make_element("float", ElementKind::El, float_attrs);
+
+        let mut para = make_element("para", ElementKind::Paragraph, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a
+        });
+
+        let para_text = make_element("para_text", ElementKind::Text, text_attrs("AA"));
+
+        let below_block = make_element("below", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(10.0));
+            a
+        });
+
+        let text_col_id = text_col.id.clone();
+        let float_id = float_el.id.clone();
+        let para_id = para.id.clone();
+        let para_text_id = para_text.id.clone();
+        let below_id = below_block.id.clone();
+
+        para.children = vec![para_text_id.clone()];
+        text_col.children = vec![float_id.clone(), para_id.clone(), below_id.clone()];
+
+        tree.root = Some(text_col_id.clone());
+        tree.insert(text_col);
+        tree.insert(float_el);
+        tree.insert(para);
+        tree.insert(para_text);
+        tree.insert(below_block);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let float_frame = tree.get(&float_id).unwrap().frame.unwrap();
+        assert_eq!(float_frame.y, 0.0);
+        assert_eq!(float_frame.height, 40.0);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments[0].x, 24.0);
+        assert_eq!(fragments[0].y, 8.0);
+
+        let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+        assert_eq!(below_frame.y, 40.0);
+
+        let text_col_frame = tree.get(&text_col_id).unwrap().frame.unwrap();
+        assert_eq!(text_col_frame.content_height, 50.0);
     }
 
     #[test]
