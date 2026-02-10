@@ -69,22 +69,18 @@ defmodule EmergeSkia.Native do
   def render(_renderer, _commands), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Upload a full EMRG tree, run layout with scale factor, and render immediately.
-  Scale is applied to all pixel-based attributes.
+  Upload a full EMRG tree, run layout, and render immediately.
+  Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_upload(reference(), binary(), float(), float(), float()) ::
-          :ok | {:error, String.t()}
-  def renderer_upload(_renderer, _data, _width, _height, _scale),
-    do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_upload(reference(), binary()) :: :ok | {:error, String.t()}
+  def renderer_upload(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Apply EMRG patches, run layout with scale factor, and render immediately.
-  Scale is applied to all pixel-based attributes.
+  Apply EMRG patches, run layout, and render immediately.
+  Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_patch(reference(), binary(), float(), float(), float()) ::
-          :ok | {:error, String.t()}
-  def renderer_patch(_renderer, _data, _width, _height, _scale),
-    do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_patch(reference(), binary()) :: :ok | {:error, String.t()}
+  def renderer_patch(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Measure text dimensions.

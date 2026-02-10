@@ -9,12 +9,11 @@ use crate::tree::element::ElementId;
 pub enum TreeMsg {
     UploadTree {
         bytes: Vec<u8>,
-        width: f32,
-        height: f32,
-        scale: f32,
     },
     PatchTree {
         bytes: Vec<u8>,
+    },
+    Resize {
         width: f32,
         height: f32,
         scale: f32,
