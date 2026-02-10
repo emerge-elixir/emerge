@@ -148,6 +148,41 @@ defmodule Emerge.UI do
   def column(children) when is_list(children), do: column([], children)
 
   @doc """
+  A text column lays out paragraph-oriented content vertically.
+
+  It behaves like a column but comes with document-friendly defaults:
+
+  - `width(fill())`
+  - `height(content())`
+
+  You can override these by passing explicit width/height attributes.
+
+  ## Example
+
+      text_column([spacing(14)], [
+        paragraph([spacing(4)], [text("First paragraph")]),
+        paragraph([spacing(4)], [text("Second paragraph")])
+      ])
+  """
+  def text_column(attrs, children) when is_list(attrs) and is_list(children) do
+    defaults = [width(fill()), height(content())]
+
+    parsed = parse_attrs(defaults ++ attrs)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :text_column,
+      id: id,
+      attrs: parsed,
+      children: children
+    }
+  end
+
+  def text_column(children) when is_list(children), do: text_column([], children)
+
+  @doc """
   A paragraph lays out inline text children with word wrapping.
 
   Children should be `text/1` elements or `el/2`-wrapped text elements.

@@ -1301,7 +1301,7 @@ defmodule Demo do
       ),
       el(
         [
-          width(px(500)),
+          width(fill()),
           padding(16),
           Background.color({:color_rgb, {40, 40, 60}}),
           Border.rounded(10)
@@ -1326,6 +1326,46 @@ defmodule Demo do
             )
           ])
         ])
+      ),
+      section_title("Text Column"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Use text_column to group multiple paragraphs into a readable article block")
+      ),
+      el(
+        [
+          width(fill()),
+          padding(16),
+          Background.color({:color_rgb, {37, 44, 58}}),
+          Border.rounded(10)
+        ],
+        text_column(
+          [
+            center_x(),
+            spacing(14),
+            Font.size(14),
+            Font.color({:color_rgb, {220, 226, 236}})
+          ],
+          [
+            paragraph([spacing(4)], [
+              text(
+                "Text columns are useful for blog posts, release notes, and long-form product " <>
+                  "explanations where several paragraphs should read as one section."
+              )
+            ]),
+            paragraph([spacing(4)], [
+              text("This block keeps a comfortable reading width by default, and you can still "),
+              el([Font.bold(), Font.color(@blue)], text("override width or spacing")),
+              text(" when a specific layout needs tighter control.")
+            ]),
+            paragraph([spacing(4)], [
+              text(
+                "In this demo it behaves like a vertical text container with paragraph-friendly " <>
+                  "defaults, so it is easy to compose document-style content."
+              )
+            ])
+          ]
+        )
       )
     ])
   end

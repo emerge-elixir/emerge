@@ -3,7 +3,15 @@ defmodule Emerge.Element do
   Core data structure representing a layout element in the Emerge tree.
   """
 
-  @type element_type :: :row | :wrapped_row | :column | :el | :text | :none | :paragraph
+  @type element_type ::
+          :row
+          | :wrapped_row
+          | :column
+          | :text_column
+          | :el
+          | :text
+          | :none
+          | :paragraph
 
   @type frame :: %{
           x: number(),

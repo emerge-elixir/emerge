@@ -82,6 +82,23 @@ defmodule Emerge.SerializationTest do
     assert length(decoded.children) == 3
   end
 
+  test "text_column roundtrip preserves type, defaults, and children" do
+    layout =
+      text_column([spacing(10)], [
+        paragraph([spacing(4)], [text("First paragraph")]),
+        paragraph([spacing(4)], [text("Second paragraph")])
+      ])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert strip_runtime(decoded) == strip_runtime(tree)
+    assert decoded.type == :text_column
+    assert decoded.attrs.width == :fill
+    assert decoded.attrs.height == :content
+    assert length(decoded.children) == 2
+  end
+
   defp strip_runtime(%Emerge.Element{} = element) do
     %{
       element
