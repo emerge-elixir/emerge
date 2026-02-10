@@ -1263,10 +1263,10 @@ defmodule Demo do
     end
   end
 
-  defp render_update(renderer, state, tree, {width, height}, scale) do
+  defp render_update(renderer, state, tree) do
     {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
 
-    case EmergeSkia.Native.renderer_patch(renderer, patch_bin, width, height, scale) do
+    case EmergeSkia.Native.renderer_patch(renderer, patch_bin) do
       :ok -> next_state
       {:ok, _} -> next_state
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
@@ -1462,7 +1462,7 @@ defmodule Demo do
         IO.puts("demo render_seq=#{render_seq} mouse_pos=#{inspect(new_mouse_pos)}")
       end
 
-      next_state = render_update(renderer, state, tree, new_size, new_scale)
+      next_state = render_update(renderer, state, tree)
 
       {:ok, next_state, new_mouse_pos, new_log, new_size, new_scale, new_page, new_move,
        new_unstable}
@@ -1942,13 +1942,7 @@ initial_tree =
 state = Emerge.diff_state_new()
 {full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
 
-case EmergeSkia.Native.renderer_upload(
-       renderer,
-       full_bin,
-       elem(initial_size, 0),
-       elem(initial_size, 1),
-       initial_scale
-     ) do
+case EmergeSkia.Native.renderer_upload(renderer, full_bin) do
   :ok -> :ok
   {:ok, _} -> :ok
   {:error, reason} -> raise "renderer_upload failed: #{reason}"

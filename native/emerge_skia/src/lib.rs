@@ -170,6 +170,7 @@ struct StartConfig {
     render_log: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tree_actor(
     tree_rx: Receiver<TreeMsg>,
     render_sender: RenderSender,
@@ -177,11 +178,13 @@ fn spawn_tree_actor(
     render_counter: Arc<AtomicU64>,
     log_input: bool,
     wayland_proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
+    initial_width: u32,
+    initial_height: u32,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut tree = ElementTree::new();
-        let mut width = 1.0f32;
-        let mut height = 1.0f32;
+        let mut width = (initial_width as f32).max(1.0);
+        let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
 
         while let Ok(msg) = tree_rx.recv() {
@@ -201,29 +204,18 @@ fn spawn_tree_actor(
             for message in messages {
                 match message {
                     TreeMsg::Stop => return,
-                    TreeMsg::UploadTree {
-                        bytes,
-                        width: new_width,
-                        height: new_height,
-                        scale: new_scale,
-                    } => match tree::deserialize::decode_tree(&bytes) {
-                        Ok(decoded) => {
-                            tree = decoded;
-                            width = new_width.max(1.0);
-                            height = new_height.max(1.0);
-                            scale = new_scale;
-                            changed = true;
+                    TreeMsg::UploadTree { bytes } => {
+                        match tree::deserialize::decode_tree(&bytes) {
+                            Ok(decoded) => {
+                                tree = decoded;
+                                changed = true;
+                            }
+                            Err(err) => {
+                                eprintln!("tree upload failed: {err}");
+                            }
                         }
-                        Err(err) => {
-                            eprintln!("tree upload failed: {err}");
-                        }
-                    },
-                    TreeMsg::PatchTree {
-                        bytes,
-                        width: new_width,
-                        height: new_height,
-                        scale: new_scale,
-                    } => {
+                    }
+                    TreeMsg::PatchTree { bytes } => {
                         let patches = match tree::patch::decode_patches(&bytes) {
                             Ok(patches) => patches,
                             Err(err) => {
@@ -235,9 +227,16 @@ fn spawn_tree_actor(
                             eprintln!("tree patch apply failed: {err}");
                             continue;
                         }
-                        width = new_width.max(1.0);
-                        height = new_height.max(1.0);
-                        scale = new_scale;
+                        changed = true;
+                    }
+                    TreeMsg::Resize {
+                        width: w,
+                        height: h,
+                        scale: s,
+                    } => {
+                        width = w.max(1.0);
+                        height = h.max(1.0);
+                        scale = s;
                         changed = true;
                     }
                     TreeMsg::ScrollRequest { element_id, dx, dy } => {
@@ -362,6 +361,23 @@ fn process_input_events(
     }
 
     for event in coalesced {
+        if let InputEvent::Resized {
+            width,
+            height,
+            scale_factor,
+        } = &event
+        {
+            send_tree(
+                tree_tx,
+                TreeMsg::Resize {
+                    width: *width as f32,
+                    height: *height as f32,
+                    scale: *scale_factor,
+                },
+                log_render,
+            );
+        }
+
         if !input_handler.accepts(&event) {
             continue;
         }
@@ -558,12 +574,15 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render);
 
+    let initial_width = config.width;
+    let initial_height = config.height;
+
     let (backend, event_proxy) = match config.backend {
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let event_tx_clone = event_tx.clone();
-            let config = WaylandConfig {
+            let wayland_config = WaylandConfig {
                 title: config.title,
                 width: config.width,
                 height: config.height,
@@ -571,7 +590,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
             thread::spawn(move || {
                 wayland::run(
-                    config,
+                    wayland_config,
                     running_flag_clone,
                     event_tx_clone,
                     render_rx,
@@ -590,6 +609,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 Arc::clone(&render_counter),
                 log_input,
                 Some(proxy.clone()),
+                initial_width,
+                initial_height,
             );
 
             (BackendKind::Wayland, Some(proxy))
@@ -600,10 +621,11 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let cursor_tx_clone = cursor_tx.clone();
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
+            let drm_input_size = (initial_width, initial_height);
 
             thread::spawn(move || {
                 let mut input = DrmInput::new(
-                    (config.width, config.height),
+                    drm_input_size,
                     screen_rx,
                     event_tx_clone,
                     cursor_tx_clone,
@@ -646,6 +668,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 Arc::clone(&render_counter),
                 log_input,
                 None,
+                initial_width,
+                initial_height,
             );
 
             (BackendKind::Drm, None)
@@ -748,44 +772,22 @@ fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> At
 // ============================================================================
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_upload(
-    renderer: ResourceArc<RendererResource>,
-    data: Binary,
-    width: f64,
-    height: f64,
-    scale: f64,
-) -> Result<Atom, String> {
+fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Result<Atom, String> {
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::UploadTree {
-            bytes,
-            width: width as f32,
-            height: height as f32,
-            scale: scale as f32,
-        },
+        TreeMsg::UploadTree { bytes },
         renderer.log_render,
     );
     Ok(atoms::ok())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_patch(
-    renderer: ResourceArc<RendererResource>,
-    data: Binary,
-    width: f64,
-    height: f64,
-    scale: f64,
-) -> Result<Atom, String> {
+fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Result<Atom, String> {
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::PatchTree {
-            bytes,
-            width: width as f32,
-            height: height as f32,
-            scale: scale as f32,
-        },
+        TreeMsg::PatchTree { bytes },
         renderer.log_render,
     );
     Ok(atoms::ok())

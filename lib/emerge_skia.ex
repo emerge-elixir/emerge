@@ -159,18 +159,18 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Upload a full EMRG tree, run layout with scale factor, and render.
+  Upload a full EMRG tree, run layout, and render.
 
-  Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
-  border radius, border width, font size). Use scale > 1.0 for high-DPI displays.
+  Window dimensions come from the initial start config and are updated
+  automatically when the window is resized (handled on the Rust side).
   """
-  @spec upload_tree(renderer(), Emerge.Element.t(), float(), float(), float()) ::
+  @spec upload_tree(renderer(), Emerge.Element.t()) ::
           {Emerge.DiffState.t(), Emerge.Element.t()}
-  def upload_tree(renderer, tree, width, height, scale \\ 1.0) do
+  def upload_tree(renderer, tree) do
     state = Emerge.diff_state_new()
     {full_bin, state, assigned} = Emerge.encode_full(state, tree)
 
-    case Native.renderer_upload(renderer, full_bin, width, height, scale) do
+    case Native.renderer_upload(renderer, full_bin) do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, reason} -> raise "renderer_upload failed: #{reason}"
@@ -180,24 +180,17 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Apply patches for a new tree, run layout with scale factor, and render.
+  Apply patches for a new tree, run layout, and render.
 
-  Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
-  border radius, border width, font size). Use scale > 1.0 for high-DPI displays.
+  Window dimensions come from the initial start config and are updated
+  automatically when the window is resized (handled on the Rust side).
   """
-  @spec patch_tree(
-          renderer(),
-          Emerge.DiffState.t(),
-          Emerge.Element.t(),
-          float(),
-          float(),
-          float()
-        ) ::
+  @spec patch_tree(renderer(), Emerge.DiffState.t(), Emerge.Element.t()) ::
           {Emerge.DiffState.t(), Emerge.Element.t()}
-  def patch_tree(renderer, state, tree, width, height, scale \\ 1.0) do
+  def patch_tree(renderer, state, tree) do
     {patch_bin, state, assigned} = Emerge.diff_state_update(state, tree)
 
-    case Native.renderer_patch(renderer, patch_bin, width, height, scale) do
+    case Native.renderer_patch(renderer, patch_bin) do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
