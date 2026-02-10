@@ -211,6 +211,73 @@ fn render_element(
         }
     }
 
+    // Render paragraph fragments (word-wrapped text)
+    if element.kind == ElementKind::Paragraph {
+        if let Some(fragments) = &attrs.paragraph_fragments {
+            for frag in fragments {
+                let baseline_y = frag.y + frag.ascent;
+                commands.push(DrawCmd::TextWithFont(
+                    frag.x,
+                    baseline_y,
+                    frag.text.clone(),
+                    frag.font_size,
+                    frag.color,
+                    frag.family.clone(),
+                    frag.weight,
+                    frag.italic,
+                ));
+
+                if frag.underline || frag.strike {
+                    let thickness = (frag.font_size * 0.06).max(1.0);
+                    let font = make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
+                    let (word_width, _) = font.measure_str(&frag.text, None);
+                    if word_width > 0.0 {
+                        if frag.underline {
+                            let y = baseline_y + frag.font_size * 0.08 - thickness / 2.0;
+                            commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                        }
+                        if frag.strike {
+                            let y = baseline_y - frag.font_size * 0.3 - thickness / 2.0;
+                            commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Skip normal child rendering for paragraphs
+        if clip_rect.is_some() {
+            commands.push(DrawCmd::PopClip);
+        }
+
+        if push_border_clip(commands, frame, attrs) {
+            push_scrollbar_thumbs(commands, frame, attrs);
+            commands.push(DrawCmd::PopClip);
+        } else {
+            push_scrollbar_thumbs(commands, frame, attrs);
+        }
+
+        // Render nearby positioned elements
+        if let Some(above_bytes) = &attrs.above {
+            render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
+        }
+        if let Some(below_bytes) = &attrs.below {
+            render_nearby_element(below_bytes, frame, NearbyPosition::Below, commands);
+        }
+        if let Some(on_left_bytes) = &attrs.on_left {
+            render_nearby_element(on_left_bytes, frame, NearbyPosition::OnLeft, commands);
+        }
+        if let Some(on_right_bytes) = &attrs.on_right {
+            render_nearby_element(on_right_bytes, frame, NearbyPosition::OnRight, commands);
+        }
+        if let Some(in_front_bytes) = &attrs.in_front {
+            render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
+        }
+
+        pop_element_transform(commands, transform_state);
+        return;
+    }
+
     let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
     let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
     let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
@@ -1331,5 +1398,209 @@ mod tests {
         };
 
         assert_eq!(overflow_clip_rect(frame, &attrs), None);
+    }
+
+    // =========================================================================
+    // Paragraph Render Tests
+    // =========================================================================
+
+    fn build_paragraph_tree(mut attrs: Attrs, frame: Frame) -> ElementTree {
+        let id = ElementId::from_term_bytes(vec![10]);
+        attrs.background = attrs.background.take();
+        let mut element = Element::with_attrs(id.clone(), ElementKind::Paragraph, Vec::new(), attrs);
+        element.frame = Some(frame);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        tree
+    }
+
+    #[test]
+    fn test_render_paragraph_emits_text_commands() {
+        use crate::tree::attrs::TextFragment;
+
+        let mut attrs = Attrs::default();
+        attrs.paragraph_fragments = Some(vec![
+            TextFragment {
+                x: 10.0,
+                y: 5.0,
+                text: "Hello".to_string(),
+                font_size: 16.0,
+                color: 0xFFFFFFFF,
+                family: "default".to_string(),
+                weight: 400,
+                italic: false,
+                underline: false,
+                strike: false,
+                ascent: 12.0,
+            },
+            TextFragment {
+                x: 60.0,
+                y: 5.0,
+                text: "World".to_string(),
+                font_size: 16.0,
+                color: 0xFF0000FF,
+                family: "default".to_string(),
+                weight: 700,
+                italic: false,
+                underline: false,
+                strike: false,
+                ascent: 12.0,
+            },
+        ]);
+
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 30.0,
+            content_width: 200.0,
+            content_height: 30.0,
+        };
+
+        let tree = build_paragraph_tree(attrs, frame);
+        let commands = render_tree(&tree);
+
+        // Should produce TextWithFont commands for each fragment
+        let text_cmds: Vec<(f32, f32, String, u32, u16)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::TextWithFont(x, y, text, _size, color, _family, weight, _italic) => {
+                    Some((*x, *y, text.clone(), *color, *weight))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text_cmds.len(), 2);
+        // First fragment: x=10, baseline_y = 5 + 12 = 17
+        assert_eq!(text_cmds[0].0, 10.0);
+        assert_eq!(text_cmds[0].1, 17.0);
+        assert_eq!(text_cmds[0].2, "Hello");
+        assert_eq!(text_cmds[0].3, 0xFFFFFFFF);
+        assert_eq!(text_cmds[0].4, 400);
+
+        // Second fragment: x=60, baseline_y = 5 + 12 = 17
+        assert_eq!(text_cmds[1].0, 60.0);
+        assert_eq!(text_cmds[1].1, 17.0);
+        assert_eq!(text_cmds[1].2, "World");
+        assert_eq!(text_cmds[1].3, 0xFF0000FF);
+        assert_eq!(text_cmds[1].4, 700);
+    }
+
+    #[test]
+    fn test_render_paragraph_underline_and_strike() {
+        use crate::tree::attrs::TextFragment;
+
+        let mut attrs = Attrs::default();
+        attrs.paragraph_fragments = Some(vec![TextFragment {
+            x: 10.0,
+            y: 5.0,
+            text: "Decorated".to_string(),
+            font_size: 18.0,
+            color: 0x010203FF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: true,
+            strike: true,
+            ascent: 14.0,
+        }]);
+
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 30.0,
+            content_width: 200.0,
+            content_height: 30.0,
+        };
+
+        let tree = build_paragraph_tree(attrs, frame);
+        let commands = render_tree(&tree);
+
+        // Should have text command + 2 decoration rects (underline + strike)
+        let text_count = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+            .count();
+        assert_eq!(text_count, 1);
+
+        let decoration_rects: Vec<_> = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, DrawCmd::Rect(_, _, _, _, color) if *color == 0x010203FF))
+            .collect();
+        assert_eq!(decoration_rects.len(), 2);
+    }
+
+    #[test]
+    fn test_render_paragraph_no_fragments() {
+        let mut attrs = Attrs::default();
+        attrs.paragraph_fragments = Some(vec![]);
+
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 30.0,
+            content_width: 200.0,
+            content_height: 30.0,
+        };
+
+        let tree = build_paragraph_tree(attrs, frame);
+        let commands = render_tree(&tree);
+
+        // No text or rect commands should be emitted
+        let text_count = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+            .count();
+        assert_eq!(text_count, 0);
+    }
+
+    #[test]
+    fn test_render_paragraph_with_background() {
+        use crate::tree::attrs::TextFragment;
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 128 }));
+        attrs.paragraph_fragments = Some(vec![TextFragment {
+            x: 0.0,
+            y: 0.0,
+            text: "Hi".to_string(),
+            font_size: 16.0,
+            color: 0xFFFFFFFF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: false,
+            strike: false,
+            ascent: 12.0,
+        }]);
+
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 20.0,
+            content_width: 100.0,
+            content_height: 20.0,
+        };
+
+        let tree = build_paragraph_tree(attrs, frame);
+        let commands = render_tree(&tree);
+
+        // Background should be rendered before text
+        let bg_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::Rect(_, _, 100.0, 20.0, 0x000080FF)))
+            .expect("background rect should exist");
+        let text_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+            .expect("text command should exist");
+
+        assert!(bg_idx < text_idx, "background should render before text");
     }
 }

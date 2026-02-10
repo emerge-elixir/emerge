@@ -148,6 +148,39 @@ defmodule Emerge.UI do
   def column(children) when is_list(children), do: column([], children)
 
   @doc """
+  A paragraph lays out inline text children with word wrapping.
+
+  Children should be `text/1` elements or `el/2`-wrapped text elements.
+  Words flow left-to-right and wrap at the container width.
+
+  Font attributes on the paragraph are inherited by text children.
+  `el()` wrappers provide inline styling (bold, color, etc.).
+
+  ## Example
+
+      paragraph([spacing(4), Font.size(16)], [
+        text("Hello "),
+        el([Font.bold()], text("world")),
+        text(", this wraps automatically.")
+      ])
+  """
+  def paragraph(attrs, children) when is_list(attrs) and is_list(children) do
+    parsed = parse_attrs(attrs)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :paragraph,
+      id: id,
+      attrs: parsed,
+      children: children
+    }
+  end
+
+  def paragraph(children) when is_list(children), do: paragraph([], children)
+
+  @doc """
   A text element. Can only be used as a child of `el`.
 
   To style text, apply Font attributes to the parent el:

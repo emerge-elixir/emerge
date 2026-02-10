@@ -5,7 +5,7 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding, TextAlign, preserve_runtime_scroll_attrs};
+use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding, TextAlign, TextFragment, preserve_runtime_scroll_attrs};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 
 // =============================================================================
@@ -101,6 +101,9 @@ pub trait TextMeasurer {
 
     /// Measure text with custom font and return (width, height).
     fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
+
+    /// Return (ascent, descent) for a given font configuration.
+    fn font_metrics(&self, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
 }
 
 /// Default text measurer using Skia.
@@ -120,6 +123,14 @@ impl TextMeasurer for SkiaTextMeasurer {
         let height = metrics.ascent.abs() + metrics.descent;
 
         (width, height)
+    }
+
+    fn font_metrics(&self, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
+        use crate::renderer::make_font_with_style;
+
+        let font = make_font_with_style(family, weight, italic, font_size);
+        let (_, metrics) = font.metrics();
+        (metrics.ascent.abs(), metrics.descent)
     }
 }
 
@@ -307,7 +318,7 @@ pub fn layout_tree<M: TextMeasurer>(
     measure_element(tree, &root_id, measurer, &FontContext::default());
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(tree, &root_id, constraint, 0.0, 0.0, &FontContext::default());
+    resolve_element(tree, &root_id, constraint, 0.0, 0.0, &FontContext::default(), measurer);
 }
 
 /// Layout with default Skia text measurer.
@@ -372,6 +383,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         font_word_spacing: attrs.font_word_spacing.map(|s| s * scale_f64),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
+        paragraph_fragments: None,
         above: attrs.above.clone(),
         below: attrs.below.clone(),
         on_left: attrs.on_left.clone(),
@@ -627,6 +639,19 @@ fn measure_element<M: TextMeasurer>(
                     + padding.top + padding.bottom,
             }
         }
+
+        ElementKind::Paragraph => {
+            // Paragraph: sum child widths (unwrapped single-line), single line height
+            let sum_width: f32 = child_sizes.iter().map(|s| s.width).sum();
+            let max_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
+
+            IntrinsicSize {
+                width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width)
+                    + padding.left + padding.right,
+                height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
+                    + padding.top + padding.bottom,
+            }
+        }
     };
 
     // Store intrinsic size in frame temporarily (will be replaced in resolve pass)
@@ -667,13 +692,14 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
 
 /// Resolve an element's frame given constraints and position.
 /// Reads from pre-scaled attrs.
-fn resolve_element(
+fn resolve_element<M: TextMeasurer>(
     tree: &mut ElementTree,
     id: &ElementId,
     constraint: Constraint,
     x: f32,
     y: f32,
     inherited: &FontContext,
+    measurer: &M,
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -709,6 +735,9 @@ fn resolve_element(
     // Use intrinsic size as default for content-based constraints
     let available_width = if text_should_fill_width {
         // Text with alignment should fill available width
+        constraint.width
+    } else if kind == ElementKind::Paragraph && is_content_length(attrs.width.as_ref()) {
+        // Paragraphs wrap text within parent's available width (like <p> in HTML)
         constraint.width
     } else if is_content_length(attrs.width.as_ref()) {
         match attrs.width.as_ref() {
@@ -777,9 +806,19 @@ fn resolve_element(
                     scroll_x_enabled,
                     scroll_y_enabled,
                     &element_context,
+                    measurer,
                 );
-                // Update content dimensions when there are children
-                if let Some(element) = tree.get_mut(id)
+                // Expand frame if content exceeds initial estimate (e.g., paragraph wrapping)
+                if actual_ch > content_height && !is_scrollable {
+                    let new_height = actual_ch + padding.top + padding.bottom;
+                    if let Some(element) = tree.get_mut(id)
+                        && let Some(ref mut frame) = element.frame
+                    {
+                        frame.height = new_height;
+                        frame.content_height = new_height;
+                        frame.content_width = actual_cw + padding.left + padding.right;
+                    }
+                } else if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
                     frame.content_width = actual_cw + padding.left + padding.right;
@@ -804,9 +843,23 @@ fn resolve_element(
                     allow_fill_width,
                     space_evenly,
                     &element_context,
+                    measurer,
                 );
-                // Update content dimensions when there are children
-                if let Some(element) = tree.get_mut(id)
+                // Expand frame if content height exceeds initial estimate (e.g., wrapped paragraph child)
+                // For non-scrollable rows, expand the frame.
+                if actual_ch > content_height
+                    && !is_scrollable
+                    && is_content_length(attrs.height.as_ref())
+                {
+                    let new_height = actual_ch + padding.top + padding.bottom;
+                    if let Some(element) = tree.get_mut(id)
+                        && let Some(ref mut frame) = element.frame
+                    {
+                        frame.height = new_height;
+                        frame.content_height = new_height;
+                        frame.content_width = actual_cw + padding.left + padding.right;
+                    }
+                } else if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
                     frame.content_width = actual_cw + padding.left + padding.right;
@@ -827,6 +880,7 @@ fn resolve_element(
                 spacing_x,
                 spacing_y,
                 &element_context,
+                measurer,
             );
             // Update frame height if content height exceeds initial estimate (due to wrapping)
             // For non-scrollable wrapped rows, expand the frame
@@ -849,7 +903,7 @@ fn resolve_element(
         ElementKind::Column => {
             let allow_fill_height = available_height.is_definite();
             let space_evenly = attrs.space_evenly.unwrap_or(false) && allow_fill_height;
-            let actual_content_height = resolve_column_children(
+            let mut actual_content_height = resolve_column_children(
                 tree,
                 &child_ids,
                 content_x,
@@ -861,10 +915,31 @@ fn resolve_element(
                 space_evenly,
                 is_scrollable,
                 &element_context,
+                measurer,
             );
             // Update frame height if content height exceeds initial estimate (e.g., due to wrapped_row children)
             // For non-scrollable columns, expand the frame
             if actual_content_height > content_height && !is_scrollable {
+                // For content-height columns, a first pass can expand children and increase
+                // total height. Re-resolve once using the expanded height so bottom/center
+                // aligned children are positioned against the final content box.
+                if !allow_fill_height {
+                    actual_content_height = resolve_column_children(
+                        tree,
+                        &child_ids,
+                        content_x,
+                        content_y,
+                        content_width,
+                        actual_content_height,
+                        spacing_y,
+                        allow_fill_height,
+                        space_evenly,
+                        is_scrollable,
+                        &element_context,
+                        measurer,
+                    );
+                }
+
                 let new_height = actual_content_height + padding.top + padding.bottom;
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
@@ -876,6 +951,39 @@ fn resolve_element(
                 && let Some(ref mut frame) = element.frame
             {
                 // Always track actual content height
+                frame.content_height = actual_content_height + padding.top + padding.bottom;
+            }
+        }
+
+        ElementKind::Paragraph => {
+            let (fragments, actual_content_height) = resolve_paragraph_children(
+                tree,
+                &child_ids,
+                content_x,
+                content_y,
+                content_width,
+                spacing_y,
+                &element_context,
+                measurer,
+            );
+
+            // Store fragments on the paragraph element
+            if let Some(element) = tree.get_mut(id) {
+                element.attrs.paragraph_fragments = Some(fragments);
+            }
+
+            // Expand frame if content height exceeds initial estimate
+            if actual_content_height > content_height && !is_scrollable {
+                let new_height = actual_content_height + padding.top + padding.bottom;
+                if let Some(element) = tree.get_mut(id)
+                    && let Some(ref mut frame) = element.frame
+                {
+                    frame.height = new_height;
+                    frame.content_height = new_height;
+                }
+            } else if let Some(element) = tree.get_mut(id)
+                && let Some(ref mut frame) = element.frame
+            {
                 frame.content_height = actual_content_height + padding.top + padding.bottom;
             }
         }
@@ -990,7 +1098,7 @@ fn get_fill_portion(length: Option<&Length>) -> f32 {
 /// - Parent's alignment (e.g., `el([centerX()], child)`) sets default for children
 /// - Child can override with its own alignment attribute
 #[allow(clippy::too_many_arguments)]
-fn resolve_el_children(
+fn resolve_el_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
     content_x: f32,
@@ -1002,6 +1110,7 @@ fn resolve_el_children(
     scroll_x_enabled: bool,
     scroll_y_enabled: bool,
     inherited: &FontContext,
+    measurer: &M,
 ) -> (f32, f32) {
     let mut max_child_width = 0.0_f32;
     let mut max_child_height = 0.0_f32;
@@ -1018,7 +1127,7 @@ fn resolve_el_children(
         let child_constraint = Constraint::new(content_width, content_height);
 
         // Resolve child first to get final size
-        resolve_element(tree, child_id, child_constraint, 0.0, 0.0, inherited);
+        resolve_element(tree, child_id, child_constraint, 0.0, 0.0, inherited, measurer);
 
         let Some(child) = tree.get(child_id) else { continue };
         let Some(frame) = &child.frame else { continue };
@@ -1056,7 +1165,7 @@ fn resolve_el_children(
 /// - Center: centered in remaining space
 ///   Returns (actual_content_width, actual_content_height).
 #[allow(clippy::too_many_arguments)]
-fn resolve_row_children(
+fn resolve_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
     content_x: f32,
@@ -1067,6 +1176,7 @@ fn resolve_row_children(
     allow_fill_width: bool,
     space_evenly: bool,
     inherited: &FontContext,
+    measurer: &M,
 ) -> (f32, f32) {
     if child_ids.is_empty() {
         return (0.0, 0.0);
@@ -1159,7 +1269,7 @@ fn resolve_row_children(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited);
+            resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited, measurer);
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -1210,7 +1320,7 @@ fn resolve_row_children(
         let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited);
+        resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited, measurer);
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -1230,7 +1340,7 @@ fn resolve_row_children(
 
         right_x -= child_width;
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, right_x, content_y, inherited);
+        resolve_element(tree, child_id, child_constraint, right_x, content_y, inherited, measurer);
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -1255,7 +1365,7 @@ fn resolve_row_children(
             let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, center_x, content_y, inherited);
+            resolve_element(tree, child_id, child_constraint, center_x, content_y, inherited, measurer);
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -1309,7 +1419,7 @@ fn apply_vertical_alignment(
 /// For non-scrollable columns, bottom-aligned children are at the container bottom.
 /// Returns the actual content height after resolution.
 #[allow(clippy::too_many_arguments)]
-fn resolve_column_children(
+fn resolve_column_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
     content_x: f32,
@@ -1321,6 +1431,7 @@ fn resolve_column_children(
     space_evenly: bool,
     is_scrollable: bool,
     inherited: &FontContext,
+    measurer: &M,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -1406,7 +1517,7 @@ fn resolve_column_children(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited);
+            resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited, measurer);
 
             let (actual_height, frame_content_width) = tree
                 .get(child_id)
@@ -1446,7 +1557,7 @@ fn resolve_column_children(
         let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
         let child_constraint = Constraint::new(content_width, child_height);
-        resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited);
+        resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited, measurer);
 
         // Get actual frame height (may differ from constraint for WrappedRow etc.)
         let (actual_height, frame_content_width) = tree.get(child_id)
@@ -1477,7 +1588,7 @@ fn resolve_column_children(
             let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, current_bottom_y, inherited);
+            resolve_element(tree, child_id, child_constraint, content_x, current_bottom_y, inherited, measurer);
 
             let (actual_height, frame_content_width) = tree.get(child_id)
                 .and_then(|child| child.frame.as_ref())
@@ -1502,7 +1613,7 @@ fn resolve_column_children(
 
             bottom_y -= child_height;
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, bottom_y, inherited);
+            resolve_element(tree, child_id, child_constraint, content_x, bottom_y, inherited, measurer);
 
             let (actual_height, frame_content_width) = tree.get(child_id)
                 .and_then(|child| child.frame.as_ref())
@@ -1549,7 +1660,7 @@ fn resolve_column_children(
             let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, center_y, inherited);
+            resolve_element(tree, child_id, child_constraint, content_x, center_y, inherited, measurer);
 
             let (actual_height, frame_content_width) = tree.get(child_id)
                 .and_then(|child| child.frame.as_ref())
@@ -1567,8 +1678,27 @@ fn resolve_column_children(
         }
     }
 
+    // Add spacing between non-empty alignment zones (top/center/bottom).
+    // This ensures content-height columns preserve configured spacing even when
+    // zones are split by self-alignment.
+    let mut non_empty_zones = 0_usize;
+    if !top_children.is_empty() {
+        non_empty_zones += 1;
+    }
+    if !center_children.is_empty() {
+        non_empty_zones += 1;
+    }
+    if !bottom_children.is_empty() {
+        non_empty_zones += 1;
+    }
+    let inter_zone_spacing = if non_empty_zones > 1 {
+        spacing * (non_empty_zones - 1) as f32
+    } else {
+        0.0
+    };
+
     // Calculate actual content height used by all children (use actual heights)
-    actual_top_height + actual_center_height + actual_bottom_height
+    actual_top_height + actual_center_height + actual_bottom_height + inter_zone_spacing
 }
 
 /// Apply horizontal alignment to a child element.
@@ -1598,7 +1728,7 @@ fn apply_horizontal_alignment(
 /// Reads from pre-scaled attrs.
 /// Returns the actual content height after wrapping.
 #[allow(clippy::too_many_arguments)]
-fn resolve_wrapped_row_children(
+fn resolve_wrapped_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
     content_x: f32,
@@ -1608,6 +1738,7 @@ fn resolve_wrapped_row_children(
     spacing_x: f32,
     spacing_y: f32,
     inherited: &FontContext,
+    measurer: &M,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -1655,7 +1786,7 @@ fn resolve_wrapped_row_children(
 
         for (child_id, child_width, _) in &line {
             let child_constraint = Constraint::new(*child_width, line_height);
-            resolve_element(tree, child_id, child_constraint, current_x, current_y, inherited);
+            resolve_element(tree, child_id, child_constraint, current_x, current_y, inherited, measurer);
             current_x += child_width + spacing_x;
         }
 
@@ -1669,6 +1800,140 @@ fn resolve_wrapped_row_children(
     } else {
         0.0
     }
+}
+
+// =============================================================================
+// Paragraph Resolution
+// =============================================================================
+
+/// Extract inline text content and font context from a child element.
+/// Returns (text_content, font_context) or None if child is not a text source.
+fn extract_inline_text(
+    tree: &ElementTree,
+    child_id: &ElementId,
+    inherited: &FontContext,
+) -> Option<(String, FontContext)> {
+    let child = tree.get(child_id)?;
+
+    match child.kind {
+        ElementKind::Text => {
+            let content = child.attrs.content.as_deref()?.to_string();
+            let font_ctx = inherited.merge_with_attrs(&child.attrs);
+            Some((content, font_ctx))
+        }
+        ElementKind::El => {
+            // Look for the first text child of this el wrapper
+            let el_context = inherited.merge_with_attrs(&child.attrs);
+            for grandchild_id in &child.children {
+                let grandchild = tree.get(grandchild_id)?;
+                if grandchild.kind == ElementKind::Text {
+                    let content = grandchild.attrs.content.as_deref()?.to_string();
+                    let font_ctx = el_context.merge_with_attrs(&grandchild.attrs);
+                    return Some((content, font_ctx));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Resolve paragraph children by word-wrapping text content.
+/// Returns (fragments, total_content_height).
+#[allow(clippy::too_many_arguments)]
+fn resolve_paragraph_children<M: TextMeasurer>(
+    tree: &ElementTree,
+    child_ids: &[ElementId],
+    content_x: f32,
+    content_y: f32,
+    content_width: f32,
+    spacing_y: f32,
+    inherited: &FontContext,
+    measurer: &M,
+) -> (Vec<TextFragment>, f32) {
+    let mut fragments = Vec::new();
+    let mut cursor_x = content_x;
+    let mut cursor_y = content_y;
+    let mut line_height: f32 = 0.0;
+
+    for child_id in child_ids {
+        let Some((content, font_ctx)) = extract_inline_text(tree, child_id, inherited) else {
+            continue;
+        };
+
+        if content.is_empty() {
+            continue;
+        }
+
+        let font_size = font_ctx.font_size.unwrap_or(16.0);
+        let family = font_ctx.font_family.clone().unwrap_or_else(|| "default".to_string());
+        let weight = font_ctx.font_weight.unwrap_or(400);
+        let italic = font_ctx.font_italic.unwrap_or(false);
+        let color = font_ctx.font_color.unwrap_or(0xFFFFFFFF);
+        let underline = font_ctx.font_underline.unwrap_or(false);
+        let strike = font_ctx.font_strike.unwrap_or(false);
+
+        let (_, text_height) = measurer.measure_with_font("Hg", font_size, &family, weight, italic);
+        let (ascent, _descent) = measurer.font_metrics(font_size, &family, weight, italic);
+
+        let (space_width, _) = measurer.measure_with_font(" ", font_size, &family, weight, italic);
+
+        // Split content into words
+        let words: Vec<&str> = content.split_whitespace().collect();
+        let starts_with_space = content.starts_with(char::is_whitespace);
+        let ends_with_space = content.ends_with(char::is_whitespace);
+
+        // Add leading space if content starts with whitespace
+        if starts_with_space && !words.is_empty() {
+            cursor_x += space_width;
+        }
+
+        for (i, word) in words.iter().enumerate() {
+            let (word_width, _) = measurer.measure_with_font(word, font_size, &family, weight, italic);
+
+            // Wrap if word doesn't fit and we're not at line start
+            if cursor_x > content_x && cursor_x + word_width > content_x + content_width {
+                cursor_y += line_height + spacing_y;
+                cursor_x = content_x;
+                line_height = 0.0;
+            }
+
+            fragments.push(TextFragment {
+                x: cursor_x,
+                y: cursor_y,
+                text: word.to_string(),
+                font_size,
+                color,
+                family: family.clone(),
+                weight,
+                italic,
+                underline,
+                strike,
+                ascent,
+            });
+
+            cursor_x += word_width;
+            line_height = line_height.max(text_height);
+
+            // Add space after word (unless last word)
+            if i < words.len() - 1 {
+                cursor_x += space_width;
+            }
+        }
+
+        // Add trailing space if content ends with whitespace
+        if ends_with_space && !words.is_empty() {
+            cursor_x += space_width;
+        }
+    }
+
+    let total_height = if line_height > 0.0 {
+        cursor_y - content_y + line_height
+    } else {
+        0.0
+    };
+
+    (fragments, total_height)
 }
 
 // =============================================================================
@@ -1726,6 +1991,12 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
         if let Some(frame) = &mut element.frame {
             frame.x += dx;
             frame.y += dy;
+        }
+        if let Some(fragments) = &mut element.attrs.paragraph_fragments {
+            for frag in fragments.iter_mut() {
+                frag.x += dx;
+                frag.y += dy;
+            }
         }
         element.children.clone()
     };
@@ -1795,6 +2066,11 @@ mod tests {
         fn measure_with_font(&self, text: &str, font_size: f32, _family: &str, _weight: u16, _italic: bool) -> (f32, f32) {
             // Simple mock: 8px per char, height = font_size
             (text.len() as f32 * 8.0, font_size)
+        }
+
+        fn font_metrics(&self, font_size: f32, _family: &str, _weight: u16, _italic: bool) -> (f32, f32) {
+            // Mock: ascent = 75% of font_size, descent = 25%
+            (font_size * 0.75, font_size * 0.25)
         }
     }
 
@@ -2896,6 +3172,302 @@ mod tests {
     }
 
     #[test]
+    fn test_content_height_column_repositions_bottom_aligned_child_after_expansion() {
+        let mut tree = ElementTree::new();
+
+        // Content-height column with a top child that expands during resolve
+        // and a bottom-aligned child that should stay at the visual bottom.
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(20.0));
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let mut row = make_element("top_row", ElementKind::Row, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a
+        });
+
+        let mut para = make_element("para", ElementKind::Paragraph, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.spacing = Some(8.0);
+            a
+        });
+
+        let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
+
+        let bottom = make_element("bottom", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(10.0));
+            a.align_y = Some(AlignY::Bottom);
+            a
+        });
+
+        let col_id = col.id.clone();
+        let row_id = row.id.clone();
+        let para_id = para.id.clone();
+        let txt_id = txt.id.clone();
+        let bottom_id = bottom.id.clone();
+
+        para.children = vec![txt_id.clone()];
+        row.children = vec![para_id.clone()];
+        col.children = vec![row_id.clone(), bottom_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(row);
+        tree.insert(para);
+        tree.insert(txt);
+        tree.insert(bottom);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        assert_eq!(row_frame.height, 40.0);
+
+        let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+        // Bottom child should render below expanded top content.
+        assert_eq!(bottom_frame.y, 40.0);
+
+        let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+        assert_eq!(col_frame.height, 50.0);
+    }
+
+    #[test]
+    fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(20.0));
+        col_attrs.spacing = Some(16.0);
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let mut row = make_element("top_row", ElementKind::Row, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a
+        });
+
+        let mut para = make_element("para", ElementKind::Paragraph, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.spacing = Some(8.0);
+            a
+        });
+
+        let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
+
+        let bottom = make_element("bottom", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(10.0));
+            a.align_y = Some(AlignY::Bottom);
+            a
+        });
+
+        let col_id = col.id.clone();
+        let row_id = row.id.clone();
+        let para_id = para.id.clone();
+        let txt_id = txt.id.clone();
+        let bottom_id = bottom.id.clone();
+
+        para.children = vec![txt_id.clone()];
+        row.children = vec![para_id.clone()];
+        col.children = vec![row_id.clone(), bottom_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(row);
+        tree.insert(para);
+        tree.insert(txt);
+        tree.insert(bottom);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        assert_eq!(row_frame.height, 40.0);
+
+        let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+        // Bottom child should appear after top content + column spacing.
+        assert_eq!(bottom_frame.y, 56.0);
+
+        let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+        // 40 (top) + 16 (zone spacing) + 10 (bottom)
+        assert_eq!(col_frame.height, 66.0);
+    }
+
+    #[test]
+    fn test_row_expands_height_when_child_paragraph_wraps() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(50.0));
+        col_attrs.spacing = Some(10.0);
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Fill);
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let mut para_attrs = Attrs::default();
+        para_attrs.width = Some(Length::Fill);
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+
+        let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
+
+        let below = make_element("below", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+
+        let col_id = col.id.clone();
+        let row_id = row.id.clone();
+        let para_id = para.id.clone();
+        let txt_id = txt.id.clone();
+        let below_id = below.id.clone();
+
+        para.children = vec![txt_id.clone()];
+        row.children = vec![para_id.clone()];
+        col.children = vec![row_id.clone(), below_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(row);
+        tree.insert(para);
+        tree.insert(txt);
+        tree.insert(below);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        // Row should match wrapped paragraph: 2 lines * 16px = 32px
+        assert_eq!(row_frame.height, 32.0);
+
+        let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+        // below y = row height (32) + spacing (10)
+        assert_eq!(below_frame.y, 42.0);
+    }
+
+    #[test]
+    fn test_line_spacing_row_pushes_following_heading() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(20.0));
+        col_attrs.spacing = Some(12.0);
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Fill);
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let mut para_attrs = Attrs::default();
+        para_attrs.width = Some(Length::Fill);
+        para_attrs.spacing = Some(8.0);
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+
+        let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
+
+        let heading = make_element("heading", ElementKind::Text, text_attrs("Document Style"));
+
+        let col_id = col.id.clone();
+        let row_id = row.id.clone();
+        let para_id = para.id.clone();
+        let txt_id = txt.id.clone();
+        let heading_id = heading.id.clone();
+
+        para.children = vec![txt_id.clone()];
+        row.children = vec![para_id.clone()];
+        col.children = vec![row_id.clone(), heading_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(row);
+        tree.insert(para);
+        tree.insert(txt);
+        tree.insert(heading);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        // Two lines with spacing(8): 16 + 8 + 16 = 40
+        assert_eq!(row_frame.height, 40.0);
+
+        let heading_frame = tree.get(&heading_id).unwrap().frame.unwrap();
+        // heading y = row height (40) + column spacing (12)
+        assert_eq!(heading_frame.y, 52.0);
+    }
+
+    #[test]
+    fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
+        let mut tree = ElementTree::new();
+
+        let mut col_attrs = Attrs::default();
+        col_attrs.width = Some(Length::Px(50.0));
+        col_attrs.height = Some(Length::Px(40.0));
+        col_attrs.spacing = Some(4.0);
+        let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+        let top = make_element("top", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(8.0));
+            a
+        });
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Fill);
+        row_attrs.height = Some(Length::Fill);
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+        let mut para_attrs = Attrs::default();
+        para_attrs.width = Some(Length::Fill);
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+
+        let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
+
+        let footer = make_element("footer", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(8.0));
+            a
+        });
+
+        let col_id = col.id.clone();
+        let top_id = top.id.clone();
+        let row_id = row.id.clone();
+        let para_id = para.id.clone();
+        let txt_id = txt.id.clone();
+        let footer_id = footer.id.clone();
+
+        para.children = vec![txt_id.clone()];
+        row.children = vec![para_id.clone()];
+        col.children = vec![top_id.clone(), row_id.clone(), footer_id.clone()];
+
+        tree.root = Some(col_id.clone());
+        tree.insert(col);
+        tree.insert(top);
+        tree.insert(row);
+        tree.insert(para);
+        tree.insert(txt);
+        tree.insert(footer);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        // Column allocates: 40 - top(8) - footer(8) - 2 spacings(8) = 16
+        // Fill-height row should remain constrained to its allocated slot.
+        assert_eq!(row_frame.height, 16.0);
+
+        let footer_frame = tree.get(&footer_id).unwrap().frame.unwrap();
+        // footer y = top(8) + spacing(4) + row(16) + spacing(4) = 32
+        assert_eq!(footer_frame.y, 32.0);
+    }
+
+    #[test]
     fn test_row_fill_portion_distribution() {
         let mut tree = ElementTree::new();
 
@@ -3382,9 +3954,9 @@ mod tests {
         let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
         let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
 
-        // Column uses its own content height (missing spacing between groups).
+        // Column includes spacing between top and bottom alignment zones.
         assert_eq!(col_frame.height, 50.0);
-        assert_eq!(col_frame.content_height, 40.0);
+        assert_eq!(col_frame.content_height, 50.0);
 
         // Scrollable parent should size content from child frame height.
         assert_eq!(el_frame.content_height, 50.0);
@@ -3696,6 +4268,45 @@ mod tests {
     }
 
     #[test]
+    fn test_el_expands_height_for_wrapped_paragraph() {
+        // El with width=50, no explicit height, containing a paragraph with text
+        // wider than 50px. The paragraph wraps, and the El should expand.
+        let mut tree = ElementTree::new();
+
+        let mut el_attrs = Attrs::default();
+        el_attrs.width = Some(Length::Px(50.0));
+        // No height set — should shrink-to-fit then expand
+
+        let mut el = make_element("el", ElementKind::El, el_attrs);
+        let el_id = el.id.clone();
+
+        // Paragraph child, no explicit width/height (inherits from parent)
+        let para_attrs = Attrs::default();
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+        let para_id = para.id.clone();
+
+        // Text child: "AAAA BBBB" = 9 chars * 8px = 72px wide
+        // In 50px container: "AAAA" (32px) fits line 1, "BBBB" (32px) fits line 2
+        // => 2 lines * 16px = 32px tall
+        let text_child = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
+        let text_id = text_child.id.clone();
+
+        para.children = vec![text_id.clone()];
+        el.children = vec![para_id.clone()];
+        tree.root = Some(el_id.clone());
+        tree.insert(el);
+        tree.insert(para);
+        tree.insert(text_child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
+        // El should expand to fit the wrapped paragraph: 2 lines * 16px = 32px
+        assert_eq!(el_frame.height, 32.0);
+        assert_eq!(el_frame.width, 50.0);
+    }
+
+    #[test]
     fn test_row_self_alignment_zones() {
         let mut tree = ElementTree::new();
 
@@ -3939,5 +4550,518 @@ mod tests {
                 }
             ))
         );
+    }
+
+    // =========================================================================
+    // Paragraph Tests
+    // =========================================================================
+
+    /// Helper: build a paragraph tree with given text children.
+    fn build_paragraph(
+        paragraph_attrs: Attrs,
+        children: Vec<(&str, ElementKind, Attrs)>,
+    ) -> (ElementTree, ElementId, Vec<ElementId>) {
+        let mut tree = ElementTree::new();
+
+        let mut para = make_element("para", ElementKind::Paragraph, paragraph_attrs);
+        let para_id = para.id.clone();
+
+        let mut child_ids = Vec::new();
+        for (i, (name, kind, attrs)) in children.into_iter().enumerate() {
+            let child_name = format!("{}_{}", name, i);
+            let child = make_element(&child_name, kind, attrs);
+            child_ids.push(child.id.clone());
+            tree.insert(child);
+        }
+
+        para.children = child_ids.clone();
+        tree.root = Some(para_id.clone());
+        tree.insert(para);
+
+        (tree, para_id, child_ids)
+    }
+
+    fn text_attrs(content: &str) -> Attrs {
+        let mut a = Attrs::default();
+        a.content = Some(content.to_string());
+        a.font_size = Some(16.0);
+        a
+    }
+
+    #[test]
+    fn test_paragraph_single_text_no_wrap() {
+        // "Hello" = 5 chars * 8px = 40px, fits within 200px
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![("t", ElementKind::Text, text_attrs("Hello"))],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].text, "Hello");
+        assert_eq!(fragments[0].x, 0.0);
+        assert_eq!(fragments[0].y, 0.0);
+    }
+
+    #[test]
+    fn test_paragraph_wraps_words() {
+        // "AA BB CC" -> 3 words: "AA" (16px), "BB" (16px), "CC" (16px)
+        // space = 8px
+        // Container 40px wide:
+        // "AA" (16) fits, + space (8) + "BB" (16) = 40 fits
+        // + space (8) + "CC" (16) = 64 > 40, "CC" wraps
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(40.0));
+                a
+            },
+            vec![("t", ElementKind::Text, text_attrs("AA BB CC"))],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 3);
+
+        // Line 1: "AA" at x=0, "BB" at x=24 (16+8)
+        assert_eq!(fragments[0].text, "AA");
+        assert_eq!(fragments[0].x, 0.0);
+        assert_eq!(fragments[0].y, 0.0);
+
+        assert_eq!(fragments[1].text, "BB");
+        assert_eq!(fragments[1].x, 24.0);
+        assert_eq!(fragments[1].y, 0.0);
+
+        // Line 2: "CC" wraps to y=16 (font_size)
+        assert_eq!(fragments[2].text, "CC");
+        assert_eq!(fragments[2].x, 0.0);
+        assert_eq!(fragments[2].y, 16.0);
+    }
+
+    #[test]
+    fn test_paragraph_multiple_text_children() {
+        // Two text children flow inline
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![
+                ("t1", ElementKind::Text, text_attrs("Hello ")),
+                ("t2", ElementKind::Text, text_attrs("World")),
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        // "Hello " -> word "Hello", trailing space
+        // "World" -> word "World"
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].text, "Hello");
+        assert_eq!(fragments[1].text, "World");
+        // "Hello" = 40px, + trailing space 8px = cursor at 48
+        assert_eq!(fragments[1].x, 48.0);
+    }
+
+    #[test]
+    fn test_paragraph_line_spacing() {
+        // "AA BB" with 40px container -> wraps
+        // spacing_y = 5
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(20.0));
+                a.spacing = Some(5.0);
+                a
+            },
+            vec![("t", ElementKind::Text, text_attrs("AA BB"))],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 2);
+
+        // Line 1: "AA" at y=0
+        assert_eq!(fragments[0].y, 0.0);
+        // Line 2: "BB" at y = 16 (line height) + 5 (spacing) = 21
+        assert_eq!(fragments[1].y, 21.0);
+    }
+
+    #[test]
+    fn test_paragraph_expands_height() {
+        // Paragraph has no explicit height; wrapping should expand it
+        // "AA BB" in 20px container -> 2 lines of 16px each
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(20.0));
+                a
+            },
+            vec![("t", ElementKind::Text, text_attrs("AA BB"))],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let frame = para.frame.unwrap();
+        // 2 lines * 16px = 32px
+        assert_eq!(frame.height, 32.0);
+    }
+
+    #[test]
+    fn test_paragraph_with_padding() {
+        // Paragraph with padding, text should be offset
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a.padding = Some(Padding::Uniform(10.0));
+                a
+            },
+            vec![("t", ElementKind::Text, text_attrs("Hi"))],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 1);
+        // Fragment at content_x = 0 + 10 (padding_left)
+        assert_eq!(fragments[0].x, 10.0);
+        assert_eq!(fragments[0].y, 10.0);
+    }
+
+    #[test]
+    fn test_paragraph_el_wrapped_text() {
+        // el([Font.bold()], text("Bold")) should participate in paragraph flow
+        let mut el_attrs = Attrs::default();
+        el_attrs.font_weight = Some(FontWeight("bold".to_string()));
+
+        let mut el_child = make_element("el_child", ElementKind::El, el_attrs);
+        let text_child = make_element("el_text", ElementKind::Text, text_attrs("Bold"));
+        let text_child_id = text_child.id.clone();
+        el_child.children = vec![text_child_id.clone()];
+
+        let mut tree = ElementTree::new();
+        let mut para_attrs = Attrs::default();
+        para_attrs.width = Some(Length::Px(200.0));
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+        let para_id = para.id.clone();
+        let el_id = el_child.id.clone();
+
+        // Also add a direct text child
+        let plain_text = make_element("plain", ElementKind::Text, text_attrs("Hi "));
+        let plain_id = plain_text.id.clone();
+
+        para.children = vec![plain_id.clone(), el_id.clone()];
+        tree.root = Some(para_id.clone());
+        tree.insert(para);
+        tree.insert(plain_text);
+        tree.insert(el_child);
+        tree.insert(text_child);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].text, "Hi");
+        assert_eq!(fragments[1].text, "Bold");
+        // "Hi" trailing space makes cursor at 16+8=24
+        assert_eq!(fragments[1].x, 24.0);
+        // Bold child should inherit weight 700
+        assert_eq!(fragments[1].weight, 700);
+    }
+
+    #[test]
+    fn test_paragraph_skips_non_text_children() {
+        // Non-text, non-el children (e.g., Row) should be silently skipped
+        let mut row_attrs = Attrs::default();
+        row_attrs.width = Some(Length::Px(50.0));
+        row_attrs.height = Some(Length::Px(20.0));
+
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![
+                ("t1", ElementKind::Text, text_attrs("Hi")),
+                ("r", ElementKind::Row, row_attrs),
+                ("t2", ElementKind::Text, text_attrs("There")),
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        // Row child should be skipped, only "Hi" and "There"
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].text, "Hi");
+        assert_eq!(fragments[1].text, "There");
+    }
+
+    #[test]
+    fn test_paragraph_empty_text_skipped() {
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![
+                ("t1", ElementKind::Text, text_attrs("")),
+                ("t2", ElementKind::Text, text_attrs("Hello")),
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].text, "Hello");
+        assert_eq!(fragments[0].x, 0.0);
+    }
+
+    #[test]
+    fn test_paragraph_no_children() {
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert!(fragments.is_empty());
+    }
+
+    #[test]
+    fn test_paragraph_inherits_font_context() {
+        // Paragraph sets font_size=20, child text has no font_size -> inherits 20
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a.font_size = Some(20.0);
+                a
+            },
+            vec![("t", ElementKind::Text, {
+                let mut a = Attrs::default();
+                a.content = Some("Hi".to_string());
+                // No font_size set -> should inherit from paragraph
+                a
+            })],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].font_size, 20.0);
+    }
+
+    #[test]
+    fn test_paragraph_intrinsic_width_is_sum_of_children() {
+        // Without explicit width, paragraph intrinsic = sum of child widths
+        let (mut tree, para_id, _) = build_paragraph(
+            Attrs::default(),
+            vec![
+                ("t1", ElementKind::Text, text_attrs("AA")),   // 16px
+                ("t2", ElementKind::Text, text_attrs("BBBB")), // 32px
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let frame = para.frame.unwrap();
+        // 16 + 32 = 48, constrained to 800 but intrinsic should be 48
+        assert_eq!(frame.width, 48.0);
+    }
+
+    #[test]
+    fn test_paragraph_fragment_colors_from_children() {
+        // Test that font_color from a child text element is used in fragment
+        let mut child_attrs = Attrs::default();
+        child_attrs.content = Some("Red".to_string());
+        child_attrs.font_size = Some(16.0);
+        child_attrs.font_color = Some(Color::Rgb { r: 255, g: 0, b: 0 });
+
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(200.0));
+                a
+            },
+            vec![("t", ElementKind::Text, child_attrs)],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].color, 0xFF0000FF);
+    }
+
+    #[test]
+    fn test_paragraph_inside_el_shifts_fragments() {
+        // An el with padding=12 containing a paragraph with text.
+        // The paragraph fragments should be offset by the parent's padding.
+        let mut tree = ElementTree::new();
+
+        // Parent el with explicit size and padding
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.width = Some(Length::Px(400.0));
+        parent_attrs.height = Some(Length::Px(200.0));
+        parent_attrs.padding = Some(Padding::Uniform(12.0));
+
+        let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
+        let parent_id = parent_el.id.clone();
+
+        // Paragraph child
+        let mut para_attrs = Attrs::default();
+        para_attrs.width = Some(Length::Fill);
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+        let para_id = para.id.clone();
+
+        // Text child of paragraph
+        let text_child = make_element("t", ElementKind::Text, text_attrs("Hello world"));
+        let text_id = text_child.id.clone();
+
+        // Wire up children
+        para.children = vec![text_id.clone()];
+        parent_el.children = vec![para_id.clone()];
+
+        tree.root = Some(parent_id.clone());
+        tree.insert(text_child);
+        tree.insert(para);
+        tree.insert(parent_el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para_el = tree.get(&para_id).unwrap();
+        let para_frame = para_el.frame.unwrap();
+        // Paragraph frame should be at (12, 12) due to parent padding
+        assert_eq!(para_frame.x, 12.0);
+        assert_eq!(para_frame.y, 12.0);
+
+        let fragments = para_el.attrs.paragraph_fragments.as_ref().unwrap();
+        assert!(!fragments.is_empty(), "paragraph should have fragments");
+        // Fragment positions should also be offset by the parent padding
+        assert_eq!(fragments[0].x, 12.0);
+        assert_eq!(fragments[0].y, 12.0);
+        assert_eq!(fragments[0].text, "Hello");
+    }
+
+    #[test]
+    fn test_paragraph_wraps_to_parent_constraint() {
+        // A paragraph with NO explicit width inside an el with width=100px.
+        // MockTextMeasurer: each char = 8px, space = 8px
+        // "AA BB CC DD" -> "AA" (16) + " " (8) + "BB" (16) + " " (8) + "CC" (16) + " " (8) + "DD" (16) = 88px
+        // But words must wrap within 100px parent constraint.
+        // Line 1: "AA" (16) + space (8) + "BB" (16) + space (8) + "CC" (16) = 64, + space (8) + "DD" (16) = 88 fits in 100
+        // Actually let's use a narrower parent: 50px
+        // Line 1: "AA" (16) + space (8) + "BB" (16) = 40, fits in 50
+        // + space (8) + "CC" (16) = 64 > 50, wraps
+        // Line 2: "CC" (16) + space (8) + "DD" (16) = 40, fits in 50
+        let mut tree = ElementTree::new();
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.width = Some(Length::Px(50.0));
+
+        let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
+        let parent_id = parent_el.id.clone();
+
+        // Paragraph with NO explicit width
+        let para_attrs = Attrs::default();
+        let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
+        let para_id = para.id.clone();
+
+        let text_child = make_element("t", ElementKind::Text, text_attrs("AA BB CC DD"));
+        let text_id = text_child.id.clone();
+
+        para.children = vec![text_id.clone()];
+        parent_el.children = vec![para_id.clone()];
+
+        tree.root = Some(parent_id.clone());
+        tree.insert(text_child);
+        tree.insert(para);
+        tree.insert(parent_el);
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para_el = tree.get(&para_id).unwrap();
+        let fragments = para_el.attrs.paragraph_fragments.as_ref().unwrap();
+
+        // Should wrap into 2 lines, not be a single line
+        assert!(fragments.len() >= 3, "paragraph should wrap text into multiple lines, got {} fragments", fragments.len());
+
+        // Line 1 fragments should be at y=0
+        assert_eq!(fragments[0].y, 0.0);
+        assert_eq!(fragments[1].y, 0.0);
+        // At least one fragment should be on line 2 (y > 0)
+        let has_second_line = fragments.iter().any(|f| f.y > 0.0);
+        assert!(has_second_line, "paragraph text should wrap to a second line");
+    }
+
+    #[test]
+    fn test_paragraph_preserves_leading_space_between_nodes() {
+        // Three text children: "Hello", " World", " End"
+        // Leading spaces on " World" and " End" must be preserved.
+        // MockTextMeasurer: each char = 8px, space = 8px
+        // "Hello" = 40px
+        // " World" -> leading space (8) + "World" (40) -> cursor at 88
+        // " End" -> leading space (8) + "End" (24) -> cursor at 120
+        let (mut tree, para_id, _) = build_paragraph(
+            {
+                let mut a = Attrs::default();
+                a.width = Some(Length::Px(400.0));
+                a
+            },
+            vec![
+                ("t1", ElementKind::Text, text_attrs("Hello")),
+                ("t2", ElementKind::Text, text_attrs(" World")),
+                ("t3", ElementKind::Text, text_attrs(" End")),
+            ],
+        );
+
+        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+
+        let para = tree.get(&para_id).unwrap();
+        let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+        assert_eq!(fragments.len(), 3);
+        assert_eq!(fragments[0].text, "Hello");
+        assert_eq!(fragments[0].x, 0.0);
+        // "Hello" = 40px, + leading space 8px = 48
+        assert_eq!(fragments[1].text, "World");
+        assert_eq!(fragments[1].x, 48.0);
+        // "World" = 40px, cursor at 88, + leading space 8px = 96
+        assert_eq!(fragments[2].text, "End");
+        assert_eq!(fragments[2].x, 96.0);
     }
 }

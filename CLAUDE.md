@@ -39,7 +39,7 @@ Rust NIF: commands stored in Arc<Mutex<RendererState>>
 Render thread: SkiaRenderer.render() draws to GPU surface
     │
     ▼
-winit/glutin window (X11 or Wayland)
+winit window (Wayland)
 ```
 
 ### Key Components
@@ -82,8 +82,7 @@ Linux only (X11 and Wayland). The Cargo.toml enables both backends via skia-safe
 
 ## Related Projects
 
-- **Emerge** (`/workspace/emerge`) - The layout engine this renderer is built for. Elm-UI inspired declarative layouts.
-- **scenic_driver_skia** (`/workspace/scenic_driver_skia`) - Reference implementation for multi-backend architecture. Study this for backend patterns.
+- **elm-ui** (`/workspace/elm-ui`) - Elm ui repository. Study this for elm-ui reference.
 
 ## Target Architecture
 
