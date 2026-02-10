@@ -25,6 +25,7 @@ pub enum ElementKind {
     El,
     Text,
     None,
+    Paragraph,
 }
 
 impl ElementKind {
@@ -37,6 +38,7 @@ impl ElementKind {
             4 => Some(Self::El),
             5 => Some(Self::Text),
             6 => Some(Self::None),
+            7 => Some(Self::Paragraph),
             _ => None,
         }
     }
@@ -282,7 +284,8 @@ mod tests {
         assert_eq!(ElementKind::from_tag(4), Some(ElementKind::El));
         assert_eq!(ElementKind::from_tag(5), Some(ElementKind::Text));
         assert_eq!(ElementKind::from_tag(6), Some(ElementKind::None));
-        assert_eq!(ElementKind::from_tag(7), None);
+        assert_eq!(ElementKind::from_tag(7), Some(ElementKind::Paragraph));
+        assert_eq!(ElementKind::from_tag(8), None);
     }
 
     #[test]

@@ -66,6 +66,22 @@ defmodule Emerge.SerializationTest do
     assert strip_runtime(decoded) == strip_runtime(tree)
   end
 
+  test "paragraph roundtrip preserves type and children" do
+    layout =
+      paragraph([spacing(6)], [
+        text("Hello "),
+        el([Emerge.UI.Font.bold()], text("world")),
+        text(", this wraps.")
+      ])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert strip_runtime(decoded) == strip_runtime(tree)
+    assert decoded.type == :paragraph
+    assert length(decoded.children) == 3
+  end
+
   defp strip_runtime(%Emerge.Element{} = element) do
     %{
       element

@@ -55,4 +55,33 @@ defmodule Emerge.UITest do
       el([mouse_over([mouse_over([alpha(0.5)])])], text("bad"))
     end
   end
+
+  test "paragraph creates a paragraph element with children" do
+    element =
+      paragraph([spacing(4), Font.size(16)], [
+        text("Hello "),
+        el([Font.bold()], text("world"))
+      ])
+
+    assert element.type == :paragraph
+    assert element.attrs.spacing == 4
+    assert element.attrs.font_size == 16
+    assert length(element.children) == 2
+  end
+
+  test "paragraph/1 creates paragraph with default attrs" do
+    element = paragraph([text("Hello")])
+
+    assert element.type == :paragraph
+    assert element.attrs == %{__attrs_hash: Emerge.Tree.attrs_hash(%{})}
+    assert length(element.children) == 1
+  end
+
+  test "paragraph supports key attribute" do
+    element = paragraph([key(:my_para), spacing(8)], [text("Hi")])
+
+    assert element.type == :paragraph
+    assert element.id == :my_para
+    assert element.attrs.spacing == 8
+  end
 end

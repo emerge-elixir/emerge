@@ -130,6 +130,22 @@ pub struct MouseOverAttrs {
     pub alpha: Option<f64>,
 }
 
+/// A positioned text fragment within a paragraph, computed during layout.
+#[derive(Clone, Debug)]
+pub struct TextFragment {
+    pub x: f32,
+    pub y: f32,
+    pub text: String,
+    pub font_size: f32,
+    pub color: u32,
+    pub family: String,
+    pub weight: u16,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    pub ascent: f32,
+}
+
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
 pub struct Attrs {
@@ -181,6 +197,8 @@ pub struct Attrs {
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
     pub space_evenly: Option<bool>,
+    /// Runtime-only: computed paragraph text fragments (not decoded from binary).
+    pub paragraph_fragments: Option<Vec<TextFragment>>,
     // Nearby elements stored as raw EMRG bytes (decoded lazily)
     pub above: Option<Vec<u8>>,
     pub below: Option<Vec<u8>>,

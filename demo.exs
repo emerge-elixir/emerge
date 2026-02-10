@@ -219,7 +219,7 @@ defmodule Demo do
       {"Hover", :hover},
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
-      {"Fonts", :fonts}
+      {"Text", :text}
     ]
 
     column(
@@ -304,7 +304,7 @@ defmodule Demo do
       :hover -> page_hover()
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
-      :fonts -> page_fonts()
+      :text -> page_text()
       _ -> page_overview()
     end
   end
@@ -1029,7 +1029,7 @@ defmodule Demo do
     ])
   end
 
-  defp page_fonts() do
+  defp page_text() do
     column([width(fill()), spacing(16)], [
       section_title("Font Inheritance"),
       el(
@@ -1210,6 +1210,122 @@ defmodule Demo do
           el([Font.bold()], text("Override: bold only")),
           text("Back to inherited")
         ]
+      ),
+      section_title("Paragraph"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Paragraph elements wrap text automatically within a constrained width")
+      ),
+      el(
+        [
+          width(px(400)),
+          padding(12),
+          Background.color({:color_rgb, {45, 45, 65}}),
+          Border.rounded(8)
+        ],
+        paragraph([Font.size(14), Font.color(:white)], [
+          text(
+            "This is a paragraph that demonstrates automatic word wrapping. " <>
+              "When text exceeds the available width, it flows naturally to the next line, " <>
+              "just like in a word processor or web browser. No manual line breaks needed."
+          )
+        ])
+      ),
+      section_title("Inline Styled Spans"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Mix plain text with bold and colored spans inside a paragraph")
+      ),
+      el(
+        [
+          width(px(450)),
+          padding(12),
+          Background.color({:color_rgb, {45, 45, 65}}),
+          Border.rounded(8)
+        ],
+        paragraph([Font.size(14), Font.color(:white)], [
+          text("Paragraphs support "),
+          el([Font.bold()], text("bold text")),
+          text(" and "),
+          el([Font.color(@pink)], text("colored spans")),
+          text(" inline. This lets you build rich text layouts where "),
+          el([Font.bold(), Font.color(@blue)], text("styled fragments")),
+          text(" flow naturally within the same line-wrapped block.")
+        ])
+      ),
+      section_title("Line Spacing"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Compare tight vs relaxed line spacing in paragraphs")
+      ),
+      row([width(fill()), spacing(16)], [
+        column([width(fill()), spacing(6)], [
+          el([Font.size(11), Font.color(@dim_text)], text("spacing(0)")),
+          el(
+            [
+              width(fill()),
+              padding(10),
+              Background.color({:color_rgb, {45, 45, 65}}),
+              Border.rounded(6)
+            ],
+            paragraph([spacing(0), Font.size(13), Font.color(:white)], [
+              text(
+                "Tight line spacing makes text feel compact and dense. " <>
+                  "Good for code-like displays or space-constrained layouts."
+              )
+            ])
+          )
+        ]),
+        column([width(fill()), spacing(6)], [
+          el([Font.size(11), Font.color(@dim_text)], text("spacing(8)")),
+          el(
+            [
+              width(fill()),
+              padding(10),
+              Background.color({:color_rgb, {45, 45, 65}}),
+              Border.rounded(6)
+            ],
+            paragraph([spacing(8), Font.size(13), Font.color(:white)], [
+              text(
+                "Relaxed line spacing improves readability for body text. " <>
+                  "Good for articles, documentation, and longer content."
+              )
+            ])
+          )
+        ])
+      ]),
+      section_title("Document Style"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Heading plus body paragraphs forming a realistic document layout")
+      ),
+      el(
+        [
+          width(px(500)),
+          padding(16),
+          Background.color({:color_rgb, {40, 40, 60}}),
+          Border.rounded(10)
+        ],
+        column([width(fill()), spacing(12)], [
+          el([Font.size(20), Font.bold(), Font.color(:white)], text("Getting Started")),
+          paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {210, 210, 230}})], [
+            text(
+              "Emerge is a native GUI toolkit for Elixir that renders with Skia. " <>
+                "It uses a declarative layout model inspired by elm-ui, where you describe " <>
+                "what your interface should look like and the engine handles the rest."
+            )
+          ]),
+          paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {210, 210, 230}})], [
+            text("To get started, add "),
+            el([Font.bold(), Font.color(@blue)], text("emerge_skia")),
+            text(" to your dependencies and call "),
+            el([Font.bold(), Font.color(@blue)], text("EmergeSkia.start/1")),
+            text(
+              ". From there you can build your UI tree using the helpers in Emerge.UI " <>
+                "and send it to the renderer."
+            )
+          ])
+        ])
       )
     ])
   end

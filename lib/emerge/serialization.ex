@@ -14,7 +14,8 @@ defmodule Emerge.Serialization do
     column: 3,
     el: 4,
     text: 5,
-    none: 6
+    none: 6,
+    paragraph: 7
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)

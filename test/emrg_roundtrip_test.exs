@@ -313,6 +313,77 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert normalized_decoded == normalized_assigned
   end
 
+  test "EMRG roundtrip preserves paragraph element" do
+    tree =
+      paragraph(
+        [
+          width(:fill),
+          spacing(4.0),
+          Emerge.UI.Font.size(16.0),
+          Emerge.UI.Font.color(:white)
+        ],
+        [
+          text("Hello "),
+          el([Emerge.UI.Font.bold()], text("world")),
+          text(", this wraps automatically.")
+        ]
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    normalized_decoded = normalize_tree(decoded)
+    normalized_assigned = normalize_tree(assigned)
+
+    assert normalized_decoded == normalized_assigned
+    assert decoded.type == :paragraph
+    assert length(decoded.children) == 3
+  end
+
+  test "paragraph inside el produces correct structure" do
+    tree =
+      el(
+        [width({:px, 400}), padding(12.0)],
+        paragraph(
+          [Emerge.UI.Font.size(16.0), Emerge.UI.Font.color(:white)],
+          [text("Hello world")]
+        )
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    assert decoded.type == :el
+    assert length(decoded.children) == 1
+
+    [para] = decoded.children
+    assert para.type == :paragraph
+    assert length(para.children) == 1
+
+    [text_child] = para.children
+    assert text_child.type == :text
+  end
+
   test "nearby element named colors are preserved" do
     # Test that named colors like :cyan are handled correctly
     tree =
