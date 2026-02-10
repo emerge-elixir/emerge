@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 mix deps.get                    # Install Elixir dependencies
 mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
 mix test                        # Run tests
+mix docs                        # Generate ExDoc documentation
 mix run demo.exs                # Run the demo (requires display: X11 or Wayland)
 
 # Rust-specific (from native/emerge_skia/)
@@ -107,6 +108,11 @@ native/scenic_driver_skia/src/
 ```
 
 Key pattern: `Renderer` struct is backend-agnostic, backends provide the Skia `Surface` and handle input/display.
+
+## Documentation
+
+All docs currently live in `guides/internals/` (architecture, EMRG format, events, scrolling, tree patching).
+Run `mix docs` to generate the full ExDoc site.
 
 ## Git Commit Guidelines
 
