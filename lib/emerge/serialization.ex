@@ -15,7 +15,8 @@ defmodule Emerge.Serialization do
     el: 4,
     text: 5,
     none: 6,
-    paragraph: 7
+    paragraph: 7,
+    text_column: 8
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -64,6 +65,7 @@ defmodule Emerge.Serialization do
         attr_bin = Emerge.AttrCodec.encode_attrs(attrs)
         child_ids = Enum.map(children, & &1.id)
         child_count = length(child_ids)
+
         children_bin =
           child_ids
           |> Enum.map(fn child_id ->
@@ -151,8 +153,10 @@ defmodule Emerge.Serialization do
   end
 
   defp collect_nodes(%Element{} = element) do
-    [%{id: element.id, type: element.type, attrs: element.attrs, children: element.children} |
-       Enum.flat_map(element.children, &collect_nodes/1)]
+    [
+      %{id: element.id, type: element.type, attrs: element.attrs, children: element.children}
+      | Enum.flat_map(element.children, &collect_nodes/1)
+    ]
   end
 
   defp decode_child_ids(rest, 0, acc), do: {Enum.reverse(acc), rest}

@@ -350,6 +350,43 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert length(decoded.children) == 3
   end
 
+  test "EMRG roundtrip preserves text_column element" do
+    tree =
+      text_column(
+        [spacing(14.0), center_x()],
+        [
+          paragraph([spacing(4.0), Emerge.UI.Font.size(14.0)], [
+            text("A short intro paragraph for the text column.")
+          ]),
+          paragraph([spacing(4.0), Emerge.UI.Font.size(14.0)], [
+            text("It should keep multiple paragraph children in order."),
+            el([Emerge.UI.Font.bold()], text(" Bold spans ")),
+            text("also roundtrip correctly.")
+          ])
+        ]
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    normalized_decoded = normalize_tree(decoded)
+    normalized_assigned = normalize_tree(assigned)
+
+    assert normalized_decoded == normalized_assigned
+    assert decoded.type == :text_column
+    assert length(decoded.children) == 2
+  end
+
   test "paragraph inside el produces correct structure" do
     tree =
       el(

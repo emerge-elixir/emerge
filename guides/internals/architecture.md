@@ -64,8 +64,8 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | column | ✅ | ✅ | ✅ | |
 | wrappedRow | ✅ | ✅ | ✅ | |
 | none | ✅ | ✅ | ✅ | |
-| paragraph | ❌ | ❌ | ❌ | Inline text flow |
-| textColumn | ❌ | ❌ | ❌ | Multi-paragraph |
+| paragraph | ✅ | ✅ | ✅ | Inline text flow |
+| textColumn | ✅ | ✅ | ✅ | Multi-paragraph (column semantics for now) |
 
 #### Sizing
 | Feature | Elixir API | Layout | Render | Notes |
@@ -256,8 +256,7 @@ These CSS features from taffy should **not** be added:
 
 ## Upcoming Features
 
-- `paragraph` element for inline text flow
-- `textColumn` for multi-paragraph layouts
+- Advanced `textColumn` float-style wrapping around `alignLeft`/`alignRight` blocks
 - Border shadows and glow effects
 - Background images
 

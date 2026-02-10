@@ -59,6 +59,8 @@ column      -> 3
 el          -> 4
 text        -> 5
 none        -> 6
+paragraph   -> 7
+text_column -> 8
 ```
 
 ## Attribute Tags (current)

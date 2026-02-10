@@ -622,7 +622,7 @@ fn measure_element<M: TextMeasurer>(
             }
         }
 
-        ElementKind::Column => {
+        ElementKind::Column | ElementKind::TextColumn => {
             // Column: sum heights + spacing + padding
             let total_spacing = if child_sizes.len() > 1 {
                 spacing_y * (child_sizes.len() - 1) as f32
@@ -900,7 +900,7 @@ fn resolve_element<M: TextMeasurer>(
             }
         }
 
-        ElementKind::Column => {
+        ElementKind::Column | ElementKind::TextColumn => {
             let allow_fill_height = available_height.is_definite();
             let space_evenly = attrs.space_evenly.unwrap_or(false) && allow_fill_height;
             let mut actual_content_height = resolve_column_children(
@@ -2351,6 +2351,50 @@ mod tests {
 
         assert_eq!(c1_frame.y, 0.0);
         assert_eq!(c2_frame.y, 24.0); // 10 + spacing_y 14
+    }
+
+    #[test]
+    fn test_layout_text_column_stacks_like_column() {
+        let mut tree = ElementTree::new();
+
+        let mut text_col_attrs = Attrs::default();
+        text_col_attrs.width = Some(Length::Px(100.0));
+        text_col_attrs.spacing = Some(12.0);
+
+        let mut text_col = make_element("text_col", ElementKind::TextColumn, text_col_attrs);
+
+        let child1 = make_element("c1", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(20.0));
+            a
+        });
+        let child2 = make_element("c2", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Px(30.0));
+            a
+        });
+
+        let text_col_id = text_col.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+
+        text_col.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(text_col_id.clone());
+        tree.insert(text_col);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+
+        let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+        let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+        let text_col_frame = tree.get(&text_col_id).unwrap().frame.unwrap();
+
+        assert_eq!(c1_frame.y, 0.0);
+        assert_eq!(c2_frame.y, 32.0); // 20 + spacing 12
+        assert_eq!(text_col_frame.height, 62.0); // 20 + 12 + 30
     }
 
     #[test]

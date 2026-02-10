@@ -84,4 +84,37 @@ defmodule Emerge.UITest do
     assert element.id == :my_para
     assert element.attrs.spacing == 8
   end
+
+  test "text_column creates a text_column element with document defaults" do
+    element =
+      text_column([spacing(12)], [
+        paragraph([spacing(4)], [text("First")]),
+        paragraph([spacing(4)], [text("Second")])
+      ])
+
+    assert element.type == :text_column
+    assert element.attrs.spacing == 12
+    assert element.attrs.width == :fill
+    assert element.attrs.height == :content
+    assert length(element.children) == 2
+  end
+
+  test "text_column allows overriding default width and height" do
+    element =
+      text_column([width(px(420)), height(px(300))], [
+        paragraph([text("Body")])
+      ])
+
+    assert element.type == :text_column
+    assert element.attrs.width == {:px, 420}
+    assert element.attrs.height == {:px, 300}
+  end
+
+  test "text_column supports key attribute" do
+    element = text_column([key(:doc), spacing(10)], [paragraph([text("Hello")])])
+
+    assert element.type == :text_column
+    assert element.id == :doc
+    assert element.attrs.spacing == 10
+  end
 end

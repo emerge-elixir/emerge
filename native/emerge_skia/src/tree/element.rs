@@ -22,6 +22,7 @@ pub enum ElementKind {
     Row,
     WrappedRow,
     Column,
+    TextColumn,
     El,
     Text,
     None,
@@ -39,6 +40,7 @@ impl ElementKind {
             5 => Some(Self::Text),
             6 => Some(Self::None),
             7 => Some(Self::Paragraph),
+            8 => Some(Self::TextColumn),
             _ => None,
         }
     }
@@ -285,7 +287,8 @@ mod tests {
         assert_eq!(ElementKind::from_tag(5), Some(ElementKind::Text));
         assert_eq!(ElementKind::from_tag(6), Some(ElementKind::None));
         assert_eq!(ElementKind::from_tag(7), Some(ElementKind::Paragraph));
-        assert_eq!(ElementKind::from_tag(8), None);
+        assert_eq!(ElementKind::from_tag(8), Some(ElementKind::TextColumn));
+        assert_eq!(ElementKind::from_tag(9), None);
     }
 
     #[test]
