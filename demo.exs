@@ -1354,7 +1354,7 @@ defmodule Demo do
               )
             ]),
             paragraph([spacing(4)], [
-              text("This block keeps a comfortable reading width by default, and you can still "),
+              text("This block fills the available width by default, and you can still "),
               el([Font.bold(), Font.color(@blue)], text("override width or spacing")),
               text(" when a specific layout needs tighter control.")
             ]),
@@ -1362,6 +1362,121 @@ defmodule Demo do
               text(
                 "In this demo it behaves like a vertical text container with paragraph-friendly " <>
                   "defaults, so it is easy to compose document-style content."
+              )
+            ])
+          ]
+        )
+      ),
+      section_title("Float Flow"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("align_left and align_right float blocks inside paragraph and text_column content")
+      ),
+      el(
+        [
+          width(fill()),
+          padding(16),
+          Background.color({:color_rgb, {44, 50, 66}}),
+          Border.rounded(10)
+        ],
+        paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {226, 232, 243}})], [
+          el(
+            [
+              align_left(),
+              width(px(40)),
+              height(px(40)),
+              Background.color({:color_rgb, {74, 113, 214}}),
+              Border.rounded(8)
+            ],
+            el(
+              [
+                Font.bold(),
+                Font.size(26),
+                Font.color(:white),
+                center_x(),
+                center_y()
+              ],
+              text("S")
+            )
+          ),
+          text(
+            "tylish copy can wrap around a left-floated drop cap. This paragraph demonstrates " <>
+              "inline flow with richer composition while keeping word wrapping automatic. "
+          ),
+          el(
+            [
+              align_right(),
+              width(px(96)),
+              padding(8),
+              Background.color({:color_rgb, {78, 58, 90}}),
+              Border.rounded(6),
+              Font.size(11),
+              Font.bold(),
+              Font.color(:white)
+            ],
+            text("PULL QUOTE")
+          ),
+          text(
+            "A right float can sit beside the same text flow, and once the floated blocks end, " <>
+              "text returns to full width for the rest of the paragraph."
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          padding(16),
+          Background.color({:color_rgb, {36, 46, 60}}),
+          Border.rounded(10)
+        ],
+        text_column(
+          [spacing(10), Font.size(13), Font.color({:color_rgb, {220, 228, 238}})],
+          [
+            el(
+              [
+                align_left(),
+                width(px(128)),
+                height(px(92)),
+                padding(10),
+                Background.color({:color_rgb, {67, 97, 150}}),
+                Border.rounded(8)
+              ],
+              column([spacing(6)], [
+                el([Font.bold(), Font.color(:white)], text("Floated Card")),
+                el(
+                  [Font.size(11), Font.color({:color_rgb, {232, 238, 246}})],
+                  text("align_left()")
+                ),
+                el([Font.size(11), Font.color({:color_rgb, {232, 238, 246}})], text("92px tall"))
+              ])
+            ),
+            paragraph([spacing(3)], [
+              text(
+                "This paragraph wraps around the floated card first, using the remaining line width " <>
+                  "to the right."
+              )
+            ]),
+            paragraph([spacing(3)], [
+              text(
+                "A second paragraph keeps flowing around the same active float until its bottom edge " <>
+                  "is passed."
+              )
+            ]),
+            el(
+              [
+                width(fill()),
+                padding(8),
+                Background.color({:color_rgb, {84, 62, 62}}),
+                Border.rounded(6),
+                Font.size(12),
+                Font.color(:white)
+              ],
+              text("Non-paragraph block: clears below active floats before rendering")
+            ),
+            paragraph([spacing(3)], [
+              text(
+                "After the clear block, flow continues as normal content in the text column with " <>
+                  "consistent vertical spacing."
               )
             ])
           ]

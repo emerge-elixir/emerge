@@ -1,6 +1,7 @@
 defmodule Emerge.UITest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
   import Emerge.UI
 
   alias Emerge.UI.{Background, Font}
@@ -116,5 +117,43 @@ defmodule Emerge.UITest do
     assert element.type == :text_column
     assert element.id == :doc
     assert element.attrs.spacing == 10
+  end
+
+  test "warns when an attribute key is overridden with a different value" do
+    stderr =
+      capture_io(:stderr, fn ->
+        _ = el([align_left(), center_x()], text("warn"))
+      end)
+
+    assert stderr =~ "attribute :align_x is set multiple times"
+    assert stderr =~ "last value wins"
+  end
+
+  test "does not warn when duplicate attribute uses the same value" do
+    stderr =
+      capture_io(:stderr, fn ->
+        _ = el([align_left(), align_left()], text("same"))
+      end)
+
+    assert stderr == ""
+  end
+
+  test "warns only once per process for identical override signature" do
+    stderr =
+      capture_io(:stderr, fn ->
+        _ = el([align_left(), center_x()], text("first"))
+        _ = el([align_left(), center_x()], text("second"))
+      end)
+
+    assert length(Regex.scan(~r/attribute :align_x is set multiple times/, stderr)) == 1
+  end
+
+  test "text_column default width and height overrides do not emit warnings" do
+    stderr =
+      capture_io(:stderr, fn ->
+        _ = text_column([width(px(420)), height(px(300))], [paragraph([text("Body")])])
+      end)
+
+    assert stderr == ""
   end
 end

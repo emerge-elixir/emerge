@@ -213,6 +213,19 @@ fn render_element(
 
     // Render paragraph fragments (word-wrapped text)
     if element.kind == ElementKind::Paragraph {
+        for child_id in &element.children {
+            let should_render_float_child = tree.get(child_id).is_some_and(|child| {
+                matches!(
+                    child.attrs.align_x,
+                    Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
+                )
+            });
+
+            if should_render_float_child {
+                render_element(tree, child_id, commands, &element_context);
+            }
+        }
+
         if let Some(fragments) = &attrs.paragraph_fragments {
             for frag in fragments {
                 let baseline_y = frag.y + frag.ascent;
@@ -1487,6 +1500,68 @@ mod tests {
         assert_eq!(text_cmds[1].2, "World");
         assert_eq!(text_cmds[1].3, 0xFF0000FF);
         assert_eq!(text_cmds[1].4, 700);
+    }
+
+    #[test]
+    fn test_render_paragraph_renders_float_child_and_fragments() {
+        use crate::tree::attrs::{AlignX, TextFragment};
+
+        let para_id = ElementId::from_term_bytes(vec![10]);
+        let float_id = ElementId::from_term_bytes(vec![11]);
+
+        let mut para_attrs = Attrs::default();
+        para_attrs.paragraph_fragments = Some(vec![TextFragment {
+            x: 24.0,
+            y: 8.0,
+            text: "AA".to_string(),
+            font_size: 16.0,
+            color: 0xFFFFFFFF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: false,
+            strike: false,
+            ascent: 12.0,
+        }]);
+
+        let mut paragraph =
+            Element::with_attrs(para_id.clone(), ElementKind::Paragraph, Vec::new(), para_attrs);
+        paragraph.children = vec![float_id.clone()];
+        paragraph.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 40.0,
+            content_width: 120.0,
+            content_height: 40.0,
+        });
+
+        let mut float_attrs = Attrs::default();
+        float_attrs.align_x = Some(AlignX::Left);
+        float_attrs.background = Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 }));
+        let mut float_el = Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
+        float_el.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+            content_width: 20.0,
+            content_height: 20.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(para_id.clone());
+        tree.insert(paragraph);
+        tree.insert(float_el);
+
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| {
+            matches!(cmd, DrawCmd::Rect(x, y, w, h, color) if *x == 0.0 && *y == 0.0 && *w == 20.0 && *h == 20.0 && *color == 0xFF0000FF)
+        }));
+        assert!(commands.iter().any(|cmd| {
+            matches!(cmd, DrawCmd::TextWithFont(x, y, text, _, _, _, _, _) if *x == 24.0 && *y == 20.0 && text == "AA")
+        }));
     }
 
     #[test]
