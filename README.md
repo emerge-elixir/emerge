@@ -1,59 +1,70 @@
-# EmergeSkia
+# Emerge
 
-Rust-backed rendering with an Elixir tree API and EMRG encoding/patching.
+A simple native GUI toolkit for Elixir.
 
-## Docs
-- Tree identity, reconciliation, and patching: `TREE_PATCHING.md`
-- Binary encoding format: `EMRG_FORMAT.md`
+Emerge lets you build native graphical interfaces in Elixir using a declarative,
+Elm-UI inspired API. It targets Nerves projects (embedded displays, kiosks,
+dashboards) but works for general-purpose desktop apps too. Backed by Skia for
+GPU-accelerated rendering.
 
-## Elixir API (tree + EMRG)
+## Quick example
+
 ```elixir
-state = Emerge.diff_state_new()
-tree =
-  Emerge.UI.column([
-    Emerge.UI.key(:root)
-  ], [
-    Emerge.UI.el(Emerge.UI.text("Hello"))
+import Emerge.UI
+
+column([width(fill()), spacing(16), padding(20)], [
+  el([Font.size(24), Font.color(0xFFFFFFFF)],
+    text("Hello from Emerge")),
+
+  row([spacing(12)], [
+    el([width(fill()), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
+      text("Card A")),
+    el([width(fill()), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+      text("Card B"))
   ])
-
-{full_bin, state, _assigned} = Emerge.encode_full(state, tree)
-{patch_bin, state, _assigned} = Emerge.diff_state_update(state, tree)
-```
-
-## Spacing & Distribution
-
-Use `spacing/1` for uniform gaps, `spacing_xy/2` to control horizontal vs vertical
-gaps, and `space_evenly/0` to distribute children with equal gaps between them
-(elm-ui "space-evenly" maps to `space-between`).
-
-```elixir
-row([width(fill()), space_evenly()], [
-  chip("One"),
-  chip("Two"),
-  chip("Three")
-])
-
-wrapped_row([width(fill()), spacing_xy(6, 14)], [
-  chip("Spacing"),
-  chip("X/Y"),
-  chip("Example"),
-  chip("Wrapped")
 ])
 ```
 
-## Installation
+## Features
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `emerge_skia` to your list of dependencies in `mix.exs`:
+- Declarative layout (`row`, `column`, `el`, `wrapped_row`, `text`)
+- Elm-UI sizing model (`fill`, `shrink`, `px`, `fill_portion`, `min`/`max`)
+- Padding, spacing, alignment
+- Backgrounds (solid color, linear gradient)
+- Borders with per-corner rounding
+- Font customization (family, weight, style, size, decorations, spacing)
+- Scrollable containers with native scrollbars
+- Mouse and keyboard input events
+- Hover styling (`mouse_over`)
+- Transforms (move, rotate, scale, alpha)
+- Overlay positioning (`above`, `below`, `in_front`, etc.)
+- High-DPI scaling
+- Incremental tree patching for efficient updates
 
-```elixir
-def deps do
-  [
-    {:emerge_skia, "~> 0.1.0"}
-  ]
-end
+## Backends
+
+- **Wayland** — windowed desktop apps (default)
+- **DRM** — direct framebuffer for Nerves / embedded / kiosk (no window manager needed)
+- **Raster** — offscreen CPU rendering for testing and headless use
+
+The Wayland backend uses winit, which can fall back to X11 automatically if no
+Wayland display is available — but X11 is not a first-class supported target.
+
+## Requirements
+
+- Elixir 1.19+
+- Rust toolchain
+- Linux (Wayland or DRM)
+
+## Getting started
+
+```bash
+mix deps.get
+mix compile
+mix test
+mix run demo.exs
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/emerge_skia>.
+## Documentation
+
+Run `mix docs` for the full API reference.
