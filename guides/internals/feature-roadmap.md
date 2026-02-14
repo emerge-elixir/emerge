@@ -19,6 +19,7 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | none | ✅ | ✅ | ✅ | |
 | paragraph | ✅ | ✅ | ✅ | Inline text flow |
 | textColumn | ✅ | ✅ | ✅ | Multi-paragraph with float flow around alignLeft/alignRight |
+| image | ✅ | ✅ | ✅ | Async Rust-loaded image element |
 
 #### Sizing
 | Feature | Elixir API | Layout | Render | Notes |
@@ -65,7 +66,7 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 |---------|------------|--------|--------|-------|
 | color | ✅ | N/A | ✅ | |
 | gradient | ✅ | N/A | ✅ | Linear only |
-| image | ❌ | N/A | ❌ | |
+| image | ✅ | N/A | ✅ | contain/cover fit modes |
 | tiled | ❌ | N/A | ❌ | |
 
 #### Border
@@ -187,4 +188,4 @@ These CSS features from taffy should **not** be added:
 
 ## Upcoming Features
 
-- Background images
+- Input primitives (button, checkbox, text, slider, etc.)

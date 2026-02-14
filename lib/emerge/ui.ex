@@ -242,6 +242,26 @@ defmodule Emerge.UI do
   end
 
   @doc """
+  An image element.
+
+  `source` can be a verified `~m"..."` reference, logical asset path,
+  runtime file path, or `{:id, image_id}`.
+  """
+  def image(source, attrs \\ []) when is_list(attrs) do
+    parsed = parse_attrs([{:image_src, source} | attrs])
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :image,
+      id: id,
+      attrs: parsed,
+      children: []
+    }
+  end
+
+  @doc """
   An empty element that takes up no space.
   """
   def none do
@@ -407,6 +427,9 @@ defmodule Emerge.UI do
   @doc "Set element opacity (0.0 - 1.0)"
   def alpha(value) when is_number(value), do: {:alpha, value}
 
+  @doc "Set image fit mode (`:contain` or `:cover`)"
+  def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
+
   # ============================================
   # NEARBY POSITIONING
   # ============================================
@@ -563,6 +586,17 @@ defmodule Emerge.UI do
 
     @doc "Set background gradient (linear)"
     def gradient(from, to, angle \\ 0), do: {:background, {:gradient, from, to, angle}}
+
+    @doc "Set background image"
+    def image(source, opts \\ []) do
+      fit =
+        case Keyword.get(opts, :fit, :contain) do
+          :cover -> :cover
+          _ -> :contain
+        end
+
+      {:background, {:image, source, fit}}
+    end
   end
 
   defmodule Border do
@@ -578,8 +612,10 @@ defmodule Emerge.UI do
     def width(w), do: {:border_width, w}
 
     @doc "Set per-edge border widths (top, right, bottom, left)"
-    def width_each(top, right, bottom, left) when top == right and right == bottom and bottom == left,
-      do: {:border_width, top}
+    def width_each(top, right, bottom, left)
+        when top == right and right == bottom and bottom == left,
+        do: {:border_width, top}
+
     def width_each(top, right, bottom, left),
       do: {:border_width, {top, right, bottom, left}}
 

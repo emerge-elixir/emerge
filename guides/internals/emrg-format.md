@@ -13,7 +13,7 @@ version           # 1 byte unsigned
 node_count        # 4 bytes unsigned, big-endian
 ```
 
-Current version is `2`.
+Current version is `3`.
 
 ## Node Record
 Each node is encoded as:
@@ -61,6 +61,7 @@ text        -> 5
 none        -> 6
 paragraph   -> 7
 text_column -> 8
+image       -> 9
 ```
 
 ## Attribute Tags (current)
@@ -114,6 +115,11 @@ font_underline    -> 47
 font_strike       -> 48
 font_letter_spacing -> 49
 font_word_spacing -> 50
+border_style      -> 51
+box_shadow        -> 52
+image_src         -> 53
+image_fit         -> 54
+image_size        -> 55
 ```
 
 ## Attribute Value Encodings (current)
@@ -171,6 +177,51 @@ f64 -> IEEE 754 float-64
 ```
 0 -> color (color encoding above)
 1 -> {:gradient, from, to, angle} (color + color + f64)
+2 -> {:image, source, fit} (image_source + image_fit)
+```
+
+### Border Style (`border_style`)
+```
+0 -> :solid
+1 -> :dashed
+2 -> :dotted
+```
+
+### Box Shadow (`box_shadow`)
+```
+u8 count
+repeat count times:
+  f64 offset_x
+  f64 offset_y
+  f64 blur
+  f64 size
+  color
+  bool inset
+```
+
+### Image Source (`image_src`)
+```
+u8 variant + payload
+
+variant 0 -> {:id, id}
+  u16 len + bytes
+
+variant 1 -> logical path
+  u16 len + bytes
+
+variant 2 -> {:path, path}
+  u16 len + bytes
+```
+
+### Image Fit (`image_fit`)
+```
+0 -> :contain
+1 -> :cover
+```
+
+### Image Size (`image_size`)
+```
+f64 width + f64 height
 ```
 
 ### Border Radius (`border_radius`)

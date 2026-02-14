@@ -108,6 +108,29 @@ defmodule EmergeSkia.Native do
   def load_font_nif(_name, _weight, _italic, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Configure native asset loading policy and manifest location.
+  """
+  @spec configure_assets_nif(
+          reference(),
+          String.t(),
+          boolean(),
+          [String.t()],
+          boolean(),
+          non_neg_integer(),
+          [String.t()]
+        ) :: :ok
+  def configure_assets_nif(
+        _renderer,
+        _manifest_path,
+        _runtime_enabled,
+        _allowlist,
+        _follow_symlinks,
+        _max_file_size,
+        _extensions
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Check if the renderer is still running.
   """
   @spec is_running(reference()) :: boolean()

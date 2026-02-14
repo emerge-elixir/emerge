@@ -15,6 +15,7 @@ Multi-backend Skia renderer with:
 - Scroll state preserved across layout/patch with resize-aware clamping
 - Clip- and rounded-corner-aware hit testing
 - Declarative `mouse_over` styling with runtime active-state application
+- Source-based image assets resolved asynchronously in Rust after tree upload/patch
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder
 - Three-pass layout engine (scale + measurement + resolution)
@@ -74,6 +75,11 @@ Usage: `tree_layout(tree, width, height, scale)` where `scale > 1.0` for high-DP
 ## EMRG Attribute Reference
 
 See the [EMRG Format](emrg-format.md) guide for the full binary encoding specification.
+
+## Image Asset Pipeline
+
+See [Assets and Images](assets-images.md) for source resolution, digest manifests,
+runtime path security, and async Rust-side loading/caching behavior.
 
 ### Length Encoding
 

@@ -4,7 +4,7 @@
 
 use super::attrs::{
     Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, Font, FontStyle, FontWeight,
-    Padding, TextAlign,
+    ImageFit, ImageSource, Padding, TextAlign,
 };
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
@@ -12,6 +12,7 @@ use super::layout::{
     Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance, layout_tree,
 };
 use super::scrollbar;
+use crate::assets::{self, AssetStatus};
 use crate::renderer::{DrawCmd, make_font_with_style};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
@@ -95,6 +96,21 @@ fn render_element(
                     border_radius_uniform(radius),
                 ));
             }
+            Background::Image { source, fit } => {
+                let clipped = push_border_clip(commands, frame, attrs);
+                push_image_for_source(
+                    commands,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    source,
+                    *fit,
+                );
+                if clipped {
+                    commands.push(DrawCmd::PopClip);
+                }
+            }
         }
     }
 
@@ -127,7 +143,12 @@ fn render_element(
             BorderWidth::Uniform(w) if *w > 0.0 => {
                 push_border_rect(commands, frame, radius, *w as f32, color, style);
             }
-            BorderWidth::Sides { top, right, bottom, left } => {
+            BorderWidth::Sides {
+                top,
+                right,
+                bottom,
+                left,
+            } => {
                 commands.push(DrawCmd::BorderEdges(
                     frame.x,
                     frame.y,
@@ -170,10 +191,7 @@ fn render_element(
             .font_underline
             .or(inherited.font_underline)
             .unwrap_or(false);
-        let strike = attrs
-            .font_strike
-            .or(inherited.font_strike)
-            .unwrap_or(false);
+        let strike = attrs.font_strike.or(inherited.font_strike).unwrap_or(false);
         let letter_spacing = attrs
             .font_letter_spacing
             .map(|v| v as f32)
@@ -269,6 +287,32 @@ fn render_element(
         }
     }
 
+    if element.kind == ElementKind::Image
+        && let Some(source) = attrs.image_src.as_ref()
+    {
+        let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
+        let (padding_left, padding_top, padding_right, padding_bottom) =
+            match attrs.padding.as_ref() {
+                Some(Padding::Uniform(value)) => {
+                    (*value as f32, *value as f32, *value as f32, *value as f32)
+                }
+                Some(Padding::Sides {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
+                None => (0.0, 0.0, 0.0, 0.0),
+            };
+
+        let draw_x = frame.x + padding_left;
+        let draw_y = frame.y + padding_top;
+        let draw_w = (frame.width - padding_left - padding_right).max(0.0);
+        let draw_h = (frame.height - padding_top - padding_bottom).max(0.0);
+
+        push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
+    }
+
     // Render paragraph fragments (word-wrapped text)
     if element.kind == ElementKind::Paragraph {
         for child_id in &element.children {
@@ -300,16 +344,23 @@ fn render_element(
 
                 if frag.underline || frag.strike {
                     let thickness = (frag.font_size * 0.06).max(1.0);
-                    let font = make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
+                    let font = make_font_with_style(
+                        &frag.family,
+                        frag.weight,
+                        frag.italic,
+                        frag.font_size,
+                    );
                     let (word_width, _) = font.measure_str(&frag.text, None);
                     if word_width > 0.0 {
                         if frag.underline {
                             let y = baseline_y + frag.font_size * 0.08 - thickness / 2.0;
-                            commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                            commands
+                                .push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
                         }
                         if frag.strike {
                             let y = baseline_y - frag.font_size * 0.3 - thickness / 2.0;
-                            commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                            commands
+                                .push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
                         }
                     }
                 }
@@ -398,6 +449,34 @@ fn render_element(
     }
 
     pop_element_transform(commands, transform_state);
+}
+
+fn push_image_for_source(
+    commands: &mut Vec<DrawCmd>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    source: &ImageSource,
+    fit: ImageFit,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    assets::ensure_source(source);
+
+    match assets::source_status(source) {
+        Some(AssetStatus::Ready(asset)) => {
+            commands.push(DrawCmd::Image(x, y, w, h, asset.id, fit));
+        }
+        Some(AssetStatus::Failed) => {
+            commands.push(DrawCmd::ImageFailed(x, y, w, h));
+        }
+        _ => {
+            commands.push(DrawCmd::ImageLoading(x, y, w, h));
+        }
+    }
 }
 
 fn color_to_u32(color: &Color) -> u32 {
@@ -913,6 +992,36 @@ mod tests {
     }
 
     #[test]
+    fn test_render_image_source_pending_emits_loading_placeholder() {
+        let id = ElementId::from_term_bytes(vec![9]);
+        let mut attrs = Attrs::default();
+        attrs.image_src = Some(ImageSource::Logical("images/photo.jpg".to_string()));
+        attrs.image_fit = Some(ImageFit::Contain);
+
+        let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 90.0,
+            content_width: 120.0,
+            content_height: 90.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+
+        let commands = render_tree(&tree);
+
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
+        );
+    }
+
+    #[test]
     fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
         let mut attrs = Attrs::default();
         attrs.content = Some("Decorated".to_string());
@@ -951,7 +1060,11 @@ mod tests {
             .collect();
 
         assert_eq!(decoration_rects.len(), 2);
-        assert!(decoration_rects.iter().all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
+        assert!(
+            decoration_rects
+                .iter()
+                .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
+        );
     }
 
     #[test]
@@ -1490,7 +1603,8 @@ mod tests {
     fn build_paragraph_tree(mut attrs: Attrs, frame: Frame) -> ElementTree {
         let id = ElementId::from_term_bytes(vec![10]);
         attrs.background = attrs.background.take();
-        let mut element = Element::with_attrs(id.clone(), ElementKind::Paragraph, Vec::new(), attrs);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::Paragraph, Vec::new(), attrs);
         element.frame = Some(frame);
 
         let mut tree = ElementTree::new();
@@ -1535,7 +1649,19 @@ mod tests {
 
         assert!(commands.iter().any(|cmd| matches!(
             cmd,
-            DrawCmd::BorderEdges(_, _, _, _, _, 1.0, 2.0, 3.0, 4.0, 0xFF0000FF, BorderStyle::Solid)
+            DrawCmd::BorderEdges(
+                _,
+                _,
+                _,
+                _,
+                _,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                0xFF0000FF,
+                BorderStyle::Solid
+            )
         )));
     }
 
@@ -1580,7 +1706,10 @@ mod tests {
             .position(|cmd| matches!(cmd, DrawCmd::Rect(..) | DrawCmd::RoundedRect(..)))
             .expect("background should exist");
 
-        assert!(shadow_idx < bg_idx, "shadow should render before background");
+        assert!(
+            shadow_idx < bg_idx,
+            "shadow should render before background"
+        );
     }
 
     #[test]
@@ -1623,9 +1752,11 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert!(!commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
+        assert!(
+            !commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
+        );
     }
 
     #[test]
@@ -1723,8 +1854,12 @@ mod tests {
             ascent: 12.0,
         }]);
 
-        let mut paragraph =
-            Element::with_attrs(para_id.clone(), ElementKind::Paragraph, Vec::new(), para_attrs);
+        let mut paragraph = Element::with_attrs(
+            para_id.clone(),
+            ElementKind::Paragraph,
+            Vec::new(),
+            para_attrs,
+        );
         paragraph.children = vec![float_id.clone()];
         paragraph.frame = Some(Frame {
             x: 0.0,
@@ -1738,7 +1873,8 @@ mod tests {
         let mut float_attrs = Attrs::default();
         float_attrs.align_x = Some(AlignX::Left);
         float_attrs.background = Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 }));
-        let mut float_el = Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
+        let mut float_el =
+            Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
         float_el.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -1882,8 +2018,16 @@ mod tests {
     fn test_render_gradient_with_rounded_corners_emits_radius() {
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Gradient {
-            from: Color::Rgb { r: 67, g: 97, b: 238 },
-            to: Color::Rgb { r: 114, g: 9, b: 183 },
+            from: Color::Rgb {
+                r: 67,
+                g: 97,
+                b: 238,
+            },
+            to: Color::Rgb {
+                r: 114,
+                g: 9,
+                b: 183,
+            },
             angle: 135.0,
         });
         attrs.border_radius = Some(BorderRadius::Uniform(10.0));
@@ -1909,7 +2053,11 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Gradient {
             from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb { r: 255, g: 255, b: 255 },
+            to: Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
             angle: 90.0,
         });
         // No border_radius set
@@ -1924,7 +2072,10 @@ mod tests {
 
         match gradient {
             DrawCmd::Gradient(_, _, _, _, _, _, _, radius) => {
-                assert_eq!(*radius, 0.0, "gradient without border_radius should have radius 0");
+                assert_eq!(
+                    *radius, 0.0,
+                    "gradient without border_radius should have radius 0"
+                );
             }
             _ => unreachable!(),
         }
@@ -1935,7 +2086,11 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Gradient {
             from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb { r: 255, g: 255, b: 255 },
+            to: Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
             angle: 0.0,
         });
         attrs.border_radius = Some(BorderRadius::Corners {
@@ -1956,7 +2111,10 @@ mod tests {
         // Per-corner radius falls back to 0 via border_radius_uniform
         match gradient {
             DrawCmd::Gradient(_, _, _, _, _, _, _, radius) => {
-                assert_eq!(*radius, 0.0, "per-corner radius should fall back to 0 for gradient");
+                assert_eq!(
+                    *radius, 0.0,
+                    "per-corner radius should fall back to 0 for gradient"
+                );
             }
             _ => unreachable!(),
         }
@@ -1972,7 +2130,11 @@ mod tests {
             bottom: 4.0,
             left: 1.0,
         });
-        attrs.border_color = Some(Color::Rgb { r: 120, g: 200, b: 160 });
+        attrs.border_color = Some(Color::Rgb {
+            r: 120,
+            g: 200,
+            b: 160,
+        });
         attrs.border_radius = Some(BorderRadius::Uniform(8.0));
 
         let tree = build_tree_with_attrs(attrs);
@@ -2005,7 +2167,11 @@ mod tests {
             bottom: 3.0,
             left: 0.0,
         });
-        attrs.border_color = Some(Color::Rgb { r: 200, g: 180, b: 100 });
+        attrs.border_color = Some(Color::Rgb {
+            r: 200,
+            g: 180,
+            b: 100,
+        });
 
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
@@ -2045,7 +2211,19 @@ mod tests {
 
         assert!(commands.iter().any(|cmd| matches!(
             cmd,
-            DrawCmd::BorderEdges(_, _, _, _, _, 2.0, 2.0, 2.0, 2.0, 0xFFFFFFFF, BorderStyle::Dashed)
+            DrawCmd::BorderEdges(
+                _,
+                _,
+                _,
+                _,
+                _,
+                2.0,
+                2.0,
+                2.0,
+                2.0,
+                0xFFFFFFFF,
+                BorderStyle::Dashed
+            )
         )));
     }
 }

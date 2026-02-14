@@ -6,7 +6,7 @@ defmodule Emerge.Serialization do
   alias Emerge.Element
   alias Emerge.Reconcile
 
-  @version 2
+  @version 3
 
   @type_tag %{
     row: 1,
@@ -16,7 +16,8 @@ defmodule Emerge.Serialization do
     text: 5,
     none: 6,
     paragraph: 7,
-    text_column: 8
+    text_column: 8,
+    image: 9
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -35,12 +36,11 @@ defmodule Emerge.Serialization do
   """
   @spec decode(binary()) :: Element.t()
   def decode(<<"EMRG", version::unsigned-8, node_count::unsigned-32, rest::binary>>) do
-    {nodes, <<>>} =
-      case version do
-        1 -> decode_nodes_v1(rest, node_count, [])
-        2 -> decode_nodes(rest, node_count, [])
-        _ -> raise ArgumentError, "unsupported serialization version: #{version}"
-      end
+    if version != @version do
+      raise ArgumentError, "unsupported serialization version: #{version}"
+    end
+
+    {nodes, <<>>} = decode_nodes(rest, node_count, [])
 
     [root | _] = nodes
     node_map = Map.new(nodes, fn node -> {node.id, node} end)
@@ -112,27 +112,6 @@ defmodule Emerge.Serialization do
 
     node = %{id: id, type: type, attrs: attrs, child_ids: child_ids}
     decode_nodes(rest, count - 1, [node | acc])
-  end
-
-  defp decode_nodes_v1(rest, 0, acc), do: {Enum.reverse(acc), rest}
-
-  defp decode_nodes_v1(
-         <<id_len::unsigned-32, rest::binary>>,
-         count,
-         acc
-       ) do
-    <<id_bin::binary-size(id_len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
-    <<type_tag::unsigned-8, attr_len::unsigned-32, rest::binary>> = rest
-    <<attr_bin::binary-size(attr_len), rest::binary>> = rest
-    attrs = :erlang.binary_to_term(attr_bin)
-    <<child_count::unsigned-16, rest::binary>> = rest
-    {child_ids, rest} = decode_child_ids(rest, child_count, [])
-
-    type = Map.fetch!(@tag_type, type_tag)
-
-    node = %{id: id, type: type, attrs: attrs, child_ids: child_ids}
-    decode_nodes_v1(rest, count - 1, [node | acc])
   end
 
   defp build_node(id, node_map) do

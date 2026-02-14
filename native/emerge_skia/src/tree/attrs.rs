@@ -1,4 +1,4 @@
-//! Attribute types and decoding for EMRG v2 format.
+//! Attribute types and decoding for EMRG v3 format.
 //!
 //! Attributes are encoded as a compact binary block:
 //! - attr_count (u16)
@@ -81,6 +81,21 @@ pub enum Color {
 pub enum Background {
     Color(Color),
     Gradient { from: Color, to: Color, angle: f64 },
+    Image { source: ImageSource, fit: ImageFit },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    Id(String),
+    Logical(String),
+    RuntimePath(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ImageFit {
+    #[default]
+    Contain,
+    Cover,
 }
 
 /// Border radius specification.
@@ -94,7 +109,12 @@ pub enum BorderRadius {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BorderWidth {
     Uniform(f64),
-    Sides { top: f64, right: f64, bottom: f64, left: f64 },
+    Sides {
+        top: f64,
+        right: f64,
+        bottom: f64,
+        left: f64,
+    },
 }
 
 /// Border style specification.
@@ -216,6 +236,9 @@ pub struct Attrs {
     pub font_strike: Option<bool>,
     pub font_letter_spacing: Option<f64>,
     pub font_word_spacing: Option<f64>,
+    pub image_src: Option<ImageSource>,
+    pub image_fit: Option<ImageFit>,
+    pub image_size: Option<(f64, f64)>,
     pub text_align: Option<TextAlign>,
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
@@ -332,6 +355,9 @@ const TAG_FONT_LETTER_SPACING: u8 = 49;
 const TAG_FONT_WORD_SPACING: u8 = 50;
 const TAG_BORDER_STYLE: u8 = 51;
 const TAG_BOX_SHADOW: u8 = 52;
+const TAG_IMAGE_SRC: u8 = 53;
+const TAG_IMAGE_FIT: u8 = 54;
+const TAG_IMAGE_SIZE: u8 = 55;
 
 // =============================================================================
 // Decoder
@@ -477,6 +503,13 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_FONT_WORD_SPACING => attrs.font_word_spacing = Some(cursor.read_f64()?),
         TAG_BORDER_STYLE => attrs.border_style = Some(decode_border_style(cursor)?),
         TAG_BOX_SHADOW => attrs.box_shadows = Some(decode_box_shadows(cursor)?),
+        TAG_IMAGE_SRC => attrs.image_src = Some(decode_image_source(cursor)?),
+        TAG_IMAGE_FIT => attrs.image_fit = Some(decode_image_fit(cursor)?),
+        TAG_IMAGE_SIZE => {
+            let width = cursor.read_f64()?;
+            let height = cursor.read_f64()?;
+            attrs.image_size = Some((width, height));
+        }
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -610,7 +643,12 @@ fn decode_border_width(cursor: &mut AttrCursor) -> Result<BorderWidth, DecodeErr
             let right = cursor.read_f64()?;
             let bottom = cursor.read_f64()?;
             let left = cursor.read_f64()?;
-            Ok(BorderWidth::Sides { top, right, bottom, left })
+            Ok(BorderWidth::Sides {
+                top,
+                right,
+                bottom,
+                left,
+            })
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown border_width variant: {}",
@@ -730,8 +768,38 @@ fn decode_background(cursor: &mut AttrCursor) -> Result<Background, DecodeError>
             let angle = cursor.read_f64()?;
             Ok(Background::Gradient { from, to, angle })
         }
+        2 => {
+            let source = decode_image_source(cursor)?;
+            let fit = decode_image_fit(cursor)?;
+            Ok(Background::Image { source, fit })
+        }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown background variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_image_source(cursor: &mut AttrCursor) -> Result<ImageSource, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(ImageSource::Id(cursor.read_string_u16()?)),
+        1 => Ok(ImageSource::Logical(cursor.read_string_u16()?)),
+        2 => Ok(ImageSource::RuntimePath(cursor.read_string_u16()?)),
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown image source variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_image_fit(cursor: &mut AttrCursor) -> Result<ImageFit, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(ImageFit::Contain),
+        1 => Ok(ImageFit::Cover),
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown image_fit variant: {}",
             variant
         ))),
     }
@@ -1023,9 +1091,10 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("mouse_over supports decorative attrs only"));
+        assert!(
+            err.to_string()
+                .contains("mouse_over supports decorative attrs only")
+        );
     }
 
     #[test]
@@ -1139,6 +1208,31 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         let shadows = attrs.box_shadows.unwrap();
         assert!(shadows[0].inset);
+    }
+
+    #[test]
+    fn test_decode_image_source_variants() {
+        let mut image_src = vec![0, 1, 53, 2, 0, 7];
+        image_src.extend_from_slice(b"a/b.png");
+
+        let attrs = decode_attrs(&image_src).unwrap();
+        assert_eq!(
+            attrs.image_src,
+            Some(ImageSource::RuntimePath("a/b.png".to_string()))
+        );
+
+        let mut background = vec![0, 1, 12, 2, 0, 0, 13];
+        background.extend_from_slice(b"img_preloaded");
+        background.push(1);
+
+        let attrs = decode_attrs(&background).unwrap();
+        assert_eq!(
+            attrs.background,
+            Some(Background::Image {
+                source: ImageSource::Id("img_preloaded".to_string()),
+                fit: ImageFit::Cover,
+            })
+        );
     }
 
     #[test]

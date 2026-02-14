@@ -186,7 +186,9 @@ defmodule Emerge.UITest do
   end
 
   test "Border.shadow with options" do
-    assert {:box_shadow, shadow} = Emerge.UI.Border.shadow(offset: {2, 3}, blur: 8, size: 4, color: :red)
+    assert {:box_shadow, shadow} =
+             Emerge.UI.Border.shadow(offset: {2, 3}, blur: 8, size: 4, color: :red)
+
     assert shadow == %{offset_x: 2, offset_y: 3, size: 4, blur: 8, color: :red, inset: false}
   end
 
@@ -229,5 +231,23 @@ defmodule Emerge.UITest do
       end)
 
     assert stderr == ""
+  end
+
+  test "image creates an image element" do
+    element = image("img_logo", [width(px(120)), height(px(80)), image_fit(:cover)])
+
+    assert element.type == :image
+    assert element.attrs.image_src == "img_logo"
+    assert element.attrs.image_fit == :cover
+    assert element.attrs.width == {:px, 120}
+    assert element.attrs.height == {:px, 80}
+    assert element.children == []
+  end
+
+  test "Background.image encodes source and fit" do
+    assert Background.image("img_hero") == {:background, {:image, "img_hero", :contain}}
+
+    assert Background.image("img_hero", fit: :cover) ==
+             {:background, {:image, "img_hero", :cover}}
   end
 end

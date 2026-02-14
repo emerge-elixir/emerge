@@ -493,4 +493,35 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     # Font color is inherited from parent during Rust rendering (not copied to text child)
     assert decoded.attrs[:font_color] == :cyan
   end
+
+  test "EMRG roundtrip preserves image element and background image" do
+    tree =
+      column([spacing(10.0)], [
+        image("img_photo", [width(px(320)), height(px(180)), image_fit(:cover)]),
+        el(
+          [width(px(200)), height(px(80)), Emerge.UI.Background.image("img_bg", fit: :contain)],
+          none()
+        )
+      ])
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    assert normalize_tree(decoded) == normalize_tree(assigned)
+    [image_node, bg_node] = decoded.children
+    assert image_node.type == :image
+    assert image_node.attrs.image_src == "img_photo"
+    assert image_node.attrs.image_fit == :cover
+    assert bg_node.attrs.background == {:image, "img_bg", :contain}
+  end
 end

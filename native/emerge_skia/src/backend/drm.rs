@@ -95,10 +95,13 @@ fn mode_is_preferred(mode: &control::Mode) -> bool {
 }
 
 fn preferred_size(modes: &[control::Mode]) -> Option<(u32, u32)> {
-    modes.iter().find(|mode| mode_is_preferred(mode)).map(|mode| {
-        let (width, height) = mode.size();
-        (width as u32, height as u32)
-    })
+    modes
+        .iter()
+        .find(|mode| mode_is_preferred(mode))
+        .map(|mode| {
+            let (width, height) = mode.size();
+            (width as u32, height as u32)
+        })
 }
 
 fn choose_mode(
@@ -126,7 +129,9 @@ fn choose_mode(
 }
 
 fn score_mode(mode: &control::Mode, target_size: Option<(u32, u32)>) -> (i64, i32, i32, i64) {
-    let distance = target_size.map(|size| mode_distance(mode, size)).unwrap_or(0);
+    let distance = target_size
+        .map(|size| mode_distance(mode, size))
+        .unwrap_or(0);
     let refresh = -(mode.vrefresh() as i32);
     let preferred = if mode_is_preferred(mode) { 0 } else { 1 };
     let area = -mode_area(mode);
@@ -176,7 +181,7 @@ fn is_primary_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
             .map(|name| name == "type")
             .unwrap_or(false)
         {
-            return Ok(val == (PlaneType::Primary as u32).into());
+            return Ok(val == u64::from(PlaneType::Primary as u32));
         }
     }
     Ok(false)
@@ -196,7 +201,7 @@ fn is_cursor_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
             .map(|name| name == "type")
             .unwrap_or(false)
         {
-            return Ok(val == (PlaneType::Cursor as u32).into());
+            return Ok(val == u64::from(PlaneType::Cursor as u32));
         }
     }
     Ok(false)
@@ -260,7 +265,10 @@ fn find_cursor_plane(
     Ok(compatible.first().copied())
 }
 
-fn prop_handle(props: &HashMap<String, property::Info>, name: &str) -> Result<property::Handle, String> {
+fn prop_handle(
+    props: &HashMap<String, property::Info>,
+    name: &str,
+) -> Result<property::Handle, String> {
     props
         .get(name)
         .map(|info| info.handle())
@@ -277,8 +285,7 @@ fn draw_cursor_bitmap(size: u32) -> Vec<u8> {
             let mut g = 0;
             let mut b = 0;
             let white = (x < 2 && y < 18) || (y < 2 && x < 18) || (x == y && x < 18);
-            let outline =
-                (x == 2 && y < 18) || (y == 2 && x < 18) || ((x == y) && x < 18 && x > 0);
+            let outline = (x == 2 && y < 18) || (y == 2 && x < 18) || ((x == y) && x < 18 && x > 0);
             if white {
                 a = 255;
                 r = 255;
@@ -926,7 +933,12 @@ pub fn run(
         let mut render_state = RenderState::default();
         renderer.render(&render_state);
 
-        if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) } == egl::FALSE {
+        if unsafe {
+            egl_state
+                .egl
+                .SwapBuffers(egl_state.display, egl_state.surface)
+        } == egl::FALSE
+        {
             eprintln!("DRM backend unavailable: eglSwapBuffers failed");
             std::thread::sleep(Duration::from_millis(250));
             continue;
@@ -988,6 +1000,7 @@ pub fn run(
         let mut last_cursor_visible = cursor_visible;
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
+        let mut last_animation_frame = Instant::now();
 
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -1019,9 +1032,14 @@ pub fn run(
 
             while let Ok(msg) = render_rx.try_recv() {
                 match msg {
-                    RenderMsg::Commands { commands, version } => {
+                    RenderMsg::Commands {
+                        commands,
+                        version,
+                        animate,
+                    } => {
                         render_state.commands = commands;
                         render_state.render_version = version;
+                        render_state.animate = animate;
                         pending_render = true;
                         if log_render {
                             let latest = render_counter.load(Ordering::Relaxed);
@@ -1047,8 +1065,13 @@ pub fn run(
                 }
             }
 
-            if cursor_plane.is_some() && (cursor_visible != last_cursor_visible || cursor_pos != last_cursor_pos) {
-                let cursor = crate::cursor::CursorState { pos: cursor_pos, visible: cursor_visible };
+            if cursor_plane.is_some()
+                && (cursor_visible != last_cursor_visible || cursor_pos != last_cursor_pos)
+            {
+                let cursor = crate::cursor::CursorState {
+                    pos: cursor_pos,
+                    visible: cursor_visible,
+                };
                 let cursor_plane_error = cursor_plane.as_ref().and_then(|plane| {
                     update_cursor_plane(&card, crtc_handle, plane, cursor, dimensions).err()
                 });
@@ -1070,6 +1093,11 @@ pub fn run(
                 }
             }
 
+            if render_state.animate && last_animation_frame.elapsed() >= Duration::from_millis(33) {
+                pending_render = true;
+                last_animation_frame = Instant::now();
+            }
+
             last_cursor_pos = cursor_pos;
             last_cursor_visible = cursor_visible;
 
@@ -1080,8 +1108,11 @@ pub fn run(
                     draw_software_cursor(&mut renderer, cursor_pos, dimensions);
                 }
 
-                if unsafe { egl_state.egl.SwapBuffers(egl_state.display, egl_state.surface) }
-                    == egl::FALSE
+                if unsafe {
+                    egl_state
+                        .egl
+                        .SwapBuffers(egl_state.display, egl_state.surface)
+                } == egl::FALSE
                 {
                     eprintln!("DRM backend unavailable: eglSwapBuffers failed");
                     break;
@@ -1127,6 +1158,8 @@ pub fn run(
                 if log_render {
                     eprintln!("drm present version={frame_version}");
                 }
+
+                last_animation_frame = Instant::now();
 
                 drop(current_bo.take());
                 current_bo = Some(next_bo);

@@ -37,7 +37,64 @@ start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else
 startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backend=#{backend}"
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
-{:ok, renderer} = EmergeSkia.start(start_opts)
+demo_assets_root = Path.expand("assets/demo_images", __DIR__)
+demo_static_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_static")
+blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")
+
+required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg"]
+
+missing_demo_images =
+  Enum.filter(required_demo_images, fn file_name ->
+    not File.regular?(Path.join(demo_assets_root, file_name))
+  end)
+
+if missing_demo_images != [] do
+  raise "missing demo image assets in #{demo_assets_root}: #{Enum.join(missing_demo_images, ", ")}"
+end
+
+File.rm_rf!(demo_static_root)
+File.rm_rf!(blocked_root)
+File.mkdir_p!(blocked_root)
+
+runtime_source = Path.join(demo_assets_root, "runtime.jpg")
+blocked_source = Path.join(blocked_root, "blocked.jpg")
+
+File.cp!(runtime_source, blocked_source)
+
+{:ok, digested_count} = Emerge.Assets.Digester.compile([demo_assets_root], demo_static_root)
+
+Application.put_env(:emerge_skia, :assets,
+  sources: [demo_assets_root],
+  manifest: [
+    path: Path.join(demo_static_root, "cache_manifest.json"),
+    images_meta_path: Path.join(demo_static_root, "cache_manifest_images.json")
+  ],
+  runtime_paths: [
+    enabled: true,
+    allowlist: [demo_assets_root],
+    follow_symlinks: false,
+    max_file_size: 25_000_000,
+    extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+  ]
+)
+
+Process.put(:demo_assets_root, demo_assets_root)
+Process.put(:demo_runtime_image_path, runtime_source)
+Process.put(:demo_restricted_image_path, blocked_source)
+
+IO.puts("Prepared #{digested_count} demo image assets from #{demo_assets_root}")
+
+renderer =
+  case EmergeSkia.start(start_opts) do
+    {:ok, renderer} ->
+      renderer
+
+    {:error, reason} ->
+      raise "failed to start renderer: #{inspect(reason)}"
+
+    other ->
+      raise "unexpected start result: #{inspect(other)}"
+  end
 
 EmergeSkia.set_input_target(renderer, self())
 
@@ -220,7 +277,8 @@ defmodule Demo do
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
       {"Text", :text},
-      {"Borders", :borders}
+      {"Borders", :borders},
+      {"Assets", :assets}
     ]
 
     column(
@@ -307,6 +365,7 @@ defmodule Demo do
       :nearby -> page_nearby()
       :text -> page_text()
       :borders -> page_borders()
+      :assets -> page_assets()
       _ -> page_overview()
     end
   end
@@ -375,6 +434,85 @@ defmodule Demo do
         chip("Transforms"),
         chip("Nearby")
       ])
+    ])
+  end
+
+  defp page_assets() do
+    runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
+
+    restricted_path =
+      Process.get(:demo_restricted_image_path, "/tmp/emerge_skia_demo_blocked/blocked.jpg")
+
+    assets_root = Process.get(:demo_assets_root, "(unknown)")
+
+    column([width(fill()), spacing(16)], [
+      section_title("Assets + Images"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "This page showcases static manifest assets, allowlisted runtime paths, and blocked runtime path failed placeholders."
+        )
+      ),
+      row([width(fill()), spacing(12)], [
+        asset_preview_card(
+          "Static source",
+          ~s(logical: "static.jpg"),
+          image("static.jpg", [width(fill()), height(fill()), image_fit(:contain)])
+        ),
+        asset_preview_card(
+          "Runtime source",
+          "source: {:path, runtime.jpg} (allowlisted)",
+          image({:path, runtime_path}, [width(fill()), height(fill()), image_fit(:cover)])
+        )
+      ]),
+      row([width(fill()), spacing(12)], [
+        asset_preview_card(
+          "Restricted source",
+          "source: {:path, blocked.jpg outside allowlist} -> blocked -> failed placeholder",
+          image({:path, restricted_path}, [width(fill()), height(fill()), image_fit(:contain)])
+        ),
+        asset_preview_card(
+          "Background.image",
+          "runtime path in container background",
+          el(
+            [
+              width(fill()),
+              height(fill()),
+              Background.image({:path, runtime_path}, fit: :cover),
+              Border.rounded(10)
+            ],
+            el(
+              [
+                center_x(),
+                center_y(),
+                padding(6),
+                Background.color({:color_rgba, {0, 0, 0, 170}}),
+                Border.rounded(6),
+                Font.size(11),
+                Font.color(:white)
+              ],
+              text("background image")
+            )
+          )
+        )
+      ]),
+      el(
+        [
+          width(fill()),
+          padding(10),
+          spacing(6),
+          Background.color({:color_rgb, {48, 48, 72}}),
+          Border.rounded(8)
+        ],
+        column([spacing(4)], [
+          el([Font.size(12), Font.color(:white)], text("Demo policy")),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text("async asset loading + loading/failed placeholders")
+          ),
+          el([Font.size(11), Font.color(@dim_text)], text("runtime allowlist: #{assets_root}"))
+        ])
+      )
     ])
   end
 
@@ -1883,6 +2021,33 @@ defmodule Demo do
     )
   end
 
+  defp asset_preview_card(title, subtitle, preview) do
+    el(
+      [
+        width(fill()),
+        padding(12),
+        spacing(8),
+        Background.color({:color_rgb, {50, 50, 74}}),
+        Border.rounded(10)
+      ],
+      column([spacing(8)], [
+        el([Font.size(13), Font.color(:white)], text(title)),
+        el([Font.size(10), Font.color(@dim_text)], text(subtitle)),
+        el(
+          [
+            width(fill()),
+            height(px(170)),
+            padding(8),
+            Background.color({:color_rgb, {34, 34, 50}}),
+            Border.rounded(10),
+            clip()
+          ],
+          preview
+        )
+      ])
+    )
+  end
+
   defp section_title(label) do
     el([Font.size(16), Font.color(@light_text)], text(label))
   end
@@ -1933,13 +2098,8 @@ defmodule Demo do
   end
 
   defp render_update(renderer, state, tree) do
-    {patch_bin, next_state, _assigned} = Emerge.diff_state_update(state, tree)
-
-    case EmergeSkia.Native.renderer_patch(renderer, patch_bin) do
-      :ok -> next_state
-      {:ok, _} -> next_state
-      {:error, reason} -> raise "renderer_patch failed: #{reason}"
-    end
+    {next_state, _assigned} = EmergeSkia.patch_tree(renderer, state, tree)
+    next_state
   end
 
   defp handle_event(
@@ -2608,14 +2768,7 @@ initial_unstable_items = [
 initial_tree =
   Demo.build_tree(initial_size, initial_mouse, [], :overview, nil, initial_unstable_items)
 
-state = Emerge.diff_state_new()
-{full_bin, state, _assigned} = Emerge.encode_full(state, initial_tree)
-
-case EmergeSkia.Native.renderer_upload(renderer, full_bin) do
-  :ok -> :ok
-  {:ok, _} -> :ok
-  {:error, reason} -> raise "renderer_upload failed: #{reason}"
-end
+{state, _assigned} = EmergeSkia.upload_tree(renderer, initial_tree)
 
 Demo.run_loop(
   renderer,

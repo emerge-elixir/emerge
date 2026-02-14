@@ -87,8 +87,12 @@ defmodule EmergeSkia do
              input_log,
              render_log
            ) do
-        ref when is_reference(ref) -> {:ok, ref}
-        error -> {:error, error}
+        ref when is_reference(ref) ->
+          :ok = configure_assets_for_renderer(ref)
+          {:ok, ref}
+
+        error ->
+          {:error, error}
       end
     else
       start(List.to_string(opts), 800, 600)
@@ -115,8 +119,12 @@ defmodule EmergeSkia do
   def start(title, width, height)
       when is_binary(title) and is_integer(width) and is_integer(height) do
     case Native.start(title, width, height) do
-      ref when is_reference(ref) -> {:ok, ref}
-      error -> {:error, error}
+      ref when is_reference(ref) ->
+        :ok = configure_assets_for_renderer(ref)
+        {:ok, ref}
+
+      error ->
+        {:error, error}
     end
   end
 
@@ -428,5 +436,30 @@ defmodule EmergeSkia do
   @spec set_input_target(renderer(), pid() | nil) :: :ok
   def set_input_target(renderer, pid) do
     Native.set_input_target(renderer, pid)
+  end
+
+  defp configure_assets_for_renderer(renderer) do
+    config = Emerge.Assets.Config.fetch()
+
+    manifest_path =
+      config
+      |> get_in([:manifest, :path])
+      |> Path.expand()
+
+    runtime = Map.get(config, :runtime_paths, %{})
+
+    case Native.configure_assets_nif(
+           renderer,
+           manifest_path,
+           Map.get(runtime, :enabled, false),
+           Map.get(runtime, :allowlist, []) |> Enum.map(&Path.expand/1),
+           Map.get(runtime, :follow_symlinks, false),
+           Map.get(runtime, :max_file_size, 25_000_000),
+           Map.get(runtime, :extensions, [])
+         ) do
+      :ok -> :ok
+      {:error, reason} -> raise "configure_assets_nif failed: #{inspect(reason)}"
+      other -> raise "configure_assets_nif failed: #{inspect(other)}"
+    end
   end
 end

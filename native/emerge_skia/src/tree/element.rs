@@ -25,6 +25,7 @@ pub enum ElementKind {
     TextColumn,
     El,
     Text,
+    Image,
     None,
     Paragraph,
 }
@@ -41,6 +42,7 @@ impl ElementKind {
             6 => Some(Self::None),
             7 => Some(Self::Paragraph),
             8 => Some(Self::TextColumn),
+            9 => Some(Self::Image),
             _ => None,
         }
     }
@@ -288,7 +290,7 @@ mod tests {
         assert_eq!(ElementKind::from_tag(6), Some(ElementKind::None));
         assert_eq!(ElementKind::from_tag(7), Some(ElementKind::Paragraph));
         assert_eq!(ElementKind::from_tag(8), Some(ElementKind::TextColumn));
-        assert_eq!(ElementKind::from_tag(9), None);
+        assert_eq!(ElementKind::from_tag(9), Some(ElementKind::Image));
     }
 
     #[test]
