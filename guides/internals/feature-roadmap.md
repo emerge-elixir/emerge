@@ -75,10 +75,10 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | color | ✅ | N/A | ✅ | |
 | rounded (uniform) | ✅ | N/A | ✅ | |
 | roundEach | ✅ | N/A | ✅ | Per-corner rendering |
-| widthEach | ❌ | N/A | ❌ | Per-edge width |
-| dashed/dotted | ❌ | N/A | ❌ | |
-| shadow | ❌ | N/A | ❌ | |
-| glow | ❌ | N/A | ❌ | |
+| widthEach | ✅ | N/A | ✅ | Per-edge width with clip-based rendering |
+| dashed/dotted | ✅ | N/A | ✅ | DashPathEffect-based rendering |
+| shadow | ✅ | N/A | ✅ | MaskFilter blur, supports inset |
+| glow | ✅ | N/A | ✅ | Sugar over shadow with zero offset |
 
 #### Typography
 | Feature | Elixir API | Layout | Render | Notes |
@@ -187,5 +187,4 @@ These CSS features from taffy should **not** be added:
 
 ## Upcoming Features
 
-- Border shadows and glow effects
 - Background images

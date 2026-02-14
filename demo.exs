@@ -219,7 +219,8 @@ defmodule Demo do
       {"Hover", :hover},
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
-      {"Text", :text}
+      {"Text", :text},
+      {"Borders", :borders}
     ]
 
     column(
@@ -305,6 +306,7 @@ defmodule Demo do
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
       :text -> page_text()
+      :borders -> page_borders()
       _ -> page_overview()
     end
   end
@@ -1482,6 +1484,239 @@ defmodule Demo do
           ]
         )
       )
+    ])
+  end
+
+  defp page_borders() do
+    column([width(fill()), spacing(16)], [
+      section_title("Border Styles"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Solid, dashed, and dotted border styles")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.width(2),
+            Border.color({:color_rgb, {100, 140, 220}}),
+            Border.solid()
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Solid")),
+            el([Font.size(11), Font.color(@dim_text)], text("Border.solid()"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.width(2),
+            Border.color({:color_rgb, {220, 160, 80}}),
+            Border.dashed()
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Dashed")),
+            el([Font.size(11), Font.color(@dim_text)], text("Border.dashed()"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.width(2),
+            Border.color({:color_rgb, {180, 100, 200}}),
+            Border.dotted()
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Dotted")),
+            el([Font.size(11), Font.color(@dim_text)], text("Border.dotted()"))
+          ])
+        )
+      ]),
+      section_title("Per-Edge Border Width"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Asymmetric border widths with width_each(top, right, bottom, left)")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.width_each(4, 1, 4, 1),
+            Border.color({:color_rgb, {120, 200, 160}}),
+            Border.solid()
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Thick top/bottom")),
+            el([Font.size(11), Font.color(@dim_text)], text("width_each(4, 1, 4, 1)"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(0),
+            Border.width_each(0, 0, 3, 0),
+            Border.color({:color_rgb, {200, 180, 100}}),
+            Border.solid()
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Bottom only")),
+            el([Font.size(11), Font.color(@dim_text)], text("width_each(0, 0, 3, 0)"))
+          ])
+        )
+      ]),
+      section_title("Box Shadow"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Drop shadows and diffuse glows using Border.shadow/1")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.shadow(offset: {4, 4}, blur: 12, color: :black)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Drop shadow")),
+            el([Font.size(11), Font.color(@dim_text)], text("offset: {4, 4}, blur: 12"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.shadow(offset: {0, 0}, blur: 20, size: 2, color: @blue)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Diffuse glow")),
+            el([Font.size(11), Font.color(@dim_text)], text("blur: 20, size: 2, color: blue"))
+          ])
+        )
+      ]),
+      section_title("Glow"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Uniform glow effect with Border.glow/2")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.glow(:cyan, 4)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Cyan glow")),
+            el([Font.size(11), Font.color(@dim_text)], text("glow(:cyan, 4)"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.glow(@pink, 6)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Pink glow")),
+            el([Font.size(11), Font.color(@dim_text)], text("glow(@pink, 6)"))
+          ])
+        )
+      ]),
+      section_title("Inner Shadow"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Inset shadows for pressed or recessed effects")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.inner_shadow(blur: 12, color: :black)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Inset shadow")),
+            el([Font.size(11), Font.color(@dim_text)], text("inner_shadow(blur: 12)"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(8),
+            Border.inner_shadow(offset: {3, 3}, blur: 8, color: @purple)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Directional inset")),
+            el([Font.size(11), Font.color(@dim_text)], text("offset: {3, 3}, color: purple"))
+          ])
+        )
+      ]),
+      section_title("Combined"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Multiple border features on a single element")
+      ),
+      row([width(fill()), spacing(12)], [
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.color(@event_bg),
+            Border.rounded(10),
+            Border.width(2),
+            Border.color({:color_rgb, {180, 140, 220}}),
+            Border.dashed(),
+            Border.shadow(offset: {3, 3}, blur: 10, color: :black)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Dashed + shadow")),
+            el([Font.size(11), Font.color(@dim_text)], text("Dashed border with drop shadow"))
+          ])
+        ),
+        el(
+          [
+            width(fill()),
+            padding(14),
+            Background.gradient(@blue, @purple, 135),
+            Border.rounded(10),
+            Border.glow(:cyan, 3),
+            Border.inner_shadow(blur: 8, color: :black)
+          ],
+          column([spacing(4)], [
+            el([Font.size(13), Font.color(:white)], text("Glow + inner shadow")),
+            el(
+              [Font.size(11), Font.color(@dim_text)],
+              text("Gradient bg, glow, and inset shadow")
+            )
+          ])
+        )
+      ])
     ])
   end
 
