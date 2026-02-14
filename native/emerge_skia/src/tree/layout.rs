@@ -2306,9 +2306,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 spacing_x,
                 active_floats,
             );
-            if line_height == 0.0 {
-                cursor_x = line_left;
-            } else if cursor_x < line_left {
+            if line_height == 0.0 || cursor_x < line_left {
                 cursor_x = line_left;
             }
 
