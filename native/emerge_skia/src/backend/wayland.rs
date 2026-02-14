@@ -6,10 +6,11 @@ use std::{
     ffi::CString,
     num::NonZeroU32,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
-        Arc,
     },
+    time::{Duration, Instant},
 };
 
 use crossbeam_channel::Receiver;
@@ -35,7 +36,7 @@ use winit::{
 
 use crate::actors::{EventMsg, RenderMsg};
 use crate::input::{
-    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::renderer::{RenderState, Renderer};
 
@@ -98,6 +99,7 @@ struct App {
     is_focused: bool,
     is_occluded: bool,
     pending_redraw: bool,
+    last_animation_frame: Instant,
 }
 
 impl App {
@@ -107,7 +109,9 @@ impl App {
 
     fn queue_redraw(&mut self) {
         self.pending_redraw = true;
-        if self.can_present() && let Some(env) = &self.env {
+        if self.can_present()
+            && let Some(env) = &self.env
+        {
             env.window.request_redraw();
         }
     }
@@ -165,9 +169,14 @@ impl App {
         let mut updated = false;
         while let Ok(msg) = self.render_rx.try_recv() {
             match msg {
-                RenderMsg::Commands { commands, version } => {
+                RenderMsg::Commands {
+                    commands,
+                    version,
+                    animate,
+                } => {
                     self.render_state.commands = commands;
                     self.render_state.render_version = version;
+                    self.render_state.animate = animate;
                     updated = true;
                 }
                 RenderMsg::Stop => {
@@ -256,6 +265,14 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         self.flush_render_updates();
+
+        if self.render_state.animate
+            && self.can_present()
+            && self.last_animation_frame.elapsed() >= Duration::from_millis(33)
+        {
+            self.last_animation_frame = Instant::now();
+            self.queue_redraw();
+        }
     }
 
     fn window_event(
@@ -570,6 +587,7 @@ pub fn run(
         is_focused: true,
         is_occluded: false,
         pending_redraw: false,
+        last_animation_frame: Instant::now(),
     };
 
     app.redraw();

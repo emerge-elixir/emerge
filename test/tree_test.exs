@@ -3,9 +3,9 @@ defmodule EmergeSkia.TreeTest do
 
   alias EmergeSkia.Native
 
-  # Helper to build EMRG header (version 2)
+  # Helper to build EMRG header (version 3)
   defp make_header(node_count) do
-    "EMRG" <> <<2, node_count::unsigned-32>>
+    "EMRG" <> <<3, node_count::unsigned-32>>
   end
 
   # Empty attrs block (attr_count = 0)
@@ -115,7 +115,8 @@ defmodule EmergeSkia.TreeTest do
       attrs = empty_attrs()
 
       parent_children =
-        <<byte_size(child1_id)::unsigned-32>> <> child1_id <>
+        <<byte_size(child1_id)::unsigned-32>> <>
+          child1_id <>
           <<byte_size(child2_id)::unsigned-32>> <> child2_id
 
       parent_node =
@@ -214,7 +215,8 @@ defmodule EmergeSkia.TreeTest do
       child_attrs = attrs_with_size(50.0, 30.0)
 
       row_children =
-        <<byte_size(child1_id)::unsigned-32>> <> child1_id <>
+        <<byte_size(child1_id)::unsigned-32>> <>
+          child1_id <>
           <<byte_size(child2_id)::unsigned-32>> <> child2_id
 
       row_node =
@@ -275,7 +277,8 @@ defmodule EmergeSkia.TreeTest do
       child_attrs = <<2::unsigned-16, 1, 2, 50.0::float-64, 2, 0>>
 
       col_children =
-        <<byte_size(child1_id)::unsigned-32>> <> child1_id <>
+        <<byte_size(child1_id)::unsigned-32>> <>
+          child1_id <>
           <<byte_size(child2_id)::unsigned-32>> <> child2_id
 
       col_node =
@@ -354,10 +357,7 @@ defmodule EmergeSkia.TreeTest do
   # Helper to create attrs with width, height, and uniform padding
   defp attrs_with_size_and_padding(width, height, padding) do
     # width (tag 1, variant 2=px), height (tag 2, variant 2=px), padding (tag 3, variant 0=uniform)
-    <<3::unsigned-16,
-      1, 2, width::float-64,
-      2, 2, height::float-64,
-      3, 0, padding::float-64>>
+    <<3::unsigned-16, 1, 2, width::float-64, 2, 2, height::float-64, 3, 0, padding::float-64>>
   end
 
   describe "wrapped_row layout" do
@@ -377,9 +377,11 @@ defmodule EmergeSkia.TreeTest do
       child_attrs = attrs_with_size(50.0, 30.0)
 
       row_children =
-        <<byte_size(c1_id)::unsigned-32>> <> c1_id <>
-        <<byte_size(c2_id)::unsigned-32>> <> c2_id <>
-        <<byte_size(c3_id)::unsigned-32>> <> c3_id
+        <<byte_size(c1_id)::unsigned-32>> <>
+          c1_id <>
+          <<byte_size(c2_id)::unsigned-32>> <>
+          c2_id <>
+          <<byte_size(c3_id)::unsigned-32>> <> c3_id
 
       # type tag 2 = WrappedRow
       row_node =
@@ -433,8 +435,10 @@ defmodule EmergeSkia.TreeTest do
       {_c3_x, c3_y, _c3_w, _c3_h} = frames_map[c3_id]
 
       assert c1_y == 0.0
-      assert c2_y == 40.0  # 30 + 10 spacing
-      assert c3_y == 80.0  # 30 + 10 + 30 + 10 spacing
+      # 30 + 10 spacing
+      assert c2_y == 40.0
+      # 30 + 10 + 30 + 10 spacing
+      assert c3_y == 80.0
     end
 
     test "wrapped_row with multiple items per line" do
@@ -454,10 +458,13 @@ defmodule EmergeSkia.TreeTest do
       child_attrs = attrs_with_size(50.0, 30.0)
 
       row_children =
-        <<byte_size(c1_id)::unsigned-32>> <> c1_id <>
-        <<byte_size(c2_id)::unsigned-32>> <> c2_id <>
-        <<byte_size(c3_id)::unsigned-32>> <> c3_id <>
-        <<byte_size(c4_id)::unsigned-32>> <> c4_id
+        <<byte_size(c1_id)::unsigned-32>> <>
+          c1_id <>
+          <<byte_size(c2_id)::unsigned-32>> <>
+          c2_id <>
+          <<byte_size(c3_id)::unsigned-32>> <>
+          c3_id <>
+          <<byte_size(c4_id)::unsigned-32>> <> c4_id
 
       row_node =
         <<byte_size(row_id)::unsigned-32>> <>
@@ -518,8 +525,10 @@ defmodule EmergeSkia.TreeTest do
       {c4_x, c4_y, _c4_w, _c4_h} = frames_map[c4_id]
 
       assert c1_x == 0.0 and c1_y == 0.0
-      assert c2_x == 60.0 and c2_y == 0.0  # 50 + 10 spacing
-      assert c3_x == 0.0 and c3_y == 40.0   # new line
+      # 50 + 10 spacing
+      assert c2_x == 60.0 and c2_y == 0.0
+      # new line
+      assert c3_x == 0.0 and c3_y == 40.0
       assert c4_x == 60.0 and c4_y == 40.0
     end
 
@@ -547,13 +556,16 @@ defmodule EmergeSkia.TreeTest do
       below_attrs = <<2::unsigned-16, 1, 0, 2, 2, 40.0::float-64>>
 
       col_children =
-        <<byte_size(row_id)::unsigned-32>> <> row_id <>
-        <<byte_size(below_id)::unsigned-32>> <> below_id
+        <<byte_size(row_id)::unsigned-32>> <>
+          row_id <>
+          <<byte_size(below_id)::unsigned-32>> <> below_id
 
       row_children =
-        <<byte_size(c1_id)::unsigned-32>> <> c1_id <>
-        <<byte_size(c2_id)::unsigned-32>> <> c2_id <>
-        <<byte_size(c3_id)::unsigned-32>> <> c3_id
+        <<byte_size(c1_id)::unsigned-32>> <>
+          c1_id <>
+          <<byte_size(c2_id)::unsigned-32>> <>
+          c2_id <>
+          <<byte_size(c3_id)::unsigned-32>> <> c3_id
 
       # type tag 3 = Column
       col_node =

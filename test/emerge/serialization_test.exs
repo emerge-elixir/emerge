@@ -99,6 +99,18 @@ defmodule Emerge.SerializationTest do
     assert length(decoded.children) == 2
   end
 
+  test "image roundtrip preserves image attrs" do
+    layout = image("img_banner", [width(px(300)), height(px(120)), image_fit(:cover)])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert strip_runtime(decoded) == strip_runtime(tree)
+    assert decoded.type == :image
+    assert decoded.attrs.image_src == "img_banner"
+    assert decoded.attrs.image_fit == :cover
+  end
+
   defp strip_runtime(%Emerge.Element{} = element) do
     %{
       element

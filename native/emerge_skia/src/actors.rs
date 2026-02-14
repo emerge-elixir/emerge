@@ -43,6 +43,7 @@ pub enum TreeMsg {
         element_id: ElementId,
         active: bool,
     },
+    AssetStateChanged,
     Stop,
 }
 
@@ -59,6 +60,7 @@ pub enum RenderMsg {
     Commands {
         commands: Vec<DrawCmd>,
         version: u64,
+        animate: bool,
     },
     CursorUpdate {
         pos: (f32, f32),

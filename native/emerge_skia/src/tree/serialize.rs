@@ -1,11 +1,11 @@
 //! Serialization of the EMRG binary format.
 //!
-//! Produces EMRG v2 from an ElementTree.
+//! Produces EMRG v3 from an ElementTree.
 
 use super::element::{Element, ElementId, ElementKind, ElementTree};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 pub fn encode_tree(tree: &ElementTree) -> Vec<u8> {
     let Some(root_id) = tree.root.as_ref() else {
@@ -67,6 +67,7 @@ fn kind_tag(kind: ElementKind) -> u8 {
         ElementKind::None => 6,
         ElementKind::Paragraph => 7,
         ElementKind::TextColumn => 8,
+        ElementKind::Image => 9,
     }
 }
 

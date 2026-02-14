@@ -56,7 +56,10 @@ defmodule Emerge.AttrCodec do
     font_letter_spacing: 49,
     font_word_spacing: 50,
     border_style: 51,
-    box_shadow: 52
+    box_shadow: 52,
+    image_src: 53,
+    image_fit: 54,
+    image_size: 55
   }
 
   @mouse_over_decorative_keys MapSet.new([
@@ -161,6 +164,9 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:font_word_spacing, value), do: encode_f64(value)
   defp encode_value(:border_style, value), do: encode_border_style(value)
   defp encode_value(:box_shadow, value), do: encode_box_shadow(value)
+  defp encode_value(:image_src, value), do: encode_image_src(value)
+  defp encode_value(:image_fit, value), do: encode_image_fit(value)
+  defp encode_value(:image_size, value), do: encode_image_size(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -213,6 +219,9 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:font_word_spacing, rest), do: decode_f64(rest)
   defp decode_value(:border_style, rest), do: decode_border_style(rest)
   defp decode_value(:box_shadow, rest), do: decode_box_shadow(rest)
+  defp decode_value(:image_src, rest), do: decode_image_src(rest)
+  defp decode_value(:image_fit, rest), do: decode_image_fit(rest)
+  defp decode_value(:image_size, rest), do: decode_image_size(rest)
 
   defp encode_mouse_over(value) when is_map(value) do
     validate_mouse_over_attrs!(value)
@@ -410,8 +419,16 @@ defmodule Emerge.AttrCodec do
 
   defp encode_box_shadow(shadows) when is_list(shadows) do
     count = length(shadows)
+
     encoded =
-      Enum.map(shadows, fn %{offset_x: ox, offset_y: oy, size: size, blur: blur, color: color, inset: inset} ->
+      Enum.map(shadows, fn %{
+                             offset_x: ox,
+                             offset_y: oy,
+                             size: size,
+                             blur: blur,
+                             color: color,
+                             inset: inset
+                           } ->
         <<encode_f64(ox)::binary, encode_f64(oy)::binary, encode_f64(blur)::binary,
           encode_f64(size)::binary, encode_color(color)::binary, encode_bool(inset)::binary>>
       end)
@@ -435,6 +452,27 @@ defmodule Emerge.AttrCodec do
 
     shadow = %{offset_x: ox, offset_y: oy, blur: blur, size: size, color: color, inset: inset}
     decode_box_shadow_items(rest, count - 1, [shadow | acc])
+  end
+
+  defp encode_image_src(source), do: encode_image_source(source)
+
+  defp decode_image_src(rest), do: decode_image_source(rest)
+
+  defp encode_image_fit(:contain), do: <<0>>
+  defp encode_image_fit(:cover), do: <<1>>
+  defp encode_image_fit(_other), do: <<0>>
+
+  defp decode_image_fit(<<0, rest::binary>>), do: {:contain, rest}
+  defp decode_image_fit(<<1, rest::binary>>), do: {:cover, rest}
+
+  defp encode_image_size({w, h}) when is_number(w) and is_number(h) do
+    <<encode_f64(w)::binary, encode_f64(h)::binary>>
+  end
+
+  defp decode_image_size(rest) do
+    {w, rest} = decode_f64(rest)
+    {h, rest} = decode_f64(rest)
+    {{w, h}, rest}
   end
 
   defp encode_align_x(:left), do: <<0>>
@@ -486,6 +524,14 @@ defmodule Emerge.AttrCodec do
     <<1, encode_color(from)::binary, encode_color(to)::binary, encode_f64(angle)::binary>>
   end
 
+  defp encode_background({:image, source, fit}) do
+    <<2, encode_image_source(source)::binary, encode_image_fit(fit)::binary>>
+  end
+
+  defp encode_background({:image, source}) do
+    encode_background({:image, source, :contain})
+  end
+
   defp encode_background(color) do
     <<0, encode_color(color)::binary>>
   end
@@ -500,6 +546,49 @@ defmodule Emerge.AttrCodec do
     {to, rest} = decode_color(rest)
     {angle, rest} = decode_f64(rest)
     {{:gradient, from, to, angle}, rest}
+  end
+
+  defp decode_background(<<2, rest::binary>>) do
+    {source, rest} = decode_image_source(rest)
+    {fit, rest} = decode_image_fit(rest)
+    {{:image, source, fit}, rest}
+  end
+
+  defp encode_image_source({:id, id}) when is_binary(id), do: <<0, encode_string(id)::binary>>
+
+  defp encode_image_source(%Emerge.Assets.Ref{path: path}) when is_binary(path),
+    do: <<1, encode_string(path)::binary>>
+
+  defp encode_image_source({:path, path}) when is_binary(path),
+    do: <<2, encode_string(path)::binary>>
+
+  defp encode_image_source(path) when is_binary(path),
+    do: <<1, encode_string(path)::binary>>
+
+  defp encode_image_source(path) when is_atom(path),
+    do: <<1, encode_string(Atom.to_string(path))::binary>>
+
+  defp encode_image_source(other) do
+    raise ArgumentError,
+          "unsupported image source #{inspect(other)} (expected binary/atom/~m/{:id,id}/{:path,path})"
+  end
+
+  defp decode_image_source(<<0, rest::binary>>) do
+    {id, rest} = decode_string(rest)
+    {{:id, id}, rest}
+  end
+
+  defp decode_image_source(<<1, rest::binary>>) do
+    decode_string(rest)
+  end
+
+  defp decode_image_source(<<2, rest::binary>>) do
+    {path, rest} = decode_string(rest)
+    {{:path, path}, rest}
+  end
+
+  defp decode_image_source(<<variant, _rest::binary>>) do
+    raise ArgumentError, "unknown image source variant: #{variant}"
   end
 
   defp encode_font(value) when is_atom(value), do: <<0, encode_atom(value)::binary>>

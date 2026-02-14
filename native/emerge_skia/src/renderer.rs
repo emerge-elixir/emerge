@@ -7,18 +7,20 @@
 //! - Font cache for text rendering
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
-    BlurStyle, Color, ColorType, Font, FontMgr, MaskFilter, Paint, PaintStyle, PathBuilder,
-    PathFillType, Point, RRect, Rect, Shader, Surface, TileMode, Typeface, Vector,
-    gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
+    BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, MipmapMode,
+    Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions, Shader,
+    Surface, TileMode, Typeface, Vector,
+    canvas::SrcRectConstraint,
     dash_path_effect,
+    gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
 
-use crate::tree::attrs::BorderStyle;
+use crate::tree::attrs::{BorderStyle, ImageFit};
 
 // ============================================================================
 // Draw Commands
@@ -32,11 +34,14 @@ mod cmd_atoms {
         border,
         text,
         gradient,
+        image,
         push_clip,
         pop_clip,
         translate,
         save,
         restore,
+        contain,
+        cover,
     }
 }
 
@@ -47,9 +52,33 @@ pub enum DrawCmd {
     RoundedRect(f32, f32, f32, f32, f32, u32),
     RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
-    BorderCorners(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    BorderCorners(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        u32,
+        BorderStyle,
+    ),
     /// Per-edge border: x, y, w, h, radius, top, right, bottom, left, color, style
-    BorderEdges(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    BorderEdges(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        u32,
+        BorderStyle,
+    ),
     /// Outer shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
     Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     /// Inner (inset) shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
@@ -59,6 +88,12 @@ pub enum DrawCmd {
     TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
     /// Gradient: x, y, w, h, from_color, to_color, angle, radius
     Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
+    /// Image draw: x, y, w, h, image_id, fit
+    Image(f32, f32, f32, f32, String, ImageFit),
+    /// Loading placeholder: x, y, w, h
+    ImageLoading(f32, f32, f32, f32),
+    /// Failed placeholder: x, y, w, h
+    ImageFailed(f32, f32, f32, f32),
     PushClip(f32, f32, f32, f32),
     PushClipRounded(f32, f32, f32, f32, f32),
     PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
@@ -142,6 +177,22 @@ impl<'a> Decoder<'a> for DrawCmd {
                 tuple[7].decode()?,
                 0.0,
             ))
+        } else if tag == cmd_atoms::image() && tuple.len() == 7 {
+            let fit_atom: Atom = tuple[6].decode()?;
+            let fit = if fit_atom == cmd_atoms::cover() {
+                ImageFit::Cover
+            } else {
+                ImageFit::Contain
+            };
+
+            Ok(DrawCmd::Image(
+                tuple[1].decode()?,
+                tuple[2].decode()?,
+                tuple[3].decode()?,
+                tuple[4].decode()?,
+                tuple[5].decode()?,
+                fit,
+            ))
         } else if tag == cmd_atoms::push_clip() && tuple.len() == 5 {
             Ok(DrawCmd::PushClip(
                 tuple[1].decode()?,
@@ -165,6 +216,7 @@ pub struct RenderState {
     pub commands: Vec<DrawCmd>,
     pub clear_color: Color,
     pub render_version: u64,
+    pub animate: bool,
 }
 
 impl Default for RenderState {
@@ -173,6 +225,7 @@ impl Default for RenderState {
             commands: Vec::new(),
             clear_color: Color::WHITE,
             render_version: 0,
+            animate: false,
         }
     }
 }
@@ -191,7 +244,7 @@ static DEFAULT_FONT_BOLD_ITALIC: &[u8] = include_bytes!("fonts/Inter-BoldItalic.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct FontKey {
     pub family: String,
-    pub weight: u16,   // 100-900, 400=normal, 700=bold
+    pub weight: u16, // 100-900, 400=normal, 700=bold
     pub italic: bool,
 }
 
@@ -293,12 +346,7 @@ fn resolve_typeface_with_fallback(
     (tf, false)
 }
 
-pub fn make_font_with_style(
-    family: &str,
-    weight: u16,
-    italic: bool,
-    size: f32,
-) -> Font {
+pub fn make_font_with_style(family: &str, weight: u16, italic: bool, size: f32) -> Font {
     let (typeface, exact) = resolve_typeface_with_fallback(family, weight, italic);
     let mut font = Font::new(&*typeface, size);
 
@@ -350,6 +398,56 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
 /// Get the default typeface (for backward compatibility).
 pub fn get_default_typeface() -> Arc<Typeface> {
     get_typeface_with_fallback("default", 400, false)
+}
+
+#[derive(Clone)]
+struct CachedImage {
+    image: Image,
+    width: u32,
+    height: u32,
+}
+
+static IMAGE_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedImage>>>> = OnceLock::new();
+
+fn get_image_cache() -> &'static Mutex<HashMap<String, Arc<CachedImage>>> {
+    IMAGE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_image(id: &str) -> Option<Arc<CachedImage>> {
+    let cache = get_image_cache().lock().ok()?;
+    cache.get(id).cloned()
+}
+
+pub fn image_dimensions(id: &str) -> Option<(u32, u32)> {
+    cached_image(id).map(|cached| (cached.width, cached.height))
+}
+
+pub fn insert_image(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
+    let image = Image::from_encoded(Data::new_copy(data))
+        .ok_or_else(|| "failed to decode image data".to_string())?;
+
+    let width = image.width().max(0) as u32;
+    let height = image.height().max(0) as u32;
+
+    let cache = get_image_cache();
+    let mut cache = cache.lock().map_err(|_| "image cache lock poisoned")?;
+    cache.insert(
+        id.to_string(),
+        Arc::new(CachedImage {
+            image,
+            width,
+            height,
+        }),
+    );
+
+    Ok((width, height))
+}
+
+#[allow(dead_code)]
+pub fn remove_image(id: &str) {
+    if let Ok(mut cache) = get_image_cache().lock() {
+        cache.remove(id);
+    }
 }
 
 // ============================================================================
@@ -517,7 +615,19 @@ impl Renderer {
                     );
                 }
 
-                DrawCmd::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
+                DrawCmd::BorderEdges(
+                    x,
+                    y,
+                    w,
+                    h,
+                    radius,
+                    top,
+                    right,
+                    bottom,
+                    left,
+                    color,
+                    style,
+                ) => {
                     draw_border(
                         canvas,
                         *x,
@@ -582,7 +692,8 @@ impl Renderer {
                     let inset_h = *h - *size * 2.0;
                     let inset_radius = (*radius - *size).max(0.0);
 
-                    let inner_rect = Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
+                    let inner_rect =
+                        Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
                     let inner_rrect = if inset_radius > 0.0 {
                         RRect::new_rect_xy(inner_rect, inset_radius, inset_radius)
                     } else {
@@ -669,6 +780,18 @@ impl Renderer {
                             canvas.draw_rect(rect, &paint);
                         }
                     }
+                }
+
+                DrawCmd::Image(x, y, w, h, image_id, fit) => {
+                    draw_image_with_fit(canvas, *x, *y, *w, *h, image_id, *fit);
+                }
+
+                DrawCmd::ImageLoading(x, y, w, h) => {
+                    draw_image_loading(canvas, *x, *y, *w, *h);
+                }
+
+                DrawCmd::ImageFailed(x, y, w, h) => {
+                    draw_image_failed(canvas, *x, *y, *w, *h);
                 }
 
                 DrawCmd::PushClip(x, y, w, h) => {
@@ -767,6 +890,142 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
+fn draw_image_with_fit(
+    canvas: &skia_safe::Canvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    image_id: &str,
+    fit: ImageFit,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let Some(cached) = cached_image(image_id) else {
+        return;
+    };
+
+    let src_w = cached.width as f32;
+    let src_h = cached.height as f32;
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return;
+    }
+
+    let target = Rect::from_xywh(x, y, w, h);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+
+    match fit {
+        ImageFit::Contain => {
+            let scale = (w / src_w).min(h / src_h);
+            let draw_w = src_w * scale;
+            let draw_h = src_h * scale;
+            let draw_x = x + (w - draw_w) * 0.5;
+            let draw_y = y + (h - draw_h) * 0.5;
+            let draw_rect = Rect::from_xywh(draw_x, draw_y, draw_w, draw_h);
+
+            canvas.draw_image_rect_with_sampling_options(
+                &cached.image,
+                Some((
+                    &Rect::from_xywh(0.0, 0.0, src_w, src_h),
+                    SrcRectConstraint::Fast,
+                )),
+                draw_rect,
+                sampling,
+                &paint,
+            );
+        }
+        ImageFit::Cover => {
+            let scale = (w / src_w).max(h / src_h);
+            let draw_w = src_w * scale;
+            let draw_h = src_h * scale;
+            let draw_x = x + (w - draw_w) * 0.5;
+            let draw_y = y + (h - draw_h) * 0.5;
+            let draw_rect = Rect::from_xywh(draw_x, draw_y, draw_w, draw_h);
+
+            canvas.save();
+            canvas.clip_rect(target, skia_safe::ClipOp::Intersect, true);
+            canvas.draw_image_rect_with_sampling_options(
+                &cached.image,
+                Some((
+                    &Rect::from_xywh(0.0, 0.0, src_w, src_h),
+                    SrcRectConstraint::Fast,
+                )),
+                draw_rect,
+                sampling,
+                &paint,
+            );
+            canvas.restore();
+        }
+    }
+}
+
+fn draw_image_loading(canvas: &skia_safe::Canvas, x: f32, y: f32, w: f32, h: f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let rect = Rect::from_xywh(x, y, w, h);
+
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color(Color::from_argb(255, 44, 48, 58));
+    canvas.draw_rect(rect, &bg);
+
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as f32)
+        .unwrap_or(0.0);
+
+    let period = 1400.0;
+    let phase = (millis % period) / period;
+    let band_w = (w * 0.35).max(24.0);
+    let band_x = x - band_w + (w + band_w * 2.0) * phase;
+
+    let shimmer_rect = Rect::from_xywh(band_x, y, band_w, h);
+    let mut shimmer = Paint::default();
+    shimmer.set_anti_alias(true);
+    shimmer.set_color(Color::from_argb(130, 130, 140, 160));
+
+    canvas.save();
+    canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
+    canvas.draw_rect(shimmer_rect, &shimmer);
+    canvas.restore();
+}
+
+fn draw_image_failed(canvas: &skia_safe::Canvas, x: f32, y: f32, w: f32, h: f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let rect = Rect::from_xywh(x, y, w, h);
+
+    let mut bg = Paint::default();
+    bg.set_anti_alias(true);
+    bg.set_color(Color::from_argb(255, 56, 38, 45));
+    canvas.draw_rect(rect, &bg);
+
+    let stroke = (w.min(h) * 0.08).clamp(1.0, 6.0);
+
+    let mut line = Paint::default();
+    line.set_anti_alias(true);
+    line.set_style(PaintStyle::Stroke);
+    line.set_stroke_width(stroke);
+    line.set_color(Color::from_argb(230, 232, 190, 200));
+
+    let inset = stroke * 1.6;
+    let x0 = x + inset;
+    let y0 = y + inset;
+    let x1 = x + w - inset;
+    let y1 = y + h - inset;
+
+    canvas.draw_line((x0, y0), (x1, y1), &line);
+    canvas.draw_line((x1, y0), (x0, y1), &line);
+}
+
 fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() <= 1.0e-3
 }
@@ -790,10 +1049,22 @@ fn corner_rrect(rect: Rect, corners: [f32; 4]) -> RRect {
     let max_ry = rect.height().max(0.0) * 0.5;
 
     let radii = [
-        Point::new(corners[0].max(0.0).min(max_rx), corners[0].max(0.0).min(max_ry)),
-        Point::new(corners[1].max(0.0).min(max_rx), corners[1].max(0.0).min(max_ry)),
-        Point::new(corners[2].max(0.0).min(max_rx), corners[2].max(0.0).min(max_ry)),
-        Point::new(corners[3].max(0.0).min(max_rx), corners[3].max(0.0).min(max_ry)),
+        Point::new(
+            corners[0].max(0.0).min(max_rx),
+            corners[0].max(0.0).min(max_ry),
+        ),
+        Point::new(
+            corners[1].max(0.0).min(max_rx),
+            corners[1].max(0.0).min(max_ry),
+        ),
+        Point::new(
+            corners[2].max(0.0).min(max_rx),
+            corners[2].max(0.0).min(max_ry),
+        ),
+        Point::new(
+            corners[3].max(0.0).min(max_rx),
+            corners[3].max(0.0).min(max_ry),
+        ),
     ];
 
     if radii.iter().all(|p| p.x <= 0.0 && p.y <= 0.0) {
@@ -1081,6 +1352,7 @@ mod tests {
             commands: vec![cmd],
             clear_color: Color::TRANSPARENT,
             render_version: 1,
+            animate: false,
         };
         renderer.render(&state);
 
@@ -1094,14 +1366,7 @@ mod tests {
         pixels
     }
 
-    fn max_alpha_in_region(
-        pixels: &[u8],
-        width: u32,
-        x0: u32,
-        y0: u32,
-        x1: u32,
-        y1: u32,
-    ) -> u8 {
+    fn max_alpha_in_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> u8 {
         let mut max_alpha = 0u8;
         for y in y0..=y1 {
             for x in x0..=x1 {
@@ -1135,7 +1400,8 @@ mod tests {
             assert!(
                 hit_count <= 1,
                 "corner point {:?} is inside {} clip regions (expected at most 1)",
-                point, hit_count,
+                point,
+                hit_count,
             );
         }
     }
@@ -1146,10 +1412,10 @@ mod tests {
 
         // Midpoints of each edge (on the border, not inside)
         let edge_midpoints: [(f32, f32, &str); 4] = [
-            (110.0, 20.0, "top"), // top midpoint
-            (210.0, 70.0, "right"), // right midpoint
+            (110.0, 20.0, "top"),     // top midpoint
+            (210.0, 70.0, "right"),   // right midpoint
             (110.0, 120.0, "bottom"), // bottom midpoint
-            (10.0, 70.0, "left"), // left midpoint
+            (10.0, 70.0, "left"),     // left midpoint
         ];
 
         for (i, (px, py, label)) in edge_midpoints.iter().enumerate() {
@@ -1157,7 +1423,10 @@ mod tests {
             assert!(
                 *width > 0.0 && point_in_convex_polygon((*px, *py), quad),
                 "{} edge midpoint ({}, {}) should be inside clip region {}",
-                label, px, py, i,
+                label,
+                px,
+                py,
+                i,
             );
         }
     }
@@ -1174,7 +1443,10 @@ mod tests {
         let top_hit = point_in_convex_polygon(p, &clips[0].1);
         let right_hit = point_in_convex_polygon(p, &clips[1].1);
 
-        assert!(top_hit, "top clip should include near-corner top-band point");
+        assert!(
+            top_hit,
+            "top clip should include near-corner top-band point"
+        );
         assert!(
             !right_hit,
             "right clip should not steal near-corner top-band point"
@@ -1255,17 +1527,7 @@ mod tests {
                 180,
                 120,
                 DrawCmd::BorderEdges(
-                    20.0,
-                    20.0,
-                    100.0,
-                    40.0,
-                    8.0,
-                    4.0,
-                    1.0,
-                    4.0,
-                    1.0,
-                    0x78C8A0FF,
-                    style,
+                    20.0, 20.0, 100.0, 40.0, 8.0, 4.0, 1.0, 4.0, 1.0, 0x78C8A0FF, style,
                 ),
             );
 

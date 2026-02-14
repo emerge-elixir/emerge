@@ -216,6 +216,32 @@ defmodule Emerge.AttrCodecTest do
     end
   end
 
+  test "encode/decode image attrs" do
+    attrs = %{image_src: "img_abc", image_fit: :cover, image_size: {640, 480}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode background image" do
+    attrs = %{background: {:image, "img_bg", :contain}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.background == {:image, "img_bg", :contain}
+  end
+
+  test "encode/decode image source variants" do
+    attrs = %{
+      image_src: {:path, "/tmp/runtime.jpg"},
+      background: {:image, {:id, "img_preloaded"}, :cover}
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.image_src == {:path, "/tmp/runtime.jpg"}
+    assert decoded.background == {:image, {:id, "img_preloaded"}, :cover}
+  end
+
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()

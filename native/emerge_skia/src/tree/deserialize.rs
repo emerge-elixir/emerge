@@ -17,7 +17,7 @@ use super::attrs::{Attrs, decode_attrs};
 use super::element::{Element, ElementId, ElementKind, ElementTree};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 /// Error type for deserialization failures.
 #[derive(Debug, Clone)]
@@ -160,8 +160,7 @@ fn decode_node(cursor: &mut Cursor) -> Result<RawNode, DecodeError> {
 
     // Read type tag
     let type_tag = cursor.read_u8()?;
-    let kind = ElementKind::from_tag(type_tag)
-        .ok_or(DecodeError::InvalidTypeTag(type_tag))?;
+    let kind = ElementKind::from_tag(type_tag).ok_or(DecodeError::InvalidTypeTag(type_tag))?;
 
     // Read attributes
     let attrs_raw = cursor.read_length_prefixed()?;

@@ -5,8 +5,12 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::attrs::{AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding, TextAlign, TextFragment, preserve_runtime_scroll_attrs};
+use super::attrs::{
+    AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding,
+    TextAlign, TextFragment, preserve_runtime_scroll_attrs,
+};
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
+use crate::assets;
 
 // =============================================================================
 // Layout Types
@@ -100,7 +104,14 @@ pub trait TextMeasurer {
     fn measure(&self, text: &str, font_size: f32) -> (f32, f32);
 
     /// Measure text with custom font and return (width, height).
-    fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
+    fn measure_with_font(
+        &self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> (f32, f32);
 
     /// Return (ascent, descent) for a given font configuration.
     fn font_metrics(&self, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
@@ -114,7 +125,14 @@ impl TextMeasurer for SkiaTextMeasurer {
         self.measure_with_font(text, font_size, "default", 400, false)
     }
 
-    fn measure_with_font(&self, text: &str, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
+    fn measure_with_font(
+        &self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> (f32, f32) {
         use crate::renderer::make_font_with_style;
 
         let font = make_font_with_style(family, weight, italic, font_size);
@@ -171,13 +189,21 @@ impl FontContext {
                 .map(|s| s.0 == "italic")
                 .or(self.font_italic),
             font_size: attrs.font_size.map(|s| s as f32).or(self.font_size),
-            font_color: attrs.font_color.as_ref()
+            font_color: attrs
+                .font_color
+                .as_ref()
                 .map(color_to_u32)
                 .or(self.font_color),
             font_underline: attrs.font_underline.or(self.font_underline),
             font_strike: attrs.font_strike.or(self.font_strike),
-            font_letter_spacing: attrs.font_letter_spacing.map(|s| s as f32).or(self.font_letter_spacing),
-            font_word_spacing: attrs.font_word_spacing.map(|s| s as f32).or(self.font_word_spacing),
+            font_letter_spacing: attrs
+                .font_letter_spacing
+                .map(|s| s as f32)
+                .or(self.font_letter_spacing),
+            font_word_spacing: attrs
+                .font_word_spacing
+                .map(|s| s as f32)
+                .or(self.font_word_spacing),
             text_align: attrs.text_align.or(self.text_align),
         }
     }
@@ -199,7 +225,9 @@ fn measure_text_width_with_spacing<M: TextMeasurer>(
     }
 
     if letter_spacing == 0.0 && word_spacing == 0.0 {
-        return measurer.measure_with_font(text, font_size, family, weight, italic).0;
+        return measurer
+            .measure_with_font(text, font_size, family, weight, italic)
+            .0;
     }
 
     let mut total = 0.0;
@@ -225,8 +253,12 @@ fn measure_text_width_with_spacing<M: TextMeasurer>(
 /// Convert a Color to u32 RGBA format.
 fn color_to_u32(color: &Color) -> u32 {
     match color {
-        Color::Rgb { r, g, b } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF,
-        Color::Rgba { r, g, b, a } => ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32),
+        Color::Rgb { r, g, b } => {
+            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF
+        }
+        Color::Rgba { r, g, b, a } => {
+            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32)
+        }
         Color::Named(name) => named_color(name),
     }
 }
@@ -318,7 +350,15 @@ pub fn layout_tree<M: TextMeasurer>(
     measure_element(tree, &root_id, measurer, &FontContext::default());
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(tree, &root_id, constraint, 0.0, 0.0, &FontContext::default(), measurer);
+    resolve_element(
+        tree,
+        &root_id,
+        constraint,
+        0.0,
+        0.0,
+        &FontContext::default(),
+        measurer,
+    );
 }
 
 /// Layout with default Skia text measurer.
@@ -364,24 +404,36 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_enter: attrs.on_mouse_enter,
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
-        mouse_over: attrs.mouse_over.as_ref().map(|hover| scale_mouse_over_attrs(hover, scale_f64)),
+        mouse_over: attrs
+            .mouse_over
+            .as_ref()
+            .map(|hover| scale_mouse_over_attrs(hover, scale_f64)),
         mouse_over_active: attrs.mouse_over_active,
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),
-        border_radius: attrs.border_radius.as_ref().map(|r| scale_border_radius(r, scale_f64)),
-        border_width: attrs.border_width.as_ref().map(|w| scale_border_width(w, scale_f64)),
+        border_radius: attrs
+            .border_radius
+            .as_ref()
+            .map(|r| scale_border_radius(r, scale_f64)),
+        border_width: attrs
+            .border_width
+            .as_ref()
+            .map(|w| scale_border_width(w, scale_f64)),
         border_style: attrs.border_style,
         border_color: attrs.border_color.clone(),
         box_shadows: attrs.box_shadows.as_ref().map(|shadows| {
-            shadows.iter().map(|s| super::attrs::BoxShadow {
-                offset_x: s.offset_x * scale_f64,
-                offset_y: s.offset_y * scale_f64,
-                blur: s.blur * scale_f64,
-                size: s.size * scale_f64,
-                color: s.color.clone(),
-                inset: s.inset,
-            }).collect()
+            shadows
+                .iter()
+                .map(|s| super::attrs::BoxShadow {
+                    offset_x: s.offset_x * scale_f64,
+                    offset_y: s.offset_y * scale_f64,
+                    blur: s.blur * scale_f64,
+                    size: s.size * scale_f64,
+                    color: s.color.clone(),
+                    inset: s.inset,
+                })
+                .collect()
         }),
         font_size: attrs.font_size.map(|s| s * scale_f64),
         font_color: attrs.font_color.clone(),
@@ -392,6 +444,11 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         font_strike: attrs.font_strike,
         font_letter_spacing: attrs.font_letter_spacing.map(|s| s * scale_f64),
         font_word_spacing: attrs.font_word_spacing.map(|s| s * scale_f64),
+        image_src: attrs.image_src.clone(),
+        image_fit: attrs.image_fit,
+        image_size: attrs
+            .image_size
+            .map(|(w, h)| (w * scale_f64, h * scale_f64)),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
         paragraph_fragments: None,
@@ -487,7 +544,12 @@ fn scale_border_width(width: &super::attrs::BorderWidth, scale: f64) -> super::a
 
     match width {
         BorderWidth::Uniform(value) => BorderWidth::Uniform(*value * scale),
-        BorderWidth::Sides { top, right, bottom, left } => BorderWidth::Sides {
+        BorderWidth::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        } => BorderWidth::Sides {
             top: *top * scale,
             right: *right * scale,
             bottom: *bottom * scale,
@@ -496,7 +558,10 @@ fn scale_border_width(width: &super::attrs::BorderWidth, scale: f64) -> super::a
     }
 }
 
-fn scale_border_radius(radius: &super::attrs::BorderRadius, scale: f64) -> super::attrs::BorderRadius {
+fn scale_border_radius(
+    radius: &super::attrs::BorderRadius,
+    scale: f64,
+) -> super::attrs::BorderRadius {
     use super::attrs::BorderRadius;
 
     match radius {
@@ -532,7 +597,12 @@ fn scale_padding(padding: &Padding, scale: f32) -> Padding {
     let scale_f64 = scale as f64;
     match padding {
         Padding::Uniform(val) => Padding::Uniform(*val * scale_f64),
-        Padding::Sides { top, right, bottom, left } => Padding::Sides {
+        Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        } => Padding::Sides {
             top: *top * scale_f64,
             right: *right * scale_f64,
             bottom: *bottom * scale_f64,
@@ -560,10 +630,7 @@ fn measure_element<M: TextMeasurer>(
         .unwrap_or_else(|| inherited.clone());
 
     // First measure all children with merged font context
-    let child_ids: Vec<ElementId> = tree
-        .get(id)
-        .map(|e| e.children.clone())
-        .unwrap_or_default();
+    let child_ids: Vec<ElementId> = tree.get(id).map(|e| e.children.clone()).unwrap_or_default();
 
     let child_sizes: Vec<IntrinsicSize> = child_ids
         .iter()
@@ -585,7 +652,9 @@ fn measure_element<M: TextMeasurer>(
         ElementKind::Text => {
             let content = attrs.content.as_deref().unwrap_or("");
             // Use inherited font context for missing values
-            let font_size = attrs.font_size.map(|s| s as f32)
+            let font_size = attrs
+                .font_size
+                .map(|s| s as f32)
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
             let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
@@ -616,6 +685,29 @@ fn measure_element<M: TextMeasurer>(
             }
         }
 
+        ElementKind::Image => {
+            let (image_width, image_height) = if let Some((w, h)) = attrs.image_size {
+                (w, h)
+            } else if let Some(source) = attrs.image_src.as_ref() {
+                assets::ensure_source(source);
+                match assets::source_dimensions(source) {
+                    Some((w, h)) => (w as f64, h as f64),
+                    None => (64.0, 64.0),
+                }
+            } else {
+                (0.0, 0.0)
+            };
+
+            IntrinsicSize {
+                width: resolve_intrinsic_length(attrs.width.as_ref(), image_width as f32)
+                    + padding.left
+                    + padding.right,
+                height: resolve_intrinsic_length(attrs.height.as_ref(), image_height as f32)
+                    + padding.top
+                    + padding.bottom,
+            }
+        }
+
         ElementKind::El | ElementKind::None => {
             // Single child container: intrinsic = max child size + padding
             let max_child_width = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
@@ -623,9 +715,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), max_child_width)
-                    + padding.left + padding.right,
+                    + padding.left
+                    + padding.right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_child_height)
-                    + padding.top + padding.bottom,
+                    + padding.top
+                    + padding.bottom,
             }
         }
 
@@ -641,9 +735,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width + total_spacing)
-                    + padding.left + padding.right,
+                    + padding.left
+                    + padding.right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + padding.top + padding.bottom,
+                    + padding.top
+                    + padding.bottom,
             }
         }
 
@@ -659,9 +755,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), max_width)
-                    + padding.left + padding.right,
+                    + padding.left
+                    + padding.right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), sum_height + total_spacing)
-                    + padding.top + padding.bottom,
+                    + padding.top
+                    + padding.bottom,
             }
         }
 
@@ -672,9 +770,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width)
-                    + padding.left + padding.right,
+                    + padding.left
+                    + padding.right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + padding.top + padding.bottom,
+                    + padding.top
+                    + padding.bottom,
             }
         }
     };
@@ -734,7 +834,12 @@ fn resolve_element<M: TextMeasurer>(
     let attrs = element.attrs.clone();
     let kind = element.kind;
     let child_ids = element.children.clone();
-    let intrinsic = element.frame.map(|f| IntrinsicSize { width: f.width, height: f.height })
+    let intrinsic = element
+        .frame
+        .map(|f| IntrinsicSize {
+            width: f.width,
+            height: f.height,
+        })
         .unwrap_or_default();
 
     // Merge inherited font context with this element's attrs
@@ -754,7 +859,10 @@ fn resolve_element<M: TextMeasurer>(
     // For text elements with non-Left alignment (direct or inherited), fill width
     let text_should_fill_width = kind == ElementKind::Text
         && attrs.width.is_none()
-        && attrs.text_align.or(inherited.text_align).is_some_and(|a| a != TextAlign::Left);
+        && attrs
+            .text_align
+            .or(inherited.text_align)
+            .is_some_and(|a| a != TextAlign::Left);
 
     // Resolve final dimensions
     // Use intrinsic size as default for content-based constraints
@@ -818,16 +926,21 @@ fn resolve_element<M: TextMeasurer>(
     // Resolve children based on element type
 
     match kind {
-        ElementKind::Text | ElementKind::None => {
+        ElementKind::Text | ElementKind::Image | ElementKind::None => {
             // No children to layout
         }
 
         ElementKind::El => {
             if !child_ids.is_empty() {
                 let (actual_cw, actual_ch) = resolve_el_children(
-                    tree, &child_ids, content_x, content_y,
-                    content_width, content_height,
-                    align_x, align_y,  // Pass parent alignment for child positioning
+                    tree,
+                    &child_ids,
+                    content_x,
+                    content_y,
+                    content_width,
+                    content_height,
+                    align_x,
+                    align_y, // Pass parent alignment for child positioning
                     scroll_x_enabled,
                     scroll_y_enabled,
                     &element_context,
@@ -1063,8 +1176,16 @@ fn resolve_element<M: TextMeasurer>(
         {
             let max_x = (frame.content_width - frame.width).max(0.0);
             let max_y = (frame.content_height - frame.height).max(0.0);
-            let prev_max_x = element.attrs.scroll_x_max.map(|v| v as f32).unwrap_or(max_x);
-            let prev_max_y = element.attrs.scroll_y_max.map(|v| v as f32).unwrap_or(max_y);
+            let prev_max_x = element
+                .attrs
+                .scroll_x_max
+                .map(|v| v as f32)
+                .unwrap_or(max_x);
+            let prev_max_y = element
+                .attrs
+                .scroll_y_max
+                .map(|v| v as f32)
+                .unwrap_or(max_y);
             let prev_scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
             let prev_scroll_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
 
@@ -1173,7 +1294,9 @@ fn resolve_el_children<M: TextMeasurer>(
 
     for child_id in child_ids {
         let (align_x, align_y) = {
-            let Some(child) = tree.get(child_id) else { continue };
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
             // Child can override parent alignment, otherwise use parent's
             let ax = child.attrs.align_x.unwrap_or(parent_align_x);
             let ay = child.attrs.align_y.unwrap_or(parent_align_y);
@@ -1183,14 +1306,32 @@ fn resolve_el_children<M: TextMeasurer>(
         let child_constraint = Constraint::new(content_width, content_height);
 
         // Resolve child first to get final size
-        resolve_element(tree, child_id, child_constraint, 0.0, 0.0, inherited, measurer);
+        resolve_element(
+            tree,
+            child_id,
+            child_constraint,
+            0.0,
+            0.0,
+            inherited,
+            measurer,
+        );
 
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let Some(frame) = &child.frame else { continue };
 
         // Track max child dimensions for content size
-        let child_content_width = if scroll_x_enabled { frame.width } else { frame.content_width };
-        let child_content_height = if scroll_y_enabled { frame.height } else { frame.content_height };
+        let child_content_width = if scroll_x_enabled {
+            frame.width
+        } else {
+            frame.content_width
+        };
+        let child_content_height = if scroll_y_enabled {
+            frame.height
+        } else {
+            frame.content_height
+        };
         max_child_width = max_child_width.max(child_content_width);
         max_child_height = max_child_height.max(child_content_height);
 
@@ -1243,7 +1384,9 @@ fn resolve_row_children<M: TextMeasurer>(
     let mut fixed_width = 0.0_f32;
 
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
         let portion = if allow_fill_width {
             get_fill_portion(child.attrs.width.as_ref())
@@ -1261,20 +1404,27 @@ fn resolve_row_children<M: TextMeasurer>(
     let effective_spacing = if space_evenly { 0.0 } else { spacing };
     let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_width - fixed_width - total_spacing).max(0.0);
-    let width_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
+    let width_per_portion = if total_portions > 0.0 {
+        remaining / total_portions
+    } else {
+        0.0
+    };
 
     // Partition children by horizontal alignment and calculate widths
     let mut left_children: Vec<ElementId> = Vec::new();
     let mut center_children: Vec<ElementId> = Vec::new();
     let mut right_children: Vec<ElementId> = Vec::new();
 
-    let mut child_widths: std::collections::HashMap<ElementId, f32> = std::collections::HashMap::new();
+    let mut child_widths: std::collections::HashMap<ElementId, f32> =
+        std::collections::HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
 
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
         let portion = if allow_fill_width {
             get_fill_portion(child.attrs.width.as_ref())
@@ -1325,7 +1475,15 @@ fn resolve_row_children<M: TextMeasurer>(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                current_x,
+                content_y,
+                inherited,
+                measurer,
+            );
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -1373,10 +1531,21 @@ fn resolve_row_children<M: TextMeasurer>(
 
     for child_id in &left_children {
         let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-        let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
+        let align_y = tree
+            .get(child_id)
+            .map(|c| c.attrs.align_y.unwrap_or_default())
+            .unwrap_or_default();
 
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, current_x, content_y, inherited, measurer);
+        resolve_element(
+            tree,
+            child_id,
+            child_constraint,
+            current_x,
+            content_y,
+            inherited,
+            measurer,
+        );
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -1392,11 +1561,22 @@ fn resolve_row_children<M: TextMeasurer>(
     let mut right_x = content_x + content_width;
     for child_id in right_children.iter().rev() {
         let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-        let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
+        let align_y = tree
+            .get(child_id)
+            .map(|c| c.attrs.align_y.unwrap_or_default())
+            .unwrap_or_default();
 
         right_x -= child_width;
         let child_constraint = Constraint::new(child_width, content_height);
-        resolve_element(tree, child_id, child_constraint, right_x, content_y, inherited, measurer);
+        resolve_element(
+            tree,
+            child_id,
+            child_constraint,
+            right_x,
+            content_y,
+            inherited,
+            measurer,
+        );
 
         if let Some(child) = tree.get(child_id)
             && let Some(frame) = &child.frame
@@ -1418,10 +1598,21 @@ fn resolve_row_children<M: TextMeasurer>(
         let mut center_x = center_start.max(left_end);
         for child_id in &center_children {
             let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-            let align_y = tree.get(child_id).map(|c| c.attrs.align_y.unwrap_or_default()).unwrap_or_default();
+            let align_y = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_y.unwrap_or_default())
+                .unwrap_or_default();
 
             let child_constraint = Constraint::new(child_width, content_height);
-            resolve_element(tree, child_id, child_constraint, center_x, content_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                center_x,
+                content_y,
+                inherited,
+                measurer,
+            );
 
             if let Some(child) = tree.get(child_id)
                 && let Some(frame) = &child.frame
@@ -1498,7 +1689,9 @@ fn resolve_column_children<M: TextMeasurer>(
     let mut fixed_height = 0.0_f32;
 
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
         let portion = if allow_fill_height {
             get_fill_portion(child.attrs.height.as_ref())
@@ -1516,18 +1709,25 @@ fn resolve_column_children<M: TextMeasurer>(
     let effective_spacing = if space_evenly { 0.0 } else { spacing };
     let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
     let remaining = (content_height - fixed_height - total_spacing).max(0.0);
-    let height_per_portion = if total_portions > 0.0 { remaining / total_portions } else { 0.0 };
+    let height_per_portion = if total_portions > 0.0 {
+        remaining / total_portions
+    } else {
+        0.0
+    };
 
     // Partition children by vertical alignment and calculate heights
     let mut top_children: Vec<ElementId> = Vec::new();
     let mut center_children: Vec<ElementId> = Vec::new();
     let mut bottom_children: Vec<ElementId> = Vec::new();
 
-    let mut child_heights: std::collections::HashMap<ElementId, f32> = std::collections::HashMap::new();
+    let mut child_heights: std::collections::HashMap<ElementId, f32> =
+        std::collections::HashMap::new();
     let mut total_center_height = 0.0_f32;
 
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
         let portion = if allow_fill_height {
             get_fill_portion(child.attrs.height.as_ref())
@@ -1573,7 +1773,15 @@ fn resolve_column_children<M: TextMeasurer>(
                 .unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                content_x,
+                current_y,
+                inherited,
+                measurer,
+            );
 
             let (actual_height, frame_content_width) = tree
                 .get(child_id)
@@ -1596,9 +1804,21 @@ fn resolve_column_children<M: TextMeasurer>(
     }
 
     // Add spacing within each group
-    let top_spacing = if top_children.len() > 1 { spacing * (top_children.len() - 1) as f32 } else { 0.0 };
-    let center_spacing = if center_children.len() > 1 { spacing * (center_children.len() - 1) as f32 } else { 0.0 };
-    let bottom_spacing = if bottom_children.len() > 1 { spacing * (bottom_children.len() - 1) as f32 } else { 0.0 };
+    let top_spacing = if top_children.len() > 1 {
+        spacing * (top_children.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let center_spacing = if center_children.len() > 1 {
+        spacing * (center_children.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let bottom_spacing = if bottom_children.len() > 1 {
+        spacing * (bottom_children.len() - 1) as f32
+    } else {
+        0.0
+    };
 
     total_center_height += center_spacing;
 
@@ -1610,13 +1830,25 @@ fn resolve_column_children<M: TextMeasurer>(
 
     for child_id in &top_children {
         let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-        let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+        let align_x = tree
+            .get(child_id)
+            .map(|c| c.attrs.align_x.unwrap_or_default())
+            .unwrap_or_default();
 
         let child_constraint = Constraint::new(content_width, child_height);
-        resolve_element(tree, child_id, child_constraint, content_x, current_y, inherited, measurer);
+        resolve_element(
+            tree,
+            child_id,
+            child_constraint,
+            content_x,
+            current_y,
+            inherited,
+            measurer,
+        );
 
         // Get actual frame height (may differ from constraint for WrappedRow etc.)
-        let (actual_height, frame_content_width) = tree.get(child_id)
+        let (actual_height, frame_content_width) = tree
+            .get(child_id)
             .and_then(|child| child.frame.as_ref())
             .map(|frame| (frame.height, frame.content_width))
             .unwrap_or((child_height, 0.0));
@@ -1641,12 +1873,24 @@ fn resolve_column_children<M: TextMeasurer>(
         let mut current_bottom_y = content_y + actual_top_height;
         for child_id in &bottom_children {
             let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+            let align_x = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_x.unwrap_or_default())
+                .unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, current_bottom_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                content_x,
+                current_bottom_y,
+                inherited,
+                measurer,
+            );
 
-            let (actual_height, frame_content_width) = tree.get(child_id)
+            let (actual_height, frame_content_width) = tree
+                .get(child_id)
                 .and_then(|child| child.frame.as_ref())
                 .map(|frame| (frame.height, frame.content_width))
                 .unwrap_or((child_height, 0.0));
@@ -1665,13 +1909,25 @@ fn resolve_column_children<M: TextMeasurer>(
         let mut bottom_y = content_y + content_height;
         for child_id in bottom_children.iter().rev() {
             let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+            let align_x = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_x.unwrap_or_default())
+                .unwrap_or_default();
 
             bottom_y -= child_height;
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, bottom_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                content_x,
+                bottom_y,
+                inherited,
+                measurer,
+            );
 
-            let (actual_height, frame_content_width) = tree.get(child_id)
+            let (actual_height, frame_content_width) = tree
+                .get(child_id)
                 .and_then(|child| child.frame.as_ref())
                 .map(|frame| (frame.height, frame.content_width))
                 .unwrap_or((child_height, 0.0));
@@ -1713,12 +1969,24 @@ fn resolve_column_children<M: TextMeasurer>(
         let mut center_y = center_start.max(top_end);
         for child_id in &center_children {
             let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree.get(child_id).map(|c| c.attrs.align_x.unwrap_or_default()).unwrap_or_default();
+            let align_x = tree
+                .get(child_id)
+                .map(|c| c.attrs.align_x.unwrap_or_default())
+                .unwrap_or_default();
 
             let child_constraint = Constraint::new(content_width, child_height);
-            resolve_element(tree, child_id, child_constraint, content_x, center_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                content_x,
+                center_y,
+                inherited,
+                measurer,
+            );
 
-            let (actual_height, frame_content_width) = tree.get(child_id)
+            let (actual_height, frame_content_width) = tree
+                .get(child_id)
                 .and_then(|child| child.frame.as_ref())
                 .map(|frame| (frame.height, frame.content_width))
                 .unwrap_or((child_height, 0.0));
@@ -1813,7 +2081,8 @@ fn flow_line_bounds(
 
         match flow_float.side {
             AlignX::Left => {
-                let candidate = (flow_float.x + flow_float.width + spacing_x).min(content_x + content_width);
+                let candidate =
+                    (flow_float.x + flow_float.width + spacing_x).min(content_x + content_width);
                 left = left.max(candidate);
             }
             AlignX::Right => {
@@ -1848,7 +2117,8 @@ fn place_flow_float<M: TextMeasurer>(
         let width = resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic_width)
             .max(0.0)
             .min(content_width);
-        let height = resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic_height).max(0.0);
+        let height =
+            resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic_height).max(0.0);
         (width, height)
     };
 
@@ -1953,7 +2223,9 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     resolve_element(tree, child_id, child_constraint, x, y, inherited, measurer);
 
     let (child_ids, attrs, frame) = {
-        let Some(child) = tree.get(child_id) else { return };
+        let Some(child) = tree.get(child_id) else {
+            return;
+        };
         (child.children.clone(), child.attrs.clone(), child.frame)
     };
     let Some(frame) = frame else {
@@ -2032,7 +2304,9 @@ fn resolve_text_column_children<M: TextMeasurer>(
         prune_flow_floats(&mut active_floats, next_flow_y);
 
         let (kind, child_align_x) = {
-            let Some(child) = tree.get(child_id) else { continue };
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
             (child.kind, child.attrs.align_x)
         };
 
@@ -2078,7 +2352,15 @@ fn resolve_text_column_children<M: TextMeasurer>(
             );
         } else {
             let child_constraint = Constraint::new(content_width, f32::MAX);
-            resolve_element(tree, child_id, child_constraint, content_x, child_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                content_x,
+                child_y,
+                inherited,
+                measurer,
+            );
         }
 
         let align_x = tree
@@ -2152,7 +2434,9 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     let mut current_line_width = 0.0;
 
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
         let intrinsic_width = child.frame.map(|f| f.width).unwrap_or(0.0);
         let intrinsic_height = child.frame.map(|f| f.height).unwrap_or(0.0);
 
@@ -2188,7 +2472,15 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
 
         for (child_id, child_width, _) in &line {
             let child_constraint = Constraint::new(*child_width, line_height);
-            resolve_element(tree, child_id, child_constraint, current_x, current_y, inherited, measurer);
+            resolve_element(
+                tree,
+                child_id,
+                child_constraint,
+                current_x,
+                current_y,
+                inherited,
+                measurer,
+            );
             current_x += child_width + spacing_x;
         }
 
@@ -2262,8 +2554,14 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     let mut line_height: f32 = 0.0;
 
     prune_flow_floats(active_floats, cursor_y);
-    let (mut line_left, mut line_right) =
-        flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+    let (mut line_left, mut line_right) = flow_line_bounds(
+        content_x,
+        content_width,
+        cursor_y,
+        1.0,
+        spacing_x,
+        active_floats,
+    );
     let mut cursor_x = line_left;
 
     for child_id in child_ids {
@@ -2277,8 +2575,14 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) =
-                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                (line_left, line_right) = flow_line_bounds(
+                    content_x,
+                    content_width,
+                    cursor_y,
+                    1.0,
+                    spacing_x,
+                    active_floats,
+                );
                 cursor_x = line_left;
             }
 
@@ -2322,7 +2626,10 @@ fn resolve_paragraph_children<M: TextMeasurer>(
         }
 
         let font_size = font_ctx.font_size.unwrap_or(16.0);
-        let family = font_ctx.font_family.clone().unwrap_or_else(|| "default".to_string());
+        let family = font_ctx
+            .font_family
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
         let weight = font_ctx.font_weight.unwrap_or(400);
         let italic = font_ctx.font_italic.unwrap_or(false);
         let color = font_ctx.font_color.unwrap_or(0xFFFFFFFF);
@@ -2356,15 +2663,22 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) =
-                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                (line_left, line_right) = flow_line_bounds(
+                    content_x,
+                    content_width,
+                    cursor_y,
+                    1.0,
+                    spacing_x,
+                    active_floats,
+                );
                 cursor_x = line_left;
             }
             cursor_x += space_width;
         }
 
         for (i, word) in words.iter().enumerate() {
-            let (word_width, _) = measurer.measure_with_font(word, font_size, &family, weight, italic);
+            let (word_width, _) =
+                measurer.measure_with_font(word, font_size, &family, weight, italic);
 
             loop {
                 prune_flow_floats(active_floats, cursor_y);
@@ -2439,8 +2753,14 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     cursor_y += line_height + spacing_y;
                     line_height = 0.0;
                     prune_flow_floats(active_floats, cursor_y);
-                    (line_left, line_right) =
-                        flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                    (line_left, line_right) = flow_line_bounds(
+                        content_x,
+                        content_width,
+                        cursor_y,
+                        1.0,
+                        spacing_x,
+                        active_floats,
+                    );
                     cursor_x = line_left;
                 } else {
                     cursor_x += space_width;
@@ -2466,8 +2786,14 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) =
-                    flow_line_bounds(content_x, content_width, cursor_y, 1.0, spacing_x, active_floats);
+                (line_left, line_right) = flow_line_bounds(
+                    content_x,
+                    content_width,
+                    cursor_y,
+                    1.0,
+                    spacing_x,
+                    active_floats,
+                );
                 cursor_x = line_left;
             }
             cursor_x += space_width;
@@ -2507,32 +2833,39 @@ fn get_padding(padding: Option<&Padding>) -> ResolvedPadding {
     match padding {
         Some(Padding::Uniform(p)) => {
             let p = *p as f32;
-            ResolvedPadding { top: p, right: p, bottom: p, left: p }
-        }
-        Some(Padding::Sides { top, right, bottom, left }) => {
             ResolvedPadding {
-                top: *top as f32,
-                right: *right as f32,
-                bottom: *bottom as f32,
-                left: *left as f32,
+                top: p,
+                right: p,
+                bottom: p,
+                left: p,
             }
         }
-        None => ResolvedPadding { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => ResolvedPadding {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => ResolvedPadding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        },
     }
 }
 
 fn spacing_x(attrs: &Attrs) -> f32 {
-    attrs
-        .spacing_x
-        .or(attrs.spacing)
-        .unwrap_or(0.0) as f32
+    attrs.spacing_x.or(attrs.spacing).unwrap_or(0.0) as f32
 }
 
 fn spacing_y(attrs: &Attrs) -> f32 {
-    attrs
-        .spacing_y
-        .or(attrs.spacing)
-        .unwrap_or(0.0) as f32
+    attrs.spacing_y.or(attrs.spacing).unwrap_or(0.0) as f32
 }
 
 fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
@@ -2541,7 +2874,9 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
     }
 
     let child_ids = {
-        let Some(element) = tree.get_mut(id) else { return };
+        let Some(element) = tree.get_mut(id) else {
+            return;
+        };
         if let Some(frame) = &mut element.frame {
             frame.x += dx;
             frame.y += dy;
@@ -2565,7 +2900,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // =============================================================================
 
 use super::render::render_tree;
-use crate::events::{build_event_registry, EventNode};
+use crate::events::{EventNode, build_event_registry};
 use crate::renderer::DrawCmd;
 
 /// Output of layout refresh: both render commands and event registry.
@@ -2617,12 +2952,25 @@ mod tests {
             self.measure_with_font(text, font_size, "default", 400, false)
         }
 
-        fn measure_with_font(&self, text: &str, font_size: f32, _family: &str, _weight: u16, _italic: bool) -> (f32, f32) {
+        fn measure_with_font(
+            &self,
+            text: &str,
+            font_size: f32,
+            _family: &str,
+            _weight: u16,
+            _italic: bool,
+        ) -> (f32, f32) {
             // Simple mock: 8px per char, height = font_size
             (text.len() as f32 * 8.0, font_size)
         }
 
-        fn font_metrics(&self, font_size: f32, _family: &str, _weight: u16, _italic: bool) -> (f32, f32) {
+        fn font_metrics(
+            &self,
+            font_size: f32,
+            _family: &str,
+            _weight: u16,
+            _italic: bool,
+        ) -> (f32, f32) {
             // Mock: ascent = 75% of font_size, descent = 25%
             (font_size * 0.75, font_size * 0.25)
         }
@@ -2650,7 +2998,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -2673,7 +3026,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -2696,7 +3054,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -2728,7 +3091,12 @@ mod tests {
         tree.insert(parent);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let frame = tree.get(&root_id).unwrap().frame.unwrap();
         assert_eq!(frame.width, 36.0); // 2 chars * 8px + 20 padding
@@ -2770,7 +3138,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -2814,7 +3187,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -2856,7 +3234,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -2898,7 +3281,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -2940,7 +3328,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -2985,7 +3378,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(200.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3036,7 +3434,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3089,7 +3492,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 300.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 300.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3133,7 +3541,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3174,7 +3587,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3215,7 +3633,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3243,7 +3666,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -3265,7 +3693,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -3287,7 +3720,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -3327,7 +3765,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(400.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(400.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -3355,7 +3798,12 @@ mod tests {
         tree.insert(el);
 
         // With scale=2.0, frame pixel values should double
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            2.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -3388,7 +3836,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            2.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         assert_eq!(root.base_attrs.font_letter_spacing, Some(2.0));
@@ -3418,11 +3871,21 @@ mod tests {
         tree.insert(root);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let first = tree.get(&root_id).unwrap().attrs.scroll_y;
         assert_eq!(first, Some(40.0));
 
-        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let second = tree.get(&root_id).unwrap().attrs.scroll_y;
         assert_eq!(second, Some(40.0));
     }
@@ -3452,12 +3915,22 @@ mod tests {
         tree.insert(root);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let first = tree.get(&root_id).unwrap();
         assert_eq!(first.attrs.scroll_x_max, Some(100.0));
         assert_eq!(first.attrs.scroll_x, Some(60.0));
 
-        layout_tree(&mut tree, Constraint::new(250.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(250.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let second = tree.get(&root_id).unwrap();
         assert_eq!(second.attrs.scroll_x_max, Some(0.0));
         assert_eq!(second.attrs.scroll_x, Some(0.0));
@@ -3488,12 +3961,22 @@ mod tests {
         tree.insert(root);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(250.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(250.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let first = tree.get(&root_id).unwrap();
         assert_eq!(first.attrs.scroll_x_max, Some(0.0));
         assert_eq!(first.attrs.scroll_x, Some(0.0));
 
-        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let second = tree.get(&root_id).unwrap();
         assert_eq!(second.attrs.scroll_x_max, Some(100.0));
         assert_eq!(second.attrs.scroll_x, Some(0.0));
@@ -3515,7 +3998,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(root);
 
-        layout_tree(&mut tree, Constraint::new(100.0, 100.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+            &MockTextMeasurer,
+        );
         let root = tree.get(&root_id).unwrap();
         assert_eq!(root.attrs.scroll_x, None);
         assert_eq!(root.attrs.scroll_x_max, None);
@@ -3538,7 +4026,12 @@ mod tests {
         // With scale=2.0:
         // width: minimum(200, fill) -> fill=800, clamped to min 200 -> 800
         // height: maximum(400, fill) -> fill=600, clamped to max 400 -> 400
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 2.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            2.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -3597,7 +4090,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         // Check wrapped row height
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
@@ -3637,14 +4135,16 @@ mod tests {
 
         let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
-        let children: Vec<_> = (0..4).map(|i| {
-            make_element(&format!("c{}", i), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(50.0));
-                a.height = Some(Length::Px(30.0));
-                a
+        let children: Vec<_> = (0..4)
+            .map(|i| {
+                make_element(&format!("c{}", i), ElementKind::El, {
+                    let mut a = Attrs::default();
+                    a.width = Some(Length::Px(50.0));
+                    a.height = Some(Length::Px(30.0));
+                    a
+                })
             })
-        }).collect();
+            .collect();
 
         let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
         let row_id = row.id.clone();
@@ -3656,7 +4156,12 @@ mod tests {
             tree.insert(child);
         }
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         // Check wrapped row height: 2 lines * 30px + 1 * 10px spacing = 70px
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
@@ -3750,7 +4255,12 @@ mod tests {
         tree.insert(chip3);
         tree.insert(below_el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         // Check wrapped_row height (3 lines * 30px + 2 * 10px spacing = 110px)
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
@@ -3819,7 +4329,12 @@ mod tests {
         tree.insert(txt);
         tree.insert(bottom);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
         assert_eq!(row_frame.height, 40.0);
@@ -3881,7 +4396,12 @@ mod tests {
         tree.insert(txt);
         tree.insert(bottom);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
         assert_eq!(row_frame.height, 40.0);
@@ -3938,7 +4458,12 @@ mod tests {
         tree.insert(txt);
         tree.insert(below);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
         // Row should match wrapped paragraph: 2 lines * 16px = 32px
@@ -3988,7 +4513,12 @@ mod tests {
         tree.insert(txt);
         tree.insert(heading);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
         // Two lines with spacing(8): 16 + 8 + 16 = 40
@@ -4053,7 +4583,12 @@ mod tests {
         tree.insert(txt);
         tree.insert(footer);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
         // Column allocates: 40 - top(8) - footer(8) - 2 spacings(8) = 16
@@ -4109,7 +4644,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -4173,7 +4713,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -4232,7 +4777,12 @@ mod tests {
         tree.insert(child2);
         tree.insert(child3);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -4269,7 +4819,7 @@ mod tests {
 
         let child1 = make_element("c1", ElementKind::El, {
             let mut a = Attrs::default();
-            a.width = Some(Length::Fill);  // Equivalent to FillPortion(1)
+            a.width = Some(Length::Fill); // Equivalent to FillPortion(1)
             a.height = Some(Length::Px(30.0));
             a
         });
@@ -4290,7 +4840,12 @@ mod tests {
         tree.insert(child1);
         tree.insert(child2);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
         let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
@@ -4312,7 +4867,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let root = tree.get(&root_id).unwrap();
         let frame = root.frame.unwrap();
@@ -4335,14 +4895,16 @@ mod tests {
 
         let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-        let children: Vec<_> = (0..3).map(|i| {
-            make_element(&format!("c{}", i), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(80.0));
-                a.height = Some(Length::Px(30.0));
-                a
+        let children: Vec<_> = (0..3)
+            .map(|i| {
+                make_element(&format!("c{}", i), ElementKind::El, {
+                    let mut a = Attrs::default();
+                    a.width = Some(Length::Px(80.0));
+                    a.height = Some(Length::Px(30.0));
+                    a
+                })
             })
-        }).collect();
+            .collect();
 
         let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
         let row_id = row.id.clone();
@@ -4354,7 +4916,12 @@ mod tests {
             tree.insert(child);
         }
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
 
@@ -4382,14 +4949,16 @@ mod tests {
 
         let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-        let children: Vec<_> = (0..3).map(|i| {
-            make_element(&format!("c{}", i), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(80.0));
-                a.height = Some(Length::Px(30.0));
-                a
+        let children: Vec<_> = (0..3)
+            .map(|i| {
+                make_element(&format!("c{}", i), ElementKind::El, {
+                    let mut a = Attrs::default();
+                    a.width = Some(Length::Px(80.0));
+                    a.height = Some(Length::Px(30.0));
+                    a
+                })
             })
-        }).collect();
+            .collect();
 
         let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
         let col_id = col.id.clone();
@@ -4401,7 +4970,12 @@ mod tests {
             tree.insert(child);
         }
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
 
@@ -4428,14 +5002,16 @@ mod tests {
 
         let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-        let children: Vec<_> = (0..5).map(|i| {
-            make_element(&format!("c{}", i), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(80.0));
-                a.height = Some(Length::Px(50.0));
-                a
+        let children: Vec<_> = (0..5)
+            .map(|i| {
+                make_element(&format!("c{}", i), ElementKind::El, {
+                    let mut a = Attrs::default();
+                    a.width = Some(Length::Px(80.0));
+                    a.height = Some(Length::Px(50.0));
+                    a
+                })
             })
-        }).collect();
+            .collect();
 
         let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
         let col_id = col.id.clone();
@@ -4447,7 +5023,12 @@ mod tests {
             tree.insert(child);
         }
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
 
@@ -4489,7 +5070,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
 
@@ -4547,7 +5133,12 @@ mod tests {
         tree.insert(top);
         tree.insert(bottom);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
         let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
@@ -4592,10 +5183,8 @@ mod tests {
         assert_eq!(constraint.max_height(100.0), 600.0);
 
         // With content-based constraints
-        let content_constraint = Constraint::with_space(
-            AvailableSpace::MaxContent,
-            AvailableSpace::MinContent,
-        );
+        let content_constraint =
+            Constraint::with_space(AvailableSpace::MaxContent, AvailableSpace::MinContent);
         // Should resolve to the default values
         assert_eq!(content_constraint.max_width(150.0), 150.0);
         assert_eq!(content_constraint.max_height(200.0), 200.0);
@@ -4634,7 +5223,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4671,7 +5265,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4709,7 +5308,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4745,7 +5349,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4780,7 +5389,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4804,7 +5418,7 @@ mod tests {
             let mut a = Attrs::default();
             a.width = Some(Length::Px(80.0));
             a.height = Some(Length::Px(30.0));
-            a.align_x = Some(AlignX::Right);  // Child overrides parent
+            a.align_x = Some(AlignX::Right); // Child overrides parent
             a
         });
 
@@ -4816,7 +5430,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4853,7 +5472,12 @@ mod tests {
         tree.insert(el);
         tree.insert(child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
 
@@ -4896,7 +5520,12 @@ mod tests {
         tree.insert(para);
         tree.insert(text_child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
         // El should expand to fit the wrapped paragraph: 2 lines * 16px = 32px
@@ -4955,7 +5584,12 @@ mod tests {
         tree.insert(center_child);
         tree.insert(right_child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let left_frame = tree.get(&left_id).unwrap().frame.unwrap();
         let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
@@ -5024,7 +5658,12 @@ mod tests {
         tree.insert(center_child);
         tree.insert(bottom_child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let top_frame = tree.get(&top_id).unwrap().frame.unwrap();
         let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
@@ -5084,7 +5723,12 @@ mod tests {
         tree.insert(left_top);
         tree.insert(right_bottom);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let lt_frame = tree.get(&lt_id).unwrap().frame.unwrap();
         let rb_frame = tree.get(&rb_id).unwrap().frame.unwrap();
@@ -5106,11 +5750,19 @@ mod tests {
         attrs.width = Some(Length::Px(100.0));
         attrs.height = Some(Length::Px(40.0));
         attrs.background = Some(crate::tree::attrs::Background::Color(
-            crate::tree::attrs::Color::Rgb { r: 10, g: 20, b: 30 },
+            crate::tree::attrs::Color::Rgb {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
         ));
         attrs.mouse_over = Some(MouseOverAttrs {
             background: Some(crate::tree::attrs::Background::Color(
-                crate::tree::attrs::Color::Rgb { r: 200, g: 100, b: 50 },
+                crate::tree::attrs::Color::Rgb {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
             )),
             font_size: Some(22.0),
             font_underline: Some(true),
@@ -5128,7 +5780,12 @@ mod tests {
         tree.root = Some(root_id.clone());
         tree.insert(root);
 
-        layout_tree(&mut tree, Constraint::new(300.0, 200.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(300.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let updated = tree.get(&root_id).unwrap();
         assert_eq!(updated.attrs.font_size, Some(22.0));
@@ -5198,7 +5855,12 @@ mod tests {
             vec![("t", ElementKind::Text, text_attrs("Hello"))],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5224,7 +5886,12 @@ mod tests {
             vec![("t", ElementKind::Text, text_attrs("AA BB CC"))],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5260,11 +5927,20 @@ mod tests {
             },
             vec![
                 ("float", ElementKind::El, float_attrs),
-                ("t", ElementKind::Text, text_attrs("AA BB CC DD EE FF GG HH")),
+                (
+                    "t",
+                    ElementKind::Text,
+                    text_attrs("AA BB CC DD EE FF GG HH"),
+                ),
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let float_frame = tree.get(&child_ids[0]).unwrap().frame.unwrap();
         assert_eq!(float_frame.x, 0.0);
@@ -5335,7 +6011,12 @@ mod tests {
         tree.insert(para_text);
         tree.insert(below_block);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let float_frame = tree.get(&float_id).unwrap().frame.unwrap();
         assert_eq!(float_frame.y, 0.0);
@@ -5368,7 +6049,12 @@ mod tests {
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5395,7 +6081,12 @@ mod tests {
             vec![("t", ElementKind::Text, text_attrs("AA BB"))],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5420,7 +6111,12 @@ mod tests {
             vec![("t", ElementKind::Text, text_attrs("AA BB"))],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let frame = para.frame.unwrap();
@@ -5441,7 +6137,12 @@ mod tests {
             vec![("t", ElementKind::Text, text_attrs("Hi"))],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5480,7 +6181,12 @@ mod tests {
         tree.insert(el_child);
         tree.insert(text_child);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5513,7 +6219,12 @@ mod tests {
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5537,7 +6248,12 @@ mod tests {
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5557,7 +6273,12 @@ mod tests {
             vec![],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5582,7 +6303,12 @@ mod tests {
             })],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5601,7 +6327,12 @@ mod tests {
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let frame = para.frame.unwrap();
@@ -5626,7 +6357,12 @@ mod tests {
             vec![("t", ElementKind::Text, child_attrs)],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
@@ -5668,7 +6404,12 @@ mod tests {
         tree.insert(para);
         tree.insert(parent_el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para_el = tree.get(&para_id).unwrap();
         let para_frame = para_el.frame.unwrap();
@@ -5719,20 +6460,32 @@ mod tests {
         tree.insert(para);
         tree.insert(parent_el);
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para_el = tree.get(&para_id).unwrap();
         let fragments = para_el.attrs.paragraph_fragments.as_ref().unwrap();
 
         // Should wrap into 2 lines, not be a single line
-        assert!(fragments.len() >= 3, "paragraph should wrap text into multiple lines, got {} fragments", fragments.len());
+        assert!(
+            fragments.len() >= 3,
+            "paragraph should wrap text into multiple lines, got {} fragments",
+            fragments.len()
+        );
 
         // Line 1 fragments should be at y=0
         assert_eq!(fragments[0].y, 0.0);
         assert_eq!(fragments[1].y, 0.0);
         // At least one fragment should be on line 2 (y > 0)
         let has_second_line = fragments.iter().any(|f| f.y > 0.0);
-        assert!(has_second_line, "paragraph text should wrap to a second line");
+        assert!(
+            has_second_line,
+            "paragraph text should wrap to a second line"
+        );
     }
 
     #[test]
@@ -5756,7 +6509,12 @@ mod tests {
             ],
         );
 
-        layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &MockTextMeasurer);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
 
         let para = tree.get(&para_id).unwrap();
         let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();

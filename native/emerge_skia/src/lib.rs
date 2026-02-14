@@ -19,6 +19,7 @@ use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Te
 use skia_safe::Font;
 
 mod actors;
+mod assets;
 mod backend;
 mod cursor;
 mod drm_input;
@@ -28,6 +29,7 @@ mod renderer;
 mod tree;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
+use assets::AssetConfig;
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
@@ -106,6 +108,7 @@ struct TreeResource {
 
 impl RendererResource {
     fn stop(&self) {
+        assets::stop();
         self.stop_flag.store(true, Ordering::Relaxed);
         send_tree(&self.tree_tx, TreeMsg::Stop, self.log_render);
         send_event(&self.event_tx, EventMsg::Stop, self.log_input);
@@ -204,17 +207,15 @@ fn spawn_tree_actor(
             for message in messages {
                 match message {
                     TreeMsg::Stop => return,
-                    TreeMsg::UploadTree { bytes } => {
-                        match tree::deserialize::decode_tree(&bytes) {
-                            Ok(decoded) => {
-                                tree = decoded;
-                                changed = true;
-                            }
-                            Err(err) => {
-                                eprintln!("tree upload failed: {err}");
-                            }
+                    TreeMsg::UploadTree { bytes } => match tree::deserialize::decode_tree(&bytes) {
+                        Ok(decoded) => {
+                            tree = decoded;
+                            changed = true;
                         }
-                    }
+                        Err(err) => {
+                            eprintln!("tree upload failed: {err}");
+                        }
+                    },
                     TreeMsg::PatchTree { bytes } => {
                         let patches = match tree::patch::decode_patches(&bytes) {
                             Ok(patches) => patches,
@@ -267,6 +268,9 @@ fn spawn_tree_actor(
                     TreeMsg::SetMouseOverActive { element_id, active } => {
                         mouse_over_active_state.insert(element_id, active);
                     }
+                    TreeMsg::AssetStateChanged => {
+                        changed = true;
+                    }
                 }
             }
 
@@ -298,6 +302,8 @@ fn spawn_tree_actor(
                 continue;
             }
 
+            assets::ensure_tree_sources(&tree);
+
             let constraint = tree::layout::Constraint::new(width, height);
             let output = layout_and_refresh_default(&mut tree, constraint, scale);
             send_event(
@@ -309,9 +315,11 @@ fn spawn_tree_actor(
             );
 
             let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            let animate = assets::has_pending_assets();
             render_sender.send_latest(RenderMsg::Commands {
                 commands: output.commands,
                 version,
+                animate,
             });
 
             if let Some(proxy) = wayland_proxy.as_ref() {
@@ -572,6 +580,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     };
     let (cursor_tx, cursor_rx) = bounded(1024);
 
+    assets::start(tree_tx.clone(), log_render);
+
     let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render);
 
     let initial_width = config.width;
@@ -755,9 +765,11 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
 #[rustler::nif]
 fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
     let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    renderer
-        .render_tx
-        .send_latest(RenderMsg::Commands { commands, version });
+    renderer.render_tx.send_latest(RenderMsg::Commands {
+        commands,
+        version,
+        animate: false,
+    });
     if renderer.backend == BackendKind::Wayland
         && let Ok(guard) = renderer.event_proxy.lock()
         && let Some(proxy) = guard.as_ref()
@@ -818,6 +830,27 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
 fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<Atom, String> {
     load_font(&name, weight as u16, italic, data.as_slice())?;
     Ok(atoms::ok())
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn configure_assets_nif(
+    _renderer: ResourceArc<RendererResource>,
+    manifest_path: String,
+    runtime_enabled: bool,
+    allowlist: Vec<String>,
+    follow_symlinks: bool,
+    max_file_size: u64,
+    extensions: Vec<String>,
+) -> Atom {
+    assets::configure(AssetConfig {
+        manifest_path,
+        runtime_enabled,
+        runtime_allowlist: allowlist,
+        runtime_follow_symlinks: follow_symlinks,
+        runtime_max_file_size: max_file_size,
+        runtime_extensions: extensions,
+    });
+    atoms::ok()
 }
 
 #[rustler::nif]
