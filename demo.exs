@@ -1492,232 +1492,395 @@ defmodule Demo do
       section_title("Border Styles"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Solid, dashed, and dotted border styles")
+        text("Style, radius, and width permutations for solid/dashed/dotted borders")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.width(2),
-            Border.color({:color_rgb, {100, 140, 220}}),
-            Border.solid()
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Solid")),
-            el([Font.size(11), Font.color(@dim_text)], text("Border.solid()"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.width(2),
-            Border.color({:color_rgb, {220, 160, 80}}),
-            Border.dashed()
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Dashed")),
-            el([Font.size(11), Font.color(@dim_text)], text("Border.dashed()"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.width(2),
-            Border.color({:color_rgb, {180, 100, 200}}),
-            Border.dotted()
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Dotted")),
-            el([Font.size(11), Font.color(@dim_text)], text("Border.dotted()"))
-          ])
-        )
-      ]),
+      border_showcase_grid(border_style_cards()),
       section_title("Per-Edge Border Width"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Asymmetric border widths with width_each(top, right, bottom, left)")
+        text("Per-edge style matrix plus top/right/bottom/left-only permutations")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.width_each(4, 1, 4, 1),
-            Border.color({:color_rgb, {120, 200, 160}}),
-            Border.solid()
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Thick top/bottom")),
-            el([Font.size(11), Font.color(@dim_text)], text("width_each(4, 1, 4, 1)"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(0),
-            Border.width_each(0, 0, 3, 0),
-            Border.color({:color_rgb, {200, 180, 100}}),
-            Border.solid()
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Bottom only")),
-            el([Font.size(11), Font.color(@dim_text)], text("width_each(0, 0, 3, 0)"))
-          ])
-        )
-      ]),
+      border_showcase_grid(per_edge_border_cards()),
       section_title("Box Shadow"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Drop shadows and diffuse glows using Border.shadow/1")
+        text("Directional, spread, and stacked drop shadow permutations")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.shadow(offset: {4, 4}, blur: 12, color: :black)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Drop shadow")),
-            el([Font.size(11), Font.color(@dim_text)], text("offset: {4, 4}, blur: 12"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.shadow(offset: {0, 0}, blur: 20, size: 2, color: @blue)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Diffuse glow")),
-            el([Font.size(11), Font.color(@dim_text)], text("blur: 20, size: 2, color: blue"))
-          ])
-        )
-      ]),
+      border_showcase_grid(box_shadow_cards()),
       section_title("Glow"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Uniform glow effect with Border.glow/2")
+        text("Glow color and intensity permutations")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.glow(:cyan, 4)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Cyan glow")),
-            el([Font.size(11), Font.color(@dim_text)], text("glow(:cyan, 4)"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.glow(@pink, 6)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Pink glow")),
-            el([Font.size(11), Font.color(@dim_text)], text("glow(@pink, 6)"))
-          ])
-        )
-      ]),
+      border_showcase_grid(glow_cards()),
       section_title("Inner Shadow"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Inset shadows for pressed or recessed effects")
+        text("Inset shadow direction and strength permutations")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.inner_shadow(blur: 12, color: :black)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Inset shadow")),
-            el([Font.size(11), Font.color(@dim_text)], text("inner_shadow(blur: 12)"))
-          ])
-        ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(8),
-            Border.inner_shadow(offset: {3, 3}, blur: 8, color: @purple)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Directional inset")),
-            el([Font.size(11), Font.color(@dim_text)], text("offset: {3, 3}, color: purple"))
-          ])
-        )
-      ]),
+      border_showcase_grid(inner_shadow_cards()),
       section_title("Combined"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Multiple border features on a single element")
+        text("Multi-attribute recipes combining border, shadow, glow, and inset variants")
       ),
-      row([width(fill()), spacing(12)], [
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.color(@event_bg),
-            Border.rounded(10),
-            Border.width(2),
-            Border.color({:color_rgb, {180, 140, 220}}),
-            Border.dashed(),
-            Border.shadow(offset: {3, 3}, blur: 10, color: :black)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Dashed + shadow")),
-            el([Font.size(11), Font.color(@dim_text)], text("Dashed border with drop shadow"))
-          ])
+      border_showcase_grid(combined_border_cards())
+    ])
+  end
+
+  defp border_style_cards() do
+    [
+      border_card_spec("Solid thin round", "1px stroke + small radius", [
+        border_attr("Border.rounded(6)", Border.rounded(6)),
+        border_attr("Border.width(1)", Border.width(1)),
+        border_attr("Border.color(:blue)", Border.color(:blue)),
+        border_attr("Border.solid()", Border.solid())
+      ]),
+      border_card_spec("Solid thick square", "5px stroke + square corners", [
+        border_attr("Border.rounded(0)", Border.rounded(0)),
+        border_attr("Border.width(5)", Border.width(5)),
+        border_attr("Border.color(:teal)", Border.color(:teal)),
+        border_attr("Border.solid()", Border.solid())
+      ]),
+      border_card_spec("Dashed medium round", "2px dashes + 8px radius", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.width(2)", Border.width(2)),
+        border_attr("Border.color(:orange)", Border.color(:orange)),
+        border_attr("Border.dashed()", Border.dashed())
+      ]),
+      border_card_spec("Dashed thick pill", "4px dashes + large radius", [
+        border_attr("Border.rounded(14)", Border.rounded(14)),
+        border_attr("Border.width(4)", Border.width(4)),
+        border_attr("Border.color(:yellow)", Border.color(:yellow)),
+        border_attr("Border.dashed()", Border.dashed())
+      ]),
+      border_card_spec("Dotted medium round", "2px dots + 10px radius", [
+        border_attr("Border.rounded(10)", Border.rounded(10)),
+        border_attr("Border.width(2)", Border.width(2)),
+        border_attr("Border.color(:magenta)", Border.color(:magenta)),
+        border_attr("Border.dotted()", Border.dotted())
+      ]),
+      border_card_spec("Dotted thick square", "4px dots + no radius", [
+        border_attr("Border.rounded(0)", Border.rounded(0)),
+        border_attr("Border.width(4)", Border.width(4)),
+        border_attr("Border.color(:pink)", Border.color(:pink)),
+        border_attr("Border.dotted()", Border.dotted())
+      ])
+    ]
+  end
+
+  defp per_edge_border_cards() do
+    style_cards =
+      Enum.map(border_style_variants(), fn variant ->
+        border_card_spec("Thick top/bottom (#{variant.name})", "width_each(4, 1, 4, 1)", [
+          border_attr("Border.rounded(8)", Border.rounded(8)),
+          border_attr("Border.width_each(4, 1, 4, 1)", Border.width_each(4, 1, 4, 1)),
+          border_attr("Border.color(:#{variant.color})", Border.color(variant.color)),
+          border_attr(variant.style_label, variant.style_attr)
+        ])
+      end)
+
+    single_side_cards =
+      for variant <- border_style_variants(),
+          {label, top, right, bottom, left} <- single_side_widths() do
+        border_card_spec("#{label} (#{variant.name})", "Single-side width_each variant", [
+          border_attr("Border.rounded(8)", Border.rounded(8)),
+          border_attr(
+            "Border.width_each(#{top}, #{right}, #{bottom}, #{left})",
+            Border.width_each(top, right, bottom, left)
+          ),
+          border_attr("Border.color(:#{variant.color})", Border.color(variant.color)),
+          border_attr(variant.style_label, variant.style_attr)
+        ])
+      end
+
+    style_cards ++ single_side_cards
+  end
+
+  defp box_shadow_cards() do
+    [
+      border_card_spec("Drop shadow down-right", "Classic card shadow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {4, 4}, blur: 12, color: :black)",
+          Border.shadow(offset: {4, 4}, blur: 12, color: :black)
+        )
+      ]),
+      border_card_spec("Lifted up-left", "Negative offset variation", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {-4, -4}, blur: 12, color: :black)",
+          Border.shadow(offset: {-4, -4}, blur: 12, color: :black)
+        )
+      ]),
+      border_card_spec("Right cast", "Directional horizontal shadow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {8, 0}, blur: 10, size: 1, color: :navy)",
+          Border.shadow(offset: {8, 0}, blur: 10, size: 1, color: :navy)
+        )
+      ]),
+      border_card_spec("Bottom cast", "Directional vertical shadow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {0, 8}, blur: 10, size: 1, color: :purple)",
+          Border.shadow(offset: {0, 8}, blur: 10, size: 1, color: :purple)
+        )
+      ]),
+      border_card_spec("Diffuse spread", "Large blur + spread size", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {0, 0}, blur: 20, size: 2, color: :blue)",
+          Border.shadow(offset: {0, 0}, blur: 20, size: 2, color: :blue)
+        )
+      ]),
+      border_card_spec("Stacked shadows", "Two shadow layers on one element", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.shadow(offset: {2, 2}, blur: 6, color: :black)",
+          Border.shadow(offset: {2, 2}, blur: 6, color: :black)
         ),
-        el(
-          [
-            width(fill()),
-            padding(14),
-            Background.gradient(@blue, @purple, 135),
-            Border.rounded(10),
-            Border.glow(:cyan, 3),
-            Border.inner_shadow(blur: 8, color: :black)
-          ],
-          column([spacing(4)], [
-            el([Font.size(13), Font.color(:white)], text("Glow + inner shadow")),
-            el(
-              [Font.size(11), Font.color(@dim_text)],
-              text("Gradient bg, glow, and inset shadow")
-            )
-          ])
+        border_attr(
+          "Border.shadow(offset: {-2, -2}, blur: 8, color: :cyan)",
+          Border.shadow(offset: {-2, -2}, blur: 8, color: :cyan)
         )
       ])
-    ])
+    ]
+  end
+
+  defp glow_cards() do
+    [
+      border_card_spec("Cyan soft", "Low intensity glow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:cyan, 2)", Border.glow(:cyan, 2))
+      ]),
+      border_card_spec("Cyan medium", "Balanced glow size", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:cyan, 4)", Border.glow(:cyan, 4))
+      ]),
+      border_card_spec("Pink strong", "High intensity glow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:pink, 7)", Border.glow(:pink, 7))
+      ]),
+      border_card_spec("Blue medium", "Cool-toned glow", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:blue, 5)", Border.glow(:blue, 5))
+      ]),
+      border_card_spec("Purple soft", "Subtle colored rim", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:purple, 3)", Border.glow(:purple, 3))
+      ]),
+      border_card_spec("Green medium", "Alternative accent color", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr("Border.glow(:green, 4)", Border.glow(:green, 4))
+      ])
+    ]
+  end
+
+  defp inner_shadow_cards() do
+    [
+      border_card_spec("Inset neutral", "Centered inner depth", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(blur: 10, color: :black)",
+          Border.inner_shadow(blur: 10, color: :black)
+        )
+      ]),
+      border_card_spec("Inset strong", "Larger blur and spread", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(blur: 16, size: 2, color: :black)",
+          Border.inner_shadow(blur: 16, size: 2, color: :black)
+        )
+      ]),
+      border_card_spec("Inset down-right", "Directional pressed effect", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(offset: {3, 3}, blur: 8, color: :purple)",
+          Border.inner_shadow(offset: {3, 3}, blur: 8, color: :purple)
+        )
+      ]),
+      border_card_spec("Inset up-left", "Reverse directional inset", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(offset: {-3, -3}, blur: 8, color: :purple)",
+          Border.inner_shadow(offset: {-3, -3}, blur: 8, color: :purple)
+        )
+      ]),
+      border_card_spec("Inset cyan tint", "Colored inner contour", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(blur: 10, color: :cyan)",
+          Border.inner_shadow(blur: 10, color: :cyan)
+        )
+      ]),
+      border_card_spec("Inset pink tint", "Warm inner contour", [
+        border_attr("Border.rounded(8)", Border.rounded(8)),
+        border_attr(
+          "Border.inner_shadow(blur: 12, color: :pink)",
+          Border.inner_shadow(blur: 12, color: :pink)
+        )
+      ])
+    ]
+  end
+
+  defp combined_border_cards() do
+    [
+      border_card_spec(
+        "Dashed + drop shadow",
+        "Classic outlined card with depth",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width(2)", Border.width(2)),
+          border_attr("Border.color(:purple)", Border.color(:purple)),
+          border_attr("Border.dashed()", Border.dashed()),
+          border_attr(
+            "Border.shadow(offset: {3, 3}, blur: 10, color: :black)",
+            Border.shadow(offset: {3, 3}, blur: 10, color: :black)
+          )
+        ]
+      ),
+      border_card_spec(
+        "Dotted + glow + inset",
+        "Outer energy + inner depth",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width(2)", Border.width(2)),
+          border_attr("Border.color(:pink)", Border.color(:pink)),
+          border_attr("Border.dotted()", Border.dotted()),
+          border_attr("Border.glow(:cyan, 3)", Border.glow(:cyan, 3)),
+          border_attr(
+            "Border.inner_shadow(blur: 8, color: :black)",
+            Border.inner_shadow(blur: 8, color: :black)
+          )
+        ],
+        [Background.gradient(@blue, @purple, 135)]
+      ),
+      border_card_spec(
+        "Per-edge solid + shadow",
+        "Asymmetric border plus depth",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width_each(4, 1, 4, 1)", Border.width_each(4, 1, 4, 1)),
+          border_attr("Border.color(:teal)", Border.color(:teal)),
+          border_attr("Border.solid()", Border.solid()),
+          border_attr(
+            "Border.shadow(offset: {2, 2}, blur: 8, color: :black)",
+            Border.shadow(offset: {2, 2}, blur: 8, color: :black)
+          )
+        ]
+      ),
+      border_card_spec(
+        "Per-edge dashed + glow",
+        "Directional widths with luminous edge",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width_each(0, 3, 3, 1)", Border.width_each(0, 3, 3, 1)),
+          border_attr("Border.color(:orange)", Border.color(:orange)),
+          border_attr("Border.dashed()", Border.dashed()),
+          border_attr("Border.glow(:blue, 4)", Border.glow(:blue, 4))
+        ]
+      ),
+      border_card_spec(
+        "Solid + stacked shadows",
+        "Dual outer layers with crisp border",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width(2)", Border.width(2)),
+          border_attr("Border.color(:white)", Border.color(:white)),
+          border_attr("Border.solid()", Border.solid()),
+          border_attr(
+            "Border.shadow(offset: {3, 3}, blur: 8, color: :black)",
+            Border.shadow(offset: {3, 3}, blur: 8, color: :black)
+          ),
+          border_attr(
+            "Border.shadow(offset: {0, 0}, blur: 14, size: 1, color: :blue)",
+            Border.shadow(offset: {0, 0}, blur: 14, size: 1, color: :blue)
+          )
+        ]
+      ),
+      border_card_spec(
+        "Inset + glow + dotted",
+        "Contrasting inner and outer effects",
+        [
+          border_attr("Border.rounded(10)", Border.rounded(10)),
+          border_attr("Border.width(2)", Border.width(2)),
+          border_attr("Border.color(:cyan)", Border.color(:cyan)),
+          border_attr("Border.dotted()", Border.dotted()),
+          border_attr("Border.glow(:magenta, 3)", Border.glow(:magenta, 3)),
+          border_attr(
+            "Border.inner_shadow(offset: {2, 2}, blur: 8, color: :purple)",
+            Border.inner_shadow(offset: {2, 2}, blur: 8, color: :purple)
+          )
+        ]
+      )
+    ]
+  end
+
+  defp border_style_variants() do
+    [
+      %{name: "solid", style_attr: Border.solid(), style_label: "Border.solid()", color: :teal},
+      %{
+        name: "dashed",
+        style_attr: Border.dashed(),
+        style_label: "Border.dashed()",
+        color: :orange
+      },
+      %{
+        name: "dotted",
+        style_attr: Border.dotted(),
+        style_label: "Border.dotted()",
+        color: :magenta
+      }
+    ]
+  end
+
+  defp single_side_widths() do
+    [
+      {"Top only", 3, 0, 0, 0},
+      {"Right only", 0, 3, 0, 0},
+      {"Bottom only", 0, 0, 3, 0},
+      {"Left only", 0, 0, 0, 3}
+    ]
+  end
+
+  defp border_attr(label, attr), do: {label, attr}
+
+  defp border_card_spec(title, subtitle, border_attrs, card_attrs \\ nil) do
+    %{
+      title: title,
+      subtitle: subtitle,
+      border_attrs: border_attrs,
+      card_attrs: card_attrs || [Background.color(@event_bg)]
+    }
+  end
+
+  defp border_showcase_grid(cards) do
+    wrapped_row([width(fill()), spacing_xy(12, 12)], Enum.map(cards, &border_showcase_card/1))
+  end
+
+  defp border_showcase_card(card) do
+    border_attrs = card.border_attrs
+    border_attr_values = Enum.map(border_attrs, fn {_label, attr} -> attr end)
+    border_attr_labels = Enum.map(border_attrs, fn {label, _attr} -> label end)
+
+    el(
+      [
+        width(px(300)),
+        padding(14)
+      ] ++ card.card_attrs ++ border_attr_values,
+      column([spacing(4)], [
+        el([Font.size(13), Font.color(:white)], text(card.title)),
+        el([Font.size(11), Font.color(@dim_text)], text(card.subtitle)),
+        el([Font.size(10), Font.color({:color_rgb, {200, 200, 220}})], text("Border attrs:")),
+        column(
+          [spacing(2)],
+          Enum.map(border_attr_labels, fn label ->
+            el([Font.size(10), Font.color(@dim_text)], text(label))
+          end)
+        )
+      ])
+    )
   end
 
   defp section_title(label) do

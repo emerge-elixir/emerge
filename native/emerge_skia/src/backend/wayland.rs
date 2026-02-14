@@ -95,9 +95,29 @@ struct App {
     window_size: (u32, u32),
     current_mods: u8,
     cursor_pos: (f32, f32),
+    is_focused: bool,
+    is_occluded: bool,
+    pending_redraw: bool,
 }
 
 impl App {
+    fn can_present(&self) -> bool {
+        self.running && self.is_focused && !self.is_occluded
+    }
+
+    fn queue_redraw(&mut self) {
+        self.pending_redraw = true;
+        if self.can_present() && let Some(env) = &self.env {
+            env.window.request_redraw();
+        }
+    }
+
+    fn flush_render_updates(&mut self) {
+        if self.running && self.drain_render_commands() {
+            self.queue_redraw();
+        }
+    }
+
     fn handle_resize(&mut self, physical_size: winit::dpi::PhysicalSize<u32>) {
         if !self.running {
             return;
@@ -113,7 +133,7 @@ impl App {
                 NonZeroU32::new(h.max(1)).unwrap(),
             );
             renderer.resize((w.max(1), h.max(1)));
-            env.window.request_redraw();
+            self.queue_redraw();
         }
 
         if let Some(env) = &self.env {
@@ -229,23 +249,13 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
             UserEvent::Redraw => {
-                if self.running
-                    && self.drain_render_commands()
-                    && let Some(env) = &self.env
-                {
-                    env.window.request_redraw();
-                }
+                self.flush_render_updates();
             }
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        if self.running
-            && self.drain_render_commands()
-            && let Some(env) = &self.env
-        {
-            env.window.request_redraw();
-        }
+        self.flush_render_updates();
     }
 
     fn window_event(
@@ -264,8 +274,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.handle_resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
-                if self.running {
+                if self.can_present() {
+                    self.pending_redraw = false;
                     self.redraw();
+                } else if self.running {
+                    self.pending_redraw = true;
                 }
             }
 
@@ -356,7 +369,18 @@ impl ApplicationHandler<UserEvent> for App {
 
             // Window focus changed
             WindowEvent::Focused(focused) => {
+                self.is_focused = focused;
                 self.send_input_event(InputEvent::Focused { focused });
+                if self.can_present() && self.pending_redraw {
+                    self.queue_redraw();
+                }
+            }
+
+            WindowEvent::Occluded(occluded) => {
+                self.is_occluded = occluded;
+                if self.can_present() && self.pending_redraw {
+                    self.queue_redraw();
+                }
             }
 
             _ => {}
@@ -543,6 +567,9 @@ pub fn run(
         window_size: (size.width, size.height),
         current_mods: 0,
         cursor_pos: (0.0, 0.0),
+        is_focused: true,
+        is_occluded: false,
+        pending_redraw: false,
     };
 
     app.redraw();
