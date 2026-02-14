@@ -32,11 +32,26 @@ In EMRG v3 these are encoded as typed image sources:
 4. On success, image bytes are decoded and inserted into native cache.
 5. `AssetManager` notifies tree actor, which triggers relayout/rerender.
 
+Startup/config flow:
+
+- `EmergeSkia.start/1` calls `configure_assets_nif` with manifest/runtime-path config.
+- Rust stores normalized config in `AssetManager` state.
+- Reconfiguration clears source-status cache so paths are revalidated under new policy.
+
 Render behavior while waiting:
 
 - pending source -> loading placeholder
 - failed source -> failed placeholder
 - ready source -> normal image draw
+
+Source status state machine:
+
+- missing -> `pending` (request queued)
+- `pending` -> `ready` (decoded + cached)
+- `pending` -> `failed` (blocked, unreadable, decode error, or missing)
+
+There is no strict/lenient runtime mode and no fail-fast path for image load
+errors. Runtime failures always render the failed placeholder.
 
 ## Static Assets (Digest + Manifest)
 
@@ -56,6 +71,9 @@ and emits:
 
 - `latest` (logical -> digested path)
 - `digests` (digested path -> metadata)
+
+`cache_manifest_images.json` is generated for image metadata output and tooling,
+while runtime logical path resolution reads `cache_manifest.json`.
 
 ## `~m` Verified Media Sigil
 

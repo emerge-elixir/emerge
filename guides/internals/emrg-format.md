@@ -307,21 +307,18 @@ defined above.
 - All nodes are read into a map keyed by id.
 - The first node in the stream is the root.
 - Children are reconstructed by resolving ids in `child_ids`.
-- Decoder accepts v1 and v2 payloads; v2 uses typed attribute blocks.
+- Decoder accepts EMRG v3 payloads only.
 
 ## Notes
 - Ids are serialized as Erlang terms.
 - Attribute values use the typed encodings described above.
-- The format is stable for the current version (`2`).
+- The format is stable for the current version (`3`).
 
-## v2 Changes (for Rust)
-- Attrs are no longer encoded with `term_to_binary`; use the typed attribute block.
-- `attrs_bin` is now a compact list of tagged attribute records.
-- Runtime-only attrs are excluded from encoding: `scroll_x`, `scroll_y`, `scroll_max`,
-  `scroll_max_x`, `scroll_bounds`, `scroll_clip_bounds`, `clip_bounds`, `clip_content`,
-  `text_baseline_offset`, `scroll_capture`, `mouse_over_active`, `__layer`, `__attrs_hash`, and
-  `nearby_*`.
-- Attribute tags and value encodings are fixed in this spec (see above).
+## v3 Image Changes
+- Added `image` element type tag (`9`).
+- Added image attrs: `image_src` (`53`), `image_fit` (`54`), `image_size` (`55`).
+- Added typed image source variants (`id`, `logical`, `runtime_path`) for `image_src` and
+  background image payloads.
 
 ## Internal / runtime (not encoded in EMRG)
 - `:scroll_x`
