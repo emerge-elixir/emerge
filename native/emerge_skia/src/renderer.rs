@@ -12,10 +12,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
-    Color, ColorType, Font, FontMgr, Paint, PaintStyle, Point, RRect, Rect, Shader, Surface,
-    TileMode, Typeface, Vector,
+    BlurStyle, Color, ColorType, Font, FontMgr, MaskFilter, Paint, PaintStyle, PathBuilder,
+    PathFillType, Point, RRect, Rect, Shader, Surface, TileMode, Typeface, Vector,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
+    dash_path_effect,
 };
+
+use crate::tree::attrs::BorderStyle;
 
 // ============================================================================
 // Draw Commands
@@ -43,12 +46,19 @@ pub enum DrawCmd {
     Rect(f32, f32, f32, f32, u32),
     RoundedRect(f32, f32, f32, f32, f32, u32),
     RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    Border(f32, f32, f32, f32, f32, f32, u32),
-    BorderCorners(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
+    Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    BorderCorners(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    /// Per-edge border: x, y, w, h, radius, top, right, bottom, left, color, style
+    BorderEdges(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    /// Outer shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
+    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
+    /// Inner (inset) shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
+    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Text(f32, f32, String, f32, u32),
     /// Text with custom font: x, y, text, font_size, color, family, weight, italic
     TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
-    Gradient(f32, f32, f32, f32, u32, u32, f32),
+    /// Gradient: x, y, w, h, from_color, to_color, angle, radius
+    Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
     PushClip(f32, f32, f32, f32),
     PushClipRounded(f32, f32, f32, f32, f32),
     PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
@@ -111,6 +121,7 @@ impl<'a> Decoder<'a> for DrawCmd {
                 tuple[5].decode()?,
                 tuple[6].decode()?,
                 tuple[7].decode()?,
+                BorderStyle::Solid,
             ))
         } else if tag == cmd_atoms::text() && tuple.len() == 6 {
             Ok(DrawCmd::Text(
@@ -129,6 +140,7 @@ impl<'a> Decoder<'a> for DrawCmd {
                 tuple[5].decode()?,
                 tuple[6].decode()?,
                 tuple[7].decode()?,
+                0.0,
             ))
         } else if tag == cmd_atoms::push_clip() && tuple.len() == 5 {
             Ok(DrawCmd::PushClip(
@@ -471,32 +483,138 @@ impl Renderer {
                     canvas.draw_rrect(rrect, &paint);
                 }
 
-                DrawCmd::Border(x, y, w, h, radius, width, color) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                DrawCmd::Border(x, y, w, h, radius, width, color, style) => {
+                    draw_border(
+                        canvas,
+                        *x,
+                        *y,
+                        *w,
+                        *h,
+                        [*radius, *radius, *radius, *radius],
+                        *width,
+                        *width,
+                        *width,
+                        *width,
+                        *color,
+                        *style,
+                    );
+                }
+
+                DrawCmd::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
+                    draw_border(
+                        canvas,
+                        *x,
+                        *y,
+                        *w,
+                        *h,
+                        [*tl, *tr, *br, *bl],
+                        *width,
+                        *width,
+                        *width,
+                        *width,
+                        *color,
+                        *style,
+                    );
+                }
+
+                DrawCmd::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
+                    draw_border(
+                        canvas,
+                        *x,
+                        *y,
+                        *w,
+                        *h,
+                        [*radius, *radius, *radius, *radius],
+                        *top,
+                        *right,
+                        *bottom,
+                        *left,
+                        *color,
+                        *style,
+                    );
+                }
+
+                DrawCmd::Shadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+                    // Expand rect by spread size and offset
+                    let shadow_x = *x + *offset_x - *size;
+                    let shadow_y = *y + *offset_y - *size;
+                    let shadow_w = *w + *size * 2.0;
+                    let shadow_h = *h + *size * 2.0;
+                    let shadow_radius = (*radius + *size).max(0.0);
+
+                    let rect = Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h);
+                    let rrect = if shadow_radius > 0.0 {
+                        RRect::new_rect_xy(rect, shadow_radius, shadow_radius)
+                    } else {
+                        RRect::new_rect(rect)
+                    };
+
                     let mut paint = Paint::default();
                     paint.set_color(color_from_u32(*color));
-                    paint.set_style(PaintStyle::Stroke);
-                    paint.set_stroke_width(*width);
                     paint.set_anti_alias(true);
+
+                    if *blur > 0.0 {
+                        let sigma = *blur / 2.0;
+                        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+                            paint.set_mask_filter(filter);
+                        }
+                    }
+
                     canvas.draw_rrect(rrect, &paint);
                 }
 
-                DrawCmd::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let radii = [
-                        Point::new(*tl, *tl),
-                        Point::new(*tr, *tr),
-                        Point::new(*br, *br),
-                        Point::new(*bl, *bl),
-                    ];
-                    let rrect = RRect::new_rect_radii(rect, &radii);
+                DrawCmd::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+                    // Clip to the element bounds so shadow doesn't leak outside
+                    let bounds_rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let bounds_rrect = if *radius > 0.0 {
+                        RRect::new_rect_xy(bounds_rect, *radius, *radius)
+                    } else {
+                        RRect::new_rect(bounds_rect)
+                    };
+
+                    canvas.save();
+                    canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Intersect, true);
+
+                    // Create inset shadow by drawing a large rect with a hole
+                    let inset_x = *x + *offset_x + *size;
+                    let inset_y = *y + *offset_y + *size;
+                    let inset_w = *w - *size * 2.0;
+                    let inset_h = *h - *size * 2.0;
+                    let inset_radius = (*radius - *size).max(0.0);
+
+                    let inner_rect = Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
+                    let inner_rrect = if inset_radius > 0.0 {
+                        RRect::new_rect_xy(inner_rect, inset_radius, inset_radius)
+                    } else {
+                        RRect::new_rect(inner_rect)
+                    };
+
+                    // Create a path: large outer rect minus inner rrect (EvenOdd)
+                    let margin = (*blur + *size) * 4.0 + 100.0;
+                    let outer_rect = Rect::from_xywh(
+                        *x - margin,
+                        *y - margin,
+                        *w + margin * 2.0,
+                        *h + margin * 2.0,
+                    );
+                    let mut builder = PathBuilder::new_with_fill_type(PathFillType::EvenOdd);
+                    builder.add_rect(outer_rect, None, None);
+                    builder.add_rrect(inner_rrect, None, None);
+                    let path = builder.detach();
+
                     let mut paint = Paint::default();
                     paint.set_color(color_from_u32(*color));
-                    paint.set_style(PaintStyle::Stroke);
-                    paint.set_stroke_width(*width);
                     paint.set_anti_alias(true);
-                    canvas.draw_rrect(rrect, &paint);
+
+                    if *blur > 0.0 {
+                        let sigma = *blur / 2.0;
+                        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+                            paint.set_mask_filter(filter);
+                        }
+                    }
+
+                    canvas.draw_path(&path, &paint);
+                    canvas.restore();
                 }
 
                 DrawCmd::Text(x, y, text, font_size, fill) => {
@@ -515,7 +633,7 @@ impl Renderer {
                     canvas.draw_str(text, (*x, *y), &font, &paint);
                 }
 
-                DrawCmd::Gradient(x, y, w, h, from, to, angle) => {
+                DrawCmd::Gradient(x, y, w, h, from, to, angle, radius) => {
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
 
                     let radians = angle.to_radians();
@@ -544,7 +662,12 @@ impl Renderer {
                         let mut paint = Paint::default();
                         paint.set_shader(shader);
                         paint.set_anti_alias(true);
-                        canvas.draw_rect(rect, &paint);
+                        if *radius > 0.0 {
+                            let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                            canvas.draw_rrect(rrect, &paint);
+                        } else {
+                            canvas.draw_rect(rect, &paint);
+                        }
                     }
                 }
 
@@ -644,6 +767,202 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
+fn approx_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1.0e-3
+}
+
+fn resolve_inset_pair(start: f32, end: f32, total: f32) -> (f32, f32) {
+    let start = start.max(0.0);
+    let end = end.max(0.0);
+    let total = total.max(0.0);
+
+    let sum = start + end;
+    if sum <= total || sum <= f32::EPSILON {
+        (start, end)
+    } else {
+        let scale = total / sum;
+        (start * scale, end * scale)
+    }
+}
+
+fn corner_rrect(rect: Rect, corners: [f32; 4]) -> RRect {
+    let max_rx = rect.width().max(0.0) * 0.5;
+    let max_ry = rect.height().max(0.0) * 0.5;
+
+    let radii = [
+        Point::new(corners[0].max(0.0).min(max_rx), corners[0].max(0.0).min(max_ry)),
+        Point::new(corners[1].max(0.0).min(max_rx), corners[1].max(0.0).min(max_ry)),
+        Point::new(corners[2].max(0.0).min(max_rx), corners[2].max(0.0).min(max_ry)),
+        Point::new(corners[3].max(0.0).min(max_rx), corners[3].max(0.0).min(max_ry)),
+    ];
+
+    if radii.iter().all(|p| p.x <= 0.0 && p.y <= 0.0) {
+        RRect::new_rect(rect)
+    } else {
+        RRect::new_rect_radii(rect, &radii)
+    }
+}
+
+fn border_band_path(outer_rrect: RRect, inner_rrect: Option<RRect>) -> skia_safe::Path {
+    let mut builder = PathBuilder::new_with_fill_type(PathFillType::EvenOdd);
+    builder.add_rrect(outer_rrect, None, None);
+    if let Some(inner) = inner_rrect {
+        builder.add_rrect(inner, None, None);
+    }
+    builder.detach()
+}
+
+fn quad_path(quad: [(f32, f32); 4]) -> skia_safe::Path {
+    PathBuilder::new()
+        .move_to(Point::new(quad[0].0, quad[0].1))
+        .line_to(Point::new(quad[1].0, quad[1].1))
+        .line_to(Point::new(quad[2].0, quad[2].1))
+        .line_to(Point::new(quad[3].0, quad[3].1))
+        .close()
+        .detach()
+}
+
+fn draw_border(
+    canvas: &skia_safe::Canvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    corners: [f32; 4],
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+    color: u32,
+    style: BorderStyle,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let (left, right) = resolve_inset_pair(left, right, w);
+    let (top, bottom) = resolve_inset_pair(top, bottom, h);
+
+    if top <= 0.0 && right <= 0.0 && bottom <= 0.0 && left <= 0.0 {
+        return;
+    }
+
+    let outer_rect = Rect::from_xywh(x, y, w, h);
+    let outer_rrect = corner_rrect(outer_rect, corners);
+
+    let outer_tl = outer_rrect.radii(skia_safe::rrect::Corner::UpperLeft);
+    let outer_tr = outer_rrect.radii(skia_safe::rrect::Corner::UpperRight);
+    let outer_br = outer_rrect.radii(skia_safe::rrect::Corner::LowerRight);
+    let outer_bl = outer_rrect.radii(skia_safe::rrect::Corner::LowerLeft);
+
+    let inner_x = x + left;
+    let inner_y = y + top;
+    let inner_w = (w - left - right).max(0.0);
+    let inner_h = (h - top - bottom).max(0.0);
+
+    let inner_rrect = if inner_w > 0.0 && inner_h > 0.0 {
+        let inner_rect = Rect::from_xywh(inner_x, inner_y, inner_w, inner_h);
+        let max_rx = inner_w * 0.5;
+        let max_ry = inner_h * 0.5;
+        let radii = [
+            Point::new(
+                (outer_tl.x - left).max(0.0).min(max_rx),
+                (outer_tl.y - top).max(0.0).min(max_ry),
+            ),
+            Point::new(
+                (outer_tr.x - right).max(0.0).min(max_rx),
+                (outer_tr.y - top).max(0.0).min(max_ry),
+            ),
+            Point::new(
+                (outer_br.x - right).max(0.0).min(max_rx),
+                (outer_br.y - bottom).max(0.0).min(max_ry),
+            ),
+            Point::new(
+                (outer_bl.x - left).max(0.0).min(max_rx),
+                (outer_bl.y - bottom).max(0.0).min(max_ry),
+            ),
+        ];
+
+        Some(if radii.iter().all(|p| p.x <= 0.0 && p.y <= 0.0) {
+            RRect::new_rect(inner_rect)
+        } else {
+            RRect::new_rect_radii(inner_rect, &radii)
+        })
+    } else {
+        None
+    };
+
+    let band_path = border_band_path(outer_rrect, inner_rrect);
+
+    match style {
+        BorderStyle::Solid => {
+            let mut fill_paint = Paint::default();
+            fill_paint.set_color(color_from_u32(color));
+            fill_paint.set_anti_alias(true);
+            canvas.draw_path(&band_path, &fill_paint);
+        }
+        BorderStyle::Dashed | BorderStyle::Dotted => {
+            let mut stroke_paint = Paint::default();
+            stroke_paint.set_color(color_from_u32(color));
+            stroke_paint.set_style(PaintStyle::Stroke);
+            stroke_paint.set_anti_alias(true);
+
+            let uniform =
+                approx_eq(top, right) && approx_eq(right, bottom) && approx_eq(bottom, left);
+
+            if uniform {
+                let width = top;
+                if width <= 0.0 {
+                    return;
+                }
+                stroke_paint.set_stroke_width(width * 2.0);
+                apply_border_style(&mut stroke_paint, style, width);
+                canvas.save();
+                canvas.clip_path(&band_path, skia_safe::ClipOp::Intersect, true);
+                canvas.draw_rrect(outer_rrect, &stroke_paint);
+                canvas.restore();
+            } else {
+                let edge_clips = border_edge_clip_quads(x, y, w, h, top, right, bottom, left);
+                for (width, quad) in &edge_clips {
+                    if *width <= 0.0 {
+                        continue;
+                    }
+
+                    let edge_path = quad_path(*quad);
+
+                    canvas.save();
+                    canvas.clip_path(&band_path, skia_safe::ClipOp::Intersect, true);
+                    canvas.clip_path(&edge_path, skia_safe::ClipOp::Intersect, false);
+                    stroke_paint.set_stroke_width(*width * 2.0);
+                    apply_border_style(&mut stroke_paint, style, *width);
+                    canvas.draw_rrect(outer_rrect, &stroke_paint);
+                    canvas.restore();
+                }
+            }
+        }
+    }
+}
+
+fn apply_border_style(paint: &mut Paint, style: BorderStyle, stroke_width: f32) {
+    match style {
+        BorderStyle::Solid => {}
+        BorderStyle::Dashed => {
+            let segment = (stroke_width * 3.0).max(4.0);
+            let gap = (stroke_width * 2.0).max(3.0);
+            if let Some(effect) = dash_path_effect::new(&[segment, gap], 0.0) {
+                paint.set_path_effect(effect);
+            }
+        }
+        BorderStyle::Dotted => {
+            let dot = stroke_width.max(1.0);
+            let gap = (stroke_width * 1.5).max(2.0);
+            if let Some(effect) = dash_path_effect::new(&[dot, gap], 0.0) {
+                paint.set_path_effect(effect);
+            }
+        }
+    }
+}
+
 pub fn color_from_u32(c: u32) -> Color {
     // RGBA format: 0xRRGGBBAA
     let r = ((c >> 24) & 0xFF) as u8;
@@ -651,4 +970,328 @@ pub fn color_from_u32(c: u32) -> Color {
     let b = ((c >> 8) & 0xFF) as u8;
     let a = (c & 0xFF) as u8;
     Color::from_argb(a, r, g, b)
+}
+
+/// Compute the four clip polygons used by `BorderEdges` rendering.
+///
+/// The clips are quads that split corners at the CSS-style inner-join points
+/// derived from per-edge insets.
+///
+/// Returns `[(stroke_width, [(x,y); 4]); 4]` in top/right/bottom/left order.
+fn border_edge_clip_quads(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+) -> [(f32, [(f32, f32); 4]); 4] {
+    let (left, right) = resolve_inset_pair(left, right, w);
+    let (top, bottom) = resolve_inset_pair(top, bottom, h);
+
+    let join_tl = (x + left, y + top);
+    let join_tr = (x + w - right, y + top);
+    let join_br = (x + w - right, y + h - bottom);
+    let join_bl = (x + left, y + h - bottom);
+
+    let margin = top.max(right).max(bottom).max(left) * 2.0 + 20.0;
+
+    [
+        (
+            top,
+            [
+                (x - margin, y - margin),
+                (x + w + margin, y - margin),
+                join_tr,
+                join_tl,
+            ],
+        ),
+        (
+            right,
+            [
+                (x + w + margin, y - margin),
+                (x + w + margin, y + h + margin),
+                join_br,
+                join_tr,
+            ],
+        ),
+        (
+            bottom,
+            [
+                (x + w + margin, y + h + margin),
+                (x - margin, y + h + margin),
+                join_bl,
+                join_br,
+            ],
+        ),
+        (
+            left,
+            [
+                (x - margin, y + h + margin),
+                (x - margin, y - margin),
+                join_tl,
+                join_bl,
+            ],
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn point_in_convex_polygon(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
+        const EPS: f32 = 1.0e-4;
+
+        let mut sign = 0i8;
+        for i in 0..vertices.len() {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % vertices.len()];
+            let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+
+            if cross.abs() <= EPS {
+                continue;
+            }
+
+            let current_sign = if cross > 0.0 { 1 } else { -1 };
+            if sign == 0 {
+                sign = current_sign;
+            } else if sign != current_sign {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn render_single_command_to_pixels(width: u32, height: u32, cmd: DrawCmd) -> Vec<u8> {
+        let info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let surface = skia_safe::surfaces::raster(&info, None, None)
+            .expect("raster surface should be created for renderer test");
+
+        let mut renderer = Renderer::from_surface(surface);
+        let state = RenderState {
+            commands: vec![cmd],
+            clear_color: Color::TRANSPARENT,
+            render_version: 1,
+        };
+        renderer.render(&state);
+
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        renderer.surface_mut().read_pixels(
+            &info,
+            pixels.as_mut_slice(),
+            (width * 4) as usize,
+            (0, 0),
+        );
+        pixels
+    }
+
+    fn max_alpha_in_region(
+        pixels: &[u8],
+        width: u32,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> u8 {
+        let mut max_alpha = 0u8;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let idx = ((y * width + x) * 4 + 3) as usize;
+                max_alpha = max_alpha.max(pixels[idx]);
+            }
+        }
+        max_alpha
+    }
+
+    #[test]
+    fn test_border_edge_clips_do_not_overlap_at_corners() {
+        // Element at (10, 20) with size 200x100 and asymmetric widths
+        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 4.0, 1.0);
+
+        // Sample points deep inside each corner quadrant of the element
+        let top_left = (20.0, 25.0); // near top-left
+        let top_right = (200.0, 25.0); // near top-right
+        let bottom_right = (200.0, 115.0); // near bottom-right
+        let bottom_left = (20.0, 115.0); // near bottom-left
+
+        let corner_points = [top_left, top_right, bottom_right, bottom_left];
+
+        for point in &corner_points {
+            let mut hit_count = 0;
+            for (width, quad) in &clips {
+                if *width > 0.0 && point_in_convex_polygon(*point, quad) {
+                    hit_count += 1;
+                }
+            }
+            assert!(
+                hit_count <= 1,
+                "corner point {:?} is inside {} clip regions (expected at most 1)",
+                point, hit_count,
+            );
+        }
+    }
+
+    #[test]
+    fn test_border_edge_clips_cover_all_edge_midpoints() {
+        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 3.0, 2.0);
+
+        // Midpoints of each edge (on the border, not inside)
+        let edge_midpoints: [(f32, f32, &str); 4] = [
+            (110.0, 20.0, "top"), // top midpoint
+            (210.0, 70.0, "right"), // right midpoint
+            (110.0, 120.0, "bottom"), // bottom midpoint
+            (10.0, 70.0, "left"), // left midpoint
+        ];
+
+        for (i, (px, py, label)) in edge_midpoints.iter().enumerate() {
+            let (width, quad) = &clips[i];
+            assert!(
+                *width > 0.0 && point_in_convex_polygon((*px, *py), quad),
+                "{} edge midpoint ({}, {}) should be inside clip region {}",
+                label, px, py, i,
+            );
+        }
+    }
+
+    #[test]
+    fn test_border_edge_clips_asymmetric_top_right_corner_prefers_top() {
+        // Regression: thick top (4) and thin right (1) should keep near-corner
+        // top-band pixels owned by the top edge clip.
+        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 4.0, 1.0);
+
+        // Very close to the top-right outer corner, but still inside top band.
+        let p = (209.0, 21.8);
+
+        let top_hit = point_in_convex_polygon(p, &clips[0].1);
+        let right_hit = point_in_convex_polygon(p, &clips[1].1);
+
+        assert!(top_hit, "top clip should include near-corner top-band point");
+        assert!(
+            !right_hit,
+            "right clip should not steal near-corner top-band point"
+        );
+    }
+
+    #[test]
+    fn test_border_edge_clips_bottom_only_covers_near_corners() {
+        // bottom-only border: top=0, right=0, bottom=3, left=0
+        let clips = border_edge_clip_quads(0.0, 0.0, 100.0, 50.0, 0.0, 0.0, 3.0, 0.0);
+
+        assert_eq!(clips[0].0, 0.0, "top width should be 0");
+        assert_eq!(clips[1].0, 0.0, "right width should be 0");
+        assert_eq!(clips[2].0, 3.0, "bottom width should be 3");
+        assert_eq!(clips[3].0, 0.0, "left width should be 0");
+
+        // Bottom midpoint and near-corner points should stay in bottom clip.
+        let bottom_mid = (50.0, 50.0);
+        let bottom_left = (1.0, 49.0);
+        let bottom_right = (99.0, 49.0);
+        assert!(
+            point_in_convex_polygon(bottom_mid, &clips[2].1),
+            "bottom edge midpoint should be inside the bottom clip region",
+        );
+        assert!(
+            point_in_convex_polygon(bottom_left, &clips[2].1),
+            "bottom-left near-corner point should be inside the bottom clip region",
+        );
+        assert!(
+            point_in_convex_polygon(bottom_right, &clips[2].1),
+            "bottom-right near-corner point should be inside the bottom clip region",
+        );
+    }
+
+    #[test]
+    fn test_solid_border_edges_asymmetric_keeps_top_right_corner_covered() {
+        // Regression: with top=4 and right=1 on rounded corners, a point near
+        // the outer top-right arc should remain filled (no corner gap).
+        let pixels = render_single_command_to_pixels(
+            160,
+            100,
+            DrawCmd::BorderEdges(
+                20.0,
+                20.0,
+                100.0,
+                40.0,
+                8.0,
+                4.0,
+                1.0,
+                4.0,
+                1.0,
+                0x78C8A0FF,
+                BorderStyle::Solid,
+            ),
+        );
+
+        // Near top-right arc location inside the border band.
+        let corner_alpha = max_alpha_in_region(&pixels, 160, 116, 22, 117, 23);
+        assert!(
+            corner_alpha >= 96,
+            "expected top-right arc coverage alpha >= 96, got {}",
+            corner_alpha
+        );
+
+        // Ensure interior remains unfilled for border-only drawing.
+        let interior_alpha = max_alpha_in_region(&pixels, 160, 60, 38, 61, 39);
+        assert!(
+            interior_alpha <= 8,
+            "expected interior alpha <= 8, got {}",
+            interior_alpha
+        );
+    }
+
+    #[test]
+    fn test_all_border_styles_stay_inside_border_box() {
+        for style in [BorderStyle::Solid, BorderStyle::Dashed, BorderStyle::Dotted] {
+            let pixels = render_single_command_to_pixels(
+                180,
+                120,
+                DrawCmd::BorderEdges(
+                    20.0,
+                    20.0,
+                    100.0,
+                    40.0,
+                    8.0,
+                    4.0,
+                    1.0,
+                    4.0,
+                    1.0,
+                    0x78C8A0FF,
+                    style,
+                ),
+            );
+
+            let outside_right_alpha = max_alpha_in_region(&pixels, 180, 121, 24, 123, 56);
+            assert!(
+                outside_right_alpha <= 8,
+                "expected no paint outside right edge for {:?}, got alpha {}",
+                style,
+                outside_right_alpha
+            );
+
+            let outside_top_alpha = max_alpha_in_region(&pixels, 180, 24, 17, 116, 19);
+            assert!(
+                outside_top_alpha <= 8,
+                "expected no paint outside top edge for {:?}, got alpha {}",
+                style,
+                outside_top_alpha
+            );
+
+            let interior_alpha = max_alpha_in_region(&pixels, 180, 68, 36, 72, 40);
+            assert!(
+                interior_alpha <= 8,
+                "expected no interior fill for {:?}, got alpha {}",
+                style,
+                interior_alpha
+            );
+        }
+    }
 }
