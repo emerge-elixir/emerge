@@ -14,6 +14,7 @@ defmodule EmergeSkia.MixProject do
         extras: [
           "README.md",
           "guides/internals/architecture.md",
+          "guides/internals/feature-roadmap.md",
           "guides/internals/emrg-format.md",
           "guides/internals/events.md",
           "guides/internals/scrolling.md",
