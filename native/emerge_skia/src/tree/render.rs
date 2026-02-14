@@ -3,7 +3,8 @@
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 use super::attrs::{
-    Attrs, Background, BorderRadius, Color, Font, FontStyle, FontWeight, Padding, TextAlign,
+    Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, Font, FontStyle, FontWeight,
+    Padding, TextAlign,
 };
 use super::deserialize::decode_tree;
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
@@ -56,6 +57,26 @@ fn render_element(
         render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
     }
 
+    // Render outer box shadows before the background
+    if let Some(shadows) = &attrs.box_shadows {
+        for shadow in shadows {
+            if !shadow.inset {
+                commands.push(DrawCmd::Shadow(
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    shadow.offset_x as f32,
+                    shadow.offset_y as f32,
+                    shadow.blur as f32,
+                    shadow.size as f32,
+                    border_radius_uniform(radius),
+                    color_to_u32(&shadow.color),
+                ));
+            }
+        }
+    }
+
     if let Some(background) = &attrs.background {
         match background {
             Background::Color(color) => {
@@ -71,21 +92,58 @@ fn render_element(
                     color_to_u32(from),
                     color_to_u32(to),
                     *angle as f32,
+                    border_radius_uniform(radius),
                 ));
             }
         }
     }
 
-    if let (Some(border_width), Some(border_color)) = (attrs.border_width, &attrs.border_color)
-        && border_width > 0.0
+    // Render inset box shadows after the background
+    if let Some(shadows) = &attrs.box_shadows {
+        for shadow in shadows {
+            if shadow.inset {
+                commands.push(DrawCmd::InsetShadow(
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    shadow.offset_x as f32,
+                    shadow.offset_y as f32,
+                    shadow.blur as f32,
+                    shadow.size as f32,
+                    border_radius_uniform(radius),
+                    color_to_u32(&shadow.color),
+                ));
+            }
+        }
+    }
+
+    if let (Some(border_width), Some(border_color)) =
+        (attrs.border_width.as_ref(), &attrs.border_color)
     {
-        push_border_rect(
-            commands,
-            frame,
-            radius,
-            border_width as f32,
-            color_to_u32(border_color),
-        );
+        let color = color_to_u32(border_color);
+        let style = attrs.border_style.unwrap_or(BorderStyle::Solid);
+        match border_width {
+            BorderWidth::Uniform(w) if *w > 0.0 => {
+                push_border_rect(commands, frame, radius, *w as f32, color, style);
+            }
+            BorderWidth::Sides { top, right, bottom, left } => {
+                commands.push(DrawCmd::BorderEdges(
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    border_radius_uniform(radius),
+                    *top as f32,
+                    *right as f32,
+                    *bottom as f32,
+                    *left as f32,
+                    color,
+                    style,
+                ));
+            }
+            _ => {}
+        }
     }
 
     let clip_rect = overflow_clip_rect(frame, attrs);
@@ -586,6 +644,7 @@ fn push_border_rect(
     radius: Option<&BorderRadius>,
     border_width: f32,
     color: u32,
+    style: BorderStyle,
 ) {
     match radius {
         Some(BorderRadius::Uniform(value)) if *value > 0.0 => {
@@ -597,6 +656,7 @@ fn push_border_rect(
                 *value as f32,
                 border_width,
                 color,
+                style,
             ));
         }
         Some(BorderRadius::Corners { tl, tr, br, bl }) => {
@@ -611,6 +671,7 @@ fn push_border_rect(
                 *bl as f32,
                 border_width,
                 color,
+                style,
             ));
         }
         _ => {
@@ -622,6 +683,7 @@ fn push_border_rect(
                 0.0,
                 border_width,
                 color,
+                style,
             ));
         }
     }
@@ -781,6 +843,14 @@ fn shift_nearby_tree(tree: &mut ElementTree, offset_x: f32, offset_y: f32) {
             frame.x += offset_x;
             frame.y += offset_y;
         }
+    }
+}
+
+/// Extract a uniform radius value from a BorderRadius, or 0.0 if per-corner.
+fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
+    match radius {
+        Some(BorderRadius::Uniform(value)) => *value as f32,
+        _ => 0.0,
     }
 }
 
@@ -1429,6 +1499,135 @@ mod tests {
         tree
     }
 
+    // =========================================================================
+    // Border Feature Tests
+    // =========================================================================
+
+    #[test]
+    fn test_render_border_uniform_emits_border_cmd() {
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        attrs.border_color = Some(Color::Named("red".to_string()));
+        attrs.border_radius = Some(BorderRadius::Uniform(4.0));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::Border(_, _, _, _, 4.0, 2.0, 0xFF0000FF, BorderStyle::Solid)
+        )));
+    }
+
+    #[test]
+    fn test_render_border_edges_emits_border_edges_cmd() {
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        });
+        attrs.border_color = Some(Color::Named("red".to_string()));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::BorderEdges(_, _, _, _, _, 1.0, 2.0, 3.0, 4.0, 0xFF0000FF, BorderStyle::Solid)
+        )));
+    }
+
+    #[test]
+    fn test_render_border_dashed_passes_style() {
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        attrs.border_style = Some(BorderStyle::Dashed);
+        attrs.border_color = Some(Color::Named("white".to_string()));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::Border(_, _, _, _, _, 2.0, 0xFFFFFFFF, BorderStyle::Dashed)
+        )));
+    }
+
+    #[test]
+    fn test_render_shadow_emits_before_background() {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Named("white".to_string())));
+        attrs.box_shadows = Some(vec![super::super::attrs::BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]);
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let shadow_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::Shadow(..)))
+            .expect("shadow should exist");
+        let bg_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::Rect(..) | DrawCmd::RoundedRect(..)))
+            .expect("background should exist");
+
+        assert!(shadow_idx < bg_idx, "shadow should render before background");
+    }
+
+    #[test]
+    fn test_render_inset_shadow_emits_after_background() {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Named("white".to_string())));
+        attrs.box_shadows = Some(vec![super::super::attrs::BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 10.0,
+            size: 0.0,
+            color: Color::Named("black".to_string()),
+            inset: true,
+        }]);
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let bg_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::Rect(..) | DrawCmd::RoundedRect(..)))
+            .expect("background should exist");
+        let inset_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::InsetShadow(..)))
+            .expect("inset shadow should exist");
+
+        assert!(
+            inset_idx > bg_idx,
+            "inset shadow should render after background"
+        );
+    }
+
+    #[test]
+    fn test_render_no_border_without_color() {
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        // No border_color set
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert!(!commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
+    }
+
     #[test]
     fn test_render_paragraph_emits_text_commands() {
         use crate::tree::attrs::TextFragment;
@@ -1677,5 +1876,176 @@ mod tests {
             .expect("text command should exist");
 
         assert!(bg_idx < text_idx, "background should render before text");
+    }
+
+    #[test]
+    fn test_render_gradient_with_rounded_corners_emits_radius() {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Gradient {
+            from: Color::Rgb { r: 67, g: 97, b: 238 },
+            to: Color::Rgb { r: 114, g: 9, b: 183 },
+            angle: 135.0,
+        });
+        attrs.border_radius = Some(BorderRadius::Uniform(10.0));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let gradient = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::Gradient(..)))
+            .expect("gradient command should exist");
+
+        match gradient {
+            DrawCmd::Gradient(_, _, _, _, _, _, _, radius) => {
+                assert_eq!(*radius, 10.0, "gradient should carry the border radius");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_render_gradient_without_radius_emits_zero() {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Gradient {
+            from: Color::Rgb { r: 0, g: 0, b: 0 },
+            to: Color::Rgb { r: 255, g: 255, b: 255 },
+            angle: 90.0,
+        });
+        // No border_radius set
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let gradient = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::Gradient(..)))
+            .expect("gradient command should exist");
+
+        match gradient {
+            DrawCmd::Gradient(_, _, _, _, _, _, _, radius) => {
+                assert_eq!(*radius, 0.0, "gradient without border_radius should have radius 0");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_render_gradient_with_per_corner_radius_emits_zero() {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Gradient {
+            from: Color::Rgb { r: 0, g: 0, b: 0 },
+            to: Color::Rgb { r: 255, g: 255, b: 255 },
+            angle: 0.0,
+        });
+        attrs.border_radius = Some(BorderRadius::Corners {
+            tl: 10.0,
+            tr: 5.0,
+            br: 10.0,
+            bl: 5.0,
+        });
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let gradient = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::Gradient(..)))
+            .expect("gradient command should exist");
+
+        // Per-corner radius falls back to 0 via border_radius_uniform
+        match gradient {
+            DrawCmd::Gradient(_, _, _, _, _, _, _, radius) => {
+                assert_eq!(*radius, 0.0, "per-corner radius should fall back to 0 for gradient");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_render_border_edges_asymmetric_widths() {
+        // Regression: thick top/bottom, thin sides should emit correct per-edge widths
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Sides {
+            top: 4.0,
+            right: 1.0,
+            bottom: 4.0,
+            left: 1.0,
+        });
+        attrs.border_color = Some(Color::Rgb { r: 120, g: 200, b: 160 });
+        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let edges_cmd = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::BorderEdges(..)))
+            .expect("BorderEdges command should exist");
+
+        match edges_cmd {
+            DrawCmd::BorderEdges(_, _, _, _, radius, top, right, bottom, left, _, _) => {
+                assert_eq!(*top, 4.0);
+                assert_eq!(*right, 1.0);
+                assert_eq!(*bottom, 4.0);
+                assert_eq!(*left, 1.0);
+                assert_eq!(*radius, 8.0, "border radius should be passed through");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_render_border_edges_bottom_only() {
+        // Regression: bottom-only border should emit BorderEdges with zero for other sides
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Sides {
+            top: 0.0,
+            right: 0.0,
+            bottom: 3.0,
+            left: 0.0,
+        });
+        attrs.border_color = Some(Color::Rgb { r: 200, g: 180, b: 100 });
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let edges_cmd = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::BorderEdges(..)))
+            .expect("BorderEdges command should exist for bottom-only border");
+
+        match edges_cmd {
+            DrawCmd::BorderEdges(_, _, _, _, radius, top, right, bottom, left, _, _) => {
+                assert_eq!(*top, 0.0);
+                assert_eq!(*right, 0.0);
+                assert_eq!(*bottom, 3.0);
+                assert_eq!(*left, 0.0);
+                assert_eq!(*radius, 0.0, "no border radius set");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_render_border_edges_with_style() {
+        // Per-edge borders should forward the border style
+        let mut attrs = Attrs::default();
+        attrs.border_width = Some(BorderWidth::Sides {
+            top: 2.0,
+            right: 2.0,
+            bottom: 2.0,
+            left: 2.0,
+        });
+        attrs.border_color = Some(Color::Named("white".to_string()));
+        attrs.border_style = Some(BorderStyle::Dashed);
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::BorderEdges(_, _, _, _, _, 2.0, 2.0, 2.0, 2.0, 0xFFFFFFFF, BorderStyle::Dashed)
+        )));
     }
 }
