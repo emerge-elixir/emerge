@@ -90,6 +90,33 @@ pub enum BorderRadius {
     Corners { tl: f64, tr: f64, br: f64, bl: f64 },
 }
 
+/// Border width specification.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BorderWidth {
+    Uniform(f64),
+    Sides { top: f64, right: f64, bottom: f64, left: f64 },
+}
+
+/// Border style specification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BorderStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+/// Box shadow specification.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxShadow {
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub blur: f64,
+    pub size: f64,
+    pub color: Color,
+    pub inset: bool,
+}
+
 /// Font specification.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Font {
@@ -176,8 +203,10 @@ pub struct Attrs {
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
     pub border_radius: Option<BorderRadius>,
-    pub border_width: Option<f64>,
+    pub border_width: Option<BorderWidth>,
+    pub border_style: Option<BorderStyle>,
     pub border_color: Option<Color>,
+    pub box_shadows: Option<Vec<BoxShadow>>,
     pub font_size: Option<f64>,
     pub font_color: Option<Color>,
     pub font: Option<Font>,
@@ -301,6 +330,8 @@ const TAG_FONT_UNDERLINE: u8 = 47;
 const TAG_FONT_STRIKE: u8 = 48;
 const TAG_FONT_LETTER_SPACING: u8 = 49;
 const TAG_FONT_WORD_SPACING: u8 = 50;
+const TAG_BORDER_STYLE: u8 = 51;
+const TAG_BOX_SHADOW: u8 = 52;
 
 // =============================================================================
 // Decoder
@@ -404,7 +435,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_CLIP_X => attrs.clip_x = Some(cursor.read_bool()?),
         TAG_BACKGROUND => attrs.background = Some(decode_background(cursor)?),
         TAG_BORDER_RADIUS => attrs.border_radius = Some(decode_radius(cursor)?),
-        TAG_BORDER_WIDTH => attrs.border_width = Some(cursor.read_f64()?),
+        TAG_BORDER_WIDTH => attrs.border_width = Some(decode_border_width(cursor)?),
         TAG_BORDER_COLOR => attrs.border_color = Some(decode_color(cursor)?),
         TAG_FONT_SIZE => attrs.font_size = Some(cursor.read_f64()?),
         TAG_FONT_COLOR => attrs.font_color = Some(decode_color(cursor)?),
@@ -444,6 +475,8 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
         TAG_FONT_LETTER_SPACING => attrs.font_letter_spacing = Some(cursor.read_f64()?),
         TAG_FONT_WORD_SPACING => attrs.font_word_spacing = Some(cursor.read_f64()?),
+        TAG_BORDER_STYLE => attrs.border_style = Some(decode_border_style(cursor)?),
+        TAG_BOX_SHADOW => attrs.box_shadows = Some(decode_box_shadows(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -566,6 +599,59 @@ fn decode_radius(cursor: &mut AttrCursor) -> Result<BorderRadius, DecodeError> {
             variant
         ))),
     }
+}
+
+fn decode_border_width(cursor: &mut AttrCursor) -> Result<BorderWidth, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(BorderWidth::Uniform(cursor.read_f64()?)),
+        1 => {
+            let top = cursor.read_f64()?;
+            let right = cursor.read_f64()?;
+            let bottom = cursor.read_f64()?;
+            let left = cursor.read_f64()?;
+            Ok(BorderWidth::Sides { top, right, bottom, left })
+        }
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown border_width variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_border_style(cursor: &mut AttrCursor) -> Result<BorderStyle, DecodeError> {
+    let variant = cursor.read_u8()?;
+    match variant {
+        0 => Ok(BorderStyle::Solid),
+        1 => Ok(BorderStyle::Dashed),
+        2 => Ok(BorderStyle::Dotted),
+        _ => Err(DecodeError::InvalidStructure(format!(
+            "unknown border_style variant: {}",
+            variant
+        ))),
+    }
+}
+
+fn decode_box_shadows(cursor: &mut AttrCursor) -> Result<Vec<BoxShadow>, DecodeError> {
+    let count = cursor.read_u8()? as usize;
+    let mut shadows = Vec::with_capacity(count);
+    for _ in 0..count {
+        let offset_x = cursor.read_f64()?;
+        let offset_y = cursor.read_f64()?;
+        let blur = cursor.read_f64()?;
+        let size = cursor.read_f64()?;
+        let color = decode_color(cursor)?;
+        let inset = cursor.read_bool()?;
+        shadows.push(BoxShadow {
+            offset_x,
+            offset_y,
+            blur,
+            size,
+            color,
+            inset,
+        });
+    }
+    Ok(shadows)
 }
 
 fn decode_align_x(cursor: &mut AttrCursor) -> Result<AlignX, DecodeError> {
@@ -940,6 +1026,119 @@ mod tests {
         assert!(err
             .to_string()
             .contains("mouse_over supports decorative attrs only"));
+    }
+
+    #[test]
+    fn test_decode_border_width_uniform() {
+        // 1 attr, tag=14 (border_width), variant=0 (uniform), f64=3.0
+        let mut data = vec![0, 1, 14, 0];
+        data.extend_from_slice(&3.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.border_width, Some(BorderWidth::Uniform(3.0)));
+    }
+
+    #[test]
+    fn test_decode_border_width_sides() {
+        // 1 attr, tag=14 (border_width), variant=1 (sides)
+        let mut data = vec![0, 1, 14, 1];
+        data.extend_from_slice(&1.0_f64.to_be_bytes());
+        data.extend_from_slice(&2.0_f64.to_be_bytes());
+        data.extend_from_slice(&3.0_f64.to_be_bytes());
+        data.extend_from_slice(&4.0_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.border_width,
+            Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_decode_border_style_variants() {
+        // Solid: tag=51, variant=0
+        let data = [0, 1, 51, 0];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.border_style, Some(BorderStyle::Solid));
+
+        // Dashed: tag=51, variant=1
+        let data = [0, 1, 51, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.border_style, Some(BorderStyle::Dashed));
+
+        // Dotted: tag=51, variant=2
+        let data = [0, 1, 51, 2];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.border_style, Some(BorderStyle::Dotted));
+    }
+
+    #[test]
+    fn test_decode_box_shadows() {
+        // 1 attr, tag=52, count=1, shadow fields
+        let mut data = vec![0, 1, 52, 1]; // 1 attr, tag=52(box_shadow), count=1
+        data.extend_from_slice(&2.0_f64.to_be_bytes()); // offset_x
+        data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
+        data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
+        data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
+        // color: named "red" -> variant=2, len=3, "red"
+        data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
+        data.push(0); // inset=false
+
+        let attrs = decode_attrs(&data).unwrap();
+        let shadows = attrs.box_shadows.unwrap();
+        assert_eq!(shadows.len(), 1);
+        assert_eq!(shadows[0].offset_x, 2.0);
+        assert_eq!(shadows[0].offset_y, 3.0);
+        assert_eq!(shadows[0].blur, 8.0);
+        assert_eq!(shadows[0].size, 4.0);
+        assert_eq!(shadows[0].color, Color::Named("red".to_string()));
+        assert!(!shadows[0].inset);
+    }
+
+    #[test]
+    fn test_decode_box_shadows_multiple() {
+        let mut data = vec![0, 1, 52, 2]; // 1 attr, tag=52, count=2
+
+        // Shadow 1: outer shadow
+        data.extend_from_slice(&1.0_f64.to_be_bytes());
+        data.extend_from_slice(&1.0_f64.to_be_bytes());
+        data.extend_from_slice(&4.0_f64.to_be_bytes());
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&[0, 0, 0, 0]); // rgb black
+        data.push(0); // inset=false
+
+        // Shadow 2: inset shadow
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&10.0_f64.to_be_bytes());
+        data.extend_from_slice(&5.0_f64.to_be_bytes());
+        data.extend_from_slice(&[0, 0, 0, 255]); // rgb blue
+        data.push(1); // inset=true
+
+        let attrs = decode_attrs(&data).unwrap();
+        let shadows = attrs.box_shadows.unwrap();
+        assert_eq!(shadows.len(), 2);
+        assert!(!shadows[0].inset);
+        assert!(shadows[1].inset);
+        assert_eq!(shadows[1].size, 5.0);
+    }
+
+    #[test]
+    fn test_decode_box_shadow_inset() {
+        let mut data = vec![0, 1, 52, 1]; // 1 attr, tag=52, count=1
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&10.0_f64.to_be_bytes());
+        data.extend_from_slice(&0.0_f64.to_be_bytes());
+        data.extend_from_slice(&[2, 0, 5, b'b', b'l', b'a', b'c', b'k']); // named "black"
+        data.push(1); // inset=true
+
+        let attrs = decode_attrs(&data).unwrap();
+        let shadows = attrs.box_shadows.unwrap();
+        assert!(shadows[0].inset);
     }
 
     #[test]

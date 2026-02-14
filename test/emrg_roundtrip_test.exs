@@ -421,6 +421,47 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert text_child.type == :text
   end
 
+  test "EMRG roundtrip preserves new border features" do
+    tree =
+      el(
+        [
+          width({:px, 200.0}),
+          height({:px, 100.0}),
+          Emerge.UI.Border.width_each(1.0, 2.0, 3.0, 4.0),
+          Emerge.UI.Border.color(:white),
+          Emerge.UI.Border.dashed(),
+          Emerge.UI.Border.shadow(offset: {2, 3}, blur: 8, size: 4, color: :red),
+          Emerge.UI.Border.glow(:cyan, 3),
+          Emerge.UI.Background.color(:black)
+        ],
+        text("Border test")
+      )
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    normalized_decoded = normalize_tree(decoded)
+    normalized_assigned = normalize_tree(assigned)
+
+    assert normalized_decoded == normalized_assigned
+
+    # Verify specific attrs
+    assert decoded.attrs[:border_width] == {1.0, 2.0, 3.0, 4.0}
+    assert decoded.attrs[:border_style] == :dashed
+    assert is_list(decoded.attrs[:box_shadow])
+    assert length(decoded.attrs[:box_shadow]) == 2
+  end
+
   test "nearby element named colors are preserved" do
     # Test that named colors like :cyan are handled correctly
     tree =

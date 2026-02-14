@@ -370,8 +370,19 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),
         border_radius: attrs.border_radius.as_ref().map(|r| scale_border_radius(r, scale_f64)),
-        border_width: attrs.border_width.map(|w| w * scale_f64),
+        border_width: attrs.border_width.as_ref().map(|w| scale_border_width(w, scale_f64)),
+        border_style: attrs.border_style,
         border_color: attrs.border_color.clone(),
+        box_shadows: attrs.box_shadows.as_ref().map(|shadows| {
+            shadows.iter().map(|s| super::attrs::BoxShadow {
+                offset_x: s.offset_x * scale_f64,
+                offset_y: s.offset_y * scale_f64,
+                blur: s.blur * scale_f64,
+                size: s.size * scale_f64,
+                color: s.color.clone(),
+                inset: s.inset,
+            }).collect()
+        }),
         font_size: attrs.font_size.map(|s| s * scale_f64),
         font_color: attrs.font_color.clone(),
         font: attrs.font.clone(),
@@ -468,6 +479,20 @@ fn apply_mouse_over_styles(tree: &mut ElementTree) {
         if let Some(alpha) = mouse_over.alpha {
             element.attrs.alpha = Some(alpha);
         }
+    }
+}
+
+fn scale_border_width(width: &super::attrs::BorderWidth, scale: f64) -> super::attrs::BorderWidth {
+    use super::attrs::BorderWidth;
+
+    match width {
+        BorderWidth::Uniform(value) => BorderWidth::Uniform(*value * scale),
+        BorderWidth::Sides { top, right, bottom, left } => BorderWidth::Sides {
+            top: *top * scale,
+            right: *right * scale,
+            bottom: *bottom * scale,
+            left: *left * scale,
+        },
     }
 }
 
