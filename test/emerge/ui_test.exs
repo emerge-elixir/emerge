@@ -148,6 +148,80 @@ defmodule Emerge.UITest do
     assert length(Regex.scan(~r/attribute :align_x is set multiple times/, stderr)) == 1
   end
 
+  # ============================================
+  # Border.width_each
+  # ============================================
+
+  test "Border.width_each returns per-edge tuple" do
+    assert Emerge.UI.Border.width_each(1, 2, 3, 4) == {:border_width, {1, 2, 3, 4}}
+  end
+
+  test "Border.width_each collapses uniform values" do
+    assert Emerge.UI.Border.width_each(5, 5, 5, 5) == {:border_width, 5}
+  end
+
+  # ============================================
+  # Border styles
+  # ============================================
+
+  test "Border.solid returns solid style" do
+    assert Emerge.UI.Border.solid() == {:border_style, :solid}
+  end
+
+  test "Border.dashed returns dashed style" do
+    assert Emerge.UI.Border.dashed() == {:border_style, :dashed}
+  end
+
+  test "Border.dotted returns dotted style" do
+    assert Emerge.UI.Border.dotted() == {:border_style, :dotted}
+  end
+
+  # ============================================
+  # Border.shadow / inner_shadow / glow
+  # ============================================
+
+  test "Border.shadow with defaults" do
+    assert {:box_shadow, shadow} = Emerge.UI.Border.shadow()
+    assert shadow == %{offset_x: 0, offset_y: 0, size: 0, blur: 10, color: :black, inset: false}
+  end
+
+  test "Border.shadow with options" do
+    assert {:box_shadow, shadow} = Emerge.UI.Border.shadow(offset: {2, 3}, blur: 8, size: 4, color: :red)
+    assert shadow == %{offset_x: 2, offset_y: 3, size: 4, blur: 8, color: :red, inset: false}
+  end
+
+  test "Border.inner_shadow with defaults" do
+    assert {:box_shadow, shadow} = Emerge.UI.Border.inner_shadow()
+    assert shadow.inset == true
+    assert shadow.offset_x == 0
+    assert shadow.offset_y == 0
+  end
+
+  test "Border.glow returns shadow with zero offset and doubled blur" do
+    assert {:box_shadow, shadow} = Emerge.UI.Border.glow(:blue, 5)
+    assert shadow == %{offset_x: 0, offset_y: 0, size: 5, blur: 10.0, color: :blue, inset: false}
+  end
+
+  # ============================================
+  # Shadow accumulation
+  # ============================================
+
+  test "multiple shadows accumulate into list" do
+    element =
+      el(
+        [
+          Emerge.UI.Border.shadow(offset: {1, 1}, blur: 4, color: :black),
+          Emerge.UI.Border.shadow(offset: {2, 2}, blur: 8, color: :red)
+        ],
+        text("shadows")
+      )
+
+    shadows = element.attrs.box_shadow
+    assert length(shadows) == 2
+    assert Enum.at(shadows, 0).color == :black
+    assert Enum.at(shadows, 1).color == :red
+  end
+
   test "text_column default width and height overrides do not emit warnings" do
     stderr =
       capture_io(:stderr, fn ->

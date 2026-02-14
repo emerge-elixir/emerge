@@ -43,7 +43,9 @@ defmodule Emerge.AttrCodecTest do
       move_y: -8.0,
       rotate: 45.0,
       scale: 1.25,
-      alpha: 0.5
+      alpha: 0.5,
+      border_style: :dashed,
+      box_shadow: [%{offset_x: 2, offset_y: 3, blur: 8, size: 4, color: :red, inset: false}]
     }
 
     encoded = AttrCodec.encode_attrs(attrs)
@@ -133,6 +135,73 @@ defmodule Emerge.AttrCodecTest do
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  # ============================================
+  # Per-edge border_width round-trip
+  # ============================================
+
+  test "encode/decode per-edge border_width" do
+    attrs = %{border_width: {2, 4, 6, 8}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.border_width == {2.0, 4.0, 6.0, 8.0}
+  end
+
+  # ============================================
+  # border_style round-trip
+  # ============================================
+
+  test "encode/decode border_style dashed" do
+    attrs = %{border_style: :dashed}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.border_style == :dashed
+  end
+
+  test "encode/decode border_style dotted" do
+    attrs = %{border_style: :dotted}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.border_style == :dotted
+  end
+
+  test "encode/decode border_style solid" do
+    attrs = %{border_style: :solid}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.border_style == :solid
+  end
+
+  # ============================================
+  # box_shadow round-trip
+  # ============================================
+
+  test "encode/decode single box_shadow" do
+    shadow = %{offset_x: 2, offset_y: 3, blur: 8, size: 4, color: :red, inset: false}
+    attrs = %{box_shadow: [shadow]}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert [decoded_shadow] = decoded.box_shadow
+    assert decoded_shadow.offset_x == 2.0
+    assert decoded_shadow.offset_y == 3.0
+    assert decoded_shadow.blur == 8.0
+    assert decoded_shadow.size == 4.0
+    assert decoded_shadow.color == :red
+    assert decoded_shadow.inset == false
+  end
+
+  test "encode/decode multiple box_shadows preserves order" do
+    shadow1 = %{offset_x: 1, offset_y: 1, blur: 4, size: 0, color: :black, inset: false}
+    shadow2 = %{offset_x: 0, offset_y: 0, blur: 10, size: 5, color: :blue, inset: true}
+    attrs = %{box_shadow: [shadow1, shadow2]}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert [d1, d2] = decoded.box_shadow
+    assert d1.color == :black
+    assert d1.inset == false
+    assert d2.color == :blue
+    assert d2.inset == true
   end
 
   test "mouse_over rejects non-decorative attrs" do

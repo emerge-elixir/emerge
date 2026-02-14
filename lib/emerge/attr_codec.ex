@@ -54,7 +54,9 @@ defmodule Emerge.AttrCodec do
     font_underline: 47,
     font_strike: 48,
     font_letter_spacing: 49,
-    font_word_spacing: 50
+    font_word_spacing: 50,
+    border_style: 51,
+    box_shadow: 52
   }
 
   @mouse_over_decorative_keys MapSet.new([
@@ -121,7 +123,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:clip_x, value), do: encode_bool(value)
   defp encode_value(:background, value), do: encode_background(value)
   defp encode_value(:border_radius, value), do: encode_radius(value)
-  defp encode_value(:border_width, value), do: encode_f64(value)
+  defp encode_value(:border_width, value), do: encode_border_width(value)
   defp encode_value(:border_color, value), do: encode_color(value)
   defp encode_value(:font_size, value), do: encode_f64(value)
   defp encode_value(:font_color, value), do: encode_color(value)
@@ -157,6 +159,8 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:font_strike, value), do: encode_bool(value)
   defp encode_value(:font_letter_spacing, value), do: encode_f64(value)
   defp encode_value(:font_word_spacing, value), do: encode_f64(value)
+  defp encode_value(:border_style, value), do: encode_border_style(value)
+  defp encode_value(:box_shadow, value), do: encode_box_shadow(value)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -171,7 +175,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:clip_x, rest), do: decode_bool(rest)
   defp decode_value(:background, rest), do: decode_background(rest)
   defp decode_value(:border_radius, rest), do: decode_radius(rest)
-  defp decode_value(:border_width, rest), do: decode_f64(rest)
+  defp decode_value(:border_width, rest), do: decode_border_width(rest)
   defp decode_value(:border_color, rest), do: decode_color(rest)
   defp decode_value(:font_size, rest), do: decode_f64(rest)
   defp decode_value(:font_color, rest), do: decode_color(rest)
@@ -207,6 +211,8 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:font_strike, rest), do: decode_bool(rest)
   defp decode_value(:font_letter_spacing, rest), do: decode_f64(rest)
   defp decode_value(:font_word_spacing, rest), do: decode_f64(rest)
+  defp decode_value(:border_style, rest), do: decode_border_style(rest)
+  defp decode_value(:box_shadow, rest), do: decode_box_shadow(rest)
 
   defp encode_mouse_over(value) when is_map(value) do
     validate_mouse_over_attrs!(value)
@@ -371,6 +377,64 @@ defmodule Emerge.AttrCodec do
     {br, rest} = decode_f64(rest)
     {bl, rest} = decode_f64(rest)
     {{tl, tr, br, bl}, rest}
+  end
+
+  defp encode_border_width(value) when is_number(value) do
+    <<0, encode_f64(value)::binary>>
+  end
+
+  defp encode_border_width({top, right, bottom, left}) do
+    <<1, encode_f64(top)::binary, encode_f64(right)::binary, encode_f64(bottom)::binary,
+      encode_f64(left)::binary>>
+  end
+
+  defp decode_border_width(<<0, rest::binary>>) do
+    decode_f64(rest)
+  end
+
+  defp decode_border_width(<<1, rest::binary>>) do
+    {top, rest} = decode_f64(rest)
+    {right, rest} = decode_f64(rest)
+    {bottom, rest} = decode_f64(rest)
+    {left, rest} = decode_f64(rest)
+    {{top, right, bottom, left}, rest}
+  end
+
+  defp encode_border_style(:solid), do: <<0>>
+  defp encode_border_style(:dashed), do: <<1>>
+  defp encode_border_style(:dotted), do: <<2>>
+
+  defp decode_border_style(<<0, rest::binary>>), do: {:solid, rest}
+  defp decode_border_style(<<1, rest::binary>>), do: {:dashed, rest}
+  defp decode_border_style(<<2, rest::binary>>), do: {:dotted, rest}
+
+  defp encode_box_shadow(shadows) when is_list(shadows) do
+    count = length(shadows)
+    encoded =
+      Enum.map(shadows, fn %{offset_x: ox, offset_y: oy, size: size, blur: blur, color: color, inset: inset} ->
+        <<encode_f64(ox)::binary, encode_f64(oy)::binary, encode_f64(blur)::binary,
+          encode_f64(size)::binary, encode_color(color)::binary, encode_bool(inset)::binary>>
+      end)
+
+    [<<count::unsigned-8>> | encoded] |> IO.iodata_to_binary()
+  end
+
+  defp decode_box_shadow(<<count::unsigned-8, rest::binary>>) do
+    decode_box_shadow_items(rest, count, [])
+  end
+
+  defp decode_box_shadow_items(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_box_shadow_items(rest, count, acc) do
+    {ox, rest} = decode_f64(rest)
+    {oy, rest} = decode_f64(rest)
+    {blur, rest} = decode_f64(rest)
+    {size, rest} = decode_f64(rest)
+    {color, rest} = decode_color(rest)
+    {inset, rest} = decode_bool(rest)
+
+    shadow = %{offset_x: ox, offset_y: oy, blur: blur, size: size, color: color, inset: inset}
+    decode_box_shadow_items(rest, count - 1, [shadow | acc])
   end
 
   defp encode_align_x(:left), do: <<0>>
