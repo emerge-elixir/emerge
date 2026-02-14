@@ -34,7 +34,7 @@ Patches are encoded into a compact binary stream:
 - Ids are stored as `term_to_binary` with a length prefix.
 - `insert_subtree` embeds a full subtree serialization.
 - Runtime-only attributes (e.g., `scroll_x`, `scroll_y`) are stripped from `:set_attrs`.
-- Attribute values use the typed v2 attribute block encodings described in `EMRG_FORMAT.md`.
+- Attribute values use typed v3 attribute block encodings described in `emrg-format.md`.
 
 ## Full Tree Serialization
 `Emerge.Serialization.encode_tree/1` produces:
@@ -54,3 +54,5 @@ Decoding rebuilds the tree by id references.
    - emit binary patches
 3. Send patches to the Rust side for incremental updates.
 4. Use `Emerge.encode_full/2` for the initial upload.
+5. AssetManager may trigger additional async rerenders as pending image sources
+   transition to ready/failed states.

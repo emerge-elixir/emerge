@@ -34,8 +34,8 @@ Notes:
 
 ## Event Registry
 
-After each tree upload, patch, or scroll-driven update, Rust rebuilds the event
-registry from the current tree.
+After each tree upload, patch, scroll-driven update, or asset-state update,
+Rust rebuilds the event registry from the current tree.
 
 Each node stores:
 
@@ -93,6 +93,13 @@ block listeners behind them.
 - Scrollbar hover emits axis-specific hover updates for thumb styling.
 - After scroll changes, layout/render output and event registry are refreshed to
   keep hit testing aligned with visible content.
+
+## Asset-Triggered Refreshes
+
+- Image assets load asynchronously in Rust (`AssetManager` actor).
+- Asset completion/failure sends `TreeMsg::AssetStateChanged`.
+- Tree actor reruns layout/render and pushes a fresh event registry so hit bounds
+  stay aligned with final image geometry.
 
 ## Elixir Responsibilities
 

@@ -37,6 +37,7 @@ lib.rs (NIF entry, resources, registration)
     ├── input.rs (InputEvent + mask filter + encoder)
     ├── events.rs (EventProcessor, event registry, hit-test, event/scroll dispatch)
     │   └── events/scrollbar.rs (scrollbar interaction state machine + hit helpers)
+    ├── assets.rs (AssetManager actor, async loading, manifest/runtime-path resolution)
     │
     └── tree/
         ├── mod.rs (public exports)
@@ -49,6 +50,15 @@ lib.rs (NIF entry, resources, registration)
         ├── scrollbar.rs (scrollbar geometry/metrics shared by render + events)
         └── serialize.rs (ElementTree → EMRG binary)
 ```
+
+## Actor Data Flow
+
+- Event actor handles raw input, hit testing, and forwards tree updates (`TreeMsg`).
+- Tree actor owns tree mutation, layout, render command generation, and event registry updates.
+- AssetManager actor loads unresolved image sources asynchronously and notifies tree actor with
+  `TreeMsg::AssetStateChanged`.
+- Render backends consume `RenderMsg::Commands` and keep requesting redraws while
+  `render_state.animate` is true (loading placeholders).
 
 ## Scaling Architecture
 
