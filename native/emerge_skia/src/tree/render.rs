@@ -134,43 +134,21 @@ fn render_element(
         }
     }
 
-    if let (Some(border_width), Some(border_color)) =
-        (attrs.border_width.as_ref(), &attrs.border_color)
-    {
-        let color = color_to_u32(border_color);
-        let style = attrs.border_style.unwrap_or(BorderStyle::Solid);
-        match border_width {
-            BorderWidth::Uniform(w) if *w > 0.0 => {
-                push_border_rect(commands, frame, radius, *w as f32, color, style);
-            }
-            BorderWidth::Sides {
-                top,
-                right,
-                bottom,
-                left,
-            } => {
-                commands.push(DrawCmd::BorderEdges(
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    border_radius_uniform(radius),
-                    *top as f32,
-                    *right as f32,
-                    *bottom as f32,
-                    *left as f32,
-                    color,
-                    style,
-                ));
-            }
-            _ => {}
-        }
+    // When border_radius + border_width + overflow clip are all present, use
+    // nested clips: outer clip at element bounds (outer radius) shapes the
+    // element, inner clip at content bounds (inner radius) clips children.
+    // The border is drawn between inner pop and outer pop, covering the inner
+    // clip's AA fringe.  No SaveLayerAlpha needed.
+    let clip = overflow_clip(frame, attrs);
+    let compositing = clip.is_some() && needs_compositing_clip(attrs);
+
+    // Push outer shape clip when compositing (covers inner clip AA)
+    if compositing {
+        push_border_clip(commands, frame, attrs);
     }
 
-    let clip_rect = overflow_clip_rect(frame, attrs);
-    if let Some((x, y, w, h)) = clip_rect {
-        commands.push(DrawCmd::PushClip(x, y, w, h));
-    }
+    // Push inner content clip
+    push_overflow_clip(commands, clip.as_ref(), compositing);
 
     if element.kind == ElementKind::Text
         && let Some(content) = attrs.content.as_deref()
@@ -203,12 +181,11 @@ fn render_element(
             .or(inherited.font_word_spacing)
             .unwrap_or(0.0);
         let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
-        let (padding_left, padding_top) = text_padding(attrs.padding.as_ref());
-        let (padding_right, _padding_bottom) = match attrs.padding.as_ref() {
-            Some(Padding::Uniform(v)) => (*v as f32, *v as f32),
-            Some(Padding::Sides { right, bottom, .. }) => (*right as f32, *bottom as f32),
-            None => (0.0, 0.0),
-        };
+        let padding = resolved_padding(attrs.padding.as_ref());
+        let border = resolved_border_width(attrs.border_width.as_ref());
+        let inset_left = padding.left + border.left;
+        let inset_top = padding.top + border.top;
+        let inset_right = padding.right + border.right;
         let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
         let text_width = measure_text_width_with_font(
             content,
@@ -219,17 +196,17 @@ fn render_element(
             letter_spacing,
             word_spacing,
         );
-        let content_width = frame.width - padding_left - padding_right;
+        let content_width = frame.width - inset_left - inset_right;
         let text_align = attrs
             .text_align
             .or(inherited.text_align)
             .unwrap_or_default();
         let text_x = match text_align {
-            TextAlign::Left => frame.x + padding_left,
-            TextAlign::Center => frame.x + padding_left + (content_width - text_width) / 2.0,
-            TextAlign::Right => frame.x + frame.width - padding_right - text_width,
+            TextAlign::Left => frame.x + inset_left,
+            TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
+            TextAlign::Right => frame.x + frame.width - inset_right - text_width,
         };
-        let baseline_y = frame.y + padding_top + ascent;
+        let baseline_y = frame.y + inset_top + ascent;
 
         if letter_spacing == 0.0 && word_spacing == 0.0 {
             commands.push(DrawCmd::TextWithFont(
@@ -291,24 +268,14 @@ fn render_element(
         && let Some(source) = attrs.image_src.as_ref()
     {
         let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
-        let (padding_left, padding_top, padding_right, padding_bottom) =
-            match attrs.padding.as_ref() {
-                Some(Padding::Uniform(value)) => {
-                    (*value as f32, *value as f32, *value as f32, *value as f32)
-                }
-                Some(Padding::Sides {
-                    top,
-                    right,
-                    bottom,
-                    left,
-                }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
-                None => (0.0, 0.0, 0.0, 0.0),
-            };
-
-        let draw_x = frame.x + padding_left;
-        let draw_y = frame.y + padding_top;
-        let draw_w = (frame.width - padding_left - padding_right).max(0.0);
-        let draw_h = (frame.height - padding_top - padding_bottom).max(0.0);
+        let padding = resolved_padding(attrs.padding.as_ref());
+        let border = resolved_border_width(attrs.border_width.as_ref());
+        let draw_x = frame.x + padding.left + border.left;
+        let draw_y = frame.y + padding.top + border.top;
+        let draw_w =
+            (frame.width - padding.left - padding.right - border.left - border.right).max(0.0);
+        let draw_h =
+            (frame.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
 
         push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
     }
@@ -368,11 +335,17 @@ fn render_element(
         }
 
         // Skip normal child rendering for paragraphs
-        if clip_rect.is_some() {
+        if clip.is_some() {
             commands.push(DrawCmd::PopClip);
         }
 
-        if push_border_clip(commands, frame, attrs) {
+        // Border between inner and outer clip to cover AA fringe
+        push_border_commands(commands, frame, attrs);
+
+        if compositing {
+            push_scrollbar_thumbs(commands, frame, attrs);
+            commands.push(DrawCmd::PopClip); // pop outer compositing clip
+        } else if push_border_clip(commands, frame, attrs) {
             push_scrollbar_thumbs(commands, frame, attrs);
             commands.push(DrawCmd::PopClip);
         } else {
@@ -418,11 +391,17 @@ fn render_element(
         commands.push(DrawCmd::Restore);
     }
 
-    if clip_rect.is_some() {
+    if clip.is_some() {
         commands.push(DrawCmd::PopClip);
     }
 
-    if push_border_clip(commands, frame, attrs) {
+    // Border between inner and outer clip to cover AA fringe
+    push_border_commands(commands, frame, attrs);
+
+    if compositing {
+        push_scrollbar_thumbs(commands, frame, attrs);
+        commands.push(DrawCmd::PopClip); // pop outer compositing clip
+    } else if push_border_clip(commands, frame, attrs) {
         push_scrollbar_thumbs(commands, frame, attrs);
         commands.push(DrawCmd::PopClip);
     } else {
@@ -512,7 +491,75 @@ fn named_color(name: &str) -> u32 {
     }
 }
 
-fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32, f32, f32, f32)> {
+#[derive(Clone, Copy, Debug, Default)]
+struct ResolvedInsets {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+fn resolved_padding(padding: Option<&Padding>) -> ResolvedInsets {
+    match padding {
+        Some(Padding::Uniform(value)) => {
+            let value = *value as f32;
+            ResolvedInsets {
+                top: value,
+                right: value,
+                bottom: value,
+                left: value,
+            }
+        }
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => ResolvedInsets {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => ResolvedInsets::default(),
+    }
+}
+
+fn resolved_border_width(border_width: Option<&BorderWidth>) -> ResolvedInsets {
+    match border_width {
+        Some(BorderWidth::Uniform(value)) => {
+            let value = *value as f32;
+            ResolvedInsets {
+                top: value,
+                right: value,
+                bottom: value,
+                left: value,
+            }
+        }
+        Some(BorderWidth::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => ResolvedInsets {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => ResolvedInsets::default(),
+    }
+}
+
+/// Describes the type of overflow clip to apply.
+#[derive(Clone, Debug, PartialEq)]
+enum OverflowClip {
+    Rect(f32, f32, f32, f32),
+    Rounded(f32, f32, f32, f32, f32),
+    RoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
+}
+
+fn overflow_clip(frame: Frame, attrs: &super::attrs::Attrs) -> Option<OverflowClip> {
     let clip_x = attrs.clip_x.unwrap_or(false) || attrs.scrollbar_x.unwrap_or(false);
     let clip_y = attrs.clip_y.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
 
@@ -520,23 +567,18 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
         return None;
     }
 
-    let (padding_left, padding_top, padding_right, padding_bottom) = match attrs.padding.as_ref() {
-        Some(Padding::Uniform(value)) => {
-            (*value as f32, *value as f32, *value as f32, *value as f32)
-        }
-        Some(Padding::Sides {
-            top,
-            right,
-            bottom,
-            left,
-        }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
-        None => (0.0, 0.0, 0.0, 0.0),
-    };
+    let padding = resolved_padding(attrs.padding.as_ref());
+    let border = resolved_border_width(attrs.border_width.as_ref());
 
-    let content_x = frame.x + padding_left;
-    let content_y = frame.y + padding_top;
-    let content_width = frame.width - padding_left - padding_right;
-    let content_height = frame.height - padding_top - padding_bottom;
+    let inset_left = padding.left + border.left;
+    let inset_top = padding.top + border.top;
+    let inset_right = padding.right + border.right;
+    let inset_bottom = padding.bottom + border.bottom;
+
+    let content_x = frame.x + inset_left;
+    let content_y = frame.y + inset_top;
+    let content_width = frame.width - inset_left - inset_right;
+    let content_height = frame.height - inset_top - inset_bottom;
 
     let (x, width) = if clip_x {
         (content_x, content_width)
@@ -549,7 +591,60 @@ fn overflow_clip_rect(frame: Frame, attrs: &super::attrs::Attrs) -> Option<(f32,
         (frame.y, frame.height)
     };
 
-    Some((x, y, width.max(0.0), height.max(0.0)))
+    let w = width.max(0.0);
+    let h = height.max(0.0);
+
+    // When border-radius is set, use a rounded clip with inner radius reduced by border width
+    let max_border = border.left.max(border.top).max(border.right).max(border.bottom);
+    match attrs.border_radius.as_ref() {
+        Some(BorderRadius::Uniform(r)) if *r > 0.0 => {
+            let inner_r = (*r as f32 - max_border).max(0.0);
+            if inner_r > 0.0 {
+                Some(OverflowClip::Rounded(x, y, w, h, inner_r))
+            } else {
+                Some(OverflowClip::Rect(x, y, w, h))
+            }
+        }
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            let inner_tl = (*tl as f32 - max_border).max(0.0);
+            let inner_tr = (*tr as f32 - max_border).max(0.0);
+            let inner_br = (*br as f32 - max_border).max(0.0);
+            let inner_bl = (*bl as f32 - max_border).max(0.0);
+            if inner_tl > 0.0 || inner_tr > 0.0 || inner_br > 0.0 || inner_bl > 0.0 {
+                Some(OverflowClip::RoundedCorners(
+                    x, y, w, h, inner_tl, inner_tr, inner_br, inner_bl,
+                ))
+            } else {
+                Some(OverflowClip::Rect(x, y, w, h))
+            }
+        }
+        _ => Some(OverflowClip::Rect(x, y, w, h)),
+    }
+}
+
+/// Returns true when the element needs an outer compositing clip to eliminate
+/// the hairline gap between the inner overflow clip and the border stroke.
+/// This happens when both border_radius and border_width are present — the two
+/// independent AA boundaries at the same geometric position create a seam.
+fn needs_compositing_clip(attrs: &super::attrs::Attrs) -> bool {
+    let has_border_radius = match attrs.border_radius.as_ref() {
+        Some(BorderRadius::Uniform(r)) => *r > 0.0,
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            *tl > 0.0 || *tr > 0.0 || *br > 0.0 || *bl > 0.0
+        }
+        None => false,
+    };
+    let has_border_width = match attrs.border_width.as_ref() {
+        Some(BorderWidth::Uniform(w)) => *w > 0.0,
+        Some(BorderWidth::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => *top > 0.0 || *right > 0.0 || *bottom > 0.0 || *left > 0.0,
+        None => false,
+    };
+    has_border_radius && has_border_width
 }
 
 fn push_border_clip(
@@ -582,6 +677,41 @@ fn push_border_clip(
             true
         }
         _ => false,
+    }
+}
+
+fn push_overflow_clip(
+    commands: &mut Vec<DrawCmd>,
+    clip: Option<&OverflowClip>,
+    hard: bool,
+) {
+    match clip {
+        Some(OverflowClip::Rect(x, y, w, h)) => {
+            if hard {
+                commands.push(DrawCmd::PushClipHard(*x, *y, *w, *h));
+            } else {
+                commands.push(DrawCmd::PushClip(*x, *y, *w, *h));
+            }
+        }
+        Some(OverflowClip::Rounded(x, y, w, h, r)) => {
+            if hard {
+                commands.push(DrawCmd::PushClipRoundedHard(*x, *y, *w, *h, *r));
+            } else {
+                commands.push(DrawCmd::PushClipRounded(*x, *y, *w, *h, *r));
+            }
+        }
+        Some(OverflowClip::RoundedCorners(x, y, w, h, tl, tr, br, bl)) => {
+            if hard {
+                commands.push(DrawCmd::PushClipRoundedCornersHard(
+                    *x, *y, *w, *h, *tl, *tr, *br, *bl,
+                ));
+            } else {
+                commands.push(DrawCmd::PushClipRoundedCorners(
+                    *x, *y, *w, *h, *tl, *tr, *br, *bl,
+                ));
+            }
+        }
+        None => {}
     }
 }
 
@@ -768,12 +898,44 @@ fn push_border_rect(
     }
 }
 
-/// Get text padding from pre-scaled attrs.
-fn text_padding(padding: Option<&Padding>) -> (f32, f32) {
-    match padding {
-        Some(Padding::Uniform(value)) => (*value as f32, *value as f32),
-        Some(Padding::Sides { top, left, .. }) => (*left as f32, *top as f32),
-        None => (0.0, 0.0),
+/// Push border draw commands for an element.
+fn push_border_commands(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &super::attrs::Attrs,
+) {
+    let radius = attrs.border_radius.as_ref();
+    if let (Some(border_width), Some(border_color)) =
+        (attrs.border_width.as_ref(), &attrs.border_color)
+    {
+        let color = color_to_u32(border_color);
+        let style = attrs.border_style.unwrap_or(BorderStyle::Solid);
+        match border_width {
+            BorderWidth::Uniform(w) if *w > 0.0 => {
+                push_border_rect(commands, frame, radius, *w as f32, color, style);
+            }
+            BorderWidth::Sides {
+                top,
+                right,
+                bottom,
+                left,
+            } => {
+                commands.push(DrawCmd::BorderEdges(
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    border_radius_uniform(radius),
+                    *top as f32,
+                    *right as f32,
+                    *bottom as f32,
+                    *left as f32,
+                    color,
+                    style,
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1108,6 +1270,44 @@ mod tests {
     }
 
     #[test]
+    fn test_render_text_insets_by_padding_and_border() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("Inset".to_string());
+        attrs.font_size = Some(16.0);
+        attrs.padding = Some(Padding::Uniform(4.0));
+        attrs.border_width = Some(BorderWidth::Uniform(3.0));
+
+        let tree = build_text_tree_with_frame(
+            attrs,
+            Frame {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 60.0,
+                content_width: 200.0,
+                content_height: 60.0,
+            },
+        );
+
+        let commands = render_tree(&tree);
+        let (ascent, _) = text_metrics_with_font(16.0, "default", 400, false);
+
+        let text_cmd = commands
+            .iter()
+            .find(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+            .expect("text command should exist");
+
+        match text_cmd {
+            DrawCmd::TextWithFont(x, y, content, _, _, _, _, _) => {
+                assert_eq!(*x, 17.0, "x should include 4px padding + 3px border");
+                assert_eq!(*y, 27.0 + ascent, "baseline should include top insets");
+                assert_eq!(content, "Inset");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
     fn test_nearby_position_calculations() {
         // Test Above: should be centered horizontally, positioned above
         let parent = Frame {
@@ -1383,7 +1583,7 @@ mod tests {
             commands,
             vec![
                 DrawCmd::RoundedRect(0.0, 0.0, 100.0, 50.0, 8.0, 0x000000FF),
-                DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
+                DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
                 DrawCmd::PopClip,
                 DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
                 DrawCmd::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR),
@@ -1418,7 +1618,7 @@ mod tests {
             commands,
             vec![
                 DrawCmd::RoundedRectCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0, 0x000000FF),
-                DrawCmd::PushClip(0.0, 0.0, 80.0, 40.0),
+                DrawCmd::PushClipRoundedCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0),
                 DrawCmd::PopClip,
                 DrawCmd::PushClipRoundedCorners(0.0, 0.0, 80.0, 40.0, 4.0, 6.0, 12.0, 8.0),
                 DrawCmd::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR),
@@ -1536,8 +1736,8 @@ mod tests {
         };
 
         assert_eq!(
-            overflow_clip_rect(frame, &attrs),
-            Some((10.0, 10.0, 80.0, 30.0))
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rect(10.0, 10.0, 80.0, 30.0))
         );
     }
 
@@ -1556,8 +1756,8 @@ mod tests {
         };
 
         assert_eq!(
-            overflow_clip_rect(frame, &attrs),
-            Some((10.0, 0.0, 80.0, 50.0))
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rect(10.0, 0.0, 80.0, 50.0))
         );
     }
 
@@ -1576,8 +1776,8 @@ mod tests {
         };
 
         assert_eq!(
-            overflow_clip_rect(frame, &attrs),
-            Some((10.0, 0.0, 80.0, 50.0))
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rect(10.0, 0.0, 80.0, 50.0))
         );
     }
 
@@ -1593,7 +1793,105 @@ mod tests {
             content_height: 50.0,
         };
 
-        assert_eq!(overflow_clip_rect(frame, &attrs), None);
+        assert_eq!(overflow_clip(frame, &attrs), None);
+    }
+
+    #[test]
+    fn test_clip_with_border_radius_uses_rounded_clip() {
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_radius = Some(BorderRadius::Uniform(10.0));
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        // Inner radius = 10 - 2 = 8, clip rect inset by border (2 each side)
+        assert_eq!(
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rounded(2.0, 2.0, 96.0, 46.0, 8.0))
+        );
+    }
+
+    #[test]
+    fn test_clip_with_border_radius_corners_uses_rounded_corners_clip() {
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_radius = Some(BorderRadius::Corners {
+            tl: 12.0,
+            tr: 8.0,
+            br: 4.0,
+            bl: 16.0,
+        });
+        attrs.border_width = Some(BorderWidth::Uniform(3.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        // Inner radii = outer - 3 (border), clamped to 0
+        assert_eq!(
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::RoundedCorners(
+                3.0, 3.0, 94.0, 44.0, 9.0, 5.0, 1.0, 13.0
+            ))
+        );
+    }
+
+    #[test]
+    fn test_clip_with_border_radius_falls_back_to_rect_when_radius_consumed() {
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_radius = Some(BorderRadius::Uniform(3.0));
+        attrs.border_width = Some(BorderWidth::Uniform(5.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        // Inner radius = 3 - 5 = 0 (clamped), so falls back to rect
+        assert_eq!(
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rect(5.0, 5.0, 90.0, 40.0))
+        );
+    }
+
+    #[test]
+    fn test_clip_with_border_radius_no_border_width() {
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+        let frame = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        };
+
+        // No border width, so inner radius = outer radius = 8
+        assert_eq!(
+            overflow_clip(frame, &attrs),
+            Some(OverflowClip::Rounded(0.0, 0.0, 100.0, 50.0, 8.0))
+        );
     }
 
     // =========================================================================
@@ -2225,5 +2523,149 @@ mod tests {
                 BorderStyle::Dashed
             )
         )));
+    }
+
+    #[test]
+    fn test_border_renders_between_inner_and_outer_clip() {
+        // When border_radius + border_width + overflow clip are all present,
+        // the command sequence should be:
+        //   outer PushClipRounded → inner PushClipRoundedHard → PopClip(inner) → Border → PopClip(outer)
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        attrs.border_color = Some(Color::Named("red".to_string()));
+        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        // Find all relevant command indices
+        let clip_pushes: Vec<usize> = commands
+            .iter()
+            .enumerate()
+            .filter(|(_, cmd)| {
+                matches!(
+                    cmd,
+                    DrawCmd::PushClipRounded(..)
+                        | DrawCmd::PushClipRoundedCorners(..)
+                        | DrawCmd::PushClipRoundedHard(..)
+                        | DrawCmd::PushClipRoundedCornersHard(..)
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let clip_pops: Vec<usize> = commands
+            .iter()
+            .enumerate()
+            .filter(|(_, cmd)| matches!(cmd, DrawCmd::PopClip))
+            .map(|(i, _)| i)
+            .collect();
+        let border_idx = commands
+            .iter()
+            .position(|cmd| matches!(cmd, DrawCmd::Border(..)))
+            .expect("Border should exist");
+
+        // Should have exactly 2 clip pushes (outer + inner) and 2 pops
+        assert_eq!(clip_pushes.len(), 2, "expected outer + inner clip pushes");
+        assert_eq!(clip_pops.len(), 2, "expected inner + outer clip pops");
+
+        // Outer clip is the element bounds with outer radius (AA on)
+        match &commands[clip_pushes[0]] {
+            DrawCmd::PushClipRounded(x, y, w, h, r) => {
+                assert_eq!((*x, *y, *w, *h, *r), (0.0, 0.0, 100.0, 50.0, 8.0));
+            }
+            _ => panic!("outer clip should be PushClipRounded"),
+        }
+
+        // Inner clip is content bounds with inner radius (8 - 2 = 6), hard clipped
+        match &commands[clip_pushes[1]] {
+            DrawCmd::PushClipRoundedHard(x, y, w, h, r) => {
+                assert_eq!((*x, *y, *w, *h, *r), (2.0, 2.0, 96.0, 46.0, 6.0));
+            }
+            _ => panic!("inner clip should be PushClipRoundedHard"),
+        }
+
+        // Border must be between inner pop and outer pop
+        assert!(
+            border_idx > clip_pops[0],
+            "border ({border_idx}) must render after inner clip pop ({})",
+            clip_pops[0]
+        );
+        assert!(
+            border_idx < clip_pops[1],
+            "border ({border_idx}) must render before outer clip pop ({})",
+            clip_pops[1]
+        );
+    }
+
+    #[test]
+    fn test_no_compositing_clip_without_border_width() {
+        // Element with border_radius but no border_width → needs_compositing_clip is false
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+        // No border_width
+
+        assert!(
+            !needs_compositing_clip(&attrs),
+            "should not need compositing clip without border_width"
+        );
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        // First rounded clip should be the inner clip (at element bounds since no border inset),
+        // NOT an outer compositing clip followed by an inner clip.
+        let first_clip = commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    DrawCmd::PushClipRounded(..) | DrawCmd::PushClipRoundedCorners(..)
+                )
+            })
+            .expect("should have at least one rounded clip");
+
+        match first_clip {
+            DrawCmd::PushClipRounded(x, y, w, h, r) => {
+                // Inner clip with no border inset = element bounds, radius 8
+                assert_eq!((*x, *y, *w, *h, *r), (0.0, 0.0, 100.0, 50.0, 8.0));
+            }
+            _ => panic!("expected PushClipRounded"),
+        }
+    }
+
+    #[test]
+    fn test_no_compositing_clip_without_border_radius() {
+        // Element with border_width but no border_radius → no outer clip pushed
+        let mut attrs = Attrs::default();
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        attrs.border_color = Some(Color::Named("red".to_string()));
+        // No border_radius
+
+        let tree = build_tree_with_attrs(attrs);
+        let commands = render_tree(&tree);
+
+        let clip_push_count = commands
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    DrawCmd::PushClip(..)
+                        | DrawCmd::PushClipRounded(..)
+                        | DrawCmd::PushClipRoundedCorners(..)
+                )
+            })
+            .count();
+
+        // Only the inner clip (Rect type since no radius), no outer compositing clip
+        assert_eq!(
+            clip_push_count, 1,
+            "should have only inner clip, no outer compositing clip"
+        );
     }
 }
