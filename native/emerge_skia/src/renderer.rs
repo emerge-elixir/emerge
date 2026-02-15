@@ -97,6 +97,9 @@ pub enum DrawCmd {
     PushClip(f32, f32, f32, f32),
     PushClipRounded(f32, f32, f32, f32, f32),
     PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
+    PushClipHard(f32, f32, f32, f32),
+    PushClipRoundedHard(f32, f32, f32, f32, f32),
+    PushClipRoundedCornersHard(f32, f32, f32, f32, f32, f32, f32, f32),
     PopClip,
     Translate(f32, f32),
     Rotate(f32),
@@ -542,6 +545,8 @@ impl Renderer {
 
         let typeface = get_default_typeface();
         let typeface = typeface.as_ref();
+        let mut clip_stack: Vec<bool> = Vec::new();
+        let mut hard_clip_depth: usize = 0;
 
         for cmd in &state.commands {
             match cmd {
@@ -783,7 +788,8 @@ impl Renderer {
                 }
 
                 DrawCmd::Image(x, y, w, h, image_id, fit) => {
-                    draw_image_with_fit(canvas, *x, *y, *w, *h, image_id, *fit);
+                    let inside_hard_clip = hard_clip_depth > 0;
+                    draw_image_with_fit(canvas, *x, *y, *w, *h, image_id, *fit, inside_hard_clip);
                 }
 
                 DrawCmd::ImageLoading(x, y, w, h) => {
@@ -798,6 +804,7 @@ impl Renderer {
                     canvas.save();
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
+                    clip_stack.push(false);
                 }
 
                 DrawCmd::PushClipRounded(x, y, w, h, radius) => {
@@ -805,6 +812,7 @@ impl Renderer {
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     let rrect = RRect::new_rect_xy(rect, *radius, *radius);
                     canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+                    clip_stack.push(false);
                 }
 
                 DrawCmd::PushClipRoundedCorners(x, y, w, h, tl, tr, br, bl) => {
@@ -818,10 +826,53 @@ impl Renderer {
                     ];
                     let rrect = RRect::new_rect_radii(rect, &radii);
                     canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+                    clip_stack.push(false);
+                }
+
+                DrawCmd::PushClipHard(x, y, w, h) => {
+                    canvas.save();
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let expanded = snap_outset_rect_to_device(canvas, rect);
+                    canvas.clip_rect(expanded, skia_safe::ClipOp::Intersect, false);
+                    clip_stack.push(true);
+                    hard_clip_depth += 1;
+                }
+
+                DrawCmd::PushClipRoundedHard(x, y, w, h, radius) => {
+                    canvas.save();
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let expanded = snap_outset_rect_to_device(canvas, rect);
+                    let (outset_x, outset_y) = rect_outset_amount(rect, expanded);
+                    let radius = (*radius + outset_x.max(outset_y)).max(0.0);
+                    let rrect = RRect::new_rect_xy(expanded, radius, radius);
+                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, false);
+                    clip_stack.push(true);
+                    hard_clip_depth += 1;
+                }
+
+                DrawCmd::PushClipRoundedCornersHard(x, y, w, h, tl, tr, br, bl) => {
+                    canvas.save();
+                    let rect = Rect::from_xywh(*x, *y, *w, *h);
+                    let expanded = snap_outset_rect_to_device(canvas, rect);
+                    let (outset_x, outset_y) = rect_outset_amount(rect, expanded);
+                    let dr = outset_x.max(outset_y);
+                    let radii = [
+                        Point::new(*tl + dr, *tl + dr),
+                        Point::new(*tr + dr, *tr + dr),
+                        Point::new(*br + dr, *br + dr),
+                        Point::new(*bl + dr, *bl + dr),
+                    ];
+                    let rrect = RRect::new_rect_radii(expanded, &radii);
+                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, false);
+                    clip_stack.push(true);
+                    hard_clip_depth += 1;
                 }
 
                 DrawCmd::PopClip => {
                     canvas.restore();
+                    if clip_stack.pop().unwrap_or(false) {
+                        hard_clip_depth = hard_clip_depth.saturating_sub(1);
+                    }
                 }
 
                 DrawCmd::Translate(x, y) => {
@@ -898,6 +949,7 @@ fn draw_image_with_fit(
     h: f32,
     image_id: &str,
     fit: ImageFit,
+    inside_hard_clip: bool,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -914,19 +966,76 @@ fn draw_image_with_fit(
     };
 
     let mut paint = Paint::default();
-    paint.set_anti_alias(true);
+    paint.set_anti_alias(false);
     let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
 
     let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
     let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
-
+    let dst_rect = if inside_hard_clip && matches!(fit, ImageFit::Cover) {
+        snap_outset_rect_to_device(canvas, dst_rect)
+    } else {
+        dst_rect
+    };
     canvas.draw_image_rect_with_sampling_options(
         &cached.image,
-        Some((&src_rect, SrcRectConstraint::Fast)),
+        Some((&src_rect, SrcRectConstraint::Strict)),
         dst_rect,
         sampling,
         &paint,
     );
+}
+
+fn snap_outset_rect_to_device(canvas: &skia_safe::Canvas, rect: Rect) -> Rect {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return rect;
+    }
+
+    let matrix = canvas.local_to_device_as_3x3();
+    let (device_rect, _) = matrix.map_rect(rect);
+    if !device_rect.left().is_finite()
+        || !device_rect.top().is_finite()
+        || !device_rect.right().is_finite()
+        || !device_rect.bottom().is_finite()
+    {
+        return rect;
+    }
+
+    let snapped_device = Rect::from_ltrb(
+        device_rect.left().floor(),
+        device_rect.top().floor(),
+        device_rect.right().ceil(),
+        device_rect.bottom().ceil(),
+    );
+
+    let Some(inv) = matrix.invert() else {
+        return rect;
+    };
+
+    let (mapped_back, _) = inv.map_rect(snapped_device);
+    if !mapped_back.left().is_finite()
+        || !mapped_back.top().is_finite()
+        || !mapped_back.right().is_finite()
+        || !mapped_back.bottom().is_finite()
+    {
+        return rect;
+    }
+
+    Rect::from_ltrb(
+        mapped_back.left().min(rect.left()),
+        mapped_back.top().min(rect.top()),
+        mapped_back.right().max(rect.right()),
+        mapped_back.bottom().max(rect.bottom()),
+    )
+}
+
+fn rect_outset_amount(original: Rect, expanded: Rect) -> (f32, f32) {
+    let outset_x = (original.left() - expanded.left())
+        .max(expanded.right() - original.right())
+        .max(0.0);
+    let outset_y = (original.top() - expanded.top())
+        .max(expanded.bottom() - original.bottom())
+        .max(0.0);
+    (outset_x, outset_y)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1385,7 +1494,7 @@ mod tests {
         true
     }
 
-    fn render_single_command_to_pixels(width: u32, height: u32, cmd: DrawCmd) -> Vec<u8> {
+    fn render_commands_to_pixels(width: u32, height: u32, commands: Vec<DrawCmd>) -> Vec<u8> {
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
             skia_safe::ColorType::RGBA8888,
@@ -1397,7 +1506,7 @@ mod tests {
 
         let mut renderer = Renderer::from_surface(surface);
         let state = RenderState {
-            commands: vec![cmd],
+            commands,
             clear_color: Color::TRANSPARENT,
             render_version: 1,
             animate: false,
@@ -1412,6 +1521,44 @@ mod tests {
             (0, 0),
         );
         pixels
+    }
+
+    fn render_single_command_to_pixels(width: u32, height: u32, cmd: DrawCmd) -> Vec<u8> {
+        render_commands_to_pixels(width, height, vec![cmd])
+    }
+
+    fn rgba_at(pixels: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let idx = ((y * width + x) * 4) as usize;
+        (
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        )
+    }
+
+    fn cache_test_image(id: &str, width: u32, height: u32, rgba_pixels: Vec<u8>) {
+        let info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let data = Data::new_copy(&rgba_pixels);
+        let image = skia_safe::images::raster_from_data(&info, data, (width * 4) as usize)
+            .expect("test image should be created from RGBA pixels");
+
+        let mut cache = get_image_cache()
+            .lock()
+            .expect("image cache lock for test image insertion");
+        cache.insert(
+            id.to_string(),
+            Arc::new(CachedImage {
+                image,
+                width,
+                height,
+            }),
+        );
     }
 
     fn max_alpha_in_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> u8 {
@@ -1433,6 +1580,55 @@ mod tests {
             expected,
             actual
         );
+    }
+
+    fn point_in_rounded_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radius: f32) -> bool {
+        if w <= 0.0 || h <= 0.0 {
+            return false;
+        }
+
+        let r = radius.max(0.0).min((w * 0.5).min(h * 0.5));
+        let left = x;
+        let right = x + w;
+        let top = y;
+        let bottom = y + h;
+
+        if px < left || px > right || py < top || py > bottom {
+            return false;
+        }
+
+        if r <= 0.0 {
+            return true;
+        }
+
+        if (px >= left + r && px <= right - r) || (py >= top + r && py <= bottom - r) {
+            return true;
+        }
+
+        let cx = if px < left + r { left + r } else { right - r };
+        let cy = if py < top + r { top + r } else { bottom - r };
+        let dx = px - cx;
+        let dy = py - cy;
+        dx * dx + dy * dy <= r * r
+    }
+
+    fn point_in_inset_rounded_rect(
+        px: f32,
+        py: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        inset: f32,
+    ) -> bool {
+        let inset = inset.max(0.0);
+        let inset_x = x + inset;
+        let inset_y = y + inset;
+        let inset_w = (w - inset * 2.0).max(0.0);
+        let inset_h = (h - inset * 2.0).max(0.0);
+        let inset_r = (radius - inset).max(0.0);
+        point_in_rounded_rect(px, py, inset_x, inset_y, inset_w, inset_h, inset_r)
     }
 
     #[test]
@@ -1518,6 +1714,191 @@ mod tests {
             compute_image_fit_rects(640.0, 420.0, f32::NAN, 0.0, 180.0, 180.0, ImageFit::Cover)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_cover_fit_avoids_edge_bleed_from_outside_crop() {
+        let image_id = "test_cover_edge_bleed";
+
+        // 8x4 image: red | green-center | blue
+        let mut src = vec![0u8; 8 * 4 * 4];
+        for y in 0..4u32 {
+            for x in 0..8u32 {
+                let i = ((y * 8 + x) * 4) as usize;
+                let (r, g, b) = if x < 2 {
+                    (255, 0, 0)
+                } else if x < 6 {
+                    (0, 220, 0)
+                } else {
+                    (0, 0, 255)
+                };
+                src[i] = r;
+                src[i + 1] = g;
+                src[i + 2] = b;
+                src[i + 3] = 255;
+            }
+        }
+
+        cache_test_image(image_id, 8, 4, src);
+
+        // Square destination forces cover crop to center 4 columns (green-only).
+        let pixels = render_commands_to_pixels(
+            32,
+            32,
+            vec![DrawCmd::Image(
+                8.0,
+                8.0,
+                15.0,
+                15.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        for (x, y) in &[(8, 14), (8, 16), (8, 18), (22, 14), (22, 16), (22, 18)] {
+            let (r, g, b, a) = rgba_at(&pixels, 32, *x, *y);
+            assert!(
+                g >= 150,
+                "expected green edge pixel at ({}, {}) without crop bleed, got rgba({}, {}, {}, {})",
+                x,
+                y,
+                r,
+                g,
+                b,
+                a
+            );
+            assert!(
+                r <= 90 && b <= 90,
+                "expected low red/blue crop bleed at ({}, {}), got rgba({}, {}, {}, {})",
+                x,
+                y,
+                r,
+                g,
+                b,
+                a
+            );
+        }
+
+        remove_image(image_id);
+    }
+
+    #[test]
+    fn test_fractional_scale_cover_border_has_no_dark_inner_hairline() {
+        let image_id = "test_fractional_cover_hairline";
+
+        // Opaque, high-contrast source color to make dark seams visible.
+        let mut src = vec![0u8; 24 * 16 * 4];
+        for px in src.chunks_exact_mut(4) {
+            px[0] = 36;
+            px[1] = 216;
+            px[2] = 72;
+            px[3] = 255;
+        }
+        cache_test_image(image_id, 24, 16, src);
+
+        // Fractional geometry mirrors a 1.5x-scaled layout.
+        // Choose values that keep the inner clip on half-pixel boundaries.
+        let outer_x: f32 = 12.0;
+        let outer_y: f32 = 8.0;
+        let outer_w: f32 = 54.0;
+        let outer_h: f32 = 38.0;
+        let border: f32 = 1.5;
+        let radius: f32 = 9.0;
+
+        let inner_x = outer_x + border;
+        let inner_y = outer_y + border;
+        let inner_w = outer_w - border * 2.0;
+        let inner_h = outer_h - border * 2.0;
+        let inner_r = (radius - border).max(0.0);
+
+        let render_scene = |background_color: u32| {
+            render_commands_to_pixels(
+                80,
+                60,
+                vec![
+                    DrawCmd::RoundedRect(outer_x, outer_y, outer_w, outer_h, radius, background_color),
+                    DrawCmd::PushClipRounded(outer_x, outer_y, outer_w, outer_h, radius),
+                    DrawCmd::PushClipRoundedHard(inner_x, inner_y, inner_w, inner_h, inner_r),
+                    DrawCmd::Image(
+                        inner_x,
+                        inner_y,
+                        inner_w,
+                        inner_h,
+                        image_id.to_string(),
+                        ImageFit::Cover,
+                    ),
+                    DrawCmd::PopClip,
+                    DrawCmd::Border(
+                        outer_x,
+                        outer_y,
+                        outer_w,
+                        outer_h,
+                        radius,
+                        border,
+                        0xD6DCECDD,
+                        BorderStyle::Solid,
+                    ),
+                    DrawCmd::PopClip,
+                ],
+            )
+        };
+
+        let dark_bg_pixels = render_scene(0x05070BFF);
+        let bright_bg_pixels = render_scene(0xF5E87AFF);
+
+        let mut band_count = 0usize;
+        let mut changed_count = 0usize;
+        let mut max_channel_diff = 0u8;
+
+        for y in 0..60u32 {
+            for x in 0..80u32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+
+                // Only inspect a thin band *inside* the inner clip edge.
+                let in_inner_near_edge =
+                    point_in_inset_rounded_rect(
+                        px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 0.05,
+                    );
+                let in_inner_deep =
+                    point_in_inset_rounded_rect(
+                        px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
+                    );
+
+                if !(in_inner_near_edge && !in_inner_deep) {
+                    continue;
+                }
+
+                let (dr, dg, db, _da) = rgba_at(&dark_bg_pixels, 80, x, y);
+                let (br, bg, bb, _ba) = rgba_at(&bright_bg_pixels, 80, x, y);
+
+                let d_r = dr.abs_diff(br);
+                let d_g = dg.abs_diff(bg);
+                let d_b = db.abs_diff(bb);
+                let local_max = d_r.max(d_g).max(d_b);
+                max_channel_diff = max_channel_diff.max(local_max);
+
+                band_count += 1;
+                if local_max > 8 {
+                    changed_count += 1;
+                }
+            }
+        }
+
+        assert!(band_count > 0, "expected non-empty inner edge band");
+        assert!(
+            max_channel_diff <= 8,
+            "expected inner edge pixels to be background-invariant (no hairline leak), max channel diff was {}",
+            max_channel_diff
+        );
+        assert!(
+            changed_count <= 2,
+            "expected <=2 significantly changed inner-edge pixels, got {} of {}",
+            changed_count,
+            band_count
+        );
+
+        remove_image(image_id);
     }
 
     #[test]
