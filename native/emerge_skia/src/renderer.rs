@@ -909,56 +909,104 @@ fn draw_image_with_fit(
 
     let src_w = cached.width as f32;
     let src_h = cached.height as f32;
-    if src_w <= 0.0 || src_h <= 0.0 {
+    let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, fit) else {
         return;
-    }
+    };
 
-    let target = Rect::from_xywh(x, y, w, h);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
 
+    let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
+    let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
+
+    canvas.draw_image_rect_with_sampling_options(
+        &cached.image,
+        Some((&src_rect, SrcRectConstraint::Fast)),
+        dst_rect,
+        sampling,
+        &paint,
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ImageFitRects {
+    src_x: f32,
+    src_y: f32,
+    src_w: f32,
+    src_h: f32,
+    dst_x: f32,
+    dst_y: f32,
+    dst_w: f32,
+    dst_h: f32,
+}
+
+fn compute_image_fit_rects(
+    src_w: f32,
+    src_h: f32,
+    dst_x: f32,
+    dst_y: f32,
+    dst_w: f32,
+    dst_h: f32,
+    fit: ImageFit,
+) -> Option<ImageFitRects> {
+    let values = [src_w, src_h, dst_x, dst_y, dst_w, dst_h];
+    if values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+
+    if src_w <= 0.0 || src_h <= 0.0 || dst_w <= 0.0 || dst_h <= 0.0 {
+        return None;
+    }
+
     match fit {
         ImageFit::Contain => {
-            let scale = (w / src_w).min(h / src_h);
-            let draw_w = src_w * scale;
-            let draw_h = src_h * scale;
-            let draw_x = x + (w - draw_w) * 0.5;
-            let draw_y = y + (h - draw_h) * 0.5;
-            let draw_rect = Rect::from_xywh(draw_x, draw_y, draw_w, draw_h);
+            let scale = (dst_w / src_w).min(dst_h / src_h);
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
 
-            canvas.draw_image_rect_with_sampling_options(
-                &cached.image,
-                Some((
-                    &Rect::from_xywh(0.0, 0.0, src_w, src_h),
-                    SrcRectConstraint::Fast,
-                )),
-                draw_rect,
-                sampling,
-                &paint,
-            );
+            let draw_w = (src_w * scale).clamp(0.0, dst_w);
+            let draw_h = (src_h * scale).clamp(0.0, dst_h);
+            let draw_x = dst_x + (dst_w - draw_w) * 0.5;
+            let draw_y = dst_y + (dst_h - draw_h) * 0.5;
+
+            Some(ImageFitRects {
+                src_x: 0.0,
+                src_y: 0.0,
+                src_w,
+                src_h,
+                dst_x: draw_x,
+                dst_y: draw_y,
+                dst_w: draw_w,
+                dst_h: draw_h,
+            })
         }
         ImageFit::Cover => {
-            let scale = (w / src_w).max(h / src_h);
-            let draw_w = src_w * scale;
-            let draw_h = src_h * scale;
-            let draw_x = x + (w - draw_w) * 0.5;
-            let draw_y = y + (h - draw_h) * 0.5;
-            let draw_rect = Rect::from_xywh(draw_x, draw_y, draw_w, draw_h);
+            let scale = (dst_w / src_w).max(dst_h / src_h);
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
 
-            canvas.save();
-            canvas.clip_rect(target, skia_safe::ClipOp::Intersect, true);
-            canvas.draw_image_rect_with_sampling_options(
-                &cached.image,
-                Some((
-                    &Rect::from_xywh(0.0, 0.0, src_w, src_h),
-                    SrcRectConstraint::Fast,
-                )),
-                draw_rect,
-                sampling,
-                &paint,
-            );
-            canvas.restore();
+            let crop_w = (dst_w / scale).clamp(0.0, src_w);
+            let crop_h = (dst_h / scale).clamp(0.0, src_h);
+            if crop_w <= 0.0 || crop_h <= 0.0 {
+                return None;
+            }
+
+            let crop_x = ((src_w - crop_w) * 0.5).clamp(0.0, src_w - crop_w);
+            let crop_y = ((src_h - crop_h) * 0.5).clamp(0.0, src_h - crop_h);
+
+            Some(ImageFitRects {
+                src_x: crop_x,
+                src_y: crop_y,
+                src_w: crop_w,
+                src_h: crop_h,
+                dst_x,
+                dst_y,
+                dst_w,
+                dst_h,
+            })
         }
     }
 }
@@ -1375,6 +1423,101 @@ mod tests {
             }
         }
         max_alpha
+    }
+
+    fn assert_close(actual: f32, expected: f32, label: &str) {
+        assert!(
+            approx_eq(actual, expected),
+            "{} expected {:.6}, got {:.6}",
+            label,
+            expected,
+            actual
+        );
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_contain_wide_frame() {
+        let rects =
+            compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 280.0, 120.0, ImageFit::Contain)
+                .expect("contain fit rects");
+
+        assert_close(rects.src_x, 0.0, "src_x");
+        assert_close(rects.src_y, 0.0, "src_y");
+        assert_close(rects.src_w, 640.0, "src_w");
+        assert_close(rects.src_h, 420.0, "src_h");
+        assert_close(rects.dst_w, 182.85715, "dst_w");
+        assert_close(rects.dst_h, 120.0, "dst_h");
+        assert_close(rects.dst_x, 48.571426, "dst_x");
+        assert_close(rects.dst_y, 0.0, "dst_y");
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_cover_wide_frame() {
+        let rects = compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 280.0, 120.0, ImageFit::Cover)
+            .expect("cover fit rects");
+
+        assert_close(rects.src_x, 0.0, "src_x");
+        assert_close(rects.src_y, 72.85715, "src_y");
+        assert_close(rects.src_w, 640.0, "src_w");
+        assert_close(rects.src_h, 274.2857, "src_h");
+        assert_close(rects.dst_x, 0.0, "dst_x");
+        assert_close(rects.dst_y, 0.0, "dst_y");
+        assert_close(rects.dst_w, 280.0, "dst_w");
+        assert_close(rects.dst_h, 120.0, "dst_h");
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_contain_tall_frame() {
+        let rects =
+            compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 140.0, 240.0, ImageFit::Contain)
+                .expect("contain fit rects");
+
+        assert_close(rects.dst_x, 0.0, "dst_x");
+        assert_close(rects.dst_y, 74.0625, "dst_y");
+        assert_close(rects.dst_w, 140.0, "dst_w");
+        assert_close(rects.dst_h, 91.875, "dst_h");
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_cover_tall_frame() {
+        let rects = compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 140.0, 240.0, ImageFit::Cover)
+            .expect("cover fit rects");
+
+        assert_close(rects.src_x, 197.5, "src_x");
+        assert_close(rects.src_y, 0.0, "src_y");
+        assert_close(rects.src_w, 245.0, "src_w");
+        assert_close(rects.src_h, 420.0, "src_h");
+        assert_close(rects.dst_w, 140.0, "dst_w");
+        assert_close(rects.dst_h, 240.0, "dst_h");
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_cover_square_frame() {
+        let rects = compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 180.0, 180.0, ImageFit::Cover)
+            .expect("cover fit rects");
+
+        assert_close(rects.src_x, 110.0, "src_x");
+        assert_close(rects.src_y, 0.0, "src_y");
+        assert_close(rects.src_w, 420.0, "src_w");
+        assert_close(rects.src_h, 420.0, "src_h");
+        assert_close(rects.dst_w, 180.0, "dst_w");
+        assert_close(rects.dst_h, 180.0, "dst_h");
+    }
+
+    #[test]
+    fn test_compute_image_fit_rects_rejects_invalid_dimensions() {
+        assert!(
+            compute_image_fit_rects(0.0, 420.0, 0.0, 0.0, 180.0, 180.0, ImageFit::Contain)
+                .is_none()
+        );
+        assert!(
+            compute_image_fit_rects(640.0, 420.0, 0.0, 0.0, 0.0, 180.0, ImageFit::Contain)
+                .is_none()
+        );
+        assert!(
+            compute_image_fit_rects(640.0, 420.0, f32::NAN, 0.0, 180.0, 180.0, ImageFit::Cover)
+                .is_none()
+        );
     }
 
     #[test]
