@@ -6,8 +6,8 @@
 //! 2. Resolution (top-down): Assign frames with constraints
 
 use super::attrs::{
-    AlignX, AlignY, Attrs, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs, Padding,
-    TextAlign, TextFragment, preserve_runtime_scroll_attrs,
+    AlignX, AlignY, Attrs, BorderWidth, Color, Font, FontStyle, FontWeight, Length,
+    MouseOverAttrs, Padding, TextAlign, TextFragment, preserve_runtime_scroll_attrs,
 };
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use crate::assets;
@@ -645,6 +645,11 @@ fn measure_element<M: TextMeasurer>(
     // Read from pre-scaled attrs
     let attrs = &element.attrs;
     let padding = get_padding(attrs.padding.as_ref());
+    let border = get_border_inset(attrs.border_width.as_ref());
+    let inset_left = padding.left + border.left;
+    let inset_right = padding.right + border.right;
+    let inset_top = padding.top + border.top;
+    let inset_bottom = padding.bottom + border.bottom;
     let spacing_x = spacing_x(attrs);
     let spacing_y = spacing_y(attrs);
 
@@ -680,8 +685,8 @@ fn measure_element<M: TextMeasurer>(
             let (_width, text_height) =
                 measurer.measure_with_font(content, font_size, &family, weight, italic);
             IntrinsicSize {
-                width: text_width + padding.left + padding.right,
-                height: text_height + padding.top + padding.bottom,
+                width: text_width + inset_left + inset_right,
+                height: text_height + inset_top + inset_bottom,
             }
         }
 
@@ -700,31 +705,31 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), image_width as f32)
-                    + padding.left
-                    + padding.right,
+                    + inset_left
+                    + inset_right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), image_height as f32)
-                    + padding.top
-                    + padding.bottom,
+                    + inset_top
+                    + inset_bottom,
             }
         }
 
         ElementKind::El | ElementKind::None => {
-            // Single child container: intrinsic = max child size + padding
+            // Single child container: intrinsic = max child size + padding + border
             let max_child_width = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
             let max_child_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), max_child_width)
-                    + padding.left
-                    + padding.right,
+                    + inset_left
+                    + inset_right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_child_height)
-                    + padding.top
-                    + padding.bottom,
+                    + inset_top
+                    + inset_bottom,
             }
         }
 
         ElementKind::Row | ElementKind::WrappedRow => {
-            // Row: sum widths + spacing + padding
+            // Row: sum widths + spacing + padding + border
             let total_spacing = if child_sizes.len() > 1 {
                 spacing_x * (child_sizes.len() - 1) as f32
             } else {
@@ -735,16 +740,16 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width + total_spacing)
-                    + padding.left
-                    + padding.right,
+                    + inset_left
+                    + inset_right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + padding.top
-                    + padding.bottom,
+                    + inset_top
+                    + inset_bottom,
             }
         }
 
         ElementKind::Column | ElementKind::TextColumn => {
-            // Column: sum heights + spacing + padding
+            // Column: sum heights + spacing + padding + border
             let total_spacing = if child_sizes.len() > 1 {
                 spacing_y * (child_sizes.len() - 1) as f32
             } else {
@@ -755,11 +760,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), max_width)
-                    + padding.left
-                    + padding.right,
+                    + inset_left
+                    + inset_right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), sum_height + total_spacing)
-                    + padding.top
-                    + padding.bottom,
+                    + inset_top
+                    + inset_bottom,
             }
         }
 
@@ -770,11 +775,11 @@ fn measure_element<M: TextMeasurer>(
 
             IntrinsicSize {
                 width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width)
-                    + padding.left
-                    + padding.right,
+                    + inset_left
+                    + inset_right,
                 height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + padding.top
-                    + padding.bottom,
+                    + inset_top
+                    + inset_bottom,
             }
         }
     };
@@ -846,6 +851,7 @@ fn resolve_element<M: TextMeasurer>(
     let element_context = inherited.merge_with_attrs(&attrs);
 
     let padding = get_padding(attrs.padding.as_ref());
+    let border = get_border_inset(attrs.border_width.as_ref());
     let spacing_x = spacing_x(&attrs);
     let spacing_y = spacing_y(&attrs);
     let align_x = attrs.align_x.unwrap_or_default();
@@ -917,11 +923,13 @@ fn resolve_element<M: TextMeasurer>(
         });
     }
 
-    // Content area for children
-    let content_x = x + padding.left;
-    let content_y = y + padding.top;
-    let content_width = (width - padding.left - padding.right).max(0.0);
-    let content_height = (height - padding.top - padding.bottom).max(0.0);
+    // Content area for children (inset by both padding and border)
+    let content_x = x + padding.left + border.left;
+    let content_y = y + padding.top + border.top;
+    let content_width =
+        (width - padding.left - padding.right - border.left - border.right).max(0.0);
+    let content_height =
+        (height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
 
     // Resolve children based on element type
 
@@ -948,19 +956,23 @@ fn resolve_element<M: TextMeasurer>(
                 );
                 // Expand frame if content exceeds initial estimate (e.g., paragraph wrapping)
                 if actual_ch > content_height && !is_scrollable {
-                    let new_height = actual_ch + padding.top + padding.bottom;
+                    let new_height =
+                        actual_ch + padding.top + padding.bottom + border.top + border.bottom;
                     if let Some(element) = tree.get_mut(id)
                         && let Some(ref mut frame) = element.frame
                     {
                         frame.height = new_height;
                         frame.content_height = new_height;
-                        frame.content_width = actual_cw + padding.left + padding.right;
+                        frame.content_width =
+                            actual_cw + padding.left + padding.right + border.left + border.right;
                     }
                 } else if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
-                    frame.content_width = actual_cw + padding.left + padding.right;
-                    frame.content_height = actual_ch + padding.top + padding.bottom;
+                    frame.content_width =
+                        actual_cw + padding.left + padding.right + border.left + border.right;
+                    frame.content_height =
+                        actual_ch + padding.top + padding.bottom + border.top + border.bottom;
                 }
             }
             // For El without children, content_width/content_height stay equal to width/height
@@ -989,19 +1001,23 @@ fn resolve_element<M: TextMeasurer>(
                     && !is_scrollable
                     && is_content_length(attrs.height.as_ref())
                 {
-                    let new_height = actual_ch + padding.top + padding.bottom;
+                    let new_height =
+                        actual_ch + padding.top + padding.bottom + border.top + border.bottom;
                     if let Some(element) = tree.get_mut(id)
                         && let Some(ref mut frame) = element.frame
                     {
                         frame.height = new_height;
                         frame.content_height = new_height;
-                        frame.content_width = actual_cw + padding.left + padding.right;
+                        frame.content_width =
+                            actual_cw + padding.left + padding.right + border.left + border.right;
                     }
                 } else if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
-                    frame.content_width = actual_cw + padding.left + padding.right;
-                    frame.content_height = actual_ch + padding.top + padding.bottom;
+                    frame.content_width =
+                        actual_cw + padding.left + padding.right + border.left + border.right;
+                    frame.content_height =
+                        actual_ch + padding.top + padding.bottom + border.top + border.bottom;
                 }
             }
             // For Row without children, content_width/content_height stay equal to width/height
@@ -1023,7 +1039,11 @@ fn resolve_element<M: TextMeasurer>(
             // Update frame height if content height exceeds initial estimate (due to wrapping)
             // For non-scrollable wrapped rows, expand the frame
             if actual_content_height > content_height && !is_scrollable {
-                let new_height = actual_content_height + padding.top + padding.bottom;
+                let new_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
@@ -1034,7 +1054,11 @@ fn resolve_element<M: TextMeasurer>(
                 && let Some(ref mut frame) = element.frame
             {
                 // Always track actual content height
-                frame.content_height = actual_content_height + padding.top + padding.bottom;
+                frame.content_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
             }
         }
 
@@ -1078,7 +1102,11 @@ fn resolve_element<M: TextMeasurer>(
                     );
                 }
 
-                let new_height = actual_content_height + padding.top + padding.bottom;
+                let new_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
@@ -1089,7 +1117,11 @@ fn resolve_element<M: TextMeasurer>(
                 && let Some(ref mut frame) = element.frame
             {
                 // Always track actual content height
-                frame.content_height = actual_content_height + padding.top + padding.bottom;
+                frame.content_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
             }
         }
 
@@ -1107,7 +1139,11 @@ fn resolve_element<M: TextMeasurer>(
             );
 
             if actual_content_height > content_height && !is_scrollable {
-                let new_height = actual_content_height + padding.top + padding.bottom;
+                let new_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
@@ -1117,7 +1153,11 @@ fn resolve_element<M: TextMeasurer>(
             } else if let Some(element) = tree.get_mut(id)
                 && let Some(ref mut frame) = element.frame
             {
-                frame.content_height = actual_content_height + padding.top + padding.bottom;
+                frame.content_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
             }
         }
 
@@ -1143,7 +1183,11 @@ fn resolve_element<M: TextMeasurer>(
 
             // Expand frame if content height exceeds initial estimate
             if actual_content_height > content_height && !is_scrollable {
-                let new_height = actual_content_height + padding.top + padding.bottom;
+                let new_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
                 if let Some(element) = tree.get_mut(id)
                     && let Some(ref mut frame) = element.frame
                 {
@@ -1153,7 +1197,11 @@ fn resolve_element<M: TextMeasurer>(
             } else if let Some(element) = tree.get_mut(id)
                 && let Some(ref mut frame) = element.frame
             {
-                frame.content_height = actual_content_height + padding.top + padding.bottom;
+                frame.content_height = actual_content_height
+                    + padding.top
+                    + padding.bottom
+                    + border.top
+                    + border.bottom;
             }
         }
     }
@@ -2233,10 +2281,13 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     };
 
     let padding = get_padding(attrs.padding.as_ref());
-    let content_x = frame.x + padding.left;
-    let content_y = frame.y + padding.top;
-    let content_width = (frame.width - padding.left - padding.right).max(0.0);
-    let content_height = (frame.height - padding.top - padding.bottom).max(0.0);
+    let border = get_border_inset(attrs.border_width.as_ref());
+    let content_x = frame.x + padding.left + border.left;
+    let content_y = frame.y + padding.top + border.top;
+    let content_width =
+        (frame.width - padding.left - padding.right - border.left - border.right).max(0.0);
+    let content_height =
+        (frame.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
     let spacing_x = spacing_x(&attrs);
     let spacing_y = spacing_y(&attrs);
     let is_scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
@@ -2260,7 +2311,11 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     }
 
     if actual_content_height > content_height && !is_scrollable {
-        let new_height = actual_content_height + padding.top + padding.bottom;
+        let new_height = actual_content_height
+            + padding.top
+            + padding.bottom
+            + border.top
+            + border.bottom;
         if let Some(element) = tree.get_mut(child_id)
             && let Some(ref mut child_frame) = element.frame
         {
@@ -2270,7 +2325,11 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     } else if let Some(element) = tree.get_mut(child_id)
         && let Some(ref mut child_frame) = element.frame
     {
-        child_frame.content_height = actual_content_height + padding.top + padding.bottom;
+        child_frame.content_height = actual_content_height
+            + padding.top
+            + padding.bottom
+            + border.top
+            + border.bottom;
     }
 }
 
@@ -2841,6 +2900,38 @@ fn get_padding(padding: Option<&Padding>) -> ResolvedPadding {
             }
         }
         Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => ResolvedPadding {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => ResolvedPadding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        },
+    }
+}
+
+/// Get border width as resolved inset values (same shape as padding).
+fn get_border_inset(border_width: Option<&BorderWidth>) -> ResolvedPadding {
+    match border_width {
+        Some(BorderWidth::Uniform(w)) => {
+            let w = *w as f32;
+            ResolvedPadding {
+                top: w,
+                right: w,
+                bottom: w,
+                left: w,
+            }
+        }
+        Some(BorderWidth::Sides {
             top,
             right,
             bottom,
@@ -6527,5 +6618,264 @@ mod tests {
         // "World" = 40px, cursor at 88, + leading space 8px = 96
         assert_eq!(fragments[2].text, "End");
         assert_eq!(fragments[2].x, 96.0);
+    }
+
+    // =========================================================================
+    // Border-box sizing tests
+    // =========================================================================
+
+    #[test]
+    fn test_border_box_el_insets_child() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Px(200.0));
+        root_attrs.height = Some(Length::Px(100.0));
+        root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+
+        let mut root = make_element("root", ElementKind::El, root_attrs);
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Fill);
+            a
+        });
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+        assert_eq!(child_frame.x, 5.0);
+        assert_eq!(child_frame.y, 5.0);
+        assert_eq!(child_frame.width, 190.0);
+        assert_eq!(child_frame.height, 90.0);
+    }
+
+    #[test]
+    fn test_border_box_el_with_padding_and_border() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Px(200.0));
+        root_attrs.height = Some(Length::Px(100.0));
+        root_attrs.padding = Some(Padding::Uniform(10.0));
+        root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+
+        let mut root = make_element("root", ElementKind::El, root_attrs);
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Fill);
+            a
+        });
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+        assert_eq!(child_frame.x, 15.0); // 10 padding + 5 border
+        assert_eq!(child_frame.y, 15.0);
+        assert_eq!(child_frame.width, 170.0); // 200 - 2*(10+5)
+        assert_eq!(child_frame.height, 70.0); // 100 - 2*(10+5)
+    }
+
+    #[test]
+    fn test_border_box_per_side_border_width() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Px(200.0));
+        root_attrs.height = Some(Length::Px(100.0));
+        root_attrs.border_width = Some(BorderWidth::Sides {
+            top: 2.0,
+            right: 4.0,
+            bottom: 6.0,
+            left: 8.0,
+        });
+
+        let mut root = make_element("root", ElementKind::El, root_attrs);
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Fill);
+            a
+        });
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+        assert_eq!(child_frame.x, 8.0);
+        assert_eq!(child_frame.y, 2.0);
+        assert_eq!(child_frame.width, 188.0); // 200 - 8 - 4
+        assert_eq!(child_frame.height, 92.0); // 100 - 2 - 6
+    }
+
+    #[test]
+    fn test_border_box_intrinsic_sizing() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+
+        let mut root = make_element("root", ElementKind::El, root_attrs);
+        let child = make_element("child", ElementKind::Text, {
+            let mut a = Attrs::default();
+            a.content = Some("Hello".to_string());
+            a.font_size = Some(16.0);
+            a
+        });
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let root_frame = tree.get(&root_id).unwrap().frame.unwrap();
+        // "Hello" = 5 chars * 8px = 40px wide, 16px tall (mock measurer)
+        // + border: 5 left + 5 right = 10, 5 top + 5 bottom = 10
+        assert_eq!(root_frame.width, 50.0);
+        assert_eq!(root_frame.height, 26.0);
+    }
+
+    #[test]
+    fn test_border_box_row_intrinsic_with_border() {
+        let mut tree = ElementTree::new();
+
+        let mut row_attrs = Attrs::default();
+        row_attrs.spacing = Some(4.0);
+        row_attrs.border_width = Some(BorderWidth::Uniform(3.0));
+
+        let mut row = make_element("row", ElementKind::Row, row_attrs);
+        let child1 = make_element("c1", ElementKind::Text, {
+            let mut a = Attrs::default();
+            a.content = Some("Hi".to_string());
+            a.font_size = Some(16.0);
+            a
+        });
+        let child2 = make_element("c2", ElementKind::Text, {
+            let mut a = Attrs::default();
+            a.content = Some("Lo".to_string());
+            a.font_size = Some(16.0);
+            a
+        });
+
+        let row_id = row.id.clone();
+        let c1_id = child1.id.clone();
+        let c2_id = child2.id.clone();
+        row.children = vec![c1_id.clone(), c2_id.clone()];
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(child1);
+        tree.insert(child2);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+        // "Hi" = 16px, "Lo" = 16px, spacing = 4px => content = 36px
+        // + border: 3 left + 3 right = 6
+        assert_eq!(row_frame.width, 42.0);
+        // height = max child height (16) + 3 top + 3 bottom = 22
+        assert_eq!(row_frame.height, 22.0);
+    }
+
+    #[test]
+    fn test_border_box_shadows_do_not_affect_layout() {
+        use crate::tree::attrs::BoxShadow;
+
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Px(200.0));
+        root_attrs.height = Some(Length::Px(100.0));
+        root_attrs.box_shadows = Some(vec![BoxShadow {
+            offset_x: 10.0,
+            offset_y: 10.0,
+            blur: 20.0,
+            size: 5.0,
+            color: Color::Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            inset: false,
+        }]);
+
+        let mut root = make_element("root", ElementKind::El, root_attrs);
+        let child = make_element("child", ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.height = Some(Length::Fill);
+            a
+        });
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        root.children = vec![child_id.clone()];
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(child);
+
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+        // Shadows should NOT inset children
+        assert_eq!(child_frame.x, 0.0);
+        assert_eq!(child_frame.y, 0.0);
+        assert_eq!(child_frame.width, 200.0);
+        assert_eq!(child_frame.height, 100.0);
     }
 }
