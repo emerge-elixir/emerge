@@ -1,15 +1,17 @@
-use std::fs;
-use std::os::fd::AsRawFd;
-use std::path::Path;
 use evdev::{
     AbsoluteAxisType, Device, InputEventKind, Key, PropType, RelativeAxisType, Synchronization,
 };
 use libc::input_absinfo;
+use std::fs;
+use std::os::fd::AsRawFd;
+use std::path::Path;
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
 use crate::actors::{EventMsg, RenderMsg};
-use crate::input::{ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT};
+use crate::input::{
+    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+};
 
 struct InputDevice {
     device: Device,
@@ -142,7 +144,11 @@ impl DrmInput {
 
         if let Some(button) = evdev_key_to_button(key) {
             let (x, y) = self.cursor_pos;
-            let action = if pressed { ACTION_PRESS } else { ACTION_RELEASE };
+            let action = if pressed {
+                ACTION_PRESS
+            } else {
+                ACTION_RELEASE
+            };
             let mods = modifiers_to_mask(self.modifiers);
             self.push_input(InputEvent::CursorButton {
                 button: button.to_string(),
@@ -159,7 +165,11 @@ impl DrmInput {
         };
 
         let mods = modifiers_to_mask(self.modifiers);
-        let action = if pressed { ACTION_PRESS } else { ACTION_RELEASE };
+        let action = if pressed {
+            ACTION_PRESS
+        } else {
+            ACTION_RELEASE
+        };
         self.push_input(InputEvent::Key {
             key: key_kind_to_name(key_kind),
             action,
@@ -247,7 +257,9 @@ impl DrmInput {
     }
 
     fn push_input(&self, event: InputEvent) {
-        if self.log_enabled && let InputEvent::CursorPos { x, y } = &event {
+        if self.log_enabled
+            && let InputEvent::CursorPos { x, y } = &event
+        {
             eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
         }
 

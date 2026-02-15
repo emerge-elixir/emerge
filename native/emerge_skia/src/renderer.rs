@@ -941,6 +941,7 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_image_with_fit(
     canvas: &skia_safe::Canvas,
     x: f32,
@@ -1250,6 +1251,7 @@ fn quad_path(quad: [(f32, f32); 4]) -> skia_safe::Path {
         .detach()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_border(
     canvas: &skia_safe::Canvas,
     x: f32,
@@ -1406,6 +1408,7 @@ pub fn color_from_u32(c: u32) -> Color {
 /// derived from per-edge insets.
 ///
 /// Returns `[(stroke_width, [(x,y); 4]); 4]` in top/right/bottom/left order.
+#[allow(clippy::too_many_arguments)]
 fn border_edge_clip_quads(
     x: f32,
     y: f32,
@@ -1582,7 +1585,15 @@ mod tests {
         );
     }
 
-    fn point_in_rounded_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radius: f32) -> bool {
+    fn point_in_rounded_rect(
+        px: f32,
+        py: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+    ) -> bool {
         if w <= 0.0 || h <= 0.0 {
             return false;
         }
@@ -1816,7 +1827,14 @@ mod tests {
                 80,
                 60,
                 vec![
-                    DrawCmd::RoundedRect(outer_x, outer_y, outer_w, outer_h, radius, background_color),
+                    DrawCmd::RoundedRect(
+                        outer_x,
+                        outer_y,
+                        outer_w,
+                        outer_h,
+                        radius,
+                        background_color,
+                    ),
                     DrawCmd::PushClipRounded(outer_x, outer_y, outer_w, outer_h, radius),
                     DrawCmd::PushClipRoundedHard(inner_x, inner_y, inner_w, inner_h, inner_r),
                     DrawCmd::Image(
@@ -1856,14 +1874,12 @@ mod tests {
                 let py = y as f32 + 0.5;
 
                 // Only inspect a thin band *inside* the inner clip edge.
-                let in_inner_near_edge =
-                    point_in_inset_rounded_rect(
-                        px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 0.05,
-                    );
-                let in_inner_deep =
-                    point_in_inset_rounded_rect(
-                        px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
-                    );
+                let in_inner_near_edge = point_in_inset_rounded_rect(
+                    px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 0.05,
+                );
+                let in_inner_deep = point_in_inset_rounded_rect(
+                    px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
+                );
 
                 if !(in_inner_near_edge && !in_inner_deep) {
                     continue;
