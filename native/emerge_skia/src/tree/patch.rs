@@ -7,8 +7,8 @@
 //!   - 3: insert_subtree - parent_len(4) + parent_id + index(2) + tree_len(4) + tree_bytes
 //!   - 4: remove - id_len(4) + id
 
-use super::attrs::{decode_attrs, preserve_runtime_scroll_attrs, Attrs};
-use super::deserialize::{decode_tree, DecodeError};
+use super::attrs::{Attrs, decode_attrs, preserve_runtime_scroll_attrs};
+use super::deserialize::{DecodeError, decode_tree};
 use super::element::{ElementId, ElementTree};
 
 /// A single patch operation.

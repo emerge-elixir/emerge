@@ -58,22 +58,12 @@ pub enum AssetStatus {
     Failed,
 }
 
+#[derive(Default)]
 struct AssetState {
     config: AssetConfig,
     config_revision: u64,
     sources: HashMap<ImageSource, AssetStatus>,
     pending_count: usize,
-}
-
-impl Default for AssetState {
-    fn default() -> Self {
-        Self {
-            config: AssetConfig::default(),
-            config_revision: 0,
-            sources: HashMap::new(),
-            pending_count: 0,
-        }
-    }
 }
 
 struct Global {
@@ -254,13 +244,13 @@ pub fn ensure_source(source: &ImageSource) {
                 let _ = tx.send(msg);
             }
             Err(TrySendError::Disconnected(_)) => {
-                if let Ok(mut state) = guard.state.lock() {
-                    if matches!(state.sources.get(source), Some(AssetStatus::Pending)) {
-                        if state.pending_count > 0 {
-                            state.pending_count -= 1;
-                        }
-                        state.sources.insert(source.clone(), AssetStatus::Failed);
+                if let Ok(mut state) = guard.state.lock()
+                    && matches!(state.sources.get(source), Some(AssetStatus::Pending))
+                {
+                    if state.pending_count > 0 {
+                        state.pending_count -= 1;
                     }
+                    state.sources.insert(source.clone(), AssetStatus::Failed);
                 }
             }
         }

@@ -11,6 +11,7 @@ use super::attrs::{
 };
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use crate::assets;
+use std::collections::HashMap;
 
 // =============================================================================
 // Layout Types
@@ -1285,6 +1286,66 @@ struct TextFlowLayoutContext<'a> {
     inherited: &'a FontContext,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ChildPlacement<'a> {
+    constraint: Constraint,
+    x: f32,
+    y: f32,
+    inherited: &'a FontContext,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ChildFrameSnapshot {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    content_width: f32,
+    content_height: f32,
+}
+
+fn child_frame_snapshot(tree: &ElementTree, child_id: &ElementId) -> Option<ChildFrameSnapshot> {
+    let frame = tree.get(child_id)?.frame?;
+    Some(ChildFrameSnapshot {
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+        content_width: frame.content_width,
+        content_height: frame.content_height,
+    })
+}
+
+fn resolve_child_with_placement<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_id: &ElementId,
+    placement: ChildPlacement<'_>,
+    measurer: &M,
+) -> Option<ChildFrameSnapshot> {
+    resolve_element(
+        tree,
+        child_id,
+        placement.constraint,
+        placement.x,
+        placement.y,
+        placement.inherited,
+        measurer,
+    );
+    child_frame_snapshot(tree, child_id)
+}
+
+fn child_align_x(tree: &ElementTree, child_id: &ElementId) -> AlignX {
+    tree.get(child_id)
+        .map(|child| child.attrs.align_x.unwrap_or_default())
+        .unwrap_or_default()
+}
+
+fn child_align_y(tree: &ElementTree, child_id: &ElementId) -> AlignY {
+    tree.get(child_id)
+        .map(|child| child.attrs.align_y.unwrap_or_default())
+        .unwrap_or_default()
+}
+
 // =============================================================================
 // Child Resolution by Element Type
 // =============================================================================
@@ -1318,23 +1379,19 @@ fn resolve_el_children<M: TextMeasurer>(
             (ax, ay)
         };
 
-        let child_constraint = Constraint::new(content.width, content.height);
-
-        // Resolve child first to get final size
-        resolve_element(
+        let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            child_constraint,
-            0.0,
-            0.0,
-            inherited,
+            ChildPlacement {
+                constraint: Constraint::new(content.width, content.height),
+                x: 0.0,
+                y: 0.0,
+                inherited,
+            },
             measurer,
-        );
-
-        let Some(child) = tree.get(child_id) else {
+        ) else {
             continue;
         };
-        let Some(frame) = &child.frame else { continue };
 
         // Track max child dimensions for content size
         let child_content_width = if options.scroll_x_enabled {
@@ -1370,25 +1427,32 @@ fn resolve_el_children<M: TextMeasurer>(
     (max_child_width, max_child_height)
 }
 
-/// Resolve children for Row with fill distribution and self-alignment.
-/// Children with align_x position themselves within the row:
-/// - Left (default): laid out left-to-right from start
-/// - Right: positioned at right edge
-/// - Center: centered in remaining space
-///   Returns (actual_content_width, actual_content_height).
-fn resolve_row_children<M: TextMeasurer>(
-    tree: &mut ElementTree,
-    child_ids: &[ElementId],
-    content: ContentRect,
-    options: RowChildrenOptions,
-    inherited: &FontContext,
-    measurer: &M,
-) -> (f32, f32) {
-    if child_ids.is_empty() {
-        return (0.0, 0.0);
-    }
+#[derive(Debug)]
+struct RowLayoutPlan {
+    child_widths: HashMap<ElementId, f32>,
+    left_children: Vec<ElementId>,
+    center_children: Vec<ElementId>,
+    right_children: Vec<ElementId>,
+    total_left_width: f32,
+    total_center_width: f32,
+    total_right_width: f32,
+}
 
-    // First pass: calculate fill_portion distribution
+fn spacing_for_count(count: usize, spacing: f32) -> f32 {
+    if count > 1 {
+        spacing * (count - 1) as f32
+    } else {
+        0.0
+    }
+}
+
+fn build_row_layout_plan(
+    tree: &ElementTree,
+    child_ids: &[ElementId],
+    options: RowChildrenOptions,
+    content_width: f32,
+) -> RowLayoutPlan {
+    // First pass: calculate fill_portion distribution.
     let mut total_portions = 0.0_f32;
     let mut fixed_width = 0.0_f32;
 
@@ -1409,27 +1473,26 @@ fn resolve_row_children<M: TextMeasurer>(
         }
     }
 
-    // Calculate width per portion
+    // Calculate width per portion.
     let effective_spacing = if options.space_evenly {
         0.0
     } else {
         options.spacing
     };
     let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
-    let remaining = (content.width - fixed_width - total_spacing).max(0.0);
+    let remaining = (content_width - fixed_width - total_spacing).max(0.0);
     let width_per_portion = if total_portions > 0.0 {
         remaining / total_portions
     } else {
         0.0
     };
 
-    // Partition children by horizontal alignment and calculate widths
+    // Partition children by horizontal alignment and calculate widths.
     let mut left_children: Vec<ElementId> = Vec::new();
     let mut center_children: Vec<ElementId> = Vec::new();
     let mut right_children: Vec<ElementId> = Vec::new();
 
-    let mut child_widths: std::collections::HashMap<ElementId, f32> =
-        std::collections::HashMap::new();
+    let mut child_widths: HashMap<ElementId, f32> = HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
@@ -1449,7 +1512,6 @@ fn resolve_row_children<M: TextMeasurer>(
         } else {
             resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic)
         };
-        // Apply min/max constraints
         let width = resolve_length(child.attrs.width.as_ref(), intrinsic, base_width);
         child_widths.insert(child_id.clone(), width);
 
@@ -1469,100 +1531,102 @@ fn resolve_row_children<M: TextMeasurer>(
         }
     }
 
-    if options.space_evenly {
-        let mut max_child_height = 0.0_f32;
-        let mut current_x = content.x;
-        let gap_count = child_ids.len().saturating_sub(1) as f32;
-        let total_child_width: f32 = child_widths.values().sum();
-        let gap = if gap_count > 0.0 {
-            (content.width - total_child_width).max(0.0) / gap_count
-        } else {
-            0.0
-        };
+    RowLayoutPlan {
+        child_widths,
+        left_children,
+        center_children,
+        right_children,
+        total_left_width,
+        total_center_width,
+        total_right_width,
+    }
+}
 
-        for child_id in child_ids {
-            let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-            let align_y = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_y.unwrap_or_default())
-                .unwrap_or_default();
+fn resolve_row_space_evenly<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content: ContentRect,
+    child_widths: &HashMap<ElementId, f32>,
+    inherited: &FontContext,
+    measurer: &M,
+) -> (f32, f32) {
+    let mut max_child_height = 0.0_f32;
+    let mut current_x = content.x;
+    let gap_count = child_ids.len().saturating_sub(1) as f32;
+    let total_child_width: f32 = child_widths.values().sum();
+    let gap = if gap_count > 0.0 {
+        (content.width - total_child_width).max(0.0) / gap_count
+    } else {
+        0.0
+    };
 
-            let child_constraint = Constraint::new(child_width, content.height);
-            resolve_element(
-                tree,
-                child_id,
-                child_constraint,
-                current_x,
-                content.y,
+    for child_id in child_ids {
+        let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
+        let align_y = child_align_y(tree, child_id);
+
+        if let Some(frame) = resolve_child_with_placement(
+            tree,
+            child_id,
+            ChildPlacement {
+                constraint: Constraint::new(child_width, content.height),
+                x: current_x,
+                y: content.y,
                 inherited,
-                measurer,
-            );
-
-            if let Some(child) = tree.get(child_id)
-                && let Some(frame) = &child.frame
-            {
-                max_child_height = max_child_height.max(frame.content_height);
-                apply_vertical_alignment(tree, child_id, content.y, content.height, align_y);
-            }
-
-            current_x += child_width + gap;
+            },
+            measurer,
+        ) {
+            max_child_height = max_child_height.max(frame.content_height);
+            apply_vertical_alignment(tree, child_id, content.y, content.height, align_y);
         }
 
-        let actual_content_width = if gap_count > 0.0 {
-            total_child_width + gap * gap_count
-        } else {
-            total_child_width
-        };
-
-        return (actual_content_width, max_child_height);
+        current_x += child_width + gap;
     }
 
-    // Add spacing within each group
-    let left_spacing = if left_children.len() > 1 {
-        options.spacing * (left_children.len() - 1) as f32
+    let actual_content_width = if gap_count > 0.0 {
+        total_child_width + gap * gap_count
     } else {
-        0.0
-    };
-    let center_spacing = if center_children.len() > 1 {
-        options.spacing * (center_children.len() - 1) as f32
-    } else {
-        0.0
-    };
-    let right_spacing = if right_children.len() > 1 {
-        options.spacing * (right_children.len() - 1) as f32
-    } else {
-        0.0
+        total_child_width
     };
 
-    total_left_width += left_spacing;
-    total_center_width += center_spacing;
-    total_right_width += right_spacing;
+    (actual_content_width, max_child_height)
+}
 
-    // Position left-aligned children from left edge
+fn resolve_row_grouped<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content: ContentRect,
+    options: RowChildrenOptions,
+    plan: &RowLayoutPlan,
+    inherited: &FontContext,
+    measurer: &M,
+) -> (f32, f32) {
+    let left_spacing = spacing_for_count(plan.left_children.len(), options.spacing);
+    let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
+    let right_spacing = spacing_for_count(plan.right_children.len(), options.spacing);
+
+    let total_left_width = plan.total_left_width + left_spacing;
+    let total_center_width = plan.total_center_width + center_spacing;
+    let total_right_width = plan.total_right_width + right_spacing;
+
+    // Position left-aligned children from left edge.
     let mut current_x = content.x;
     let mut max_child_height = 0.0_f32;
 
-    for child_id in &left_children {
-        let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-        let align_y = tree
-            .get(child_id)
-            .map(|c| c.attrs.align_y.unwrap_or_default())
-            .unwrap_or_default();
+    for child_id in &plan.left_children {
+        let child_width = *plan.child_widths.get(child_id).unwrap_or(&0.0);
+        let align_y = child_align_y(tree, child_id);
 
-        let child_constraint = Constraint::new(child_width, content.height);
-        resolve_element(
+        if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            child_constraint,
-            current_x,
-            content.y,
-            inherited,
+            ChildPlacement {
+                constraint: Constraint::new(child_width, content.height),
+                x: current_x,
+                y: content.y,
+                inherited,
+            },
             measurer,
-        );
-
-        if let Some(child) = tree.get(child_id)
-            && let Some(frame) = &child.frame
-        {
+        ) {
             max_child_height = max_child_height.max(frame.content_height);
             apply_vertical_alignment(tree, child_id, content.y, content.height, align_y);
         }
@@ -1570,30 +1634,24 @@ fn resolve_row_children<M: TextMeasurer>(
         current_x += child_width + options.spacing;
     }
 
-    // Position right-aligned children from right edge
+    // Position right-aligned children from right edge.
     let mut right_x = content.x + content.width;
-    for child_id in right_children.iter().rev() {
-        let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-        let align_y = tree
-            .get(child_id)
-            .map(|c| c.attrs.align_y.unwrap_or_default())
-            .unwrap_or_default();
+    for child_id in plan.right_children.iter().rev() {
+        let child_width = *plan.child_widths.get(child_id).unwrap_or(&0.0);
+        let align_y = child_align_y(tree, child_id);
 
         right_x -= child_width;
-        let child_constraint = Constraint::new(child_width, content.height);
-        resolve_element(
+        if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            child_constraint,
-            right_x,
-            content.y,
-            inherited,
+            ChildPlacement {
+                constraint: Constraint::new(child_width, content.height),
+                x: right_x,
+                y: content.y,
+                inherited,
+            },
             measurer,
-        );
-
-        if let Some(child) = tree.get(child_id)
-            && let Some(frame) = &child.frame
-        {
+        ) {
             max_child_height = max_child_height.max(frame.content_height);
             apply_vertical_alignment(tree, child_id, content.y, content.height, align_y);
         }
@@ -1601,35 +1659,29 @@ fn resolve_row_children<M: TextMeasurer>(
         right_x -= options.spacing;
     }
 
-    // Position center-aligned children in the middle of remaining space
-    if !center_children.is_empty() {
+    // Position center-aligned children in the middle of remaining space.
+    if !plan.center_children.is_empty() {
         let left_end = content.x + total_left_width;
         let right_start = content.x + content.width - total_right_width;
         let available_center = (right_start - left_end).max(0.0);
         let center_start = left_end + (available_center - total_center_width) / 2.0;
 
         let mut center_x = center_start.max(left_end);
-        for child_id in &center_children {
-            let child_width = *child_widths.get(child_id).unwrap_or(&0.0);
-            let align_y = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_y.unwrap_or_default())
-                .unwrap_or_default();
+        for child_id in &plan.center_children {
+            let child_width = *plan.child_widths.get(child_id).unwrap_or(&0.0);
+            let align_y = child_align_y(tree, child_id);
 
-            let child_constraint = Constraint::new(child_width, content.height);
-            resolve_element(
+            if let Some(frame) = resolve_child_with_placement(
                 tree,
                 child_id,
-                child_constraint,
-                center_x,
-                content.y,
-                inherited,
+                ChildPlacement {
+                    constraint: Constraint::new(child_width, content.height),
+                    x: center_x,
+                    y: content.y,
+                    inherited,
+                },
                 measurer,
-            );
-
-            if let Some(child) = tree.get(child_id)
-                && let Some(frame) = &child.frame
-            {
+            ) {
                 max_child_height = max_child_height.max(frame.content_height);
                 apply_vertical_alignment(tree, child_id, content.y, content.height, align_y);
             }
@@ -1638,16 +1690,47 @@ fn resolve_row_children<M: TextMeasurer>(
         }
     }
 
-    // Calculate actual content width used by all children
-    let total_child_width: f32 = child_widths.values().sum();
-    let total_spacing_used = if child_ids.len() > 1 {
-        options.spacing * (child_ids.len() - 1) as f32
-    } else {
-        0.0
-    };
+    let total_child_width: f32 = plan.child_widths.values().sum();
+    let total_spacing_used = spacing_for_count(child_ids.len(), options.spacing);
     let actual_content_width = total_child_width + total_spacing_used;
 
     (actual_content_width, max_child_height)
+}
+
+/// Resolve children for Row with fill distribution and self-alignment.
+/// Children with align_x position themselves within the row:
+/// - Left (default): laid out left-to-right from start
+/// - Right: positioned at right edge
+/// - Center: centered in remaining space
+///   Returns (actual_content_width, actual_content_height).
+fn resolve_row_children<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content: ContentRect,
+    options: RowChildrenOptions,
+    inherited: &FontContext,
+    measurer: &M,
+) -> (f32, f32) {
+    if child_ids.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let plan = build_row_layout_plan(tree, child_ids, options, content.width);
+
+    if options.space_evenly {
+        resolve_row_space_evenly(
+            tree,
+            child_ids,
+            content,
+            &plan.child_widths,
+            inherited,
+            measurer,
+        )
+    } else {
+        resolve_row_grouped(
+            tree, child_ids, content, options, &plan, inherited, measurer,
+        )
+    }
 }
 
 /// Apply vertical alignment to a child element.
@@ -1673,24 +1756,22 @@ fn apply_vertical_alignment(
     }
 }
 
-/// Resolve children for Column with fill distribution and vertical self-alignment.
-/// Children are partitioned by align_y into top/center/bottom zones.
-/// For scrollable columns, bottom-aligned children are positioned after top content.
-/// For non-scrollable columns, bottom-aligned children are at the container bottom.
-/// Returns the actual content height after resolution.
-fn resolve_column_children<M: TextMeasurer>(
-    tree: &mut ElementTree,
-    child_ids: &[ElementId],
-    content: ContentRect,
-    options: ColumnChildrenOptions,
-    inherited: &FontContext,
-    measurer: &M,
-) -> f32 {
-    if child_ids.is_empty() {
-        return 0.0;
-    }
+#[derive(Debug)]
+struct ColumnLayoutPlan {
+    child_heights: HashMap<ElementId, f32>,
+    top_children: Vec<ElementId>,
+    center_children: Vec<ElementId>,
+    bottom_children: Vec<ElementId>,
+    total_center_height: f32,
+}
 
-    // First pass: calculate fill_portion distribution
+fn build_column_layout_plan(
+    tree: &ElementTree,
+    child_ids: &[ElementId],
+    options: ColumnChildrenOptions,
+    content_height: f32,
+) -> ColumnLayoutPlan {
+    // First pass: calculate fill_portion distribution.
     let mut total_portions = 0.0_f32;
     let mut fixed_height = 0.0_f32;
 
@@ -1711,27 +1792,25 @@ fn resolve_column_children<M: TextMeasurer>(
         }
     }
 
-    // Calculate height per portion
+    // Calculate height per portion.
     let effective_spacing = if options.space_evenly {
         0.0
     } else {
         options.spacing
     };
     let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
-    let remaining = (content.height - fixed_height - total_spacing).max(0.0);
+    let remaining = (content_height - fixed_height - total_spacing).max(0.0);
     let height_per_portion = if total_portions > 0.0 {
         remaining / total_portions
     } else {
         0.0
     };
 
-    // Partition children by vertical alignment and calculate heights
+    // Partition children by vertical alignment and calculate heights.
     let mut top_children: Vec<ElementId> = Vec::new();
     let mut center_children: Vec<ElementId> = Vec::new();
     let mut bottom_children: Vec<ElementId> = Vec::new();
-
-    let mut child_heights: std::collections::HashMap<ElementId, f32> =
-        std::collections::HashMap::new();
+    let mut child_heights: HashMap<ElementId, f32> = HashMap::new();
     let mut total_center_height = 0.0_f32;
 
     for child_id in child_ids {
@@ -1749,7 +1828,6 @@ fn resolve_column_children<M: TextMeasurer>(
         } else {
             resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic)
         };
-        // Apply min/max constraints
         let height = resolve_length(child.attrs.height.as_ref(), intrinsic, base_height);
         child_heights.insert(child_id.clone(), height);
 
@@ -1763,188 +1841,164 @@ fn resolve_column_children<M: TextMeasurer>(
         }
     }
 
-    if options.space_evenly {
-        let mut current_y = content.y;
-        let gap_count = child_ids.len().saturating_sub(1) as f32;
-        let total_child_height: f32 = child_heights.values().sum();
-        let gap = if gap_count > 0.0 {
-            (content.height - total_child_height).max(0.0) / gap_count
-        } else {
-            0.0
-        };
-        let mut max_child_width = 0.0_f32;
-        let mut total_height = 0.0_f32;
-
-        for child_id in child_ids {
-            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_x.unwrap_or_default())
-                .unwrap_or_default();
-
-            let child_constraint = Constraint::new(content.width, child_height);
-            resolve_element(
-                tree,
-                child_id,
-                child_constraint,
-                content.x,
-                current_y,
-                inherited,
-                measurer,
-            );
-
-            let (actual_height, frame_content_width) = tree
-                .get(child_id)
-                .and_then(|child| child.frame.as_ref())
-                .map(|frame| (frame.height, frame.content_width))
-                .unwrap_or((child_height, 0.0));
-
-            max_child_width = max_child_width.max(frame_content_width);
-            apply_horizontal_alignment(tree, child_id, content.x, content.width, align_x);
-
-            total_height += actual_height;
-            current_y += actual_height + gap;
-        }
-
-        if gap_count > 0.0 {
-            total_height += gap * gap_count;
-        }
-
-        return total_height.max(0.0);
+    ColumnLayoutPlan {
+        child_heights,
+        top_children,
+        center_children,
+        bottom_children,
+        total_center_height,
     }
+}
 
-    // Add spacing within each group
-    let top_spacing = if top_children.len() > 1 {
-        options.spacing * (top_children.len() - 1) as f32
-    } else {
-        0.0
-    };
-    let center_spacing = if center_children.len() > 1 {
-        options.spacing * (center_children.len() - 1) as f32
-    } else {
-        0.0
-    };
-    let bottom_spacing = if bottom_children.len() > 1 {
-        options.spacing * (bottom_children.len() - 1) as f32
-    } else {
-        0.0
-    };
-
-    total_center_height += center_spacing;
-
-    // Position top-aligned children from top edge
-    // Resolve each child and use actual height for positioning subsequent children
+fn resolve_column_space_evenly<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content: ContentRect,
+    child_heights: &HashMap<ElementId, f32>,
+    inherited: &FontContext,
+    measurer: &M,
+) -> f32 {
     let mut current_y = content.y;
-    let mut max_child_width = 0.0_f32;
-    let mut actual_top_height = 0.0_f32;
+    let gap_count = child_ids.len().saturating_sub(1) as f32;
+    let total_child_height: f32 = child_heights.values().sum();
+    let gap = if gap_count > 0.0 {
+        (content.height - total_child_height).max(0.0) / gap_count
+    } else {
+        0.0
+    };
+    let mut total_height = 0.0_f32;
 
-    for child_id in &top_children {
+    for child_id in child_ids {
         let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-        let align_x = tree
-            .get(child_id)
-            .map(|c| c.attrs.align_x.unwrap_or_default())
-            .unwrap_or_default();
+        let align_x = child_align_x(tree, child_id);
 
-        let child_constraint = Constraint::new(content.width, child_height);
-        resolve_element(
+        let frame = resolve_child_with_placement(
             tree,
             child_id,
-            child_constraint,
-            content.x,
-            current_y,
-            inherited,
+            ChildPlacement {
+                constraint: Constraint::new(content.width, child_height),
+                x: content.x,
+                y: current_y,
+                inherited,
+            },
             measurer,
         );
+        let actual_height = frame
+            .map(|snapshot| snapshot.height)
+            .unwrap_or(child_height);
 
-        // Get actual frame height (may differ from constraint for WrappedRow etc.)
-        let (actual_height, frame_content_width) = tree
-            .get(child_id)
-            .and_then(|child| child.frame.as_ref())
-            .map(|frame| (frame.height, frame.content_width))
-            .unwrap_or((child_height, 0.0));
+        apply_horizontal_alignment(tree, child_id, content.x, content.width, align_x);
 
-        max_child_width = max_child_width.max(frame_content_width);
+        total_height += actual_height;
+        current_y += actual_height + gap;
+    }
+
+    if gap_count > 0.0 {
+        total_height += gap * gap_count;
+    }
+
+    total_height.max(0.0)
+}
+
+fn resolve_column_grouped<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    content: ContentRect,
+    options: ColumnChildrenOptions,
+    plan: &ColumnLayoutPlan,
+    inherited: &FontContext,
+    measurer: &M,
+) -> f32 {
+    let top_spacing = spacing_for_count(plan.top_children.len(), options.spacing);
+    let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
+    let bottom_spacing = spacing_for_count(plan.bottom_children.len(), options.spacing);
+    let total_center_height = plan.total_center_height + center_spacing;
+
+    // Position top-aligned children from top edge.
+    let mut current_y = content.y;
+    let mut actual_top_height = 0.0_f32;
+
+    for child_id in &plan.top_children {
+        let child_height = *plan.child_heights.get(child_id).unwrap_or(&0.0);
+        let align_x = child_align_x(tree, child_id);
+
+        let frame = resolve_child_with_placement(
+            tree,
+            child_id,
+            ChildPlacement {
+                constraint: Constraint::new(content.width, child_height),
+                x: content.x,
+                y: current_y,
+                inherited,
+            },
+            measurer,
+        );
+        let actual_height = frame
+            .map(|snapshot| snapshot.height)
+            .unwrap_or(child_height);
+
         apply_horizontal_alignment(tree, child_id, content.x, content.width, align_x);
 
         actual_top_height += actual_height;
         current_y += actual_height + options.spacing;
     }
-    if !top_children.is_empty() {
+    if !plan.top_children.is_empty() {
         actual_top_height += top_spacing;
     }
 
-    // Position bottom-aligned children
-    // For scrollable columns: position after top content (so you can scroll to see them)
-    // For non-scrollable columns: position at container bottom (traditional align_bottom behavior)
+    // Position bottom-aligned children.
     let mut actual_bottom_height = 0.0_f32;
 
     if options.is_scrollable {
-        // Scrollable: position bottom children after top content, going down
         let mut current_bottom_y = content.y + actual_top_height;
-        for child_id in &bottom_children {
-            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_x.unwrap_or_default())
-                .unwrap_or_default();
+        for child_id in &plan.bottom_children {
+            let child_height = *plan.child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = child_align_x(tree, child_id);
 
-            let child_constraint = Constraint::new(content.width, child_height);
-            resolve_element(
+            let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                child_constraint,
-                content.x,
-                current_bottom_y,
-                inherited,
+                ChildPlacement {
+                    constraint: Constraint::new(content.width, child_height),
+                    x: content.x,
+                    y: current_bottom_y,
+                    inherited,
+                },
                 measurer,
             );
+            let actual_height = frame
+                .map(|snapshot| snapshot.height)
+                .unwrap_or(child_height);
 
-            let (actual_height, frame_content_width) = tree
-                .get(child_id)
-                .and_then(|child| child.frame.as_ref())
-                .map(|frame| (frame.height, frame.content_width))
-                .unwrap_or((child_height, 0.0));
-
-            max_child_width = max_child_width.max(frame_content_width);
             apply_horizontal_alignment(tree, child_id, content.x, content.width, align_x);
 
             actual_bottom_height += actual_height;
             current_bottom_y += actual_height + options.spacing;
         }
-        if !bottom_children.is_empty() {
+        if !plan.bottom_children.is_empty() {
             actual_bottom_height += bottom_spacing;
         }
     } else {
-        // Non-scrollable: position from container bottom, going up
         let mut bottom_y = content.y + content.height;
-        for child_id in bottom_children.iter().rev() {
-            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_x.unwrap_or_default())
-                .unwrap_or_default();
+        for child_id in plan.bottom_children.iter().rev() {
+            let child_height = *plan.child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = child_align_x(tree, child_id);
 
             bottom_y -= child_height;
-            let child_constraint = Constraint::new(content.width, child_height);
-            resolve_element(
+            let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                child_constraint,
-                content.x,
-                bottom_y,
-                inherited,
+                ChildPlacement {
+                    constraint: Constraint::new(content.width, child_height),
+                    x: content.x,
+                    y: bottom_y,
+                    inherited,
+                },
                 measurer,
             );
+            let actual_height = frame
+                .map(|snapshot| snapshot.height)
+                .unwrap_or(child_height);
 
-            let (actual_height, frame_content_width) = tree
-                .get(child_id)
-                .and_then(|child| child.frame.as_ref())
-                .map(|frame| (frame.height, frame.content_width))
-                .unwrap_or((child_height, 0.0));
-
-            max_child_width = max_child_width.max(frame_content_width);
-
-            // Adjust position if actual height differs from constraint
             let height_diff = actual_height - child_height;
             if height_diff != 0.0 {
                 bottom_y -= height_diff;
@@ -1956,19 +2010,16 @@ fn resolve_column_children<M: TextMeasurer>(
             actual_bottom_height += actual_height;
             bottom_y -= options.spacing;
         }
-        if !bottom_children.is_empty() {
+        if !plan.bottom_children.is_empty() {
             actual_bottom_height += bottom_spacing;
         }
     }
 
-    // Position center-aligned children in the middle of remaining space
-    // For scrollable columns, center children go between top and bottom (which are sequential)
-    // For non-scrollable columns, center children go in the gap between top-end and bottom-start
+    // Position center-aligned children in the middle of remaining space.
     let mut actual_center_height = 0.0_f32;
-    if !center_children.is_empty() {
+    if !plan.center_children.is_empty() {
         let top_end = content.y + actual_top_height;
         let bottom_start = if options.is_scrollable {
-            // In scrollable, bottom children come after top, so center goes between
             content.y + actual_top_height
         } else {
             content.y + content.height - actual_bottom_height
@@ -1977,62 +2028,79 @@ fn resolve_column_children<M: TextMeasurer>(
         let center_start = top_end + (available_center - total_center_height) / 2.0;
 
         let mut center_y = center_start.max(top_end);
-        for child_id in &center_children {
-            let child_height = *child_heights.get(child_id).unwrap_or(&0.0);
-            let align_x = tree
-                .get(child_id)
-                .map(|c| c.attrs.align_x.unwrap_or_default())
-                .unwrap_or_default();
+        for child_id in &plan.center_children {
+            let child_height = *plan.child_heights.get(child_id).unwrap_or(&0.0);
+            let align_x = child_align_x(tree, child_id);
 
-            let child_constraint = Constraint::new(content.width, child_height);
-            resolve_element(
+            let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                child_constraint,
-                content.x,
-                center_y,
-                inherited,
+                ChildPlacement {
+                    constraint: Constraint::new(content.width, child_height),
+                    x: content.x,
+                    y: center_y,
+                    inherited,
+                },
                 measurer,
             );
+            let actual_height = frame
+                .map(|snapshot| snapshot.height)
+                .unwrap_or(child_height);
 
-            let (actual_height, frame_content_width) = tree
-                .get(child_id)
-                .and_then(|child| child.frame.as_ref())
-                .map(|frame| (frame.height, frame.content_width))
-                .unwrap_or((child_height, 0.0));
-
-            max_child_width = max_child_width.max(frame_content_width);
             apply_horizontal_alignment(tree, child_id, content.x, content.width, align_x);
 
             actual_center_height += actual_height;
             center_y += actual_height + options.spacing;
         }
-        if !center_children.is_empty() {
-            actual_center_height += center_spacing;
-        }
+        actual_center_height += center_spacing;
     }
 
-    // Add spacing between non-empty alignment zones (top/center/bottom).
-    // This ensures content-height columns preserve configured spacing even when
-    // zones are split by self-alignment.
     let mut non_empty_zones = 0_usize;
-    if !top_children.is_empty() {
+    if !plan.top_children.is_empty() {
         non_empty_zones += 1;
     }
-    if !center_children.is_empty() {
+    if !plan.center_children.is_empty() {
         non_empty_zones += 1;
     }
-    if !bottom_children.is_empty() {
+    if !plan.bottom_children.is_empty() {
         non_empty_zones += 1;
     }
-    let inter_zone_spacing = if non_empty_zones > 1 {
-        options.spacing * (non_empty_zones - 1) as f32
-    } else {
-        0.0
-    };
+    let inter_zone_spacing = spacing_for_count(non_empty_zones, options.spacing);
 
-    // Calculate actual content height used by all children (use actual heights)
     actual_top_height + actual_center_height + actual_bottom_height + inter_zone_spacing
+}
+
+/// Resolve children for Column with fill distribution and vertical self-alignment.
+/// Children are partitioned by align_y into top/center/bottom zones.
+/// For scrollable columns, bottom-aligned children are positioned after top content.
+/// For non-scrollable columns, bottom-aligned children are at the container bottom.
+/// Returns the actual content height after resolution.
+fn resolve_column_children<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    child_ids: &[ElementId],
+    content: ContentRect,
+    options: ColumnChildrenOptions,
+    inherited: &FontContext,
+    measurer: &M,
+) -> f32 {
+    if child_ids.is_empty() {
+        return 0.0;
+    }
+
+    let plan = build_column_layout_plan(tree, child_ids, options, content.height);
+
+    if options.space_evenly {
+        resolve_column_space_evenly(
+            tree,
+            child_ids,
+            content,
+            &plan.child_heights,
+            inherited,
+            measurer,
+        )
+    } else {
+        resolve_column_grouped(tree, content, options, &plan, inherited, measurer)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2115,7 +2183,6 @@ fn flow_line_bounds(
     (left, right.max(left))
 }
 
-#[allow(unused_assignments)]
 fn place_flow_float<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_id: &ElementId,
@@ -2142,10 +2209,8 @@ fn place_flow_float<M: TextMeasurer>(
         float_y = float_y.max(side_bottom);
     }
 
-    let mut line_left = context.content_x;
-    let mut line_right = context.content_x + context.content_width;
-    loop {
-        let (left, right) = flow_line_bounds(
+    let (line_left, line_right, float_y) = loop {
+        let (line_left, line_right) = flow_line_bounds(
             context.content_x,
             context.content_width,
             float_y,
@@ -2153,24 +2218,22 @@ fn place_flow_float<M: TextMeasurer>(
             context.spacing_x,
             context.active_floats,
         );
-        line_left = left;
-        line_right = right;
 
         let available_width = (line_right - line_left).max(0.0);
         if desired_width <= available_width + 0.001 {
-            break;
+            break (line_left, line_right, float_y);
         }
 
         let Some(next_y) = next_flow_float_bottom(context.active_floats, float_y) else {
-            break;
+            break (line_left, line_right, float_y);
         };
 
         if next_y <= float_y + 0.001 {
-            break;
+            break (line_left, line_right, float_y);
         }
 
         float_y = next_y;
-    }
+    };
 
     let float_x = match side {
         AlignX::Left => line_left,
@@ -2545,7 +2608,6 @@ fn extract_inline_text(
 
 /// Resolve paragraph children by word-wrapping text content.
 /// Returns (fragments, total_content_height).
-#[allow(unused_assignments)]
 fn resolve_paragraph_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[ElementId],
@@ -2567,7 +2629,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     let mut line_height: f32 = 0.0;
 
     prune_flow_floats(active_floats, cursor_y);
-    let (mut line_left, mut line_right) = flow_line_bounds(
+    let (mut line_left, _) = flow_line_bounds(
         content_x,
         content_width,
         cursor_y,
@@ -2588,7 +2650,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) = flow_line_bounds(
+                let (next_line_left, _) = flow_line_bounds(
                     content_x,
                     content_width,
                     cursor_y,
@@ -2596,6 +2658,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     spacing_x,
                     active_floats,
                 );
+                line_left = next_line_left;
                 cursor_x = line_left;
             }
 
@@ -2617,7 +2680,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 active_floats.push(flow_float);
             }
 
-            (line_left, line_right) = flow_line_bounds(
+            let (next_line_left, _) = flow_line_bounds(
                 content_x,
                 content_width,
                 cursor_y,
@@ -2625,6 +2688,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 spacing_x,
                 active_floats,
             );
+            line_left = next_line_left;
             if line_height == 0.0 || cursor_x < line_left {
                 cursor_x = line_left;
             }
@@ -2663,7 +2727,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
         // Add leading space if content starts with whitespace
         if starts_with_space && !words.is_empty() {
-            (line_left, line_right) = flow_line_bounds(
+            let (next_line_left, line_right) = flow_line_bounds(
                 content_x,
                 content_width,
                 cursor_y,
@@ -2671,6 +2735,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 spacing_x,
                 active_floats,
             );
+            line_left = next_line_left;
             if cursor_x < line_left {
                 cursor_x = line_left;
             }
@@ -2678,7 +2743,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) = flow_line_bounds(
+                let (next_line_left, _) = flow_line_bounds(
                     content_x,
                     content_width,
                     cursor_y,
@@ -2686,6 +2751,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     spacing_x,
                     active_floats,
                 );
+                line_left = next_line_left;
                 cursor_x = line_left;
             }
             cursor_x += space_width;
@@ -2697,7 +2763,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
             loop {
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) = flow_line_bounds(
+                let (next_line_left, line_right) = flow_line_bounds(
                     content_x,
                     content_width,
                     cursor_y,
@@ -2705,6 +2771,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     spacing_x,
                     active_floats,
                 );
+                line_left = next_line_left;
 
                 if cursor_x < line_left {
                     cursor_x = line_left;
@@ -2751,7 +2818,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
             // Add space after word (unless last word)
             if i < words.len() - 1 {
-                (line_left, line_right) = flow_line_bounds(
+                let (next_line_left, line_right) = flow_line_bounds(
                     content_x,
                     content_width,
                     cursor_y,
@@ -2759,6 +2826,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     spacing_x,
                     active_floats,
                 );
+                line_left = next_line_left;
 
                 if cursor_x < line_left {
                     cursor_x = line_left;
@@ -2768,7 +2836,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     cursor_y += line_height + spacing_y;
                     line_height = 0.0;
                     prune_flow_floats(active_floats, cursor_y);
-                    (line_left, line_right) = flow_line_bounds(
+                    let (next_line_left, _) = flow_line_bounds(
                         content_x,
                         content_width,
                         cursor_y,
@@ -2776,6 +2844,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                         spacing_x,
                         active_floats,
                     );
+                    line_left = next_line_left;
                     cursor_x = line_left;
                 } else {
                     cursor_x += space_width;
@@ -2785,7 +2854,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
         // Add trailing space if content ends with whitespace
         if ends_with_space && !words.is_empty() {
-            (line_left, line_right) = flow_line_bounds(
+            let (next_line_left, line_right) = flow_line_bounds(
                 content_x,
                 content_width,
                 cursor_y,
@@ -2793,6 +2862,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 spacing_x,
                 active_floats,
             );
+            line_left = next_line_left;
 
             if cursor_x < line_left {
                 cursor_x = line_left;
@@ -2801,7 +2871,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
-                (line_left, line_right) = flow_line_bounds(
+                let (next_line_left, _) = flow_line_bounds(
                     content_x,
                     content_width,
                     cursor_y,
@@ -2809,6 +2879,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     spacing_x,
                     active_floats,
                 );
+                line_left = next_line_left;
                 cursor_x = line_left;
             }
             cursor_x += space_width;

@@ -9,11 +9,11 @@ use super::attrs::{
 use super::deserialize::decode_tree;
 use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{
-    font_info_with_inheritance, layout_tree, Constraint, FontContext, SkiaTextMeasurer,
+    Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance, layout_tree,
 };
 use super::scrollbar;
 use crate::assets::{self, AssetStatus};
-use crate::renderer::{make_font_with_style, DrawCmd};
+use crate::renderer::{DrawCmd, make_font_with_style};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 
@@ -991,6 +991,7 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
     (metrics.ascent.abs(), metrics.descent)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_text_decorations(
     commands: &mut Vec<DrawCmd>,
     x: f32,
@@ -1245,9 +1246,11 @@ mod tests {
 
         let commands = render_tree(&tree);
 
-        assert!(commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _))));
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
+        );
     }
 
     #[test]
@@ -1289,9 +1292,11 @@ mod tests {
             .collect();
 
         assert_eq!(decoration_rects.len(), 2);
-        assert!(decoration_rects
-            .iter()
-            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
+        assert!(
+            decoration_rects
+                .iter()
+                .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
+        );
     }
 
     #[test]
@@ -2115,9 +2120,11 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert!(!commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
+        assert!(
+            !commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
+        );
     }
 
     #[test]

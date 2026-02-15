@@ -2,6 +2,6 @@
 //!
 //! Each backend provides a way to create a window/surface and run an event loop.
 
+pub mod drm;
 pub mod raster;
 pub mod wayland;
-pub mod drm;

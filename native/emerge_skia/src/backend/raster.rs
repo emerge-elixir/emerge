@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use skia_safe::{surfaces, ColorType, ImageInfo};
+use skia_safe::{ColorType, ImageInfo, surfaces};
 
 use crate::renderer::{RenderState, Renderer};
 
@@ -112,12 +112,7 @@ impl RasterBackend {
         );
 
         let surface = self.renderer.surface_mut();
-        surface.read_pixels(
-            &info,
-            &mut data,
-            (self.width * 4) as usize,
-            (0, 0),
-        );
+        surface.read_pixels(&info, &mut data, (self.width * 4) as usize, (0, 0));
 
         RasterFrame {
             width: self.width,
