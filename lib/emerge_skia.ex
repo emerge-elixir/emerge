@@ -77,16 +77,16 @@ defmodule EmergeSkia do
 
       drm_card = if is_nil(drm_card), do: nil, else: to_string(drm_card)
 
-      case Native.start_opts(
-             backend,
-             title,
-             width,
-             height,
-             drm_card,
-             hw_cursor,
-             input_log,
-             render_log
-           ) do
+      case Native.start_opts(%{
+             backend: backend,
+             title: title,
+             width: width,
+             height: height,
+             drm_card: drm_card,
+             hw_cursor: hw_cursor,
+             input_log: input_log,
+             render_log: render_log
+           }) do
         ref when is_reference(ref) ->
           :ok = configure_assets_for_renderer(ref)
           {:ok, ref}

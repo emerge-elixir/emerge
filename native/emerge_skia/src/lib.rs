@@ -173,9 +173,19 @@ struct StartConfig {
     render_log: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_tree_actor(
-    tree_rx: Receiver<TreeMsg>,
+#[derive(rustler::NifMap)]
+struct StartOptsNif {
+    backend: String,
+    title: String,
+    width: u32,
+    height: u32,
+    drm_card: Option<String>,
+    hw_cursor: bool,
+    input_log: bool,
+    render_log: bool,
+}
+
+struct TreeActorConfig {
     render_sender: RenderSender,
     event_tx: Sender<EventMsg>,
     render_counter: Arc<AtomicU64>,
@@ -183,8 +193,20 @@ fn spawn_tree_actor(
     wayland_proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
     initial_width: u32,
     initial_height: u32,
-) -> thread::JoinHandle<()> {
+}
+
+fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let TreeActorConfig {
+            render_sender,
+            event_tx,
+            render_counter,
+            log_input,
+            wayland_proxy,
+            initial_width,
+            initial_height,
+        } = config;
+
         let mut tree = ElementTree::new();
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
@@ -614,13 +636,15 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
             spawn_tree_actor(
                 tree_rx,
-                render_sender.clone(),
-                event_tx.clone(),
-                Arc::clone(&render_counter),
-                log_input,
-                Some(proxy.clone()),
-                initial_width,
-                initial_height,
+                TreeActorConfig {
+                    render_sender: render_sender.clone(),
+                    event_tx: event_tx.clone(),
+                    render_counter: Arc::clone(&render_counter),
+                    log_input,
+                    wayland_proxy: Some(proxy.clone()),
+                    initial_width,
+                    initial_height,
+                },
             );
 
             (BackendKind::Wayland, Some(proxy))
@@ -660,26 +684,30 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
             thread::spawn(move || {
                 drm::run(
-                    stop_for_thread,
-                    running_flag_clone,
-                    render_rx,
-                    cursor_rx,
-                    event_tx_clone,
-                    screen_tx,
-                    render_counter_clone,
+                    drm::DrmRunContext {
+                        stop: stop_for_thread,
+                        running_flag: running_flag_clone,
+                        render_rx,
+                        cursor_rx,
+                        event_tx: event_tx_clone,
+                        screen_tx,
+                        render_counter: render_counter_clone,
+                    },
                     drm_config,
                 );
             });
 
             spawn_tree_actor(
                 tree_rx,
-                render_sender.clone(),
-                event_tx.clone(),
-                Arc::clone(&render_counter),
-                log_input,
-                None,
-                initial_width,
-                initial_height,
+                TreeActorConfig {
+                    render_sender: render_sender.clone(),
+                    event_tx: event_tx.clone(),
+                    render_counter: Arc::clone(&render_counter),
+                    log_input,
+                    wayland_proxy: None,
+                    initial_width,
+                    initial_height,
+                },
             );
 
             (BackendKind::Drm, None)
@@ -722,18 +750,8 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
 }
 
 #[rustler::nif]
-#[allow(clippy::too_many_arguments)]
-fn start_opts(
-    backend: String,
-    title: String,
-    width: u32,
-    height: u32,
-    drm_card: Option<String>,
-    hw_cursor: bool,
-    input_log: bool,
-    render_log: bool,
-) -> NifResult<ResourceArc<RendererResource>> {
-    let backend = backend.to_lowercase();
+fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
+    let backend = opts.backend.to_lowercase();
     let backend = match backend.as_str() {
         "drm" => BackendKind::Drm,
         "wayland" | "x11" => BackendKind::Wayland,
@@ -746,13 +764,13 @@ fn start_opts(
 
     start_with_config(StartConfig {
         backend,
-        title,
-        width,
-        height,
-        drm_card,
-        drm_hw_cursor: hw_cursor,
-        drm_input_log: input_log,
-        render_log,
+        title: opts.title,
+        width: opts.width,
+        height: opts.height,
+        drm_card: opts.drm_card,
+        drm_hw_cursor: opts.hw_cursor,
+        drm_input_log: opts.input_log,
+        render_log: opts.render_log,
     })
 }
 

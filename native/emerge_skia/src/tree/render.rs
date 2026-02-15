@@ -365,7 +365,16 @@ fn render_text_content(
     }
 
     push_text_decorations(
-        commands, text_x, baseline_y, text_width, font_size, color, underline, strike,
+        commands,
+        TextDecorationSpec {
+            x: text_x,
+            baseline_y,
+            width: text_width,
+            font_size,
+            color,
+            underline,
+            strike,
+        },
     );
 }
 
@@ -422,13 +431,15 @@ fn render_paragraph_content(
                 let (word_width, _) = font.measure_str(&frag.text, None);
                 push_text_decorations(
                     commands,
-                    frag.x,
-                    baseline_y,
-                    word_width,
-                    frag.font_size,
-                    frag.color,
-                    frag.underline,
-                    frag.strike,
+                    TextDecorationSpec {
+                        x: frag.x,
+                        baseline_y,
+                        width: word_width,
+                        font_size: frag.font_size,
+                        color: frag.color,
+                        underline: frag.underline,
+                        strike: frag.strike,
+                    },
                 );
             }
         }
@@ -991,9 +1002,8 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
     (metrics.ascent.abs(), metrics.descent)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn push_text_decorations(
-    commands: &mut Vec<DrawCmd>,
+#[derive(Clone, Copy, Debug)]
+struct TextDecorationSpec {
     x: f32,
     baseline_y: f32,
     width: f32,
@@ -1001,7 +1011,19 @@ fn push_text_decorations(
     color: u32,
     underline: bool,
     strike: bool,
-) {
+}
+
+fn push_text_decorations(commands: &mut Vec<DrawCmd>, spec: TextDecorationSpec) {
+    let TextDecorationSpec {
+        x,
+        baseline_y,
+        width,
+        font_size,
+        color,
+        underline,
+        strike,
+    } = spec;
+
     if width <= 0.0 || (!underline && !strike) {
         return;
     }
