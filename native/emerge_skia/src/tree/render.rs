@@ -57,14 +57,11 @@ fn render_element(
 
     let clip_state = begin_overflow_clipping(commands, frame, attrs);
 
-    render_text_content(
-        commands,
-        frame,
-        attrs,
-        inherited,
-        element.kind == ElementKind::Text,
-    );
-    render_image_content(commands, frame, attrs, element.kind == ElementKind::Image);
+    match element.kind {
+        ElementKind::Text => render_text_content(commands, frame, attrs, inherited),
+        ElementKind::Image => render_image_content(commands, frame, attrs),
+        _ => {}
+    }
 
     if element.kind == ElementKind::Paragraph {
         render_paragraph_content(tree, element, commands, &element_context);
@@ -225,7 +222,12 @@ fn begin_overflow_clipping(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &At
         push_border_clip(commands, frame, attrs);
     }
 
-    push_overflow_clip(commands, clip.as_ref(), compositing);
+    let mode = if compositing {
+        ClipMode::Hard
+    } else {
+        ClipMode::AntiAlias
+    };
+    push_overflow_clip(commands, clip.as_ref(), mode);
 
     ClipState {
         inner_active: clip.is_some(),
@@ -262,12 +264,7 @@ fn render_text_content(
     frame: Frame,
     attrs: &Attrs,
     inherited: &FontContext,
-    is_text: bool,
 ) {
-    if !is_text {
-        return;
-    }
-
     let Some(content) = attrs.content.as_deref() else {
         return;
     };
@@ -300,11 +297,10 @@ fn render_text_content(
         .or(inherited.font_word_spacing)
         .unwrap_or(0.0);
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
-    let padding = resolved_padding(attrs.padding.as_ref());
-    let border = resolved_border_width(attrs.border_width.as_ref());
-    let inset_left = padding.left + border.left;
-    let inset_top = padding.top + border.top;
-    let inset_right = padding.right + border.right;
+    let insets = content_insets(attrs);
+    let inset_left = insets.left;
+    let inset_top = insets.top;
+    let inset_right = insets.right;
     let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
     let text_width = measure_text_width_with_font(
         content,
@@ -368,38 +364,18 @@ fn render_text_content(
         }
     }
 
-    if underline || strike {
-        let thickness = (font_size * 0.06).max(1.0);
-        if text_width > 0.0 {
-            if underline {
-                let y = baseline_y + font_size * 0.08 - thickness / 2.0;
-                commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
-            }
-            if strike {
-                let y = baseline_y - font_size * 0.3 - thickness / 2.0;
-                commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
-            }
-        }
-    }
+    push_text_decorations(
+        commands, text_x, baseline_y, text_width, font_size, color, underline, strike,
+    );
 }
 
-fn render_image_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs, is_image: bool) {
-    if !is_image {
-        return;
-    }
-
+fn render_image_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
     let Some(source) = attrs.image_src.as_ref() else {
         return;
     };
 
     let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
-    let padding = resolved_padding(attrs.padding.as_ref());
-    let border = resolved_border_width(attrs.border_width.as_ref());
-    let draw_x = frame.x + padding.left + border.left;
-    let draw_y = frame.y + padding.top + border.top;
-    let draw_w = (frame.width - padding.left - padding.right - border.left - border.right).max(0.0);
-    let draw_h =
-        (frame.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
+    let (draw_x, draw_y, draw_w, draw_h) = content_rect(frame, attrs);
 
     push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
 }
@@ -441,20 +417,19 @@ fn render_paragraph_content(
             ));
 
             if frag.underline || frag.strike {
-                let thickness = (frag.font_size * 0.06).max(1.0);
                 let font =
                     make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
                 let (word_width, _) = font.measure_str(&frag.text, None);
-                if word_width > 0.0 {
-                    if frag.underline {
-                        let y = baseline_y + frag.font_size * 0.08 - thickness / 2.0;
-                        commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
-                    }
-                    if frag.strike {
-                        let y = baseline_y - frag.font_size * 0.3 - thickness / 2.0;
-                        commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
-                    }
-                }
+                push_text_decorations(
+                    commands,
+                    frag.x,
+                    baseline_y,
+                    word_width,
+                    frag.font_size,
+                    frag.color,
+                    frag.underline,
+                    frag.strike,
+                );
             }
         }
     }
@@ -607,6 +582,33 @@ fn resolved_border_width(border_width: Option<&BorderWidth>) -> ResolvedInsets {
     }
 }
 
+fn content_insets(attrs: &Attrs) -> ResolvedInsets {
+    let padding = resolved_padding(attrs.padding.as_ref());
+    let border = resolved_border_width(attrs.border_width.as_ref());
+    ResolvedInsets {
+        top: padding.top + border.top,
+        right: padding.right + border.right,
+        bottom: padding.bottom + border.bottom,
+        left: padding.left + border.left,
+    }
+}
+
+fn content_rect(frame: Frame, attrs: &Attrs) -> (f32, f32, f32, f32) {
+    let insets = content_insets(attrs);
+    let x = frame.x + insets.left;
+    let y = frame.y + insets.top;
+    let w = (frame.width - insets.left - insets.right).max(0.0);
+    let h = (frame.height - insets.top - insets.bottom).max(0.0);
+    (x, y, w, h)
+}
+
+/// Describes the clip operation mode to apply.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ClipMode {
+    AntiAlias,
+    Hard,
+}
+
 /// Describes the type of overflow clip to apply.
 #[derive(Clone, Debug, PartialEq)]
 enum OverflowClip {
@@ -623,18 +625,8 @@ fn overflow_clip(frame: Frame, attrs: &super::attrs::Attrs) -> Option<OverflowCl
         return None;
     }
 
-    let padding = resolved_padding(attrs.padding.as_ref());
     let border = resolved_border_width(attrs.border_width.as_ref());
-
-    let inset_left = padding.left + border.left;
-    let inset_top = padding.top + border.top;
-    let inset_right = padding.right + border.right;
-    let inset_bottom = padding.bottom + border.bottom;
-
-    let content_x = frame.x + inset_left;
-    let content_y = frame.y + inset_top;
-    let content_width = frame.width - inset_left - inset_right;
-    let content_height = frame.height - inset_top - inset_bottom;
+    let (content_x, content_y, content_width, content_height) = content_rect(frame, attrs);
 
     let (x, width) = if clip_x {
         (content_x, content_width)
@@ -740,24 +732,24 @@ fn push_border_clip(
     }
 }
 
-fn push_overflow_clip(commands: &mut Vec<DrawCmd>, clip: Option<&OverflowClip>, hard: bool) {
+fn push_overflow_clip(commands: &mut Vec<DrawCmd>, clip: Option<&OverflowClip>, mode: ClipMode) {
     match clip {
         Some(OverflowClip::Rect(x, y, w, h)) => {
-            if hard {
+            if mode == ClipMode::Hard {
                 commands.push(DrawCmd::PushClipHard(*x, *y, *w, *h));
             } else {
                 commands.push(DrawCmd::PushClip(*x, *y, *w, *h));
             }
         }
         Some(OverflowClip::Rounded(x, y, w, h, r)) => {
-            if hard {
+            if mode == ClipMode::Hard {
                 commands.push(DrawCmd::PushClipRoundedHard(*x, *y, *w, *h, *r));
             } else {
                 commands.push(DrawCmd::PushClipRounded(*x, *y, *w, *h, *r));
             }
         }
         Some(OverflowClip::RoundedCorners(x, y, w, h, tl, tr, br, bl)) => {
-            if hard {
+            if mode == ClipMode::Hard {
                 commands.push(DrawCmd::PushClipRoundedCornersHard(
                     *x, *y, *w, *h, *tl, *tr, *br, *bl,
                 ));
@@ -997,6 +989,31 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
     let font = make_font_with_style(family, weight, italic, font_size);
     let (_, metrics) = font.metrics();
     (metrics.ascent.abs(), metrics.descent)
+}
+
+fn push_text_decorations(
+    commands: &mut Vec<DrawCmd>,
+    x: f32,
+    baseline_y: f32,
+    width: f32,
+    font_size: f32,
+    color: u32,
+    underline: bool,
+    strike: bool,
+) {
+    if width <= 0.0 || (!underline && !strike) {
+        return;
+    }
+
+    let thickness = (font_size * 0.06).max(1.0);
+    if underline {
+        let y = baseline_y + font_size * 0.08 - thickness / 2.0;
+        commands.push(DrawCmd::Rect(x, y, width, thickness, color));
+    }
+    if strike {
+        let y = baseline_y - font_size * 0.3 - thickness / 2.0;
+        commands.push(DrawCmd::Rect(x, y, width, thickness, color));
+    }
 }
 
 fn measure_text_width_with_font(
