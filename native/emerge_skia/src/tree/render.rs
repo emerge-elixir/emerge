@@ -7,13 +7,13 @@ use super::attrs::{
     ImageFit, ImageSource, Padding, TextAlign,
 };
 use super::deserialize::decode_tree;
-use super::element::{ElementId, ElementKind, ElementTree, Frame};
+use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{
-    Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance, layout_tree,
+    font_info_with_inheritance, layout_tree, Constraint, FontContext, SkiaTextMeasurer,
 };
 use super::scrollbar;
 use crate::assets::{self, AssetStatus};
-use crate::renderer::{DrawCmd, make_font_with_style};
+use crate::renderer::{make_font_with_style, DrawCmd};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 
@@ -53,362 +53,57 @@ fn render_element(
 
     let transform_state = push_element_transform(commands, frame, attrs);
 
-    // Render "behind" elements first (underlay)
+    render_pre_layers(commands, frame, attrs, radius);
+
+    let clip_state = begin_overflow_clipping(commands, frame, attrs);
+
+    render_text_content(
+        commands,
+        frame,
+        attrs,
+        inherited,
+        element.kind == ElementKind::Text,
+    );
+    render_image_content(commands, frame, attrs, element.kind == ElementKind::Image);
+
+    if element.kind == ElementKind::Paragraph {
+        render_paragraph_content(tree, element, commands, &element_context);
+    } else {
+        render_children_content(tree, element, commands, &element_context, attrs);
+    }
+
+    finish_overflow_clipping(commands, frame, attrs, clip_state);
+
+    render_nearby_overlays(commands, frame, attrs);
+
+    pop_element_transform(commands, transform_state);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ClipState {
+    inner_active: bool,
+    compositing: bool,
+}
+
+fn render_pre_layers(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    radius: Option<&BorderRadius>,
+) {
+    render_nearby_behind(commands, frame, attrs);
+    push_box_shadows(commands, frame, attrs, radius, false);
+    push_background(commands, frame, attrs, radius);
+    push_box_shadows(commands, frame, attrs, radius, true);
+}
+
+fn render_nearby_behind(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
     if let Some(behind_bytes) = &attrs.behind {
         render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
     }
+}
 
-    // Render outer box shadows before the background
-    if let Some(shadows) = &attrs.box_shadows {
-        for shadow in shadows {
-            if !shadow.inset {
-                commands.push(DrawCmd::Shadow(
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    shadow.offset_x as f32,
-                    shadow.offset_y as f32,
-                    shadow.blur as f32,
-                    shadow.size as f32,
-                    border_radius_uniform(radius),
-                    color_to_u32(&shadow.color),
-                ));
-            }
-        }
-    }
-
-    if let Some(background) = &attrs.background {
-        match background {
-            Background::Color(color) => {
-                let fill = color_to_u32(color);
-                push_background_rect(commands, frame, radius, fill);
-            }
-            Background::Gradient { from, to, angle } => {
-                commands.push(DrawCmd::Gradient(
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    color_to_u32(from),
-                    color_to_u32(to),
-                    *angle as f32,
-                    border_radius_uniform(radius),
-                ));
-            }
-            Background::Image { source, fit } => {
-                let clipped = push_border_clip(commands, frame, attrs);
-                push_image_for_source(
-                    commands,
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    source,
-                    *fit,
-                );
-                if clipped {
-                    commands.push(DrawCmd::PopClip);
-                }
-            }
-        }
-    }
-
-    // Render inset box shadows after the background
-    if let Some(shadows) = &attrs.box_shadows {
-        for shadow in shadows {
-            if shadow.inset {
-                commands.push(DrawCmd::InsetShadow(
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    shadow.offset_x as f32,
-                    shadow.offset_y as f32,
-                    shadow.blur as f32,
-                    shadow.size as f32,
-                    border_radius_uniform(radius),
-                    color_to_u32(&shadow.color),
-                ));
-            }
-        }
-    }
-
-    // When border_radius + border_width + overflow clip are all present, use
-    // nested clips: outer clip at element bounds (outer radius) shapes the
-    // element, inner clip at content bounds (inner radius) clips children.
-    // The border is drawn between inner pop and outer pop, covering the inner
-    // clip's AA fringe.  No SaveLayerAlpha needed.
-    let clip = overflow_clip(frame, attrs);
-    let compositing = clip.is_some() && needs_compositing_clip(attrs);
-
-    // Push outer shape clip when compositing (covers inner clip AA)
-    if compositing {
-        push_border_clip(commands, frame, attrs);
-    }
-
-    // Push inner content clip
-    push_overflow_clip(commands, clip.as_ref(), compositing);
-
-    if element.kind == ElementKind::Text
-        && let Some(content) = attrs.content.as_deref()
-    {
-        // Use inherited font context for missing values
-        let font_size = attrs
-            .font_size
-            .map(|s| s as f32)
-            .or(inherited.font_size)
-            .unwrap_or(16.0);
-        let color = attrs
-            .font_color
-            .as_ref()
-            .map(color_to_u32)
-            .or(inherited.font_color)
-            .unwrap_or(0xFFFFFFFF);
-        let underline = attrs
-            .font_underline
-            .or(inherited.font_underline)
-            .unwrap_or(false);
-        let strike = attrs.font_strike.or(inherited.font_strike).unwrap_or(false);
-        let letter_spacing = attrs
-            .font_letter_spacing
-            .map(|v| v as f32)
-            .or(inherited.font_letter_spacing)
-            .unwrap_or(0.0);
-        let word_spacing = attrs
-            .font_word_spacing
-            .map(|v| v as f32)
-            .or(inherited.font_word_spacing)
-            .unwrap_or(0.0);
-        let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
-        let padding = resolved_padding(attrs.padding.as_ref());
-        let border = resolved_border_width(attrs.border_width.as_ref());
-        let inset_left = padding.left + border.left;
-        let inset_top = padding.top + border.top;
-        let inset_right = padding.right + border.right;
-        let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
-        let text_width = measure_text_width_with_font(
-            content,
-            font_size,
-            &family,
-            weight,
-            italic,
-            letter_spacing,
-            word_spacing,
-        );
-        let content_width = frame.width - inset_left - inset_right;
-        let text_align = attrs
-            .text_align
-            .or(inherited.text_align)
-            .unwrap_or_default();
-        let text_x = match text_align {
-            TextAlign::Left => frame.x + inset_left,
-            TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
-            TextAlign::Right => frame.x + frame.width - inset_right - text_width,
-        };
-        let baseline_y = frame.y + inset_top + ascent;
-
-        if letter_spacing == 0.0 && word_spacing == 0.0 {
-            commands.push(DrawCmd::TextWithFont(
-                text_x,
-                baseline_y,
-                content.to_string(),
-                font_size,
-                color,
-                family.clone(),
-                weight,
-                italic,
-            ));
-        } else {
-            let measure_font = make_font_with_style(&family, weight, italic, font_size);
-            let mut cursor_x = text_x;
-            let mut chars = content.chars().peekable();
-
-            while let Some(ch) = chars.next() {
-                let glyph = ch.to_string();
-                commands.push(DrawCmd::TextWithFont(
-                    cursor_x,
-                    baseline_y,
-                    glyph.clone(),
-                    font_size,
-                    color,
-                    family.clone(),
-                    weight,
-                    italic,
-                ));
-
-                let (glyph_width, _bounds) = measure_font.measure_str(&glyph, None);
-                cursor_x += glyph_width;
-
-                if chars.peek().is_some() {
-                    cursor_x += letter_spacing;
-                    if ch.is_whitespace() {
-                        cursor_x += word_spacing;
-                    }
-                }
-            }
-        }
-
-        if underline || strike {
-            let thickness = (font_size * 0.06).max(1.0);
-            if text_width > 0.0 {
-                if underline {
-                    let y = baseline_y + font_size * 0.08 - thickness / 2.0;
-                    commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
-                }
-                if strike {
-                    let y = baseline_y - font_size * 0.3 - thickness / 2.0;
-                    commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
-                }
-            }
-        }
-    }
-
-    if element.kind == ElementKind::Image
-        && let Some(source) = attrs.image_src.as_ref()
-    {
-        let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
-        let padding = resolved_padding(attrs.padding.as_ref());
-        let border = resolved_border_width(attrs.border_width.as_ref());
-        let draw_x = frame.x + padding.left + border.left;
-        let draw_y = frame.y + padding.top + border.top;
-        let draw_w =
-            (frame.width - padding.left - padding.right - border.left - border.right).max(0.0);
-        let draw_h =
-            (frame.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
-
-        push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
-    }
-
-    // Render paragraph fragments (word-wrapped text)
-    if element.kind == ElementKind::Paragraph {
-        for child_id in &element.children {
-            let should_render_float_child = tree.get(child_id).is_some_and(|child| {
-                matches!(
-                    child.attrs.align_x,
-                    Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
-                )
-            });
-
-            if should_render_float_child {
-                render_element(tree, child_id, commands, &element_context);
-            }
-        }
-
-        if let Some(fragments) = &attrs.paragraph_fragments {
-            for frag in fragments {
-                let baseline_y = frag.y + frag.ascent;
-                commands.push(DrawCmd::TextWithFont(
-                    frag.x,
-                    baseline_y,
-                    frag.text.clone(),
-                    frag.font_size,
-                    frag.color,
-                    frag.family.clone(),
-                    frag.weight,
-                    frag.italic,
-                ));
-
-                if frag.underline || frag.strike {
-                    let thickness = (frag.font_size * 0.06).max(1.0);
-                    let font = make_font_with_style(
-                        &frag.family,
-                        frag.weight,
-                        frag.italic,
-                        frag.font_size,
-                    );
-                    let (word_width, _) = font.measure_str(&frag.text, None);
-                    if word_width > 0.0 {
-                        if frag.underline {
-                            let y = baseline_y + frag.font_size * 0.08 - thickness / 2.0;
-                            commands
-                                .push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
-                        }
-                        if frag.strike {
-                            let y = baseline_y - frag.font_size * 0.3 - thickness / 2.0;
-                            commands
-                                .push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Skip normal child rendering for paragraphs
-        if clip.is_some() {
-            commands.push(DrawCmd::PopClip);
-        }
-
-        // Border between inner and outer clip to cover AA fringe
-        push_border_commands(commands, frame, attrs);
-
-        if compositing {
-            push_scrollbar_thumbs(commands, frame, attrs);
-            commands.push(DrawCmd::PopClip); // pop outer compositing clip
-        } else if push_border_clip(commands, frame, attrs) {
-            push_scrollbar_thumbs(commands, frame, attrs);
-            commands.push(DrawCmd::PopClip);
-        } else {
-            push_scrollbar_thumbs(commands, frame, attrs);
-        }
-
-        // Render nearby positioned elements
-        if let Some(above_bytes) = &attrs.above {
-            render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
-        }
-        if let Some(below_bytes) = &attrs.below {
-            render_nearby_element(below_bytes, frame, NearbyPosition::Below, commands);
-        }
-        if let Some(on_left_bytes) = &attrs.on_left {
-            render_nearby_element(on_left_bytes, frame, NearbyPosition::OnLeft, commands);
-        }
-        if let Some(on_right_bytes) = &attrs.on_right {
-            render_nearby_element(on_right_bytes, frame, NearbyPosition::OnRight, commands);
-        }
-        if let Some(in_front_bytes) = &attrs.in_front {
-            render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
-        }
-
-        pop_element_transform(commands, transform_state);
-        return;
-    }
-
-    let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
-    let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
-    let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
-    let has_children = !element.children.is_empty();
-
-    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
-        commands.push(DrawCmd::Save);
-        commands.push(DrawCmd::Translate(-scroll_x, -scroll_y));
-    }
-
-    for child_id in &element.children {
-        render_element(tree, child_id, commands, &element_context);
-    }
-
-    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
-        commands.push(DrawCmd::Restore);
-    }
-
-    if clip.is_some() {
-        commands.push(DrawCmd::PopClip);
-    }
-
-    // Border between inner and outer clip to cover AA fringe
-    push_border_commands(commands, frame, attrs);
-
-    if compositing {
-        push_scrollbar_thumbs(commands, frame, attrs);
-        commands.push(DrawCmd::PopClip); // pop outer compositing clip
-    } else if push_border_clip(commands, frame, attrs) {
-        push_scrollbar_thumbs(commands, frame, attrs);
-        commands.push(DrawCmd::PopClip);
-    } else {
-        push_scrollbar_thumbs(commands, frame, attrs);
-    }
-
-    // Render nearby positioned elements (above, below, on_left, on_right)
+fn render_nearby_overlays(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
     if let Some(above_bytes) = &attrs.above {
         render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
     }
@@ -421,13 +116,374 @@ fn render_element(
     if let Some(on_right_bytes) = &attrs.on_right {
         render_nearby_element(on_right_bytes, frame, NearbyPosition::OnRight, commands);
     }
-
-    // Render "in_front" elements last (overlay)
     if let Some(in_front_bytes) = &attrs.in_front {
         render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
     }
+}
 
-    pop_element_transform(commands, transform_state);
+fn push_box_shadows(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    radius: Option<&BorderRadius>,
+    inset: bool,
+) {
+    let Some(shadows) = &attrs.box_shadows else {
+        return;
+    };
+
+    for shadow in shadows {
+        if shadow.inset != inset {
+            continue;
+        }
+
+        if inset {
+            commands.push(DrawCmd::InsetShadow(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                shadow.offset_x as f32,
+                shadow.offset_y as f32,
+                shadow.blur as f32,
+                shadow.size as f32,
+                border_radius_uniform(radius),
+                color_to_u32(&shadow.color),
+            ));
+        } else {
+            commands.push(DrawCmd::Shadow(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                shadow.offset_x as f32,
+                shadow.offset_y as f32,
+                shadow.blur as f32,
+                shadow.size as f32,
+                border_radius_uniform(radius),
+                color_to_u32(&shadow.color),
+            ));
+        }
+    }
+}
+
+fn push_background(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    radius: Option<&BorderRadius>,
+) {
+    let Some(background) = &attrs.background else {
+        return;
+    };
+
+    match background {
+        Background::Color(color) => {
+            let fill = color_to_u32(color);
+            push_background_rect(commands, frame, radius, fill);
+        }
+        Background::Gradient { from, to, angle } => {
+            commands.push(DrawCmd::Gradient(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                color_to_u32(from),
+                color_to_u32(to),
+                *angle as f32,
+                border_radius_uniform(radius),
+            ));
+        }
+        Background::Image { source, fit } => {
+            let clipped = push_border_clip(commands, frame, attrs);
+            push_image_for_source(
+                commands,
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                source,
+                *fit,
+            );
+            if clipped {
+                commands.push(DrawCmd::PopClip);
+            }
+        }
+    }
+}
+
+fn begin_overflow_clipping(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) -> ClipState {
+    // When border_radius + border_width + overflow clip are all present, use
+    // nested clips: outer clip at element bounds (outer radius) shapes the
+    // element, inner clip at content bounds (inner radius) clips children.
+    // The border is drawn between inner pop and outer pop, covering the inner
+    // clip's AA fringe.  No SaveLayerAlpha needed.
+    let clip = overflow_clip(frame, attrs);
+    let compositing = clip.is_some() && needs_compositing_clip(attrs);
+
+    if compositing {
+        push_border_clip(commands, frame, attrs);
+    }
+
+    push_overflow_clip(commands, clip.as_ref(), compositing);
+
+    ClipState {
+        inner_active: clip.is_some(),
+        compositing,
+    }
+}
+
+fn finish_overflow_clipping(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    clip_state: ClipState,
+) {
+    if clip_state.inner_active {
+        commands.push(DrawCmd::PopClip);
+    }
+
+    // Border between inner and outer clip to cover AA fringe
+    push_border_commands(commands, frame, attrs);
+
+    if clip_state.compositing {
+        push_scrollbar_thumbs(commands, frame, attrs);
+        commands.push(DrawCmd::PopClip); // pop outer compositing clip
+    } else if push_border_clip(commands, frame, attrs) {
+        push_scrollbar_thumbs(commands, frame, attrs);
+        commands.push(DrawCmd::PopClip);
+    } else {
+        push_scrollbar_thumbs(commands, frame, attrs);
+    }
+}
+
+fn render_text_content(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    inherited: &FontContext,
+    is_text: bool,
+) {
+    if !is_text {
+        return;
+    }
+
+    let Some(content) = attrs.content.as_deref() else {
+        return;
+    };
+
+    // Use inherited font context for missing values
+    let font_size = attrs
+        .font_size
+        .map(|s| s as f32)
+        .or(inherited.font_size)
+        .unwrap_or(16.0);
+    let color = attrs
+        .font_color
+        .as_ref()
+        .map(color_to_u32)
+        .or(inherited.font_color)
+        .unwrap_or(0xFFFFFFFF);
+    let underline = attrs
+        .font_underline
+        .or(inherited.font_underline)
+        .unwrap_or(false);
+    let strike = attrs.font_strike.or(inherited.font_strike).unwrap_or(false);
+    let letter_spacing = attrs
+        .font_letter_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_letter_spacing)
+        .unwrap_or(0.0);
+    let word_spacing = attrs
+        .font_word_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_word_spacing)
+        .unwrap_or(0.0);
+    let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+    let padding = resolved_padding(attrs.padding.as_ref());
+    let border = resolved_border_width(attrs.border_width.as_ref());
+    let inset_left = padding.left + border.left;
+    let inset_top = padding.top + border.top;
+    let inset_right = padding.right + border.right;
+    let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
+    let text_width = measure_text_width_with_font(
+        content,
+        font_size,
+        &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    );
+    let content_width = frame.width - inset_left - inset_right;
+    let text_align = attrs
+        .text_align
+        .or(inherited.text_align)
+        .unwrap_or_default();
+    let text_x = match text_align {
+        TextAlign::Left => frame.x + inset_left,
+        TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
+        TextAlign::Right => frame.x + frame.width - inset_right - text_width,
+    };
+    let baseline_y = frame.y + inset_top + ascent;
+
+    if letter_spacing == 0.0 && word_spacing == 0.0 {
+        commands.push(DrawCmd::TextWithFont(
+            text_x,
+            baseline_y,
+            content.to_string(),
+            font_size,
+            color,
+            family.clone(),
+            weight,
+            italic,
+        ));
+    } else {
+        let measure_font = make_font_with_style(&family, weight, italic, font_size);
+        let mut cursor_x = text_x;
+        let mut chars = content.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            let glyph = ch.to_string();
+            commands.push(DrawCmd::TextWithFont(
+                cursor_x,
+                baseline_y,
+                glyph.clone(),
+                font_size,
+                color,
+                family.clone(),
+                weight,
+                italic,
+            ));
+
+            let (glyph_width, _bounds) = measure_font.measure_str(&glyph, None);
+            cursor_x += glyph_width;
+
+            if chars.peek().is_some() {
+                cursor_x += letter_spacing;
+                if ch.is_whitespace() {
+                    cursor_x += word_spacing;
+                }
+            }
+        }
+    }
+
+    if underline || strike {
+        let thickness = (font_size * 0.06).max(1.0);
+        if text_width > 0.0 {
+            if underline {
+                let y = baseline_y + font_size * 0.08 - thickness / 2.0;
+                commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
+            }
+            if strike {
+                let y = baseline_y - font_size * 0.3 - thickness / 2.0;
+                commands.push(DrawCmd::Rect(text_x, y, text_width, thickness, color));
+            }
+        }
+    }
+}
+
+fn render_image_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs, is_image: bool) {
+    if !is_image {
+        return;
+    }
+
+    let Some(source) = attrs.image_src.as_ref() else {
+        return;
+    };
+
+    let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
+    let padding = resolved_padding(attrs.padding.as_ref());
+    let border = resolved_border_width(attrs.border_width.as_ref());
+    let draw_x = frame.x + padding.left + border.left;
+    let draw_y = frame.y + padding.top + border.top;
+    let draw_w = (frame.width - padding.left - padding.right - border.left - border.right).max(0.0);
+    let draw_h =
+        (frame.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
+
+    push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
+}
+
+fn render_paragraph_content(
+    tree: &ElementTree,
+    element: &Element,
+    commands: &mut Vec<DrawCmd>,
+    element_context: &FontContext,
+) {
+    let attrs = &element.attrs;
+
+    // Render floating children before paragraph fragments.
+    for child_id in &element.children {
+        let should_render_float_child = tree.get(child_id).is_some_and(|child| {
+            matches!(
+                child.attrs.align_x,
+                Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
+            )
+        });
+
+        if should_render_float_child {
+            render_element(tree, child_id, commands, element_context);
+        }
+    }
+
+    if let Some(fragments) = &attrs.paragraph_fragments {
+        for frag in fragments {
+            let baseline_y = frag.y + frag.ascent;
+            commands.push(DrawCmd::TextWithFont(
+                frag.x,
+                baseline_y,
+                frag.text.clone(),
+                frag.font_size,
+                frag.color,
+                frag.family.clone(),
+                frag.weight,
+                frag.italic,
+            ));
+
+            if frag.underline || frag.strike {
+                let thickness = (frag.font_size * 0.06).max(1.0);
+                let font =
+                    make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
+                let (word_width, _) = font.measure_str(&frag.text, None);
+                if word_width > 0.0 {
+                    if frag.underline {
+                        let y = baseline_y + frag.font_size * 0.08 - thickness / 2.0;
+                        commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                    }
+                    if frag.strike {
+                        let y = baseline_y - frag.font_size * 0.3 - thickness / 2.0;
+                        commands.push(DrawCmd::Rect(frag.x, y, word_width, thickness, frag.color));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_children_content(
+    tree: &ElementTree,
+    element: &Element,
+    commands: &mut Vec<DrawCmd>,
+    element_context: &FontContext,
+    attrs: &Attrs,
+) {
+    let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
+    let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
+    let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
+    let has_children = !element.children.is_empty();
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Save);
+        commands.push(DrawCmd::Translate(-scroll_x, -scroll_y));
+    }
+
+    for child_id in &element.children {
+        render_element(tree, child_id, commands, element_context);
+    }
+
+    if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
+        commands.push(DrawCmd::Restore);
+    }
 }
 
 fn push_image_for_source(
@@ -595,7 +651,11 @@ fn overflow_clip(frame: Frame, attrs: &super::attrs::Attrs) -> Option<OverflowCl
     let h = height.max(0.0);
 
     // When border-radius is set, use a rounded clip with inner radius reduced by border width
-    let max_border = border.left.max(border.top).max(border.right).max(border.bottom);
+    let max_border = border
+        .left
+        .max(border.top)
+        .max(border.right)
+        .max(border.bottom);
     match attrs.border_radius.as_ref() {
         Some(BorderRadius::Uniform(r)) if *r > 0.0 => {
             let inner_r = (*r as f32 - max_border).max(0.0);
@@ -680,11 +740,7 @@ fn push_border_clip(
     }
 }
 
-fn push_overflow_clip(
-    commands: &mut Vec<DrawCmd>,
-    clip: Option<&OverflowClip>,
-    hard: bool,
-) {
+fn push_overflow_clip(commands: &mut Vec<DrawCmd>, clip: Option<&OverflowClip>, hard: bool) {
     match clip {
         Some(OverflowClip::Rect(x, y, w, h)) => {
             if hard {
@@ -899,11 +955,7 @@ fn push_border_rect(
 }
 
 /// Push border draw commands for an element.
-fn push_border_commands(
-    commands: &mut Vec<DrawCmd>,
-    frame: Frame,
-    attrs: &super::attrs::Attrs,
-) {
+fn push_border_commands(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super::attrs::Attrs) {
     let radius = attrs.border_radius.as_ref();
     if let (Some(border_width), Some(border_color)) =
         (attrs.border_width.as_ref(), &attrs.border_color)
@@ -1176,11 +1228,9 @@ mod tests {
 
         let commands = render_tree(&tree);
 
-        assert!(
-            commands
-                .iter()
-                .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
-        );
+        assert!(commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _))));
     }
 
     #[test]
@@ -1222,11 +1272,9 @@ mod tests {
             .collect();
 
         assert_eq!(decoration_rects.len(), 2);
-        assert!(
-            decoration_rects
-                .iter()
-                .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
-        );
+        assert!(decoration_rects
+            .iter()
+            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
     }
 
     #[test]
@@ -2050,11 +2098,9 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert!(
-            !commands
-                .iter()
-                .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
-        );
+        assert!(!commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
     }
 
     #[test]
