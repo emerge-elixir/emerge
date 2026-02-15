@@ -4,10 +4,6 @@ use crate::tree::element::Element;
 
 pub(super) struct MockTextMeasurer;
 impl TextMeasurer for MockTextMeasurer {
-    fn measure(&self, text: &str, font_size: f32) -> (f32, f32) {
-        self.measure_with_font(text, font_size, "default", 400, false)
-    }
-
     fn measure_with_font(
         &self,
         text: &str,

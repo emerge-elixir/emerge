@@ -37,7 +37,6 @@ pub enum InputEvent {
     Key { key: String, action: u8, mods: u8 },
 
     /// Text input (character typed)
-    #[allow(dead_code)]
     Codepoint { codepoint: char, mods: u8 },
 
     /// Cursor entered/exited window

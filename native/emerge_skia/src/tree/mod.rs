@@ -7,8 +7,6 @@
 //! - Patch application for incremental updates
 //! - Layout engine for computing element frames
 
-#![allow(unused_imports)] // Re-exports are part of the public API even if unused internally.
-
 pub mod attrs;
 pub mod deserialize;
 pub mod element;
