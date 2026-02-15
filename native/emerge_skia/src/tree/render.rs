@@ -3,8 +3,8 @@
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 use super::attrs::{
-    Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, Font, FontStyle, FontWeight,
-    ImageFit, ImageSource, Padding, TextAlign,
+    Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, ImageFit, ImageSource,
+    Padding, TextAlign,
 };
 use super::deserialize::decode_tree;
 use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
@@ -995,8 +995,6 @@ fn push_border_commands(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &super
 }
 
 fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
-    use skia_safe::Font;
-
     let font = make_font_with_style(family, weight, italic, font_size);
     let (_, metrics) = font.metrics();
     (metrics.ascent.abs(), metrics.descent)

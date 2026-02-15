@@ -106,6 +106,10 @@ struct TreeResource {
     tree: Mutex<ElementTree>,
 }
 
+impl rustler::Resource for RendererResource {}
+
+impl rustler::Resource for TreeResource {}
+
 impl RendererResource {
     fn stop(&self) {
         assets::stop();
@@ -1101,11 +1105,8 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
 // NIF Registration
 // ============================================================================
 
-#[allow(non_local_definitions)]
 fn load(env: Env, _info: Term) -> bool {
-    let _ = rustler::resource!(RendererResource, env);
-    let _ = rustler::resource!(TreeResource, env);
-    true
+    env.register::<RendererResource>().is_ok() && env.register::<TreeResource>().is_ok()
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);

@@ -446,8 +446,8 @@ pub fn insert_image(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-#[allow(dead_code)]
-pub fn remove_image(id: &str) {
+#[cfg(test)]
+fn remove_image(id: &str) {
     if let Ok(mut cache) = get_image_cache().lock() {
         cache.remove(id);
     }
@@ -464,7 +464,6 @@ pub enum SurfaceSource {
         num_samples: usize,
         stencil_size: usize,
     },
-    #[allow(dead_code)]
     Raster,
 }
 
@@ -504,7 +503,6 @@ impl Renderer {
     }
 
     /// Create a new renderer with a CPU-backed surface (for raster backend).
-    #[allow(dead_code)]
     pub fn from_surface(surface: Surface) -> Self {
         Self {
             surface,
@@ -514,7 +512,6 @@ impl Renderer {
     }
 
     /// Get mutable access to the underlying Skia surface.
-    #[allow(dead_code)]
     pub fn surface_mut(&mut self) -> &mut Surface {
         &mut self.surface
     }

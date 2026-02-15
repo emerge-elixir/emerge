@@ -1,5 +1,6 @@
 use super::super::*;
 use super::common::*;
+use crate::tree::attrs::FontWeight;
 
 fn build_paragraph(
     paragraph_attrs: Attrs,

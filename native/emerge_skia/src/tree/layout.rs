@@ -6,8 +6,8 @@
 //! 2. Resolution (top-down): Assign frames with constraints
 
 use super::attrs::{
-    AlignX, AlignY, Attrs, BorderWidth, Color, Font, FontStyle, FontWeight, Length, MouseOverAttrs,
-    Padding, TextAlign, TextFragment, preserve_runtime_scroll_attrs,
+    AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
+    TextFragment, preserve_runtime_scroll_attrs,
 };
 use super::element::{ElementId, ElementKind, ElementTree, Frame};
 use crate::assets;
@@ -100,10 +100,6 @@ pub struct IntrinsicSize {
 
 /// Trait for measuring text dimensions.
 pub trait TextMeasurer {
-    /// Measure text and return (width, height) using the default font.
-    #[allow(dead_code)]
-    fn measure(&self, text: &str, font_size: f32) -> (f32, f32);
-
     /// Measure text with custom font and return (width, height).
     fn measure_with_font(
         &self,
@@ -122,10 +118,6 @@ pub trait TextMeasurer {
 pub struct SkiaTextMeasurer;
 
 impl TextMeasurer for SkiaTextMeasurer {
-    fn measure(&self, text: &str, font_size: f32) -> (f32, f32) {
-        self.measure_with_font(text, font_size, "default", 400, false)
-    }
-
     fn measure_with_font(
         &self,
         text: &str,
@@ -3208,18 +3200,6 @@ pub fn refresh(tree: &ElementTree) -> LayoutOutput {
         commands: render_tree(tree),
         event_registry: build_event_registry(tree),
     }
-}
-
-/// Full layout (for structure changes) followed by refresh.
-#[allow(dead_code)]
-pub fn layout_and_refresh<M: TextMeasurer>(
-    tree: &mut ElementTree,
-    constraint: Constraint,
-    scale: f32,
-    measurer: &M,
-) -> LayoutOutput {
-    layout_tree(tree, constraint, scale, measurer);
-    refresh(tree)
 }
 
 /// Full layout with default Skia text measurer, followed by refresh.
