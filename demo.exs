@@ -445,6 +445,40 @@ defmodule Demo do
 
     assets_root = Process.get(:demo_assets_root, "(unknown)")
 
+    fit_frames = [
+      {"Wide frame", {280, 120}},
+      {"Tall frame", {140, 240}},
+      {"Square frame", {180, 180}}
+    ]
+
+    image_fit_cards =
+      Enum.flat_map(fit_frames, fn {label, {frame_w, frame_h}} ->
+        Enum.map([:contain, :cover], fn fit ->
+          fit_demo_card(
+            "image/2",
+            label,
+            {frame_w, frame_h},
+            fit,
+            :element,
+            "static.jpg"
+          )
+        end)
+      end)
+
+    background_fit_cards =
+      Enum.flat_map(fit_frames, fn {label, {frame_w, frame_h}} ->
+        Enum.map([:contain, :cover], fn fit ->
+          fit_demo_card(
+            "Background.image/2",
+            label,
+            {frame_w, frame_h},
+            fit,
+            :background,
+            "static.jpg"
+          )
+        end)
+      end)
+
     column([width(fill()), spacing(16)], [
       section_title("Assets + Images"),
       el(
@@ -453,7 +487,8 @@ defmodule Demo do
           "This page showcases static manifest assets, allowlisted runtime paths, and blocked runtime path failed placeholders."
         )
       ),
-      row([width(fill()), spacing(12)], [
+      section_title("Source Behavior"),
+      wrapped_row([width(fill()), spacing_xy(12, 12)], [
         asset_preview_card(
           "Static source",
           ~s(logical: "static.jpg"),
@@ -463,9 +498,7 @@ defmodule Demo do
           "Runtime source",
           "source: {:path, runtime.jpg} (allowlisted)",
           image({:path, runtime_path}, [width(fill()), height(fill()), image_fit(:cover)])
-        )
-      ]),
-      row([width(fill()), spacing(12)], [
+        ),
         asset_preview_card(
           "Restricted source",
           "source: {:path, blocked.jpg outside allowlist} -> blocked -> failed placeholder",
@@ -496,6 +529,19 @@ defmodule Demo do
           )
         )
       ]),
+      section_title("Image Fit Lab"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Same source image, different frame ratios. Compare :contain vs :cover behavior.")
+      ),
+      el([Font.size(12), Font.color({:color_rgb, {205, 214, 229}})], text("image/2")),
+      wrapped_row([width(fill()), spacing_xy(12, 12)], image_fit_cards),
+      el(
+        [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
+        text("Background.image/2")
+      ),
+      wrapped_row([width(fill()), spacing_xy(12, 12)], background_fit_cards),
+      fit_legend(),
       el(
         [
           width(fill()),
@@ -2024,7 +2070,7 @@ defmodule Demo do
   defp asset_preview_card(title, subtitle, preview) do
     el(
       [
-        width(fill()),
+        width(px(320)),
         padding(12),
         spacing(8),
         Background.color({:color_rgb, {50, 50, 74}}),
@@ -2046,6 +2092,127 @@ defmodule Demo do
         )
       ])
     )
+  end
+
+  defp fit_demo_card(api_label, frame_label, {frame_w, frame_h}, fit, variant, source) do
+    stage_padding = 10
+    stage_w = frame_w + stage_padding * 2
+    stage_h = frame_h + stage_padding * 2
+    card_w = max(stage_w + 20, 220)
+
+    el(
+      [
+        width(px(card_w)),
+        padding(10),
+        spacing(8),
+        Background.color({:color_rgb, {45, 45, 68}}),
+        Border.rounded(10)
+      ],
+      column([spacing(8)], [
+        row([width(fill()), spacing(8)], [
+          el([Font.size(11), Font.color(:white)], text(api_label)),
+          fit_chip(fit)
+        ]),
+        el([Font.size(10), Font.color(@dim_text)], text(frame_label)),
+        el(
+          [Font.size(10), Font.color({:color_rgb, {184, 188, 210}})],
+          text("#{frame_w}x#{frame_h}")
+        ),
+        el(
+          [
+            center_x(),
+            width(px(stage_w)),
+            height(px(stage_h)),
+            Background.color({:color_rgb, {31, 31, 45}}),
+            Border.rounded(8)
+          ],
+          fit_demo_preview(variant, source, fit, {frame_w, frame_h})
+        )
+      ])
+    )
+  end
+
+  defp fit_demo_preview(:element, source, fit, {frame_w, frame_h}) do
+    el(
+      [
+        center_x(),
+        center_y(),
+        width(px(frame_w)),
+        height(px(frame_h)),
+        Background.color({:color_rgb, {24, 24, 36}}),
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8),
+        clip()
+      ],
+      image(source, [width(fill()), height(fill()), image_fit(fit)])
+    )
+  end
+
+  defp fit_demo_preview(:background, source, fit, {frame_w, frame_h}) do
+    el(
+      [
+        center_x(),
+        center_y(),
+        width(px(frame_w)),
+        height(px(frame_h)),
+        Background.color({:color_rgb, {24, 24, 36}}),
+        Background.image(source, fit: fit),
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8),
+        clip()
+      ],
+      el(
+        [
+          center_x(),
+          center_y(),
+          padding(5),
+          Background.color({:color_rgba, {0, 0, 0, 160}}),
+          Border.rounded(5),
+          Font.size(10),
+          Font.color(:white)
+        ],
+        text("bg")
+      )
+    )
+  end
+
+  defp fit_chip(:contain) do
+    el(
+      [
+        padding(4),
+        Background.color({:color_rgb, {52, 110, 124}}),
+        Border.rounded(6),
+        Font.size(10),
+        Font.color(:white)
+      ],
+      text("contain")
+    )
+  end
+
+  defp fit_chip(:cover) do
+    el(
+      [
+        padding(4),
+        Background.color({:color_rgb, {142, 84, 52}}),
+        Border.rounded(6),
+        Font.size(10),
+        Font.color(:white)
+      ],
+      text("cover")
+    )
+  end
+
+  defp fit_legend() do
+    column([spacing(4)], [
+      el([Font.size(11), Font.color({:color_rgb, {200, 210, 222}})], text("Fit legend")),
+      el(
+        [Font.size(10), Font.color(@dim_text)],
+        text("contain: full image visible, may letterbox")
+      ),
+      el([Font.size(10), Font.color(@dim_text)], text("cover: frame fully filled, may crop"))
+    ])
   end
 
   defp section_title(label) do
