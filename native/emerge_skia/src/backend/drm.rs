@@ -707,17 +707,27 @@ pub struct DrmRunConfig {
     pub render_log: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    stop: Arc<AtomicBool>,
-    running_flag: Arc<AtomicBool>,
-    render_rx: Receiver<RenderMsg>,
-    cursor_rx: Receiver<RenderMsg>,
-    event_tx: Sender<EventMsg>,
-    screen_tx: Sender<(u32, u32)>,
-    render_counter: Arc<AtomicU64>,
-    config: DrmRunConfig,
-) {
+pub struct DrmRunContext {
+    pub stop: Arc<AtomicBool>,
+    pub running_flag: Arc<AtomicBool>,
+    pub render_rx: Receiver<RenderMsg>,
+    pub cursor_rx: Receiver<RenderMsg>,
+    pub event_tx: Sender<EventMsg>,
+    pub screen_tx: Sender<(u32, u32)>,
+    pub render_counter: Arc<AtomicU64>,
+}
+
+pub fn run(context: DrmRunContext, config: DrmRunConfig) {
+    let DrmRunContext {
+        stop,
+        running_flag,
+        render_rx,
+        cursor_rx,
+        event_tx,
+        screen_tx,
+        render_counter,
+    } = context;
+
     let card = match open_card(config.card_path.as_deref()) {
         Ok(card) => card,
         Err(e) => {

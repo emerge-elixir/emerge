@@ -589,34 +589,36 @@ impl Renderer {
                 DrawCmd::Border(x, y, w, h, radius, width, color, style) => {
                     draw_border(
                         canvas,
-                        *x,
-                        *y,
-                        *w,
-                        *h,
-                        [*radius, *radius, *radius, *radius],
-                        *width,
-                        *width,
-                        *width,
-                        *width,
-                        *color,
-                        *style,
+                        BorderDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            corners: [*radius, *radius, *radius, *radius],
+                            insets: EdgeInsets::uniform(*width),
+                            color: *color,
+                            style: *style,
+                        },
                     );
                 }
 
                 DrawCmd::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
                     draw_border(
                         canvas,
-                        *x,
-                        *y,
-                        *w,
-                        *h,
-                        [*tl, *tr, *br, *bl],
-                        *width,
-                        *width,
-                        *width,
-                        *width,
-                        *color,
-                        *style,
+                        BorderDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            corners: [*tl, *tr, *br, *bl],
+                            insets: EdgeInsets::uniform(*width),
+                            color: *color,
+                            style: *style,
+                        },
                     );
                 }
 
@@ -635,17 +637,23 @@ impl Renderer {
                 ) => {
                     draw_border(
                         canvas,
-                        *x,
-                        *y,
-                        *w,
-                        *h,
-                        [*radius, *radius, *radius, *radius],
-                        *top,
-                        *right,
-                        *bottom,
-                        *left,
-                        *color,
-                        *style,
+                        BorderDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            corners: [*radius, *radius, *radius, *radius],
+                            insets: EdgeInsets {
+                                top: *top,
+                                right: *right,
+                                bottom: *bottom,
+                                left: *left,
+                            },
+                            color: *color,
+                            style: *style,
+                        },
                     );
                 }
 
@@ -789,7 +797,20 @@ impl Renderer {
 
                 DrawCmd::Image(x, y, w, h, image_id, fit) => {
                     let inside_hard_clip = hard_clip_depth > 0;
-                    draw_image_with_fit(canvas, *x, *y, *w, *h, image_id, *fit, inside_hard_clip);
+                    draw_image_with_fit(
+                        canvas,
+                        ImageDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            image_id,
+                            fit: *fit,
+                            inside_hard_clip,
+                        },
+                    );
                 }
 
                 DrawCmd::ImageLoading(x, y, w, h) => {
@@ -920,6 +941,50 @@ impl Renderer {
 // Helper Functions
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RectSpec {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EdgeInsets {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+impl EdgeInsets {
+    fn uniform(width: f32) -> Self {
+        Self {
+            top: width,
+            right: width,
+            bottom: width,
+            left: width,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ImageDrawSpec<'a> {
+    rect: RectSpec,
+    image_id: &'a str,
+    fit: ImageFit,
+    inside_hard_clip: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BorderDrawSpec {
+    rect: RectSpec,
+    corners: [f32; 4],
+    insets: EdgeInsets,
+    color: u32,
+    style: BorderStyle,
+}
+
 fn create_gl_surface(
     dimensions: (i32, i32),
     fb_info: FramebufferInfo,
@@ -941,28 +1006,20 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_image_with_fit(
-    canvas: &skia_safe::Canvas,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    image_id: &str,
-    fit: ImageFit,
-    inside_hard_clip: bool,
-) {
+fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
+    let RectSpec { x, y, w, h } = spec.rect;
+
     if w <= 0.0 || h <= 0.0 {
         return;
     }
 
-    let Some(cached) = cached_image(image_id) else {
+    let Some(cached) = cached_image(spec.image_id) else {
         return;
     };
 
     let src_w = cached.width as f32;
     let src_h = cached.height as f32;
-    let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, fit) else {
+    let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
         return;
     };
 
@@ -972,7 +1029,7 @@ fn draw_image_with_fit(
 
     let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
     let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
-    let dst_rect = if inside_hard_clip && matches!(fit, ImageFit::Cover) {
+    let dst_rect = if spec.inside_hard_clip && matches!(spec.fit, ImageFit::Cover) {
         snap_outset_rect_to_device(canvas, dst_rect)
     } else {
         dst_rect
@@ -1251,21 +1308,18 @@ fn quad_path(quad: [(f32, f32); 4]) -> skia_safe::Path {
         .detach()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_border(
-    canvas: &skia_safe::Canvas,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    corners: [f32; 4],
-    top: f32,
-    right: f32,
-    bottom: f32,
-    left: f32,
-    color: u32,
-    style: BorderStyle,
-) {
+fn draw_border(canvas: &skia_safe::Canvas, spec: BorderDrawSpec) {
+    let RectSpec { x, y, w, h } = spec.rect;
+    let corners = spec.corners;
+    let EdgeInsets {
+        top,
+        right,
+        bottom,
+        left,
+    } = spec.insets;
+    let color = spec.color;
+    let style = spec.style;
+
     if w <= 0.0 || h <= 0.0 {
         return;
     }
@@ -1352,7 +1406,7 @@ fn draw_border(
                 canvas.draw_rrect(outer_rrect, &stroke_paint);
                 canvas.restore();
             } else {
-                let edge_clips = border_edge_clip_quads(x, y, w, h, top, right, bottom, left);
+                let edge_clips = border_edge_clip_quads(spec.rect, spec.insets);
                 for (width, quad) in &edge_clips {
                     if *width <= 0.0 {
                         continue;
@@ -1408,17 +1462,15 @@ pub fn color_from_u32(c: u32) -> Color {
 /// derived from per-edge insets.
 ///
 /// Returns `[(stroke_width, [(x,y); 4]); 4]` in top/right/bottom/left order.
-#[allow(clippy::too_many_arguments)]
-fn border_edge_clip_quads(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-    left: f32,
-) -> [(f32, [(f32, f32); 4]); 4] {
+fn border_edge_clip_quads(rect: RectSpec, insets: EdgeInsets) -> [(f32, [(f32, f32); 4]); 4] {
+    let RectSpec { x, y, w, h } = rect;
+    let EdgeInsets {
+        top,
+        right,
+        bottom,
+        left,
+    } = insets;
+
     let (left, right) = resolve_inset_pair(left, right, w);
     let (top, bottom) = resolve_inset_pair(top, bottom, h);
 
@@ -1920,7 +1972,20 @@ mod tests {
     #[test]
     fn test_border_edge_clips_do_not_overlap_at_corners() {
         // Element at (10, 20) with size 200x100 and asymmetric widths
-        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 4.0, 1.0);
+        let clips = border_edge_clip_quads(
+            RectSpec {
+                x: 10.0,
+                y: 20.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            EdgeInsets {
+                top: 4.0,
+                right: 1.0,
+                bottom: 4.0,
+                left: 1.0,
+            },
+        );
 
         // Sample points deep inside each corner quadrant of the element
         let top_left = (20.0, 25.0); // near top-left
@@ -1948,7 +2013,20 @@ mod tests {
 
     #[test]
     fn test_border_edge_clips_cover_all_edge_midpoints() {
-        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 3.0, 2.0);
+        let clips = border_edge_clip_quads(
+            RectSpec {
+                x: 10.0,
+                y: 20.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            EdgeInsets {
+                top: 4.0,
+                right: 1.0,
+                bottom: 3.0,
+                left: 2.0,
+            },
+        );
 
         // Midpoints of each edge (on the border, not inside)
         let edge_midpoints: [(f32, f32, &str); 4] = [
@@ -1975,7 +2053,20 @@ mod tests {
     fn test_border_edge_clips_asymmetric_top_right_corner_prefers_top() {
         // Regression: thick top (4) and thin right (1) should keep near-corner
         // top-band pixels owned by the top edge clip.
-        let clips = border_edge_clip_quads(10.0, 20.0, 200.0, 100.0, 4.0, 1.0, 4.0, 1.0);
+        let clips = border_edge_clip_quads(
+            RectSpec {
+                x: 10.0,
+                y: 20.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            EdgeInsets {
+                top: 4.0,
+                right: 1.0,
+                bottom: 4.0,
+                left: 1.0,
+            },
+        );
 
         // Very close to the top-right outer corner, but still inside top band.
         let p = (209.0, 21.8);
@@ -1996,7 +2087,20 @@ mod tests {
     #[test]
     fn test_border_edge_clips_bottom_only_covers_near_corners() {
         // bottom-only border: top=0, right=0, bottom=3, left=0
-        let clips = border_edge_clip_quads(0.0, 0.0, 100.0, 50.0, 0.0, 0.0, 3.0, 0.0);
+        let clips = border_edge_clip_quads(
+            RectSpec {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            EdgeInsets {
+                top: 0.0,
+                right: 0.0,
+                bottom: 3.0,
+                left: 0.0,
+            },
+        );
 
         assert_eq!(clips[0].0, 0.0, "top width should be 0");
         assert_eq!(clips[1].0, 0.0, "right width should be 0");

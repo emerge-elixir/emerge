@@ -22,27 +22,17 @@ defmodule EmergeSkia.Native do
 
   Mirrors `EmergeSkia.start/1` keyword options.
   """
-  @spec start_opts(
-          String.t(),
-          String.t(),
-          non_neg_integer(),
-          non_neg_integer(),
-          String.t() | nil,
-          boolean(),
-          boolean(),
-          boolean()
-        ) :: {:ok, reference()} | {:error, term()}
-  def start_opts(
-        _backend,
-        _title,
-        _width,
-        _height,
-        _drm_card,
-        _hw_cursor,
-        _input_log,
-        _render_log
-      ),
-      do: :erlang.nif_error(:nif_not_loaded)
+  @spec start_opts(%{
+          required(:backend) => String.t(),
+          required(:title) => String.t(),
+          required(:width) => non_neg_integer(),
+          required(:height) => non_neg_integer(),
+          required(:drm_card) => String.t() | nil,
+          required(:hw_cursor) => boolean(),
+          required(:input_log) => boolean(),
+          required(:render_log) => boolean()
+        }) :: {:ok, reference()} | {:error, term()}
+  def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Stop the renderer and close the window.
