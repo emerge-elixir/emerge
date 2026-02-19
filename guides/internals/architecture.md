@@ -22,6 +22,60 @@ Multi-backend Skia renderer with:
 - Scale factor support for high-DPI displays
 - Tree-to-DrawCmd rendering
 
+## Architecture Diagram
+
+This diagram shows the three main runtime parts and the communication contracts
+between them:
+
+- Elixir/BEAM owns app state and UI tree definition, and consumes processed events.
+- `UI Runtime (Rust)` is centered on `Tree actor`, `Event actor`, and internal `Assets actor`.
+- `Backend (Rust)` is split into `Render loop` (consumes draw commands) and `Event capture`
+  (emits standardized events to runtime).
+
+```mermaid
+flowchart TD
+  classDef node fill:#afafaf,stroke:#334155,stroke-width:1.5px,rx:10,ry:10,color:#0f172a;
+  classDef dir1 stroke:#16a34a,stroke-width:2.5px;
+  classDef dir2 stroke:#db2777,stroke-width:2.5px;
+  classDef dir3 stroke:#7c3aed,stroke-width:2.5px;
+
+  subgraph ELX["Elixir / BEAM"]
+    APP["App state<br/>+ UI tree"]:::node
+  end
+
+  subgraph RUST["UI Runtime (Rust)"]
+    direction LR
+    TREE["Tree actor"]:::node
+    EVENT["Event actor"]:::node
+    ASSET["Assets actor<br/>(internal)"]:::node
+
+    TREE e1@--> |event listeners<br/>registry| EVENT
+    EVENT e2@--> |internal events<br/>scroll/resize| TREE
+    TREE e3@--> |asset requests| ASSET
+    ASSET e4@--> |asset loaded| TREE
+
+    class e1 dir1
+    class e2 dir3
+    class e3 dir1
+    class e4 dir3
+  end
+
+  subgraph BACK["Backend (Rust)"]
+    EVENT_CAPTURE["Event<br/>capture"]:::node
+    RENDER_LOOP["Render<br/>loop"]:::node
+  end
+
+  APP e31@--> |tree definition| TREE
+  EVENT e32@--> |processed events| APP
+  TREE e33@--> |draw commands| RENDER_LOOP
+  EVENT_CAPTURE e34@--> |standardized events| EVENT
+
+  class e31 dir1
+  class e32 dir2
+  class e33 dir1
+  class e34 dir2
+```
+
 ## Module Structure
 
 ```
