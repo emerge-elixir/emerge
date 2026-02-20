@@ -524,4 +524,36 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert image_node.attrs.image_fit == :cover
     assert bg_node.attrs.background == {:image, "img_bg", :contain}
   end
+
+  test "EMRG roundtrip preserves background image repeat fit variants" do
+    tree =
+      column([spacing(8.0)], [
+        el([width(px(80)), height(px(80)), Emerge.UI.Background.tiled("img_bg")], none()),
+        el([width(px(80)), height(px(80)), Emerge.UI.Background.tiled_x("img_bg")], none()),
+        el([width(px(80)), height(px(80)), Emerge.UI.Background.tiled_y("img_bg")], none()),
+        el([width(px(80)), height(px(80)), Emerge.UI.Background.uncropped("img_bg")], none()),
+        el([width(px(80)), height(px(80)), Emerge.UI.Background.image("img_bg")], none())
+      ])
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    [tiled, tiled_x, tiled_y, uncropped, image_default] = decoded.children
+
+    assert tiled.attrs.background == {:image, "img_bg", :repeat}
+    assert tiled_x.attrs.background == {:image, "img_bg", :repeat_x}
+    assert tiled_y.attrs.background == {:image, "img_bg", :repeat_y}
+    assert uncropped.attrs.background == {:image, "img_bg", :contain}
+    assert image_default.attrs.background == {:image, "img_bg", :cover}
+  end
 end

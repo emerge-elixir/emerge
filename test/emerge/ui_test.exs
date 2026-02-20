@@ -244,10 +244,33 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
+  test "padding_xy expands to per-edge padding" do
+    assert padding_xy(6, 3) == {:padding, {3, 6, 3, 6}}
+  end
+
   test "Background.image encodes source and fit" do
-    assert Background.image("img_hero") == {:background, {:image, "img_hero", :contain}}
+    assert Background.image("img_hero") == {:background, {:image, "img_hero", :cover}}
+
+    assert Background.image("img_hero", fit: :contain) ==
+             {:background, {:image, "img_hero", :contain}}
 
     assert Background.image("img_hero", fit: :cover) ==
              {:background, {:image, "img_hero", :cover}}
+
+    assert Background.image("img_hero", fit: :repeat) ==
+             {:background, {:image, "img_hero", :repeat}}
+
+    assert Background.image("img_hero", fit: :repeat_x) ==
+             {:background, {:image, "img_hero", :repeat_x}}
+
+    assert Background.image("img_hero", fit: :repeat_y) ==
+             {:background, {:image, "img_hero", :repeat_y}}
+  end
+
+  test "Background helper modes mirror elm-ui" do
+    assert Background.uncropped("img_hero") == {:background, {:image, "img_hero", :contain}}
+    assert Background.tiled("img_hero") == {:background, {:image, "img_hero", :repeat}}
+    assert Background.tiled_x("img_hero") == {:background, {:image, "img_hero", :repeat_x}}
+    assert Background.tiled_y("img_hero") == {:background, {:image, "img_hero", :repeat_y}}
   end
 end

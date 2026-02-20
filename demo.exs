@@ -41,7 +41,7 @@ demo_assets_root = Path.expand("assets/demo_images", __DIR__)
 demo_static_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_static")
 blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")
 
-required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg"]
+required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg", "tile_bird_small.jpg"]
 
 missing_demo_images =
   Enum.filter(required_demo_images, fn file_name ->
@@ -439,6 +439,7 @@ defmodule Demo do
 
   defp page_assets() do
     runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
+    bird_tile_source = "tile_bird_small.jpg"
 
     restricted_path =
       Process.get(:demo_restricted_image_path, "/tmp/emerge_skia_demo_blocked/blocked.jpg")
@@ -479,69 +480,102 @@ defmodule Demo do
         end)
       end)
 
+    source_cards =
+      [
+        %{
+          title: "Static source",
+          source_label: ~s(source: "static.jpg"),
+          status: {"Manifest", :manifest},
+          preview: {:image, "static.jpg", :contain, "image :contain"}
+        },
+        %{
+          title: "Runtime source",
+          source_label: "source: {:path, runtime.jpg}",
+          status: {"Allowlisted", :runtime},
+          preview: {:image, {:path, runtime_path}, :cover, "image :cover"}
+        },
+        %{
+          title: "Restricted source",
+          source_label: "source outside allowlist",
+          status: {"Blocked", :blocked},
+          preview: {:image, {:path, restricted_path}, :contain, "blocked"}
+        }
+      ]
+      |> Enum.map(&asset_behavior_card/1)
+
+    background_cards =
+      [
+        %{
+          title: "Background.image/1",
+          source_label: "source: tile_bird_small.jpg",
+          status: {"Background", :background},
+          preview: {:background, Background.image(bird_tile_source), "bg :cover"}
+        },
+        %{
+          title: "Background.uncropped/1",
+          source_label: "source: tile_bird_small.jpg",
+          status: {"Helper", :helper},
+          preview: {:background, Background.uncropped(bird_tile_source), "bg :contain"}
+        },
+        %{
+          title: "Background.tiled/1",
+          source_label: "source: tile_bird_small.jpg",
+          status: {"Helper", :helper},
+          preview: {:background, Background.tiled(bird_tile_source), "bg :repeat"}
+        },
+        %{
+          title: "Background.tiled_x/1",
+          source_label: "source: tile_bird_small.jpg",
+          status: {"Helper", :helper},
+          preview: {:background, Background.tiled_x(bird_tile_source), "bg :repeat_x"}
+        },
+        %{
+          title: "Background.tiled_y/1",
+          source_label: "source: tile_bird_small.jpg",
+          status: {"Helper", :helper},
+          preview: {:background, Background.tiled_y(bird_tile_source), "bg :repeat_y"}
+        }
+      ]
+      |> Enum.map(&asset_behavior_card/1)
+
     column([width(fill()), spacing(16)], [
       section_title("Assets + Images"),
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "This page showcases static manifest assets, allowlisted runtime paths, and blocked runtime path failed placeholders."
+          "Assets resolve from manifest paths or runtime paths first, then render through image/2 or Background helpers."
         )
       ),
-      section_title("Source Behavior"),
-      wrapped_row([width(fill()), spacing_xy(12, 12)], [
-        asset_preview_card(
-          "Static source",
-          ~s(logical: "static.jpg"),
-          image("static.jpg", [width(fill()), height(fill()), image_fit(:contain)])
-        ),
-        asset_preview_card(
-          "Runtime source",
-          "source: {:path, runtime.jpg} (allowlisted)",
-          image({:path, runtime_path}, [width(fill()), height(fill()), image_fit(:cover)])
-        ),
-        asset_preview_card(
-          "Restricted source",
-          "source: {:path, blocked.jpg outside allowlist} -> blocked -> failed placeholder",
-          image({:path, restricted_path}, [width(fill()), height(fill()), image_fit(:contain)])
-        ),
-        asset_preview_card(
-          "Background.image",
-          "runtime path in container background",
-          el(
-            [
-              width(fill()),
-              height(fill()),
-              Background.image({:path, runtime_path}, fit: :cover),
-              Border.rounded(10)
-            ],
-            el(
-              [
-                center_x(),
-                center_y(),
-                padding(6),
-                Background.color({:color_rgba, {0, 0, 0, 170}}),
-                Border.rounded(6),
-                Font.size(11),
-                Font.color(:white)
-              ],
-              text("background image")
-            )
-          )
-        )
-      ]),
-      section_title("Image Fit Lab"),
+      section_title("Source"),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text("How each source type resolves before rendering.")
+      ),
+      centered_wrapped_cards(source_cards, 936),
+      section_title("Image"),
       el(
         [Font.size(12), Font.color(@dim_text)],
-        text("Same source image, different frame ratios. Compare :contain vs :cover behavior.")
+        text("image/2 fit behavior with the same source across different frame ratios.")
       ),
-      el([Font.size(12), Font.color({:color_rgb, {205, 214, 229}})], text("image/2")),
-      wrapped_row([width(fill()), spacing_xy(12, 12)], image_fit_cards),
+      centered_wrapped_cards(image_fit_cards, 960),
+      fit_legend(),
+      section_title("Background"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Background.image plus helper variants. Same card design, only background attributes differ."
+        )
+      ),
+      centered_wrapped_cards(background_cards, 936),
+      el(
+        [Font.size(10), Font.color(@dim_text)],
+        text("Tile source: tile_bird_small.jpg (160x120)")
+      ),
       el(
         [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
-        text("Background.image/2")
+        text("Background.image/2 fit behavior")
       ),
-      wrapped_row([width(fill()), spacing_xy(12, 12)], background_fit_cards),
-      fit_legend(),
+      centered_wrapped_cards(background_fit_cards, 960),
       el(
         [
           width(fill()),
@@ -2067,30 +2101,114 @@ defmodule Demo do
     )
   end
 
-  defp asset_preview_card(title, subtitle, preview) do
+  defp centered_wrapped_cards(cards, max_width \\ 960) do
+    el(
+      [center_x(), width(maximum(max_width, fill()))],
+      wrapped_row([width(fill()), spacing_xy(12, 12)], cards)
+    )
+  end
+
+  defp asset_behavior_card(%{
+         title: title,
+         source_label: source_label,
+         status: {status_label, status_tone},
+         preview: preview_spec
+       }) do
     el(
       [
-        width(px(320)),
-        padding(12),
+        width(px(300)),
+        padding(10),
         spacing(8),
         Background.color({:color_rgb, {50, 50, 74}}),
         Border.rounded(10)
       ],
       column([spacing(8)], [
-        el([Font.size(13), Font.color(:white)], text(title)),
-        el([Font.size(10), Font.color(@dim_text)], text(subtitle)),
+        row([width(fill()), spacing(8)], [
+          el([width(fill()), Font.size(12), Font.color(:white)], text(title)),
+          source_status_chip(status_label, status_tone)
+        ]),
+        el([Font.size(10), Font.color(@dim_text)], text(source_label)),
         el(
           [
             width(fill()),
             height(px(170)),
             padding(8),
             Background.color({:color_rgb, {34, 34, 50}}),
-            Border.rounded(10),
-            clip()
+            Border.rounded(8)
           ],
-          preview
+          asset_behavior_preview(preview_spec)
         )
       ])
+    )
+  end
+
+  defp asset_behavior_preview({:image, source, fit, mode_label}) do
+    el(
+      [
+        width(fill()),
+        height(fill()),
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8),
+        clip(),
+        in_front(asset_preview_mode_badge(mode_label))
+      ],
+      image(source, [width(fill()), height(fill()), image_fit(fit)])
+    )
+  end
+
+  defp asset_behavior_preview({:background, bg_attr, mode_label}) do
+    el(
+      [
+        width(fill()),
+        height(fill()),
+        bg_attr,
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8),
+        clip(),
+        in_front(asset_preview_mode_badge(mode_label))
+      ],
+      none()
+    )
+  end
+
+  defp asset_preview_mode_badge(label) do
+    el(
+      [
+        align_right(),
+        align_bottom(),
+        move_x(-6),
+        move_y(-6),
+        padding_each(2, 6, 2, 6),
+        Background.color({:color_rgba, {0, 0, 0, 165}}),
+        Border.rounded(4),
+        Font.size(9),
+        Font.color(:white)
+      ],
+      text(label)
+    )
+  end
+
+  defp source_status_chip(label, tone) do
+    bg_color =
+      case tone do
+        :manifest -> {:color_rgb, {58, 98, 158}}
+        :runtime -> {:color_rgb, {48, 120, 102}}
+        :blocked -> {:color_rgb, {150, 77, 83}}
+        :background -> {:color_rgb, {92, 80, 164}}
+        :helper -> {:color_rgb, {88, 92, 124}}
+      end
+
+    el(
+      [
+        padding_each(2, 8, 2, 8),
+        Background.color(bg_color),
+        Border.rounded(999),
+        Font.size(10),
+        Font.color(:white)
+      ],
+      text(label)
     )
   end
 
@@ -2156,7 +2274,6 @@ defmodule Demo do
         center_y(),
         width(px(frame_w)),
         height(px(frame_h)),
-        Background.color({:color_rgb, {24, 24, 36}}),
         Background.image(source, fit: fit),
         Border.width(1),
         Border.color({:color_rgba, {214, 220, 236, 220}}),

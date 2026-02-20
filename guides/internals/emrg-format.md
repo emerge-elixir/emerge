@@ -217,6 +217,9 @@ variant 2 -> {:path, path}
 ```
 0 -> :contain
 1 -> :cover
+2 -> :repeat
+3 -> :repeat_x
+4 -> :repeat_y
 ```
 
 ### Image Size (`image_size`)
