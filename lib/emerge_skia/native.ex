@@ -4,7 +4,7 @@ defmodule EmergeSkia.Native do
   """
 
   use Rustler,
-    otp_app: :emerge_skia,
+    otp_app: :emerge,
     crate: "emerge_skia",
     path: "native/emerge_skia"
 

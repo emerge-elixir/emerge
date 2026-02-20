@@ -63,7 +63,7 @@ File.cp!(runtime_source, blocked_source)
 
 {:ok, digested_count} = Emerge.Assets.Digester.compile([demo_assets_root], demo_static_root)
 
-Application.put_env(:emerge_skia, :assets,
+Application.put_env(:emerge, :assets,
   sources: [demo_assets_root],
   manifest: [
     path: Path.join(demo_static_root, "cache_manifest.json"),

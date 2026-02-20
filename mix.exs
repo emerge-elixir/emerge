@@ -1,14 +1,14 @@
-defmodule EmergeSkia.MixProject do
+defmodule Emerge.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :emerge_skia,
+      app: :emerge,
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      name: "EmergeSkia",
+      name: "Emerge",
       docs: [
         main: "readme",
         before_closing_body_tag: &before_closing_body_tag/1,

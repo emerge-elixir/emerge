@@ -1,35 +1,85 @@
 # Emerge
 
-A simple native GUI toolkit for Elixir.
+GUI framework for Elixir.
 
 Emerge lets you build native graphical interfaces in Elixir using a declarative,
-Elm-UI inspired API. It targets Nerves projects (embedded displays, kiosks,
-dashboards) but works for general-purpose desktop apps too. Backed by Skia for
-GPU-accelerated rendering.
+Elm-UI inspired API.
+
+Main inspiration came from needing easy to use GUI framework for Nerves projects
+but it should work for general-purpose desktop apps too.
+
+It is backed by Skia for GPU-accelerated rendering.Layout engine, input event processing
+and rendering are implemented in rust for performance reasons.
 
 ## Quick example
 
 ```elixir
 import Emerge.UI
 
-column([width(fill()), spacing(16), padding(20)], [
-  el([Font.size(24), Font.color(0xFFFFFFFF)],
-    text("Hello from Emerge")),
+# Column element that fills viewport, padding to content of 20px
+# elements inside are spaced evenly 
+column([width(fill()), height(fill()), space_evenly()), padding(20)], [
+  # Header element 
+  el([width(fill()), Font.center(), Font.size(24), Font.color(0xFFFFFFFF)],
+    text("Hello from Emerge, this a header")),
 
-  row([spacing(12)], [
+  # Two content cards where left is bigger to right by 2:1 ratio
+  row([spacing(12), padding(20)], [
+    el([width(fill_portion(2)), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
+      text("Left Card")),
+    el([width(fill_portion(1), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+      text("Right Card"))
+  ])
+
+  # Three element footer each filling equal portion
+  row([spacing(12), padding(20)], [
     el([width(fill()), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
-      text("Card A")),
+      text("Left footer side")),
     el([width(fill()), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
-      text("Card B"))
+      text("Center footer side"))
+    el([width(fill()), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+      text("Right footer side"))
   ])
 ])
 ```
 
+## Declarative layout
+
+Emerge layout syntax is heavily inspired and influence by `elm-ui` library.
+Markup is defined by simple elixir functions, no templating or xml style things.
+
+### Layout elements
+
+Each element is a function accepting
+2 arguments, a list of attributes, and a child/list of children. 
+
+Basic building block is `el/2`, `el` only accepts one child,
+usually `text/1` which is a content construct
+and cannot live on it's own without `el` as it's parent.
+
+If you want element to have multiple children 
+you can use `row`, `column` and `wrapped_row`
+
+### Layout sizing
+
+Element can be declared to fixed size by using `width(px)` and `height(px)`
+attributes where px is number.
+
+Sizing can also be relative to elements peer element:
+- `shrink` attribute will shrink an element to fit it's contents it is also a default.
+- `fill` Fill the available space. The available space will be split evenly between elements that have width fill.
+- `fill_portion(n)` Fill available space by ratio. `fill` == `fill_portion(1)`
+- `min(px)`/`max(px)` Define min/max size of an element, can be used in combination with `shrink`/`fill`
+
+### Spacing
+
+Same as in elm-ui there is no concept of margins.
+
+Padding is the distance between the outer edge and the content, and spacing is the space between children.
+
+
 ## Features
 
-- Declarative layout (`row`, `column`, `el`, `wrapped_row`, `text`)
-- Elm-UI sizing model (`fill`, `shrink`, `px`, `fill_portion`, `min`/`max`)
-- Padding, spacing, alignment
 - Backgrounds (solid color, linear gradient, and image cover/contain/repeat)
 - Image rendering (`image/2` elements and `Background.image/2`)
 - Borders with per-corner rounding
