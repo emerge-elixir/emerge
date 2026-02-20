@@ -30,7 +30,7 @@ column([width(fill()), spacing(16), padding(20)], [
 - Declarative layout (`row`, `column`, `el`, `wrapped_row`, `text`)
 - Elm-UI sizing model (`fill`, `shrink`, `px`, `fill_portion`, `min`/`max`)
 - Padding, spacing, alignment
-- Backgrounds (solid color, linear gradient)
+- Backgrounds (solid color, linear gradient, and image cover/contain/repeat)
 - Image rendering (`image/2` elements and `Background.image/2`)
 - Borders with per-corner rounding
 - Font customization (family, weight, style, size, decorations, spacing)
@@ -99,6 +99,12 @@ defmodule MyApp.UI do
   end
 end
 ```
+
+Background image fit helpers:
+
+- `Background.image/2` defaults to `fit: :cover`
+- `Background.uncropped/1` uses `:contain`
+- `Background.tiled/1`, `Background.tiled_x/1`, `Background.tiled_y/1` use repeat modes
 
 ## Asset Config
 

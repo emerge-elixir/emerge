@@ -96,6 +96,9 @@ pub enum ImageFit {
     #[default]
     Contain,
     Cover,
+    Repeat,
+    RepeatX,
+    RepeatY,
 }
 
 /// Border radius specification.
@@ -798,6 +801,9 @@ fn decode_image_fit(cursor: &mut AttrCursor) -> Result<ImageFit, DecodeError> {
     match variant {
         0 => Ok(ImageFit::Contain),
         1 => Ok(ImageFit::Cover),
+        2 => Ok(ImageFit::Repeat),
+        3 => Ok(ImageFit::RepeatX),
+        4 => Ok(ImageFit::RepeatY),
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown image_fit variant: {}",
             variant
@@ -1233,6 +1239,25 @@ mod tests {
                 fit: ImageFit::Cover,
             })
         );
+
+        for (fit_variant, expected_fit) in [
+            (2_u8, ImageFit::Repeat),
+            (3_u8, ImageFit::RepeatX),
+            (4_u8, ImageFit::RepeatY),
+        ] {
+            let mut tiled_bg = vec![0, 1, 12, 2, 0, 0, 13];
+            tiled_bg.extend_from_slice(b"img_preloaded");
+            tiled_bg.push(fit_variant);
+
+            let attrs = decode_attrs(&tiled_bg).unwrap();
+            assert_eq!(
+                attrs.background,
+                Some(Background::Image {
+                    source: ImageSource::Id("img_preloaded".to_string()),
+                    fit: expected_fit,
+                })
+            );
+        }
     }
 
     #[test]

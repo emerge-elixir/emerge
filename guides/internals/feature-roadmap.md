@@ -66,8 +66,11 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 |---------|------------|--------|--------|-------|
 | color | ✅ | N/A | ✅ | |
 | gradient | ✅ | N/A | ✅ | Linear only |
-| image | ✅ | N/A | ✅ | contain/cover fit modes |
-| tiled | ❌ | N/A | ❌ | |
+| image | ✅ | N/A | ✅ | Default `:cover`; supports contain/cover/repeat modes |
+| uncropped | ✅ | N/A | ✅ | `:contain` background helper |
+| tiled | ✅ | N/A | ✅ | Repeat on both axes |
+| tiledX | ✅ | N/A | ✅ | Repeat on X axis only |
+| tiledY | ✅ | N/A | ✅ | Repeat on Y axis only |
 
 #### Border
 | Feature | Elixir API | Layout | Render | Notes |

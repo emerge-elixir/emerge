@@ -86,6 +86,13 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode padding_xy tuple form" do
+    attrs = %{padding: {3, 6}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.padding == {3.0, 6.0, 3.0, 6.0}
+  end
+
   test "encode/decode on_click presence" do
     attrs = %{on_click: {self(), :clicked}}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
@@ -224,10 +231,25 @@ defmodule Emerge.AttrCodecTest do
   end
 
   test "encode/decode background image" do
-    attrs = %{background: {:image, "img_bg", :contain}}
+    attrs = %{background: {:image, "img_bg", :cover}}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
-    assert decoded.background == {:image, "img_bg", :contain}
+    assert decoded.background == {:image, "img_bg", :cover}
+  end
+
+  test "encode/decode background image fit variants" do
+    for fit <- [:contain, :cover, :repeat, :repeat_x, :repeat_y] do
+      attrs = %{background: {:image, "img_bg", fit}}
+      decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+      assert decoded.background == {:image, "img_bg", fit}
+    end
+  end
+
+  test "encode/decode background image default fit is cover" do
+    attrs = %{background: {:image, "img_bg"}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert decoded.background == {:image, "img_bg", :cover}
   end
 
   test "encode/decode image source variants" do

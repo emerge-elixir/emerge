@@ -332,7 +332,7 @@ defmodule Emerge.UI do
   def padding(n) when is_number(n), do: {:padding, n}
 
   @doc "Padding with vertical and horizontal values"
-  def padding_xy(x, y), do: {:padding, {y, x}}
+  def padding_xy(x, y), do: {:padding, {y, x, y, x}}
 
   @doc "Padding with individual values (top, right, bottom, left)"
   def padding_each(top, right, bottom, left), do: {:padding, {top, right, bottom, left}}
@@ -587,16 +587,32 @@ defmodule Emerge.UI do
     @doc "Set background gradient (linear)"
     def gradient(from, to, angle \\ 0), do: {:background, {:gradient, from, to, angle}}
 
-    @doc "Set background image"
+    @doc "Set background image (default fit: `:cover`)"
     def image(source, opts \\ []) do
       fit =
-        case Keyword.get(opts, :fit, :contain) do
+        case Keyword.get(opts, :fit, :cover) do
+          :contain -> :contain
           :cover -> :cover
-          _ -> :contain
+          :repeat -> :repeat
+          :repeat_x -> :repeat_x
+          :repeat_y -> :repeat_y
+          _ -> :cover
         end
 
       {:background, {:image, source, fit}}
     end
+
+    @doc "Set a background image that fits without cropping (`:contain`)"
+    def uncropped(source), do: {:background, {:image, source, :contain}}
+
+    @doc "Tile a background image on both axes"
+    def tiled(source), do: {:background, {:image, source, :repeat}}
+
+    @doc "Tile a background image on the X axis"
+    def tiled_x(source), do: {:background, {:image, source, :repeat_x}}
+
+    @doc "Tile a background image on the Y axis"
+    def tiled_y(source), do: {:background, {:image, source, :repeat_y}}
   end
 
   defmodule Border do

@@ -340,6 +340,11 @@ defmodule Emerge.AttrCodec do
       encode_f64(left)::binary>>
   end
 
+  defp encode_padding({vertical, horizontal}) do
+    <<1, encode_f64(vertical)::binary, encode_f64(horizontal)::binary,
+      encode_f64(vertical)::binary, encode_f64(horizontal)::binary>>
+  end
+
   defp encode_padding(%{top: top, right: right, bottom: bottom, left: left}) do
     <<2, encode_f64(top)::binary, encode_f64(right)::binary, encode_f64(bottom)::binary,
       encode_f64(left)::binary>>
@@ -460,10 +465,16 @@ defmodule Emerge.AttrCodec do
 
   defp encode_image_fit(:contain), do: <<0>>
   defp encode_image_fit(:cover), do: <<1>>
+  defp encode_image_fit(:repeat), do: <<2>>
+  defp encode_image_fit(:repeat_x), do: <<3>>
+  defp encode_image_fit(:repeat_y), do: <<4>>
   defp encode_image_fit(_other), do: <<0>>
 
   defp decode_image_fit(<<0, rest::binary>>), do: {:contain, rest}
   defp decode_image_fit(<<1, rest::binary>>), do: {:cover, rest}
+  defp decode_image_fit(<<2, rest::binary>>), do: {:repeat, rest}
+  defp decode_image_fit(<<3, rest::binary>>), do: {:repeat_x, rest}
+  defp decode_image_fit(<<4, rest::binary>>), do: {:repeat_y, rest}
 
   defp encode_image_size({w, h}) when is_number(w) and is_number(h) do
     <<encode_f64(w)::binary, encode_f64(h)::binary>>
@@ -529,7 +540,7 @@ defmodule Emerge.AttrCodec do
   end
 
   defp encode_background({:image, source}) do
-    encode_background({:image, source, :contain})
+    encode_background({:image, source, :cover})
   end
 
   defp encode_background(color) do

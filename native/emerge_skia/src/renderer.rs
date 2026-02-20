@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
-    BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, MipmapMode,
-    Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions, Shader,
-    Surface, TileMode, Typeface, Vector,
+    BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, Matrix,
+    MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions,
+    Shader, Surface, TileMode, Typeface, Vector,
     canvas::SrcRectConstraint,
     dash_path_effect,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
@@ -42,6 +42,9 @@ mod cmd_atoms {
         restore,
         contain,
         cover,
+        repeat,
+        repeat_x,
+        repeat_y,
     }
 }
 
@@ -184,6 +187,12 @@ impl<'a> Decoder<'a> for DrawCmd {
             let fit_atom: Atom = tuple[6].decode()?;
             let fit = if fit_atom == cmd_atoms::cover() {
                 ImageFit::Cover
+            } else if fit_atom == cmd_atoms::repeat() {
+                ImageFit::Repeat
+            } else if fit_atom == cmd_atoms::repeat_x() {
+                ImageFit::RepeatX
+            } else if fit_atom == cmd_atoms::repeat_y() {
+                ImageFit::RepeatY
             } else {
                 ImageFit::Contain
             };
@@ -1014,30 +1023,73 @@ fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
         return;
     };
 
-    let src_w = cached.width as f32;
-    let src_h = cached.height as f32;
-    let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
+    match spec.fit {
+        ImageFit::Contain | ImageFit::Cover => {
+            let src_w = cached.width as f32;
+            let src_h = cached.height as f32;
+            let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
+                return;
+            };
+
+            let mut paint = Paint::default();
+            paint.set_anti_alias(false);
+            let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+
+            let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
+            let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
+            let dst_rect = if spec.inside_hard_clip && matches!(spec.fit, ImageFit::Cover) {
+                snap_outset_rect_to_device(canvas, dst_rect)
+            } else {
+                dst_rect
+            };
+            canvas.draw_image_rect_with_sampling_options(
+                &cached.image,
+                Some((&src_rect, SrcRectConstraint::Strict)),
+                dst_rect,
+                sampling,
+                &paint,
+            );
+        }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
+            draw_tiled_image(canvas, &cached.image, x, y, w, h, spec.fit);
+        }
+    }
+}
+
+fn draw_tiled_image(
+    canvas: &skia_safe::Canvas,
+    image: &Image,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    fit: ImageFit,
+) {
+    let Some(tile_modes) = tile_modes_for_fit(fit) else {
+        return;
+    };
+
+    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+    let local_matrix = Matrix::translate((x, y));
+    let Some(shader) = image.to_shader(Some(tile_modes), sampling, Some(&local_matrix)) else {
         return;
     };
 
     let mut paint = Paint::default();
     paint.set_anti_alias(false);
-    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+    paint.set_shader(shader);
 
-    let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
-    let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
-    let dst_rect = if spec.inside_hard_clip && matches!(spec.fit, ImageFit::Cover) {
-        snap_outset_rect_to_device(canvas, dst_rect)
-    } else {
-        dst_rect
-    };
-    canvas.draw_image_rect_with_sampling_options(
-        &cached.image,
-        Some((&src_rect, SrcRectConstraint::Strict)),
-        dst_rect,
-        sampling,
-        &paint,
-    );
+    let dst_rect = Rect::from_xywh(x, y, w, h);
+    canvas.draw_rect(dst_rect, &paint);
+}
+
+fn tile_modes_for_fit(fit: ImageFit) -> Option<(TileMode, TileMode)> {
+    match fit {
+        ImageFit::Repeat => Some((TileMode::Repeat, TileMode::Repeat)),
+        ImageFit::RepeatX => Some((TileMode::Repeat, TileMode::Decal)),
+        ImageFit::RepeatY => Some((TileMode::Decal, TileMode::Repeat)),
+        ImageFit::Contain | ImageFit::Cover => None,
+    }
 }
 
 fn snap_outset_rect_to_device(canvas: &skia_safe::Canvas, rect: Rect) -> Rect {
@@ -1172,6 +1224,7 @@ fn compute_image_fit_rects(
                 dst_h,
             })
         }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => None,
     }
 }
 
@@ -1838,6 +1891,112 @@ mod tests {
                 a
             );
         }
+
+        remove_image(image_id);
+    }
+
+    #[test]
+    fn test_repeat_fit_tiles_both_axes() {
+        let image_id = "test_repeat_fit_tiles_both_axes";
+
+        // 2x2 source pattern:
+        // [red, green]
+        // [blue, yellow]
+        let src = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        cache_test_image(image_id, 2, 2, src);
+
+        let pixels = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 0), (0, 255, 0, 255));
+        assert_eq!(rgba_at(&pixels, 8, 0, 1), (0, 0, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 1), (255, 255, 0, 255));
+
+        // Repeat period is source dimensions (2x2)
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 2, 0));
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 0, 2));
+        assert_eq!(rgba_at(&pixels, 8, 1, 1), rgba_at(&pixels, 8, 3, 3));
+
+        remove_image(image_id);
+    }
+
+    #[test]
+    fn test_repeat_x_fit_tiles_horizontally_only() {
+        let image_id = "test_repeat_x_fit_tiles_horizontally_only";
+
+        let src = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        cache_test_image(image_id, 2, 2, src);
+
+        let pixels = render_commands_to_pixels(
+            20,
+            20,
+            vec![DrawCmd::Image(
+                4.0,
+                5.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::RepeatX,
+            )],
+        );
+
+        // Horizontal repetition exists in the top tile row.
+        assert_eq!(rgba_at(&pixels, 20, 4, 5), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 20, 6, 5), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 20, 5, 6), (255, 255, 0, 255));
+
+        // Outside image height should be transparent (no Y repeat).
+        assert_eq!(rgba_at(&pixels, 20, 5, 9).3, 0);
+        assert_eq!(rgba_at(&pixels, 20, 11, 12).3, 0);
+
+        remove_image(image_id);
+    }
+
+    #[test]
+    fn test_repeat_y_fit_tiles_vertically_only() {
+        let image_id = "test_repeat_y_fit_tiles_vertically_only";
+
+        let src = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        cache_test_image(image_id, 2, 2, src);
+
+        let pixels = render_commands_to_pixels(
+            20,
+            20,
+            vec![DrawCmd::Image(
+                4.0,
+                5.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::RepeatY,
+            )],
+        );
+
+        // Vertical repetition exists in the left tile column.
+        assert_eq!(rgba_at(&pixels, 20, 4, 5), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 20, 4, 7), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 20, 5, 8), (255, 255, 0, 255));
+
+        // Outside image width should be transparent (no X repeat).
+        assert_eq!(rgba_at(&pixels, 20, 7, 6).3, 0);
+        assert_eq!(rgba_at(&pixels, 20, 12, 12).3, 0);
 
         remove_image(image_id);
     }
