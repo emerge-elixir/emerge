@@ -41,4 +41,57 @@ defmodule EmergeSkiaTest do
       EmergeSkia.start("Legacy")
     end
   end
+
+  test "start/1 validates assets.fonts source type" do
+    assert_raise ArgumentError, ~r/assets\.fonts\[\]\.source must be a logical string path/, fn ->
+      EmergeSkia.start(
+        otp_app: :emerge,
+        assets: [fonts: [[family: "my-font", source: {:path, "/tmp/font.ttf"}]]]
+      )
+    end
+  end
+
+  test "start/1 validates assets.fonts weight range" do
+    assert_raise ArgumentError,
+                 ~r/assets\.fonts\[\]\.weight must be an integer between 100 and 900/,
+                 fn ->
+                   EmergeSkia.start(
+                     otp_app: :emerge,
+                     assets: [
+                       fonts: [[family: "my-font", source: "fonts/MyFont.ttf", weight: 50]]
+                     ]
+                   )
+                 end
+  end
+
+  test "start/1 rejects duplicate font variants" do
+    assert_raise ArgumentError, ~r/duplicate assets\.fonts entries/, fn ->
+      EmergeSkia.start(
+        otp_app: :emerge,
+        assets: [
+          fonts: [
+            [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
+            [family: "my-font", source: "fonts/MyFont-Regular2.ttf", weight: 400]
+          ]
+        ]
+      )
+    end
+  end
+
+  test "start/1 validates assets.fonts extension allowlist" do
+    assert_raise ArgumentError, ~r/extension must be one of/, fn ->
+      EmergeSkia.start(
+        otp_app: :emerge,
+        assets: [fonts: [[family: "my-font", source: "fonts/MyFont.woff2", weight: 400]]]
+      )
+    end
+  end
+
+  test "load_font_file/4 normalizes native ok tuple" do
+    priv_dir = :code.priv_dir(:emerge) |> List.to_string()
+    path = Path.join(priv_dir, "demo_fonts/Lobster-Regular.ttf")
+
+    assert File.regular?(path)
+    assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
+  end
 end

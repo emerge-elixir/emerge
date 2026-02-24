@@ -35,6 +35,7 @@ In EMRG v3 these are encoded as typed image sources:
 Startup/config flow:
 
 - `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root plus runtime-path policy.
+- `EmergeSkia.start/1` preloads configured font assets (`assets.fonts`) from `<otp_app>/priv` and registers them in the native font cache.
 - Rust stores normalized config in `AssetManager` state.
 - Reconfiguration clears source-status cache so paths are revalidated under new policy.
 
@@ -99,12 +100,30 @@ Validation sequence for runtime paths:
 4. symlink/canonical path policy
 5. allowlist root check
 
+## Font Assets
+
+Font assets are configured at startup under `assets.fonts` and loaded synchronously.
+
+Each entry supports:
+
+- `family` (required)
+- `source` (required logical path under `<otp_app>/priv`, or `%Emerge.Assets.Ref{}`)
+- `weight` (optional, default `400`)
+- `italic` (optional, default `false`)
+
+Duplicate variants (`{family, weight, italic}`) are rejected at startup.
+
 ## Start Options
 
 ```elixir
 EmergeSkia.start(
   otp_app: :my_app,
   assets: [
+    fonts: [
+      [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
+      [family: "my-font", source: "fonts/MyFont-Bold.ttf", weight: 700],
+      [family: "my-font", source: "fonts/MyFont-Italic.ttf", weight: 400, italic: true]
+    ],
     runtime_paths: [
       enabled: false,
       allowlist: [],

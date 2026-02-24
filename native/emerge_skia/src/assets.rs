@@ -25,7 +25,7 @@ pub struct AssetConfig {
 impl Default for AssetConfig {
     fn default() -> Self {
         Self {
-            sources: vec!["assets".to_string()],
+            sources: vec!["priv".to_string()],
             runtime_enabled: false,
             runtime_allowlist: Vec::new(),
             runtime_follow_symlinks: false,

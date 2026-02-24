@@ -49,6 +49,7 @@ defmodule EmergeSkia do
 
   @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
   @default_runtime_max_file_size 25_000_000
+  @default_font_extensions [".ttf", ".otf", ".ttc"]
 
   @doc """
   Start a new renderer window.
@@ -72,6 +73,13 @@ defmodule EmergeSkia do
   - `runtime_paths.follow_symlinks` (default: `false`)
   - `runtime_paths.max_file_size` (default: `25_000_000`)
   - `runtime_paths.extensions` (default image extension allowlist)
+  - `fonts` (default: `[]`)
+
+  Each `assets.fonts` entry supports:
+  - `family` (required)
+  - `source` (required, logical path under `<otp_app>/priv` or `%Emerge.Assets.Ref{}`)
+  - `weight` (default: `400`)
+  - `italic` (default: `false`)
   """
   @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
   def start(opts) when is_list(opts) do
@@ -107,8 +115,14 @@ defmodule EmergeSkia do
              render_log: render_log
            }) do
         ref when is_reference(ref) ->
-          :ok = configure_assets_for_renderer(ref, asset_config)
-          {:ok, ref}
+          case initialize_renderer_assets(ref, asset_config) do
+            :ok ->
+              {:ok, ref}
+
+            {:error, reason} ->
+              _ = Native.stop(ref)
+              {:error, reason}
+          end
 
         error ->
           {:error, error}
@@ -267,7 +281,7 @@ defmodule EmergeSkia do
           :ok | {:error, term()}
   def load_font_file(name, weight, italic, path) do
     case File.read(path) do
-      {:ok, data} -> Native.load_font_nif(name, weight, italic, data)
+      {:ok, data} -> normalize_native_ok(Native.load_font_nif(name, weight, italic, data))
       {:error, reason} -> {:error, reason}
     end
   end
@@ -453,6 +467,13 @@ defmodule EmergeSkia do
     Native.set_input_target(renderer, pid)
   end
 
+  defp initialize_renderer_assets(renderer, asset_config) do
+    with :ok <- configure_assets_for_renderer(renderer, asset_config),
+         :ok <- preload_font_assets(asset_config) do
+      :ok
+    end
+  end
+
   defp configure_assets_for_renderer(renderer, asset_config) do
     case Native.configure_assets_nif(
            renderer,
@@ -464,10 +485,45 @@ defmodule EmergeSkia do
            asset_config.runtime_extensions
          ) do
       :ok -> :ok
-      {:error, reason} -> raise "configure_assets_nif failed: #{inspect(reason)}"
-      other -> raise "configure_assets_nif failed: #{inspect(other)}"
+      {:error, reason} -> {:error, {:configure_assets_failed, reason}}
+      other -> {:error, {:configure_assets_failed, other}}
     end
   end
+
+  defp preload_font_assets(%{fonts: []}), do: :ok
+
+  defp preload_font_assets(%{fonts: fonts, priv_dir: priv_dir}) do
+    Enum.reduce_while(fonts, :ok, fn font, :ok ->
+      absolute_path = Path.join(priv_dir, font.source)
+
+      case File.read(absolute_path) do
+        {:ok, data} ->
+          case normalize_native_ok(
+                 Native.load_font_nif(font.family, font.weight, font.italic, data)
+               ) do
+            :ok ->
+              {:cont, :ok}
+
+            {:error, reason} ->
+              {:halt,
+               {:error,
+                {:font_asset_load_failed,
+                 %{font: font_key(font), source: font.source, reason: reason}}}}
+          end
+
+        {:error, reason} ->
+          {:halt,
+           {:error,
+            {:font_asset_read_failed,
+             %{font: font_key(font), source: font.source, path: absolute_path, reason: reason}}}}
+      end
+    end)
+  end
+
+  defp normalize_native_ok(:ok), do: :ok
+  defp normalize_native_ok({:ok, _}), do: :ok
+  defp normalize_native_ok({:error, reason}), do: {:error, reason}
+  defp normalize_native_ok(other), do: {:error, {:unexpected_native_result, other}}
 
   defp normalize_asset_config!(opts) do
     otp_app =
@@ -504,6 +560,11 @@ defmodule EmergeSkia do
       |> Keyword.get(:extensions, @default_runtime_extensions)
       |> normalize_string_list!("assets.runtime_paths.extensions")
 
+    fonts =
+      assets_opts
+      |> Keyword.get(:fonts, [])
+      |> normalize_fonts!()
+
     runtime_max_file_size =
       Keyword.get(runtime_opts, :max_file_size, @default_runtime_max_file_size)
 
@@ -529,13 +590,66 @@ defmodule EmergeSkia do
       runtime_allowlist: runtime_allowlist,
       runtime_follow_symlinks: runtime_follow_symlinks,
       runtime_max_file_size: runtime_max_file_size,
-      runtime_extensions: runtime_extensions
+      runtime_extensions: runtime_extensions,
+      fonts: fonts
     }
+  end
+
+  defp normalize_fonts!(fonts) do
+    entries = normalize_list!(fonts, "assets.fonts")
+
+    normalized =
+      Enum.map(entries, fn entry ->
+        opts = normalize_keyword_or_map!(entry, "assets.fonts[]")
+
+        family =
+          opts
+          |> Keyword.fetch!(:family)
+          |> normalize_non_empty_string!("assets.fonts[].family")
+
+        source =
+          opts
+          |> Keyword.fetch!(:source)
+          |> normalize_font_source!()
+
+        weight =
+          opts
+          |> Keyword.get(:weight, 400)
+          |> normalize_font_weight!()
+
+        italic =
+          opts
+          |> Keyword.get(:italic, false)
+          |> normalize_boolean!("assets.fonts[].italic")
+
+        extension = Path.extname(source) |> String.downcase()
+
+        if extension not in @default_font_extensions do
+          raise ArgumentError,
+                "assets.fonts[].source extension must be one of #{inspect(@default_font_extensions)}, got: #{inspect(source)}"
+        end
+
+        %{
+          family: family,
+          source: source,
+          weight: weight,
+          italic: italic
+        }
+      end)
+
+    ensure_unique_fonts!(normalized)
+    normalized
   end
 
   defp normalize_path_list!(list, field_name) do
     strings = normalize_string_list!(list, field_name)
     Enum.map(strings, &Path.expand/1)
+  end
+
+  defp normalize_list!(list, _field_name) when is_list(list), do: list
+
+  defp normalize_list!(value, field_name) do
+    raise ArgumentError, "#{field_name} must be a list, got: #{inspect(value)}"
   end
 
   defp normalize_string_list!(list, field_name) do
@@ -545,6 +659,73 @@ defmodule EmergeSkia do
 
     list
   end
+
+  defp normalize_non_empty_string!(value, field_name) when is_binary(value) do
+    case String.trim(value) do
+      "" -> raise ArgumentError, "#{field_name} must not be empty"
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_non_empty_string!(value, field_name) do
+    raise ArgumentError, "#{field_name} must be a string, got: #{inspect(value)}"
+  end
+
+  defp normalize_boolean!(value, _field_name) when is_boolean(value), do: value
+
+  defp normalize_boolean!(value, field_name) do
+    raise ArgumentError, "#{field_name} must be a boolean, got: #{inspect(value)}"
+  end
+
+  defp normalize_font_weight!(weight) when is_integer(weight) and weight in 100..900, do: weight
+
+  defp normalize_font_weight!(weight) do
+    raise ArgumentError,
+          "assets.fonts[].weight must be an integer between 100 and 900, got: #{inspect(weight)}"
+  end
+
+  defp normalize_font_source!(%Emerge.Assets.Ref{path: path}) when is_binary(path) do
+    normalize_logical_source!(path)
+  end
+
+  defp normalize_font_source!(path) when is_binary(path) do
+    normalize_logical_source!(path)
+  end
+
+  defp normalize_font_source!(other) do
+    raise ArgumentError,
+          "assets.fonts[].source must be a logical string path or %Emerge.Assets.Ref{}, got: #{inspect(other)}"
+  end
+
+  defp normalize_logical_source!(path) do
+    normalized =
+      path
+      |> String.trim()
+      |> String.trim_leading("/")
+
+    if normalized == "" do
+      raise ArgumentError, "assets.fonts[].source must not be empty"
+    end
+
+    if Enum.any?(Path.split(normalized), &(&1 == "..")) do
+      raise ArgumentError,
+            "assets.fonts[].source must be relative and may not contain '..': #{inspect(path)}"
+    end
+
+    normalized
+  end
+
+  defp ensure_unique_fonts!(fonts) do
+    keys = Enum.map(fonts, &font_key/1)
+    duplicates = keys -- Enum.uniq(keys)
+
+    if duplicates != [] do
+      duplicates = duplicates |> Enum.uniq() |> Enum.map(&inspect/1) |> Enum.join(", ")
+      raise ArgumentError, "duplicate assets.fonts entries for variants: #{duplicates}"
+    end
+  end
+
+  defp font_key(%{family: family, weight: weight, italic: italic}), do: {family, weight, italic}
 
   defp normalize_keyword_or_map!(value, field_name) do
     cond do

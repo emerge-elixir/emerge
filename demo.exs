@@ -43,27 +43,7 @@ start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else
 startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backend=#{backend}"
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
-demo_assets_root = Path.expand("assets/demo_images", __DIR__)
 blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")
-
-required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg", "tile_bird_small.jpg"]
-
-missing_demo_images =
-  Enum.filter(required_demo_images, fn file_name ->
-    not File.regular?(Path.join(demo_assets_root, file_name))
-  end)
-
-if missing_demo_images != [] do
-  raise "missing demo image assets in #{demo_assets_root}: #{Enum.join(missing_demo_images, ", ")}"
-end
-
-File.rm_rf!(blocked_root)
-File.mkdir_p!(blocked_root)
-
-runtime_source = Path.join(demo_assets_root, "runtime.jpg")
-blocked_source = Path.join(blocked_root, "blocked.jpg")
-
-File.cp!(runtime_source, blocked_source)
 
 demo_priv_dir =
   case :code.priv_dir(:emerge) do
@@ -71,29 +51,65 @@ demo_priv_dir =
     _ -> raise "failed to resolve :emerge priv dir"
   end
 
-demo_logical_root = Path.join(demo_priv_dir, "demo_images")
-File.mkdir_p!(demo_logical_root)
+demo_image_root = Path.join(demo_priv_dir, "demo_images")
+demo_font_root = Path.join(demo_priv_dir, "demo_fonts")
 
-Enum.each(required_demo_images, fn file_name ->
-  File.cp!(Path.join(demo_assets_root, file_name), Path.join(demo_logical_root, file_name))
-end)
+required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg", "tile_bird_small.jpg"]
+required_demo_fonts = ["Lobster-Regular.ttf"]
+
+missing_demo_images =
+  Enum.filter(required_demo_images, fn file_name ->
+    not File.regular?(Path.join(demo_image_root, file_name))
+  end)
+
+if missing_demo_images != [] do
+  raise "missing demo image assets in #{demo_image_root}: #{Enum.join(missing_demo_images, ", ")}"
+end
+
+missing_demo_fonts =
+  Enum.filter(required_demo_fonts, fn file_name ->
+    not File.regular?(Path.join(demo_font_root, file_name))
+  end)
+
+if missing_demo_fonts != [] do
+  raise "missing demo font assets in #{demo_font_root}: #{Enum.join(missing_demo_fonts, ", ")}"
+end
+
+File.rm_rf!(blocked_root)
+File.mkdir_p!(blocked_root)
+
+runtime_source = Path.join(demo_image_root, "runtime.jpg")
+blocked_source = Path.join(blocked_root, "blocked.jpg")
+lobster_source = "demo_fonts/Lobster-Regular.ttf"
+
+File.cp!(runtime_source, blocked_source)
 
 start_opts =
   Keyword.put(start_opts, :assets,
+    fonts: [
+      [
+        family: "lobster-demo",
+        source: lobster_source,
+        weight: 400,
+        italic: false
+      ]
+    ],
     runtime_paths: [
       enabled: true,
-      allowlist: [demo_assets_root],
+      allowlist: [demo_image_root],
       follow_symlinks: false,
       max_file_size: 25_000_000,
       extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
     ]
   )
 
-Process.put(:demo_assets_root, demo_assets_root)
+Process.put(:demo_runtime_allowlist_root, demo_image_root)
 Process.put(:demo_runtime_image_path, runtime_source)
 Process.put(:demo_restricted_image_path, blocked_source)
+Process.put(:demo_font_source, lobster_source)
 
-IO.puts("Configured demo logical source root #{demo_logical_root}")
+IO.puts("Configured demo logical source root #{demo_image_root}")
+IO.puts("Configured demo font asset #{lobster_source}")
 
 renderer =
   case EmergeSkia.start(start_opts) do
@@ -452,11 +468,12 @@ defmodule Demo do
     runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
     static_source = "demo_images/static.jpg"
     bird_tile_source = "demo_images/tile_bird_small.jpg"
+    font_source = Process.get(:demo_font_source, "demo_fonts/Lobster-Regular.ttf")
 
     restricted_path =
       Process.get(:demo_restricted_image_path, "/tmp/emerge_skia_demo_blocked/blocked.jpg")
 
-    assets_root = Process.get(:demo_assets_root, "(unknown)")
+    runtime_allowlist_root = Process.get(:demo_runtime_allowlist_root, "(unknown)")
 
     fit_frames = [
       {"Wide frame", {280, 120}},
@@ -515,6 +532,32 @@ defmodule Demo do
       ]
       |> Enum.map(&asset_behavior_card/1)
 
+    font_cards =
+      [
+        %{
+          title: "Default Inter",
+          source_label: "source: built-in default",
+          status: {"Built-in", :font_builtin},
+          note: "No assets.fonts entry required",
+          attrs: []
+        },
+        %{
+          title: "Lobster asset",
+          source_label: ~s(source: "#{font_source}"),
+          status: {"Font asset", :font},
+          note: "Loaded at startup from otp_app priv",
+          attrs: [Font.family("lobster-demo")]
+        },
+        %{
+          title: "Lobster synthetic bold + italic",
+          source_label: ~s(source: "#{font_source}"),
+          status: {"Synthetic", :synthetic},
+          note: "Only regular is loaded, style is synthesized",
+          attrs: [Font.family("lobster-demo"), Font.bold(), Font.italic()]
+        }
+      ]
+      |> Enum.map(&font_asset_card/1)
+
     background_cards =
       [
         %{
@@ -551,11 +594,11 @@ defmodule Demo do
       |> Enum.map(&asset_behavior_card/1)
 
     column([width(fill()), spacing(16)], [
-      section_title("Assets + Images"),
+      section_title("Assets"),
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Assets resolve from otp_app priv or runtime paths, then render through image/2 or Background helpers."
+          "Assets resolve from otp_app priv or runtime paths, then render through image/2, Background helpers, and startup-loaded font assets."
         )
       ),
       section_title("Source"),
@@ -564,6 +607,12 @@ defmodule Demo do
         text("How each source type resolves before rendering.")
       ),
       centered_wrapped_cards(source_cards, 936),
+      section_title("Fonts"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text("Startup font assets are resolved from priv and mapped by family/weight/style.")
+      ),
+      centered_wrapped_cards(font_cards, 936),
       section_title("Image"),
       el(
         [Font.size(12), Font.color(@dim_text)],
@@ -602,7 +651,11 @@ defmodule Demo do
             [Font.size(11), Font.color(@dim_text)],
             text("async asset loading + loading/failed placeholders")
           ),
-          el([Font.size(11), Font.color(@dim_text)], text("runtime allowlist: #{assets_root}"))
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text("runtime allowlist: #{runtime_allowlist_root}")
+          ),
+          el([Font.size(11), Font.color(@dim_text)], text("font asset: #{font_source}"))
         ])
       )
     ])
@@ -2113,7 +2166,7 @@ defmodule Demo do
     )
   end
 
-  defp centered_wrapped_cards(cards, max_width \\ 960) do
+  defp centered_wrapped_cards(cards, max_width) do
     el(
       [center_x(), width(maximum(max_width, fill()))],
       wrapped_row([width(fill()), spacing_xy(12, 12)], cards)
@@ -2149,6 +2202,49 @@ defmodule Demo do
             Border.rounded(8)
           ],
           asset_behavior_preview(preview_spec)
+        )
+      ])
+    )
+  end
+
+  defp font_asset_card(%{
+         title: title,
+         source_label: source_label,
+         status: {status_label, status_tone},
+         note: note,
+         attrs: font_attrs
+       }) do
+    sample = "quick brown fox jumps over a lazy dog"
+
+    el(
+      [
+        width(px(300)),
+        padding(10),
+        spacing(8),
+        Background.color({:color_rgb, {50, 50, 74}}),
+        Border.rounded(10)
+      ],
+      column([spacing(8)], [
+        row([width(fill()), spacing(8)], [
+          el([width(fill()), Font.size(12), Font.color(:white)], text(title)),
+          source_status_chip(status_label, status_tone)
+        ]),
+        el([Font.size(10), Font.color(@dim_text)], text(source_label)),
+        el([Font.size(10), Font.color({:color_rgb, {196, 202, 222}})], text(note)),
+        el(
+          [
+            width(fill()),
+            padding(10),
+            Background.color({:color_rgb, {34, 34, 50}}),
+            Border.rounded(8)
+          ],
+          column([spacing(6)], [
+            el([Font.size(22), Font.color(:white)] ++ font_attrs, text("Asset Fonts 123")),
+            el(
+              [Font.size(12), Font.color({:color_rgb, {214, 220, 236}})] ++ font_attrs,
+              text(sample)
+            )
+          ])
         )
       ])
     )
@@ -2210,6 +2306,9 @@ defmodule Demo do
         :blocked -> {:color_rgb, {150, 77, 83}}
         :background -> {:color_rgb, {92, 80, 164}}
         :helper -> {:color_rgb, {88, 92, 124}}
+        :font_builtin -> {:color_rgb, {84, 106, 94}}
+        :font -> {:color_rgb, {132, 86, 54}}
+        :synthetic -> {:color_rgb, {118, 74, 120}}
       end
 
     el(
