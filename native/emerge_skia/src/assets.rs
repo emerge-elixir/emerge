@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::SystemTime;
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::actors::TreeMsg;
@@ -16,7 +14,7 @@ use crate::tree::element::ElementTree;
 
 #[derive(Clone, Debug)]
 pub struct AssetConfig {
-    pub manifest_path: String,
+    pub sources: Vec<String>,
     pub runtime_enabled: bool,
     pub runtime_allowlist: Vec<String>,
     pub runtime_follow_symlinks: bool,
@@ -27,7 +25,7 @@ pub struct AssetConfig {
 impl Default for AssetConfig {
     fn default() -> Self {
         Self {
-            manifest_path: "priv/static/cache_manifest.json".to_string(),
+            sources: vec!["assets".to_string()],
             runtime_enabled: false,
             runtime_allowlist: Vec::new(),
             runtime_follow_symlinks: false,
@@ -61,7 +59,6 @@ pub enum AssetStatus {
 #[derive(Default)]
 struct AssetState {
     config: AssetConfig,
-    config_revision: u64,
     sources: HashMap<ImageSource, AssetStatus>,
     pending_count: usize,
 }
@@ -85,19 +82,10 @@ enum AssetMsg {
     Stop,
 }
 
-struct ManifestCache {
-    path: String,
-    mtime: SystemTime,
-    latest: HashMap<String, String>,
-    root: PathBuf,
-}
-
 struct Worker {
     tree_tx: Sender<TreeMsg>,
     state: Arc<Mutex<AssetState>>,
     log_render: bool,
-    seen_revision: u64,
-    manifest_cache: Option<ManifestCache>,
 }
 
 static GLOBAL: OnceLock<Mutex<Global>> = OnceLock::new();
@@ -133,8 +121,6 @@ pub fn start(tree_tx: Sender<TreeMsg>, log_render: bool) {
             tree_tx,
             state,
             log_render,
-            seen_revision: 0,
-            manifest_cache: None,
         };
 
         while let Ok(msg) = rx.recv() {
@@ -170,7 +156,6 @@ pub fn configure(config: AssetConfig) {
 
     if let Ok(mut state) = guard.state.lock() {
         state.config = normalize_config(config);
-        state.config_revision = state.config_revision.saturating_add(1);
         state.sources.clear();
         state.pending_count = 0;
     }
@@ -284,15 +269,10 @@ pub fn has_pending_assets() -> bool {
 
 impl Worker {
     fn handle_ensure(&mut self, source: ImageSource) {
-        let (config, revision) = match self.state.lock() {
-            Ok(state) => (state.config.clone(), state.config_revision),
+        let config = match self.state.lock() {
+            Ok(state) => state.config.clone(),
             Err(_) => return,
         };
-
-        if revision != self.seen_revision {
-            self.seen_revision = revision;
-            self.manifest_cache = None;
-        }
 
         let result = self.load_source(&source, &config);
 
@@ -360,75 +340,25 @@ impl Worker {
         Ok(ResolvedAsset { id, width, height })
     }
 
-    fn resolve_logical_path(
-        &mut self,
-        logical: &str,
-        config: &AssetConfig,
-    ) -> Result<PathBuf, String> {
-        let manifest_path = PathBuf::from(&config.manifest_path);
+    fn resolve_logical_path(&self, logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
+        let relative = logical_asset_relative_path(logical)?;
 
-        let metadata = fs::metadata(&manifest_path)
-            .map_err(|err| format!("failed to stat manifest {}: {err}", manifest_path.display()))?;
-
-        let mtime = metadata.modified().map_err(|err| {
-            format!(
-                "failed to read manifest mtime {}: {err}",
-                manifest_path.display()
-            )
-        })?;
-
-        let reload = self
-            .manifest_cache
-            .as_ref()
-            .is_none_or(|cache| cache.path != config.manifest_path || cache.mtime != mtime);
-
-        if reload {
-            let bytes = fs::read(&manifest_path).map_err(|err| {
-                format!("failed to read manifest {}: {err}", manifest_path.display())
-            })?;
-
-            let parsed: Value = serde_json::from_slice(&bytes).map_err(|err| {
-                format!(
-                    "failed to parse manifest {}: {err}",
-                    manifest_path.display()
-                )
-            })?;
-
-            let latest_obj = parsed
-                .get("latest")
-                .and_then(Value::as_object)
-                .ok_or_else(|| "manifest missing latest map".to_string())?;
-
-            let mut latest = HashMap::new();
-            for (key, value) in latest_obj {
-                if let Some(path) = value.as_str() {
-                    latest.insert(key.clone(), path.to_string());
-                }
-            }
-
-            self.manifest_cache = Some(ManifestCache {
-                path: config.manifest_path.clone(),
-                mtime,
-                latest,
-                root: manifest_path
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from(".")),
-            });
+        if config.sources.is_empty() {
+            return Err("asset sources are empty".to_string());
         }
 
-        let cache = self
-            .manifest_cache
-            .as_ref()
-            .ok_or_else(|| "manifest cache unavailable".to_string())?;
-
-        for candidate in logical_candidates(logical) {
-            if let Some(digested) = cache.latest.get(&candidate) {
-                return Ok(cache.root.join(digested));
+        for source in &config.sources {
+            let source_root = PathBuf::from(source);
+            let candidate = source_root.join(&relative);
+            if fs::metadata(&candidate)
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false)
+            {
+                return Ok(candidate);
             }
         }
 
-        Err(format!("logical asset not found in manifest: {logical}"))
+        Err(format!("logical asset not found: {logical}"))
     }
 }
 
@@ -447,6 +377,11 @@ fn send_tree_update(tree_tx: &Sender<TreeMsg>, log_render: bool) {
 
 fn normalize_config(config: AssetConfig) -> AssetConfig {
     let mut normalized = config;
+    normalized.sources = normalized
+        .sources
+        .into_iter()
+        .map(|path| expand_path(path.as_str()))
+        .collect();
     normalized.runtime_allowlist = normalized
         .runtime_allowlist
         .into_iter()
@@ -460,14 +395,34 @@ fn normalize_config(config: AssetConfig) -> AssetConfig {
     normalized
 }
 
-fn logical_candidates(path: &str) -> Vec<String> {
-    let trimmed = path.trim_start_matches('/').to_string();
-    let mut out = vec![trimmed.clone()];
-    let prefixed = format!("/{trimmed}");
-    if prefixed != trimmed {
-        out.push(prefixed);
+fn logical_asset_relative_path(logical: &str) -> Result<PathBuf, String> {
+    let trimmed = logical.trim();
+    let without_prefix = trimmed.trim_start_matches('/');
+    if without_prefix.is_empty() {
+        return Err(format!("logical asset path is empty: {logical}"));
     }
-    out
+
+    let mut out = PathBuf::new();
+    for component in Path::new(without_prefix).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(segment) => out.push(segment),
+            Component::ParentDir => {
+                return Err(format!(
+                    "logical asset path may not contain '..': {logical}"
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("logical asset path must be relative: {logical}"));
+            }
+        }
+    }
+
+    if out.as_os_str().is_empty() {
+        return Err(format!("logical asset path is empty: {logical}"));
+    }
+
+    Ok(out)
 }
 
 fn canonical_image_id(data: &[u8]) -> String {

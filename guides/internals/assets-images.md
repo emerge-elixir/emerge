@@ -28,13 +28,13 @@ In EMRG v3 these are encoded as typed image sources:
 
 1. Elixir uploads/patches tree sources as-is (no Elixir-side file IO).
 2. Rust tree actor requests missing sources from `AssetManager` actor.
-3. `AssetManager` performs manifest/runtime path resolution and file reads asynchronously.
+3. `AssetManager` resolves logical paths from the configured OTP app `priv` root (or validates runtime paths) and reads files asynchronously.
 4. On success, image bytes are decoded and inserted into native cache.
 5. `AssetManager` notifies tree actor, which triggers relayout/rerender.
 
 Startup/config flow:
 
-- `EmergeSkia.start/1` calls `configure_assets_nif` with manifest/runtime-path config.
+- `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root plus runtime-path policy.
 - Rust stores normalized config in `AssetManager` state.
 - Reconfiguration clears source-status cache so paths are revalidated under new policy.
 
@@ -53,27 +53,15 @@ Source status state machine:
 There is no strict/lenient runtime mode and no fail-fast path for image load
 errors. Runtime failures always render the failed placeholder.
 
-## Static Assets (Digest + Manifest)
+## Source Root
 
-Run:
+Logical sources are resolved directly from the `priv` root of the `otp_app` passed to `EmergeSkia.start/1`.
 
-```bash
-mix emerge.assets.digest
-```
+Path safety rules for logical sources:
 
-This compiles image assets from configured `sources` into a static output root
-and emits:
-
-- `cache_manifest.json`
-- `cache_manifest_images.json`
-
-`cache_manifest.json` contains:
-
-- `latest` (logical -> digested path)
-- `digests` (digested path -> metadata)
-
-`cache_manifest_images.json` is generated for image metadata output and tooling,
-while runtime logical path resolution reads `cache_manifest.json`.
+- paths must be relative (leading `/` is normalized away)
+- `..` traversal is rejected
+- missing files resolve to the failed placeholder path
 
 ## `~m` Verified Media Sigil
 
@@ -81,14 +69,14 @@ while runtime logical path resolution reads `cache_manifest.json`.
 
 Behavior:
 
-- compile-time validation that the file exists in configured `sources`
+- compile-time validation that the file exists under `<otp_app>/priv`
 - marks source file as external resource for recompilation tracking
 - only accepts literal string paths (no modifiers)
 
 Import with:
 
 ```elixir
-use Emerge.Assets.Path
+use Emerge.Assets.Path, otp_app: :my_app
 ```
 
 ## Runtime Paths (Security)
@@ -111,20 +99,19 @@ Validation sequence for runtime paths:
 4. symlink/canonical path policy
 5. allowlist root check
 
-## Config Reference
+## Start Options
 
 ```elixir
-config :emerge_skia, :assets,
-  sources: ["assets"],
-  manifest: [
-    path: "priv/static/cache_manifest.json",
-    images_meta_path: "priv/static/cache_manifest_images.json"
-  ],
-  runtime_paths: [
-    enabled: false,
-    allowlist: [],
-    follow_symlinks: false,
-    max_file_size: 25_000_000,
-    extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+EmergeSkia.start(
+  otp_app: :my_app,
+  assets: [
+    runtime_paths: [
+      enabled: false,
+      allowlist: [],
+      follow_symlinks: false,
+      max_file_size: 25_000_000,
+      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+    ]
   ]
+)
 ```

@@ -91,7 +91,7 @@ Padding is the distance between the outer edge and the content, and spacing is t
 - Overlay positioning (`above`, `below`, `in_front`, etc.)
 - High-DPI scaling
 - Incremental tree patching for efficient updates
-- Asset pipeline with compile-time verified media paths (`~m`) and digest manifests
+- Source-based asset loading with compile-time verified media paths (`~m`)
 
 ## Backends
 
@@ -113,7 +113,6 @@ Wayland display is available — but X11 is not a first-class supported target.
 ```bash
 mix deps.get
 mix compile
-mix emerge.assets.digest
 mix test
 mix run demo.exs
 ```
@@ -126,7 +125,7 @@ EmergeSkia resolves image **sources** asynchronously in the Rust pipeline after
 Supported source forms:
 
 - `~m"images/logo.png"` (compile-time verified static path)
-- `"images/logo.png"` (logical static path, looked up in digest manifest)
+- `"images/logo.png"` (logical static path, resolved from `<otp_app>/priv/images/logo.png`)
 - `{:path, "/absolute/or/runtime/path.png"}` (runtime filesystem path)
 - `{:id, "img_<sha256>"}` (already-loaded image ID)
 
@@ -134,7 +133,7 @@ Use the `~m` sigil by importing `Emerge.Assets.Path`:
 
 ```elixir
 defmodule MyApp.UI do
-  use Emerge.Assets.Path
+  use Emerge.Assets.Path, otp_app: :my_app
   import Emerge.UI
 
   def view do
@@ -156,25 +155,28 @@ Background image fit helpers:
 - `Background.uncropped/1` uses `:contain`
 - `Background.tiled/1`, `Background.tiled_x/1`, `Background.tiled_y/1` use repeat modes
 
-## Asset Config
+## Asset Startup Options
 
-Configure global asset behavior under `:emerge_skia, :assets`:
+Configure assets when starting the renderer. `otp_app` is required:
 
 ```elixir
-config :emerge_skia, :assets,
-  sources: ["assets"],
-  manifest: [
-    path: "priv/static/cache_manifest.json",
-    images_meta_path: "priv/static/cache_manifest_images.json"
-  ],
-  runtime_paths: [
-    enabled: false,
-    allowlist: [],
-    follow_symlinks: false,
-    max_file_size: 25_000_000,
-    extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
-  ]
+{:ok, renderer} =
+  EmergeSkia.start(
+    otp_app: :my_app,
+    title: "My App",
+    assets: [
+      runtime_paths: [
+        enabled: false,
+        allowlist: [],
+        follow_symlinks: false,
+        max_file_size: 25_000_000,
+        extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+      ]
+    ]
+  )
 ```
+
+Logical paths are always resolved from the provided app's `priv` directory.
 
 Runtime behavior:
 

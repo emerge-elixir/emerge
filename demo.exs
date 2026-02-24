@@ -28,7 +28,13 @@ card = Keyword.get(cli_opts, :card)
 input_log = Keyword.get(cli_opts, :input_log, false)
 render_log = Keyword.get(cli_opts, :render_log, false)
 
-start_opts = [backend: backend, title: "EmergeSkia Demo", width: width, height: height]
+start_opts = [
+  otp_app: :emerge,
+  backend: backend,
+  title: "EmergeSkia Demo",
+  width: width,
+  height: height
+]
 
 start_opts = if card, do: Keyword.put(start_opts, :drm_card, card), else: start_opts
 start_opts = if input_log, do: Keyword.put(start_opts, :input_log, true), else: start_opts
@@ -38,7 +44,6 @@ startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backen
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
 demo_assets_root = Path.expand("assets/demo_images", __DIR__)
-demo_static_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_static")
 blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")
 
 required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg", "tile_bird_small.jpg"]
@@ -52,7 +57,6 @@ if missing_demo_images != [] do
   raise "missing demo image assets in #{demo_assets_root}: #{Enum.join(missing_demo_images, ", ")}"
 end
 
-File.rm_rf!(demo_static_root)
 File.rm_rf!(blocked_root)
 File.mkdir_p!(blocked_root)
 
@@ -61,28 +65,35 @@ blocked_source = Path.join(blocked_root, "blocked.jpg")
 
 File.cp!(runtime_source, blocked_source)
 
-{:ok, digested_count} = Emerge.Assets.Digester.compile([demo_assets_root], demo_static_root)
+demo_priv_dir =
+  case :code.priv_dir(:emerge) do
+    path when is_list(path) -> List.to_string(path)
+    _ -> raise "failed to resolve :emerge priv dir"
+  end
 
-Application.put_env(:emerge, :assets,
-  sources: [demo_assets_root],
-  manifest: [
-    path: Path.join(demo_static_root, "cache_manifest.json"),
-    images_meta_path: Path.join(demo_static_root, "cache_manifest_images.json")
-  ],
-  runtime_paths: [
-    enabled: true,
-    allowlist: [demo_assets_root],
-    follow_symlinks: false,
-    max_file_size: 25_000_000,
-    extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
-  ]
-)
+demo_logical_root = Path.join(demo_priv_dir, "demo_images")
+File.mkdir_p!(demo_logical_root)
+
+Enum.each(required_demo_images, fn file_name ->
+  File.cp!(Path.join(demo_assets_root, file_name), Path.join(demo_logical_root, file_name))
+end)
+
+start_opts =
+  Keyword.put(start_opts, :assets,
+    runtime_paths: [
+      enabled: true,
+      allowlist: [demo_assets_root],
+      follow_symlinks: false,
+      max_file_size: 25_000_000,
+      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+    ]
+  )
 
 Process.put(:demo_assets_root, demo_assets_root)
 Process.put(:demo_runtime_image_path, runtime_source)
 Process.put(:demo_restricted_image_path, blocked_source)
 
-IO.puts("Prepared #{digested_count} demo image assets from #{demo_assets_root}")
+IO.puts("Configured demo logical source root #{demo_logical_root}")
 
 renderer =
   case EmergeSkia.start(start_opts) do
@@ -439,7 +450,8 @@ defmodule Demo do
 
   defp page_assets() do
     runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
-    bird_tile_source = "tile_bird_small.jpg"
+    static_source = "demo_images/static.jpg"
+    bird_tile_source = "demo_images/tile_bird_small.jpg"
 
     restricted_path =
       Process.get(:demo_restricted_image_path, "/tmp/emerge_skia_demo_blocked/blocked.jpg")
@@ -461,7 +473,7 @@ defmodule Demo do
             {frame_w, frame_h},
             fit,
             :element,
-            "static.jpg"
+            static_source
           )
         end)
       end)
@@ -475,7 +487,7 @@ defmodule Demo do
             {frame_w, frame_h},
             fit,
             :background,
-            "static.jpg"
+            static_source
           )
         end)
       end)
@@ -484,9 +496,9 @@ defmodule Demo do
       [
         %{
           title: "Static source",
-          source_label: ~s(source: "static.jpg"),
-          status: {"Manifest", :manifest},
-          preview: {:image, "static.jpg", :contain, "image :contain"}
+          source_label: ~s(source: "demo_images/static.jpg"),
+          status: {"Source root", :source},
+          preview: {:image, static_source, :contain, "image :contain"}
         },
         %{
           title: "Runtime source",
@@ -507,31 +519,31 @@ defmodule Demo do
       [
         %{
           title: "Background.image/1",
-          source_label: "source: tile_bird_small.jpg",
+          source_label: "source: demo_images/tile_bird_small.jpg",
           status: {"Background", :background},
           preview: {:background, Background.image(bird_tile_source), "bg :cover"}
         },
         %{
           title: "Background.uncropped/1",
-          source_label: "source: tile_bird_small.jpg",
+          source_label: "source: demo_images/tile_bird_small.jpg",
           status: {"Helper", :helper},
           preview: {:background, Background.uncropped(bird_tile_source), "bg :contain"}
         },
         %{
           title: "Background.tiled/1",
-          source_label: "source: tile_bird_small.jpg",
+          source_label: "source: demo_images/tile_bird_small.jpg",
           status: {"Helper", :helper},
           preview: {:background, Background.tiled(bird_tile_source), "bg :repeat"}
         },
         %{
           title: "Background.tiled_x/1",
-          source_label: "source: tile_bird_small.jpg",
+          source_label: "source: demo_images/tile_bird_small.jpg",
           status: {"Helper", :helper},
           preview: {:background, Background.tiled_x(bird_tile_source), "bg :repeat_x"}
         },
         %{
           title: "Background.tiled_y/1",
-          source_label: "source: tile_bird_small.jpg",
+          source_label: "source: demo_images/tile_bird_small.jpg",
           status: {"Helper", :helper},
           preview: {:background, Background.tiled_y(bird_tile_source), "bg :repeat_y"}
         }
@@ -543,7 +555,7 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Assets resolve from manifest paths or runtime paths first, then render through image/2 or Background helpers."
+          "Assets resolve from otp_app priv or runtime paths, then render through image/2 or Background helpers."
         )
       ),
       section_title("Source"),
@@ -569,7 +581,7 @@ defmodule Demo do
       centered_wrapped_cards(background_cards, 936),
       el(
         [Font.size(10), Font.color(@dim_text)],
-        text("Tile source: tile_bird_small.jpg (160x120)")
+        text("Tile source: demo_images/tile_bird_small.jpg (160x120)")
       ),
       el(
         [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
@@ -2193,7 +2205,7 @@ defmodule Demo do
   defp source_status_chip(label, tone) do
     bg_color =
       case tone do
-        :manifest -> {:color_rgb, {58, 98, 158}}
+        :source -> {:color_rgb, {58, 98, 158}}
         :runtime -> {:color_rgb, {48, 120, 102}}
         :blocked -> {:color_rgb, {150, 77, 83}}
         :background -> {:color_rgb, {92, 80, 164}}

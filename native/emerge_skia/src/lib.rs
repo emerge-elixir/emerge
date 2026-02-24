@@ -857,7 +857,7 @@ fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Resul
 #[rustler::nif(schedule = "DirtyIo")]
 fn configure_assets_nif(
     _renderer: ResourceArc<RendererResource>,
-    manifest_path: String,
+    sources: Vec<String>,
     runtime_enabled: bool,
     allowlist: Vec<String>,
     follow_symlinks: bool,
@@ -865,7 +865,7 @@ fn configure_assets_nif(
     extensions: Vec<String>,
 ) -> Atom {
     assets::configure(AssetConfig {
-        manifest_path,
+        sources,
         runtime_enabled,
         runtime_allowlist: allowlist,
         runtime_follow_symlinks: follow_symlinks,

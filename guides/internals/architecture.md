@@ -91,7 +91,7 @@ lib.rs (NIF entry, resources, registration)
     ├── input.rs (InputEvent + mask filter + encoder)
     ├── events.rs (EventProcessor, event registry, hit-test, event/scroll dispatch)
     │   └── events/scrollbar.rs (scrollbar interaction state machine + hit helpers)
-    ├── assets.rs (AssetManager actor, async loading, manifest/runtime-path resolution)
+    ├── assets.rs (AssetManager actor, async loading, source-root/runtime-path resolution)
     │
     └── tree/
         ├── mod.rs (public exports)
@@ -142,7 +142,7 @@ See the [EMRG Format](emrg-format.md) guide for the full binary encoding specifi
 
 ## Image Asset Pipeline
 
-See [Assets and Images](assets-images.md) for source resolution, digest manifests,
+See [Assets and Images](assets-images.md) for source resolution,
 runtime path security, and async Rust-side loading/caching behavior.
 
 ### Length Encoding

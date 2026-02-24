@@ -14,7 +14,13 @@ defmodule EmergeSkia do
   ## Example
 
       # Start renderer
-      {:ok, renderer} = EmergeSkia.start("My App", 800, 600)
+      {:ok, renderer} =
+        EmergeSkia.start(
+          otp_app: :my_app,
+          title: "My App",
+          width: 800,
+          height: 600
+        )
 
       # Render commands
       EmergeSkia.render(renderer, [
@@ -41,11 +47,15 @@ defmodule EmergeSkia do
   @type renderer :: reference()
   @type color :: non_neg_integer()
 
+  @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+  @default_runtime_max_file_size 25_000_000
+
   @doc """
   Start a new renderer window.
 
   ## Options
 
+  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
   - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`)
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
@@ -54,11 +64,20 @@ defmodule EmergeSkia do
   - `hw_cursor` - Enable hardware cursor when available (default: true)
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
+  - `assets` - Asset runtime policy options (optional)
+
+  `assets` options:
+  - `runtime_paths.enabled` (default: `false`)
+  - `runtime_paths.allowlist` (default: `[]`)
+  - `runtime_paths.follow_symlinks` (default: `false`)
+  - `runtime_paths.max_file_size` (default: `25_000_000`)
+  - `runtime_paths.extensions` (default image extension allowlist)
   """
   @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
   def start(opts) when is_list(opts) do
     if Keyword.keyword?(opts) do
       opts = Keyword.new(opts)
+      asset_config = normalize_asset_config!(opts)
       backend = Keyword.get(opts, :backend, :wayland)
       title = Keyword.get(opts, :title, "Emerge")
       width = Keyword.get(opts, :width, 800)
@@ -88,44 +107,40 @@ defmodule EmergeSkia do
              render_log: render_log
            }) do
         ref when is_reference(ref) ->
-          :ok = configure_assets_for_renderer(ref)
+          :ok = configure_assets_for_renderer(ref, asset_config)
           {:ok, ref}
 
         error ->
           {:error, error}
       end
     else
-      start(List.to_string(opts), 800, 600)
+      raise ArgumentError,
+            "EmergeSkia.start/1 expects a keyword list, for example: EmergeSkia.start(otp_app: :my_app, ...)"
     end
   end
 
-  @spec start(String.t()) :: {:ok, renderer()} | {:error, term()}
-  def start(title) when is_binary(title) do
-    start(title, 800, 600)
+  @spec start(String.t()) :: no_return()
+  def start(_title) do
+    raise ArgumentError,
+          "EmergeSkia.start/1 with title is no longer supported; use EmergeSkia.start(otp_app: :my_app, title: \"...\")"
   end
 
-  @spec start() :: {:ok, renderer()} | {:error, term()}
+  @spec start() :: no_return()
   def start do
-    start("Emerge", 800, 600)
+    raise ArgumentError,
+          "EmergeSkia.start/0 requires explicit otp_app; use EmergeSkia.start(otp_app: :my_app)"
   end
 
-  @spec start(String.t(), non_neg_integer()) :: {:ok, renderer()} | {:error, term()}
-  def start(title, width) when is_binary(title) and is_integer(width) do
-    start(title, width, 600)
+  @spec start(String.t(), non_neg_integer()) :: no_return()
+  def start(_title, _width) do
+    raise ArgumentError,
+          "EmergeSkia.start/2 is no longer supported; use EmergeSkia.start(otp_app: :my_app, title: \"...\", width: ...)"
   end
 
-  @spec start(String.t(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, renderer()} | {:error, term()}
-  def start(title, width, height)
-      when is_binary(title) and is_integer(width) and is_integer(height) do
-    case Native.start(title, width, height) do
-      ref when is_reference(ref) ->
-        :ok = configure_assets_for_renderer(ref)
-        {:ok, ref}
-
-      error ->
-        {:error, error}
-    end
+  @spec start(String.t(), non_neg_integer(), non_neg_integer()) :: no_return()
+  def start(_title, _width, _height) do
+    raise ArgumentError,
+          "EmergeSkia.start/3 is no longer supported; use EmergeSkia.start(otp_app: :my_app, title: \"...\", width: ..., height: ...)"
   end
 
   @doc """
@@ -240,9 +255,9 @@ defmodule EmergeSkia do
   ## Example
 
       # Load font variants
-      :ok = EmergeSkia.load_font_file("my-font", 400, false, "assets/fonts/MyFont-Regular.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 700, false, "assets/fonts/MyFont-Bold.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 400, true, "assets/fonts/MyFont-Italic.ttf")
+      :ok = EmergeSkia.load_font_file("my-font", 400, false, "priv/fonts/MyFont-Regular.ttf")
+      :ok = EmergeSkia.load_font_file("my-font", 700, false, "priv/fonts/MyFont-Bold.ttf")
+      :ok = EmergeSkia.load_font_file("my-font", 400, true, "priv/fonts/MyFont-Italic.ttf")
 
       # Use in elements
       el([Font.family("my-font"), Font.size(16)], text("Hello"))
@@ -438,28 +453,120 @@ defmodule EmergeSkia do
     Native.set_input_target(renderer, pid)
   end
 
-  defp configure_assets_for_renderer(renderer) do
-    config = Emerge.Assets.Config.fetch()
-
-    manifest_path =
-      config
-      |> get_in([:manifest, :path])
-      |> Path.expand()
-
-    runtime = Map.get(config, :runtime_paths, %{})
-
+  defp configure_assets_for_renderer(renderer, asset_config) do
     case Native.configure_assets_nif(
            renderer,
-           manifest_path,
-           Map.get(runtime, :enabled, false),
-           Map.get(runtime, :allowlist, []) |> Enum.map(&Path.expand/1),
-           Map.get(runtime, :follow_symlinks, false),
-           Map.get(runtime, :max_file_size, 25_000_000),
-           Map.get(runtime, :extensions, [])
+           [asset_config.priv_dir],
+           asset_config.runtime_enabled,
+           asset_config.runtime_allowlist,
+           asset_config.runtime_follow_symlinks,
+           asset_config.runtime_max_file_size,
+           asset_config.runtime_extensions
          ) do
       :ok -> :ok
       {:error, reason} -> raise "configure_assets_nif failed: #{inspect(reason)}"
       other -> raise "configure_assets_nif failed: #{inspect(other)}"
+    end
+  end
+
+  defp normalize_asset_config!(opts) do
+    otp_app =
+      case Keyword.fetch(opts, :otp_app) do
+        {:ok, value} when is_atom(value) ->
+          value
+
+        {:ok, value} ->
+          raise ArgumentError,
+                "otp_app must be an atom, got: #{inspect(value)}"
+
+        :error ->
+          raise ArgumentError,
+                "missing required :otp_app option; use EmergeSkia.start(otp_app: :my_app, ...)"
+      end
+
+    assets_opts =
+      opts
+      |> Keyword.get(:assets, [])
+      |> normalize_keyword_or_map!("assets")
+
+    runtime_opts =
+      assets_opts
+      |> Keyword.get(:runtime_paths, [])
+      |> normalize_keyword_or_map!("assets.runtime_paths")
+
+    runtime_allowlist =
+      runtime_opts
+      |> Keyword.get(:allowlist, [])
+      |> normalize_path_list!("assets.runtime_paths.allowlist")
+
+    runtime_extensions =
+      runtime_opts
+      |> Keyword.get(:extensions, @default_runtime_extensions)
+      |> normalize_string_list!("assets.runtime_paths.extensions")
+
+    runtime_max_file_size =
+      Keyword.get(runtime_opts, :max_file_size, @default_runtime_max_file_size)
+
+    runtime_enabled = Keyword.get(runtime_opts, :enabled, false)
+    runtime_follow_symlinks = Keyword.get(runtime_opts, :follow_symlinks, false)
+
+    if not is_boolean(runtime_enabled) do
+      raise ArgumentError, "assets.runtime_paths.enabled must be a boolean"
+    end
+
+    if not is_boolean(runtime_follow_symlinks) do
+      raise ArgumentError, "assets.runtime_paths.follow_symlinks must be a boolean"
+    end
+
+    if not (is_integer(runtime_max_file_size) and runtime_max_file_size > 0) do
+      raise ArgumentError, "assets.runtime_paths.max_file_size must be a positive integer"
+    end
+
+    %{
+      otp_app: otp_app,
+      priv_dir: otp_app_priv_dir!(otp_app),
+      runtime_enabled: runtime_enabled,
+      runtime_allowlist: runtime_allowlist,
+      runtime_follow_symlinks: runtime_follow_symlinks,
+      runtime_max_file_size: runtime_max_file_size,
+      runtime_extensions: runtime_extensions
+    }
+  end
+
+  defp normalize_path_list!(list, field_name) do
+    strings = normalize_string_list!(list, field_name)
+    Enum.map(strings, &Path.expand/1)
+  end
+
+  defp normalize_string_list!(list, field_name) do
+    if not (is_list(list) and Enum.all?(list, &is_binary/1)) do
+      raise ArgumentError, "#{field_name} must be a list of strings"
+    end
+
+    list
+  end
+
+  defp normalize_keyword_or_map!(value, field_name) do
+    cond do
+      is_map(value) ->
+        Map.to_list(value)
+
+      is_list(value) and Keyword.keyword?(value) ->
+        Keyword.new(value)
+
+      true ->
+        raise ArgumentError, "#{field_name} must be a keyword list or map, got: #{inspect(value)}"
+    end
+  end
+
+  defp otp_app_priv_dir!(otp_app) do
+    case :code.priv_dir(otp_app) do
+      path when is_list(path) ->
+        List.to_string(path)
+
+      _ ->
+        raise ArgumentError,
+              "could not resolve priv dir for otp_app #{inspect(otp_app)}; ensure the application is part of your release"
     end
   end
 end
