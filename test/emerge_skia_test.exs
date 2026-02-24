@@ -19,4 +19,26 @@ defmodule EmergeSkiaTest do
     assert EmergeSkia.input_mask_focus() == 0x80
     assert EmergeSkia.input_mask_all() == 0xFF
   end
+
+  test "start/1 requires otp_app option" do
+    assert_raise ArgumentError, ~r/missing required :otp_app option/, fn ->
+      EmergeSkia.start(title: "No otp app")
+    end
+  end
+
+  test "start/1 validates otp_app type" do
+    assert_raise ArgumentError, ~r/otp_app must be an atom/, fn ->
+      EmergeSkia.start(otp_app: "emerge")
+    end
+  end
+
+  test "legacy start arities raise explicit otp_app guidance" do
+    assert_raise ArgumentError, ~r/requires explicit otp_app/, fn ->
+      EmergeSkia.start()
+    end
+
+    assert_raise ArgumentError, ~r/no longer supported/, fn ->
+      EmergeSkia.start("Legacy")
+    end
+  end
 end

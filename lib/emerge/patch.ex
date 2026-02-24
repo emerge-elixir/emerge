@@ -96,6 +96,7 @@ defmodule Emerge.Patch do
   defp encode_patch({:set_attrs, id, attrs}) do
     attr_bin = Emerge.AttrCodec.encode_attrs(attrs)
     id_bin = :erlang.term_to_binary(id)
+
     <<1, byte_size(id_bin)::unsigned-32, id_bin::binary, byte_size(attr_bin)::unsigned-32,
       attr_bin::binary>>
   end
@@ -120,8 +121,7 @@ defmodule Emerge.Patch do
     parent_bin = :erlang.term_to_binary(parent_id)
 
     <<3, byte_size(parent_bin)::unsigned-32, parent_bin::binary, index::unsigned-16,
-      byte_size(subtree_bin)::unsigned-32,
-      subtree_bin::binary>>
+      byte_size(subtree_bin)::unsigned-32, subtree_bin::binary>>
   end
 
   defp encode_patch({:remove, id}) do

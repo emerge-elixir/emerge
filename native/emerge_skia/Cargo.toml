@@ -22,8 +22,6 @@ evdev = "0.12"
 libc = "0.2"
 crossbeam-channel = "0.5"
 sha2 = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # Support both X11 and Wayland
 skia-safe = { version = "0.91.1", default-features = false, features = ["x11", "wayland", "embed-freetype", "binary-cache"] }
