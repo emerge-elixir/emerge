@@ -9,7 +9,7 @@ defmodule Emerge.Assets.Config do
   @spec fetch() :: map()
   def fetch do
     defaults()
-    |> deep_merge(normalize(Application.get_env(:emerge_skia, :assets, [])))
+    |> deep_merge(normalize(Application.get_env(:emerge, :assets, [])))
     |> validate!()
   end
 
