@@ -165,6 +165,11 @@ Configure assets when starting the renderer. `otp_app` is required:
     otp_app: :my_app,
     title: "My App",
     assets: [
+      fonts: [
+        [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
+        [family: "my-font", source: "fonts/MyFont-Bold.ttf", weight: 700],
+        [family: "my-font", source: "fonts/MyFont-Italic.ttf", weight: 400, italic: true]
+      ],
       runtime_paths: [
         enabled: false,
         allowlist: [],
@@ -177,6 +182,9 @@ Configure assets when starting the renderer. `otp_app` is required:
 ```
 
 Logical paths are always resolved from the provided app's `priv` directory.
+
+Font assets are loaded at startup from logical `priv` paths and registered by
+`family` + `weight` + `italic`.
 
 Runtime behavior:
 
