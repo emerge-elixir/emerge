@@ -426,7 +426,11 @@ defmodule EmergeSkia.EmrgRoundtripTest do
       Emerge.UI.Input.text("quick brown fox", [
         width(px(260)),
         Emerge.UI.Font.size(14.0),
-        on_change({self(), :changed})
+        on_change({self(), :changed}),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred}),
+        focused([alpha(0.85), move_x(1)]),
+        mouse_down([move_y(-1), scale(0.97)])
       ])
 
     {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
@@ -447,6 +451,10 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert decoded.attrs.content == "quick brown fox"
     assert decoded.attrs.font_size == 14.0
     assert decoded.attrs.on_change == true
+    assert decoded.attrs.on_focus == true
+    assert decoded.attrs.on_blur == true
+    assert decoded.attrs.focused == %{alpha: 0.85, move_x: 1.0}
+    assert decoded.attrs.mouse_down == %{move_y: -1.0, scale: 0.97}
   end
 
   test "EMRG roundtrip preserves new border features" do

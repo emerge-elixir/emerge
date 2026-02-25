@@ -221,8 +221,13 @@ pub struct Attrs {
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
     pub on_change: Option<bool>,
+    pub on_focus: Option<bool>,
+    pub on_blur: Option<bool>,
     pub mouse_over: Option<MouseOverAttrs>,
+    pub focused: Option<MouseOverAttrs>,
+    pub mouse_down: Option<MouseOverAttrs>,
     pub mouse_over_active: Option<bool>,
+    pub mouse_down_active: Option<bool>,
     pub text_input_focused: Option<bool>,
     pub text_input_cursor: Option<u32>,
     pub text_input_selection_anchor: Option<u32>,
@@ -291,6 +296,9 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
     if incoming.mouse_over_active.is_none() {
         incoming.mouse_over_active = existing.mouse_over_active;
     }
+    if incoming.mouse_down_active.is_none() {
+        incoming.mouse_down_active = existing.mouse_down_active;
+    }
     if incoming.text_input_focused.is_none() {
         incoming.text_input_focused = existing.text_input_focused;
     }
@@ -316,6 +324,10 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
 
     if incoming.mouse_over.is_none() {
         incoming.mouse_over_active = None;
+    }
+
+    if incoming.mouse_down.is_none() {
+        incoming.mouse_down_active = None;
     }
 
     normalize_scrollbar_hover_axis(incoming);
@@ -433,6 +445,10 @@ const TAG_IMAGE_SRC: u8 = 53;
 const TAG_IMAGE_FIT: u8 = 54;
 const TAG_IMAGE_SIZE: u8 = 55;
 const TAG_ON_CHANGE: u8 = 56;
+const TAG_ON_FOCUS: u8 = 57;
+const TAG_ON_BLUR: u8 = 58;
+const TAG_FOCUSED: u8 = 59;
+const TAG_MOUSE_DOWN_STYLE: u8 = 60;
 
 // =============================================================================
 // Decoder
@@ -572,7 +588,15 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
         TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
-        TAG_MOUSE_OVER => attrs.mouse_over = Some(decode_mouse_over_attrs(cursor)?),
+        TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
+        TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
+        TAG_MOUSE_OVER => {
+            attrs.mouse_over = Some(decode_decorative_style_attrs(cursor, "mouse_over")?)
+        }
+        TAG_FOCUSED => attrs.focused = Some(decode_decorative_style_attrs(cursor, "focused")?),
+        TAG_MOUSE_DOWN_STYLE => {
+            attrs.mouse_down = Some(decode_decorative_style_attrs(cursor, "mouse_down")?)
+        }
         TAG_FONT_UNDERLINE => attrs.font_underline = Some(cursor.read_bool()?),
         TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
         TAG_FONT_LETTER_SPACING => attrs.font_letter_spacing = Some(cursor.read_f64()?),
@@ -596,7 +620,10 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
     Ok(())
 }
 
-fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, DecodeError> {
+fn decode_decorative_style_attrs(
+    cursor: &mut AttrCursor,
+    style_name: &str,
+) -> Result<MouseOverAttrs, DecodeError> {
     let data = cursor.read_bytes_u32()?;
     let mut nested = AttrCursor::new(&data);
     let mut out = MouseOverAttrs::default();
@@ -625,8 +652,8 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
             TAG_ALPHA => out.alpha = Some(nested.read_f64()?),
             _ => {
                 return Err(DecodeError::InvalidStructure(format!(
-                    "mouse_over supports decorative attrs only, got tag: {}",
-                    tag
+                    "{} supports decorative attrs only, got tag: {}",
+                    style_name, tag
                 )));
             }
         }
@@ -634,8 +661,9 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
 
     if nested.remaining() != 0 {
         return Err(DecodeError::InvalidStructure(format!(
-            "mouse_over has {} trailing bytes",
-            nested.remaining()
+            "{} has {} trailing bytes",
+            style_name,
+            nested.remaining(),
         )));
     }
 
@@ -1177,6 +1205,46 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_focused_and_mouse_down_styles() {
+        let mut focused_nested = vec![0, 1, 35];
+        focused_nested.extend_from_slice(&0.25_f64.to_be_bytes());
+
+        let mut mouse_down_nested = vec![0, 1, 31];
+        mouse_down_nested.extend_from_slice(&4.0_f64.to_be_bytes());
+
+        let mut data = vec![0, 2, 59];
+        data.extend_from_slice(&(focused_nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&focused_nested);
+        data.push(60);
+        data.extend_from_slice(&(mouse_down_nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&mouse_down_nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.focused.as_ref().and_then(|style| style.alpha),
+            Some(0.25)
+        );
+        assert_eq!(
+            attrs.mouse_down.as_ref().and_then(|style| style.move_x),
+            Some(4.0)
+        );
+    }
+
+    #[test]
+    fn test_decode_focused_rejects_non_decorative_tag() {
+        let nested = vec![0, 1, 1, 0];
+        let mut data = vec![0, 1, 59];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let err = decode_attrs(&data).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("focused supports decorative attrs only")
+        );
+    }
+
+    #[test]
     fn test_decode_border_width_uniform() {
         // 1 attr, tag=14 (border_width), variant=0 (uniform), f64=3.0
         let mut data = vec![0, 1, 14, 0];
@@ -1190,6 +1258,14 @@ mod tests {
         let data = [0, 1, 56, 1];
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_change, Some(true));
+    }
+
+    #[test]
+    fn test_decode_focus_events() {
+        let data = [0, 2, 57, 1, 58, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_focus, Some(true));
+        assert_eq!(attrs.on_blur, Some(true));
     }
 
     #[test]
@@ -1468,6 +1544,39 @@ mod tests {
         let mut incoming = Attrs::default();
         preserve_runtime_scroll_attrs(&existing, &mut incoming);
         assert_eq!(incoming.mouse_over_active, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_mouse_down_active() {
+        let mut existing = Attrs::default();
+        existing.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_down_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        incoming.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_down_active, Some(true));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_mouse_down_active_without_mouse_down() {
+        let mut existing = Attrs::default();
+        existing.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_down_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_down_active, None);
     }
 
     #[test]

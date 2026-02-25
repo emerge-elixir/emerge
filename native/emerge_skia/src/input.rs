@@ -108,6 +108,7 @@ pub const EVENT_MOUSE_LEAVE: u16 = 0x0100;
 pub const EVENT_MOUSE_MOVE: u16 = 0x0200;
 pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
 pub const EVENT_TEXT_INPUT: u16 = 0x0800;
+pub const EVENT_MOUSE_DOWN_STYLE: u16 = 0x1000;
 
 // ============================================================================
 // Atoms

@@ -57,6 +57,39 @@ defmodule Emerge.UITest do
     end
   end
 
+  test "focused and mouse_down store decorative attrs" do
+    element =
+      el(
+        [
+          focused([
+            Font.size(20),
+            Font.color(:white),
+            alpha(0.9)
+          ]),
+          mouse_down([
+            Background.color(:blue),
+            move_y(-1)
+          ])
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.focused == %{font_size: 20, font_color: :white, alpha: 0.9}
+    assert element.attrs.mouse_down == %{background: :blue, move_y: -1}
+  end
+
+  test "focused rejects non-decorative attrs" do
+    assert_raise ArgumentError, ~r/focused only supports decorative attributes/, fn ->
+      el([focused([width(fill())])], text("bad"))
+    end
+  end
+
+  test "mouse_down rejects nested state styles" do
+    assert_raise ArgumentError, ~r/mouse_down does not support nested focused/, fn ->
+      el([mouse_down([focused([alpha(0.5)])])], text("bad"))
+    end
+  end
+
   test "paragraph creates a paragraph element with children" do
     element =
       paragraph([spacing(4), Font.size(16)], [
@@ -246,6 +279,11 @@ defmodule Emerge.UITest do
 
   test "on_change helper returns attr tuple" do
     assert on_change({self(), :changed}) == {:on_change, {self(), :changed}}
+  end
+
+  test "focus event helpers return attr tuples" do
+    assert on_focus({self(), :focused}) == {:on_focus, {self(), :focused}}
+    assert on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
   end
 
   test "Input.text creates a text_input element" do

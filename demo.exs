@@ -141,6 +141,9 @@ Process.put(:hover_manual_active, false)
 Process.put(:demo_input_value, "quick brown fox")
 Process.put(:demo_input_preedit, nil)
 Process.put(:demo_input_preedit_cursor, nil)
+Process.put(:demo_input_focused, false)
+Process.put(:demo_input_focus_count, 0)
+Process.put(:demo_input_blur_count, 0)
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -683,6 +686,28 @@ defmodule Demo do
     value = Process.get(:demo_input_value, "quick brown fox")
     preedit = Process.get(:demo_input_preedit, nil)
     preedit_cursor = Process.get(:demo_input_preedit_cursor, nil)
+    focused = Process.get(:demo_input_focused, false)
+    focus_count = Process.get(:demo_input_focus_count, 0)
+    blur_count = Process.get(:demo_input_blur_count, 0)
+
+    {status_label, status_bg, status_text, input_border_color, input_border_width} =
+      if focused do
+        {
+          "Focused",
+          {:color_rgb, {72, 96, 70}},
+          {:color_rgb, {227, 244, 223}},
+          {:color_rgb, {228, 183, 104}},
+          1
+        }
+      else
+        {
+          "Blurred",
+          {:color_rgb, {72, 74, 102}},
+          {:color_rgb, {220, 224, 240}},
+          {:color_rgb, {120, 130, 175}},
+          1
+        }
+      end
 
     value_label =
       case value do
@@ -702,7 +727,7 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Text input: click/drag to select, shift+arrows, ctrl/meta+a/c/x/v, backspace/delete."
+          "Text input: click/drag to select, shift+arrows, ctrl/meta+a/c/x/v, middle-click paste, backspace/delete."
         )
       ),
       el(
@@ -721,16 +746,50 @@ defmodule Demo do
             Font.color(:white),
             Background.color({:color_rgb, {62, 62, 94}}),
             Border.rounded(8),
-            Border.width(1),
-            Border.color({:color_rgb, {120, 130, 175}}),
-            on_change({self(), {:demo_event, :inupt_changed}})
+            Border.width(input_border_width),
+            Border.color(input_border_color),
+            on_change({self(), {:demo_event, :inupt_changed}}),
+            on_focus({self(), {:demo_event, :inupt_focus}}),
+            on_blur({self(), {:demo_event, :inupt_blur}})
           ]),
           el(
             [Font.size(11), Font.color(@dim_text)],
             text(
-              "on_change emits each edit from Rust; rerender applies value back into the input."
+              "on_change emits each edit from Rust; on_focus/on_blur fire on focus transitions."
             )
           ),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color(status_bg),
+                Border.rounded(999)
+              ],
+              el([Font.size(11), Font.color(status_text)], text("State: #{status_label}"))
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {64, 74, 106}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {205, 216, 246}})],
+                text("focus: #{focus_count}")
+              )
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {78, 68, 100}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {228, 212, 246}})],
+                text("blur: #{blur_count}")
+              )
+            )
+          ]),
           el(
             [Font.size(12), Font.color({:color_rgb, {225, 228, 244}})],
             text("Value: #{value_label}")
@@ -2967,6 +3026,40 @@ defmodule Demo do
       end
 
     changed = changed_value or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :inupt_focus},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_input_focused, false)
+    count = Process.get(:demo_input_focus_count, 0) + 1
+
+    Process.put(:demo_input_focused, true)
+    Process.put(:demo_input_focus_count, count)
+
+    new_log = Enum.take(["Inupt focus (#{count})" | event_log], 20)
+    changed = !previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :inupt_blur},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_input_focused, false)
+    count = Process.get(:demo_input_blur_count, 0) + 1
+
+    Process.put(:demo_input_focused, false)
+    Process.put(:demo_input_blur_count, count)
+
+    new_log = Enum.take(["Inupt blur (#{count})" | event_log], 20)
+    changed = previous or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
