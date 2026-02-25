@@ -421,6 +421,34 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert text_child.type == :text
   end
 
+  test "EMRG roundtrip preserves text_input element" do
+    tree =
+      Emerge.UI.Input.text("quick brown fox", [
+        width(px(260)),
+        Emerge.UI.Font.size(14.0),
+        on_change({self(), :changed})
+      ])
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    assert assigned.type == :text_input
+    assert decoded.type == :text_input
+    assert decoded.attrs.content == "quick brown fox"
+    assert decoded.attrs.font_size == 14.0
+    assert decoded.attrs.on_change == true
+  end
+
   test "EMRG roundtrip preserves new border features" do
     tree =
       el(

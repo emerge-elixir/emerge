@@ -16,17 +16,46 @@ use crate::assets::{self, AssetStatus};
 use crate::renderer::{DrawCmd, make_font_with_style};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
+const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
+
+pub struct RenderOutput {
+    pub commands: Vec<DrawCmd>,
+    pub text_input_focused: bool,
+    pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
+}
 
 /// Render the tree to draw commands.
 /// Reads from pre-scaled attrs (layout pass must run first).
+#[allow(dead_code)]
 pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
+    render_tree_with_meta(tree).commands
+}
+
+pub fn render_tree_with_meta(tree: &ElementTree) -> RenderOutput {
     let Some(root) = tree.root.as_ref() else {
-        return Vec::new();
+        return RenderOutput {
+            commands: Vec::new(),
+            text_input_focused: false,
+            text_input_cursor_area: None,
+        };
     };
 
     let mut commands = Vec::new();
-    render_element(tree, root, &mut commands, &FontContext::default());
-    commands
+    let mut text_input_focused = false;
+    let mut text_input_cursor_area = None;
+    render_element(
+        tree,
+        root,
+        &mut commands,
+        &FontContext::default(),
+        &mut text_input_focused,
+        &mut text_input_cursor_area,
+    );
+    RenderOutput {
+        commands,
+        text_input_focused,
+        text_input_cursor_area,
+    }
 }
 
 fn render_element(
@@ -34,6 +63,8 @@ fn render_element(
     id: &ElementId,
     commands: &mut Vec<DrawCmd>,
     inherited: &FontContext,
+    text_input_focused: &mut bool,
+    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -59,14 +90,41 @@ fn render_element(
 
     match element.kind {
         ElementKind::Text => render_text_content(commands, frame, attrs, inherited),
+        ElementKind::TextInput => {
+            if attrs.text_input_focused.unwrap_or(false) {
+                *text_input_focused = true;
+            }
+
+            if text_input_cursor_area.is_none() {
+                *text_input_cursor_area =
+                    render_text_input_content(commands, frame, attrs, inherited);
+            } else {
+                let _ = render_text_input_content(commands, frame, attrs, inherited);
+            }
+        }
         ElementKind::Image => render_image_content(commands, frame, attrs),
         _ => {}
     }
 
     if element.kind == ElementKind::Paragraph {
-        render_paragraph_content(tree, element, commands, &element_context);
+        render_paragraph_content(
+            tree,
+            element,
+            commands,
+            &element_context,
+            text_input_focused,
+            text_input_cursor_area,
+        );
     } else {
-        render_children_content(tree, element, commands, &element_context, attrs);
+        render_children_content(
+            tree,
+            element,
+            commands,
+            &element_context,
+            attrs,
+            text_input_focused,
+            text_input_cursor_area,
+        );
     }
 
     finish_overflow_clipping(commands, frame, attrs, clip_state);
@@ -378,6 +436,248 @@ fn render_text_content(
     );
 }
 
+fn render_text_input_content(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) -> Option<(f32, f32, f32, f32)> {
+    let content = attrs.content.as_deref().unwrap_or("");
+    let preedit = attrs
+        .text_input_preedit
+        .as_deref()
+        .filter(|value| !value.is_empty());
+
+    let font_size = attrs
+        .font_size
+        .map(|s| s as f32)
+        .or(inherited.font_size)
+        .unwrap_or(16.0);
+    let color = attrs
+        .font_color
+        .as_ref()
+        .map(color_to_u32)
+        .or(inherited.font_color)
+        .unwrap_or(0xFFFFFFFF);
+    let underline = attrs
+        .font_underline
+        .or(inherited.font_underline)
+        .unwrap_or(false);
+    let strike = attrs.font_strike.or(inherited.font_strike).unwrap_or(false);
+    let letter_spacing = attrs
+        .font_letter_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_letter_spacing)
+        .unwrap_or(0.0);
+    let word_spacing = attrs
+        .font_word_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_word_spacing)
+        .unwrap_or(0.0);
+    let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+    let insets = content_insets(attrs);
+    let inset_left = insets.left;
+    let inset_top = insets.top;
+    let inset_right = insets.right;
+    let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
+    let content_char_count = content.chars().count() as u32;
+    let base_cursor = attrs
+        .text_input_cursor
+        .unwrap_or(content_char_count)
+        .min(content_char_count);
+    let prefix: String = content.chars().take(base_cursor as usize).collect();
+    let suffix: String = content.chars().skip(base_cursor as usize).collect();
+    let displayed_text = match preedit {
+        Some(preedit_text) => {
+            let mut value = String::with_capacity(content.len() + preedit_text.len());
+            value.push_str(&prefix);
+            value.push_str(preedit_text);
+            value.push_str(&suffix);
+            value
+        }
+        None => content.to_string(),
+    };
+
+    let text_width = measure_text_width_with_font(
+        &displayed_text,
+        font_size,
+        &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    );
+    let content_width = frame.width - inset_left - inset_right;
+    let text_align = attrs
+        .text_align
+        .or(inherited.text_align)
+        .unwrap_or_default();
+    let text_x = match text_align {
+        TextAlign::Left => frame.x + inset_left,
+        TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
+        TextAlign::Right => frame.x + frame.width - inset_right - text_width,
+    };
+    let baseline_y = frame.y + inset_top + ascent;
+
+    if let Some(anchor) = attrs.text_input_selection_anchor {
+        let anchor = anchor.min(content_char_count);
+        if anchor != base_cursor {
+            let preedit_len = preedit
+                .map(|value| value.chars().count() as u32)
+                .unwrap_or(0);
+            let map_committed_to_displayed = |index: u32| {
+                if preedit_len > 0 && index > base_cursor {
+                    index + preedit_len
+                } else {
+                    index
+                }
+            };
+
+            let sel_start = anchor.min(base_cursor);
+            let sel_end = anchor.max(base_cursor);
+            let displayed_start = map_committed_to_displayed(sel_start);
+            let displayed_end = map_committed_to_displayed(sel_end);
+
+            let start_offset = text_offset_for_char_index(
+                &displayed_text,
+                displayed_start as usize,
+                font_size,
+                &family,
+                weight,
+                italic,
+                letter_spacing,
+                word_spacing,
+            );
+            let end_offset = text_offset_for_char_index(
+                &displayed_text,
+                displayed_end as usize,
+                font_size,
+                &family,
+                weight,
+                italic,
+                letter_spacing,
+                word_spacing,
+            );
+
+            let selection_width = (end_offset - start_offset).max(0.0);
+            if selection_width > 0.0 {
+                let selection_top = baseline_y - ascent;
+                let selection_height = (ascent + descent).max(font_size * 0.9);
+                commands.push(DrawCmd::Rect(
+                    text_x + start_offset,
+                    selection_top,
+                    selection_width,
+                    selection_height,
+                    TEXT_SELECTION_COLOR,
+                ));
+            }
+        }
+    }
+
+    draw_text_run_with_spacing(
+        commands,
+        text_x,
+        baseline_y,
+        &displayed_text,
+        font_size,
+        color,
+        &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    );
+
+    push_text_decorations(
+        commands,
+        TextDecorationSpec {
+            x: text_x,
+            baseline_y,
+            width: text_width,
+            font_size,
+            color,
+            underline,
+            strike,
+        },
+    );
+
+    if let Some(preedit_text) = preedit {
+        let preedit_start_offset = text_offset_for_char_index(
+            &displayed_text,
+            base_cursor as usize,
+            font_size,
+            &family,
+            weight,
+            italic,
+            letter_spacing,
+            word_spacing,
+        );
+        let preedit_width = measure_text_width_with_font(
+            preedit_text,
+            font_size,
+            &family,
+            weight,
+            italic,
+            letter_spacing,
+            word_spacing,
+        );
+
+        push_text_decorations(
+            commands,
+            TextDecorationSpec {
+                x: text_x + preedit_start_offset,
+                baseline_y,
+                width: preedit_width,
+                font_size,
+                color,
+                underline: true,
+                strike: false,
+            },
+        );
+    }
+
+    if attrs.text_input_focused.unwrap_or(false) {
+        let displayed_char_count = displayed_text.chars().count() as u32;
+        let caret_char_index = if let Some(preedit_text) = preedit {
+            let preedit_len = preedit_text.chars().count() as u32;
+            let preedit_cursor_end = attrs
+                .text_input_preedit_cursor
+                .map(|(_start, end)| end.min(preedit_len))
+                .unwrap_or(preedit_len);
+            (base_cursor + preedit_cursor_end).min(displayed_char_count)
+        } else {
+            base_cursor.min(displayed_char_count)
+        };
+
+        let caret_offset = text_offset_for_char_index(
+            &displayed_text,
+            caret_char_index as usize,
+            font_size,
+            &family,
+            weight,
+            italic,
+            letter_spacing,
+            word_spacing,
+        );
+        let caret_x = text_x + caret_offset;
+        let caret_top = baseline_y - ascent;
+        let caret_height = (ascent + descent).max(font_size * 0.9);
+        let caret_width = (font_size * 0.08).max(1.0);
+
+        commands.push(DrawCmd::Rect(
+            caret_x,
+            caret_top,
+            caret_width,
+            caret_height,
+            color,
+        ));
+
+        return Some((caret_x, caret_top, caret_width, caret_height));
+    }
+
+    None
+}
+
 fn render_image_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
     let Some(source) = attrs.image_src.as_ref() else {
         return;
@@ -394,6 +694,8 @@ fn render_paragraph_content(
     element: &Element,
     commands: &mut Vec<DrawCmd>,
     element_context: &FontContext,
+    text_input_focused: &mut bool,
+    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
 ) {
     let attrs = &element.attrs;
 
@@ -407,7 +709,14 @@ fn render_paragraph_content(
         });
 
         if should_render_float_child {
-            render_element(tree, child_id, commands, element_context);
+            render_element(
+                tree,
+                child_id,
+                commands,
+                element_context,
+                text_input_focused,
+                text_input_cursor_area,
+            );
         }
     }
 
@@ -452,6 +761,8 @@ fn render_children_content(
     commands: &mut Vec<DrawCmd>,
     element_context: &FontContext,
     attrs: &Attrs,
+    text_input_focused: &mut bool,
+    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
 ) {
     let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
     let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -464,7 +775,14 @@ fn render_children_content(
     }
 
     for child_id in &element.children {
-        render_element(tree, child_id, commands, element_context);
+        render_element(
+            tree,
+            child_id,
+            commands,
+            element_context,
+            text_input_focused,
+            text_input_cursor_area,
+        );
     }
 
     if has_children && scrollable && (scroll_x != 0.0 || scroll_y != 0.0) {
@@ -1000,6 +1318,66 @@ fn text_metrics_with_font(font_size: f32, family: &str, weight: u16, italic: boo
     (metrics.ascent.abs(), metrics.descent)
 }
 
+fn draw_text_run_with_spacing(
+    commands: &mut Vec<DrawCmd>,
+    x: f32,
+    baseline_y: f32,
+    text: &str,
+    font_size: f32,
+    color: u32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    if letter_spacing == 0.0 && word_spacing == 0.0 {
+        commands.push(DrawCmd::TextWithFont(
+            x,
+            baseline_y,
+            text.to_string(),
+            font_size,
+            color,
+            family.to_string(),
+            weight,
+            italic,
+        ));
+        return;
+    }
+
+    let measure_font = make_font_with_style(family, weight, italic, font_size);
+    let mut cursor_x = x;
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        let glyph = ch.to_string();
+        commands.push(DrawCmd::TextWithFont(
+            cursor_x,
+            baseline_y,
+            glyph.clone(),
+            font_size,
+            color,
+            family.to_string(),
+            weight,
+            italic,
+        ));
+
+        let (glyph_width, _bounds) = measure_font.measure_str(&glyph, None);
+        cursor_x += glyph_width;
+
+        if chars.peek().is_some() {
+            cursor_x += letter_spacing;
+            if ch.is_whitespace() {
+                cursor_x += word_spacing;
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TextDecorationSpec {
     x: f32,
@@ -1066,6 +1444,49 @@ fn measure_text_width_with_font(
         total += glyph_width;
 
         if chars.peek().is_some() {
+            total += letter_spacing;
+            if ch.is_whitespace() {
+                total += word_spacing;
+            }
+        }
+    }
+
+    total
+}
+
+fn text_offset_for_char_index(
+    text: &str,
+    char_index: usize,
+    font_size: f32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
+) -> f32 {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return 0.0;
+    }
+
+    let clamped_index = char_index.min(chars.len());
+    if clamped_index == 0 {
+        return 0.0;
+    }
+
+    let font = make_font_with_style(family, weight, italic, font_size);
+    let mut total = 0.0;
+
+    for (idx, ch) in chars.iter().enumerate() {
+        if idx >= clamped_index {
+            break;
+        }
+
+        let glyph = ch.to_string();
+        let (glyph_width, _bounds) = font.measure_str(&glyph, None);
+        total += glyph_width;
+
+        if idx + 1 < chars.len() {
             total += letter_spacing;
             if ch.is_whitespace() {
                 total += word_spacing;
@@ -1164,7 +1585,16 @@ fn render_nearby_element(
     shift_nearby_tree(&mut nearby_tree, offset_x, offset_y);
 
     // Render the nearby tree
-    render_element(&nearby_tree, &root_id, commands, &FontContext::default());
+    let mut focused = false;
+    let mut cursor_area = None;
+    render_element(
+        &nearby_tree,
+        &root_id,
+        commands,
+        &FontContext::default(),
+        &mut focused,
+        &mut cursor_area,
+    );
 }
 
 /// Shift all frames in a nearby tree by the given offset.
@@ -1398,6 +1828,92 @@ mod tests {
     }
 
     #[test]
+    fn test_render_text_input_preedit_underlines_segment_and_reports_composition_caret() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("quick".to_string());
+        attrs.font_size = Some(16.0);
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        attrs.text_input_preedit = Some("xy".to_string());
+        attrs.text_input_preedit_cursor = Some((1, 1));
+
+        let frame = Frame {
+            x: 10.0,
+            y: 20.0,
+            width: 280.0,
+            height: 40.0,
+            content_width: 280.0,
+            content_height: 40.0,
+        };
+
+        let tree = build_text_input_tree_with_frame(attrs, frame);
+        let output = render_tree_with_meta(&tree);
+
+        assert!(output.text_input_focused);
+
+        let (caret_x, _caret_y, _caret_w, _caret_h) = output
+            .text_input_cursor_area
+            .expect("caret area should be present");
+
+        let displayed = "quxyick";
+        let expected_caret_offset =
+            text_offset_for_char_index(displayed, 3, 16.0, "default", 400, false, 0.0, 0.0);
+        let expected_caret_x = 10.0 + expected_caret_offset;
+        assert!((caret_x - expected_caret_x).abs() < 0.2);
+
+        let (ascent, _descent) = text_metrics_with_font(16.0, "default", 400, false);
+        let baseline_y = 20.0 + ascent;
+
+        let preedit_x =
+            10.0 + text_offset_for_char_index(displayed, 2, 16.0, "default", 400, false, 0.0, 0.0);
+        let preedit_width =
+            measure_text_width_with_font("xy", 16.0, "default", 400, false, 0.0, 0.0);
+        let underline_y = baseline_y + 16.0_f32 * 0.08 - (16.0_f32 * 0.06).max(1.0) / 2.0;
+
+        let has_preedit_underline = output.commands.iter().any(|cmd| match cmd {
+            DrawCmd::Rect(x, y, w, _h, _color) => {
+                (*x - preedit_x).abs() < 0.3
+                    && (*y - underline_y).abs() < 0.3
+                    && (*w - preedit_width).abs() < 0.3
+            }
+            _ => false,
+        });
+
+        assert!(has_preedit_underline);
+    }
+
+    #[test]
+    fn test_render_text_input_selection_emits_highlight_rect() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("hello".to_string());
+        attrs.font_size = Some(16.0);
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(4);
+        attrs.text_input_selection_anchor = Some(1);
+
+        let frame = Frame {
+            x: 10.0,
+            y: 20.0,
+            width: 280.0,
+            height: 40.0,
+            content_width: 280.0,
+            content_height: 40.0,
+        };
+
+        let tree = build_text_input_tree_with_frame(attrs, frame);
+        let output = render_tree_with_meta(&tree);
+
+        let has_selection_rect = output.commands.iter().any(|cmd| match cmd {
+            DrawCmd::Rect(_x, _y, w, h, color) => {
+                *color == TEXT_SELECTION_COLOR && *w > 0.0 && *h > 0.0
+            }
+            _ => false,
+        });
+
+        assert!(has_selection_rect);
+    }
+
+    #[test]
     fn test_nearby_position_calculations() {
         // Test Above: should be centered horizontally, positioned above
         let parent = Frame {
@@ -1518,6 +2034,18 @@ mod tests {
     fn build_text_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
         let id = ElementId::from_term_bytes(vec![2]);
         let mut element = Element::with_attrs(id.clone(), ElementKind::Text, Vec::new(), attrs);
+        element.frame = Some(frame);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id);
+        tree.insert(element);
+        tree
+    }
+
+    fn build_text_input_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
+        let id = ElementId::from_term_bytes(vec![3]);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
         element.frame = Some(frame);
 
         let mut tree = ElementTree::new();

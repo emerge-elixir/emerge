@@ -179,7 +179,10 @@ impl DrmInput {
         if pressed
             && let Some(codepoint) = key_to_codepoint(key_kind, self.modifiers, self.caps_lock)
         {
-            self.push_input(InputEvent::Codepoint { codepoint, mods });
+            self.push_input(InputEvent::TextCommit {
+                text: codepoint.to_string(),
+                mods,
+            });
         }
     }
 

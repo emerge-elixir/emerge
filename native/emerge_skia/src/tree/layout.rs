@@ -397,11 +397,17 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_enter: attrs.on_mouse_enter,
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
+        on_change: attrs.on_change,
         mouse_over: attrs
             .mouse_over
             .as_ref()
             .map(|hover| scale_mouse_over_attrs(hover, scale_f64)),
         mouse_over_active: attrs.mouse_over_active,
+        text_input_focused: attrs.text_input_focused,
+        text_input_cursor: attrs.text_input_cursor,
+        text_input_selection_anchor: attrs.text_input_selection_anchor,
+        text_input_preedit: attrs.text_input_preedit.clone(),
+        text_input_preedit_cursor: attrs.text_input_preedit_cursor,
         clip_y: attrs.clip_y,
         clip_x: attrs.clip_x,
         background: attrs.background.clone(),
@@ -642,7 +648,7 @@ fn measure_element<M: TextMeasurer>(
     let spacing_y = spacing_y(attrs);
 
     let intrinsic = match element.kind {
-        ElementKind::Text => {
+        ElementKind::Text | ElementKind::TextInput => {
             let content = attrs.content.as_deref().unwrap_or("");
             // Use inherited font context for missing values
             let font_size = attrs
@@ -1184,7 +1190,7 @@ fn resolve_element<M: TextMeasurer>(
     };
 
     match kind {
-        ElementKind::Text | ElementKind::Image | ElementKind::None => {}
+        ElementKind::Text | ElementKind::TextInput | ElementKind::Image | ElementKind::None => {}
         ElementKind::El => resolve_el_kind(tree, &params, &element_context, measurer),
         ElementKind::Row => resolve_row_kind(tree, &params, &element_context, measurer),
         ElementKind::WrappedRow => {
@@ -3183,7 +3189,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree;
+use super::render::render_tree_with_meta;
 use crate::events::{EventNode, build_event_registry};
 use crate::renderer::DrawCmd;
 
@@ -3191,14 +3197,20 @@ use crate::renderer::DrawCmd;
 pub struct LayoutOutput {
     pub commands: Vec<DrawCmd>,
     pub event_registry: Vec<EventNode>,
+    pub ime_enabled: bool,
+    pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &ElementTree) -> LayoutOutput {
+    let render_output = render_tree_with_meta(tree);
+
     LayoutOutput {
-        commands: render_tree(tree),
+        commands: render_output.commands,
         event_registry: build_event_registry(tree),
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
     }
 }
 

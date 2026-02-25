@@ -59,7 +59,8 @@ defmodule Emerge.AttrCodec do
     box_shadow: 52,
     image_src: 53,
     image_fit: 54,
-    image_size: 55
+    image_size: 55,
+    on_change: 56
   }
 
   @mouse_over_decorative_keys MapSet.new([
@@ -167,6 +168,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:image_src, value), do: encode_image_src(value)
   defp encode_value(:image_fit, value), do: encode_image_fit(value)
   defp encode_value(:image_size, value), do: encode_image_size(value)
+  defp encode_value(:on_change, _value), do: encode_bool(true)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -222,6 +224,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:image_src, rest), do: decode_image_src(rest)
   defp decode_value(:image_fit, rest), do: decode_image_fit(rest)
   defp decode_value(:image_size, rest), do: decode_image_size(rest)
+  defp decode_value(:on_change, rest), do: decode_bool(rest)
 
   defp encode_mouse_over(value) when is_map(value) do
     validate_mouse_over_attrs!(value)

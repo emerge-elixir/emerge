@@ -28,13 +28,16 @@ mod input;
 mod renderer;
 mod tree;
 
-use actors::{EventMsg, RenderMsg, TreeMsg};
+use actors::{ElementEvent, EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use drm_input::DrmInput;
-use events::{EventProcessor, MouseOverRequest, ScrollbarHoverRequest, ScrollbarThumbDragRequest};
+use events::{
+    EventProcessor, MouseOverRequest, ScrollbarHoverRequest, ScrollbarThumbDragRequest,
+    TextInputCommandRequest, TextInputCursorRequest, TextInputEditRequest, TextInputPreeditRequest,
+};
 use input::{InputEvent, InputHandler};
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
@@ -215,6 +218,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
+        let mut text_clipboard = String::new();
 
         while let Ok(msg) = tree_rx.recv() {
             let mut messages = vec![msg];
@@ -294,6 +298,128 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     TreeMsg::SetMouseOverActive { element_id, active } => {
                         mouse_over_active_state.insert(element_id, active);
                     }
+                    TreeMsg::SetTextInputFocus { element_id } => {
+                        changed |= tree.set_text_input_focus(element_id.as_ref());
+                    }
+                    TreeMsg::TextInputMoveLeft {
+                        element_id,
+                        extend_selection,
+                    } => {
+                        changed |= tree.text_input_move_left(&element_id, extend_selection);
+                    }
+                    TreeMsg::TextInputMoveRight {
+                        element_id,
+                        extend_selection,
+                    } => {
+                        changed |= tree.text_input_move_right(&element_id, extend_selection);
+                    }
+                    TreeMsg::TextInputMoveHome {
+                        element_id,
+                        extend_selection,
+                    } => {
+                        changed |= tree.text_input_move_home(&element_id, extend_selection);
+                    }
+                    TreeMsg::TextInputMoveEnd {
+                        element_id,
+                        extend_selection,
+                    } => {
+                        changed |= tree.text_input_move_end(&element_id, extend_selection);
+                    }
+                    TreeMsg::TextInputBackspace { element_id } => {
+                        if let Some(value) = tree.text_input_backspace(&element_id) {
+                            changed = true;
+                            send_event(
+                                &event_tx,
+                                EventMsg::ElementEvent {
+                                    element_id,
+                                    event: ElementEvent::Change { value },
+                                },
+                                log_input,
+                            );
+                        }
+                    }
+                    TreeMsg::TextInputDelete { element_id } => {
+                        if let Some(value) = tree.text_input_delete(&element_id) {
+                            changed = true;
+                            send_event(
+                                &event_tx,
+                                EventMsg::ElementEvent {
+                                    element_id,
+                                    event: ElementEvent::Change { value },
+                                },
+                                log_input,
+                            );
+                        }
+                    }
+                    TreeMsg::TextInputInsert { element_id, text } => {
+                        if let Some(value) = tree.text_input_insert(&element_id, &text) {
+                            changed = true;
+                            send_event(
+                                &event_tx,
+                                EventMsg::ElementEvent {
+                                    element_id,
+                                    event: ElementEvent::Change { value },
+                                },
+                                log_input,
+                            );
+                        }
+                    }
+                    TreeMsg::SetTextInputCursorFromPoint {
+                        element_id,
+                        x,
+                        extend_selection,
+                    } => {
+                        changed |=
+                            tree.set_text_input_cursor_from_point(&element_id, x, extend_selection);
+                    }
+                    TreeMsg::TextInputSelectAll { element_id } => {
+                        changed |= tree.text_input_select_all(&element_id);
+                    }
+                    TreeMsg::TextInputCopy { element_id } => {
+                        if let Some(selection) = tree.text_input_copy_selection(&element_id) {
+                            text_clipboard = selection;
+                        }
+                    }
+                    TreeMsg::TextInputCut { element_id } => {
+                        if let Some((value, cut_text)) = tree.text_input_cut_selection(&element_id)
+                        {
+                            text_clipboard = cut_text;
+                            changed = true;
+                            send_event(
+                                &event_tx,
+                                EventMsg::ElementEvent {
+                                    element_id,
+                                    event: ElementEvent::Change { value },
+                                },
+                                log_input,
+                            );
+                        }
+                    }
+                    TreeMsg::TextInputPaste { element_id } => {
+                        if let Some(value) =
+                            tree.text_input_paste_text(&element_id, &text_clipboard)
+                        {
+                            changed = true;
+                            send_event(
+                                &event_tx,
+                                EventMsg::ElementEvent {
+                                    element_id,
+                                    event: ElementEvent::Change { value },
+                                },
+                                log_input,
+                            );
+                        }
+                    }
+                    TreeMsg::SetTextInputPreedit {
+                        element_id,
+                        text,
+                        cursor,
+                    } => {
+                        changed |= tree.set_text_input_preedit(&element_id, text, cursor);
+                    }
+                    TreeMsg::ClearTextInputPreedit { element_id } => {
+                        changed |= tree.clear_text_input_preedit(&element_id);
+                    }
                     TreeMsg::AssetStateChanged => {
                         changed = true;
                     }
@@ -346,6 +472,8 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                 commands: output.commands,
                 version,
                 animate,
+                ime_enabled: output.ime_enabled,
+                ime_cursor_area: output.ime_cursor_area,
             });
 
             if let Some(proxy) = wayland_proxy.as_ref() {
@@ -412,17 +540,17 @@ fn process_input_events(
             );
         }
 
-        if !input_handler.accepts(&event) {
-            continue;
-        }
-
         if let InputEvent::CursorPos { x, y } = &event {
             input_handler.set_cursor_pos(*x, *y);
         }
 
+        let forward_to_target = input_handler.accepts(&event);
+
         if let Some(pid) = target.as_ref() {
             let pid = *pid;
-            events::send_input_event(pid, &event);
+            if forward_to_target {
+                events::send_input_event(pid, &event);
+            }
 
             if let Some(clicked_id) = processor.detect_click(&event) {
                 events::send_element_event(pid, &clicked_id, events::click_atom());
@@ -439,6 +567,88 @@ fn process_input_events(
             processor.detect_click(&event);
             processor.detect_mouse_button_event(&event);
             processor.handle_hover_event(&event);
+        }
+
+        if let Some(focused_id) = processor.text_input_focus_request(&event) {
+            send_tree(
+                tree_tx,
+                TreeMsg::SetTextInputFocus {
+                    element_id: focused_id,
+                },
+                log_render,
+            );
+        }
+
+        for request in processor.text_input_cursor_requests(&event) {
+            match request {
+                TextInputCursorRequest::Set {
+                    element_id,
+                    x,
+                    extend_selection,
+                } => {
+                    send_tree(
+                        tree_tx,
+                        TreeMsg::SetTextInputCursorFromPoint {
+                            element_id,
+                            x,
+                            extend_selection,
+                        },
+                        log_render,
+                    );
+                }
+            }
+        }
+
+        if let Some((element_id, request)) = processor.text_input_command_request(&event) {
+            let message = match request {
+                TextInputCommandRequest::SelectAll => TreeMsg::TextInputSelectAll { element_id },
+                TextInputCommandRequest::Copy => TreeMsg::TextInputCopy { element_id },
+                TextInputCommandRequest::Cut => TreeMsg::TextInputCut { element_id },
+                TextInputCommandRequest::Paste => TreeMsg::TextInputPaste { element_id },
+            };
+
+            send_tree(tree_tx, message, log_render);
+        }
+
+        if let Some((element_id, request)) = processor.text_input_edit_request(&event) {
+            let message = match request {
+                TextInputEditRequest::MoveLeft { extend_selection } => TreeMsg::TextInputMoveLeft {
+                    element_id,
+                    extend_selection,
+                },
+                TextInputEditRequest::MoveRight { extend_selection } => {
+                    TreeMsg::TextInputMoveRight {
+                        element_id,
+                        extend_selection,
+                    }
+                }
+                TextInputEditRequest::MoveHome { extend_selection } => TreeMsg::TextInputMoveHome {
+                    element_id,
+                    extend_selection,
+                },
+                TextInputEditRequest::MoveEnd { extend_selection } => TreeMsg::TextInputMoveEnd {
+                    element_id,
+                    extend_selection,
+                },
+                TextInputEditRequest::Backspace => TreeMsg::TextInputBackspace { element_id },
+                TextInputEditRequest::Delete => TreeMsg::TextInputDelete { element_id },
+                TextInputEditRequest::Insert(text) => TreeMsg::TextInputInsert { element_id, text },
+            };
+
+            send_tree(tree_tx, message, log_render);
+        }
+
+        if let Some((element_id, request)) = processor.text_input_preedit_request(&event) {
+            let message = match request {
+                TextInputPreeditRequest::Set { text, cursor } => TreeMsg::SetTextInputPreedit {
+                    element_id,
+                    text,
+                    cursor,
+                },
+                TextInputPreeditRequest::Clear => TreeMsg::ClearTextInputPreedit { element_id },
+            };
+
+            send_tree(tree_tx, message, log_render);
         }
 
         for request in processor.scrollbar_thumb_drag_requests(&event) {
@@ -570,6 +780,30 @@ fn spawn_event_actor(
                             log_render,
                         );
                         target = pid;
+                    }
+                    EventMsg::ElementEvent { element_id, event } => {
+                        process_input_events(
+                            &mut pending_inputs,
+                            &mut processor,
+                            &mut input_handler,
+                            &target,
+                            &tree_tx,
+                            log_render,
+                        );
+
+                        if let Some(pid) = target.as_ref() {
+                            let pid = *pid;
+                            match event {
+                                ElementEvent::Change { value } => {
+                                    events::send_element_event_with_string_payload(
+                                        pid,
+                                        &element_id,
+                                        events::change_atom(),
+                                        &value,
+                                    );
+                                }
+                            }
+                        }
                     }
                     EventMsg::Stop => return,
                 }
@@ -791,6 +1025,8 @@ fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> At
         commands,
         version,
         animate: false,
+        ime_enabled: false,
+        ime_cursor_area: None,
     });
     if renderer.backend == BackendKind::Wayland
         && let Ok(guard) = renderer.event_proxy.lock()
@@ -888,7 +1124,7 @@ fn is_running(renderer: ResourceArc<RendererResource>) -> bool {
 ///
 /// Mask bits:
 /// - 0x01: Key events
-/// - 0x02: Codepoint (text input) events
+/// - 0x02: Text input commit/preedit events
 /// - 0x04: Cursor position events
 /// - 0x08: Cursor button events
 /// - 0x10: Cursor scroll events

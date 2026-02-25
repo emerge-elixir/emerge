@@ -10,6 +10,11 @@ Multi-backend Skia renderer with:
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
 - EventProcessor thread for hit testing, click/scroll dispatch, and redraws
+- Rust-owned single-line text input editing (`cursor`, `insert/delete`,
+  `on_change` payload emission)
+- Rust-owned text selection and shortcut handling (`shift+arrows`,
+  `ctrl/meta+a/c/x/v`)
+- Wayland IME integration (`preedit` + `commit`, IME cursor area updates)
 - Scrollbar track/thumb hit testing, drag snapping, and axis-specific hover state
 - Drag-scroll support with deadzone and finger-like direction
 - Scroll state preserved across layout/patch with resize-aware clamping
@@ -109,10 +114,14 @@ lib.rs (NIF entry, resources, registration)
 
 - Event actor handles raw input, hit testing, and forwards tree updates (`TreeMsg`).
 - Tree actor owns tree mutation, layout, render command generation, and event registry updates.
+- Text input editing is applied in tree actor (`TreeMsg::TextInput*`), then
+  emits element change events with value payload.
 - AssetManager actor loads unresolved image sources asynchronously and notifies tree actor with
   `TreeMsg::AssetStateChanged`.
 - Render backends consume `RenderMsg::Commands` and keep requesting redraws while
   `render_state.animate` is true (loading placeholders).
+- Wayland backend also consumes IME metadata (`ime_enabled`,
+  `ime_cursor_area`) to drive `set_ime_allowed` and `set_ime_cursor_area`.
 
 ## Scaling Architecture
 

@@ -225,6 +225,35 @@ defmodule Emerge.DiffStateTest do
     end
   end
 
+  test "on_change is registered in event registry" do
+    layout = Emerge.UI.Input.text("hello", [key(:field), on_change({self(), :changed})])
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {pid, :changed}} = Emerge.lookup_event(state, id_bin, :change)
+    assert pid == self()
+  end
+
+  test "dispatch_event with payload appends payload to tuple message" do
+    layout =
+      Emerge.UI.Input.text("hello", [key(:field), on_change({self(), {:changed, :field}})])
+
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok == Emerge.dispatch_event(state, id_bin, :change, "hello!")
+    assert_receive {:changed, :field, "hello!"}
+  end
+
+  test "dispatch_event with payload wraps non-tuple message" do
+    layout = Emerge.UI.Input.text("hello", [key(:field), on_change({self(), :changed})])
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok == Emerge.dispatch_event(state, id_bin, :change, "hello!")
+    assert_receive {:changed, "hello!"}
+  end
+
   defp content_id_map(%Emerge.Element{children: children}) do
     children
     |> Enum.map(fn child ->

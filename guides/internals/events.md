@@ -6,12 +6,15 @@ EmergeSkia.
 ## Overview
 
 - Rust owns hit testing, pointer state, hover state, click detection, scroll
-  request generation, and `mouse_over` style activation.
+  request generation, `mouse_over` style activation, and focused text-input
+  editing state.
 - Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
 - EMRG encodes event attributes as presence flags only (no payloads).
 - Scrollbar-specific hit testing and interaction state live in
   `native/emerge_skia/src/events/scrollbar.rs` and are coordinated by
   `EventProcessor`.
+- Wayland text input is IME-aware (`Ime::Preedit` + `Ime::Commit`), while DRM
+  currently emits simple text commits from key mapping.
 
 ## End-to-End Event Flow
 
@@ -31,6 +34,8 @@ Notes:
 - Raw input events and element events are both delivered as
   `{:emerge_skia_event, ...}`.
 - `element_id_bin` is the `term_to_binary` payload for the element id.
+- Element events may include payloads (for example, text input change events
+  include the latest string value).
 
 ## Event Registry
 
@@ -103,8 +108,10 @@ block listeners behind them.
 
 ## Elixir Responsibilities
 
-- Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff state.
-- Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`).
+- Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff
+  state.
+- Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`,
+  `on_change`).
 - Encode `mouse_over` as a typed decorative attr block (no payload routing).
 - On Rust element events, resolve and forward stored payloads.
 
@@ -116,9 +123,36 @@ block listeners behind them.
 - `:mouse_enter`
 - `:mouse_leave`
 - `:mouse_move`
+- `:change` (text input, payload includes latest value)
 
 `mouse_over` does not emit an element event; it is applied as runtime styling in
 Rust.
+
+## Raw Text Input Events
+
+Backends send raw text input events to the configured input target process:
+
+- `{:text_commit, {text, modifiers}}`
+- `{:text_preedit, {text, cursor_range}}`
+- `:text_preedit_clear`
+
+Text commit events mutate focused text-input content in Rust. Preedit events
+track composition state for IME workflows and do not emit `:change` by
+themselves.
+
+## Text Selection and Clipboard Shortcuts
+
+- Selection is tracked in Rust runtime attrs (`cursor` + `selection_anchor`) and
+  is not encoded in EMRG.
+- Mouse drag selects text within focused single-line inputs.
+- Shift+arrow/home/end extends selection.
+- Ctrl/Meta shortcuts are handled in Rust for focused text inputs:
+  - `A` select all
+  - `C` copy selection
+  - `X` cut selection
+  - `V` paste text
+- Cut, paste, and typed insertion replace the selected range when present and
+  emit `:change` with updated value.
 
 ## Current Limits
 

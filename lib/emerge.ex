@@ -71,6 +71,15 @@ defmodule Emerge do
   end
 
   @doc """
+  Dispatch an element event with payload to the registered handler.
+  """
+  @spec dispatch_event(DiffState.t(), binary(), atom(), term()) :: :ok
+  def dispatch_event(%DiffState{} = state, id_bin, event, payload)
+      when is_binary(id_bin) and is_atom(event) do
+    DiffState.dispatch_event(state, id_bin, event, payload)
+  end
+
+  @doc """
   Lookup the handler payload for an element event.
   """
   @spec lookup_event(DiffState.t(), binary(), atom()) :: {:ok, {pid(), term()}} | :error

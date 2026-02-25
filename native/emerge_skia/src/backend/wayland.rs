@@ -27,8 +27,8 @@ use raw_window_handle::HasWindowHandle;
 use skia_safe::gpu::gl::FramebufferInfo;
 use winit::{
     application::ApplicationHandler,
-    dpi::LogicalSize,
-    event::{ElementState, MouseButton, WindowEvent},
+    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+    event::{ElementState, Ime, MouseButton, WindowEvent},
     event_loop::{EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
@@ -100,6 +100,9 @@ struct App {
     is_occluded: bool,
     pending_redraw: bool,
     last_animation_frame: Instant,
+    ime_enabled: bool,
+    ime_cursor_area: Option<(f32, f32, f32, f32)>,
+    ime_preedit_active: bool,
 }
 
 impl App {
@@ -167,16 +170,24 @@ impl App {
 
     fn drain_render_commands(&mut self) -> bool {
         let mut updated = false;
+        let mut ime_changed = false;
         while let Ok(msg) = self.render_rx.try_recv() {
             match msg {
                 RenderMsg::Commands {
                     commands,
                     version,
                     animate,
+                    ime_enabled,
+                    ime_cursor_area,
                 } => {
                     self.render_state.commands = commands;
                     self.render_state.render_version = version;
                     self.render_state.animate = animate;
+                    if self.ime_enabled != ime_enabled || self.ime_cursor_area != ime_cursor_area {
+                        self.ime_enabled = ime_enabled;
+                        self.ime_cursor_area = ime_cursor_area;
+                        ime_changed = true;
+                    }
                     updated = true;
                 }
                 RenderMsg::Stop => {
@@ -185,7 +196,29 @@ impl App {
                 RenderMsg::CursorUpdate { .. } => {}
             }
         }
+
+        if ime_changed {
+            self.apply_ime_state();
+        }
+
         updated
+    }
+
+    fn apply_ime_state(&self) {
+        let Some(env) = &self.env else {
+            return;
+        };
+
+        env.window.set_ime_allowed(self.ime_enabled);
+
+        if self.ime_enabled
+            && let Some((x, y, width, height)) = self.ime_cursor_area
+        {
+            let px = PhysicalPosition::new(x.round() as i32, y.round() as i32);
+            let size =
+                PhysicalSize::new(width.max(1.0).ceil() as u32, height.max(1.0).ceil() as u32);
+            env.window.set_ime_cursor_area(px, size);
+        }
     }
 
     fn mouse_button_name(button: MouseButton) -> &'static str {
@@ -244,6 +277,35 @@ impl App {
             Key::Unidentified(_) => "unknown".to_string(),
             Key::Dead(_) => "dead".to_string(),
         }
+    }
+
+    fn normalize_commit_text(text: &str) -> Option<String> {
+        let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        if filtered.is_empty() {
+            None
+        } else {
+            Some(filtered)
+        }
+    }
+
+    fn preedit_cursor_to_char_range(
+        text: &str,
+        cursor: Option<(usize, usize)>,
+    ) -> Option<(u32, u32)> {
+        let (start, end) = cursor?;
+        let mut start = Self::byte_index_to_char_index(text, start);
+        let mut end = Self::byte_index_to_char_index(text, end);
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        Some((start, end))
+    }
+
+    fn byte_index_to_char_index(text: &str, byte_index: usize) -> u32 {
+        let clamped = byte_index.min(text.len());
+        text.char_indices()
+            .take_while(|(idx, _)| *idx < clamped)
+            .count() as u32
     }
 }
 
@@ -364,7 +426,46 @@ impl ApplicationHandler<UserEvent> for App {
                     action,
                     mods: self.current_mods,
                 });
+
+                if action == ACTION_PRESS
+                    && !self.ime_preedit_active
+                    && let Some(text) = event.text
+                    && let Some(commit) = Self::normalize_commit_text(text.as_ref())
+                {
+                    self.send_input_event(InputEvent::TextCommit {
+                        text: commit,
+                        mods: self.current_mods,
+                    });
+                }
             }
+
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Preedit(text, cursor) => {
+                    self.ime_preedit_active = !text.is_empty();
+                    if text.is_empty() {
+                        self.send_input_event(InputEvent::TextPreeditClear);
+                    } else {
+                        let cursor = Self::preedit_cursor_to_char_range(&text, cursor);
+                        self.send_input_event(InputEvent::TextPreedit { text, cursor });
+                    }
+                }
+                Ime::Commit(text) => {
+                    self.ime_preedit_active = false;
+                    if let Some(commit) = Self::normalize_commit_text(&text) {
+                        self.send_input_event(InputEvent::TextCommit {
+                            text: commit,
+                            mods: self.current_mods,
+                        });
+                    }
+                }
+                Ime::Disabled => {
+                    self.ime_preedit_active = false;
+                    self.send_input_event(InputEvent::TextPreeditClear);
+                }
+                Ime::Enabled => {
+                    self.ime_preedit_active = false;
+                }
+            },
 
             // Modifier state changed
             WindowEvent::ModifiersChanged(mods) => {
@@ -387,6 +488,9 @@ impl ApplicationHandler<UserEvent> for App {
             // Window focus changed
             WindowEvent::Focused(focused) => {
                 self.is_focused = focused;
+                if !focused {
+                    self.ime_preedit_active = false;
+                }
                 self.send_input_event(InputEvent::Focused { focused });
                 if self.can_present() && self.pending_redraw {
                     self.queue_redraw();
@@ -588,8 +692,41 @@ pub fn run(
         is_occluded: false,
         pending_redraw: false,
         last_animation_frame: Instant::now(),
+        ime_enabled: false,
+        ime_cursor_area: None,
+        ime_preedit_active: false,
     };
 
+    app.apply_ime_state();
     app.redraw();
     el.run_app(&mut app).expect("run_app failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn normalize_commit_text_filters_control_chars() {
+        assert_eq!(App::normalize_commit_text("abc"), Some("abc".to_string()));
+        assert_eq!(
+            App::normalize_commit_text("a\u{0008}b"),
+            Some("ab".to_string())
+        );
+        assert_eq!(App::normalize_commit_text("\u{0000}\n\t"), None);
+    }
+
+    #[test]
+    fn preedit_cursor_to_char_range_converts_byte_indices() {
+        let text = "Aé日";
+        let cursor = App::preedit_cursor_to_char_range(text, Some((1, text.len())));
+        assert_eq!(cursor, Some((1, 3)));
+    }
+
+    #[test]
+    fn preedit_cursor_to_char_range_orders_indices() {
+        let text = "hello";
+        let cursor = App::preedit_cursor_to_char_range(text, Some((4, 1)));
+        assert_eq!(cursor, Some((1, 4)));
+    }
 }

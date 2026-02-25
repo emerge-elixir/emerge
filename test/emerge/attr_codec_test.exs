@@ -120,6 +120,13 @@ defmodule Emerge.AttrCodecTest do
            }
   end
 
+  test "encode/decode on_change presence" do
+    attrs = %{on_change: {self(), :changed}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_change: true}
+  end
+
   test "encode/decode mouse_over decorative attrs" do
     attrs = %{
       mouse_over: %{

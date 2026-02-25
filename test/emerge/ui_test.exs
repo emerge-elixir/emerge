@@ -244,6 +244,26 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
+  test "on_change helper returns attr tuple" do
+    assert on_change({self(), :changed}) == {:on_change, {self(), :changed}}
+  end
+
+  test "Input.text creates a text_input element" do
+    element =
+      Emerge.UI.Input.text("hello", [
+        key(:search),
+        width(px(240)),
+        on_change({self(), :search_changed})
+      ])
+
+    assert element.type == :text_input
+    assert element.id == :search
+    assert element.attrs.content == "hello"
+    assert element.attrs.width == {:px, 240}
+    assert element.attrs.on_change == {self(), :search_changed}
+    assert element.children == []
+  end
+
   test "padding_xy expands to per-edge padding" do
     assert padding_xy(6, 3) == {:padding, {3, 6, 3, 6}}
   end

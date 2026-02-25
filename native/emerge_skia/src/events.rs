@@ -1,11 +1,12 @@
 use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 
 use crate::input::{
-    EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE,
-    EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS,
-    EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS, InputEvent,
+    ACTION_PRESS, EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE,
+    EVENT_MOUSE_MOVE, EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP, EVENT_SCROLL_X_NEG,
+    EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS, EVENT_TEXT_INPUT, InputEvent,
+    MOD_CTRL, MOD_META, MOD_SHIFT,
 };
-use crate::tree::element::{ElementId, ElementTree};
+use crate::tree::element::{ElementId, ElementKind, ElementTree};
 use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
 
 mod scrollbar;
@@ -22,6 +23,8 @@ pub struct EventProcessor {
     pressed_id: Option<ElementId>,
     hovered_id: Option<ElementId>,
     mouse_over_active_id: Option<ElementId>,
+    focused_text_input_id: Option<ElementId>,
+    text_input_drag_id: Option<ElementId>,
     hovered_scrollbar_thumb: Option<ScrollbarThumbHover>,
     drag_start: Option<(f32, f32)>,
     drag_last_pos: Option<(f32, f32)>,
@@ -101,6 +104,43 @@ pub enum MouseOverRequest {
     SetMouseOverActive { element_id: ElementId, active: bool },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextInputEditRequest {
+    MoveLeft { extend_selection: bool },
+    MoveRight { extend_selection: bool },
+    MoveHome { extend_selection: bool },
+    MoveEnd { extend_selection: bool },
+    Backspace,
+    Delete,
+    Insert(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextInputCursorRequest {
+    Set {
+        element_id: ElementId,
+        x: f32,
+        extend_selection: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextInputCommandRequest {
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextInputPreeditRequest {
+    Set {
+        text: String,
+        cursor: Option<(u32, u32)>,
+    },
+    Clear,
+}
+
 pub fn build_event_registry(tree: &ElementTree) -> Vec<EventNode> {
     let Some(root) = tree.root.as_ref() else {
         return Vec::new();
@@ -144,6 +184,9 @@ fn collect_event_nodes(
     }
     if element.attrs.mouse_over.is_some() {
         flags |= EVENT_MOUSE_OVER_STYLE;
+    }
+    if element.kind == ElementKind::TextInput {
+        flags |= EVENT_TEXT_INPUT;
     }
     if element.attrs.scrollbar_x.unwrap_or(false) {
         let scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -403,6 +446,8 @@ impl EventProcessor {
             pressed_id: None,
             hovered_id: None,
             mouse_over_active_id: None,
+            focused_text_input_id: None,
+            text_input_drag_id: None,
             hovered_scrollbar_thumb: None,
             drag_start: None,
             drag_last_pos: None,
@@ -427,6 +472,26 @@ impl EventProcessor {
             });
             if !still_valid {
                 self.hovered_scrollbar_thumb = None;
+            }
+        }
+
+        if let Some(focused) = self.focused_text_input_id.as_ref() {
+            let still_valid = self
+                .registry
+                .iter()
+                .any(|node| node.id == *focused && (node.flags & EVENT_TEXT_INPUT != 0));
+            if !still_valid {
+                self.focused_text_input_id = None;
+            }
+        }
+
+        if let Some(drag_id) = self.text_input_drag_id.as_ref() {
+            let still_valid = self
+                .registry
+                .iter()
+                .any(|node| node.id == *drag_id && (node.flags & EVENT_TEXT_INPUT != 0));
+            if !still_valid {
+                self.text_input_drag_id = None;
             }
         }
 
@@ -617,6 +682,173 @@ impl EventProcessor {
         }
 
         emitted
+    }
+
+    pub fn text_input_focus_request(&mut self, event: &InputEvent) -> Option<Option<ElementId>> {
+        let next_focus = match event {
+            InputEvent::CursorButton {
+                button,
+                action,
+                x,
+                y,
+                ..
+            } if button == "left" && *action == ACTION_PRESS => {
+                Some(hit_test_with_flag(&self.registry, *x, *y, EVENT_TEXT_INPUT))
+            }
+            InputEvent::Focused { focused } if !*focused => {
+                self.text_input_drag_id = None;
+                Some(None)
+            }
+            _ => None,
+        }?;
+
+        if self.focused_text_input_id == next_focus {
+            return None;
+        }
+
+        self.focused_text_input_id = next_focus.clone();
+        Some(next_focus)
+    }
+
+    pub fn text_input_cursor_requests(
+        &mut self,
+        event: &InputEvent,
+    ) -> Vec<TextInputCursorRequest> {
+        match event {
+            InputEvent::CursorButton {
+                button,
+                action,
+                x,
+                y,
+                mods,
+                ..
+            } if button == "left" && *action == ACTION_PRESS => {
+                let Some(id) = hit_test_with_flag(&self.registry, *x, *y, EVENT_TEXT_INPUT) else {
+                    self.text_input_drag_id = None;
+                    return Vec::new();
+                };
+
+                self.text_input_drag_id = Some(id.clone());
+                let extend_selection = *mods & MOD_SHIFT != 0;
+                vec![TextInputCursorRequest::Set {
+                    element_id: id,
+                    x: *x,
+                    extend_selection,
+                }]
+            }
+            InputEvent::CursorPos { x, .. } => {
+                let Some(id) = self.text_input_drag_id.clone() else {
+                    return Vec::new();
+                };
+
+                vec![TextInputCursorRequest::Set {
+                    element_id: id,
+                    x: *x,
+                    extend_selection: true,
+                }]
+            }
+            InputEvent::CursorButton { button, action, .. }
+                if button == "left" && *action == crate::input::ACTION_RELEASE =>
+            {
+                self.text_input_drag_id = None;
+                Vec::new()
+            }
+            InputEvent::CursorEntered { entered } if !*entered => {
+                self.text_input_drag_id = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn text_input_command_request(
+        &self,
+        event: &InputEvent,
+    ) -> Option<(ElementId, TextInputCommandRequest)> {
+        let focused_id = self.focused_text_input_id.as_ref()?.clone();
+
+        match event {
+            InputEvent::Key { key, action, mods } if *action == ACTION_PRESS => {
+                let has_meta = (*mods & MOD_CTRL != 0) || (*mods & MOD_META != 0);
+                if !has_meta {
+                    return None;
+                }
+
+                let key = key.to_ascii_lowercase();
+                let request = match key.as_str() {
+                    "a" => TextInputCommandRequest::SelectAll,
+                    "c" => TextInputCommandRequest::Copy,
+                    "x" => TextInputCommandRequest::Cut,
+                    "v" => TextInputCommandRequest::Paste,
+                    _ => return None,
+                };
+
+                Some((focused_id, request))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn text_input_edit_request(
+        &self,
+        event: &InputEvent,
+    ) -> Option<(ElementId, TextInputEditRequest)> {
+        let focused_id = self.focused_text_input_id.as_ref()?.clone();
+
+        match event {
+            InputEvent::Key { key, action, mods } if *action == ACTION_PRESS => {
+                let extend_selection = *mods & MOD_SHIFT != 0;
+                let request = match key.as_str() {
+                    "left" => Some(TextInputEditRequest::MoveLeft { extend_selection }),
+                    "right" => Some(TextInputEditRequest::MoveRight { extend_selection }),
+                    "home" => Some(TextInputEditRequest::MoveHome { extend_selection }),
+                    "end" => Some(TextInputEditRequest::MoveEnd { extend_selection }),
+                    "backspace" => Some(TextInputEditRequest::Backspace),
+                    "delete" => Some(TextInputEditRequest::Delete),
+                    _ => None,
+                }?;
+
+                Some((focused_id, request))
+            }
+            InputEvent::TextCommit { text, mods } => {
+                if (*mods & MOD_CTRL != 0) || (*mods & MOD_META != 0) {
+                    return None;
+                }
+
+                let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                if filtered.is_empty() {
+                    return None;
+                }
+
+                Some((focused_id, TextInputEditRequest::Insert(filtered)))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn text_input_preedit_request(
+        &self,
+        event: &InputEvent,
+    ) -> Option<(ElementId, TextInputPreeditRequest)> {
+        let focused_id = self.focused_text_input_id.as_ref()?.clone();
+
+        match event {
+            InputEvent::TextPreedit { text, cursor } => {
+                if text.is_empty() {
+                    Some((focused_id, TextInputPreeditRequest::Clear))
+                } else {
+                    Some((
+                        focused_id,
+                        TextInputPreeditRequest::Set {
+                            text: text.clone(),
+                            cursor: *cursor,
+                        },
+                    ))
+                }
+            }
+            InputEvent::TextPreeditClear => Some((focused_id, TextInputPreeditRequest::Clear)),
+            _ => None,
+        }
     }
 
     fn node_has_flag(&self, id: &ElementId, flag: u16) -> bool {
@@ -1019,6 +1251,21 @@ pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: A
     });
 }
 
+pub(crate) fn send_element_event_with_string_payload(
+    pid: LocalPid,
+    element_id: &ElementId,
+    event: Atom,
+    value: &str,
+) {
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |inner_env| {
+        let mut bin = OwnedBinary::new(element_id.0.len()).unwrap();
+        bin.as_mut_slice().copy_from_slice(&element_id.0);
+        let id_bin = bin.release(inner_env);
+        (emerge_skia_event(), (id_bin, event, value.to_string())).encode(inner_env)
+    });
+}
+
 pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1029,6 +1276,7 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
 rustler::atoms! {
     emerge_skia_event,
     click,
+    change,
     mouse_down,
     mouse_up,
     mouse_enter,
@@ -1038,6 +1286,10 @@ rustler::atoms! {
 
 pub(crate) fn click_atom() -> Atom {
     click()
+}
+
+pub(crate) fn change_atom() -> Atom {
+    change()
 }
 
 #[cfg(test)]
@@ -1185,6 +1437,30 @@ mod tests {
                 height,
             },
             flags: EVENT_MOUSE_OVER_STYLE,
+            self_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            scrollbar_x: None,
+            scrollbar_y: None,
+        }
+    }
+
+    fn make_text_input_node(id: u8, x: f32, y: f32, width: f32, height: f32) -> EventNode {
+        EventNode {
+            id: ElementId::from_term_bytes(vec![id]),
+            hit_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            flags: EVENT_TEXT_INPUT,
             self_rect: Rect {
                 x,
                 y,
@@ -1624,5 +1900,215 @@ mod tests {
                 active: true,
             }
         );
+    }
+
+    #[test]
+    fn test_text_input_focus_requests_track_target() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_text_input_node(9, 0.0, 0.0, 120.0, 30.0)];
+
+        let press_inside = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 20.0,
+            y: 10.0,
+        };
+
+        let press_outside = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 300.0,
+            y: 300.0,
+        };
+
+        let first = processor.text_input_focus_request(&press_inside).unwrap();
+        assert_eq!(first, Some(ElementId::from_term_bytes(vec![9])));
+
+        assert!(processor.text_input_focus_request(&press_inside).is_none());
+
+        let blur = processor.text_input_focus_request(&press_outside).unwrap();
+        assert_eq!(blur, None);
+    }
+
+    #[test]
+    fn test_text_input_cursor_click_request_returns_x_for_hit_input() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_text_input_node(3, 0.0, 0.0, 160.0, 24.0)];
+
+        let press_inside = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 42.0,
+            y: 12.0,
+        };
+
+        let requests = processor.text_input_cursor_requests(&press_inside);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0],
+            TextInputCursorRequest::Set {
+                element_id: ElementId::from_term_bytes(vec![3]),
+                x: 42.0,
+                extend_selection: false,
+            }
+        );
+
+        let move_inside = InputEvent::CursorPos { x: 55.0, y: 12.0 };
+        let drag_requests = processor.text_input_cursor_requests(&move_inside);
+        assert_eq!(drag_requests.len(), 1);
+        assert_eq!(
+            drag_requests[0],
+            TextInputCursorRequest::Set {
+                element_id: ElementId::from_term_bytes(vec![3]),
+                x: 55.0,
+                extend_selection: true,
+            }
+        );
+
+        let release = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_RELEASE,
+            mods: 0,
+            x: 55.0,
+            y: 12.0,
+        };
+        assert!(processor.text_input_cursor_requests(&release).is_empty());
+
+        let press_outside = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 300.0,
+            y: 12.0,
+        };
+        assert!(
+            processor
+                .text_input_cursor_requests(&press_outside)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_text_input_edit_requests_follow_focus_and_keys() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_text_input_node(5, 0.0, 0.0, 100.0, 20.0)];
+
+        let focus = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+        processor.text_input_focus_request(&focus);
+
+        let left = InputEvent::Key {
+            key: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        let (left_id, left_req) = processor.text_input_edit_request(&left).unwrap();
+        assert_eq!(left_id, ElementId::from_term_bytes(vec![5]));
+        assert_eq!(
+            left_req,
+            TextInputEditRequest::MoveLeft {
+                extend_selection: false
+            }
+        );
+
+        let commit = InputEvent::TextCommit {
+            text: "x".to_string(),
+            mods: 0,
+        };
+        let (_commit_id, commit_req) = processor.text_input_edit_request(&commit).unwrap();
+        assert_eq!(commit_req, TextInputEditRequest::Insert("x".to_string()));
+
+        let ctrl_commit = InputEvent::TextCommit {
+            text: "x".to_string(),
+            mods: crate::input::MOD_CTRL,
+        };
+        assert!(processor.text_input_edit_request(&ctrl_commit).is_none());
+
+        let shift_right = InputEvent::Key {
+            key: "right".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_SHIFT,
+        };
+        let (_, shift_req) = processor.text_input_edit_request(&shift_right).unwrap();
+        assert_eq!(
+            shift_req,
+            TextInputEditRequest::MoveRight {
+                extend_selection: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_text_input_command_requests_map_shortcuts() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_text_input_node(8, 0.0, 0.0, 140.0, 24.0)];
+
+        let focus = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 8.0,
+            y: 8.0,
+        };
+        processor.text_input_focus_request(&focus);
+
+        let select_all = InputEvent::Key {
+            key: "a".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_CTRL,
+        };
+        let (_, request) = processor.text_input_command_request(&select_all).unwrap();
+        assert_eq!(request, TextInputCommandRequest::SelectAll);
+
+        let paste = InputEvent::Key {
+            key: "V".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_META,
+        };
+        let (_, request) = processor.text_input_command_request(&paste).unwrap();
+        assert_eq!(request, TextInputCommandRequest::Paste);
+    }
+
+    #[test]
+    fn test_text_input_preedit_requests_follow_focus() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_text_input_node(7, 0.0, 0.0, 140.0, 24.0)];
+
+        let focus = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 8.0,
+            y: 8.0,
+        };
+        processor.text_input_focus_request(&focus);
+
+        let preedit = InputEvent::TextPreedit {
+            text: "ka".to_string(),
+            cursor: Some((2, 2)),
+        };
+
+        let (id, req) = processor.text_input_preedit_request(&preedit).unwrap();
+        assert_eq!(id, ElementId::from_term_bytes(vec![7]));
+        assert_eq!(
+            req,
+            TextInputPreeditRequest::Set {
+                text: "ka".to_string(),
+                cursor: Some((2, 2))
+            }
+        );
+
+        let clear = InputEvent::TextPreeditClear;
+        let (_, clear_req) = processor.text_input_preedit_request(&clear).unwrap();
+        assert_eq!(clear_req, TextInputPreeditRequest::Clear);
     }
 }

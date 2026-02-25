@@ -1046,6 +1046,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         commands,
                         version,
                         animate,
+                        ..
                     } => {
                         render_state.commands = commands;
                         render_state.render_version = version;
