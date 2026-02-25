@@ -11,15 +11,17 @@ Multi-backend Skia renderer with:
 - Push-based input event delivery
 - EventProcessor thread for hit testing, click/scroll dispatch, and redraws
 - Rust-owned single-line text input editing (`cursor`, `insert/delete`,
-  `on_change` payload emission)
+  `on_change` payload emission, `on_focus`/`on_blur` element events)
 - Rust-owned text selection and shortcut handling (`shift+arrows`,
   `ctrl/meta+a/c/x/v`)
+- Clipboard manager integration (OS clipboard + Linux PRIMARY with in-memory
+  fallback)
 - Wayland IME integration (`preedit` + `commit`, IME cursor area updates)
 - Scrollbar track/thumb hit testing, drag snapping, and axis-specific hover state
 - Drag-scroll support with deadzone and finger-like direction
 - Scroll state preserved across layout/patch with resize-aware clamping
 - Clip- and rounded-corner-aware hit testing
-- Declarative `mouse_over` styling with runtime active-state application
+- Declarative state styling (`mouse_over`, `focused`, `mouse_down`) with runtime active-state application
 - Source-based image assets resolved asynchronously in Rust after tree upload/patch
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder
