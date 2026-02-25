@@ -234,6 +234,44 @@ defmodule Emerge.DiffStateTest do
     assert pid == self()
   end
 
+  test "on_focus and on_blur are registered in event registry" do
+    layout =
+      Emerge.UI.Input.text("hello", [
+        key(:field),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred})
+      ])
+
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {focus_pid, :focused}} = Emerge.lookup_event(state, id_bin, :focus)
+    assert {:ok, {blur_pid, :blurred}} = Emerge.lookup_event(state, id_bin, :blur)
+    assert focus_pid == self()
+    assert blur_pid == self()
+  end
+
+  test "text input registers click and mouse handlers alongside on_change" do
+    layout =
+      Emerge.UI.Input.text("hello", [
+        key(:field),
+        on_click({self(), :clicked}),
+        on_mouse_enter({self(), :entered}),
+        on_mouse_leave({self(), :left}),
+        on_mouse_move({self(), :moved}),
+        on_change({self(), :changed})
+      ])
+
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {_, :clicked}} = Emerge.lookup_event(state, id_bin, :click)
+    assert {:ok, {_, :entered}} = Emerge.lookup_event(state, id_bin, :mouse_enter)
+    assert {:ok, {_, :left}} = Emerge.lookup_event(state, id_bin, :mouse_leave)
+    assert {:ok, {_, :moved}} = Emerge.lookup_event(state, id_bin, :mouse_move)
+    assert {:ok, {_, :changed}} = Emerge.lookup_event(state, id_bin, :change)
+  end
+
   test "dispatch_event with payload appends payload to tuple message" do
     layout =
       Emerge.UI.Input.text("hello", [key(:field), on_change({self(), {:changed, :field}})])
@@ -252,6 +290,24 @@ defmodule Emerge.DiffStateTest do
 
     assert :ok == Emerge.dispatch_event(state, id_bin, :change, "hello!")
     assert_receive {:changed, "hello!"}
+  end
+
+  test "dispatch_event routes focus and blur events" do
+    layout =
+      Emerge.UI.Input.text("hello", [
+        key(:field),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred})
+      ])
+
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok == Emerge.dispatch_event(state, id_bin, :focus)
+    assert_receive :focused
+
+    assert :ok == Emerge.dispatch_event(state, id_bin, :blur)
+    assert_receive :blurred
   end
 
   defp content_id_map(%Emerge.Element{children: children}) do

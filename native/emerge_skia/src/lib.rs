@@ -21,6 +21,7 @@ use skia_safe::Font;
 mod actors;
 mod assets;
 mod backend;
+mod clipboard;
 mod cursor;
 mod drm_input;
 mod events;
@@ -28,17 +29,13 @@ mod input;
 mod renderer;
 mod tree;
 
-use actors::{ElementEvent, EventMsg, RenderMsg, TreeMsg};
+use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use drm_input::DrmInput;
-use events::{
-    EventProcessor, MouseOverRequest, ScrollbarHoverRequest, ScrollbarThumbDragRequest,
-    TextInputCommandRequest, TextInputCursorRequest, TextInputEditRequest, TextInputPreeditRequest,
-};
-use input::{InputEvent, InputHandler};
+use events::spawn_event_actor;
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
 use tree::layout::layout_and_refresh_default;
@@ -218,7 +215,6 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
-        let mut text_clipboard = String::new();
 
         while let Ok(msg) = tree_rx.recv() {
             let mut messages = vec![msg];
@@ -232,6 +228,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             let mut hover_x_state = std::collections::HashMap::new();
             let mut hover_y_state = std::collections::HashMap::new();
             let mut mouse_over_active_state = std::collections::HashMap::new();
+            let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut changed = false;
 
             for message in messages {
@@ -298,127 +295,31 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     TreeMsg::SetMouseOverActive { element_id, active } => {
                         mouse_over_active_state.insert(element_id, active);
                     }
-                    TreeMsg::SetTextInputFocus { element_id } => {
-                        changed |= tree.set_text_input_focus(element_id.as_ref());
+                    TreeMsg::SetMouseDownActive { element_id, active } => {
+                        mouse_down_active_state.insert(element_id, active);
                     }
-                    TreeMsg::TextInputMoveLeft {
+                    TreeMsg::SetTextInputContent {
                         element_id,
-                        extend_selection,
+                        content,
                     } => {
-                        changed |= tree.text_input_move_left(&element_id, extend_selection);
+                        changed |= tree.set_text_input_content(&element_id, content);
                     }
-                    TreeMsg::TextInputMoveRight {
+                    TreeMsg::SetTextInputRuntime {
                         element_id,
-                        extend_selection,
-                    } => {
-                        changed |= tree.text_input_move_right(&element_id, extend_selection);
-                    }
-                    TreeMsg::TextInputMoveHome {
-                        element_id,
-                        extend_selection,
-                    } => {
-                        changed |= tree.text_input_move_home(&element_id, extend_selection);
-                    }
-                    TreeMsg::TextInputMoveEnd {
-                        element_id,
-                        extend_selection,
-                    } => {
-                        changed |= tree.text_input_move_end(&element_id, extend_selection);
-                    }
-                    TreeMsg::TextInputBackspace { element_id } => {
-                        if let Some(value) = tree.text_input_backspace(&element_id) {
-                            changed = true;
-                            send_event(
-                                &event_tx,
-                                EventMsg::ElementEvent {
-                                    element_id,
-                                    event: ElementEvent::Change { value },
-                                },
-                                log_input,
-                            );
-                        }
-                    }
-                    TreeMsg::TextInputDelete { element_id } => {
-                        if let Some(value) = tree.text_input_delete(&element_id) {
-                            changed = true;
-                            send_event(
-                                &event_tx,
-                                EventMsg::ElementEvent {
-                                    element_id,
-                                    event: ElementEvent::Change { value },
-                                },
-                                log_input,
-                            );
-                        }
-                    }
-                    TreeMsg::TextInputInsert { element_id, text } => {
-                        if let Some(value) = tree.text_input_insert(&element_id, &text) {
-                            changed = true;
-                            send_event(
-                                &event_tx,
-                                EventMsg::ElementEvent {
-                                    element_id,
-                                    event: ElementEvent::Change { value },
-                                },
-                                log_input,
-                            );
-                        }
-                    }
-                    TreeMsg::SetTextInputCursorFromPoint {
-                        element_id,
-                        x,
-                        extend_selection,
-                    } => {
-                        changed |=
-                            tree.set_text_input_cursor_from_point(&element_id, x, extend_selection);
-                    }
-                    TreeMsg::TextInputSelectAll { element_id } => {
-                        changed |= tree.text_input_select_all(&element_id);
-                    }
-                    TreeMsg::TextInputCopy { element_id } => {
-                        if let Some(selection) = tree.text_input_copy_selection(&element_id) {
-                            text_clipboard = selection;
-                        }
-                    }
-                    TreeMsg::TextInputCut { element_id } => {
-                        if let Some((value, cut_text)) = tree.text_input_cut_selection(&element_id)
-                        {
-                            text_clipboard = cut_text;
-                            changed = true;
-                            send_event(
-                                &event_tx,
-                                EventMsg::ElementEvent {
-                                    element_id,
-                                    event: ElementEvent::Change { value },
-                                },
-                                log_input,
-                            );
-                        }
-                    }
-                    TreeMsg::TextInputPaste { element_id } => {
-                        if let Some(value) =
-                            tree.text_input_paste_text(&element_id, &text_clipboard)
-                        {
-                            changed = true;
-                            send_event(
-                                &event_tx,
-                                EventMsg::ElementEvent {
-                                    element_id,
-                                    event: ElementEvent::Change { value },
-                                },
-                                log_input,
-                            );
-                        }
-                    }
-                    TreeMsg::SetTextInputPreedit {
-                        element_id,
-                        text,
+                        focused,
                         cursor,
+                        selection_anchor,
+                        preedit,
+                        preedit_cursor,
                     } => {
-                        changed |= tree.set_text_input_preedit(&element_id, text, cursor);
-                    }
-                    TreeMsg::ClearTextInputPreedit { element_id } => {
-                        changed |= tree.clear_text_input_preedit(&element_id);
+                        changed |= tree.set_text_input_runtime(
+                            &element_id,
+                            focused,
+                            cursor,
+                            selection_anchor,
+                            preedit,
+                            preedit_cursor,
+                        );
                     }
                     TreeMsg::AssetStateChanged => {
                         changed = true;
@@ -448,6 +349,10 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
 
             for (id, active) in mouse_over_active_state {
                 changed |= tree.set_mouse_over_active(&id, active);
+            }
+
+            for (id, active) in mouse_down_active_state {
+                changed |= tree.set_mouse_down_active(&id, active);
             }
 
             if !changed {
@@ -483,344 +388,6 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
     })
 }
 
-fn process_input_events(
-    events: &mut Vec<InputEvent>,
-    processor: &mut EventProcessor,
-    input_handler: &mut InputHandler,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-) {
-    if events.is_empty() {
-        return;
-    }
-
-    let mut coalesced = Vec::new();
-    let mut last_cursor: Option<InputEvent> = None;
-    let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
-
-    for event in events.drain(..) {
-        let event = event.normalize_scroll();
-        match event {
-            InputEvent::CursorPos { .. } => {
-                last_cursor = Some(event);
-            }
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                scroll_acc = Some(match scroll_acc {
-                    Some((acc_dx, acc_dy, _, _)) => (acc_dx + dx, acc_dy + dy, x, y),
-                    None => (dx, dy, x, y),
-                });
-            }
-            other => coalesced.push(other),
-        }
-    }
-
-    if let Some((dx, dy, x, y)) = scroll_acc {
-        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
-    }
-    if let Some(cursor) = last_cursor {
-        coalesced.push(cursor);
-    }
-
-    for event in coalesced {
-        if let InputEvent::Resized {
-            width,
-            height,
-            scale_factor,
-        } = &event
-        {
-            send_tree(
-                tree_tx,
-                TreeMsg::Resize {
-                    width: *width as f32,
-                    height: *height as f32,
-                    scale: *scale_factor,
-                },
-                log_render,
-            );
-        }
-
-        if let InputEvent::CursorPos { x, y } = &event {
-            input_handler.set_cursor_pos(*x, *y);
-        }
-
-        let forward_to_target = input_handler.accepts(&event);
-
-        if let Some(pid) = target.as_ref() {
-            let pid = *pid;
-            if forward_to_target {
-                events::send_input_event(pid, &event);
-            }
-
-            if let Some(clicked_id) = processor.detect_click(&event) {
-                events::send_element_event(pid, &clicked_id, events::click_atom());
-            }
-
-            if let Some((mouse_id, mouse_event)) = processor.detect_mouse_button_event(&event) {
-                events::send_element_event(pid, &mouse_id, mouse_event);
-            }
-
-            for (hover_id, hover_event) in processor.handle_hover_event(&event) {
-                events::send_element_event(pid, &hover_id, hover_event);
-            }
-        } else {
-            processor.detect_click(&event);
-            processor.detect_mouse_button_event(&event);
-            processor.handle_hover_event(&event);
-        }
-
-        if let Some(focused_id) = processor.text_input_focus_request(&event) {
-            send_tree(
-                tree_tx,
-                TreeMsg::SetTextInputFocus {
-                    element_id: focused_id,
-                },
-                log_render,
-            );
-        }
-
-        for request in processor.text_input_cursor_requests(&event) {
-            match request {
-                TextInputCursorRequest::Set {
-                    element_id,
-                    x,
-                    extend_selection,
-                } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetTextInputCursorFromPoint {
-                            element_id,
-                            x,
-                            extend_selection,
-                        },
-                        log_render,
-                    );
-                }
-            }
-        }
-
-        if let Some((element_id, request)) = processor.text_input_command_request(&event) {
-            let message = match request {
-                TextInputCommandRequest::SelectAll => TreeMsg::TextInputSelectAll { element_id },
-                TextInputCommandRequest::Copy => TreeMsg::TextInputCopy { element_id },
-                TextInputCommandRequest::Cut => TreeMsg::TextInputCut { element_id },
-                TextInputCommandRequest::Paste => TreeMsg::TextInputPaste { element_id },
-            };
-
-            send_tree(tree_tx, message, log_render);
-        }
-
-        if let Some((element_id, request)) = processor.text_input_edit_request(&event) {
-            let message = match request {
-                TextInputEditRequest::MoveLeft { extend_selection } => TreeMsg::TextInputMoveLeft {
-                    element_id,
-                    extend_selection,
-                },
-                TextInputEditRequest::MoveRight { extend_selection } => {
-                    TreeMsg::TextInputMoveRight {
-                        element_id,
-                        extend_selection,
-                    }
-                }
-                TextInputEditRequest::MoveHome { extend_selection } => TreeMsg::TextInputMoveHome {
-                    element_id,
-                    extend_selection,
-                },
-                TextInputEditRequest::MoveEnd { extend_selection } => TreeMsg::TextInputMoveEnd {
-                    element_id,
-                    extend_selection,
-                },
-                TextInputEditRequest::Backspace => TreeMsg::TextInputBackspace { element_id },
-                TextInputEditRequest::Delete => TreeMsg::TextInputDelete { element_id },
-                TextInputEditRequest::Insert(text) => TreeMsg::TextInputInsert { element_id, text },
-            };
-
-            send_tree(tree_tx, message, log_render);
-        }
-
-        if let Some((element_id, request)) = processor.text_input_preedit_request(&event) {
-            let message = match request {
-                TextInputPreeditRequest::Set { text, cursor } => TreeMsg::SetTextInputPreedit {
-                    element_id,
-                    text,
-                    cursor,
-                },
-                TextInputPreeditRequest::Clear => TreeMsg::ClearTextInputPreedit { element_id },
-            };
-
-            send_tree(tree_tx, message, log_render);
-        }
-
-        for request in processor.scrollbar_thumb_drag_requests(&event) {
-            match request {
-                ScrollbarThumbDragRequest::X { element_id, dx } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::ScrollbarThumbDragX { element_id, dx },
-                        log_render,
-                    );
-                }
-                ScrollbarThumbDragRequest::Y { element_id, dy } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::ScrollbarThumbDragY { element_id, dy },
-                        log_render,
-                    );
-                }
-            }
-        }
-
-        for (id, dx, dy) in processor.scroll_requests(&event) {
-            send_tree(
-                tree_tx,
-                TreeMsg::ScrollRequest {
-                    element_id: id,
-                    dx,
-                    dy,
-                },
-                log_render,
-            );
-        }
-
-        for request in processor.scrollbar_hover_requests(&event) {
-            match request {
-                ScrollbarHoverRequest::X {
-                    element_id,
-                    hovered,
-                } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetScrollbarXHover {
-                            element_id,
-                            hovered,
-                        },
-                        log_render,
-                    );
-                }
-                ScrollbarHoverRequest::Y {
-                    element_id,
-                    hovered,
-                } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetScrollbarYHover {
-                            element_id,
-                            hovered,
-                        },
-                        log_render,
-                    );
-                }
-            }
-        }
-
-        for request in processor.mouse_over_requests(&event) {
-            match request {
-                MouseOverRequest::SetMouseOverActive { element_id, active } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetMouseOverActive { element_id, active },
-                        log_render,
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn spawn_event_actor(
-    event_rx: Receiver<EventMsg>,
-    tree_tx: Sender<TreeMsg>,
-    log_render: bool,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut processor = EventProcessor::new();
-        let mut input_handler = InputHandler::new();
-        let mut target: Option<LocalPid> = None;
-
-        while let Ok(msg) = event_rx.recv() {
-            let mut messages = vec![msg];
-            while let Ok(next) = event_rx.try_recv() {
-                messages.push(next);
-            }
-
-            let mut pending_inputs = Vec::new();
-
-            for message in messages {
-                match message {
-                    EventMsg::InputEvent(event) => pending_inputs.push(event),
-                    EventMsg::RegistryUpdate { registry } => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        processor.rebuild_registry(registry);
-                    }
-                    EventMsg::SetInputMask(mask) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        input_handler.set_mask(mask);
-                    }
-                    EventMsg::SetInputTarget(pid) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        target = pid;
-                    }
-                    EventMsg::ElementEvent { element_id, event } => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-
-                        if let Some(pid) = target.as_ref() {
-                            let pid = *pid;
-                            match event {
-                                ElementEvent::Change { value } => {
-                                    events::send_element_event_with_string_payload(
-                                        pid,
-                                        &element_id,
-                                        events::change_atom(),
-                                        &value,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    EventMsg::Stop => return,
-                }
-            }
-
-            process_input_events(
-                &mut pending_inputs,
-                &mut processor,
-                &mut input_handler,
-                &target,
-                &tree_tx,
-                log_render,
-            );
-        }
-    })
-}
-
 fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResource>> {
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -842,7 +409,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     assets::start(tree_tx.clone(), log_render);
 
-    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render);
+    let system_clipboard = matches!(config.backend, BackendKind::Wayland);
+    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render, system_clipboard);
 
     let initial_width = config.width;
     let initial_height = config.height;

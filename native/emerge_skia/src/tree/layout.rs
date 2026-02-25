@@ -337,7 +337,7 @@ pub fn layout_tree<M: TextMeasurer>(
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
     apply_scale_to_tree(tree, scale);
-    apply_mouse_over_styles(tree);
+    apply_interaction_styles(tree);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
     measure_element(tree, &root_id, measurer, &FontContext::default());
@@ -398,11 +398,22 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
         on_change: attrs.on_change,
+        on_focus: attrs.on_focus,
+        on_blur: attrs.on_blur,
         mouse_over: attrs
             .mouse_over
             .as_ref()
             .map(|hover| scale_mouse_over_attrs(hover, scale_f64)),
+        focused: attrs
+            .focused
+            .as_ref()
+            .map(|style| scale_mouse_over_attrs(style, scale_f64)),
+        mouse_down: attrs
+            .mouse_down
+            .as_ref()
+            .map(|style| scale_mouse_over_attrs(style, scale_f64)),
         mouse_over_active: attrs.mouse_over_active,
+        mouse_down_active: attrs.mouse_down_active,
         text_input_focused: attrs.text_input_focused,
         text_input_cursor: attrs.text_input_cursor,
         text_input_selection_anchor: attrs.text_input_selection_anchor,
@@ -486,55 +497,67 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
     }
 }
 
-fn apply_mouse_over_styles(tree: &mut ElementTree) {
+fn apply_interaction_styles(tree: &mut ElementTree) {
     for element in tree.nodes.values_mut() {
-        if !element.attrs.mouse_over_active.unwrap_or(false) {
-            continue;
+        if element.attrs.mouse_over_active.unwrap_or(false)
+            && let Some(mouse_over) = element.attrs.mouse_over.clone()
+        {
+            apply_decorative_style(&mut element.attrs, &mouse_over);
         }
 
-        let Some(mouse_over) = element.attrs.mouse_over.clone() else {
-            continue;
-        };
+        if element.attrs.text_input_focused.unwrap_or(false)
+            && let Some(focused) = element.attrs.focused.clone()
+        {
+            apply_decorative_style(&mut element.attrs, &focused);
+        }
 
-        if let Some(background) = mouse_over.background {
-            element.attrs.background = Some(background);
+        if element.attrs.mouse_down_active.unwrap_or(false)
+            && let Some(mouse_down) = element.attrs.mouse_down.clone()
+        {
+            apply_decorative_style(&mut element.attrs, &mouse_down);
         }
-        if let Some(border_color) = mouse_over.border_color {
-            element.attrs.border_color = Some(border_color);
-        }
-        if let Some(font_color) = mouse_over.font_color {
-            element.attrs.font_color = Some(font_color);
-        }
-        if let Some(font_size) = mouse_over.font_size {
-            element.attrs.font_size = Some(font_size);
-        }
-        if let Some(font_underline) = mouse_over.font_underline {
-            element.attrs.font_underline = Some(font_underline);
-        }
-        if let Some(font_strike) = mouse_over.font_strike {
-            element.attrs.font_strike = Some(font_strike);
-        }
-        if let Some(font_letter_spacing) = mouse_over.font_letter_spacing {
-            element.attrs.font_letter_spacing = Some(font_letter_spacing);
-        }
-        if let Some(font_word_spacing) = mouse_over.font_word_spacing {
-            element.attrs.font_word_spacing = Some(font_word_spacing);
-        }
-        if let Some(move_x) = mouse_over.move_x {
-            element.attrs.move_x = Some(move_x);
-        }
-        if let Some(move_y) = mouse_over.move_y {
-            element.attrs.move_y = Some(move_y);
-        }
-        if let Some(rotate) = mouse_over.rotate {
-            element.attrs.rotate = Some(rotate);
-        }
-        if let Some(scale) = mouse_over.scale {
-            element.attrs.scale = Some(scale);
-        }
-        if let Some(alpha) = mouse_over.alpha {
-            element.attrs.alpha = Some(alpha);
-        }
+    }
+}
+
+fn apply_decorative_style(attrs: &mut Attrs, style: &MouseOverAttrs) {
+    if let Some(background) = style.background.clone() {
+        attrs.background = Some(background);
+    }
+    if let Some(border_color) = style.border_color.clone() {
+        attrs.border_color = Some(border_color);
+    }
+    if let Some(font_color) = style.font_color.clone() {
+        attrs.font_color = Some(font_color);
+    }
+    if let Some(font_size) = style.font_size {
+        attrs.font_size = Some(font_size);
+    }
+    if let Some(font_underline) = style.font_underline {
+        attrs.font_underline = Some(font_underline);
+    }
+    if let Some(font_strike) = style.font_strike {
+        attrs.font_strike = Some(font_strike);
+    }
+    if let Some(font_letter_spacing) = style.font_letter_spacing {
+        attrs.font_letter_spacing = Some(font_letter_spacing);
+    }
+    if let Some(font_word_spacing) = style.font_word_spacing {
+        attrs.font_word_spacing = Some(font_word_spacing);
+    }
+    if let Some(move_x) = style.move_x {
+        attrs.move_x = Some(move_x);
+    }
+    if let Some(move_y) = style.move_y {
+        attrs.move_y = Some(move_y);
+    }
+    if let Some(rotate) = style.rotate {
+        attrs.rotate = Some(rotate);
+    }
+    if let Some(scale) = style.scale {
+        attrs.scale = Some(scale);
+    }
+    if let Some(alpha) = style.alpha {
+        attrs.alpha = Some(alpha);
     }
 }
 

@@ -103,6 +103,8 @@ defmodule Emerge.DiffState do
     |> register_event(element, :on_mouse_leave, :mouse_leave)
     |> register_event(element, :on_mouse_move, :mouse_move)
     |> register_event(element, :on_change, :change)
+    |> register_event(element, :on_focus, :focus)
+    |> register_event(element, :on_blur, :blur)
     |> then(fn registry ->
       Enum.reduce(element.children, registry, fn child, next_registry ->
         collect_event_handlers(child, next_registry)

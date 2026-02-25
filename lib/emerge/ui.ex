@@ -38,6 +38,8 @@ defmodule Emerge.UI do
                                 :alpha
                               ])
 
+  @state_style_keys [:mouse_over, :focused, :mouse_down]
+
   @override_warning_store_key :emerge_ui_override_warnings
 
   # ============================================
@@ -423,8 +425,22 @@ defmodule Emerge.UI do
   @doc "Register a change handler payload for this input element"
   def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
 
+  @doc "Register a focus handler payload for this input element"
+  def on_focus({pid, _msg} = payload) when is_pid(pid), do: {:on_focus, payload}
+
+  @doc "Register a blur handler payload for this input element"
+  def on_blur({pid, _msg} = payload) when is_pid(pid), do: {:on_blur, payload}
+
   @doc "Apply decorative attributes while pointer is over the element"
-  def mouse_over(attrs) when is_list(attrs), do: {:mouse_over, parse_mouse_over_attrs(attrs)}
+  def mouse_over(attrs) when is_list(attrs),
+    do: {:mouse_over, parse_state_style_attrs(attrs, :mouse_over)}
+
+  @doc "Apply decorative attributes while this input is focused"
+  def focused(attrs) when is_list(attrs), do: {:focused, parse_state_style_attrs(attrs, :focused)}
+
+  @doc "Apply decorative attributes while left mouse button is pressed"
+  def mouse_down(attrs) when is_list(attrs),
+    do: {:mouse_down, parse_state_style_attrs(attrs, :mouse_down)}
 
   # ============================================
   # TRANSFORMS
@@ -492,11 +508,11 @@ defmodule Emerge.UI do
       end)
 
     validate_scrollbar_clipping!(parsed)
-    validate_mouse_over_payload!(parsed)
+    validate_state_style_payloads!(parsed)
     parsed
   end
 
-  defp parse_mouse_over_attrs(attrs) do
+  defp parse_state_style_attrs(attrs, style_key) do
     parsed =
       Enum.reduce(attrs, %{}, fn
         {key, value}, acc -> Map.put(acc, key, value)
@@ -504,7 +520,7 @@ defmodule Emerge.UI do
         _, acc -> acc
       end)
 
-    validate_mouse_over_attrs!(parsed)
+    validate_decorative_attrs!(parsed, style_key)
     parsed
   end
 
@@ -541,35 +557,41 @@ defmodule Emerge.UI do
     end
   end
 
-  defp validate_mouse_over_payload!(attrs) do
-    case Map.get(attrs, :mouse_over) do
+  defp validate_state_style_payloads!(attrs) do
+    Enum.each(@state_style_keys, fn style_key ->
+      validate_state_style_payload!(attrs, style_key)
+    end)
+  end
+
+  defp validate_state_style_payload!(attrs, style_key) do
+    case Map.get(attrs, style_key) do
       nil ->
         :ok
 
-      mouse_over_attrs when is_map(mouse_over_attrs) ->
-        validate_mouse_over_attrs!(mouse_over_attrs)
+      style_attrs when is_map(style_attrs) ->
+        validate_decorative_attrs!(style_attrs, style_key)
 
       other ->
         raise ArgumentError,
-              "mouse_over must be a list/map of decorative attributes, got: #{inspect(other)}"
+              "#{style_key} must be a list/map of decorative attributes, got: #{inspect(other)}"
     end
   end
 
-  defp validate_mouse_over_attrs!(attrs) do
+  defp validate_decorative_attrs!(attrs, style_key) do
     allowed =
       @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
 
     Enum.each(attrs, fn {key, _value} ->
       cond do
-        key == :mouse_over ->
-          raise ArgumentError, "mouse_over does not support nested mouse_over"
+        key in @state_style_keys ->
+          raise ArgumentError, "#{style_key} does not support nested #{key}"
 
         MapSet.member?(@mouse_over_decorative_keys, key) ->
           :ok
 
         true ->
           raise ArgumentError,
-                "mouse_over only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+                "#{style_key} only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
       end
     end)
   end

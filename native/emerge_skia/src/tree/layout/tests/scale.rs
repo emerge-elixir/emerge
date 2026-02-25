@@ -166,6 +166,87 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
 }
 
 #[test]
+fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(100.0));
+    attrs.height = Some(Length::Px(40.0));
+    attrs.mouse_over = Some(MouseOverAttrs {
+        border_color: Some(crate::tree::attrs::Color::Rgb {
+            r: 160,
+            g: 90,
+            b: 70,
+        }),
+        font_size: Some(18.0),
+        move_x: Some(5.0),
+        ..Default::default()
+    });
+    attrs.focused = Some(MouseOverAttrs {
+        border_color: Some(crate::tree::attrs::Color::Rgb {
+            r: 80,
+            g: 160,
+            b: 90,
+        }),
+        font_size: Some(24.0),
+        font_color: Some(crate::tree::attrs::Color::Rgb {
+            r: 220,
+            g: 240,
+            b: 255,
+        }),
+        alpha: Some(0.8),
+        ..Default::default()
+    });
+    attrs.mouse_down = Some(MouseOverAttrs {
+        border_color: Some(crate::tree::attrs::Color::Rgb {
+            r: 70,
+            g: 90,
+            b: 180,
+        }),
+        font_size: Some(30.0),
+        move_y: Some(-2.0),
+        ..Default::default()
+    });
+    attrs.mouse_over_active = Some(true);
+    attrs.text_input_focused = Some(true);
+    attrs.mouse_down_active = Some(true);
+
+    let root = make_element("root", ElementKind::TextInput, attrs);
+    let root_id = root.id.clone();
+    tree.root = Some(root_id.clone());
+    tree.insert(root);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(300.0, 200.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let updated = tree.get(&root_id).unwrap();
+    assert_eq!(updated.attrs.font_size, Some(30.0));
+    assert_eq!(
+        updated.attrs.border_color,
+        Some(crate::tree::attrs::Color::Rgb {
+            r: 70,
+            g: 90,
+            b: 180
+        })
+    );
+    assert_eq!(
+        updated.attrs.font_color,
+        Some(crate::tree::attrs::Color::Rgb {
+            r: 220,
+            g: 240,
+            b: 255
+        })
+    );
+    assert_eq!(updated.attrs.move_x, Some(5.0));
+    assert_eq!(updated.attrs.move_y, Some(-2.0));
+    assert_eq!(updated.attrs.alpha, Some(0.8));
+}
+
+#[test]
 fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
     let mut attrs = Attrs::default();
     attrs.width = Some(Length::Minimum(
@@ -252,6 +333,16 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         move_y: Some(4.0),
         ..Default::default()
     });
+    attrs.focused = Some(MouseOverAttrs {
+        font_size: Some(10.0),
+        alpha: Some(0.5),
+        ..Default::default()
+    });
+    attrs.mouse_down = Some(MouseOverAttrs {
+        move_x: Some(3.0),
+        move_y: Some(-2.0),
+        ..Default::default()
+    });
 
     let scaled = scale_attrs(&attrs, 2.0);
     let hover = scaled
@@ -264,4 +355,18 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
     assert_eq!(hover.font_word_spacing, Some(4.0));
     assert_eq!(hover.move_x, Some(-6.0));
     assert_eq!(hover.move_y, Some(8.0));
+
+    let focused = scaled
+        .focused
+        .as_ref()
+        .expect("scaled focused attrs should exist");
+    assert_eq!(focused.font_size, Some(20.0));
+    assert_eq!(focused.alpha, Some(0.5));
+
+    let mouse_down = scaled
+        .mouse_down
+        .as_ref()
+        .expect("scaled mouse_down attrs should exist");
+    assert_eq!(mouse_down.move_x, Some(6.0));
+    assert_eq!(mouse_down.move_y, Some(-4.0));
 }

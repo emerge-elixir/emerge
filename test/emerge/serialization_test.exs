@@ -115,7 +115,11 @@ defmodule Emerge.SerializationTest do
     layout =
       Emerge.UI.Input.text("hello", [
         width(px(280)),
-        on_change({self(), :changed})
+        on_change({self(), :changed}),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred}),
+        focused([alpha(0.9), move_x(2)]),
+        mouse_down([move_y(-1), scale(0.98)])
       ])
 
     {binary, tree} = Serialization.encode(layout)
@@ -125,6 +129,10 @@ defmodule Emerge.SerializationTest do
     assert decoded.type == :text_input
     assert decoded.attrs.content == "hello"
     assert decoded.attrs.on_change == true
+    assert decoded.attrs.on_focus == true
+    assert decoded.attrs.on_blur == true
+    assert decoded.attrs.focused == %{alpha: 0.9, move_x: 2.0}
+    assert decoded.attrs.mouse_down == %{move_y: -1.0, scale: 0.98}
   end
 
   defp strip_runtime(%Emerge.Element{} = element) do
