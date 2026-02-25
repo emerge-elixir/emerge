@@ -6,8 +6,8 @@ EmergeSkia.
 ## Overview
 
 - Rust owns hit testing, pointer state, hover state, click detection, scroll
-  request generation, `mouse_over` style activation, and focused text-input
-  editing state.
+  request generation, interaction-style activation (`mouse_over`, `focused`,
+  `mouse_down`), and focused text-input editing state.
 - Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
 - EMRG encodes event attributes as presence flags only (no payloads).
 - Scrollbar-specific hit testing and interaction state live in
@@ -71,18 +71,23 @@ block listeners behind them.
 - `on_mouse_down` and `on_mouse_up` are emitted for left button only.
 - Hover state tracks topmost hit and emits `:mouse_enter`, `:mouse_leave`, and
   `:mouse_move` based on listener flags.
+- Text inputs emit `:focus` when they gain focus and `:blur` when focus leaves.
 - A drag deadzone suppresses click when pointer movement exceeds the threshold
   during a press.
 
-## mouse_over Styling Behavior
+## State Styling Behavior
 
 - `mouse_over` is a style attribute, not an emitted element event.
 - EventProcessor hit tests for the topmost node with `mouse_over` and sends
   tree requests as the active element changes.
 - Tree updates use `TreeMsg::SetMouseOverActive { element_id, active }`.
-- Layout applies `mouse_over` decorative attrs when runtime
-  `mouse_over_active` is true.
-- Supported decorative attrs in `mouse_over` are: `background`,
+- `mouse_down` is also style-only; EventProcessor toggles runtime state with
+  `TreeMsg::SetMouseDownActive { element_id, active }` on left press/release.
+- `focused` is style-only for inputs and is activated from runtime input focus
+  state (`text_input_focused`).
+- Layout merges active style blocks in this order: `mouse_over -> focused ->
+  mouse_down`. Later styles win on attribute conflicts.
+- Supported decorative attrs in state styles are: `background`,
   `border_color`, `font_color`, `font_size`, `font_underline`,
   `font_strike`, `font_letter_spacing`, `font_word_spacing`, `move_x`,
   `move_y`, `rotate`, `scale`, and `alpha`.
@@ -111,8 +116,9 @@ block listeners behind them.
 - Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff
   state.
 - Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`,
-  `on_change`).
-- Encode `mouse_over` as a typed decorative attr block (no payload routing).
+  `on_change`, `on_focus`, `on_blur`).
+- Encode `mouse_over`, `focused`, and `mouse_down` as typed decorative attr
+  blocks (no payload routing).
 - On Rust element events, resolve and forward stored payloads.
 
 ## Supported Element Events
@@ -124,9 +130,11 @@ block listeners behind them.
 - `:mouse_leave`
 - `:mouse_move`
 - `:change` (text input, payload includes latest value)
+- `:focus` (text input)
+- `:blur` (text input)
 
-`mouse_over` does not emit an element event; it is applied as runtime styling in
-Rust.
+`mouse_over`, `focused`, and `mouse_down` do not emit element events; they are
+applied as runtime styling in Rust.
 
 ## Raw Text Input Events
 
@@ -151,6 +159,10 @@ themselves.
   - `C` copy selection
   - `X` cut selection
   - `V` paste text
+- Linux PRIMARY selection is tracked separately and updated from current
+  selection/copy/cut.
+- Middle mouse button pastes from Linux PRIMARY selection into focused text
+  inputs.
 - Cut, paste, and typed insertion replace the selected range when present and
   emit `:change` with updated value.
 

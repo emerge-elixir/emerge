@@ -120,6 +120,11 @@ box_shadow        -> 52
 image_src         -> 53
 image_fit         -> 54
 image_size        -> 55
+on_change         -> 56
+on_focus          -> 57
+on_blur           -> 58
+focused           -> 59
+mouse_down        -> 60
 ```
 
 ## Attribute Value Encodings (current)
@@ -254,7 +259,7 @@ u16 len + bytes
 u32 len + EMRG subtree bytes
 ```
 
-### Mouse Over (`mouse_over`)
+### State Styles (`mouse_over`, `focused`, `mouse_down`)
 ```
 u32 len + nested typed attr block
 ```
@@ -275,6 +280,9 @@ The nested block uses the same format as an attribute block (`attr_count` +
 - `rotate`
 - `scale`
 - `alpha`
+
+`focused` and `mouse_down` use the same nested decorative payload format as
+`mouse_over`.
 
 ### Numeric attrs (`spacing`, `move_x`, `move_y`, `rotate`, `scale`, `alpha`, `scroll_x`, `scroll_y`, `font_letter_spacing`, `font_word_spacing`)
 ```
@@ -300,11 +308,11 @@ f64 x + f64 y
 1 -> true
 ```
 
-For event attributes (`on_click`, `on_mouse_*`), Elixir encodes presence as
-`true`.
+For event attributes (`on_click`, `on_mouse_*`, `on_change`, `on_focus`,
+`on_blur`), Elixir encodes presence as `true`.
 
-`mouse_over` is not a presence flag; it stores the nested decorative attr block
-defined above.
+`mouse_over`, `focused`, and `mouse_down` are not presence flags; each stores
+the nested decorative attr block defined above.
 
 ## Decoding
 - All nodes are read into a map keyed by id.
@@ -335,6 +343,7 @@ defined above.
 - `:text_baseline_offset`
 - `:scroll_capture`
 - `:mouse_over_active`
+- `:mouse_down_active`
 - `:__layer`
 - `:nearby_behind`
 - `:nearby_in_front`
