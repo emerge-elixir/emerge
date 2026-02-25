@@ -323,7 +323,7 @@ defmodule Demo do
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
       {"Text", :text},
-      {"Inupt", :inupt},
+      {"Input", :input},
       {"Borders", :borders},
       {"Assets", :assets}
     ]
@@ -411,7 +411,7 @@ defmodule Demo do
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
       :text -> page_text()
-      :inupt -> page_inupt()
+      :input -> page_input()
       :borders -> page_borders()
       :assets -> page_assets()
       _ -> page_overview()
@@ -682,7 +682,7 @@ defmodule Demo do
     ])
   end
 
-  defp page_inupt() do
+  defp page_input() do
     value = Process.get(:demo_input_value, "quick brown fox")
     preedit = Process.get(:demo_input_preedit, nil)
     preedit_cursor = Process.get(:demo_input_preedit_cursor, nil)
@@ -723,7 +723,7 @@ defmodule Demo do
       end
 
     column([width(fill()), spacing(16)], [
-      section_title("Inupt"),
+      section_title("Input"),
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
@@ -748,9 +748,9 @@ defmodule Demo do
             Border.rounded(8),
             Border.width(input_border_width),
             Border.color(input_border_color),
-            on_change({self(), {:demo_event, :inupt_changed}}),
-            on_focus({self(), {:demo_event, :inupt_focus}}),
-            on_blur({self(), {:demo_event, :inupt_blur}})
+            on_change({self(), {:demo_event, :input_changed}}),
+            on_focus({self(), {:demo_event, :input_focus}}),
+            on_blur({self(), {:demo_event, :input_blur}})
           ]),
           el(
             [Font.size(11), Font.color(@dim_text)],
@@ -799,6 +799,54 @@ defmodule Demo do
           el(
             [Font.size(11), Font.color(@dim_text)],
             text("Preedit cursor: #{inspect(preedit_cursor)}")
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color({:color_rgb, {46, 50, 72}}),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          el(
+            [Font.size(12), Font.color({:color_rgb, {225, 230, 244}})],
+            text("Declarative interaction styles")
+          ),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "No focus/down handlers required: styles come from mouse_over, focused, and mouse_down."
+            )
+          ),
+          Emerge.UI.Input.text("Style showcase input", [
+            width(fill()),
+            padding_xy(10, 8),
+            Font.size(16),
+            Font.color({:color_rgb, {228, 232, 246}}),
+            Background.color({:color_rgb, {58, 62, 90}}),
+            Border.rounded(8),
+            Border.width(1),
+            Border.color({:color_rgb, {110, 120, 162}}),
+            mouse_over([
+              Background.color({:color_rgb, {64, 70, 100}}),
+              Border.color({:color_rgb, {132, 143, 189}})
+            ]),
+            focused([
+              Background.color({:color_rgb, {70, 78, 112}}),
+              Border.color({:color_rgb, {164, 188, 236}})
+            ]),
+            mouse_down([
+              Background.color({:color_rgb, {63, 70, 100}}),
+              Border.color({:color_rgb, {224, 186, 124}}),
+              move_y(1)
+            ])
+          ]),
+          el(
+            [Font.size(10), Font.color(@dim_text)],
+            text("Merge order: mouse_over -> focused -> mouse_down (later styles win conflicts).")
           )
         ])
       )
@@ -3003,7 +3051,7 @@ defmodule Demo do
   end
 
   defp process_event(
-         {:demo_event, :inupt_changed, value},
+         {:demo_event, :input_changed, value},
          _state,
          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        )
@@ -3020,7 +3068,7 @@ defmodule Demo do
         preview =
           if String.length(value) > 42, do: String.slice(value, 0, 39) <> "...", else: value
 
-        Enum.take(["Inupt change: #{preview}" | event_log], 20)
+        Enum.take(["Input change: #{preview}" | event_log], 20)
       else
         event_log
       end
@@ -3031,7 +3079,7 @@ defmodule Demo do
   end
 
   defp process_event(
-         {:demo_event, :inupt_focus},
+         {:demo_event, :input_focus},
          _state,
          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
@@ -3041,14 +3089,14 @@ defmodule Demo do
     Process.put(:demo_input_focused, true)
     Process.put(:demo_input_focus_count, count)
 
-    new_log = Enum.take(["Inupt focus (#{count})" | event_log], 20)
+    new_log = Enum.take(["Input focus (#{count})" | event_log], 20)
     changed = !previous or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
 
   defp process_event(
-         {:demo_event, :inupt_blur},
+         {:demo_event, :input_blur},
          _state,
          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        ) do
@@ -3058,7 +3106,7 @@ defmodule Demo do
     Process.put(:demo_input_focused, false)
     Process.put(:demo_input_blur_count, count)
 
-    new_log = Enum.take(["Inupt blur (#{count})" | event_log], 20)
+    new_log = Enum.take(["Input blur (#{count})" | event_log], 20)
     changed = previous or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
