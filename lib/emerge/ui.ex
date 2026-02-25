@@ -261,6 +261,21 @@ defmodule Emerge.UI do
     }
   end
 
+  @doc false
+  def __text_input__(value, attrs) when is_binary(value) and is_list(attrs) do
+    parsed = parse_attrs([{:content, value} | attrs])
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :text_input,
+      id: id,
+      attrs: parsed,
+      children: []
+    }
+  end
+
   @doc """
   An empty element that takes up no space.
   """
@@ -404,6 +419,9 @@ defmodule Emerge.UI do
 
   @doc "Register a mouse move handler payload for this element"
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
+
+  @doc "Register a change handler payload for this input element"
+  def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
 
   @doc "Apply decorative attributes while pointer is over the element"
   def mouse_over(attrs) when is_list(attrs), do: {:mouse_over, parse_mouse_over_attrs(attrs)}
@@ -737,5 +755,14 @@ defmodule Emerge.UI do
 
     @doc "Center text within element"
     def center, do: {:text_align, :center}
+  end
+
+  defmodule Input do
+    @moduledoc "Input elements"
+
+    @doc "Single-line text input"
+    def text(value, attrs \\ []) when is_binary(value) and is_list(attrs) do
+      Emerge.UI.__text_input__(value, attrs)
+    end
   end
 end

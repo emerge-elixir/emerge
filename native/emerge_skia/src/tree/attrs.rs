@@ -220,8 +220,14 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
+    pub on_change: Option<bool>,
     pub mouse_over: Option<MouseOverAttrs>,
     pub mouse_over_active: Option<bool>,
+    pub text_input_focused: Option<bool>,
+    pub text_input_cursor: Option<u32>,
+    pub text_input_selection_anchor: Option<u32>,
+    pub text_input_preedit: Option<String>,
+    pub text_input_preedit_cursor: Option<(u32, u32)>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
@@ -263,8 +269,10 @@ pub struct Attrs {
     pub behind: Option<Vec<u8>>,
 }
 
-/// Preserve runtime-only scrollbar fields across attr replacement.
+/// Preserve runtime-only fields across attr replacement.
 pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
+    let content_changed = incoming.content != existing.content;
+
     if incoming.scroll_x.is_none() {
         incoming.scroll_x = existing.scroll_x;
     }
@@ -283,12 +291,35 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
     if incoming.mouse_over_active.is_none() {
         incoming.mouse_over_active = existing.mouse_over_active;
     }
+    if incoming.text_input_focused.is_none() {
+        incoming.text_input_focused = existing.text_input_focused;
+    }
+    if incoming.text_input_cursor.is_none() {
+        incoming.text_input_cursor = existing.text_input_cursor;
+    }
+    if incoming.text_input_selection_anchor.is_none() {
+        incoming.text_input_selection_anchor = existing.text_input_selection_anchor;
+    }
+
+    if content_changed {
+        incoming.text_input_selection_anchor = None;
+        incoming.text_input_preedit = None;
+        incoming.text_input_preedit_cursor = None;
+    } else {
+        if incoming.text_input_preedit.is_none() {
+            incoming.text_input_preedit = existing.text_input_preedit.clone();
+        }
+        if incoming.text_input_preedit_cursor.is_none() {
+            incoming.text_input_preedit_cursor = existing.text_input_preedit_cursor;
+        }
+    }
 
     if incoming.mouse_over.is_none() {
         incoming.mouse_over_active = None;
     }
 
     normalize_scrollbar_hover_axis(incoming);
+    normalize_text_input_runtime(incoming);
 }
 
 fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
@@ -300,6 +331,46 @@ fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
             attrs.scrollbar_hover_axis = None;
         }
         _ => {}
+    }
+}
+
+fn normalize_text_input_runtime(attrs: &mut Attrs) {
+    let content_len = attrs
+        .content
+        .as_ref()
+        .map(|content| content.chars().count() as u32)
+        .unwrap_or(0);
+
+    if let Some(cursor) = attrs.text_input_cursor {
+        attrs.text_input_cursor = Some(cursor.min(content_len));
+    } else if attrs.text_input_focused.unwrap_or(false) {
+        attrs.text_input_cursor = Some(content_len);
+    }
+
+    if let Some(anchor) = attrs.text_input_selection_anchor {
+        let clamped_anchor = anchor.min(content_len);
+        let cursor = attrs.text_input_cursor.unwrap_or(content_len);
+        if clamped_anchor == cursor {
+            attrs.text_input_selection_anchor = None;
+        } else {
+            attrs.text_input_selection_anchor = Some(clamped_anchor);
+        }
+    }
+
+    if attrs.text_input_preedit.is_none() {
+        attrs.text_input_preedit_cursor = None;
+    } else if let Some((start, end)) = attrs.text_input_preedit_cursor {
+        let preedit_len = attrs
+            .text_input_preedit
+            .as_ref()
+            .map(|value| value.chars().count() as u32)
+            .unwrap_or(0);
+        let mut start = start.min(preedit_len);
+        let mut end = end.min(preedit_len);
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        attrs.text_input_preedit_cursor = Some((start, end));
     }
 }
 
@@ -361,6 +432,7 @@ const TAG_BOX_SHADOW: u8 = 52;
 const TAG_IMAGE_SRC: u8 = 53;
 const TAG_IMAGE_FIT: u8 = 54;
 const TAG_IMAGE_SIZE: u8 = 55;
+const TAG_ON_CHANGE: u8 = 56;
 
 // =============================================================================
 // Decoder
@@ -499,6 +571,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_ENTER => attrs.on_mouse_enter = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
+        TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
         TAG_MOUSE_OVER => attrs.mouse_over = Some(decode_mouse_over_attrs(cursor)?),
         TAG_FONT_UNDERLINE => attrs.font_underline = Some(cursor.read_bool()?),
         TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
@@ -1113,6 +1186,13 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_on_change() {
+        let data = [0, 1, 56, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_change, Some(true));
+    }
+
+    #[test]
     fn test_decode_border_width_sides() {
         // 1 attr, tag=14 (border_width), variant=1 (sides)
         let mut data = vec![0, 1, 14, 1];
@@ -1388,5 +1468,73 @@ mod tests {
         let mut incoming = Attrs::default();
         preserve_runtime_scroll_attrs(&existing, &mut incoming);
         assert_eq!(incoming.mouse_over_active, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_text_input_runtime_state() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_focused = Some(true);
+        existing.text_input_cursor = Some(4);
+        existing.text_input_selection_anchor = Some(1);
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("hello".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_focused, Some(true));
+        assert_eq!(incoming.text_input_cursor, Some(4));
+        assert_eq!(incoming.text_input_selection_anchor, Some(1));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_preedit_when_content_changes() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_selection_anchor = Some(1);
+        existing.text_input_preedit = Some("ka".to_string());
+        existing.text_input_preedit_cursor = Some((2, 2));
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("world".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_selection_anchor, None);
+        assert_eq!(incoming.text_input_preedit, None);
+        assert_eq!(incoming.text_input_preedit_cursor, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clamps_and_orders_preedit_cursor() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_preedit = Some("abc".to_string());
+        existing.text_input_preedit_cursor = Some((5, 1));
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("hello".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_preedit.as_deref(), Some("abc"));
+        assert_eq!(incoming.text_input_preedit_cursor, Some((1, 3)));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_selection_when_anchor_equals_cursor() {
+        let mut existing = Attrs::default();
+        existing.content = Some("abc".to_string());
+        existing.text_input_cursor = Some(2);
+        existing.text_input_selection_anchor = Some(2);
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("abc".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_cursor, Some(2));
+        assert_eq!(incoming.text_input_selection_anchor, None);
     }
 }

@@ -111,6 +111,22 @@ defmodule Emerge.SerializationTest do
     assert decoded.attrs.image_fit == :cover
   end
 
+  test "text_input roundtrip preserves content and handlers" do
+    layout =
+      Emerge.UI.Input.text("hello", [
+        width(px(280)),
+        on_change({self(), :changed})
+      ])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert tree.type == :text_input
+    assert decoded.type == :text_input
+    assert decoded.attrs.content == "hello"
+    assert decoded.attrs.on_change == true
+  end
+
   defp strip_runtime(%Emerge.Element{} = element) do
     %{
       element

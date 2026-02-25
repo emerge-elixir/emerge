@@ -10,6 +10,7 @@ defmodule Emerge.Element do
           | :text_column
           | :el
           | :text
+          | :text_input
           | :image
           | :none
           | :paragraph

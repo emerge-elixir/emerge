@@ -138,6 +138,9 @@ end
 
 Process.put(:clock_time, clock_now.())
 Process.put(:hover_manual_active, false)
+Process.put(:demo_input_value, "quick brown fox")
+Process.put(:demo_input_preedit, nil)
+Process.put(:demo_input_preedit_cursor, nil)
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -178,6 +181,19 @@ defmodule Demo do
     action_str = if action == 1, do: "pressed", else: "released"
     mods_str = if mods == [], do: "", else: " [#{Enum.join(mods, ", ")}]"
     "Key: #{key} #{action_str}#{mods_str}"
+  end
+
+  def format_event({:text_commit, {text, mods}}) do
+    mods_str = if mods == [], do: "", else: " [#{Enum.join(mods, ", ")}]"
+    "Text commit: #{inspect(text)}#{mods_str}"
+  end
+
+  def format_event({:text_preedit, {text, cursor}}) do
+    "Text preedit: #{inspect(text)} cursor=#{inspect(cursor)}"
+  end
+
+  def format_event(:text_preedit_clear) do
+    "Text preedit: cleared"
   end
 
   def format_event({:cursor_entered, entered}) do
@@ -304,6 +320,7 @@ defmodule Demo do
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
       {"Text", :text},
+      {"Inupt", :inupt},
       {"Borders", :borders},
       {"Assets", :assets}
     ]
@@ -391,6 +408,7 @@ defmodule Demo do
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
       :text -> page_text()
+      :inupt -> page_inupt()
       :borders -> page_borders()
       :assets -> page_assets()
       _ -> page_overview()
@@ -656,6 +674,73 @@ defmodule Demo do
             text("runtime allowlist: #{runtime_allowlist_root}")
           ),
           el([Font.size(11), Font.color(@dim_text)], text("font asset: #{font_source}"))
+        ])
+      )
+    ])
+  end
+
+  defp page_inupt() do
+    value = Process.get(:demo_input_value, "quick brown fox")
+    preedit = Process.get(:demo_input_preedit, nil)
+    preedit_cursor = Process.get(:demo_input_preedit_cursor, nil)
+
+    value_label =
+      case value do
+        "" -> "(empty)"
+        _ -> value
+      end
+
+    preedit_label =
+      case preedit do
+        nil -> "(none)"
+        "" -> "(empty)"
+        _ -> preedit
+      end
+
+    column([width(fill()), spacing(16)], [
+      section_title("Inupt"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Text input: click/drag to select, shift+arrows, ctrl/meta+a/c/x/v, backspace/delete."
+        )
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color({:color_rgb, {48, 48, 72}}),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          Emerge.UI.Input.text(value, [
+            width(fill()),
+            padding_xy(10, 8),
+            Font.size(16),
+            Font.color(:white),
+            Background.color({:color_rgb, {62, 62, 94}}),
+            Border.rounded(8),
+            Border.width(1),
+            Border.color({:color_rgb, {120, 130, 175}}),
+            on_change({self(), {:demo_event, :inupt_changed}})
+          ]),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "on_change emits each edit from Rust; rerender applies value back into the input."
+            )
+          ),
+          el(
+            [Font.size(12), Font.color({:color_rgb, {225, 228, 244}})],
+            text("Value: #{value_label}")
+          ),
+          el([Font.size(11), Font.color(@dim_text)], text("Length: #{String.length(value)}")),
+          el([Font.size(11), Font.color(@dim_text)], text("Preedit: #{preedit_label}")),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text("Preedit cursor: #{inspect(preedit_cursor)}")
+          )
         ])
       )
     ])
@@ -2731,8 +2816,52 @@ defmodule Demo do
               {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
           end
 
+        {id_bin, event_type, payload} when is_binary(id_bin) and is_atom(event_type) ->
+          case Emerge.lookup_event(state, id_bin, event_type) do
+            {:ok, {pid, msg}} when pid == self() ->
+              msg_with_payload =
+                if is_tuple(msg),
+                  do: Tuple.insert_at(msg, tuple_size(msg), payload),
+                  else: {msg, payload}
+
+              {next_state, _changed} =
+                process_event(
+                  msg_with_payload,
+                  state,
+                  {mouse_pos, event_log, size, scale, current_page, last_move_label,
+                   unstable_items}
+                )
+
+              next_state
+
+            _ ->
+              Emerge.dispatch_event(state, id_bin, event_type, payload)
+
+              {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+          end
+
         _ ->
           {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+      end
+
+    preedit_changed =
+      case event do
+        {:text_preedit, {text, cursor}} when is_binary(text) ->
+          previous_text = Process.get(:demo_input_preedit, nil)
+          previous_cursor = Process.get(:demo_input_preedit_cursor, nil)
+          Process.put(:demo_input_preedit, text)
+          Process.put(:demo_input_preedit_cursor, cursor)
+          previous_text != text or previous_cursor != cursor
+
+        :text_preedit_clear ->
+          previous_text = Process.get(:demo_input_preedit, nil)
+          previous_cursor = Process.get(:demo_input_preedit_cursor, nil)
+          Process.put(:demo_input_preedit, nil)
+          Process.put(:demo_input_preedit_cursor, nil)
+          previous_text != nil or previous_cursor != nil
+
+        _ ->
+          false
       end
 
     new_mouse_pos =
@@ -2758,7 +2887,7 @@ defmodule Demo do
 
     changed =
       new_mouse_pos != mouse_pos or new_log != event_log or new_size != size or
-        new_scale != scale
+        new_scale != scale or preedit_changed
 
     {{new_mouse_pos, new_log, new_size, new_scale, current_page, last_move_label, unstable_items},
      changed}
@@ -2810,6 +2939,34 @@ defmodule Demo do
     entry = if active, do: "Manual hover: enter", else: "Manual hover: leave"
     new_log = Enum.take([entry | event_log], 20)
     changed = previous != active or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :inupt_changed, value},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       )
+       when is_binary(value) do
+    previous = Process.get(:demo_input_value, "")
+    Process.put(:demo_input_value, value)
+    Process.put(:demo_input_preedit, nil)
+    Process.put(:demo_input_preedit_cursor, nil)
+
+    changed_value = value != previous
+
+    new_log =
+      if changed_value do
+        preview =
+          if String.length(value) > 42, do: String.slice(value, 0, 39) <> "...", else: value
+
+        Enum.take(["Inupt change: #{preview}" | event_log], 20)
+      else
+        event_log
+      end
+
+    changed = changed_value or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end

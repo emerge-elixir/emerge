@@ -36,8 +36,17 @@ pub enum InputEvent {
     /// Keyboard key pressed/released
     Key { key: String, action: u8, mods: u8 },
 
-    /// Text input (character typed)
-    Codepoint { codepoint: char, mods: u8 },
+    /// Text input commit (may contain multiple chars)
+    TextCommit { text: String, mods: u8 },
+
+    /// IME preedit text update for focused text input
+    TextPreedit {
+        text: String,
+        cursor: Option<(u32, u32)>,
+    },
+
+    /// IME preedit text cleared
+    TextPreeditClear,
 
     /// Cursor entered/exited window
     CursorEntered { entered: bool },
@@ -98,6 +107,7 @@ pub const EVENT_MOUSE_ENTER: u16 = 0x0080;
 pub const EVENT_MOUSE_LEAVE: u16 = 0x0100;
 pub const EVENT_MOUSE_MOVE: u16 = 0x0200;
 pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
+pub const EVENT_TEXT_INPUT: u16 = 0x0800;
 
 // ============================================================================
 // Atoms
@@ -106,7 +116,9 @@ pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
 rustler::atoms! {
     emerge_skia_event,
     key,
-    codepoint,
+    text_commit,
+    text_preedit,
+    text_preedit_clear,
     cursor_pos,
     cursor_button,
     cursor_scroll,
@@ -152,7 +164,9 @@ impl InputHandler {
     pub fn accepts(&self, event: &InputEvent) -> bool {
         let event_mask = match &event {
             InputEvent::Key { .. } => INPUT_MASK_KEY,
-            InputEvent::Codepoint { .. } => INPUT_MASK_CODEPOINT,
+            InputEvent::TextCommit { .. }
+            | InputEvent::TextPreedit { .. }
+            | InputEvent::TextPreeditClear => INPUT_MASK_CODEPOINT,
             InputEvent::CursorPos { .. } => INPUT_MASK_CURSOR_POS,
             InputEvent::CursorButton { .. } => INPUT_MASK_CURSOR_BUTTON,
             InputEvent::CursorScroll { .. } | InputEvent::CursorScrollLines { .. } => {
@@ -251,13 +265,16 @@ impl Encoder for InputEvent {
                 (key(), (key_atom, *action, mods)).encode(env)
             }
 
-            InputEvent::Codepoint {
-                codepoint: cp,
-                mods,
-            } => {
+            InputEvent::TextCommit { text, mods } => {
                 let mods = InputEvent::mods_to_terms(env, *mods);
-                (codepoint(), (cp.to_string(), mods)).encode(env)
+                (text_commit(), (text.clone(), mods)).encode(env)
             }
+
+            InputEvent::TextPreedit { text, cursor } => {
+                (text_preedit(), (text.clone(), *cursor)).encode(env)
+            }
+
+            InputEvent::TextPreeditClear => text_preedit_clear().encode(env),
 
             InputEvent::CursorEntered { entered } => (cursor_entered(), *entered).encode(env),
 
