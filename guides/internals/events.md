@@ -153,6 +153,8 @@ themselves.
 - Selection is tracked in Rust runtime attrs (`cursor` + `selection_anchor`) and
   is not encoded in EMRG.
 - Mouse drag selects text within focused single-line inputs.
+- Tab cycles focus across currently visible text inputs.
+- Shift+Tab cycles focus in reverse order.
 - Shift+arrow/home/end extends selection.
 - Ctrl/Meta shortcuts are handled in Rust for focused text inputs:
   - `A` select all

@@ -4,7 +4,7 @@ use crate::input::{
     ACTION_PRESS, EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_DOWN_STYLE, EVENT_MOUSE_ENTER,
     EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE, EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP,
     EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
-    EVENT_TEXT_INPUT, InputEvent, MOD_CTRL, MOD_META, MOD_SHIFT,
+    EVENT_TEXT_INPUT, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::{ElementId, ElementKind, ElementTree};
@@ -819,6 +819,17 @@ impl EventProcessor {
             } if (button == "left" || button == "middle") && *action == ACTION_PRESS => {
                 Some(hit_test_with_flag(&self.registry, *x, *y, EVENT_TEXT_INPUT))
             }
+            InputEvent::Key { key, action, mods }
+                if *action == ACTION_PRESS && key.eq_ignore_ascii_case("tab") =>
+            {
+                let blocked_mods = MOD_CTRL | MOD_ALT | MOD_META;
+                if *mods & blocked_mods != 0 {
+                    None
+                } else {
+                    let reverse = *mods & MOD_SHIFT != 0;
+                    self.cycle_visible_text_input_focus(reverse).map(Some)
+                }
+            }
             InputEvent::Focused { focused } if !*focused => {
                 self.text_input_drag_id = None;
                 Some(None)
@@ -1003,6 +1014,38 @@ impl EventProcessor {
 
     pub fn focused_text_input_id(&self) -> Option<ElementId> {
         self.focused_text_input_id.clone()
+    }
+
+    fn cycle_visible_text_input_focus(&self, reverse: bool) -> Option<ElementId> {
+        let focusable: Vec<ElementId> = self
+            .registry
+            .iter()
+            .filter(|node| node.flags & EVENT_TEXT_INPUT != 0)
+            .map(|node| node.id.clone())
+            .collect();
+
+        if focusable.is_empty() {
+            return None;
+        }
+
+        let next_index = match self
+            .focused_text_input_id
+            .as_ref()
+            .and_then(|focused| focusable.iter().position(|id| id == focused))
+        {
+            Some(current) if reverse => {
+                if current == 0 {
+                    focusable.len() - 1
+                } else {
+                    current - 1
+                }
+            }
+            Some(current) => (current + 1) % focusable.len(),
+            None if reverse => focusable.len() - 1,
+            None => 0,
+        };
+
+        Some(focusable[next_index].clone())
     }
 
     fn node_has_flag(&self, id: &ElementId, flag: u16) -> bool {
@@ -2375,6 +2418,102 @@ mod tests {
 
         let blur = processor.text_input_focus_request(&press_outside).unwrap();
         assert_eq!(blur, None);
+    }
+
+    #[test]
+    fn test_text_input_focus_requests_cycle_forward_with_tab() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_text_input_node(1, 0.0, 0.0, 120.0, 30.0),
+            make_text_input_node(2, 0.0, 40.0, 120.0, 30.0),
+            make_text_input_node(3, 0.0, 80.0, 120.0, 30.0),
+        ];
+
+        let tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        let first = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(first, Some(ElementId::from_term_bytes(vec![1])));
+
+        let second = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(second, Some(ElementId::from_term_bytes(vec![2])));
+
+        let third = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(third, Some(ElementId::from_term_bytes(vec![3])));
+
+        let wrapped = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(wrapped, Some(ElementId::from_term_bytes(vec![1])));
+    }
+
+    #[test]
+    fn test_text_input_focus_requests_cycle_reverse_with_shift_tab() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_text_input_node(1, 0.0, 0.0, 120.0, 30.0),
+            make_text_input_node(2, 0.0, 40.0, 120.0, 30.0),
+            make_text_input_node(3, 0.0, 80.0, 120.0, 30.0),
+        ];
+
+        let shift_tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_SHIFT,
+        };
+
+        let first = processor.text_input_focus_request(&shift_tab).unwrap();
+        assert_eq!(first, Some(ElementId::from_term_bytes(vec![3])));
+
+        let second = processor.text_input_focus_request(&shift_tab).unwrap();
+        assert_eq!(second, Some(ElementId::from_term_bytes(vec![2])));
+
+        let third = processor.text_input_focus_request(&shift_tab).unwrap();
+        assert_eq!(third, Some(ElementId::from_term_bytes(vec![1])));
+
+        let wrapped = processor.text_input_focus_request(&shift_tab).unwrap();
+        assert_eq!(wrapped, Some(ElementId::from_term_bytes(vec![3])));
+    }
+
+    #[test]
+    fn test_text_input_focus_requests_ignore_tab_with_ctrl_alt_or_meta() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_text_input_node(1, 0.0, 0.0, 120.0, 30.0),
+            make_text_input_node(2, 0.0, 40.0, 120.0, 30.0),
+        ];
+
+        let tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+        let ctrl_tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_CTRL,
+        };
+        let alt_tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_ALT,
+        };
+        let meta_tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: crate::input::MOD_META,
+        };
+
+        let first = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(first, Some(ElementId::from_term_bytes(vec![1])));
+
+        assert!(processor.text_input_focus_request(&ctrl_tab).is_none());
+        assert!(processor.text_input_focus_request(&alt_tab).is_none());
+        assert!(processor.text_input_focus_request(&meta_tab).is_none());
+
+        let second = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(second, Some(ElementId::from_term_bytes(vec![2])));
     }
 
     #[test]

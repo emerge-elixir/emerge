@@ -727,7 +727,7 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Text input: click/drag to select, shift+arrows, ctrl/meta+a/c/x/v, middle-click paste, backspace/delete."
+          "Text input: tab/shift+tab focus cycle, click/drag select, shift+arrows, ctrl/meta+a/c/x/v, middle-click paste, backspace/delete."
         )
       ),
       el(
