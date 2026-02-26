@@ -229,6 +229,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             let mut hover_y_state = std::collections::HashMap::new();
             let mut mouse_over_active_state = std::collections::HashMap::new();
             let mut mouse_down_active_state = std::collections::HashMap::new();
+            let mut focused_active_state = std::collections::HashMap::new();
             let mut changed = false;
 
             for message in messages {
@@ -298,6 +299,9 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     TreeMsg::SetMouseDownActive { element_id, active } => {
                         mouse_down_active_state.insert(element_id, active);
                     }
+                    TreeMsg::SetFocusedActive { element_id, active } => {
+                        focused_active_state.insert(element_id, active);
+                    }
                     TreeMsg::SetTextInputContent {
                         element_id,
                         content,
@@ -353,6 +357,10 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
 
             for (id, active) in mouse_down_active_state {
                 changed |= tree.set_mouse_down_active(&id, active);
+            }
+
+            for (id, active) in focused_active_state {
+                changed |= tree.set_focused_active(&id, active);
             }
 
             if !changed {

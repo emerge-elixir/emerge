@@ -64,12 +64,14 @@ defmodule Emerge.AttrCodec do
     on_focus: 57,
     on_blur: 58,
     focused: 59,
-    mouse_down: 60
+    mouse_down: 60,
+    on_press: 61
   }
 
   @mouse_over_decorative_keys MapSet.new([
                                 :background,
                                 :border_color,
+                                :box_shadow,
                                 :font_color,
                                 :font_size,
                                 :font_underline,
@@ -159,6 +161,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:scroll_x, value), do: encode_f64(value)
   defp encode_value(:scroll_y, value), do: encode_f64(value)
   defp encode_value(:on_click, _value), do: encode_bool(true)
+  defp encode_value(:on_press, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_down, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_up, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_enter, _value), do: encode_bool(true)
@@ -219,6 +222,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:scroll_x, rest), do: decode_f64(rest)
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
   defp decode_value(:on_click, rest), do: decode_bool(rest)
+  defp decode_value(:on_press, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_down, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_up, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_enter, rest), do: decode_bool(rest)

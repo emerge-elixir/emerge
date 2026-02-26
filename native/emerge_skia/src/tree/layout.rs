@@ -397,6 +397,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_mouse_enter: attrs.on_mouse_enter,
         on_mouse_leave: attrs.on_mouse_leave,
         on_mouse_move: attrs.on_mouse_move,
+        on_press: attrs.on_press,
         on_change: attrs.on_change,
         on_focus: attrs.on_focus,
         on_blur: attrs.on_blur,
@@ -414,6 +415,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
             .map(|style| scale_mouse_over_attrs(style, scale_f64)),
         mouse_over_active: attrs.mouse_over_active,
         mouse_down_active: attrs.mouse_down_active,
+        focused_active: attrs.focused_active,
         text_input_focused: attrs.text_input_focused,
         text_input_cursor: attrs.text_input_cursor,
         text_input_selection_anchor: attrs.text_input_selection_anchor,
@@ -483,6 +485,19 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
     MouseOverAttrs {
         background: attrs.background.clone(),
         border_color: attrs.border_color.clone(),
+        box_shadows: attrs.box_shadows.as_ref().map(|shadows| {
+            shadows
+                .iter()
+                .map(|shadow| super::attrs::BoxShadow {
+                    offset_x: shadow.offset_x * scale,
+                    offset_y: shadow.offset_y * scale,
+                    blur: shadow.blur * scale,
+                    size: shadow.size * scale,
+                    color: shadow.color.clone(),
+                    inset: shadow.inset,
+                })
+                .collect()
+        }),
         font_color: attrs.font_color.clone(),
         font_size: attrs.font_size.map(|v| v * scale),
         font_underline: attrs.font_underline,
@@ -505,7 +520,7 @@ fn apply_interaction_styles(tree: &mut ElementTree) {
             apply_decorative_style(&mut element.attrs, &mouse_over);
         }
 
-        if element.attrs.text_input_focused.unwrap_or(false)
+        if element.attrs.focused_active.unwrap_or(false)
             && let Some(focused) = element.attrs.focused.clone()
         {
             apply_decorative_style(&mut element.attrs, &focused);
@@ -525,6 +540,9 @@ fn apply_decorative_style(attrs: &mut Attrs, style: &MouseOverAttrs) {
     }
     if let Some(border_color) = style.border_color.clone() {
         attrs.border_color = Some(border_color);
+    }
+    if let Some(box_shadows) = style.box_shadows.clone() {
+        attrs.box_shadows = Some(box_shadows);
     }
     if let Some(font_color) = style.font_color.clone() {
         attrs.font_color = Some(font_color);

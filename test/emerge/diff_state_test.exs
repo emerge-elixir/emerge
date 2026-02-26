@@ -251,6 +251,20 @@ defmodule Emerge.DiffStateTest do
     assert blur_pid == self()
   end
 
+  test "on_press is registered in event registry" do
+    layout =
+      Emerge.UI.Input.button("Save", [
+        key(:save),
+        on_press({self(), :pressed})
+      ])
+
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {pid, :pressed}} = Emerge.lookup_event(state, id_bin, :press)
+    assert pid == self()
+  end
+
   test "text input registers click and mouse handlers alongside on_change" do
     layout =
       Emerge.UI.Input.text("hello", [
@@ -308,6 +322,15 @@ defmodule Emerge.DiffStateTest do
 
     assert :ok == Emerge.dispatch_event(state, id_bin, :blur)
     assert_receive :blurred
+  end
+
+  test "dispatch_event routes press events" do
+    layout = Emerge.UI.Input.button("Save", [key(:save), on_press({self(), :pressed})])
+    state = Emerge.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok == Emerge.dispatch_event(state, id_bin, :press)
+    assert_receive :pressed
   end
 
   defp content_id_map(%Emerge.Element{children: children}) do

@@ -18,7 +18,8 @@ use super::{
     EventNode, EventProcessor, MouseDownRequest, MouseOverRequest, ScrollbarHoverRequest,
     ScrollbarThumbDragRequest, TextInputCommandRequest, TextInputCursorRequest,
     TextInputDescriptor, TextInputEditRequest, TextInputPreeditRequest, blur_atom, change_atom,
-    focus_atom, send_element_event, send_element_event_with_string_payload, send_input_event,
+    focus_atom, press_atom, send_element_event, send_element_event_with_string_payload,
+    send_input_event,
 };
 
 #[derive(Clone, Debug)]
@@ -493,8 +494,65 @@ fn reconcile_text_input_sessions(
     }
 
     sessions.retain(|id, _| seen.contains(id));
-    if focused.as_ref().is_some_and(|id| !seen.contains(id)) {
-        *focused = None;
+}
+
+fn apply_focus_change(
+    next_focus: Option<ElementId>,
+    focused: &mut Option<ElementId>,
+    target: &Option<LocalPid>,
+    sessions: &mut HashMap<ElementId, TextInputSession>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+) {
+    let previous_focus = focused.clone();
+    *focused = next_focus.clone();
+
+    if previous_focus == next_focus {
+        return;
+    }
+
+    if let Some(prev_id) = previous_focus {
+        if let Some(pid) = target.as_ref() {
+            send_element_event(*pid, &prev_id, blur_atom());
+        }
+
+        send_tree(
+            tree_tx,
+            TreeMsg::SetFocusedActive {
+                element_id: prev_id.clone(),
+                active: false,
+            },
+            log_render,
+        );
+
+        if let Some(session) = sessions.get_mut(&prev_id) {
+            session.focused = false;
+            session.selection_anchor = None;
+            clear_preedit(session);
+            normalize_session_runtime(session);
+            send_runtime_update(tree_tx, log_render, &prev_id, session);
+        }
+    }
+
+    if let Some(next_id) = next_focus {
+        if let Some(pid) = target.as_ref() {
+            send_element_event(*pid, &next_id, focus_atom());
+        }
+
+        send_tree(
+            tree_tx,
+            TreeMsg::SetFocusedActive {
+                element_id: next_id.clone(),
+                active: true,
+            },
+            log_render,
+        );
+
+        if let Some(session) = sessions.get_mut(&next_id) {
+            session.focused = true;
+            normalize_session_runtime(session);
+            send_runtime_update(tree_tx, log_render, &next_id, session);
+        }
     }
 }
 
@@ -574,6 +632,10 @@ fn process_input_events(
                 send_element_event(pid, &clicked_id, super::click_atom());
             }
 
+            if let Some(pressed_id) = processor.detect_press(&event) {
+                send_element_event(pid, &pressed_id, press_atom());
+            }
+
             if let Some((mouse_id, mouse_event)) = processor.detect_mouse_button_event(&event) {
                 send_element_event(pid, &mouse_id, mouse_event);
             }
@@ -583,41 +645,13 @@ fn process_input_events(
             }
         } else {
             processor.detect_click(&event);
+            processor.detect_press(&event);
             processor.detect_mouse_button_event(&event);
             processor.handle_hover_event(&event);
         }
 
         if let Some(next_focus) = processor.text_input_focus_request(&event) {
-            let previous_focus = focused.clone();
-            *focused = next_focus.clone();
-
-            if previous_focus != next_focus {
-                if let Some(prev_id) = previous_focus {
-                    if let Some(pid) = target.as_ref() {
-                        send_element_event(*pid, &prev_id, blur_atom());
-                    }
-
-                    if let Some(session) = sessions.get_mut(&prev_id) {
-                        session.focused = false;
-                        session.selection_anchor = None;
-                        clear_preedit(session);
-                        normalize_session_runtime(session);
-                        send_runtime_update(tree_tx, log_render, &prev_id, session);
-                    }
-                }
-
-                if let Some(next_id) = next_focus {
-                    if let Some(pid) = target.as_ref() {
-                        send_element_event(*pid, &next_id, focus_atom());
-                    }
-
-                    if let Some(session) = sessions.get_mut(&next_id) {
-                        session.focused = true;
-                        normalize_session_runtime(session);
-                        send_runtime_update(tree_tx, log_render, &next_id, session);
-                    }
-                }
-            }
+            apply_focus_change(next_focus, focused, target, sessions, tree_tx, log_render);
         }
 
         for request in processor.text_input_cursor_requests(&event) {
@@ -958,7 +992,15 @@ pub(crate) fn spawn_event_actor(
                         );
 
                         processor.rebuild_registry(registry.clone());
-                        focused = processor.focused_text_input_id();
+                        let next_focus = processor.focused_id();
+                        apply_focus_change(
+                            next_focus,
+                            &mut focused,
+                            &target,
+                            &mut sessions,
+                            &tree_tx,
+                            log_render,
+                        );
                         reconcile_text_input_sessions(
                             &registry,
                             &mut sessions,

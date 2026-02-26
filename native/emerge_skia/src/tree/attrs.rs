@@ -167,6 +167,7 @@ pub enum ScrollbarHoverAxis {
 pub struct MouseOverAttrs {
     pub background: Option<Background>,
     pub border_color: Option<Color>,
+    pub box_shadows: Option<Vec<BoxShadow>>,
     pub font_color: Option<Color>,
     pub font_size: Option<f64>,
     pub font_underline: Option<bool>,
@@ -220,6 +221,7 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
+    pub on_press: Option<bool>,
     pub on_change: Option<bool>,
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
@@ -228,6 +230,7 @@ pub struct Attrs {
     pub mouse_down: Option<MouseOverAttrs>,
     pub mouse_over_active: Option<bool>,
     pub mouse_down_active: Option<bool>,
+    pub focused_active: Option<bool>,
     pub text_input_focused: Option<bool>,
     pub text_input_cursor: Option<u32>,
     pub text_input_selection_anchor: Option<u32>,
@@ -298,6 +301,9 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
     }
     if incoming.mouse_down_active.is_none() {
         incoming.mouse_down_active = existing.mouse_down_active;
+    }
+    if incoming.focused_active.is_none() {
+        incoming.focused_active = existing.focused_active;
     }
     if incoming.text_input_focused.is_none() {
         incoming.text_input_focused = existing.text_input_focused;
@@ -449,6 +455,7 @@ const TAG_ON_FOCUS: u8 = 57;
 const TAG_ON_BLUR: u8 = 58;
 const TAG_FOCUSED: u8 = 59;
 const TAG_MOUSE_DOWN_STYLE: u8 = 60;
+const TAG_ON_PRESS: u8 = 61;
 
 // =============================================================================
 // Decoder
@@ -587,6 +594,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_ENTER => attrs.on_mouse_enter = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
+        TAG_ON_PRESS => attrs.on_press = Some(cursor.read_bool()?),
         TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
         TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
         TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
@@ -639,6 +647,7 @@ fn decode_decorative_style_attrs(
         match tag {
             TAG_BACKGROUND => out.background = Some(decode_background(&mut nested)?),
             TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
+            TAG_BOX_SHADOW => out.box_shadows = Some(decode_box_shadows(&mut nested)?),
             TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
             TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
             TAG_FONT_UNDERLINE => out.font_underline = Some(nested.read_bool()?),
@@ -1170,6 +1179,37 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_mouse_over_box_shadows() {
+        // nested: attr_count=1, box_shadow with one inset named-color shadow
+        let mut nested = vec![0, 1, 52, 1];
+        nested.extend_from_slice(&1.0_f64.to_be_bytes());
+        nested.extend_from_slice(&(-2.0_f64).to_be_bytes());
+        nested.extend_from_slice(&3.0_f64.to_be_bytes());
+        nested.extend_from_slice(&4.0_f64.to_be_bytes());
+        nested.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
+        nested.push(1);
+
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let mouse_over = attrs.mouse_over.unwrap();
+        let shadows = mouse_over
+            .box_shadows
+            .expect("mouse_over shadows should decode");
+        assert_eq!(shadows.len(), 1);
+
+        let shadow = &shadows[0];
+        assert_eq!(shadow.offset_x, 1.0);
+        assert_eq!(shadow.offset_y, -2.0);
+        assert_eq!(shadow.blur, 3.0);
+        assert_eq!(shadow.size, 4.0);
+        assert_eq!(shadow.color, Color::Named("red".to_string()));
+        assert!(shadow.inset);
+    }
+
+    #[test]
     fn test_decode_mouse_over_font_decoration_and_spacing() {
         // nested: underline=true, strike=true, letter_spacing=2.0, word_spacing=4.0
         let mut nested = vec![0, 4, 47, 1, 48, 1, 49];
@@ -1209,8 +1249,16 @@ mod tests {
         let mut focused_nested = vec![0, 1, 35];
         focused_nested.extend_from_slice(&0.25_f64.to_be_bytes());
 
-        let mut mouse_down_nested = vec![0, 1, 31];
+        let mut mouse_down_nested = vec![0, 2, 31];
         mouse_down_nested.extend_from_slice(&4.0_f64.to_be_bytes());
+        mouse_down_nested.push(52);
+        mouse_down_nested.push(1);
+        mouse_down_nested.extend_from_slice(&0.5_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&0.5_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&2.0_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&1.0_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&[2, 0, 4, b'c', b'y', b'a', b'n']);
+        mouse_down_nested.push(0);
 
         let mut data = vec![0, 2, 59];
         data.extend_from_slice(&(focused_nested.len() as u32).to_be_bytes());
@@ -1228,6 +1276,14 @@ mod tests {
             attrs.mouse_down.as_ref().and_then(|style| style.move_x),
             Some(4.0)
         );
+        let mouse_down_shadow = attrs
+            .mouse_down
+            .as_ref()
+            .and_then(|style| style.box_shadows.as_ref())
+            .and_then(|shadows| shadows.first())
+            .expect("mouse_down shadow should decode");
+        assert_eq!(mouse_down_shadow.blur, 2.0);
+        assert_eq!(mouse_down_shadow.color, Color::Named("cyan".to_string()));
     }
 
     #[test]
@@ -1266,6 +1322,13 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_focus, Some(true));
         assert_eq!(attrs.on_blur, Some(true));
+    }
+
+    #[test]
+    fn test_decode_on_press() {
+        let data = [0, 1, 61, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_press, Some(true));
     }
 
     #[test]

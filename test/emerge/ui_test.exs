@@ -4,7 +4,7 @@ defmodule Emerge.UITest do
   import ExUnit.CaptureIO
   import Emerge.UI
 
-  alias Emerge.UI.{Background, Font}
+  alias Emerge.UI.{Background, Border, Font}
 
   test "mouse_over stores decorative attrs" do
     element =
@@ -64,18 +64,50 @@ defmodule Emerge.UITest do
           focused([
             Font.size(20),
             Font.color(:white),
-            alpha(0.9)
+            alpha(0.9),
+            Border.glow(:cyan, 3)
           ]),
           mouse_down([
             Background.color(:blue),
-            move_y(-1)
+            move_y(-1),
+            Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
           ])
         ],
         text("hi")
       )
 
-    assert element.attrs.focused == %{font_size: 20, font_color: :white, alpha: 0.9}
-    assert element.attrs.mouse_down == %{background: :blue, move_y: -1}
+    assert element.attrs.focused.font_size == 20
+    assert element.attrs.focused.font_color == :white
+    assert element.attrs.focused.alpha == 0.9
+
+    assert element.attrs.mouse_down.background == :blue
+    assert element.attrs.mouse_down.move_y == -1
+
+    assert element.attrs.focused.box_shadow == [
+             %{offset_x: 0, offset_y: 0, size: 3, blur: 6, color: :cyan, inset: false}
+           ]
+
+    assert element.attrs.mouse_down.box_shadow == [
+             %{offset_x: 0, offset_y: 1, size: 1, blur: 6, color: :black, inset: true}
+           ]
+  end
+
+  test "state styles append multiple box shadows" do
+    element =
+      el(
+        [
+          focused([
+            Border.glow(:cyan, 2),
+            Border.glow(:blue, 3)
+          ])
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.focused.box_shadow == [
+             %{offset_x: 0, offset_y: 0, size: 2, blur: 4, color: :cyan, inset: false},
+             %{offset_x: 0, offset_y: 0, size: 3, blur: 6, color: :blue, inset: false}
+           ]
   end
 
   test "focused rejects non-decorative attrs" do
@@ -281,6 +313,10 @@ defmodule Emerge.UITest do
     assert on_change({self(), :changed}) == {:on_change, {self(), :changed}}
   end
 
+  test "on_press helper returns attr tuple" do
+    assert on_press({self(), :pressed}) == {:on_press, {self(), :pressed}}
+  end
+
   test "focus event helpers return attr tuples" do
     assert on_focus({self(), :focused}) == {:on_focus, {self(), :focused}}
     assert on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
@@ -300,6 +336,29 @@ defmodule Emerge.UITest do
     assert element.attrs.width == {:px, 240}
     assert element.attrs.on_change == {self(), :search_changed}
     assert element.children == []
+  end
+
+  test "Input.button creates an el with text label and handlers" do
+    element =
+      Emerge.UI.Input.button("Save", [
+        key(:save_btn),
+        width(px(160)),
+        on_press({self(), :save_pressed}),
+        on_focus({self(), :save_focused}),
+        on_blur({self(), :save_blurred})
+      ])
+
+    assert element.type == :el
+    assert element.id == :save_btn
+    assert element.attrs.width == {:px, 160}
+    assert element.attrs.on_press == {self(), :save_pressed}
+    assert element.attrs.on_focus == {self(), :save_focused}
+    assert element.attrs.on_blur == {self(), :save_blurred}
+    assert length(element.children) == 1
+
+    [label] = element.children
+    assert label.type == :text
+    assert label.attrs.content == "Save"
   end
 
   test "padding_xy expands to per-edge padding" do

@@ -236,6 +236,21 @@ impl ElementTree {
         true
     }
 
+    /// Set focused active state. Returns true when state changes.
+    pub fn set_focused_active(&mut self, id: &ElementId, active: bool) -> bool {
+        let Some(element) = self.get_mut(id) else {
+            return false;
+        };
+
+        let current = element.attrs.focused_active.unwrap_or(false);
+        if current == active {
+            return false;
+        }
+
+        element.attrs.focused_active = Some(active);
+        true
+    }
+
     pub fn set_text_input_content(&mut self, id: &ElementId, content: String) -> bool {
         let Some(element) = self.get_mut(id) else {
             return false;
@@ -684,6 +699,33 @@ mod tests {
 
         assert!(tree.set_mouse_down_active(&id, false));
         assert_eq!(tree.get(&id).unwrap().attrs.mouse_down_active, Some(false));
+    }
+
+    #[test]
+    fn test_set_focused_active_toggles_state() {
+        let id = ElementId::from_term_bytes(vec![13]);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.set_focused_active(&id, true));
+        assert_eq!(tree.get(&id).unwrap().attrs.focused_active, Some(true));
+
+        assert!(!tree.set_focused_active(&id, true));
+
+        assert!(tree.set_focused_active(&id, false));
+        assert_eq!(tree.get(&id).unwrap().attrs.focused_active, Some(false));
     }
 
     #[test]

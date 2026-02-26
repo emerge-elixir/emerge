@@ -68,6 +68,8 @@ block listeners behind them.
 ## Click, Hover, and Button Behavior
 
 - `on_click` is emitted on left-button press+release on the same element.
+- `on_press` uses the same left-button press+release activation as `on_click`.
+- `on_press` is also emitted when a focused pressable element receives `Enter`.
 - `on_mouse_down` and `on_mouse_up` are emitted for left button only.
 - Hover state tracks topmost hit and emits `:mouse_enter`, `:mouse_leave`, and
   `:mouse_move` based on listener flags.
@@ -83,14 +85,14 @@ block listeners behind them.
 - Tree updates use `TreeMsg::SetMouseOverActive { element_id, active }`.
 - `mouse_down` is also style-only; EventProcessor toggles runtime state with
   `TreeMsg::SetMouseDownActive { element_id, active }` on left press/release.
-- `focused` is style-only for inputs and is activated from runtime input focus
-  state (`text_input_focused`).
+- `focused` is style-only and is activated from runtime focus state
+  (`focused_active`) on focused inputs.
 - Layout merges active style blocks in this order: `mouse_over -> focused ->
   mouse_down`. Later styles win on attribute conflicts.
 - Supported decorative attrs in state styles are: `background`,
-  `border_color`, `font_color`, `font_size`, `font_underline`,
-  `font_strike`, `font_letter_spacing`, `font_word_spacing`, `move_x`,
-  `move_y`, `rotate`, `scale`, and `alpha`.
+  `border_color`, `box_shadow`, `font_color`, `font_size`,
+  `font_underline`, `font_strike`, `font_letter_spacing`,
+  `font_word_spacing`, `move_x`, `move_y`, `rotate`, `scale`, and `alpha`.
 
 ## Scroll-Related Event Behavior
 
@@ -116,7 +118,7 @@ block listeners behind them.
 - Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff
   state.
 - Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`,
-  `on_change`, `on_focus`, `on_blur`).
+  `on_press`, `on_change`, `on_focus`, `on_blur`).
 - Encode `mouse_over`, `focused`, and `mouse_down` as typed decorative attr
   blocks (no payload routing).
 - On Rust element events, resolve and forward stored payloads.
@@ -124,6 +126,7 @@ block listeners behind them.
 ## Supported Element Events
 
 - `:click`
+- `:press`
 - `:mouse_down`
 - `:mouse_up`
 - `:mouse_enter`
@@ -153,7 +156,7 @@ themselves.
 - Selection is tracked in Rust runtime attrs (`cursor` + `selection_anchor`) and
   is not encoded in EMRG.
 - Mouse drag selects text within focused single-line inputs.
-- Tab cycles focus across currently visible text inputs.
+- Tab cycles focus across currently visible focusable inputs.
 - Shift+Tab cycles focus in reverse order.
 - Shift+arrow/home/end extends selection.
 - Ctrl/Meta shortcuts are handled in Rust for focused text inputs:

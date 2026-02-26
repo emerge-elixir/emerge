@@ -97,6 +97,7 @@ defmodule Emerge.DiffState do
   defp collect_event_handlers(%Emerge.Element{} = element, acc) do
     acc
     |> register_event(element, :on_click, :click)
+    |> register_event(element, :on_press, :press)
     |> register_event(element, :on_mouse_down, :mouse_down)
     |> register_event(element, :on_mouse_up, :mouse_up)
     |> register_event(element, :on_mouse_enter, :mouse_enter)

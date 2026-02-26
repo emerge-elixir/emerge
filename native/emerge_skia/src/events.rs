@@ -1,9 +1,9 @@
 use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 
 use crate::input::{
-    ACTION_PRESS, EVENT_CLICK, EVENT_MOUSE_DOWN, EVENT_MOUSE_DOWN_STYLE, EVENT_MOUSE_ENTER,
-    EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE, EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP,
-    EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
+    ACTION_PRESS, EVENT_CLICK, EVENT_FOCUSABLE, EVENT_MOUSE_DOWN, EVENT_MOUSE_DOWN_STYLE,
+    EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE, EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP,
+    EVENT_PRESS, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
     EVENT_TEXT_INPUT, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
@@ -24,10 +24,11 @@ const DRAG_DEADZONE: f32 = 10.0;
 pub struct EventProcessor {
     registry: Vec<EventNode>,
     pressed_id: Option<ElementId>,
+    pending_press_id: Option<ElementId>,
     hovered_id: Option<ElementId>,
     mouse_over_active_id: Option<ElementId>,
     mouse_down_active_id: Option<ElementId>,
-    focused_text_input_id: Option<ElementId>,
+    focused_id: Option<ElementId>,
     text_input_drag_id: Option<ElementId>,
     hovered_scrollbar_thumb: Option<ScrollbarThumbHover>,
     drag_start: Option<(f32, f32)>,
@@ -209,6 +210,9 @@ fn collect_event_nodes(
     if element.attrs.on_mouse_move.unwrap_or(false) {
         flags |= EVENT_MOUSE_MOVE;
     }
+    if element.attrs.on_press.unwrap_or(false) {
+        flags |= EVENT_PRESS;
+    }
     if element.attrs.mouse_over.is_some() {
         flags |= EVENT_MOUSE_OVER_STYLE;
     }
@@ -217,6 +221,13 @@ fn collect_event_nodes(
     }
     if element.kind == ElementKind::TextInput {
         flags |= EVENT_TEXT_INPUT;
+        flags |= EVENT_FOCUSABLE;
+    }
+    if element.attrs.on_press.unwrap_or(false)
+        || element.attrs.on_focus.unwrap_or(false)
+        || element.attrs.on_blur.unwrap_or(false)
+    {
+        flags |= EVENT_FOCUSABLE;
     }
     if element.attrs.scrollbar_x.unwrap_or(false) {
         let scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -558,10 +569,11 @@ impl EventProcessor {
         Self {
             registry: Vec::new(),
             pressed_id: None,
+            pending_press_id: None,
             hovered_id: None,
             mouse_over_active_id: None,
             mouse_down_active_id: None,
-            focused_text_input_id: None,
+            focused_id: None,
             text_input_drag_id: None,
             hovered_scrollbar_thumb: None,
             drag_start: None,
@@ -590,13 +602,13 @@ impl EventProcessor {
             }
         }
 
-        if let Some(focused) = self.focused_text_input_id.as_ref() {
+        if let Some(focused) = self.focused_id.as_ref() {
             let still_valid = self
                 .registry
                 .iter()
-                .any(|node| node.id == *focused && (node.flags & EVENT_TEXT_INPUT != 0));
+                .any(|node| node.id == *focused && (node.flags & EVENT_FOCUSABLE != 0));
             if !still_valid {
-                self.focused_text_input_id = None;
+                self.focused_id = None;
             }
         }
 
@@ -674,6 +686,7 @@ impl EventProcessor {
             if hit_test_scrollbar(&self.registry, *x, *y).is_some() {
                 self.scrollbar_interaction.mark_captured();
                 self.pressed_id = None;
+                self.pending_press_id = None;
                 self.drag_start = None;
                 self.drag_last_pos = None;
                 self.drag_active = false;
@@ -682,7 +695,8 @@ impl EventProcessor {
             }
 
             self.scrollbar_interaction.clear();
-            let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK);
+            self.pending_press_id = None;
+            let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK | EVENT_PRESS);
             self.pressed_id = hit;
             self.drag_start = Some((*x, *y));
             self.drag_last_pos = Some((*x, *y));
@@ -699,24 +713,57 @@ impl EventProcessor {
                 self.scrollbar_interaction.clear();
             }
 
-            let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK);
+            let hit = hit_test_with_flag(&self.registry, *x, *y, EVENT_CLICK | EVENT_PRESS);
             let pressed = self.pressed_id.take();
             self.drag_start = None;
             self.drag_last_pos = None;
             let was_dragged = self.drag_consumed;
             self.drag_active = false;
             self.drag_consumed = false;
+            self.pending_press_id = None;
             if consumed_by_scrollbar || was_dragged {
                 return None;
             }
             if let (Some(pressed_id), Some(hit_id)) = (pressed, hit)
                 && pressed_id == hit_id
             {
-                return Some(pressed_id);
+                if self.node_has_flag(&pressed_id, EVENT_PRESS) {
+                    self.pending_press_id = Some(pressed_id.clone());
+                }
+
+                if self.node_has_flag(&pressed_id, EVENT_CLICK) {
+                    return Some(pressed_id);
+                }
             }
         }
 
         None
+    }
+
+    pub(crate) fn detect_press(&mut self, event: &InputEvent) -> Option<ElementId> {
+        match event {
+            InputEvent::CursorButton { button, action, .. }
+                if button == "left" && *action == crate::input::ACTION_RELEASE =>
+            {
+                self.pending_press_id.take()
+            }
+            InputEvent::Key { key, action, mods }
+                if *action == ACTION_PRESS && key.eq_ignore_ascii_case("enter") =>
+            {
+                let blocked_mods = MOD_CTRL | MOD_ALT | MOD_META;
+                if *mods & blocked_mods != 0 {
+                    return None;
+                }
+
+                let focused_id = self.focused_id.as_ref()?.clone();
+                if self.node_has_flag(&focused_id, EVENT_PRESS) {
+                    Some(focused_id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn detect_mouse_button_event(
@@ -816,7 +863,16 @@ impl EventProcessor {
                 x,
                 y,
                 ..
-            } if (button == "left" || button == "middle") && *action == ACTION_PRESS => {
+            } if button == "left" && *action == ACTION_PRESS => {
+                Some(hit_test_with_flag(&self.registry, *x, *y, EVENT_FOCUSABLE))
+            }
+            InputEvent::CursorButton {
+                button,
+                action,
+                x,
+                y,
+                ..
+            } if button == "middle" && *action == ACTION_PRESS => {
                 Some(hit_test_with_flag(&self.registry, *x, *y, EVENT_TEXT_INPUT))
             }
             InputEvent::Key { key, action, mods }
@@ -827,7 +883,7 @@ impl EventProcessor {
                     None
                 } else {
                     let reverse = *mods & MOD_SHIFT != 0;
-                    self.cycle_visible_text_input_focus(reverse).map(Some)
+                    self.cycle_visible_focus(reverse).map(Some)
                 }
             }
             InputEvent::Focused { focused } if !*focused => {
@@ -837,11 +893,11 @@ impl EventProcessor {
             _ => None,
         }?;
 
-        if self.focused_text_input_id == next_focus {
+        if self.focused_id == next_focus {
             return None;
         }
 
-        self.focused_text_input_id = next_focus.clone();
+        self.focused_id = next_focus.clone();
         Some(next_focus)
     }
 
@@ -929,7 +985,7 @@ impl EventProcessor {
                 Some((id, TextInputCommandRequest::PastePrimary))
             }
             InputEvent::Key { key, action, mods } if *action == ACTION_PRESS => {
-                let focused_id = self.focused_text_input_id.as_ref()?.clone();
+                let focused_id = self.focused_text_input_id()?.clone();
                 let has_meta = (*mods & MOD_CTRL != 0) || (*mods & MOD_META != 0);
                 if !has_meta {
                     return None;
@@ -954,7 +1010,7 @@ impl EventProcessor {
         &self,
         event: &InputEvent,
     ) -> Option<(ElementId, TextInputEditRequest)> {
-        let focused_id = self.focused_text_input_id.as_ref()?.clone();
+        let focused_id = self.focused_text_input_id()?.clone();
 
         match event {
             InputEvent::Key { key, action, mods } if *action == ACTION_PRESS => {
@@ -991,7 +1047,7 @@ impl EventProcessor {
         &self,
         event: &InputEvent,
     ) -> Option<(ElementId, TextInputPreeditRequest)> {
-        let focused_id = self.focused_text_input_id.as_ref()?.clone();
+        let focused_id = self.focused_text_input_id()?.clone();
 
         match event {
             InputEvent::TextPreedit { text, cursor } => {
@@ -1013,14 +1069,23 @@ impl EventProcessor {
     }
 
     pub fn focused_text_input_id(&self) -> Option<ElementId> {
-        self.focused_text_input_id.clone()
+        let focused_id = self.focused_id.as_ref()?.clone();
+        if self.node_has_flag(&focused_id, EVENT_TEXT_INPUT) {
+            Some(focused_id)
+        } else {
+            None
+        }
     }
 
-    fn cycle_visible_text_input_focus(&self, reverse: bool) -> Option<ElementId> {
+    pub fn focused_id(&self) -> Option<ElementId> {
+        self.focused_id.clone()
+    }
+
+    fn cycle_visible_focus(&self, reverse: bool) -> Option<ElementId> {
         let focusable: Vec<ElementId> = self
             .registry
             .iter()
-            .filter(|node| node.flags & EVENT_TEXT_INPUT != 0)
+            .filter(|node| node.flags & EVENT_FOCUSABLE != 0)
             .map(|node| node.id.clone())
             .collect();
 
@@ -1029,7 +1094,7 @@ impl EventProcessor {
         }
 
         let next_index = match self
-            .focused_text_input_id
+            .focused_id
             .as_ref()
             .and_then(|focused| focusable.iter().position(|id| id == focused))
         {
@@ -1522,6 +1587,7 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
 rustler::atoms! {
     emerge_skia_event,
     click,
+    press,
     change,
     focus,
     blur,
@@ -1534,6 +1600,10 @@ rustler::atoms! {
 
 pub(crate) fn click_atom() -> Atom {
     click()
+}
+
+pub(crate) fn press_atom() -> Atom {
+    press()
 }
 
 pub(crate) fn change_atom() -> Atom {
@@ -1744,7 +1814,7 @@ mod tests {
                 width,
                 height,
             },
-            flags: EVENT_TEXT_INPUT,
+            flags: EVENT_TEXT_INPUT | EVENT_FOCUSABLE,
             self_rect: Rect {
                 x,
                 y,
@@ -1770,6 +1840,31 @@ mod tests {
                 letter_spacing: 0.0,
                 word_spacing: 0.0,
             }),
+        }
+    }
+
+    fn make_pressable_node(id: u8, x: f32, y: f32, width: f32, height: f32) -> EventNode {
+        EventNode {
+            id: ElementId::from_term_bytes(vec![id]),
+            hit_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            flags: EVENT_PRESS | EVENT_FOCUSABLE,
+            self_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            scrollbar_x: None,
+            scrollbar_y: None,
+            text_input: None,
         }
     }
 
@@ -2298,6 +2393,33 @@ mod tests {
     }
 
     #[test]
+    fn test_build_event_registry_includes_press_and_focusable_flags() {
+        let mut tree = ElementTree::new();
+
+        let mut attrs = Attrs::default();
+        attrs.on_press = Some(true);
+
+        let id = ElementId::from_term_bytes(vec![21]);
+        let mut el = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        el.frame = Some(crate::tree::element::Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        });
+
+        tree.root = Some(id.clone());
+        tree.insert(el);
+
+        let registry = build_event_registry(&tree);
+        assert_eq!(registry.len(), 1);
+        assert!(registry[0].flags & EVENT_PRESS != 0);
+        assert!(registry[0].flags & EVENT_FOCUSABLE != 0);
+    }
+
+    #[test]
     fn test_mouse_down_requests_activate_and_deactivate() {
         let mut processor = EventProcessor::new();
         processor.registry = vec![make_mouse_down_style_node(1, 0.0, 0.0, 100.0, 100.0)];
@@ -2418,6 +2540,89 @@ mod tests {
 
         let blur = processor.text_input_focus_request(&press_outside).unwrap();
         assert_eq!(blur, None);
+    }
+
+    #[test]
+    fn test_press_requests_activate_on_mouse_click_for_pressable_nodes() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_pressable_node(4, 0.0, 0.0, 100.0, 40.0)];
+
+        let press = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+
+        let release = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_RELEASE,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+
+        assert_eq!(processor.detect_click(&press), None);
+        assert_eq!(processor.detect_press(&press), None);
+
+        assert_eq!(processor.detect_click(&release), None);
+        assert_eq!(
+            processor.detect_press(&release),
+            Some(ElementId::from_term_bytes(vec![4]))
+        );
+    }
+
+    #[test]
+    fn test_press_requests_activate_on_enter_for_focused_pressable_nodes() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![make_pressable_node(5, 0.0, 0.0, 100.0, 40.0)];
+
+        let focus_press = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+
+        let focus = processor.text_input_focus_request(&focus_press).unwrap();
+        assert_eq!(focus, Some(ElementId::from_term_bytes(vec![5])));
+
+        let enter = InputEvent::Key {
+            key: "enter".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        assert_eq!(
+            processor.detect_press(&enter),
+            Some(ElementId::from_term_bytes(vec![5]))
+        );
+    }
+
+    #[test]
+    fn test_focus_cycle_includes_pressable_nodes() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_text_input_node(1, 0.0, 0.0, 120.0, 30.0),
+            make_pressable_node(2, 0.0, 40.0, 120.0, 30.0),
+        ];
+
+        let tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        let first = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(first, Some(ElementId::from_term_bytes(vec![1])));
+
+        let second = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(second, Some(ElementId::from_term_bytes(vec![2])));
+
+        let wrapped = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(wrapped, Some(ElementId::from_term_bytes(vec![1])));
     }
 
     #[test]
