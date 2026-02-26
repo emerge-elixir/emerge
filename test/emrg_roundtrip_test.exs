@@ -429,8 +429,12 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         on_change({self(), :changed}),
         on_focus({self(), :focused}),
         on_blur({self(), :blurred}),
-        focused([alpha(0.85), move_x(1)]),
-        mouse_down([move_y(-1), scale(0.97)])
+        focused([alpha(0.85), move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
+        mouse_down([
+          move_y(-1),
+          scale(0.97),
+          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
+        ])
       ])
 
     {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
@@ -453,8 +457,22 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert decoded.attrs.on_change == true
     assert decoded.attrs.on_focus == true
     assert decoded.attrs.on_blur == true
-    assert decoded.attrs.focused == %{alpha: 0.85, move_x: 1.0}
-    assert decoded.attrs.mouse_down == %{move_y: -1.0, scale: 0.97}
+
+    assert decoded.attrs.focused == %{
+             alpha: 0.85,
+             move_x: 1.0,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 0.0, blur: 6.0, size: 3.0, color: :cyan, inset: false}
+             ]
+           }
+
+    assert decoded.attrs.mouse_down == %{
+             move_y: -1.0,
+             scale: 0.97,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 1.0, blur: 6.0, size: 1.0, color: :black, inset: true}
+             ]
+           }
   end
 
   test "EMRG roundtrip preserves new border features" do

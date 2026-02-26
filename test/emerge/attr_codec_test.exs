@@ -100,6 +100,13 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == %{on_click: true}
   end
 
+  test "encode/decode on_press presence" do
+    attrs = %{on_press: {self(), :pressed}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_press: true}
+  end
+
   test "encode/decode mouse event presence" do
     attrs = %{
       on_mouse_down: {self(), :down},
@@ -163,11 +170,17 @@ defmodule Emerge.AttrCodecTest do
       focused: %{
         font_size: 18,
         font_color: :white,
-        alpha: 0.6
+        alpha: 0.6,
+        box_shadow: [
+          %{offset_x: 0, offset_y: 0, blur: 8, size: 2, color: :cyan, inset: false}
+        ]
       },
       mouse_down: %{
         border_color: {:color_rgb, {10, 20, 30}},
-        move_y: -2
+        move_y: -2,
+        box_shadow: [
+          %{offset_x: 0, offset_y: 1, blur: 6, size: 1, color: :black, inset: true}
+        ]
       }
     }
 

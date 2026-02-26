@@ -125,6 +125,7 @@ on_focus          -> 57
 on_blur           -> 58
 focused           -> 59
 mouse_down        -> 60
+on_press          -> 61
 ```
 
 ## Attribute Value Encodings (current)
@@ -269,6 +270,7 @@ The nested block uses the same format as an attribute block (`attr_count` +
 
 - `background`
 - `border_color`
+- `box_shadow`
 - `font_color`
 - `font_size`
 - `font_underline`
@@ -308,8 +310,8 @@ f64 x + f64 y
 1 -> true
 ```
 
-For event attributes (`on_click`, `on_mouse_*`, `on_change`, `on_focus`,
-`on_blur`), Elixir encodes presence as `true`.
+For event attributes (`on_click`, `on_press`, `on_mouse_*`, `on_change`,
+`on_focus`, `on_blur`), Elixir encodes presence as `true`.
 
 `mouse_over`, `focused`, and `mouse_down` are not presence flags; each stores
 the nested decorative attr block defined above.
@@ -344,6 +346,7 @@ the nested decorative attr block defined above.
 - `:scroll_capture`
 - `:mouse_over_active`
 - `:mouse_down_active`
+- `:focused_active`
 - `:__layer`
 - `:nearby_behind`
 - `:nearby_in_front`

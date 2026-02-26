@@ -47,6 +47,10 @@ pub enum TreeMsg {
         element_id: ElementId,
         active: bool,
     },
+    SetFocusedActive {
+        element_id: ElementId,
+        active: bool,
+    },
     SetTextInputContent {
         element_id: ElementId,
         content: String,

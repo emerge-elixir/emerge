@@ -25,6 +25,7 @@ defmodule Emerge.UI do
   @mouse_over_decorative_keys MapSet.new([
                                 :background,
                                 :border_color,
+                                :box_shadow,
                                 :font_color,
                                 :font_size,
                                 :font_underline,
@@ -278,6 +279,21 @@ defmodule Emerge.UI do
     }
   end
 
+  @doc false
+  def __input_button__(label, attrs) when is_binary(label) and is_list(attrs) do
+    parsed = parse_attrs(attrs)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :el,
+      id: id,
+      attrs: parsed,
+      children: [text(label)]
+    }
+  end
+
   @doc """
   An empty element that takes up no space.
   """
@@ -407,6 +423,9 @@ defmodule Emerge.UI do
   @doc "Register a click handler payload for this element"
   def on_click({pid, _msg} = payload) when is_pid(pid), do: {:on_click, payload}
 
+  @doc "Register a press handler payload for this element"
+  def on_press({pid, _msg} = payload) when is_pid(pid), do: {:on_press, payload}
+
   @doc "Register a mouse down handler payload for this element"
   def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
 
@@ -515,14 +534,33 @@ defmodule Emerge.UI do
   defp parse_state_style_attrs(attrs, style_key) do
     parsed =
       Enum.reduce(attrs, %{}, fn
-        {key, value}, acc -> Map.put(acc, key, value)
-        other, acc when is_map(other) -> Map.merge(acc, other)
-        _, acc -> acc
+        {key, value}, acc ->
+          put_state_style_attr(acc, key, value)
+
+        other, acc when is_map(other) ->
+          Enum.reduce(other, acc, fn {key, value}, map_acc ->
+            put_state_style_attr(map_acc, key, value)
+          end)
+
+        _, acc ->
+          acc
       end)
 
     validate_decorative_attrs!(parsed, style_key)
     parsed
   end
+
+  defp put_state_style_attr(acc, :box_shadow, value) when is_map(value) do
+    existing = Map.get(acc, :box_shadow, [])
+    Map.put(acc, :box_shadow, existing ++ [value])
+  end
+
+  defp put_state_style_attr(acc, :box_shadow, value) when is_list(value) do
+    existing = Map.get(acc, :box_shadow, [])
+    Map.put(acc, :box_shadow, existing ++ value)
+  end
+
+  defp put_state_style_attr(acc, key, value), do: Map.put(acc, key, value)
 
   defp put_attr(acc, :box_shadow, value, _warn_overrides) do
     existing = Map.get(acc, :box_shadow, [])
@@ -785,6 +823,11 @@ defmodule Emerge.UI do
     @doc "Single-line text input"
     def text(value, attrs \\ []) when is_binary(value) and is_list(attrs) do
       Emerge.UI.__text_input__(value, attrs)
+    end
+
+    @doc "Button input with text label"
+    def button(label, attrs \\ []) when is_binary(label) and is_list(attrs) do
+      Emerge.UI.__input_button__(label, attrs)
     end
   end
 end

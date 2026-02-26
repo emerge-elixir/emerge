@@ -178,6 +178,14 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             g: 90,
             b: 70,
         }),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 0.0,
+            offset_y: 1.0,
+            blur: 4.0,
+            size: 0.0,
+            color: crate::tree::attrs::Color::Named("black".to_string()),
+            inset: false,
+        }]),
         font_size: Some(18.0),
         move_x: Some(5.0),
         ..Default::default()
@@ -194,6 +202,14 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             g: 240,
             b: 255,
         }),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 8.0,
+            size: 2.0,
+            color: crate::tree::attrs::Color::Named("cyan".to_string()),
+            inset: false,
+        }]),
         alpha: Some(0.8),
         ..Default::default()
     });
@@ -203,12 +219,20 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             g: 90,
             b: 180,
         }),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 0.0,
+            offset_y: 1.0,
+            blur: 6.0,
+            size: 1.0,
+            color: crate::tree::attrs::Color::Named("white".to_string()),
+            inset: true,
+        }]),
         font_size: Some(30.0),
         move_y: Some(-2.0),
         ..Default::default()
     });
     attrs.mouse_over_active = Some(true);
-    attrs.text_input_focused = Some(true);
+    attrs.focused_active = Some(true);
     attrs.mouse_down_active = Some(true);
 
     let root = make_element("root", ElementKind::TextInput, attrs);
@@ -244,6 +268,18 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     assert_eq!(updated.attrs.move_x, Some(5.0));
     assert_eq!(updated.attrs.move_y, Some(-2.0));
     assert_eq!(updated.attrs.alpha, Some(0.8));
+    let shadow = updated
+        .attrs
+        .box_shadows
+        .as_ref()
+        .and_then(|shadows| shadows.first())
+        .expect("mouse_down style should win shadow conflicts");
+    assert!(shadow.inset);
+    assert_eq!(shadow.blur, 6.0);
+    assert_eq!(
+        shadow.color,
+        crate::tree::attrs::Color::Named("white".to_string())
+    );
 }
 
 #[test]
@@ -331,16 +367,40 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         font_word_spacing: Some(2.0),
         move_x: Some(-3.0),
         move_y: Some(4.0),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 1.0,
+            offset_y: -2.0,
+            blur: 3.0,
+            size: 4.0,
+            color: crate::tree::attrs::Color::Named("black".to_string()),
+            inset: false,
+        }]),
         ..Default::default()
     });
     attrs.focused = Some(MouseOverAttrs {
         font_size: Some(10.0),
         alpha: Some(0.5),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 6.0,
+            size: 1.0,
+            color: crate::tree::attrs::Color::Named("blue".to_string()),
+            inset: false,
+        }]),
         ..Default::default()
     });
     attrs.mouse_down = Some(MouseOverAttrs {
         move_x: Some(3.0),
         move_y: Some(-2.0),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 0.5,
+            offset_y: 1.5,
+            blur: 2.0,
+            size: 0.5,
+            color: crate::tree::attrs::Color::Named("white".to_string()),
+            inset: true,
+        }]),
         ..Default::default()
     });
 
@@ -355,6 +415,15 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
     assert_eq!(hover.font_word_spacing, Some(4.0));
     assert_eq!(hover.move_x, Some(-6.0));
     assert_eq!(hover.move_y, Some(8.0));
+    let hover_shadow = hover
+        .box_shadows
+        .as_ref()
+        .and_then(|shadows| shadows.first())
+        .expect("hover shadow should scale");
+    assert_eq!(hover_shadow.offset_x, 2.0);
+    assert_eq!(hover_shadow.offset_y, -4.0);
+    assert_eq!(hover_shadow.blur, 6.0);
+    assert_eq!(hover_shadow.size, 8.0);
 
     let focused = scaled
         .focused
@@ -362,6 +431,13 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         .expect("scaled focused attrs should exist");
     assert_eq!(focused.font_size, Some(20.0));
     assert_eq!(focused.alpha, Some(0.5));
+    let focused_shadow = focused
+        .box_shadows
+        .as_ref()
+        .and_then(|shadows| shadows.first())
+        .expect("focused shadow should scale");
+    assert_eq!(focused_shadow.blur, 12.0);
+    assert_eq!(focused_shadow.size, 2.0);
 
     let mouse_down = scaled
         .mouse_down
@@ -369,4 +445,14 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         .expect("scaled mouse_down attrs should exist");
     assert_eq!(mouse_down.move_x, Some(6.0));
     assert_eq!(mouse_down.move_y, Some(-4.0));
+    let mouse_down_shadow = mouse_down
+        .box_shadows
+        .as_ref()
+        .and_then(|shadows| shadows.first())
+        .expect("mouse_down shadow should scale");
+    assert_eq!(mouse_down_shadow.offset_x, 1.0);
+    assert_eq!(mouse_down_shadow.offset_y, 3.0);
+    assert_eq!(mouse_down_shadow.blur, 4.0);
+    assert_eq!(mouse_down_shadow.size, 1.0);
+    assert!(mouse_down_shadow.inset);
 }
