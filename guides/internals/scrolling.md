@@ -13,6 +13,7 @@ This document describes the current scrolling behavior and runtime flow.
 - Wheel input (`CursorScroll`) produces per-axis scroll requests.
 - Content drag (`CursorPos` during active press) produces scroll requests after
   a drag deadzone.
+- Arrow keys (`up/down/left/right`) produce registry-targeted scroll requests.
 - Scrollbar track and thumb pointer input produce axis-specific thumb-drag
   requests (`ScrollbarThumbDragX/Y`) with snap-to-cursor track behavior.
 - Drag follows finger-like direction (pointer movement and content movement are
@@ -25,14 +26,23 @@ The same registry powers click, hover, and scroll:
 - Nodes are traversed in reverse for topmost-hit behavior.
 - Scroll hit tests use directional flags (`can scroll +/- on each axis`).
 - Flag filtering runs before geometric checks.
+- Focusable nodes also carry keyboard scroll matchers and focus-reveal matchers.
 
 ## Runtime Flow
 
 ```
-CursorScroll / drag CursorPos
+CursorScroll / drag CursorPos / arrow Key
   -> EventProcessor::scroll_requests
   -> TreeMsg::ScrollRequest {id, dx, dy}
   -> tree.apply_scroll(id, dx, dy)
+  -> layout_and_refresh_default(tree, constraint, scale)
+  -> EventMsg::RegistryUpdate
+  -> redraw
+
+Tab / Shift+Tab focus change
+  -> EventProcessor chooses next focus from rendered focusables
+  -> EventProcessor emits registry precomputed reveal scroll requests
+  -> TreeMsg::ScrollRequest {id, dx, dy}
   -> layout_and_refresh_default(tree, constraint, scale)
   -> EventMsg::RegistryUpdate
   -> redraw
@@ -47,6 +57,11 @@ Scrollbar thumb/track input
 ```
 
 This keeps render output and hit bounds synchronized after every scroll change.
+
+When the focused node has no directional keyboard scroll matcher (including
+scroll-ancestor boundary cases), arrow scrolling falls back to the first
+visible scrollable element (root-first traversal order) that can scroll in
+that direction. The same fallback is used when no element is focused.
 
 ## Runtime State and Clamping
 
