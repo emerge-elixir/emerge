@@ -4,14 +4,17 @@ use crate::input::{
     ACTION_PRESS, EVENT_CLICK, EVENT_FOCUSABLE, EVENT_MOUSE_DOWN, EVENT_MOUSE_DOWN_STYLE,
     EVENT_MOUSE_ENTER, EVENT_MOUSE_LEAVE, EVENT_MOUSE_MOVE, EVENT_MOUSE_OVER_STYLE, EVENT_MOUSE_UP,
     EVENT_PRESS, EVENT_SCROLL_X_NEG, EVENT_SCROLL_X_POS, EVENT_SCROLL_Y_NEG, EVENT_SCROLL_Y_POS,
-    EVENT_TEXT_INPUT, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    EVENT_TEXT_INPUT, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, SCROLL_LINE_PIXELS,
 };
 use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::{ElementId, ElementKind, ElementTree};
 use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
 
+mod registry_v2;
 mod runtime;
 mod scrollbar;
+mod dispatch_outcome;
+use registry_v2::{DispatchCtx, DispatchJob, DispatchRuleAction, EventRegistryV2, TriggerId};
 pub(crate) use runtime::spawn_event_actor;
 use scrollbar::{
     ScrollbarDragState, ScrollbarHitArea, ScrollbarInteraction, ScrollbarThumbHover, axis_coord,
@@ -21,8 +24,54 @@ pub use scrollbar::{ScrollbarHoverRequest, ScrollbarNode, ScrollbarThumbDragRequ
 
 const DRAG_DEADZONE: f32 = 10.0;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyScrollDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug)]
+struct ScrollContext {
+    id: ElementId,
+    viewport: Rect,
+    scroll_x: f32,
+    scroll_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyScrollTargets {
+    pub left: Option<ElementId>,
+    pub right: Option<ElementId>,
+    pub up: Option<ElementId>,
+    pub down: Option<ElementId>,
+}
+
+impl KeyScrollTargets {
+    fn for_direction(&self, direction: KeyScrollDirection) -> Option<ElementId> {
+        match direction {
+            KeyScrollDirection::Left => self.left.clone(),
+            KeyScrollDirection::Right => self.right.clone(),
+            KeyScrollDirection::Up => self.up.clone(),
+            KeyScrollDirection::Down => self.down.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollRequestMatcher {
+    pub element_id: ElementId,
+    pub dx: f32,
+    pub dy: f32,
+}
+
+#[derive(Clone)]
 pub struct EventProcessor {
     registry: Vec<EventNode>,
+    registry_v2: EventRegistryV2,
     pressed_id: Option<ElementId>,
     pending_press_id: Option<ElementId>,
     hovered_id: Option<ElementId>,
@@ -95,6 +144,7 @@ pub(crate) struct ClipContext {
 pub struct EventNode {
     pub id: ElementId,
     pub hit_rect: Rect,
+    pub visible: bool,
     pub flags: u16,
     pub self_rect: Rect,
     pub self_radii: Option<CornerRadii>,
@@ -102,12 +152,17 @@ pub struct EventNode {
     pub clip_radii: Option<CornerRadii>,
     pub scrollbar_x: Option<ScrollbarNode>,
     pub scrollbar_y: Option<ScrollbarNode>,
+    pub key_scroll_targets: KeyScrollTargets,
+    pub focus_reveal_scrolls: Vec<ScrollRequestMatcher>,
     pub text_input: Option<TextInputDescriptor>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextInputDescriptor {
     pub content: String,
+    pub content_len: u32,
+    pub cursor: u32,
+    pub selection_anchor: Option<u32>,
     pub frame_x: f32,
     pub frame_width: f32,
     pub inset_left: f32,
@@ -175,7 +230,7 @@ pub fn build_event_registry(tree: &ElementTree) -> Vec<EventNode> {
     };
 
     let mut registry = Vec::new();
-    collect_event_nodes(tree, root, &mut registry, 0.0, 0.0, None);
+    collect_event_nodes(tree, root, &mut registry, 0.0, 0.0, None, &[]);
     registry
 }
 
@@ -186,6 +241,7 @@ fn collect_event_nodes(
     offset_x: f32,
     offset_y: f32,
     clip_rect: Option<ClipContext>,
+    scroll_contexts: &[ScrollContext],
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -251,6 +307,9 @@ fn collect_event_nodes(
     }
 
     let mut next_clip = clip_rect;
+    let mut next_scroll_contexts = scroll_contexts.to_vec();
+    let mut scroll_x = 0.0;
+    let mut scroll_y = 0.0;
 
     if let Some(frame) = element.frame {
         let frame_rect = Rect::from_frame(frame);
@@ -276,6 +335,8 @@ fn collect_event_nodes(
             }
         }
 
+        let visible = visible_rect.width > 0.0 && visible_rect.height > 0.0;
+
         let self_radii = radii_from_border_radius(element.attrs.border_radius.as_ref())
             .map(|radii| clamp_radii(adjusted_rect, radii));
         let clip_radii = active_clip_rect
@@ -290,10 +351,89 @@ fn collect_event_nodes(
             None
         };
 
-        if flags != 0 && visible_rect.width > 0.0 && visible_rect.height > 0.0 {
+        let padding = element.attrs.padding.as_ref();
+        let (left, top, right, bottom) = match padding {
+            Some(crate::tree::attrs::Padding::Uniform(v)) => {
+                (*v as f32, *v as f32, *v as f32, *v as f32)
+            }
+            Some(crate::tree::attrs::Padding::Sides {
+                left,
+                top,
+                right,
+                bottom,
+            }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+
+        let content_rect = Rect {
+            x: adjusted_rect.x + left,
+            y: adjusted_rect.y + top,
+            width: (adjusted_rect.width - left - right).max(0.0),
+            height: (adjusted_rect.height - top - bottom).max(0.0),
+        };
+
+        let scroll_x_enabled = element.attrs.scrollbar_x.unwrap_or(false);
+        let scroll_y_enabled = element.attrs.scrollbar_y.unwrap_or(false);
+        let max_x = if scroll_x_enabled {
+            element
+                .attrs
+                .scroll_x_max
+                .unwrap_or((frame.content_width - frame.width).max(0.0) as f64) as f32
+        } else {
+            0.0
+        }
+        .max(0.0);
+        let max_y = if scroll_y_enabled {
+            element
+                .attrs
+                .scroll_y_max
+                .unwrap_or((frame.content_height - frame.height).max(0.0) as f64) as f32
+        } else {
+            0.0
+        }
+        .max(0.0);
+        let current_scroll_x = if scroll_x_enabled {
+            (element.attrs.scroll_x.unwrap_or(0.0) as f32).clamp(0.0, max_x)
+        } else {
+            0.0
+        };
+        let current_scroll_y = if scroll_y_enabled {
+            (element.attrs.scroll_y.unwrap_or(0.0) as f32).clamp(0.0, max_y)
+        } else {
+            0.0
+        };
+
+        scroll_x = current_scroll_x;
+        scroll_y = current_scroll_y;
+
+        if scroll_x_enabled || scroll_y_enabled {
+            next_scroll_contexts.push(ScrollContext {
+                id: element.id.clone(),
+                viewport: content_rect,
+                scroll_x: current_scroll_x,
+                scroll_y: current_scroll_y,
+                max_x,
+                max_y,
+            });
+        }
+
+        let focusable = flags & EVENT_FOCUSABLE != 0;
+        let key_scroll_targets = if focusable {
+            key_scroll_targets_for_contexts(&next_scroll_contexts)
+        } else {
+            KeyScrollTargets::default()
+        };
+        let focus_reveal_scrolls = if focusable {
+            focus_reveal_scroll_requests(&element.id, adjusted_rect, &next_scroll_contexts)
+        } else {
+            Vec::new()
+        };
+
+        if flags != 0 && (visible || focusable) {
             registry.push(EventNode {
                 id: element.id.clone(),
                 hit_rect: visible_rect,
+                visible,
                 flags,
                 self_rect: adjusted_rect,
                 self_radii,
@@ -301,6 +441,8 @@ fn collect_event_nodes(
                 clip_radii,
                 scrollbar_x,
                 scrollbar_y,
+                key_scroll_targets,
+                focus_reveal_scrolls,
                 text_input,
             });
         }
@@ -311,25 +453,6 @@ fn collect_event_nodes(
             || element.attrs.scrollbar_y.unwrap_or(false);
 
         if clip_enabled {
-            let padding = element.attrs.padding.as_ref();
-            let (left, top, right, bottom) = match padding {
-                Some(crate::tree::attrs::Padding::Uniform(v)) => {
-                    (*v as f32, *v as f32, *v as f32, *v as f32)
-                }
-                Some(crate::tree::attrs::Padding::Sides {
-                    left,
-                    top,
-                    right,
-                    bottom,
-                }) => (*left as f32, *top as f32, *right as f32, *bottom as f32),
-                None => (0.0, 0.0, 0.0, 0.0),
-            };
-            let content_rect = Rect {
-                x: adjusted_rect.x + left,
-                y: adjusted_rect.y + top,
-                width: (adjusted_rect.width - left - right).max(0.0),
-                height: (adjusted_rect.height - top - bottom).max(0.0),
-            };
             let clip_radii = radii_from_border_radius(element.attrs.border_radius.as_ref());
             let clip_rect = match clip_rect {
                 Some(active_clip) => content_rect.intersect(active_clip.rect).unwrap_or(Rect {
@@ -350,17 +473,6 @@ fn collect_event_nodes(
         }
     }
 
-    let scroll_x = if element.attrs.scrollbar_x.unwrap_or(false) {
-        element.attrs.scroll_x.unwrap_or(0.0) as f32
-    } else {
-        0.0
-    };
-    let scroll_y = if element.attrs.scrollbar_y.unwrap_or(false) {
-        element.attrs.scroll_y.unwrap_or(0.0) as f32
-    } else {
-        0.0
-    };
-
     let child_offset_x = offset_x + scroll_x;
     let child_offset_y = offset_y + scroll_y;
 
@@ -372,8 +484,101 @@ fn collect_event_nodes(
             child_offset_x,
             child_offset_y,
             next_clip,
+            &next_scroll_contexts,
         );
     }
+}
+
+fn key_scroll_targets_for_contexts(contexts: &[ScrollContext]) -> KeyScrollTargets {
+    let mut targets = KeyScrollTargets::default();
+
+    for context in contexts.iter().rev() {
+        if targets.left.is_none() && context.scroll_x > 0.0 {
+            targets.left = Some(context.id.clone());
+        }
+        if targets.right.is_none() && context.scroll_x < context.max_x {
+            targets.right = Some(context.id.clone());
+        }
+        if targets.up.is_none() && context.scroll_y > 0.0 {
+            targets.up = Some(context.id.clone());
+        }
+        if targets.down.is_none() && context.scroll_y < context.max_y {
+            targets.down = Some(context.id.clone());
+        }
+
+        if targets.left.is_some()
+            && targets.right.is_some()
+            && targets.up.is_some()
+            && targets.down.is_some()
+        {
+            break;
+        }
+    }
+
+    targets
+}
+
+fn focus_reveal_scroll_requests(
+    element_id: &ElementId,
+    element_rect: Rect,
+    contexts: &[ScrollContext],
+) -> Vec<ScrollRequestMatcher> {
+    let mut adjusted = element_rect;
+    let mut requests = Vec::new();
+
+    for context in contexts.iter().rev() {
+        if context.id == *element_id {
+            continue;
+        }
+
+        let mut scroll_delta_x = 0.0;
+        if context.max_x > 0.0 {
+            let viewport_left = context.viewport.x;
+            let viewport_right = context.viewport.x + context.viewport.width;
+            let element_left = adjusted.x;
+            let element_right = adjusted.x + adjusted.width;
+
+            let mut desired_scroll_x = context.scroll_x;
+            if element_left < viewport_left {
+                desired_scroll_x += element_left - viewport_left;
+            } else if element_right > viewport_right {
+                desired_scroll_x += element_right - viewport_right;
+            }
+
+            desired_scroll_x = desired_scroll_x.clamp(0.0, context.max_x);
+            scroll_delta_x = desired_scroll_x - context.scroll_x;
+        }
+
+        let mut scroll_delta_y = 0.0;
+        if context.max_y > 0.0 {
+            let viewport_top = context.viewport.y;
+            let viewport_bottom = context.viewport.y + context.viewport.height;
+            let element_top = adjusted.y;
+            let element_bottom = adjusted.y + adjusted.height;
+
+            let mut desired_scroll_y = context.scroll_y;
+            if element_top < viewport_top {
+                desired_scroll_y += element_top - viewport_top;
+            } else if element_bottom > viewport_bottom {
+                desired_scroll_y += element_bottom - viewport_bottom;
+            }
+
+            desired_scroll_y = desired_scroll_y.clamp(0.0, context.max_y);
+            scroll_delta_y = desired_scroll_y - context.scroll_y;
+        }
+
+        if scroll_delta_x.abs() > f32::EPSILON || scroll_delta_y.abs() > f32::EPSILON {
+            requests.push(ScrollRequestMatcher {
+                element_id: context.id.clone(),
+                dx: -scroll_delta_x,
+                dy: -scroll_delta_y,
+            });
+            adjusted.x -= scroll_delta_x;
+            adjusted.y -= scroll_delta_y;
+        }
+    }
+
+    requests
 }
 
 pub fn hit_test_with_flag(registry: &[EventNode], x: f32, y: f32, flag: u16) -> Option<ElementId> {
@@ -491,11 +696,25 @@ fn text_input_descriptor(
     adjusted_rect: Rect,
 ) -> TextInputDescriptor {
     let content = element.base_attrs.content.clone().unwrap_or_default();
+    let content_len = content.chars().count() as u32;
+    let cursor = element
+        .attrs
+        .text_input_cursor
+        .unwrap_or(content_len)
+        .min(content_len);
+    let selection_anchor = element
+        .attrs
+        .text_input_selection_anchor
+        .map(|anchor| anchor.min(content_len))
+        .filter(|anchor| *anchor != cursor);
     let (inset_left, inset_right) = text_content_insets(&element.attrs);
     let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.attrs);
 
     TextInputDescriptor {
         content,
+        content_len,
+        cursor,
+        selection_anchor,
         frame_x: adjusted_rect.x,
         frame_width: adjusted_rect.width,
         inset_left,
@@ -568,6 +787,7 @@ impl EventProcessor {
     pub fn new() -> Self {
         Self {
             registry: Vec::new(),
+            registry_v2: EventRegistryV2::default(),
             pressed_id: None,
             pending_press_id: None,
             hovered_id: None,
@@ -586,6 +806,7 @@ impl EventProcessor {
 
     pub fn rebuild_registry(&mut self, registry: Vec<EventNode>) {
         self.registry = registry;
+        self.registry_v2 = EventRegistryV2::from_event_nodes(&self.registry);
 
         if let Some(hover) = self.hovered_scrollbar_thumb.as_ref() {
             let still_valid = self.registry.iter().any(|node| {
@@ -769,7 +990,7 @@ impl EventProcessor {
     pub(crate) fn detect_mouse_button_event(
         &mut self,
         event: &InputEvent,
-    ) -> Option<(ElementId, Atom)> {
+    ) -> Option<(ElementId, dispatch_outcome::ElementEventKind)> {
         let InputEvent::CursorButton {
             button,
             action,
@@ -801,17 +1022,22 @@ impl EventProcessor {
             _ => return None,
         }
 
-        let (flag, event_atom) = match *action {
-            crate::input::ACTION_PRESS => (EVENT_MOUSE_DOWN, mouse_down()),
-            crate::input::ACTION_RELEASE => (EVENT_MOUSE_UP, mouse_up()),
+        let (flag, kind) = match *action {
+            crate::input::ACTION_PRESS => {
+                (EVENT_MOUSE_DOWN, dispatch_outcome::ElementEventKind::MouseDown)
+            }
+            crate::input::ACTION_RELEASE => (EVENT_MOUSE_UP, dispatch_outcome::ElementEventKind::MouseUp),
             _ => return None,
         };
 
         let hit = hit_test_with_flag(&self.registry, *x, *y, flag)?;
-        Some((hit, event_atom))
+        Some((hit, kind))
     }
 
-    pub(crate) fn handle_hover_event(&mut self, event: &InputEvent) -> Vec<(ElementId, Atom)> {
+    pub(crate) fn handle_hover_event(
+        &mut self,
+        event: &InputEvent,
+    ) -> Vec<(ElementId, dispatch_outcome::ElementEventKind)> {
         let mut emitted = Vec::new();
 
         match event {
@@ -823,13 +1049,13 @@ impl EventProcessor {
                     if let Some(previous) = self.hovered_id.take()
                         && self.node_has_flag(&previous, EVENT_MOUSE_LEAVE)
                     {
-                        emitted.push((previous, mouse_leave()));
+                        emitted.push((previous, dispatch_outcome::ElementEventKind::MouseLeave));
                     }
 
                     if let Some(new_id) = hit.clone()
                         && self.node_has_flag(&new_id, EVENT_MOUSE_ENTER)
                     {
-                        emitted.push((new_id.clone(), mouse_enter()));
+                        emitted.push((new_id.clone(), dispatch_outcome::ElementEventKind::MouseEnter));
                     }
 
                     self.hovered_id = hit;
@@ -838,7 +1064,7 @@ impl EventProcessor {
                 if let Some(current) = self.hovered_id.as_ref()
                     && self.node_has_flag(current, EVENT_MOUSE_MOVE)
                 {
-                    emitted.push((current.clone(), mouse_move()));
+                    emitted.push((current.clone(), dispatch_outcome::ElementEventKind::MouseMove));
                 }
             }
             InputEvent::CursorEntered { entered } => {
@@ -846,7 +1072,7 @@ impl EventProcessor {
                     && let Some(previous) = self.hovered_id.take()
                     && self.node_has_flag(&previous, EVENT_MOUSE_LEAVE)
                 {
-                    emitted.push((previous, mouse_leave()));
+                    emitted.push((previous, dispatch_outcome::ElementEventKind::MouseLeave));
                 }
             }
             _ => {}
@@ -883,7 +1109,7 @@ impl EventProcessor {
                     None
                 } else {
                     let reverse = *mods & MOD_SHIFT != 0;
-                    self.cycle_visible_focus(reverse).map(Some)
+                    self.cycle_focus(reverse).map(Some)
                 }
             }
             InputEvent::Focused { focused } if !*focused => {
@@ -1011,19 +1237,11 @@ impl EventProcessor {
         event: &InputEvent,
     ) -> Option<(ElementId, TextInputEditRequest)> {
         let focused_id = self.focused_text_input_id()?.clone();
+        let descriptor = self.text_input_descriptor(&focused_id)?;
 
         match event {
             InputEvent::Key { key, action, mods } if *action == ACTION_PRESS => {
-                let extend_selection = *mods & MOD_SHIFT != 0;
-                let request = match key.as_str() {
-                    "left" => Some(TextInputEditRequest::MoveLeft { extend_selection }),
-                    "right" => Some(TextInputEditRequest::MoveRight { extend_selection }),
-                    "home" => Some(TextInputEditRequest::MoveHome { extend_selection }),
-                    "end" => Some(TextInputEditRequest::MoveEnd { extend_selection }),
-                    "backspace" => Some(TextInputEditRequest::Backspace),
-                    "delete" => Some(TextInputEditRequest::Delete),
-                    _ => None,
-                }?;
+                let request = self.text_input_key_edit_request(descriptor, key, *mods)?;
 
                 Some((focused_id, request))
             }
@@ -1068,6 +1286,211 @@ impl EventProcessor {
         }
     }
 
+    fn text_input_descriptor(&self, id: &ElementId) -> Option<&TextInputDescriptor> {
+        self.registry
+            .iter()
+            .find(|node| node.id == *id)
+            .and_then(|node| node.text_input.as_ref())
+    }
+
+    fn focused_text_input_descriptor(&self) -> Option<&TextInputDescriptor> {
+        let focused_id = self.focused_text_input_id()?;
+        self.text_input_descriptor(&focused_id)
+    }
+
+    fn text_input_key_edit_request(
+        &self,
+        descriptor: &TextInputDescriptor,
+        key: &str,
+        mods: u8,
+    ) -> Option<TextInputEditRequest> {
+        let extend_selection = mods & MOD_SHIFT != 0;
+        let has_selection = descriptor
+            .selection_anchor
+            .is_some_and(|anchor| anchor != descriptor.cursor);
+
+        match key {
+            "left" => {
+                let can_move = if extend_selection {
+                    descriptor.cursor > 0
+                } else {
+                    descriptor.cursor > 0 || has_selection
+                };
+                if can_move {
+                    Some(TextInputEditRequest::MoveLeft { extend_selection })
+                } else {
+                    None
+                }
+            }
+            "right" => {
+                let can_move = if extend_selection {
+                    descriptor.cursor < descriptor.content_len
+                } else {
+                    descriptor.cursor < descriptor.content_len || has_selection
+                };
+                if can_move {
+                    Some(TextInputEditRequest::MoveRight { extend_selection })
+                } else {
+                    None
+                }
+            }
+            "home" => {
+                let can_move = if extend_selection {
+                    descriptor.cursor > 0
+                } else {
+                    descriptor.cursor > 0 || has_selection
+                };
+                if can_move {
+                    Some(TextInputEditRequest::MoveHome { extend_selection })
+                } else {
+                    None
+                }
+            }
+            "end" => {
+                let can_move = if extend_selection {
+                    descriptor.cursor < descriptor.content_len
+                } else {
+                    descriptor.cursor < descriptor.content_len || has_selection
+                };
+                if can_move {
+                    Some(TextInputEditRequest::MoveEnd { extend_selection })
+                } else {
+                    None
+                }
+            }
+            "backspace" => Some(TextInputEditRequest::Backspace),
+            "delete" => Some(TextInputEditRequest::Delete),
+            _ => None,
+        }
+    }
+
+    fn preview_text_char_len(content: &str) -> u32 {
+        content.chars().count() as u32
+    }
+
+    fn preview_char_to_byte_index(content: &str, char_index: u32) -> usize {
+        content
+            .char_indices()
+            .nth(char_index as usize)
+            .map(|(idx, _)| idx)
+            .unwrap_or(content.len())
+    }
+
+    fn preview_selected_range(
+        cursor: u32,
+        selection_anchor: Option<u32>,
+        content_len: u32,
+    ) -> Option<(u32, u32)> {
+        let cursor = cursor.min(content_len);
+        let anchor = selection_anchor?.min(content_len);
+        if anchor == cursor {
+            return None;
+        }
+
+        Some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    fn preview_next_content_for_edit(
+        descriptor: &TextInputDescriptor,
+        request: &TextInputEditRequest,
+    ) -> Option<String> {
+        let content_len = Self::preview_text_char_len(&descriptor.content);
+        let cursor = descriptor.cursor.min(content_len);
+        let selection_anchor = descriptor
+            .selection_anchor
+            .map(|anchor| anchor.min(content_len));
+
+        match request {
+            TextInputEditRequest::Insert(text) => {
+                if text.is_empty() {
+                    return None;
+                }
+
+                let (start, end) =
+                    Self::preview_selected_range(cursor, selection_anchor, content_len)
+                        .unwrap_or((cursor, cursor));
+
+                let mut next = descriptor.content.clone();
+                let start_byte = Self::preview_char_to_byte_index(&next, start);
+                let end_byte = Self::preview_char_to_byte_index(&next, end);
+                next.replace_range(start_byte..end_byte, text);
+
+                if next == descriptor.content {
+                    None
+                } else {
+                    Some(next)
+                }
+            }
+            TextInputEditRequest::Backspace => {
+                let (start, end) =
+                    Self::preview_selected_range(cursor, selection_anchor, content_len)
+                        .unwrap_or((cursor, cursor));
+
+                if start != end {
+                    let mut next = descriptor.content.clone();
+                    let start_byte = Self::preview_char_to_byte_index(&next, start);
+                    let end_byte = Self::preview_char_to_byte_index(&next, end);
+                    next.replace_range(start_byte..end_byte, "");
+                    return Some(next);
+                }
+
+                if cursor == 0 {
+                    return None;
+                }
+
+                let mut next = descriptor.content.clone();
+                let start_byte = Self::preview_char_to_byte_index(&next, cursor - 1);
+                let end_byte = Self::preview_char_to_byte_index(&next, cursor);
+                next.replace_range(start_byte..end_byte, "");
+                Some(next)
+            }
+            TextInputEditRequest::Delete => {
+                let (start, end) =
+                    Self::preview_selected_range(cursor, selection_anchor, content_len)
+                        .unwrap_or((cursor, cursor));
+
+                if start != end {
+                    let mut next = descriptor.content.clone();
+                    let start_byte = Self::preview_char_to_byte_index(&next, start);
+                    let end_byte = Self::preview_char_to_byte_index(&next, end);
+                    next.replace_range(start_byte..end_byte, "");
+                    return Some(next);
+                }
+
+                if cursor >= content_len {
+                    return None;
+                }
+
+                let mut next = descriptor.content.clone();
+                let start_byte = Self::preview_char_to_byte_index(&next, cursor);
+                let end_byte = Self::preview_char_to_byte_index(&next, cursor + 1);
+                next.replace_range(start_byte..end_byte, "");
+                Some(next)
+            }
+            TextInputEditRequest::MoveLeft { .. }
+            | TextInputEditRequest::MoveRight { .. }
+            | TextInputEditRequest::MoveHome { .. }
+            | TextInputEditRequest::MoveEnd { .. } => None,
+        }
+    }
+
+    fn push_unique_scroll_request(
+        out: &mut dispatch_outcome::DispatchOutcome,
+        target: &ElementId,
+        dx: f32,
+        dy: f32,
+    ) {
+        let request = dispatch_outcome::ScrollRequestOut {
+            target: dispatch_outcome::node_key(target),
+            dx: dispatch_outcome::milli(dx),
+            dy: dispatch_outcome::milli(dy),
+        };
+
+        if !out.scroll_requests.contains(&request) {
+            out.scroll_requests.push(request);
+        }
+    }
+
     pub fn focused_text_input_id(&self) -> Option<ElementId> {
         let focused_id = self.focused_id.as_ref()?.clone();
         if self.node_has_flag(&focused_id, EVENT_TEXT_INPUT) {
@@ -1081,7 +1504,415 @@ impl EventProcessor {
         self.focused_id.clone()
     }
 
-    fn cycle_visible_focus(&self, reverse: bool) -> Option<ElementId> {
+    pub(crate) fn set_focused_id_for_runtime(&mut self, next_focus: Option<ElementId>) {
+        self.focused_id = next_focus;
+        if self.focused_id.is_none() {
+            self.text_input_drag_id = None;
+        }
+    }
+
+    fn apply_v2_focus_change_action(
+        &self,
+        next: Option<u32>,
+        out: &mut dispatch_outcome::DispatchOutcome,
+    ) {
+        out.focus_change =
+            Some(next.and_then(|idx| self.registry_v2.node_id(idx).map(dispatch_outcome::node_key)));
+    }
+
+    fn apply_v2_scroll_action(
+        &self,
+        element: u32,
+        dx: f32,
+        dy: f32,
+        out: &mut dispatch_outcome::DispatchOutcome,
+    ) {
+        if let Some(target_id) = self.registry_v2.node_id(element) {
+            Self::push_unique_scroll_request(out, target_id, dx, dy);
+        }
+    }
+
+    fn v2_element_event_kind_for_trigger(
+        trigger: TriggerId,
+    ) -> Option<dispatch_outcome::ElementEventKind> {
+        match trigger {
+            TriggerId::KeyEnterPress => Some(dispatch_outcome::ElementEventKind::Press),
+            _ => None,
+        }
+    }
+
+    fn apply_v2_emit_event_action(
+        &self,
+        trigger: TriggerId,
+        element: u32,
+        out: &mut dispatch_outcome::DispatchOutcome,
+    ) -> bool {
+        let Some(kind) = Self::v2_element_event_kind_for_trigger(trigger) else {
+            return false;
+        };
+        let Some(target_id) = self.registry_v2.node_id(element) else {
+            return false;
+        };
+
+        out.element_events.push(dispatch_outcome::ElementEventOut {
+            target: dispatch_outcome::node_key(target_id),
+            kind,
+            payload: None,
+        });
+
+        trigger == TriggerId::KeyEnterPress && kind == dispatch_outcome::ElementEventKind::Press
+    }
+
+    fn apply_v2_keyboard_focus_actions(
+        &self,
+        trigger: TriggerId,
+        actions: &[DispatchRuleAction],
+        out: &mut dispatch_outcome::DispatchOutcome,
+    ) -> bool {
+        let mut enter_press_emitted = false;
+
+        for action in actions {
+            match action {
+                DispatchRuleAction::FocusChange { next } => {
+                    self.apply_v2_focus_change_action(*next, out);
+                }
+                DispatchRuleAction::ScrollRequest { element, dx, dy } => {
+                    self.apply_v2_scroll_action(*element, *dx, *dy, out);
+                }
+                DispatchRuleAction::EmitElementEvent { element } => {
+                    if self.apply_v2_emit_event_action(trigger, *element, out) {
+                        enter_press_emitted = true;
+                    }
+                }
+                DispatchRuleAction::TextCommand { .. }
+                | DispatchRuleAction::TextEdit { .. }
+                | DispatchRuleAction::TextPreedit { .. } => {}
+            }
+        }
+
+        enter_press_emitted
+    }
+
+    fn apply_v2_keyboard_focus_job_for_event(
+        &self,
+        event: &InputEvent,
+        focused: Option<&ElementId>,
+        out: &mut dispatch_outcome::DispatchOutcome,
+    ) -> (Option<TriggerId>, bool) {
+        let trigger = self.v2_trigger_for_input_event(event);
+
+        let mods = match event {
+            InputEvent::Key { mods, .. } => *mods,
+            _ => 0,
+        };
+
+        let focused_idx = focused.and_then(|id| self.registry_v2.node_idx(id));
+        let ctx = DispatchCtx {
+            mods,
+            focused: focused_idx,
+            cursor: None,
+            runtime_flags: 0,
+        };
+
+        let Some(trigger) = trigger else {
+            return (None, false);
+        };
+
+        let job = if let Some(target) = focused_idx {
+            DispatchJob::Targeted {
+                trigger,
+                target,
+                ctx,
+            }
+        } else {
+            DispatchJob::Untargeted { trigger, ctx }
+        };
+
+        let enter_press_emitted_by_v2 = self
+            .registry_v2
+            .resolve_actions_for_job(&job)
+            .is_some_and(|actions| self.apply_v2_keyboard_focus_actions(trigger, actions, out));
+
+        (Some(trigger), enter_press_emitted_by_v2)
+    }
+
+    pub(crate) fn v2_trigger_for_input_event(&self, event: &InputEvent) -> Option<TriggerId> {
+        match event {
+            InputEvent::Key { key, action, .. } if *action == ACTION_PRESS => {
+                if key.eq_ignore_ascii_case("left") {
+                    Some(TriggerId::KeyLeftPress)
+                } else if key.eq_ignore_ascii_case("right") {
+                    Some(TriggerId::KeyRightPress)
+                } else if key.eq_ignore_ascii_case("up") {
+                    Some(TriggerId::KeyUpPress)
+                } else if key.eq_ignore_ascii_case("down") {
+                    Some(TriggerId::KeyDownPress)
+                } else if key.eq_ignore_ascii_case("tab") {
+                    Some(TriggerId::KeyTabPress)
+                } else if key.eq_ignore_ascii_case("enter") {
+                    Some(TriggerId::KeyEnterPress)
+                } else if key.eq_ignore_ascii_case("home") {
+                    Some(TriggerId::KeyHomePress)
+                } else if key.eq_ignore_ascii_case("end") {
+                    Some(TriggerId::KeyEndPress)
+                } else if key.eq_ignore_ascii_case("backspace") {
+                    Some(TriggerId::KeyBackspacePress)
+                } else if key.eq_ignore_ascii_case("delete") {
+                    Some(TriggerId::KeyDeletePress)
+                } else {
+                    None
+                }
+            }
+            InputEvent::TextCommit { .. } => Some(TriggerId::TextCommit),
+            InputEvent::TextPreedit { .. } => Some(TriggerId::TextPreedit),
+            InputEvent::TextPreeditClear => Some(TriggerId::TextPreeditClear),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn preview_v2_keyboard_focus_outcome(
+        &self,
+        event: &InputEvent,
+        focused: Option<&ElementId>,
+    ) -> Option<dispatch_outcome::DispatchOutcome> {
+        let previous_focus = focused.cloned();
+
+        let mut out = dispatch_outcome::DispatchOutcome::default();
+        let (trigger, enter_press_emitted_by_v2) =
+            self.apply_v2_keyboard_focus_job_for_event(event, focused, &mut out);
+
+        let mut shadow = self.clone();
+
+        if let Some(clicked_id) = shadow.detect_click(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&clicked_id),
+                kind: dispatch_outcome::ElementEventKind::Click,
+                payload: None,
+            });
+        }
+
+        let allow_fallback_enter_press =
+            !(trigger == Some(TriggerId::KeyEnterPress) && enter_press_emitted_by_v2);
+        if allow_fallback_enter_press && let Some(pressed_id) = shadow.detect_press(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&pressed_id),
+                kind: dispatch_outcome::ElementEventKind::Press,
+                payload: None,
+            });
+        }
+
+        if let Some((mouse_id, kind)) = shadow.detect_mouse_button_event(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&mouse_id),
+                kind,
+                payload: None,
+            });
+        }
+
+        for (hover_id, kind) in shadow.handle_hover_event(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&hover_id),
+                kind,
+                payload: None,
+            });
+        }
+
+        let mut focus_transition_events_emitted = false;
+        if let Some(next_focus) = shadow.text_input_focus_request(event) {
+            out.focus_change = Some(next_focus.as_ref().map(dispatch_outcome::node_key));
+
+            if previous_focus != next_focus {
+                if let Some(prev_id) = previous_focus.as_ref() {
+                    out.element_events.push(dispatch_outcome::ElementEventOut {
+                        target: dispatch_outcome::node_key(prev_id),
+                        kind: dispatch_outcome::ElementEventKind::Blur,
+                        payload: None,
+                    });
+                }
+
+                if let Some(next_id) = next_focus.as_ref() {
+                    out.element_events.push(dispatch_outcome::ElementEventOut {
+                        target: dispatch_outcome::node_key(next_id),
+                        kind: dispatch_outcome::ElementEventKind::Focus,
+                        payload: None,
+                    });
+                }
+
+                focus_transition_events_emitted = true;
+            }
+
+            if let Some(focused_id) = next_focus.as_ref() {
+                for (id, dx, dy) in shadow.focus_reveal_scroll_requests(focused_id) {
+                    Self::push_unique_scroll_request(&mut out, &id, dx, dy);
+                }
+            }
+        }
+
+        if !focus_transition_events_emitted && let Some(next_focus) = out.focus_change.as_ref() {
+            let previous_focus_key = previous_focus.as_ref().map(dispatch_outcome::node_key);
+            if previous_focus_key != *next_focus {
+                if let Some(prev_key) = previous_focus_key {
+                    out.element_events.push(dispatch_outcome::ElementEventOut {
+                        target: prev_key,
+                        kind: dispatch_outcome::ElementEventKind::Blur,
+                        payload: None,
+                    });
+                }
+
+                if let Some(next_key) = next_focus.as_ref() {
+                    out.element_events.push(dispatch_outcome::ElementEventOut {
+                        target: next_key.clone(),
+                        kind: dispatch_outcome::ElementEventKind::Focus,
+                        payload: None,
+                    });
+                }
+            }
+        }
+
+        for (id, dx, dy) in shadow.scroll_requests(event) {
+            Self::push_unique_scroll_request(&mut out, &id, dx, dy);
+        }
+
+        for request in shadow.scrollbar_thumb_drag_requests(event) {
+            match request {
+                ScrollbarThumbDragRequest::X { element_id, dx } => {
+                    out.scrollbar_thumb_drag_requests
+                        .push(dispatch_outcome::ScrollbarThumbDragReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::X,
+                            delta: dispatch_outcome::milli(dx),
+                        });
+                }
+                ScrollbarThumbDragRequest::Y { element_id, dy } => {
+                    out.scrollbar_thumb_drag_requests
+                        .push(dispatch_outcome::ScrollbarThumbDragReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::Y,
+                            delta: dispatch_outcome::milli(dy),
+                        });
+                }
+            }
+        }
+
+        for request in shadow.scrollbar_hover_requests(event) {
+            match request {
+                ScrollbarHoverRequest::X {
+                    element_id,
+                    hovered,
+                } => {
+                    out.scrollbar_hover_requests
+                        .push(dispatch_outcome::ScrollbarHoverReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::X,
+                            hovered,
+                        });
+                }
+                ScrollbarHoverRequest::Y {
+                    element_id,
+                    hovered,
+                } => {
+                    out.scrollbar_hover_requests
+                        .push(dispatch_outcome::ScrollbarHoverReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::Y,
+                            hovered,
+                        });
+                }
+            }
+        }
+
+        for request in shadow.mouse_over_requests(event) {
+            match request {
+                MouseOverRequest::SetMouseOverActive { element_id, active } => {
+                    out.style_runtime_requests
+                        .push(dispatch_outcome::StyleRuntimeReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            kind: dispatch_outcome::StyleRuntimeKind::MouseOver,
+                            active,
+                        });
+                }
+            }
+        }
+
+        for request in shadow.mouse_down_requests(event) {
+            match request {
+                MouseDownRequest::SetMouseDownActive { element_id, active } => {
+                    out.style_runtime_requests
+                        .push(dispatch_outcome::StyleRuntimeReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            kind: dispatch_outcome::StyleRuntimeKind::MouseDown,
+                            active,
+                        });
+                }
+            }
+        }
+
+        if let Some((element_id, request)) = self.text_input_command_request(event) {
+            out.text_command_requests
+                .push(dispatch_outcome::TextCommandReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    request,
+                });
+        }
+
+        if let Some((element_id, request)) = self.text_input_edit_request(event) {
+            out.text_edit_requests.push(dispatch_outcome::TextEditReqOut {
+                target: dispatch_outcome::node_key(&element_id),
+                request: request.clone(),
+            });
+
+            if let Some(descriptor) = self.text_input_descriptor(&element_id)
+                && let Some(next_content) =
+                    Self::preview_next_content_for_edit(descriptor, &request)
+            {
+                out.element_events.push(dispatch_outcome::ElementEventOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    kind: dispatch_outcome::ElementEventKind::Change,
+                    payload: Some(next_content),
+                });
+            }
+        }
+
+        if let Some((element_id, request)) = self.text_input_preedit_request(event) {
+            out.text_preedit_requests
+                .push(dispatch_outcome::TextPreeditReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    request,
+                });
+        }
+
+        let has_output = out.focus_change.is_some()
+            || !out.element_events.is_empty()
+            || !out.scroll_requests.is_empty()
+            || !out.text_command_requests.is_empty()
+            || !out.text_edit_requests.is_empty()
+            || !out.text_preedit_requests.is_empty()
+            || !out.scrollbar_thumb_drag_requests.is_empty()
+            || !out.scrollbar_hover_requests.is_empty()
+            || !out.style_runtime_requests.is_empty();
+
+        if has_output { Some(out) } else { None }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_v2(&self) -> &EventRegistryV2 {
+        &self.registry_v2
+    }
+
+    pub fn focus_reveal_scroll_requests(&self, id: &ElementId) -> Vec<(ElementId, f32, f32)> {
+        self.registry
+            .iter()
+            .find(|node| node.id == *id)
+            .map(|node| {
+                node.focus_reveal_scrolls
+                    .iter()
+                    .map(|request| (request.element_id.clone(), request.dx, request.dy))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn cycle_focus(&self, reverse: bool) -> Option<ElementId> {
         let focusable: Vec<ElementId> = self
             .registry
             .iter()
@@ -1308,7 +2139,83 @@ impl EventProcessor {
         let mut requests = Vec::new();
         requests.extend(self.handle_drag_scroll_requests(event));
         requests.extend(self.handle_scroll_requests(event));
+        requests.extend(self.handle_key_scroll_requests(event));
         requests
+    }
+
+    fn handle_key_scroll_requests(&self, event: &InputEvent) -> Vec<(ElementId, f32, f32)> {
+        let InputEvent::Key { key, action, mods } = event else {
+            return Vec::new();
+        };
+
+        if *action != ACTION_PRESS {
+            return Vec::new();
+        }
+
+        if *mods & (MOD_CTRL | MOD_ALT | MOD_META) != 0 {
+            return Vec::new();
+        }
+
+        let direction = match key.as_str() {
+            "left" => KeyScrollDirection::Left,
+            "right" => KeyScrollDirection::Right,
+            "up" => KeyScrollDirection::Up,
+            "down" => KeyScrollDirection::Down,
+            _ => return Vec::new(),
+        };
+
+        if let Some(descriptor) = self.focused_text_input_descriptor() {
+            let text_key = match direction {
+                KeyScrollDirection::Left => "left",
+                KeyScrollDirection::Right => "right",
+                KeyScrollDirection::Up => "up",
+                KeyScrollDirection::Down => "down",
+            };
+
+            if self
+                .text_input_key_edit_request(descriptor, text_key, *mods)
+                .is_some()
+            {
+                return Vec::new();
+            }
+        }
+
+        let target = if let Some(focused_id) = self.focused_id.as_ref() {
+            self.registry
+                .iter()
+                .find(|node| node.id == *focused_id)
+                .and_then(|node| node.key_scroll_targets.for_direction(direction))
+                .or_else(|| self.first_visible_scroll_target(direction))
+        } else {
+            self.first_visible_scroll_target(direction)
+        };
+
+        let Some(target) = target else {
+            return Vec::new();
+        };
+
+        let (dx, dy) = match direction {
+            KeyScrollDirection::Left => (SCROLL_LINE_PIXELS, 0.0),
+            KeyScrollDirection::Right => (-SCROLL_LINE_PIXELS, 0.0),
+            KeyScrollDirection::Up => (0.0, SCROLL_LINE_PIXELS),
+            KeyScrollDirection::Down => (0.0, -SCROLL_LINE_PIXELS),
+        };
+
+        vec![(target, dx, dy)]
+    }
+
+    fn first_visible_scroll_target(&self, direction: KeyScrollDirection) -> Option<ElementId> {
+        let flag = match direction {
+            KeyScrollDirection::Left => EVENT_SCROLL_X_NEG,
+            KeyScrollDirection::Right => EVENT_SCROLL_X_POS,
+            KeyScrollDirection::Up => EVENT_SCROLL_Y_NEG,
+            KeyScrollDirection::Down => EVENT_SCROLL_Y_POS,
+        };
+
+        self.registry
+            .iter()
+            .find(|node| node.visible && (node.flags & flag != 0))
+            .map(|node| node.id.clone())
     }
 
     fn handle_scrollbar_button_requests(
@@ -1618,8 +2525,31 @@ pub(crate) fn blur_atom() -> Atom {
     blur()
 }
 
+pub(crate) fn mouse_down_atom() -> Atom {
+    mouse_down()
+}
+
+pub(crate) fn mouse_up_atom() -> Atom {
+    mouse_up()
+}
+
+pub(crate) fn mouse_enter_atom() -> Atom {
+    mouse_enter()
+}
+
+pub(crate) fn mouse_leave_atom() -> Atom {
+    mouse_leave()
+}
+
+pub(crate) fn mouse_move_atom() -> Atom {
+    mouse_move()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::registry_v2::{
+        DispatchCtx, DispatchJob, DispatchRuleAction, EventRegistryV2, ScrollDirection, TriggerId,
+    };
     use super::*;
     use crate::tree::attrs::Attrs;
     use crate::tree::element::{Element, ElementKind, ElementTree};
@@ -1650,6 +2580,7 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
+            visible: true,
             flags: EVENT_CLICK
                 | EVENT_MOUSE_DOWN
                 | EVENT_MOUSE_UP
@@ -1685,6 +2616,8 @@ mod tests {
                 scroll_offset: 40.0,
                 scroll_range: 140.0,
             }),
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }
     }
@@ -1698,6 +2631,7 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
+            visible: true,
             flags: EVENT_SCROLL_X_NEG
                 | EVENT_SCROLL_X_POS
                 | EVENT_SCROLL_Y_NEG
@@ -1751,6 +2685,8 @@ mod tests {
                 scroll_offset: 40.0,
                 scroll_range: 140.0,
             }),
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }
     }
@@ -1764,6 +2700,7 @@ mod tests {
                 width,
                 height,
             },
+            visible: true,
             flags: EVENT_MOUSE_OVER_STYLE,
             self_rect: Rect {
                 x,
@@ -1776,6 +2713,8 @@ mod tests {
             clip_radii: None,
             scrollbar_x: None,
             scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }
     }
@@ -1789,6 +2728,7 @@ mod tests {
                 width,
                 height,
             },
+            visible: true,
             flags: EVENT_MOUSE_DOWN_STYLE,
             self_rect: Rect {
                 x,
@@ -1801,6 +2741,42 @@ mod tests {
             clip_radii: None,
             scrollbar_x: None,
             scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
+            text_input: None,
+        }
+    }
+
+    fn make_pointer_events_node(id: u8, x: f32, y: f32, width: f32, height: f32) -> EventNode {
+        EventNode {
+            id: ElementId::from_term_bytes(vec![id]),
+            hit_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            visible: true,
+            flags: EVENT_CLICK
+                | EVENT_PRESS
+                | EVENT_MOUSE_DOWN
+                | EVENT_MOUSE_UP
+                | EVENT_MOUSE_ENTER
+                | EVENT_MOUSE_LEAVE
+                | EVENT_MOUSE_MOVE,
+            self_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            scrollbar_x: None,
+            scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }
     }
@@ -1814,6 +2790,7 @@ mod tests {
                 width,
                 height,
             },
+            visible: true,
             flags: EVENT_TEXT_INPUT | EVENT_FOCUSABLE,
             self_rect: Rect {
                 x,
@@ -1826,8 +2803,13 @@ mod tests {
             clip_radii: None,
             scrollbar_x: None,
             scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: Some(TextInputDescriptor {
                 content: String::new(),
+                content_len: 0,
+                cursor: 0,
+                selection_anchor: None,
                 frame_x: x,
                 frame_width: width,
                 inset_left: 0.0,
@@ -1852,6 +2834,7 @@ mod tests {
                 width,
                 height,
             },
+            visible: true,
             flags: EVENT_PRESS | EVENT_FOCUSABLE,
             self_rect: Rect {
                 x,
@@ -1864,8 +2847,1220 @@ mod tests {
             clip_radii: None,
             scrollbar_x: None,
             scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }
+    }
+
+    fn make_scroll_target_node(id: u8, visible: bool, flags: u16) -> EventNode {
+        EventNode {
+            id: ElementId::from_term_bytes(vec![id]),
+            hit_rect: if visible {
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 100.0,
+                }
+            } else {
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                }
+            },
+            visible,
+            flags,
+            self_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+            scrollbar_x: None,
+            scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
+            text_input: None,
+        }
+    }
+
+    #[test]
+    fn test_registry_v2_focus_order_matches_current_registry_order() {
+        let registry = vec![
+            make_pressable_node(1, 0.0, 0.0, 20.0, 20.0),
+            make_scroll_target_node(2, true, EVENT_CLICK),
+            make_text_input_node(3, 0.0, 24.0, 120.0, 30.0),
+            make_scroll_target_node(4, false, EVENT_FOCUSABLE),
+        ];
+
+        let expected: Vec<ElementId> = registry
+            .iter()
+            .filter(|node| node.flags & EVENT_FOCUSABLE != 0)
+            .map(|node| node.id.clone())
+            .collect();
+
+        let registry_v2 = EventRegistryV2::from_event_nodes(&registry);
+        assert_eq!(registry_v2.focus_order_ids(), expected);
+    }
+
+    #[test]
+    fn test_registry_v2_first_visible_scrollable_matches_existing_logic() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_scroll_target_node(1, false, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(2, true, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(3, true, EVENT_SCROLL_Y_POS),
+        ];
+
+        let old = processor.first_visible_scroll_target(KeyScrollDirection::Down);
+
+        let registry_v2 = EventRegistryV2::from_event_nodes(&processor.registry);
+        let v2 = registry_v2.first_visible_scrollable_id(ScrollDirection::Down);
+
+        assert_eq!(v2, old);
+    }
+
+    #[test]
+    fn test_registry_v2_pointer_candidates_keep_topmost_first_order() {
+        let registry = vec![
+            make_scroll_target_node(1, true, EVENT_CLICK),
+            make_scroll_target_node(2, true, EVENT_CLICK),
+            make_scroll_target_node(3, true, EVENT_CLICK),
+        ];
+
+        let top_hit = hit_test_with_flag(&registry, 10.0, 10.0, EVENT_CLICK).unwrap();
+        assert_eq!(top_hit, ElementId::from_term_bytes(vec![3]));
+
+        let registry_v2 = EventRegistryV2::from_event_nodes(&registry);
+        let candidate_ids: Vec<ElementId> = registry_v2
+            .pointer_candidates(TriggerId::CursorButtonLeftPress)
+            .iter()
+            .filter_map(|idx| registry_v2.node_id(*idx).cloned())
+            .collect();
+
+        assert_eq!(candidate_ids.first(), Some(&top_hit));
+        assert_eq!(
+            candidate_ids,
+            vec![
+                ElementId::from_term_bytes(vec![3]),
+                ElementId::from_term_bytes(vec![2]),
+                ElementId::from_term_bytes(vec![1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rebuild_registry_populates_v2_indexes() {
+        let mut processor = EventProcessor::new();
+        let registry = vec![
+            make_pressable_node(1, 0.0, 0.0, 20.0, 20.0),
+            make_scroll_target_node(2, true, EVENT_SCROLL_Y_POS),
+        ];
+
+        processor.rebuild_registry(registry);
+
+        let next_focus = processor
+            .registry_v2()
+            .focus_order_next(None, false)
+            .and_then(|idx| processor.registry_v2().node_id(idx).cloned());
+        assert_eq!(next_focus, Some(ElementId::from_term_bytes(vec![1])));
+
+        let first_scroll = processor
+            .registry_v2()
+            .first_visible_scrollable_id(ScrollDirection::Down);
+        assert_eq!(first_scroll, Some(ElementId::from_term_bytes(vec![2])));
+    }
+
+    fn first_scroll_action(
+        registry_v2: &EventRegistryV2,
+        actions: &[DispatchRuleAction],
+    ) -> Option<(ElementId, f32, f32)> {
+        actions.iter().find_map(|action| match action {
+            DispatchRuleAction::ScrollRequest { element, dx, dy } => registry_v2
+                .node_id(*element)
+                .cloned()
+                .map(|id| (id, *dx, *dy)),
+            _ => None,
+        })
+    }
+
+    fn first_focus_change_action(
+        registry_v2: &EventRegistryV2,
+        actions: &[DispatchRuleAction],
+    ) -> Option<ElementId> {
+        actions.iter().find_map(|action| match action {
+            DispatchRuleAction::FocusChange { next: Some(next) } => {
+                registry_v2.node_id(*next).cloned()
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn test_registry_v2_arrow_down_parity_without_focus() {
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            make_scroll_target_node(1, false, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(2, true, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(3, true, EVENT_SCROLL_Y_POS),
+        ]);
+
+        let down = InputEvent::Key {
+            key: "down".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+        let old = processor.handle_key_scroll_requests(&down);
+
+        let v2_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Untargeted {
+                trigger: TriggerId::KeyDownPress,
+                ctx: DispatchCtx::default(),
+            })
+            .expect("v2 should resolve a no-focus arrow rule");
+        let v2 = first_scroll_action(processor.registry_v2(), v2_actions)
+            .expect("v2 should emit a scroll action");
+
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].0, v2.0);
+        assert!((old[0].1 - v2.1).abs() < f32::EPSILON);
+        assert!((old[0].2 - v2.2).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_registry_v2_arrow_uses_focused_directional_matcher_before_fallback() {
+        let focused_id = ElementId::from_term_bytes(vec![10]);
+        let focused_scroll_id = ElementId::from_term_bytes(vec![11]);
+        let fallback_scroll_id = ElementId::from_term_bytes(vec![12]);
+
+        let mut focused = make_pressable_node(10, 0.0, 0.0, 80.0, 30.0);
+        focused.key_scroll_targets.down = Some(focused_scroll_id.clone());
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            focused,
+            make_scroll_target_node(11, true, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(12, true, EVENT_SCROLL_Y_POS),
+        ]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let down = InputEvent::Key {
+            key: "down".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+        let old = processor.handle_key_scroll_requests(&down);
+
+        let focused_idx = processor
+            .registry_v2()
+            .node_idx(&focused_id)
+            .expect("focused node should exist in v2 registry");
+        let v2_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyDownPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            })
+            .expect("v2 should resolve focused directional rule");
+        let v2 = first_scroll_action(processor.registry_v2(), v2_actions)
+            .expect("v2 should emit focused scroll action");
+
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].0, focused_scroll_id);
+        assert_eq!(old[0].0, v2.0);
+        assert_ne!(v2.0, fallback_scroll_id);
+    }
+
+    #[test]
+    fn test_registry_v2_arrow_falls_back_when_focused_has_no_directional_matcher() {
+        let focused_id = ElementId::from_term_bytes(vec![20]);
+        let fallback_scroll_id = ElementId::from_term_bytes(vec![21]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            make_pressable_node(20, 0.0, 0.0, 80.0, 30.0),
+            make_scroll_target_node(21, true, EVENT_SCROLL_Y_POS),
+        ]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let down = InputEvent::Key {
+            key: "down".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+        let old = processor.handle_key_scroll_requests(&down);
+
+        let focused_idx = processor
+            .registry_v2()
+            .node_idx(&focused_id)
+            .expect("focused node should exist in v2 registry");
+        let v2_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyDownPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            })
+            .expect("v2 should resolve fallback arrow rule");
+        let v2 = first_scroll_action(processor.registry_v2(), v2_actions)
+            .expect("v2 should emit fallback scroll action");
+
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].0, fallback_scroll_id);
+        assert_eq!(old[0].0, v2.0);
+    }
+
+    #[test]
+    fn test_registry_v2_tab_focus_change_parity() {
+        let id1 = ElementId::from_term_bytes(vec![30]);
+        let id2 = ElementId::from_term_bytes(vec![31]);
+        let id3 = ElementId::from_term_bytes(vec![32]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            make_pressable_node(30, 0.0, 0.0, 80.0, 30.0),
+            make_pressable_node(31, 0.0, 40.0, 80.0, 30.0),
+            make_pressable_node(32, 0.0, 80.0, 80.0, 30.0),
+        ]);
+
+        processor.focused_id = Some(id2.clone());
+        let old_next = processor.cycle_focus(false);
+
+        let focused_idx = processor
+            .registry_v2()
+            .node_idx(&id2)
+            .expect("focused node should exist in v2 registry");
+        let v2_next_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyTabPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            })
+            .expect("v2 should resolve tab forward rule");
+        let v2_next = first_focus_change_action(processor.registry_v2(), v2_next_actions)
+            .expect("focus action");
+
+        assert_eq!(old_next, Some(id3.clone()));
+        assert_eq!(Some(v2_next), old_next);
+
+        let old_prev = processor.cycle_focus(true);
+        let v2_prev_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyTabPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    mods: MOD_SHIFT,
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            })
+            .expect("v2 should resolve tab reverse rule");
+        let v2_prev = first_focus_change_action(processor.registry_v2(), v2_prev_actions)
+            .expect("focus action");
+
+        assert_eq!(old_prev, Some(id1.clone()));
+        assert_eq!(Some(v2_prev), old_prev);
+    }
+
+    #[test]
+    fn test_registry_v2_enter_press_parity_for_focused_pressable() {
+        let focused_id = ElementId::from_term_bytes(vec![40]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_pressable_node(40, 0.0, 0.0, 80.0, 30.0)]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let enter = InputEvent::Key {
+            key: "enter".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+        let old = processor.detect_press(&enter);
+
+        let focused_idx = processor
+            .registry_v2()
+            .node_idx(&focused_id)
+            .expect("focused node should exist in v2 registry");
+        let v2_actions = processor
+            .registry_v2()
+            .resolve_actions_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyEnterPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            })
+            .expect("v2 should resolve enter press rule");
+
+        let emitted_id = v2_actions.iter().find_map(|action| match action {
+            DispatchRuleAction::EmitElementEvent { element } => {
+                processor.registry_v2().node_id(*element).cloned()
+            }
+            _ => None,
+        });
+
+        assert_eq!(old, Some(focused_id.clone()));
+        assert_eq!(emitted_id, Some(focused_id));
+
+        let ctrl_enter = InputEvent::Key {
+            key: "enter".to_string(),
+            action: ACTION_PRESS,
+            mods: MOD_CTRL,
+        };
+        let old_blocked = processor.detect_press(&ctrl_enter);
+        let v2_blocked = processor
+            .registry_v2()
+            .resolve_winner_for_job(&DispatchJob::Targeted {
+                trigger: TriggerId::KeyEnterPress,
+                target: focused_idx,
+                ctx: DispatchCtx {
+                    mods: MOD_CTRL,
+                    focused: Some(focused_idx),
+                    ..DispatchCtx::default()
+                },
+            });
+
+        assert_eq!(old_blocked, None);
+        assert_eq!(v2_blocked, None);
+    }
+
+    #[test]
+    fn test_registry_v2_keyboard_bucket_population_scaffold() {
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            make_pressable_node(50, 0.0, 0.0, 80.0, 30.0),
+            make_scroll_target_node(51, true, EVENT_SCROLL_Y_POS),
+        ]);
+
+        let (targeted_enter, ordered_enter) = processor
+            .registry_v2()
+            .debug_bucket_sizes(TriggerId::KeyEnterPress);
+        assert!(targeted_enter >= 1);
+        assert_eq!(ordered_enter, 0);
+
+        let (targeted_down, ordered_down) = processor
+            .registry_v2()
+            .debug_bucket_sizes(TriggerId::KeyDownPress);
+        assert_eq!(targeted_down, 0);
+        assert!(ordered_down >= 1);
+    }
+
+    #[test]
+    fn test_v2_preview_text_command_request_parity() {
+        let focused_id = ElementId::from_term_bytes(vec![61]);
+        let mut node = make_text_input_node(61, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abc".to_string();
+            descriptor.content_len = 3;
+            descriptor.cursor = 3;
+            descriptor.selection_anchor = None;
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::Key {
+            key: "a".to_string(),
+            action: ACTION_PRESS,
+            mods: MOD_CTRL,
+        };
+
+        let old = processor.text_input_command_request(&event).unwrap();
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce command request outcome");
+
+        assert_eq!(predicted.text_command_requests.len(), 1);
+        assert_eq!(
+            predicted.text_command_requests[0].target,
+            dispatch_outcome::node_key(&old.0)
+        );
+        assert_eq!(predicted.text_command_requests[0].request, old.1);
+    }
+
+    #[test]
+    fn test_v2_preview_text_edit_request_parity() {
+        let focused_id = ElementId::from_term_bytes(vec![62]);
+        let mut node = make_text_input_node(62, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abc".to_string();
+            descriptor.content_len = 3;
+            descriptor.cursor = 3;
+            descriptor.selection_anchor = None;
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id);
+
+        let event = InputEvent::Key {
+            key: "backspace".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let old = processor.text_input_edit_request(&event).unwrap();
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce edit request outcome");
+
+        assert_eq!(predicted.text_edit_requests.len(), 1);
+        assert_eq!(
+            predicted.text_edit_requests[0].target,
+            dispatch_outcome::node_key(&old.0)
+        );
+        assert_eq!(predicted.text_edit_requests[0].request, old.1);
+    }
+
+    #[test]
+    fn test_v2_preview_text_commit_emits_change_event_payload() {
+        let focused_id = ElementId::from_term_bytes(vec![68]);
+        let mut node = make_text_input_node(68, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "ab".to_string();
+            descriptor.content_len = 2;
+            descriptor.cursor = 2;
+            descriptor.selection_anchor = None;
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::TextCommit {
+            text: "x".to_string(),
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce text commit change event");
+
+        let change_events: Vec<&dispatch_outcome::ElementEventOut> = predicted
+            .element_events
+            .iter()
+            .filter(|event| event.kind == dispatch_outcome::ElementEventKind::Change)
+            .collect();
+
+        assert_eq!(change_events.len(), 1);
+        assert_eq!(change_events[0].target, dispatch_outcome::node_key(&focused_id));
+        assert_eq!(change_events[0].payload.as_deref(), Some("abx"));
+    }
+
+    #[test]
+    fn test_v2_preview_backspace_emits_change_event_payload() {
+        let focused_id = ElementId::from_term_bytes(vec![69]);
+        let mut node = make_text_input_node(69, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abcd".to_string();
+            descriptor.content_len = 4;
+            descriptor.cursor = 4;
+            descriptor.selection_anchor = None;
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::Key {
+            key: "backspace".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce backspace change event");
+
+        let change_events: Vec<&dispatch_outcome::ElementEventOut> = predicted
+            .element_events
+            .iter()
+            .filter(|event| event.kind == dispatch_outcome::ElementEventKind::Change)
+            .collect();
+
+        assert_eq!(change_events.len(), 1);
+        assert_eq!(change_events[0].target, dispatch_outcome::node_key(&focused_id));
+        assert_eq!(change_events[0].payload.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn test_v2_preview_backspace_at_start_emits_no_change_event() {
+        let mut node = make_text_input_node(70, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abcd".to_string();
+            descriptor.content_len = 4;
+            descriptor.cursor = 0;
+            descriptor.selection_anchor = None;
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(ElementId::from_term_bytes(vec![70]));
+
+        let event = InputEvent::Key {
+            key: "backspace".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce backspace outcome");
+
+        let change_events: Vec<&dispatch_outcome::ElementEventOut> = predicted
+            .element_events
+            .iter()
+            .filter(|event| event.kind == dispatch_outcome::ElementEventKind::Change)
+            .collect();
+
+        assert!(change_events.is_empty());
+    }
+
+    #[test]
+    fn test_v2_preview_backspace_with_selection_emits_change_event_payload() {
+        let focused_id = ElementId::from_term_bytes(vec![71]);
+        let mut node = make_text_input_node(71, 0.0, 0.0, 160.0, 30.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abcd".to_string();
+            descriptor.content_len = 4;
+            descriptor.cursor = 3;
+            descriptor.selection_anchor = Some(1);
+        }
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::Key {
+            key: "backspace".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce selection delete change event");
+
+        let change_events: Vec<&dispatch_outcome::ElementEventOut> = predicted
+            .element_events
+            .iter()
+            .filter(|event| event.kind == dispatch_outcome::ElementEventKind::Change)
+            .collect();
+
+        assert_eq!(change_events.len(), 1);
+        assert_eq!(change_events[0].target, dispatch_outcome::node_key(&focused_id));
+        assert_eq!(change_events[0].payload.as_deref(), Some("ad"));
+    }
+
+    #[test]
+    fn test_v2_preview_text_preedit_request_parity() {
+        let focused_id = ElementId::from_term_bytes(vec![63]);
+        let node = make_text_input_node(63, 0.0, 0.0, 160.0, 30.0);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![node]);
+        processor.focused_id = Some(focused_id);
+
+        let event = InputEvent::TextPreedit {
+            text: "kana".to_string(),
+            cursor: Some((1, 3)),
+        };
+
+        let old = processor.text_input_preedit_request(&event).unwrap();
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce preedit request outcome");
+
+        assert_eq!(predicted.text_preedit_requests.len(), 1);
+        assert_eq!(
+            predicted.text_preedit_requests[0].target,
+            dispatch_outcome::node_key(&old.0)
+        );
+        assert_eq!(predicted.text_preedit_requests[0].request, old.1);
+    }
+
+    #[test]
+    fn test_v2_preview_enter_press_does_not_duplicate_press_event() {
+        let focused_id = ElementId::from_term_bytes(vec![64]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_pressable_node(64, 0.0, 0.0, 100.0, 30.0)]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::Key {
+            key: "enter".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce enter press outcome");
+
+        let press_events: Vec<&dispatch_outcome::ElementEventOut> = predicted
+            .element_events
+            .iter()
+            .filter(|event| event.kind == dispatch_outcome::ElementEventKind::Press)
+            .collect();
+
+        assert_eq!(press_events.len(), 1);
+        assert_eq!(press_events[0].target, dispatch_outcome::node_key(&focused_id));
+    }
+
+    #[test]
+    fn test_v2_preview_tab_emits_focus_transition_events() {
+        let first = ElementId::from_term_bytes(vec![65]);
+        let second = ElementId::from_term_bytes(vec![66]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![
+            make_pressable_node(65, 0.0, 0.0, 100.0, 30.0),
+            make_pressable_node(66, 0.0, 40.0, 100.0, 30.0),
+        ]);
+        processor.focused_id = Some(first.clone());
+
+        let event = InputEvent::Key {
+            key: "tab".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce tab focus transition outcome");
+
+        assert_eq!(
+            predicted.focus_change,
+            Some(Some(dispatch_outcome::node_key(&second)))
+        );
+        assert_eq!(predicted.element_events.len(), 2);
+        assert_eq!(
+            predicted.element_events[0],
+            dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&first),
+                kind: dispatch_outcome::ElementEventKind::Blur,
+                payload: None,
+            }
+        );
+        assert_eq!(
+            predicted.element_events[1],
+            dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&second),
+                kind: dispatch_outcome::ElementEventKind::Focus,
+                payload: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_v2_preview_window_focus_lost_emits_blur_event() {
+        let focused_id = ElementId::from_term_bytes(vec![67]);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_pressable_node(67, 0.0, 0.0, 100.0, 30.0)]);
+        processor.focused_id = Some(focused_id.clone());
+
+        let event = InputEvent::Focused { focused: false };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce blur outcome on window focus loss");
+
+        assert_eq!(predicted.focus_change, Some(None));
+        assert_eq!(predicted.element_events.len(), 1);
+        assert_eq!(
+            predicted.element_events[0],
+            dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&focused_id),
+                kind: dispatch_outcome::ElementEventKind::Blur,
+                payload: None,
+            }
+        );
+    }
+
+    fn v1_reference_outcome_for_event(
+        processor: &mut EventProcessor,
+        event: &InputEvent,
+    ) -> dispatch_outcome::DispatchOutcome {
+        let mut out = dispatch_outcome::DispatchOutcome::default();
+
+        if let Some(clicked_id) = processor.detect_click(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&clicked_id),
+                kind: dispatch_outcome::ElementEventKind::Click,
+                payload: None,
+            });
+        }
+
+        if let Some(pressed_id) = processor.detect_press(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&pressed_id),
+                kind: dispatch_outcome::ElementEventKind::Press,
+                payload: None,
+            });
+        }
+
+        if let Some((mouse_id, kind)) = processor.detect_mouse_button_event(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&mouse_id),
+                kind,
+                payload: None,
+            });
+        }
+
+        for (hover_id, kind) in processor.handle_hover_event(event) {
+            out.element_events.push(dispatch_outcome::ElementEventOut {
+                target: dispatch_outcome::node_key(&hover_id),
+                kind,
+                payload: None,
+            });
+        }
+
+        if let Some(next_focus) = processor.text_input_focus_request(event) {
+            out.focus_change = Some(next_focus.as_ref().map(dispatch_outcome::node_key));
+
+            if let Some(focused_id) = next_focus.as_ref() {
+                for (id, dx, dy) in processor.focus_reveal_scroll_requests(focused_id) {
+                    out.scroll_requests.push(dispatch_outcome::ScrollRequestOut {
+                        target: dispatch_outcome::node_key(&id),
+                        dx: dispatch_outcome::milli(dx),
+                        dy: dispatch_outcome::milli(dy),
+                    });
+                }
+            }
+        }
+
+        for (id, dx, dy) in processor.scroll_requests(event) {
+            out.scroll_requests.push(dispatch_outcome::ScrollRequestOut {
+                target: dispatch_outcome::node_key(&id),
+                dx: dispatch_outcome::milli(dx),
+                dy: dispatch_outcome::milli(dy),
+            });
+        }
+
+        for request in processor.scrollbar_thumb_drag_requests(event) {
+            match request {
+                ScrollbarThumbDragRequest::X { element_id, dx } => {
+                    out.scrollbar_thumb_drag_requests
+                        .push(dispatch_outcome::ScrollbarThumbDragReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::X,
+                            delta: dispatch_outcome::milli(dx),
+                        });
+                }
+                ScrollbarThumbDragRequest::Y { element_id, dy } => {
+                    out.scrollbar_thumb_drag_requests
+                        .push(dispatch_outcome::ScrollbarThumbDragReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::Y,
+                            delta: dispatch_outcome::milli(dy),
+                        });
+                }
+            }
+        }
+
+        for request in processor.scrollbar_hover_requests(event) {
+            match request {
+                ScrollbarHoverRequest::X {
+                    element_id,
+                    hovered,
+                } => {
+                    out.scrollbar_hover_requests
+                        .push(dispatch_outcome::ScrollbarHoverReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::X,
+                            hovered,
+                        });
+                }
+                ScrollbarHoverRequest::Y {
+                    element_id,
+                    hovered,
+                } => {
+                    out.scrollbar_hover_requests
+                        .push(dispatch_outcome::ScrollbarHoverReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            axis: dispatch_outcome::ScrollbarAxisOut::Y,
+                            hovered,
+                        });
+                }
+            }
+        }
+
+        for request in processor.mouse_over_requests(event) {
+            match request {
+                MouseOverRequest::SetMouseOverActive { element_id, active } => {
+                    out.style_runtime_requests
+                        .push(dispatch_outcome::StyleRuntimeReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            kind: dispatch_outcome::StyleRuntimeKind::MouseOver,
+                            active,
+                        });
+                }
+            }
+        }
+
+        for request in processor.mouse_down_requests(event) {
+            match request {
+                MouseDownRequest::SetMouseDownActive { element_id, active } => {
+                    out.style_runtime_requests
+                        .push(dispatch_outcome::StyleRuntimeReqOut {
+                            target: dispatch_outcome::node_key(&element_id),
+                            kind: dispatch_outcome::StyleRuntimeKind::MouseDown,
+                            active,
+                        });
+                }
+            }
+        }
+
+        if let Some((element_id, request)) = processor.text_input_command_request(event) {
+            out.text_command_requests
+                .push(dispatch_outcome::TextCommandReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    request,
+                });
+        }
+
+        if let Some((element_id, request)) = processor.text_input_edit_request(event) {
+            out.text_edit_requests.push(dispatch_outcome::TextEditReqOut {
+                target: dispatch_outcome::node_key(&element_id),
+                request,
+            });
+        }
+
+        if let Some((element_id, request)) = processor.text_input_preedit_request(event) {
+            out.text_preedit_requests
+                .push(dispatch_outcome::TextPreeditReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    request,
+                });
+        }
+
+        out
+    }
+
+    #[test]
+    fn test_v2_preview_scrollbar_thumb_drag_parity_sequence() {
+        let mut old_processor = EventProcessor::new();
+        old_processor.rebuild_registry(vec![make_scrollbar_test_node(66)]);
+
+        let mut preview_processor = old_processor.clone();
+
+        let events = [
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 95.0,
+                y: 80.0,
+            },
+            InputEvent::CursorPos { x: 95.0, y: 70.0 },
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 95.0,
+                y: 70.0,
+            },
+        ];
+
+        for event in events {
+            let expected = v1_reference_outcome_for_event(&mut old_processor, &event);
+            let predicted = preview_processor
+                .preview_v2_keyboard_focus_outcome(&event, None)
+                .unwrap_or_default();
+
+            assert_eq!(
+                predicted.scrollbar_thumb_drag_requests,
+                expected.scrollbar_thumb_drag_requests
+            );
+
+            let _ = v1_reference_outcome_for_event(&mut preview_processor, &event);
+        }
+    }
+
+    #[test]
+    fn test_v2_preview_scrollbar_hover_request_parity() {
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_scrollbar_test_node(64)]);
+
+        let event = InputEvent::CursorPos { x: 97.0, y: 25.0 };
+
+        let mut old_processor = processor.clone();
+        let old = old_processor.scrollbar_hover_requests(&event);
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce scrollbar hover request outcome");
+
+        let expected: Vec<dispatch_outcome::ScrollbarHoverReqOut> = old
+            .into_iter()
+            .map(|request| match request {
+                ScrollbarHoverRequest::X {
+                    element_id,
+                    hovered,
+                } => dispatch_outcome::ScrollbarHoverReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    axis: dispatch_outcome::ScrollbarAxisOut::X,
+                    hovered,
+                },
+                ScrollbarHoverRequest::Y {
+                    element_id,
+                    hovered,
+                } => dispatch_outcome::ScrollbarHoverReqOut {
+                    target: dispatch_outcome::node_key(&element_id),
+                    axis: dispatch_outcome::ScrollbarAxisOut::Y,
+                    hovered,
+                },
+            })
+            .collect();
+
+        assert_eq!(predicted.scrollbar_hover_requests, expected);
+    }
+
+    #[test]
+    fn test_v2_preview_style_runtime_mouse_over_request_parity() {
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_mouse_over_node(65, 0.0, 0.0, 100.0, 100.0)]);
+
+        let event = InputEvent::CursorPos { x: 10.0, y: 10.0 };
+
+        let mut old_processor = processor.clone();
+        let old = old_processor.mouse_over_requests(&event);
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, processor.focused_id.as_ref())
+            .expect("v2 preview should produce style runtime request outcome");
+
+        let expected: Vec<dispatch_outcome::StyleRuntimeReqOut> = old
+            .into_iter()
+            .map(|request| match request {
+                MouseOverRequest::SetMouseOverActive { element_id, active } => {
+                    dispatch_outcome::StyleRuntimeReqOut {
+                        target: dispatch_outcome::node_key(&element_id),
+                        kind: dispatch_outcome::StyleRuntimeKind::MouseOver,
+                        active,
+                    }
+                }
+            })
+            .collect();
+
+        assert_eq!(predicted.style_runtime_requests, expected);
+    }
+
+    #[test]
+    fn test_v2_preview_style_runtime_mouse_down_parity_sequence() {
+        let mut old_processor = EventProcessor::new();
+        old_processor
+            .rebuild_registry(vec![make_mouse_down_style_node(67, 0.0, 0.0, 100.0, 100.0)]);
+
+        let mut preview_processor = old_processor.clone();
+
+        let events = [
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+        ];
+
+        for event in events {
+            let expected = v1_reference_outcome_for_event(&mut old_processor, &event);
+            let predicted = preview_processor
+                .preview_v2_keyboard_focus_outcome(&event, None)
+                .unwrap_or_default();
+
+            assert_eq!(
+                predicted.style_runtime_requests,
+                expected.style_runtime_requests
+            );
+
+            let _ = v1_reference_outcome_for_event(&mut preview_processor, &event);
+        }
+    }
+
+    #[test]
+    fn test_v2_preview_pointer_element_events_parity_sequence() {
+        let mut old_processor = EventProcessor::new();
+        old_processor.rebuild_registry(vec![make_pointer_events_node(68, 0.0, 0.0, 100.0, 100.0)]);
+
+        let mut preview_processor = old_processor.clone();
+
+        let events = [
+            InputEvent::CursorPos { x: 10.0, y: 10.0 },
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            InputEvent::CursorPos { x: 140.0, y: 140.0 },
+        ];
+
+        for event in events {
+            let expected = v1_reference_outcome_for_event(&mut old_processor, &event);
+            let predicted = preview_processor
+                .preview_v2_keyboard_focus_outcome(&event, None)
+                .unwrap_or_default();
+
+            assert_eq!(predicted.element_events, expected.element_events);
+
+            let _ = v1_reference_outcome_for_event(&mut preview_processor, &event);
+        }
+    }
+
+    #[test]
+    fn test_v2_preview_mouse_button_payload_is_none() {
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_pointer_events_node(72, 0.0, 0.0, 100.0, 100.0)]);
+
+        let event = InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+
+        let predicted = processor
+            .preview_v2_keyboard_focus_outcome(&event, None)
+            .expect("v2 preview should produce mouse down outcome");
+
+        let mouse_down_event = predicted
+            .element_events
+            .iter()
+            .find(|event| event.kind == dispatch_outcome::ElementEventKind::MouseDown)
+            .expect("mouse down event should be predicted");
+
+        assert_eq!(mouse_down_event.payload, None);
+    }
+
+    #[test]
+    fn test_v2_preview_key_scroll_requests_are_deduped() {
+        let focused_id = ElementId::from_term_bytes(vec![73]);
+        let scroll_id = ElementId::from_term_bytes(vec![74]);
+
+        let mut focused = make_pressable_node(73, 0.0, 0.0, 100.0, 30.0);
+        focused.key_scroll_targets.down = Some(scroll_id.clone());
+
+        let mut old_processor = EventProcessor::new();
+        old_processor.rebuild_registry(vec![
+            focused,
+            make_scroll_target_node(74, true, EVENT_SCROLL_Y_POS),
+        ]);
+        old_processor.focused_id = Some(focused_id.clone());
+
+        let preview_processor = old_processor.clone();
+
+        let event = InputEvent::Key {
+            key: "down".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let expected = v1_reference_outcome_for_event(&mut old_processor, &event);
+        let predicted = preview_processor
+            .preview_v2_keyboard_focus_outcome(&event, preview_processor.focused_id.as_ref())
+            .expect("v2 preview should produce key scroll outcome");
+
+        assert_eq!(predicted.scroll_requests, expected.scroll_requests);
+        assert_eq!(predicted.scroll_requests.len(), 1);
+        assert_eq!(
+            predicted.scroll_requests[0],
+            dispatch_outcome::ScrollRequestOut {
+                target: dispatch_outcome::node_key(&scroll_id),
+                dx: dispatch_outcome::milli(0.0),
+                dy: dispatch_outcome::milli(-SCROLL_LINE_PIXELS),
+            }
+        );
+    }
+
+    #[test]
+    fn test_v2_preview_tab_focus_reveal_scroll_is_deduped() {
+        let first_id = ElementId::from_term_bytes(vec![75]);
+        let second_id = ElementId::from_term_bytes(vec![76]);
+        let scroll_id = ElementId::from_term_bytes(vec![77]);
+
+        let first = make_pressable_node(75, 0.0, 0.0, 100.0, 30.0);
+        let mut second = make_pressable_node(76, 0.0, 40.0, 100.0, 30.0);
+        second.focus_reveal_scrolls.push(ScrollRequestMatcher {
+            element_id: scroll_id.clone(),
+            dx: 0.0,
+            dy: -50.0,
+        });
+
+        let mut old_processor = EventProcessor::new();
+        old_processor.rebuild_registry(vec![
+            first,
+            second,
+            make_scroll_target_node(77, true, EVENT_SCROLL_Y_POS),
+        ]);
+        old_processor.focused_id = Some(first_id.clone());
+
+        let preview_processor = old_processor.clone();
+
+        let event = InputEvent::Key {
+            key: "tab".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+
+        let expected = v1_reference_outcome_for_event(&mut old_processor, &event);
+        let predicted = preview_processor
+            .preview_v2_keyboard_focus_outcome(&event, preview_processor.focused_id.as_ref())
+            .expect("v2 preview should produce tab focus-reveal outcome");
+
+        assert_eq!(
+            predicted.focus_change,
+            Some(Some(dispatch_outcome::node_key(&second_id)))
+        );
+        assert_eq!(predicted.scroll_requests, expected.scroll_requests);
+        assert_eq!(predicted.scroll_requests.len(), 1);
+        assert_eq!(
+            predicted.scroll_requests[0],
+            dispatch_outcome::ScrollRequestOut {
+                target: dispatch_outcome::node_key(&scroll_id),
+                dx: dispatch_outcome::milli(0.0),
+                dy: dispatch_outcome::milli(-50.0),
+            }
+        );
     }
 
     #[test]
@@ -2123,6 +4318,7 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
+            visible: true,
             flags: EVENT_CLICK,
             self_rect: Rect {
                 x: 0.0,
@@ -2135,6 +4331,8 @@ mod tests {
             clip_radii: None,
             scrollbar_x: None,
             scrollbar_y: None,
+            key_scroll_targets: KeyScrollTargets::default(),
+            focus_reveal_scrolls: Vec::new(),
             text_input: None,
         }];
 
@@ -2626,6 +4824,229 @@ mod tests {
     }
 
     #[test]
+    fn test_focus_cycle_includes_clipped_focusables_and_builds_reveal_scrolls() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.scrollbar_y = Some(true);
+        root_attrs.scroll_y = Some(0.0);
+        root_attrs.scroll_y_max = Some(200.0);
+        let root_id = ElementId::from_term_bytes(vec![1]);
+
+        let mut visible_attrs = Attrs::default();
+        visible_attrs.on_press = Some(true);
+        let visible_id = ElementId::from_term_bytes(vec![2]);
+
+        let mut clipped_attrs = Attrs::default();
+        clipped_attrs.on_press = Some(true);
+        let clipped_id = ElementId::from_term_bytes(vec![3]);
+
+        let root = make_element(
+            1,
+            root_attrs,
+            crate::tree::element::Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 300.0,
+            },
+            vec![visible_id.clone(), clipped_id.clone()],
+        );
+
+        let visible = make_element(
+            2,
+            visible_attrs,
+            crate::tree::element::Frame {
+                x: 0.0,
+                y: 10.0,
+                width: 80.0,
+                height: 20.0,
+                content_width: 80.0,
+                content_height: 20.0,
+            },
+            Vec::new(),
+        );
+
+        let clipped = make_element(
+            3,
+            clipped_attrs,
+            crate::tree::element::Frame {
+                x: 0.0,
+                y: 220.0,
+                width: 80.0,
+                height: 30.0,
+                content_width: 80.0,
+                content_height: 30.0,
+            },
+            Vec::new(),
+        );
+
+        tree.root = Some(root_id);
+        tree.insert(root);
+        tree.insert(visible);
+        tree.insert(clipped);
+
+        let registry = build_event_registry(&tree);
+        let clipped_node = registry
+            .iter()
+            .find(|node| node.id == clipped_id)
+            .expect("clipped focusable should be present in registry");
+
+        assert!(!clipped_node.visible);
+        assert!(clipped_node.flags & EVENT_FOCUSABLE != 0);
+        assert_eq!(clipped_node.focus_reveal_scrolls.len(), 1);
+        assert_eq!(
+            clipped_node.focus_reveal_scrolls[0].element_id,
+            ElementId::from_term_bytes(vec![1])
+        );
+        assert!((clipped_node.focus_reveal_scrolls[0].dy + 150.0).abs() < 0.01);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(registry);
+
+        let tab = InputEvent::Key {
+            key: "tab".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        let first = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(first, Some(visible_id));
+
+        let second = processor.text_input_focus_request(&tab).unwrap();
+        assert_eq!(second, Some(clipped_id.clone()));
+
+        let reveal = processor.focus_reveal_scroll_requests(&clipped_id);
+        assert_eq!(reveal.len(), 1);
+        assert_eq!(reveal[0].0, ElementId::from_term_bytes(vec![1]));
+        assert!((reveal[0].2 + 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_key_scroll_uses_first_visible_scrollable_without_focus() {
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_scroll_target_node(1, false, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(2, true, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(3, true, EVENT_SCROLL_Y_POS),
+        ];
+
+        let down = InputEvent::Key {
+            key: "down".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        assert_eq!(
+            processor.scroll_requests(&down),
+            vec![(
+                ElementId::from_term_bytes(vec![2]),
+                0.0,
+                -SCROLL_LINE_PIXELS,
+            )]
+        );
+    }
+
+    #[test]
+    fn test_key_scroll_falls_back_when_focused_node_has_no_directional_matcher() {
+        let focused_id = ElementId::from_term_bytes(vec![4]);
+
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![
+            make_pressable_node(4, 0.0, 0.0, 100.0, 30.0),
+            make_scroll_target_node(1, false, EVENT_SCROLL_Y_POS),
+            make_scroll_target_node(2, true, EVENT_SCROLL_Y_POS),
+        ];
+        processor.focused_id = Some(focused_id);
+
+        let down = InputEvent::Key {
+            key: "down".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        assert_eq!(
+            processor.scroll_requests(&down),
+            vec![(
+                ElementId::from_term_bytes(vec![2]),
+                0.0,
+                -SCROLL_LINE_PIXELS,
+            )]
+        );
+    }
+
+    #[test]
+    fn test_text_input_boundary_falls_back_to_root_scrollable_when_matcher_missing() {
+        let focused_id = ElementId::from_term_bytes(vec![5]);
+        let left_ancestor_id = ElementId::from_term_bytes(vec![7]);
+        let fallback_id = ElementId::from_term_bytes(vec![8]);
+
+        let mut text_node = make_text_input_node(5, 0.0, 0.0, 120.0, 30.0);
+        if let Some(descriptor) = text_node.text_input.as_mut() {
+            descriptor.content = "abc".to_string();
+            descriptor.content_len = 3;
+            descriptor.cursor = 3;
+            descriptor.selection_anchor = None;
+        }
+        text_node.key_scroll_targets.left = Some(left_ancestor_id.clone());
+
+        let left_ancestor_node = make_scroll_target_node(7, true, EVENT_SCROLL_X_NEG);
+        let fallback_node = make_scroll_target_node(8, true, EVENT_SCROLL_X_POS);
+
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![text_node, left_ancestor_node, fallback_node];
+        processor.focused_id = Some(focused_id);
+
+        let right = InputEvent::Key {
+            key: "right".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        assert!(processor.text_input_edit_request(&right).is_none());
+        assert_eq!(
+            processor.scroll_requests(&right),
+            vec![(fallback_id, -SCROLL_LINE_PIXELS, 0.0)]
+        );
+    }
+
+    #[test]
+    fn test_right_arrow_at_text_boundary_scrolls_using_registry_matcher() {
+        let focused_id = ElementId::from_term_bytes(vec![5]);
+        let ancestor_id = ElementId::from_term_bytes(vec![9]);
+
+        let mut text_node = make_text_input_node(5, 0.0, 0.0, 120.0, 30.0);
+        if let Some(descriptor) = text_node.text_input.as_mut() {
+            descriptor.content = "abc".to_string();
+            descriptor.content_len = 3;
+            descriptor.cursor = 3;
+            descriptor.selection_anchor = None;
+        }
+        text_node.key_scroll_targets.right = Some(ancestor_id.clone());
+
+        let mut ancestor_node = make_scroll_target_node(9, true, EVENT_SCROLL_X_POS);
+        ancestor_node.visible = true;
+
+        let mut processor = EventProcessor::new();
+        processor.registry = vec![text_node, ancestor_node];
+        processor.focused_id = Some(focused_id.clone());
+
+        let right = InputEvent::Key {
+            key: "right".to_string(),
+            action: crate::input::ACTION_PRESS,
+            mods: 0,
+        };
+
+        assert!(processor.text_input_edit_request(&right).is_none());
+        assert_eq!(
+            processor.scroll_requests(&right),
+            vec![(ancestor_id, -SCROLL_LINE_PIXELS, 0.0)]
+        );
+    }
+
+    #[test]
     fn test_text_input_focus_requests_cycle_forward_with_tab() {
         let mut processor = EventProcessor::new();
         processor.registry = vec![
@@ -2783,7 +5204,13 @@ mod tests {
     #[test]
     fn test_text_input_edit_requests_follow_focus_and_keys() {
         let mut processor = EventProcessor::new();
-        processor.registry = vec![make_text_input_node(5, 0.0, 0.0, 100.0, 20.0)];
+        let mut node = make_text_input_node(5, 0.0, 0.0, 100.0, 20.0);
+        if let Some(descriptor) = node.text_input.as_mut() {
+            descriptor.content = "abc".to_string();
+            descriptor.content_len = 3;
+            descriptor.cursor = 2;
+        }
+        processor.registry = vec![node];
 
         let focus = InputEvent::CursorButton {
             button: "left".to_string(),

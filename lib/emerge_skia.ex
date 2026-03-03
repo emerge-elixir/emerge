@@ -95,6 +95,11 @@ defmodule EmergeSkia do
       input_log = Keyword.get(opts, :input_log, false)
       render_log = Keyword.get(opts, :render_log, false)
 
+      if Keyword.has_key?(opts, :dispatch_mode) do
+        raise ArgumentError,
+              "dispatch_mode option has been removed; EmergeSkia now runs V2 dispatch only"
+      end
+
       backend =
         case backend do
           value when is_atom(value) -> Atom.to_string(value)

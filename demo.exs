@@ -18,7 +18,14 @@ argv =
       input_log: :boolean,
       render_log: :boolean
     ],
-    aliases: [b: :backend, c: :card, w: :width, h: :height, i: :input_log, r: :render_log]
+    aliases: [
+      b: :backend,
+      c: :card,
+      w: :width,
+      h: :height,
+      i: :input_log,
+      r: :render_log
+    ]
   )
 
 backend = Keyword.get(cli_opts, :backend, "wayland")
@@ -40,7 +47,11 @@ start_opts = if card, do: Keyword.put(start_opts, :drm_card, card), else: start_
 start_opts = if input_log, do: Keyword.put(start_opts, :input_log, true), else: start_opts
 start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else: start_opts
 
-startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backend=#{backend}"
+startup_detail =
+  if card,
+    do: " backend=#{backend} dispatch_mode=v2 card=#{card}",
+    else: " backend=#{backend} dispatch_mode=v2"
+
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
 blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")

@@ -3,6 +3,7 @@
 //! This backend creates a window using winit and renders to it via OpenGL/Skia.
 
 use std::{
+    env,
     ffi::CString,
     num::NonZeroU32,
     sync::{
@@ -103,6 +104,7 @@ struct App {
     ime_enabled: bool,
     ime_cursor_area: Option<(f32, f32, f32, f32)>,
     ime_preedit_active: bool,
+    text_commit_diag: bool,
 }
 
 impl App {
@@ -288,6 +290,44 @@ impl App {
         }
     }
 
+    fn env_flag_enabled(name: &str) -> bool {
+        let Ok(value) = env::var(name) else {
+            return false;
+        };
+
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    fn truncate_for_log(value: &str, max_chars: usize) -> String {
+        let mut chars = value.chars();
+        let truncated: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            format!("{truncated}...")
+        } else {
+            truncated
+        }
+    }
+
+    fn maybe_log_text_commit_source(&self, source: &str, text: &str) {
+        if !self.text_commit_diag {
+            return;
+        }
+
+        let truncated = Self::truncate_for_log(text, 80);
+        eprintln!(
+            "text-commit source={} mods={} text={:?}",
+            source, self.current_mods, truncated
+        );
+    }
+
+    fn text_commit_diag_enabled() -> bool {
+        Self::env_flag_enabled("EMERGE_SKIA_TEXT_COMMIT_DIAG")
+            || Self::env_flag_enabled("EMERGE_SKIA_SHADOW_TEXT_DIAG")
+    }
+
     fn preedit_cursor_to_char_range(
         text: &str,
         cursor: Option<(usize, usize)>,
@@ -432,6 +472,7 @@ impl ApplicationHandler<UserEvent> for App {
                     && let Some(text) = event.text
                     && let Some(commit) = Self::normalize_commit_text(text.as_ref())
                 {
+                    self.maybe_log_text_commit_source("keyboard", &commit);
                     self.send_input_event(InputEvent::TextCommit {
                         text: commit,
                         mods: self.current_mods,
@@ -452,6 +493,7 @@ impl ApplicationHandler<UserEvent> for App {
                 Ime::Commit(text) => {
                     self.ime_preedit_active = false;
                     if let Some(commit) = Self::normalize_commit_text(&text) {
+                        self.maybe_log_text_commit_source("ime", &commit);
                         self.send_input_event(InputEvent::TextCommit {
                             text: commit,
                             mods: self.current_mods,
@@ -671,6 +713,7 @@ pub fn run(
         Err(err) => {
             eprintln!("Failed to initialize renderer: {err}");
             running_flag.store(false, Ordering::Relaxed);
+            let _ = event_tx.send(EventMsg::Stop);
             return;
         }
     };
@@ -695,11 +738,13 @@ pub fn run(
         ime_enabled: false,
         ime_cursor_area: None,
         ime_preedit_active: false,
+        text_commit_diag: App::text_commit_diag_enabled(),
     };
 
     app.apply_ime_state();
     app.redraw();
     el.run_app(&mut app).expect("run_app failed");
+    let _ = app.event_tx.send(EventMsg::Stop);
 }
 
 #[cfg(test)]

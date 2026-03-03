@@ -73,7 +73,7 @@ block listeners behind them.
 - `on_mouse_down` and `on_mouse_up` are emitted for left button only.
 - Hover state tracks topmost hit and emits `:mouse_enter`, `:mouse_leave`, and
   `:mouse_move` based on listener flags.
-- Text inputs emit `:focus` when they gain focus and `:blur` when focus leaves.
+- Focusable inputs emit `:focus` when they gain focus and `:blur` when focus leaves.
 - A drag deadzone suppresses click when pointer movement exceeds the threshold
   during a press.
 
@@ -97,9 +97,10 @@ block listeners behind them.
 ## Scroll-Related Event Behavior
 
 - Wheel and drag scrolling both use the same registry.
+- Arrow-key scrolling also uses registry matchers.
 - Directional scroll flags are computed from current offset vs max offset.
-- EventProcessor converts pointer movement/wheel deltas into scroll requests to
-  the tree actor.
+- EventProcessor converts pointer movement/wheel deltas and keyboard navigation
+  into scroll requests to the tree actor.
 - Scrollbar track/thumb hit testing and thumb drag are implemented (track click
   snaps thumb to cursor, then drag continues from that point).
 - Scrollbar hover emits axis-specific hover updates for thumb styling.
@@ -133,8 +134,8 @@ block listeners behind them.
 - `:mouse_leave`
 - `:mouse_move`
 - `:change` (text input, payload includes latest value)
-- `:focus` (text input)
-- `:blur` (text input)
+- `:focus` (focusable inputs)
+- `:blur` (focusable inputs)
 
 `mouse_over`, `focused`, and `mouse_down` do not emit element events; they are
 applied as runtime styling in Rust.
@@ -156,8 +157,15 @@ themselves.
 - Selection is tracked in Rust runtime attrs (`cursor` + `selection_anchor`) and
   is not encoded in EMRG.
 - Mouse drag selects text within focused single-line inputs.
-- Tab cycles focus across currently visible focusable inputs.
+- Tab cycles focus across all rendered focusable inputs (including clipped
+  descendants).
 - Shift+Tab cycles focus in reverse order.
+- Focus changes can emit registry-derived scroll requests so the focused element
+  is brought into view.
+- If left/right/home/end cannot move a focused text cursor (already at bound),
+  the key can fall back to ancestor scrolling via registry matchers.
+- If no focused directional matcher is available, arrow keys fall back to the
+  first visible root-first scrollable that can scroll in that direction.
 - Shift+arrow/home/end extends selection.
 - Ctrl/Meta shortcuts are handled in Rust for focused text inputs:
   - `A` select all
