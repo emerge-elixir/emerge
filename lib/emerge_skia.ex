@@ -97,7 +97,7 @@ defmodule EmergeSkia do
 
       if Keyword.has_key?(opts, :dispatch_mode) do
         raise ArgumentError,
-              "dispatch_mode option has been removed; EmergeSkia now runs V2 dispatch only"
+              "dispatch_mode option has been removed; EmergeSkia now runs a single dispatch engine"
       end
 
       backend =

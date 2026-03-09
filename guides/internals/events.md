@@ -133,7 +133,7 @@ block listeners behind them.
 - `:mouse_enter`
 - `:mouse_leave`
 - `:mouse_move`
-- `:change` (text input, payload includes latest value)
+- `:change` (text input, payload includes latest value; emitted only when `on_change` is set)
 - `:focus` (focusable inputs)
 - `:blur` (focusable inputs)
 
@@ -151,6 +151,9 @@ Backends send raw text input events to the configured input target process:
 Text commit events mutate focused text-input content in Rust. Preedit events
 track composition state for IME workflows and do not emit `:change` by
 themselves.
+
+Text editing remains active without `on_change`; `on_change` gates only
+whether `:change` element events are emitted.
 
 ## Text Selection and Clipboard Shortcuts
 
@@ -177,7 +180,7 @@ themselves.
 - Middle mouse button pastes from Linux PRIMARY selection into focused text
   inputs.
 - Cut, paste, and typed insertion replace the selected range when present and
-  emit `:change` with updated value.
+  emit `:change` with updated value when `on_change` is set.
 
 ## Current Limits
 

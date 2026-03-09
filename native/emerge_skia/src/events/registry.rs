@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::input::{
@@ -9,8 +7,9 @@ use crate::input::{
     EVENT_TEXT_INPUT, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, SCROLL_LINE_PIXELS,
 };
 use crate::tree::element::ElementId;
+use crate::tree::interaction::{CornerRadii, Rect, point_in_rounded_rect};
 
-use super::{EventNode, TextInputCommandRequest, TextInputEditRequest, TextInputPreeditRequest};
+use super::{EventNode, TextInputEditRequest};
 
 pub type NodeIdx = u32;
 pub type DispatchRuleId = u32;
@@ -21,14 +20,21 @@ pub enum TriggerId {
     // Pointer
     CursorButtonLeftPress,
     CursorButtonLeftRelease,
-    CursorButtonMiddlePress,
+    MouseDownStyleClear,
+    CursorClickRelease,
+    CursorPressRelease,
     CursorMove,
     CursorEnter,
     CursorLeave,
-    CursorScrollXNeg,
-    CursorScrollXPos,
-    CursorScrollYNeg,
-    CursorScrollYPos,
+    CursorDragScroll,
+    CursorScrollDispatch,
+    ScrollbarThumbDispatch,
+    ScrollbarHoverDispatch,
+    CursorFocusDispatch,
+    TextCommandDispatch,
+    TextCursorDispatch,
+    TextEditDispatch,
+    TextPreeditDispatch,
     // Keyboard
     KeyLeftPress,
     KeyRightPress,
@@ -40,17 +46,13 @@ pub enum TriggerId {
     KeyEndPress,
     KeyBackspacePress,
     KeyDeletePress,
-    // Text/IME
-    TextCommit,
-    TextPreedit,
-    TextPreeditClear,
     // Window/state
+    WindowResizeDispatch,
     WindowFocusLost,
-    WindowResized,
 }
 
 impl TriggerId {
-    pub const COUNT: usize = TriggerId::WindowResized as usize + 1;
+    pub const COUNT: usize = TriggerId::WindowFocusLost as usize + 1;
 
     #[inline]
     pub const fn index(self) -> usize {
@@ -80,8 +82,6 @@ impl ScrollDirection {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PriorityKey {
-    pub depth: u32,
-    pub paint_order: u32,
     pub insertion_order: u32,
 }
 
@@ -89,7 +89,6 @@ pub struct PriorityKey {
 pub enum RuleScope {
     Target(NodeIdx),
     Focused(NodeIdx),
-    PointerHit,
     NoFocus,
     Any,
 }
@@ -98,8 +97,6 @@ pub enum RuleScope {
 pub struct DispatchRulePredicate {
     pub required_mods: u8,
     pub forbidden_mods: u8,
-    pub runtime_flags_all: u32,
-    pub runtime_flags_none: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +104,20 @@ pub enum DispatchRuleAction {
     EmitElementEvent {
         element: NodeIdx,
     },
+    StyleRuntime {
+        element: NodeIdx,
+        kind: StyleRuntimeActionKind,
+        active: bool,
+    },
+    EmitScrollRequestsFromEvent,
+    EmitScrollbarThumbDragRequestsFromEvent,
+    EmitScrollbarHoverRequestsFromEvent,
+    EmitWindowResizeFromEvent,
+    EmitFocusChangeFromEvent,
+    EmitTextCommandRequestsFromEvent,
+    EmitTextCursorRequestsFromEvent,
+    EmitTextEditRequestsFromEvent,
+    EmitTextPreeditRequestsFromEvent,
     ScrollRequest {
         element: NodeIdx,
         dx: f32,
@@ -115,18 +126,16 @@ pub enum DispatchRuleAction {
     FocusChange {
         next: Option<NodeIdx>,
     },
-    TextCommand {
-        element: NodeIdx,
-        request: TextInputCommandRequest,
-    },
     TextEdit {
         element: NodeIdx,
         request: TextInputEditRequest,
     },
-    TextPreedit {
-        element: NodeIdx,
-        request: TextInputPreeditRequest,
-    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StyleRuntimeActionKind {
+    MouseOver,
+    MouseDown,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,8 +150,6 @@ pub struct DispatchRule {
 pub struct DispatchCtx {
     pub mods: u8,
     pub focused: Option<NodeIdx>,
-    pub cursor: Option<(f32, f32)>,
-    pub runtime_flags: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +182,11 @@ pub struct NodeMeta {
     pub id: ElementId,
     pub visible: bool,
     pub flags: u16,
+    pub hit_rect: Rect,
+    pub self_rect: Rect,
+    pub self_radii: Option<CornerRadii>,
+    pub clip_rect: Option<Rect>,
+    pub clip_radii: Option<CornerRadii>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,7 +203,7 @@ impl Default for PointerIndexPhase1 {
 }
 
 #[derive(Clone, Debug)]
-pub struct EventRegistryV2 {
+pub struct EventRegistry {
     pub nodes: Vec<NodeMeta>,
     pub id_to_idx: HashMap<ElementId, NodeIdx>,
     pub dispatch_rules: Vec<DispatchRule>,
@@ -202,7 +214,7 @@ pub struct EventRegistryV2 {
     pub first_visible_scrollable_by_dir: [Option<NodeIdx>; 4],
 }
 
-impl Default for EventRegistryV2 {
+impl Default for EventRegistry {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
@@ -217,7 +229,7 @@ impl Default for EventRegistryV2 {
     }
 }
 
-impl EventRegistryV2 {
+impl EventRegistry {
     const FOCUS_NONE: u32 = u32::MAX;
 
     pub fn from_event_nodes(event_nodes: &[EventNode]) -> Self {
@@ -234,6 +246,11 @@ impl EventRegistryV2 {
                 id: node.id.clone(),
                 visible: node.visible,
                 flags: node.flags,
+                hit_rect: node.hit_rect,
+                self_rect: node.self_rect,
+                self_radii: node.self_radii,
+                clip_rect: node.clip_rect,
+                clip_radii: node.clip_radii,
             });
         }
 
@@ -287,9 +304,182 @@ impl EventRegistryV2 {
             }
         }
 
+        out.populate_pointer_rules(event_nodes);
         out.populate_keyboard_focus_rules(event_nodes);
+        out.populate_runtime_scroll_rules(event_nodes);
 
         out
+    }
+
+    fn populate_pointer_rules(&mut self, event_nodes: &[EventNode]) {
+        for node in event_nodes {
+            if !node.visible {
+                continue;
+            }
+
+            let Some(source_idx) = self.node_idx(&node.id) else {
+                continue;
+            };
+
+            let mut press_actions = Vec::new();
+            if node.flags & EVENT_MOUSE_DOWN != 0 {
+                press_actions.push(DispatchRuleAction::EmitElementEvent {
+                    element: source_idx,
+                });
+            }
+            if node.flags & EVENT_MOUSE_DOWN_STYLE != 0 {
+                press_actions.push(DispatchRuleAction::StyleRuntime {
+                    element: source_idx,
+                    kind: StyleRuntimeActionKind::MouseDown,
+                    active: true,
+                });
+            }
+            if !press_actions.is_empty() {
+                self.push_targeted_rule(
+                    TriggerId::CursorButtonLeftPress,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: press_actions,
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            let mut release_actions = Vec::new();
+            if node.flags & EVENT_MOUSE_UP != 0 {
+                release_actions.push(DispatchRuleAction::EmitElementEvent {
+                    element: source_idx,
+                });
+            }
+            if !release_actions.is_empty() {
+                self.push_targeted_rule(
+                    TriggerId::CursorButtonLeftRelease,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: release_actions,
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            if node.flags & EVENT_MOUSE_DOWN_STYLE != 0 {
+                self.push_targeted_rule(
+                    TriggerId::MouseDownStyleClear,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: vec![DispatchRuleAction::StyleRuntime {
+                            element: source_idx,
+                            kind: StyleRuntimeActionKind::MouseDown,
+                            active: false,
+                        }],
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            if node.flags & EVENT_CLICK != 0 {
+                self.push_targeted_rule(
+                    TriggerId::CursorClickRelease,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: vec![DispatchRuleAction::EmitElementEvent {
+                            element: source_idx,
+                        }],
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            if node.flags & EVENT_PRESS != 0 {
+                self.push_targeted_rule(
+                    TriggerId::CursorPressRelease,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: vec![DispatchRuleAction::EmitElementEvent {
+                            element: source_idx,
+                        }],
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            let mut enter_actions = Vec::new();
+            if node.flags & EVENT_MOUSE_ENTER != 0 {
+                enter_actions.push(DispatchRuleAction::EmitElementEvent {
+                    element: source_idx,
+                });
+            }
+            if node.flags & EVENT_MOUSE_OVER_STYLE != 0 {
+                enter_actions.push(DispatchRuleAction::StyleRuntime {
+                    element: source_idx,
+                    kind: StyleRuntimeActionKind::MouseOver,
+                    active: true,
+                });
+            }
+            if !enter_actions.is_empty() {
+                self.push_targeted_rule(
+                    TriggerId::CursorEnter,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: enter_actions,
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            let mut leave_actions = Vec::new();
+            if node.flags & EVENT_MOUSE_LEAVE != 0 {
+                leave_actions.push(DispatchRuleAction::EmitElementEvent {
+                    element: source_idx,
+                });
+            }
+            if node.flags & EVENT_MOUSE_OVER_STYLE != 0 {
+                leave_actions.push(DispatchRuleAction::StyleRuntime {
+                    element: source_idx,
+                    kind: StyleRuntimeActionKind::MouseOver,
+                    active: false,
+                });
+            }
+            if !leave_actions.is_empty() {
+                self.push_targeted_rule(
+                    TriggerId::CursorLeave,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: leave_actions,
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+
+            if node.flags & EVENT_MOUSE_MOVE != 0 {
+                self.push_targeted_rule(
+                    TriggerId::CursorMove,
+                    source_idx,
+                    DispatchRule {
+                        scope: RuleScope::Target(source_idx),
+                        predicate: DispatchRulePredicate::default(),
+                        actions: vec![DispatchRuleAction::EmitElementEvent {
+                            element: source_idx,
+                        }],
+                        priority: self.next_priority(),
+                    },
+                );
+            }
+        }
     }
 
     fn populate_keyboard_focus_rules(&mut self, event_nodes: &[EventNode]) {
@@ -780,6 +970,146 @@ impl EventRegistryV2 {
         );
     }
 
+    fn populate_runtime_scroll_rules(&mut self, event_nodes: &[EventNode]) {
+        self.push_ordered_rule(
+            TriggerId::WindowResizeDispatch,
+            DispatchRule {
+                scope: RuleScope::Any,
+                predicate: DispatchRulePredicate::default(),
+                actions: vec![DispatchRuleAction::EmitWindowResizeFromEvent],
+                priority: self.next_priority(),
+            },
+        );
+
+        let has_scroll_targets = event_nodes.iter().any(|node| {
+            node.visible
+                && (node.flags
+                    & (EVENT_SCROLL_X_NEG
+                        | EVENT_SCROLL_X_POS
+                        | EVENT_SCROLL_Y_NEG
+                        | EVENT_SCROLL_Y_POS)
+                    != 0)
+        });
+
+        if has_scroll_targets {
+            self.push_ordered_rule(
+                TriggerId::CursorScrollDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitScrollRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::CursorDragScroll,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitScrollRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+        }
+
+        let has_scrollbar = event_nodes
+            .iter()
+            .any(|node| node.scrollbar_x.is_some() || node.scrollbar_y.is_some());
+
+        if has_scrollbar {
+            self.push_ordered_rule(
+                TriggerId::ScrollbarThumbDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitScrollbarThumbDragRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::ScrollbarHoverDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitScrollbarHoverRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+        }
+
+        let has_focusable = event_nodes
+            .iter()
+            .any(|node| node.flags & EVENT_FOCUSABLE != 0);
+        if has_focusable {
+            self.push_ordered_rule(
+                TriggerId::CursorFocusDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitFocusChangeFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::WindowFocusLost,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitFocusChangeFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+        }
+
+        let has_text_input = event_nodes
+            .iter()
+            .any(|node| node.flags & EVENT_TEXT_INPUT != 0);
+        if has_text_input {
+            self.push_ordered_rule(
+                TriggerId::TextCommandDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitTextCommandRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::TextCursorDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitTextCursorRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::TextEditDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitTextEditRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+
+            self.push_ordered_rule(
+                TriggerId::TextPreeditDispatch,
+                DispatchRule {
+                    scope: RuleScope::Any,
+                    predicate: DispatchRulePredicate::default(),
+                    actions: vec![DispatchRuleAction::EmitTextPreeditRequestsFromEvent],
+                    priority: self.next_priority(),
+                },
+            );
+        }
+    }
+
     fn focus_change_actions(
         &self,
         next_idx: NodeIdx,
@@ -848,6 +1178,7 @@ impl EventRegistryV2 {
         self.nodes.get(idx as usize).map(|node| &node.id)
     }
 
+    #[cfg(test)]
     pub fn focus_order_ids(&self) -> Vec<ElementId> {
         self.focus_order
             .iter()
@@ -855,6 +1186,7 @@ impl EventRegistryV2 {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn focus_order_next(&self, current: Option<NodeIdx>, reverse: bool) -> Option<NodeIdx> {
         if self.focus_order.is_empty() {
             return None;
@@ -883,6 +1215,7 @@ impl EventRegistryV2 {
         self.first_visible_scrollable_by_dir[direction.index()]
     }
 
+    #[cfg(test)]
     pub fn first_visible_scrollable_id(&self, direction: ScrollDirection) -> Option<ElementId> {
         self.first_visible_scrollable(direction)
             .and_then(|idx| self.node_id(idx).cloned())
@@ -892,11 +1225,28 @@ impl EventRegistryV2 {
         &self.pointer_index.candidates_by_trigger[trigger.index()]
     }
 
-    pub fn debug_bucket_sizes(&self, trigger: TriggerId) -> (usize, usize) {
-        let bucket = &self.buckets[trigger.index()];
-        let targeted = bucket.targeted.values().map(Vec::len).sum();
-        let ordered = bucket.ordered.len();
-        (targeted, ordered)
+    fn point_hits_node(&self, idx: NodeIdx, x: f32, y: f32) -> bool {
+        let Some(node) = self.nodes.get(idx as usize) else {
+            return false;
+        };
+
+        if !node.hit_rect.contains(x, y) {
+            return false;
+        }
+
+        if let (Some(rect), Some(radii)) = (node.clip_rect, node.clip_radii)
+            && !point_in_rounded_rect(rect, radii, x, y)
+        {
+            return false;
+        }
+
+        if let Some(radii) = node.self_radii
+            && !point_in_rounded_rect(node.self_rect, radii, x, y)
+        {
+            return false;
+        }
+
+        true
     }
 
     pub fn resolve_winner_for_job(&self, job: &DispatchJob) -> Option<DispatchRuleId> {
@@ -916,8 +1266,31 @@ impl EventRegistryV2 {
 
                 self.resolve_in_candidates(&bucket.ordered, Some(*target), ctx)
             }
-            DispatchJob::Untargeted { trigger, ctx }
-            | DispatchJob::Pointed { trigger, ctx, .. } => {
+            DispatchJob::Pointed { trigger, x, y, ctx } => {
+                let bucket = &self.buckets[trigger.index()];
+
+                for target in self.pointer_candidates(*trigger).iter().copied() {
+                    if !self.point_hits_node(target, *x, *y) {
+                        continue;
+                    }
+
+                    if let Some(targeted) = bucket.targeted.get(&target)
+                        && let Some(winner) =
+                            self.resolve_in_candidates(targeted, Some(target), ctx)
+                    {
+                        return Some(winner);
+                    }
+
+                    if let Some(winner) =
+                        self.resolve_in_candidates(&bucket.ordered, Some(target), ctx)
+                    {
+                        return Some(winner);
+                    }
+                }
+
+                self.resolve_in_candidates(&bucket.ordered, None, ctx)
+            }
+            DispatchJob::Untargeted { trigger, ctx } => {
                 let bucket = &self.buckets[trigger.index()];
                 self.resolve_in_candidates(&bucket.ordered, None, ctx)
             }
@@ -937,11 +1310,19 @@ impl EventRegistryV2 {
         target: Option<NodeIdx>,
         ctx: &DispatchCtx,
     ) -> Option<DispatchRuleId> {
-        candidate_rule_ids.iter().copied().find(|rule_id| {
-            self.dispatch_rules
-                .get(*rule_id as usize)
-                .is_some_and(|rule| self.rule_matches(rule, target, ctx))
-        })
+        candidate_rule_ids
+            .iter()
+            .copied()
+            .filter_map(|rule_id| {
+                let rule = self.dispatch_rules.get(rule_id as usize)?;
+                if self.rule_matches(rule, target, ctx) {
+                    Some((rule_id, rule.priority))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(_, priority)| *priority)
+            .map(|(rule_id, _)| rule_id)
     }
 
     fn rule_matches(
@@ -956,35 +1337,22 @@ impl EventRegistryV2 {
         if ctx.mods & rule.predicate.forbidden_mods != 0 {
             return false;
         }
-        if ctx.runtime_flags & rule.predicate.runtime_flags_all != rule.predicate.runtime_flags_all
-        {
-            return false;
-        }
-        if ctx.runtime_flags & rule.predicate.runtime_flags_none != 0 {
-            return false;
-        }
 
         match rule.scope {
             RuleScope::Target(expected) => target == Some(expected),
             RuleScope::Focused(expected) => ctx.focused == Some(expected),
-            RuleScope::PointerHit => target.is_some(),
             RuleScope::NoFocus => ctx.focused.is_none(),
             RuleScope::Any => true,
         }
     }
 }
 
-const POINTER_TRIGGERS: [TriggerId; 10] = [
+const POINTER_TRIGGERS: [TriggerId; 5] = [
     TriggerId::CursorButtonLeftPress,
     TriggerId::CursorButtonLeftRelease,
-    TriggerId::CursorButtonMiddlePress,
     TriggerId::CursorMove,
     TriggerId::CursorEnter,
     TriggerId::CursorLeave,
-    TriggerId::CursorScrollXNeg,
-    TriggerId::CursorScrollXPos,
-    TriggerId::CursorScrollYNeg,
-    TriggerId::CursorScrollYPos,
 ];
 
 fn pointer_trigger_matches(flags: u16, trigger: TriggerId) -> bool {
@@ -1005,17 +1373,8 @@ fn pointer_trigger_matches(flags: u16, trigger: TriggerId) -> bool {
                 | EVENT_MOUSE_OVER_STYLE
                 | EVENT_MOUSE_DOWN_STYLE
         }
-        TriggerId::CursorButtonMiddlePress => EVENT_TEXT_INPUT | EVENT_FOCUSABLE,
-        TriggerId::CursorMove => {
-            EVENT_MOUSE_ENTER | EVENT_MOUSE_LEAVE | EVENT_MOUSE_MOVE | EVENT_MOUSE_OVER_STYLE
-        }
-        TriggerId::CursorEnter | TriggerId::CursorLeave => {
-            EVENT_MOUSE_ENTER | EVENT_MOUSE_LEAVE | EVENT_MOUSE_OVER_STYLE | EVENT_MOUSE_DOWN_STYLE
-        }
-        TriggerId::CursorScrollXNeg => EVENT_SCROLL_X_NEG,
-        TriggerId::CursorScrollXPos => EVENT_SCROLL_X_POS,
-        TriggerId::CursorScrollYNeg => EVENT_SCROLL_Y_NEG,
-        TriggerId::CursorScrollYPos => EVENT_SCROLL_Y_POS,
+        TriggerId::CursorMove => EVENT_MOUSE_ENTER | EVENT_MOUSE_LEAVE | EVENT_MOUSE_MOVE,
+        TriggerId::CursorEnter | TriggerId::CursorLeave => EVENT_MOUSE_ENTER | EVENT_MOUSE_LEAVE,
         _ => return false,
     };
 

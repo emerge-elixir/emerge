@@ -5,7 +5,7 @@ use crate::input::InputEvent;
 use crate::renderer::DrawCmd;
 use crate::tree::element::ElementId;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TreeMsg {
     UploadTree {
         bytes: Vec<u8>,

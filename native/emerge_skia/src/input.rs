@@ -142,20 +142,13 @@ rustler::atoms! {
 /// Handles input event filtering and delivery to Elixir.
 pub struct InputHandler {
     mask: u32,
-    cursor_pos: (f32, f32),
 }
 
 impl InputHandler {
     pub fn new() -> Self {
         Self {
             mask: INPUT_MASK_ALL,
-            cursor_pos: (0.0, 0.0),
         }
-    }
-
-    /// Update cursor position (used for button/scroll events)
-    pub fn set_cursor_pos(&mut self, x: f32, y: f32) {
-        self.cursor_pos = (x, y);
     }
 
     /// Set the input mask for filtering events

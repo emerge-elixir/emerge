@@ -49,8 +49,8 @@ start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else
 
 startup_detail =
   if card,
-    do: " backend=#{backend} dispatch_mode=v2 card=#{card}",
-    else: " backend=#{backend} dispatch_mode=v2"
+    do: " backend=#{backend} card=#{card}",
+    else: " backend=#{backend}"
 
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 

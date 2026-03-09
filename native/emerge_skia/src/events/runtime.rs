@@ -16,11 +16,11 @@ use crate::{
 
 use super::dispatch_outcome::{DispatchOutcome, ElementEventKind};
 use super::{
-    EventNode, EventProcessor, TextInputCommandRequest, TextInputCursorRequest,
-    TextInputDescriptor, TextInputEditRequest, TextInputPreeditRequest, blur_atom, change_atom,
-    click_atom, focus_atom, mouse_down_atom, mouse_enter_atom, mouse_leave_atom, mouse_move_atom,
-    mouse_up_atom, press_atom, registry_v2::TriggerId, send_element_event,
-    send_element_event_with_string_payload, send_input_event,
+    EventNode, EventProcessor, TextInputCommandRequest, TextInputDescriptor, TextInputEditRequest,
+    TextInputPreeditRequest, blur_atom, change_atom, click_atom, focus_atom, mouse_down_atom,
+    mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
+    registry::TriggerId, send_element_event, send_element_event_with_string_payload,
+    send_input_event, text_ops,
 };
 
 #[derive(Clone, Debug)]
@@ -50,13 +50,13 @@ impl TextInputSession {
 }
 
 #[derive(Clone, Debug)]
-struct V2OnlyNoPredictionStats {
+struct NoPredictionStats {
     total: u64,
     unclassified: u64,
     by_trigger: Vec<u64>,
 }
 
-impl V2OnlyNoPredictionStats {
+impl NoPredictionStats {
     fn new() -> Self {
         Self {
             total: 0,
@@ -75,6 +75,12 @@ impl V2OnlyNoPredictionStats {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PredictionMeta {
+    had_jobs: bool,
+    trigger_for_stats: Option<TriggerId>,
+}
+
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     match tree_tx.try_send(msg) {
         Ok(()) => {}
@@ -88,7 +94,11 @@ fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     }
 }
 
-fn send_element_event_if_target(target: Option<LocalPid>, element_id: &ElementId, event: rustler::Atom) {
+fn send_element_event_if_target(
+    target: Option<LocalPid>,
+    element_id: &ElementId,
+    event: rustler::Atom,
+) {
     if let Some(pid) = target {
         send_element_event(pid, element_id, event);
     }
@@ -142,17 +152,14 @@ fn event_is_dispatch_candidate(event: &InputEvent) -> bool {
         | InputEvent::TextPreedit { .. }
         | InputEvent::TextPreeditClear
         | InputEvent::CursorEntered { .. }
-        | InputEvent::Focused { .. } => true,
-        InputEvent::Resized { .. } => false,
+        | InputEvent::Focused { .. }
+        | InputEvent::Resized { .. } => true,
     }
 }
 
-fn maybe_dump_v2_no_prediction_stats(
-    stats: &V2OnlyNoPredictionStats,
-    reason: &str,
-) {
+fn maybe_dump_no_prediction_stats(stats: &NoPredictionStats, reason: &str) {
     eprintln!(
-        "v2-only no-prediction reason={reason} total={} unclassified={}",
+        "no-prediction reason={reason} total={} unclassified={}",
         stats.total, stats.unclassified
     );
 
@@ -161,23 +168,12 @@ fn maybe_dump_v2_no_prediction_stats(
             continue;
         }
 
-        eprintln!(
-            "v2-only no-prediction trigger_index={} count={}",
-            index, count
-        );
+        eprintln!("no-prediction trigger_index={} count={}", index, count);
     }
 }
 
 fn text_char_len(content: &str) -> u32 {
-    content.chars().count() as u32
-}
-
-fn char_to_byte_index(content: &str, char_index: u32) -> usize {
-    content
-        .char_indices()
-        .nth(char_index as usize)
-        .map(|(idx, _)| idx)
-        .unwrap_or(content.len())
+    text_ops::text_char_len(content)
 }
 
 fn selected_range(cursor: u32, selection_anchor: Option<u32>) -> Option<(u32, u32)> {
@@ -273,92 +269,43 @@ fn replace_selection_or_insert(
     session: &mut TextInputSession,
     insert_text: &str,
 ) -> Option<String> {
-    if insert_text.is_empty() {
-        return None;
-    }
-
-    let (start, end) = selected_range(session.cursor, session.selection_anchor)
-        .unwrap_or((session.cursor, session.cursor));
-
-    let mut next = session.content.clone();
-    let start_byte = char_to_byte_index(&next, start);
-    let end_byte = char_to_byte_index(&next, end);
-    next.replace_range(start_byte..end_byte, insert_text);
-
-    if next == session.content {
-        return None;
-    }
-
-    let next_cursor = start + text_char_len(insert_text);
-    apply_content_change(session, next.clone(), next_cursor);
-    Some(next)
+    text_ops::apply_insert(
+        &session.content,
+        session.cursor,
+        session.selection_anchor,
+        insert_text,
+    )
+    .map(|(next_content, next_cursor)| {
+        apply_content_change(session, next_content.clone(), next_cursor);
+        next_content
+    })
 }
 
 fn delete_backward(session: &mut TextInputSession) -> Option<String> {
-    let (start, end) = selected_range(session.cursor, session.selection_anchor)
-        .unwrap_or((session.cursor, session.cursor));
-
-    if start != end {
-        let mut next = session.content.clone();
-        let start_byte = char_to_byte_index(&next, start);
-        let end_byte = char_to_byte_index(&next, end);
-        next.replace_range(start_byte..end_byte, "");
-        apply_content_change(session, next.clone(), start);
-        return Some(next);
-    }
-
-    if session.cursor == 0 {
-        return None;
-    }
-
-    let mut next = session.content.clone();
-    let start_byte = char_to_byte_index(&next, session.cursor - 1);
-    let end_byte = char_to_byte_index(&next, session.cursor);
-    next.replace_range(start_byte..end_byte, "");
-    apply_content_change(session, next.clone(), session.cursor - 1);
-    Some(next)
+    text_ops::apply_backspace(&session.content, session.cursor, session.selection_anchor).map(
+        |(next_content, next_cursor)| {
+            apply_content_change(session, next_content.clone(), next_cursor);
+            next_content
+        },
+    )
 }
 
 fn delete_forward(session: &mut TextInputSession) -> Option<String> {
-    let (start, end) = selected_range(session.cursor, session.selection_anchor)
-        .unwrap_or((session.cursor, session.cursor));
-
-    if start != end {
-        let mut next = session.content.clone();
-        let start_byte = char_to_byte_index(&next, start);
-        let end_byte = char_to_byte_index(&next, end);
-        next.replace_range(start_byte..end_byte, "");
-        apply_content_change(session, next.clone(), start);
-        return Some(next);
-    }
-
-    let len = text_char_len(&session.content);
-    if session.cursor >= len {
-        return None;
-    }
-
-    let mut next = session.content.clone();
-    let start_byte = char_to_byte_index(&next, session.cursor);
-    let end_byte = char_to_byte_index(&next, session.cursor + 1);
-    next.replace_range(start_byte..end_byte, "");
-    apply_content_change(session, next.clone(), session.cursor);
-    Some(next)
+    text_ops::apply_delete(&session.content, session.cursor, session.selection_anchor).map(
+        |(next_content, next_cursor)| {
+            apply_content_change(session, next_content.clone(), next_cursor);
+            next_content
+        },
+    )
 }
 
 fn cut_selection(session: &mut TextInputSession) -> Option<(String, String)> {
-    let (start, end) = selected_range(session.cursor, session.selection_anchor)?;
-    let selected = selection_text(session)?;
-
-    if selected.is_empty() {
-        return None;
-    }
-
-    let mut next = session.content.clone();
-    let start_byte = char_to_byte_index(&next, start);
-    let end_byte = char_to_byte_index(&next, end);
-    next.replace_range(start_byte..end_byte, "");
-    apply_content_change(session, next.clone(), start);
-    Some((next, selected))
+    text_ops::cut_selection_content(&session.content, session.cursor, session.selection_anchor).map(
+        |(next_content, next_cursor, selected)| {
+            apply_content_change(session, next_content.clone(), next_cursor);
+            (next_content, selected)
+        },
+    )
 }
 
 fn sanitize_single_line_text(text: &str) -> String {
@@ -537,11 +484,7 @@ fn send_content_update(
     );
 }
 
-fn emit_change_event(
-    target: &Option<LocalPid>,
-    element_id: &ElementId,
-    value: &str,
-) {
+fn emit_change_event(target: &Option<LocalPid>, element_id: &ElementId, value: &str) {
     send_element_event_with_string_payload_if_target(
         target.as_ref().copied(),
         element_id,
@@ -550,8 +493,27 @@ fn emit_change_event(
     );
 }
 
+fn emit_content_change_outputs(
+    target: &Option<LocalPid>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+    element_id: &ElementId,
+    session: &TextInputSession,
+    emit_change: bool,
+    next_content: String,
+) {
+    send_content_update(tree_tx, log_render, element_id, next_content.clone());
+    send_runtime_update(tree_tx, log_render, element_id, session);
+    if emit_change {
+        emit_change_event(target, element_id, &next_content);
+    }
+}
+
 #[cfg(test)]
-fn change_payload_for_target(predicted: &DispatchOutcome, element_id: Option<&ElementId>) -> Option<String> {
+fn change_payload_for_target(
+    predicted: &DispatchOutcome,
+    element_id: Option<&ElementId>,
+) -> Option<String> {
     let target = super::dispatch_outcome::node_key(element_id?);
     predicted
         .element_events
@@ -596,89 +558,91 @@ fn remove_predicted_change_event(
 
 fn enrich_predicted_command_change_events(
     predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    event: &InputEvent,
-    processor: &EventProcessor,
-    target: &Option<LocalPid>,
+    allow_change_events: bool,
     sessions: &HashMap<ElementId, TextInputSession>,
     clipboard: &mut ClipboardManager,
 ) {
-    if target.is_none() {
-        return;
-    }
+    let command_requests = predicted.text_command_requests.clone();
+    for request in command_requests {
+        let element_id = element_id_from_node_key(&request.target);
+        let Some(session) = sessions.get(&element_id) else {
+            remove_predicted_change_event(predicted, &element_id);
+            continue;
+        };
+        if !allow_change_events || !session.descriptor.emit_change {
+            remove_predicted_change_event(predicted, &element_id);
+            continue;
+        }
 
-    let Some((element_id, request)) = processor.text_input_command_request(event) else {
-        return;
-    };
-    let Some(session) = sessions.get(&element_id) else {
-        return;
-    };
-
-    let mut shadow_session = session.clone();
-    let next_content =
-        match request {
+        let mut simulated_session = session.clone();
+        let next_content = match request.request {
             TextInputCommandRequest::Cut => {
-                cut_selection(&mut shadow_session).map(|(next_content, _selected)| next_content)
+                cut_selection(&mut simulated_session).map(|(next_content, _selected)| next_content)
             }
             TextInputCommandRequest::Paste => clipboard
                 .get_text(ClipboardTarget::Clipboard)
                 .and_then(|pasted| {
                     let sanitized = sanitize_single_line_text(&pasted);
-                    replace_selection_or_insert(&mut shadow_session, &sanitized)
+                    replace_selection_or_insert(&mut simulated_session, &sanitized)
                 }),
             TextInputCommandRequest::PastePrimary => clipboard
                 .get_text(ClipboardTarget::Primary)
                 .and_then(|pasted| {
                     let sanitized = sanitize_single_line_text(&pasted);
-                    replace_selection_or_insert(&mut shadow_session, &sanitized)
+                    replace_selection_or_insert(&mut simulated_session, &sanitized)
                 }),
             TextInputCommandRequest::SelectAll | TextInputCommandRequest::Copy => None,
         };
 
-    if let Some(next_content) = next_content {
-        upsert_predicted_change_event(predicted, &element_id, next_content);
-    } else {
-        remove_predicted_change_event(predicted, &element_id);
+        if let Some(next_content) = next_content {
+            upsert_predicted_change_event(predicted, &element_id, next_content);
+        } else {
+            remove_predicted_change_event(predicted, &element_id);
+        }
     }
 }
 
 fn enrich_predicted_edit_change_events(
     predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    event: &InputEvent,
-    processor: &EventProcessor,
     sessions: &HashMap<ElementId, TextInputSession>,
     allow_change_events: bool,
 ) {
-    let Some((element_id, request)) = processor.text_input_edit_request(event) else {
-        return;
-    };
+    let edit_requests = predicted.text_edit_requests.clone();
+    for request in edit_requests {
+        let element_id = element_id_from_node_key(&request.target);
 
-    if !allow_change_events {
-        remove_predicted_change_event(predicted, &element_id);
-        return;
-    }
-
-    let Some(session) = sessions.get(&element_id) else {
-        remove_predicted_change_event(predicted, &element_id);
-        return;
-    };
-
-    let mut shadow_session = session.clone();
-    let next_content = match request {
-        TextInputEditRequest::MoveLeft { .. }
-        | TextInputEditRequest::MoveRight { .. }
-        | TextInputEditRequest::MoveHome { .. }
-        | TextInputEditRequest::MoveEnd { .. } => None,
-        TextInputEditRequest::Backspace => delete_backward(&mut shadow_session),
-        TextInputEditRequest::Delete => delete_forward(&mut shadow_session),
-        TextInputEditRequest::Insert(text) => {
-            replace_selection_or_insert(&mut shadow_session, &text)
+        if !allow_change_events {
+            remove_predicted_change_event(predicted, &element_id);
+            continue;
         }
-    };
 
-    if let Some(next_content) = next_content {
-        upsert_predicted_change_event(predicted, &element_id, next_content);
-    } else {
-        remove_predicted_change_event(predicted, &element_id);
+        let Some(session) = sessions.get(&element_id) else {
+            remove_predicted_change_event(predicted, &element_id);
+            continue;
+        };
+        if !session.descriptor.emit_change {
+            remove_predicted_change_event(predicted, &element_id);
+            continue;
+        }
+
+        let mut simulated_session = session.clone();
+        let next_content = match request.request {
+            TextInputEditRequest::MoveLeft { .. }
+            | TextInputEditRequest::MoveRight { .. }
+            | TextInputEditRequest::MoveHome { .. }
+            | TextInputEditRequest::MoveEnd { .. } => None,
+            TextInputEditRequest::Backspace => delete_backward(&mut simulated_session),
+            TextInputEditRequest::Delete => delete_forward(&mut simulated_session),
+            TextInputEditRequest::Insert(text) => {
+                replace_selection_or_insert(&mut simulated_session, &text)
+            }
+        };
+
+        if let Some(next_content) = next_content {
+            upsert_predicted_change_event(predicted, &element_id, next_content);
+        } else {
+            remove_predicted_change_event(predicted, &element_id);
+        }
     }
 }
 
@@ -690,7 +654,7 @@ fn float_from_milli(value: super::dispatch_outcome::Milli) -> f32 {
     value.0 as f32 / 1000.0
 }
 
-fn apply_v2_dispatch_outcome(
+fn apply_dispatch_outcome(
     outcome: DispatchOutcome,
     processor: &mut EventProcessor,
     target: &Option<LocalPid>,
@@ -700,6 +664,18 @@ fn apply_v2_dispatch_outcome(
     focused: &mut Option<ElementId>,
     clipboard: &mut ClipboardManager,
 ) {
+    for request in &outcome.window_resize_requests {
+        send_tree(
+            tree_tx,
+            TreeMsg::Resize {
+                width: request.width as f32,
+                height: request.height as f32,
+                scale: float_from_milli(request.scale),
+            },
+            log_render,
+        );
+    }
+
     if let Some(next_focus) = outcome.focus_change {
         let next_focus = next_focus.as_ref().map(element_id_from_node_key);
         apply_focus_change(
@@ -711,6 +687,19 @@ fn apply_v2_dispatch_outcome(
             log_render,
         );
         processor.set_focused_id_for_runtime(next_focus);
+    }
+
+    for request in outcome.text_cursor_requests {
+        let element_id = element_id_from_node_key(&request.target);
+        if let Some(session) = sessions.get_mut(&element_id) {
+            let next_cursor = cursor_from_click_x(session, float_from_milli(request.x));
+            if move_cursor(session, next_cursor, request.extend_selection) {
+                send_runtime_update(tree_tx, log_render, &element_id, session);
+                if request.extend_selection {
+                    sync_primary_selection(session, clipboard);
+                }
+            }
+        }
     }
 
     for request in outcome.text_command_requests {
@@ -747,41 +736,52 @@ fn apply_v2_dispatch_outcome(
                     }
                 }
                 TextInputCommandRequest::Cut => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some((next_content, selected)) = cut_selection(session) {
                         clipboard.set_text(ClipboardTarget::Clipboard, &selected);
                         clipboard.set_text(ClipboardTarget::Primary, &selected);
-                        send_content_update(tree_tx, log_render, &element_id, next_content.clone());
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        emit_change_event(target, &element_id, &next_content);
+                        emit_content_change_outputs(
+                            target,
+                            tree_tx,
+                            log_render,
+                            &element_id,
+                            session,
+                            emit_change,
+                            next_content,
+                        );
                     }
                 }
                 TextInputCommandRequest::Paste => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some(pasted) = clipboard.get_text(ClipboardTarget::Clipboard) {
                         let pasted = sanitize_single_line_text(&pasted);
                         if let Some(next_content) = replace_selection_or_insert(session, &pasted) {
-                            send_content_update(
+                            emit_content_change_outputs(
+                                target,
                                 tree_tx,
                                 log_render,
                                 &element_id,
-                                next_content.clone(),
+                                session,
+                                emit_change,
+                                next_content,
                             );
-                            send_runtime_update(tree_tx, log_render, &element_id, session);
-                            emit_change_event(target, &element_id, &next_content);
                         }
                     }
                 }
                 TextInputCommandRequest::PastePrimary => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some(pasted) = clipboard.get_text(ClipboardTarget::Primary) {
                         let pasted = sanitize_single_line_text(&pasted);
                         if let Some(next_content) = replace_selection_or_insert(session, &pasted) {
-                            send_content_update(
+                            emit_content_change_outputs(
+                                target,
                                 tree_tx,
                                 log_render,
                                 &element_id,
-                                next_content.clone(),
+                                session,
+                                emit_change,
+                                next_content,
                             );
-                            send_runtime_update(tree_tx, log_render, &element_id, session);
-                            emit_change_event(target, &element_id, &next_content);
                         }
                     }
                 }
@@ -852,24 +852,45 @@ fn apply_v2_dispatch_outcome(
                     }
                 }
                 TextInputEditRequest::Backspace => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some(next_content) = delete_backward(session) {
-                        send_content_update(tree_tx, log_render, &element_id, next_content.clone());
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        emit_change_event(target, &element_id, &next_content);
+                        emit_content_change_outputs(
+                            target,
+                            tree_tx,
+                            log_render,
+                            &element_id,
+                            session,
+                            emit_change,
+                            next_content,
+                        );
                     }
                 }
                 TextInputEditRequest::Delete => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some(next_content) = delete_forward(session) {
-                        send_content_update(tree_tx, log_render, &element_id, next_content.clone());
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        emit_change_event(target, &element_id, &next_content);
+                        emit_content_change_outputs(
+                            target,
+                            tree_tx,
+                            log_render,
+                            &element_id,
+                            session,
+                            emit_change,
+                            next_content,
+                        );
                     }
                 }
                 TextInputEditRequest::Insert(text) => {
+                    let emit_change = session.descriptor.emit_change;
                     if let Some(next_content) = replace_selection_or_insert(session, &text) {
-                        send_content_update(tree_tx, log_render, &element_id, next_content.clone());
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        emit_change_event(target, &element_id, &next_content);
+                        emit_content_change_outputs(
+                            target,
+                            tree_tx,
+                            log_render,
+                            &element_id,
+                            session,
+                            emit_change,
+                            next_content,
+                        );
                     }
                 }
             }
@@ -1003,15 +1024,8 @@ fn apply_v2_dispatch_outcome(
     }
 }
 
-fn advance_processor_state_after_v2_event(processor: &mut EventProcessor, event: &InputEvent) {
-    processor.detect_click(event);
-    processor.detect_press(event);
-    processor.detect_mouse_button_event(event);
-    processor.handle_hover_event(event);
-    processor.scrollbar_thumb_drag_requests(event);
-    processor.scrollbar_hover_requests(event);
-    processor.mouse_over_requests(event);
-    processor.mouse_down_requests(event);
+fn advance_processor_state_after_event(processor: &mut EventProcessor, event: &InputEvent) {
+    processor.advance_runtime_state_after_event(event);
 }
 
 fn sync_primary_selection(session: &TextInputSession, clipboard: &mut ClipboardManager) {
@@ -1142,23 +1156,7 @@ fn apply_focus_change(
     }
 }
 
-fn process_input_events(
-    events: &mut Vec<InputEvent>,
-    processor: &mut EventProcessor,
-    input_handler: &mut InputHandler,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-    sessions: &mut HashMap<ElementId, TextInputSession>,
-    focused: &mut Option<ElementId>,
-    clipboard: &mut ClipboardManager,
-    v2_no_prediction_stats: &mut V2OnlyNoPredictionStats,
-    v2_no_prediction_verbose: bool,
-) {
-    if events.is_empty() {
-        return;
-    }
-
+fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
     let mut coalesced = Vec::new();
     let mut last_cursor: Option<InputEvent> = None;
     let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
@@ -1186,105 +1184,136 @@ fn process_input_events(
         coalesced.push(cursor);
     }
 
+    coalesced
+}
+
+fn preview_and_enrich_dispatch_outcome(
+    event: &InputEvent,
+    processor: &EventProcessor,
+    focused: Option<&ElementId>,
+    target: &Option<LocalPid>,
+    sessions: &HashMap<ElementId, TextInputSession>,
+    clipboard: &mut ClipboardManager,
+) -> (Option<DispatchOutcome>, PredictionMeta) {
+    let super::DispatchPreview {
+        outcome: mut predicted_outcome,
+        had_jobs,
+        trigger_for_stats,
+    } = processor.preview_dispatch_outcome(event, focused);
+
+    if let Some(mut predicted) = predicted_outcome.take() {
+        enrich_predicted_command_change_events(
+            &mut predicted,
+            target.is_some(),
+            sessions,
+            clipboard,
+        );
+
+        enrich_predicted_edit_change_events(&mut predicted, sessions, target.is_some());
+
+        predicted_outcome = Some(predicted);
+    }
+
+    (
+        predicted_outcome,
+        PredictionMeta {
+            had_jobs,
+            trigger_for_stats,
+        },
+    )
+}
+
+fn forward_observer_input(
+    event: &InputEvent,
+    input_handler: &InputHandler,
+    target: &Option<LocalPid>,
+) {
+    let forward_to_target = input_handler.accepts(event);
+    if let Some(pid) = target.as_ref()
+        && forward_to_target
+    {
+        send_input_event(*pid, event);
+    }
+}
+
+fn finalize_dispatch_for_event(
+    event: &InputEvent,
+    predicted_outcome: Option<DispatchOutcome>,
+    prediction_meta: PredictionMeta,
+    processor: &mut EventProcessor,
+    target: &Option<LocalPid>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+    sessions: &mut HashMap<ElementId, TextInputSession>,
+    focused: &mut Option<ElementId>,
+    clipboard: &mut ClipboardManager,
+    no_prediction_stats: &mut NoPredictionStats,
+    no_prediction_verbose: bool,
+) {
+    if let Some(outcome) = predicted_outcome {
+        apply_dispatch_outcome(
+            outcome, processor, target, tree_tx, log_render, sessions, focused, clipboard,
+        );
+        advance_processor_state_after_event(processor, event);
+    } else if event_is_dispatch_candidate(event) {
+        advance_processor_state_after_event(processor, event);
+        if prediction_meta.had_jobs {
+            no_prediction_stats.record(prediction_meta.trigger_for_stats);
+        }
+        if no_prediction_verbose && prediction_meta.had_jobs {
+            eprintln!(
+                "no-prediction trigger={:?} event={:?}",
+                prediction_meta.trigger_for_stats, event
+            );
+        }
+    }
+}
+
+fn process_input_events(
+    events: &mut Vec<InputEvent>,
+    processor: &mut EventProcessor,
+    input_handler: &mut InputHandler,
+    target: &Option<LocalPid>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+    sessions: &mut HashMap<ElementId, TextInputSession>,
+    focused: &mut Option<ElementId>,
+    clipboard: &mut ClipboardManager,
+    no_prediction_stats: &mut NoPredictionStats,
+    no_prediction_verbose: bool,
+) {
+    if events.is_empty() {
+        return;
+    }
+
+    let coalesced = coalesce_input_events(events);
+
     for event in coalesced {
-        let trigger = processor.v2_trigger_for_input_event(&event);
-        let mut predicted_outcome: Option<DispatchOutcome> = None;
+        let (predicted_outcome, prediction_meta) = preview_and_enrich_dispatch_outcome(
+            &event,
+            processor,
+            focused.as_ref(),
+            target,
+            sessions,
+            clipboard,
+        );
 
-        if let Some(mut predicted) =
-            processor.preview_v2_keyboard_focus_outcome(&event, focused.as_ref())
-        {
-            enrich_predicted_command_change_events(
-                &mut predicted,
-                &event,
-                processor,
-                target,
-                sessions,
-                clipboard,
-            );
+        forward_observer_input(&event, input_handler, target);
 
-            enrich_predicted_edit_change_events(
-                &mut predicted,
-                &event,
-                processor,
-                sessions,
-                target.is_some(),
-            );
-
-            predicted_outcome = Some(predicted);
-        }
-
-        if let InputEvent::Resized {
-            width,
-            height,
-            scale_factor,
-        } = &event
-        {
-            send_tree(
-                tree_tx,
-                TreeMsg::Resize {
-                    width: *width as f32,
-                    height: *height as f32,
-                    scale: *scale_factor,
-                },
-                log_render,
-            );
-        }
-
-        if let InputEvent::CursorPos { x, y } = &event {
-            input_handler.set_cursor_pos(*x, *y);
-        }
-
-        let forward_to_target = input_handler.accepts(&event);
-
-        if let Some(pid) = target.as_ref()
-            && forward_to_target
-        {
-            send_input_event(*pid, &event);
-        }
-
-        for request in processor.text_input_cursor_requests(&event) {
-            match request {
-                TextInputCursorRequest::Set {
-                    element_id,
-                    x,
-                    extend_selection,
-                } => {
-                    if let Some(session) = sessions.get_mut(&element_id) {
-                        let next_cursor = cursor_from_click_x(session, x);
-                        if move_cursor(session, next_cursor, extend_selection) {
-                            send_runtime_update(tree_tx, log_render, &element_id, session);
-                            if extend_selection {
-                                sync_primary_selection(session, clipboard);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(outcome) = predicted_outcome {
-            apply_v2_dispatch_outcome(
-                outcome,
-                processor,
-                target,
-                tree_tx,
-                log_render,
-                sessions,
-                focused,
-                clipboard,
-            );
-            advance_processor_state_after_v2_event(processor, &event);
-        } else if event_is_dispatch_candidate(&event) {
-            advance_processor_state_after_v2_event(processor, &event);
-            v2_no_prediction_stats.record(trigger);
-            if v2_no_prediction_verbose {
-                eprintln!(
-                    "v2-only no-prediction trigger={:?} event={:?}",
-                    trigger, event
-                );
-            }
-        }
-
+        finalize_dispatch_for_event(
+            &event,
+            predicted_outcome,
+            prediction_meta,
+            processor,
+            target,
+            tree_tx,
+            log_render,
+            sessions,
+            focused,
+            clipboard,
+            no_prediction_stats,
+            no_prediction_verbose,
+        );
     }
 }
 
@@ -1302,8 +1331,8 @@ pub(crate) fn spawn_event_actor(
         let mut focused: Option<ElementId> = None;
         let mut clipboard = ClipboardManager::new(system_clipboard);
 
-        let mut v2_no_prediction_stats = V2OnlyNoPredictionStats::new();
-        let v2_no_prediction_verbose = env_flag_enabled("EMERGE_SKIA_V2_NO_PRED_VERBOSE");
+        let mut no_prediction_stats = NoPredictionStats::new();
+        let no_prediction_verbose = env_flag_enabled("EMERGE_SKIA_NO_PRED_VERBOSE");
 
         while let Ok(msg) = event_rx.recv() {
             let mut messages = vec![msg];
@@ -1327,8 +1356,8 @@ pub(crate) fn spawn_event_actor(
                             &mut sessions,
                             &mut focused,
                             &mut clipboard,
-                            &mut v2_no_prediction_stats,
-                            v2_no_prediction_verbose,
+                            &mut no_prediction_stats,
+                            no_prediction_verbose,
                         );
 
                         processor.rebuild_registry(registry.clone());
@@ -1360,8 +1389,8 @@ pub(crate) fn spawn_event_actor(
                             &mut sessions,
                             &mut focused,
                             &mut clipboard,
-                            &mut v2_no_prediction_stats,
-                            v2_no_prediction_verbose,
+                            &mut no_prediction_stats,
+                            no_prediction_verbose,
                         );
                         input_handler.set_mask(mask);
                     }
@@ -1376,13 +1405,13 @@ pub(crate) fn spawn_event_actor(
                             &mut sessions,
                             &mut focused,
                             &mut clipboard,
-                            &mut v2_no_prediction_stats,
-                            v2_no_prediction_verbose,
+                            &mut no_prediction_stats,
+                            no_prediction_verbose,
                         );
                         target = pid;
                     }
                     EventMsg::Stop => {
-                        maybe_dump_v2_no_prediction_stats(&v2_no_prediction_stats, "stop");
+                        maybe_dump_no_prediction_stats(&no_prediction_stats, "stop");
                         return;
                     }
                 }
@@ -1398,12 +1427,12 @@ pub(crate) fn spawn_event_actor(
                 &mut sessions,
                 &mut focused,
                 &mut clipboard,
-                &mut v2_no_prediction_stats,
-                v2_no_prediction_verbose,
+                &mut no_prediction_stats,
+                no_prediction_verbose,
             );
         }
 
-        maybe_dump_v2_no_prediction_stats(&v2_no_prediction_stats, "channel_closed");
+        maybe_dump_no_prediction_stats(&no_prediction_stats, "channel_closed");
     })
 }
 
@@ -1414,14 +1443,17 @@ mod tests {
     use crossbeam_channel::{Receiver, bounded};
 
     use super::{
-        DispatchOutcome, ElementEventKind, TextInputSession, V2OnlyNoPredictionStats,
-        change_payload_for_target, enrich_predicted_edit_change_events, process_input_events,
-        reconcile_text_input_sessions,
+        DispatchOutcome, ElementEventKind, NoPredictionStats, TextInputSession,
+        change_payload_for_target, coalesce_input_events, enrich_predicted_command_change_events,
+        enrich_predicted_edit_change_events, process_input_events, reconcile_text_input_sessions,
     };
     use crate::{
         actors::TreeMsg,
         clipboard::ClipboardManager,
-        events::{EventNode, EventProcessor, KeyScrollTargets, Rect, TextInputDescriptor},
+        events::{
+            EventNode, EventProcessor, KeyScrollTargets, Rect, TextInputCommandRequest,
+            TextInputDescriptor, TextInputEditRequest,
+        },
         input::{ACTION_PRESS, EVENT_MOUSE_LEAVE, EVENT_TEXT_INPUT, InputEvent, InputHandler},
         tree::{attrs::TextAlign, element::ElementId},
     };
@@ -1436,6 +1468,7 @@ mod tests {
             content_len: content.chars().count() as u32,
             cursor,
             selection_anchor,
+            emit_change: true,
             frame_x: 0.0,
             frame_width: 300.0,
             inset_left: 0.0,
@@ -1610,10 +1643,6 @@ mod tests {
         let id = ElementId::from_term_bytes(vec![203]);
         let descriptor = make_text_input_descriptor("abc", 3, None);
 
-        let mut processor = EventProcessor::new();
-        processor.rebuild_registry(vec![make_text_input_node(id.clone(), descriptor.clone())]);
-        processor.focused_id = Some(id.clone());
-
         let mut sessions = HashMap::new();
         let mut session = TextInputSession::from_descriptor(descriptor);
         session.content = "abcd".to_string();
@@ -1622,14 +1651,15 @@ mod tests {
         sessions.insert(id.clone(), session);
 
         let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_edit_requests
+            .push(super::super::dispatch_outcome::TextEditReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputEditRequest::Insert("e".to_string()),
+            });
         push_change_event(&mut predicted, &id, "abce");
 
-        let event = InputEvent::TextCommit {
-            text: "e".to_string(),
-            mods: 0,
-        };
-
-        enrich_predicted_edit_change_events(&mut predicted, &event, &processor, &sessions, true);
+        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
 
         assert_eq!(
             change_payload_for_target(&predicted, Some(&id)).as_deref(),
@@ -1646,13 +1676,39 @@ mod tests {
     }
 
     #[test]
+    fn enrich_predicted_command_change_events_uses_outcome_requests() {
+        let id = ElementId::from_term_bytes(vec![209]);
+        let descriptor = make_text_input_descriptor("abc", 3, None);
+
+        let mut sessions = HashMap::new();
+        let mut session = TextInputSession::from_descriptor(descriptor);
+        session.focused = true;
+        sessions.insert(id.clone(), session);
+
+        let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_command_requests
+            .push(super::super::dispatch_outcome::TextCommandReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputCommandRequest::Paste,
+            });
+        push_change_event(&mut predicted, &id, "stale");
+
+        let mut clipboard = ClipboardManager::new(false);
+        clipboard.set_text(crate::clipboard::ClipboardTarget::Clipboard, "z");
+
+        enrich_predicted_command_change_events(&mut predicted, true, &sessions, &mut clipboard);
+
+        assert_eq!(
+            change_payload_for_target(&predicted, Some(&id)).as_deref(),
+            Some("abcz")
+        );
+    }
+
+    #[test]
     fn enrich_predicted_edit_change_events_removes_noop_backspace_change() {
         let id = ElementId::from_term_bytes(vec![204]);
         let descriptor = make_text_input_descriptor("abc", 0, None);
-
-        let mut processor = EventProcessor::new();
-        processor.rebuild_registry(vec![make_text_input_node(id.clone(), descriptor.clone())]);
-        processor.focused_id = Some(id.clone());
 
         let mut sessions = HashMap::new();
         let mut session = TextInputSession::from_descriptor(descriptor);
@@ -1661,15 +1717,15 @@ mod tests {
         sessions.insert(id.clone(), session);
 
         let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_edit_requests
+            .push(super::super::dispatch_outcome::TextEditReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputEditRequest::Backspace,
+            });
         push_change_event(&mut predicted, &id, "stale");
 
-        let event = InputEvent::Key {
-            key: "backspace".to_string(),
-            action: ACTION_PRESS,
-            mods: 0,
-        };
-
-        enrich_predicted_edit_change_events(&mut predicted, &event, &processor, &sessions, true);
+        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
 
         assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
     }
@@ -1677,6 +1733,235 @@ mod tests {
     #[test]
     fn enrich_predicted_edit_change_events_removes_change_when_not_allowed() {
         let id = ElementId::from_term_bytes(vec![205]);
+        let descriptor = make_text_input_descriptor("abc", 3, None);
+
+        let mut sessions = HashMap::new();
+        let mut session = TextInputSession::from_descriptor(descriptor);
+        session.focused = true;
+        sessions.insert(id.clone(), session);
+
+        let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_edit_requests
+            .push(super::super::dispatch_outcome::TextEditReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputEditRequest::Insert("x".to_string()),
+            });
+        push_change_event(&mut predicted, &id, "stale");
+
+        enrich_predicted_edit_change_events(&mut predicted, &sessions, false);
+
+        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
+    }
+
+    #[test]
+    fn enrich_predicted_edit_change_events_removes_change_when_on_change_disabled() {
+        let id = ElementId::from_term_bytes(vec![210]);
+        let mut descriptor = make_text_input_descriptor("abc", 3, None);
+        descriptor.emit_change = false;
+
+        let mut sessions = HashMap::new();
+        let mut session = TextInputSession::from_descriptor(descriptor);
+        session.focused = true;
+        sessions.insert(id.clone(), session);
+
+        let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_edit_requests
+            .push(super::super::dispatch_outcome::TextEditReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputEditRequest::Insert("x".to_string()),
+            });
+        push_change_event(&mut predicted, &id, "stale");
+
+        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
+
+        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
+    }
+
+    #[test]
+    fn enrich_predicted_command_change_events_removes_change_when_on_change_disabled() {
+        let id = ElementId::from_term_bytes(vec![211]);
+        let mut descriptor = make_text_input_descriptor("abc", 3, None);
+        descriptor.emit_change = false;
+
+        let mut sessions = HashMap::new();
+        let mut session = TextInputSession::from_descriptor(descriptor);
+        session.focused = true;
+        sessions.insert(id.clone(), session);
+
+        let mut predicted = DispatchOutcome::default();
+        predicted
+            .text_command_requests
+            .push(super::super::dispatch_outcome::TextCommandReqOut {
+                target: super::super::dispatch_outcome::node_key(&id),
+                request: TextInputCommandRequest::Paste,
+            });
+        push_change_event(&mut predicted, &id, "stale");
+
+        let mut clipboard = ClipboardManager::new(false);
+        clipboard.set_text(crate::clipboard::ClipboardTarget::Clipboard, "z");
+
+        enrich_predicted_command_change_events(&mut predicted, true, &sessions, &mut clipboard);
+
+        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
+    }
+
+    #[test]
+    fn coalesce_input_events_merges_scroll_and_keeps_last_cursor() {
+        let mut events = vec![
+            InputEvent::Key {
+                key: "a".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            InputEvent::CursorPos { x: 1.0, y: 2.0 },
+            InputEvent::CursorScroll {
+                dx: 1.0,
+                dy: 2.0,
+                x: 3.0,
+                y: 4.0,
+            },
+            InputEvent::Focused { focused: false },
+            InputEvent::CursorPos { x: 5.0, y: 6.0 },
+            InputEvent::CursorScroll {
+                dx: 0.5,
+                dy: -1.5,
+                x: 7.0,
+                y: 8.0,
+            },
+        ];
+
+        let coalesced = coalesce_input_events(&mut events);
+
+        assert!(events.is_empty());
+        assert_eq!(coalesced.len(), 4);
+        assert!(matches!(
+            &coalesced[0],
+            InputEvent::Key { key, action, mods } if key == "a" && *action == ACTION_PRESS && *mods == 0
+        ));
+        assert!(matches!(
+            &coalesced[1],
+            InputEvent::Focused { focused: false }
+        ));
+
+        match &coalesced[2] {
+            InputEvent::CursorScroll { dx, dy, x, y } => {
+                assert_eq!(*dx, 1.5);
+                assert_eq!(*dy, 0.5);
+                assert_eq!(*x, 7.0);
+                assert_eq!(*y, 8.0);
+            }
+            _ => panic!("expected merged cursor scroll event"),
+        }
+
+        match &coalesced[3] {
+            InputEvent::CursorPos { x, y } => {
+                assert_eq!(*x, 5.0);
+                assert_eq!(*y, 6.0);
+            }
+            _ => panic!("expected final cursor position event"),
+        }
+    }
+
+    #[test]
+    fn process_input_events_resize_is_dispatch_driven_and_no_prediction_neutral() {
+        let mut processor = EventProcessor::new();
+        let mut input_handler = InputHandler::new();
+        let target = None;
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut sessions = HashMap::new();
+        let mut focused = None;
+        let mut clipboard = ClipboardManager::new(false);
+        let mut no_prediction_stats = NoPredictionStats::new();
+
+        let mut events = vec![InputEvent::Resized {
+            width: 800,
+            height: 600,
+            scale_factor: 2.0,
+        }];
+
+        process_input_events(
+            &mut events,
+            &mut processor,
+            &mut input_handler,
+            &target,
+            &tree_tx,
+            false,
+            &mut sessions,
+            &mut focused,
+            &mut clipboard,
+            &mut no_prediction_stats,
+            false,
+        );
+
+        assert_eq!(no_prediction_stats.total, 0);
+
+        let messages = drain_msgs(&tree_rx);
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            &messages[0],
+            TreeMsg::Resize {
+                width,
+                height,
+                scale,
+            } if *width == 800.0 && *height == 600.0 && *scale == 2.0
+        ));
+    }
+
+    #[test]
+    fn process_input_events_applies_dispatch_text_cursor_requests() {
+        let id = ElementId::from_term_bytes(vec![207]);
+        let descriptor = make_text_input_descriptor("abcd", 0, None);
+
+        let mut processor = EventProcessor::new();
+        processor.rebuild_registry(vec![make_text_input_node(id.clone(), descriptor.clone())]);
+
+        let mut sessions = HashMap::new();
+        let mut session = TextInputSession::from_descriptor(descriptor);
+        session.cursor = 0;
+        session.focused = true;
+        sessions.insert(id.clone(), session);
+
+        let mut input_handler = InputHandler::new();
+        let target = None;
+        let (tree_tx, _tree_rx) = bounded(32);
+        let mut focused = Some(id.clone());
+        let mut clipboard = ClipboardManager::new(false);
+        let mut no_prediction_stats = NoPredictionStats::new();
+
+        let mut events = vec![InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 0.0,
+            y: 10.0,
+        }];
+
+        process_input_events(
+            &mut events,
+            &mut processor,
+            &mut input_handler,
+            &target,
+            &tree_tx,
+            false,
+            &mut sessions,
+            &mut focused,
+            &mut clipboard,
+            &mut no_prediction_stats,
+            false,
+        );
+
+        let session = sessions
+            .get(&id)
+            .expect("text session should exist after cursor request");
+        assert_eq!(session.cursor, 0);
+        assert_eq!(no_prediction_stats.total, 0);
+    }
+
+    #[test]
+    fn matched_dispatch_job_with_empty_outcome_does_not_increment_no_prediction() {
+        let id = ElementId::from_term_bytes(vec![208]);
         let descriptor = make_text_input_descriptor("abc", 3, None);
 
         let mut processor = EventProcessor::new();
@@ -1688,21 +1973,39 @@ mod tests {
         session.focused = true;
         sessions.insert(id.clone(), session);
 
-        let mut predicted = DispatchOutcome::default();
-        push_change_event(&mut predicted, &id, "stale");
+        let mut input_handler = InputHandler::new();
+        let target = None;
+        let (tree_tx, _tree_rx) = bounded(32);
+        let mut focused = Some(id);
+        let mut clipboard = ClipboardManager::new(false);
+        let mut no_prediction_stats = NoPredictionStats::new();
 
-        let event = InputEvent::TextCommit {
-            text: "x".to_string(),
+        let mut events = vec![InputEvent::Key {
+            key: "a".to_string(),
+            action: ACTION_PRESS,
             mods: 0,
-        };
+        }];
 
-        enrich_predicted_edit_change_events(&mut predicted, &event, &processor, &sessions, false);
+        process_input_events(
+            &mut events,
+            &mut processor,
+            &mut input_handler,
+            &target,
+            &tree_tx,
+            false,
+            &mut sessions,
+            &mut focused,
+            &mut clipboard,
+            &mut no_prediction_stats,
+            false,
+        );
 
-        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
+        assert_eq!(no_prediction_stats.total, 0);
+        assert_eq!(no_prediction_stats.unclassified, 0);
     }
 
     #[test]
-    fn v2_only_no_prediction_still_advances_hover_state_for_leave_only_target() {
+    fn no_prediction_still_advances_hover_state_for_leave_only_target() {
         let id = ElementId::from_term_bytes(vec![206]);
 
         let mut processor = EventProcessor::new();
@@ -1714,7 +2017,7 @@ mod tests {
         let mut sessions = HashMap::new();
         let mut focused = None;
         let mut clipboard = ClipboardManager::new(false);
-        let mut no_prediction_stats = V2OnlyNoPredictionStats::new();
+        let mut no_prediction_stats = NoPredictionStats::new();
 
         let mut first = vec![InputEvent::CursorPos { x: 10.0, y: 10.0 }];
         process_input_events(

@@ -3,6 +3,7 @@
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
 use super::attrs::{Attrs, ScrollbarHoverAxis};
+use super::interaction::ElementInteraction;
 use std::collections::HashMap;
 
 /// Unique identifier for an element, derived from Erlang term.
@@ -90,6 +91,9 @@ pub struct Element {
 
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
+
+    /// Computed interaction geometry (populated by interaction pass).
+    pub interaction: Option<ElementInteraction>,
 }
 
 impl Element {
@@ -104,6 +108,7 @@ impl Element {
             attrs,
             children: Vec::new(),
             frame: None,
+            interaction: None,
         }
     }
 }
