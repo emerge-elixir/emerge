@@ -113,6 +113,12 @@ Key pattern: `Renderer` struct is backend-agnostic, backends provide the Skia `S
 All docs currently live in `guides/internals/` (architecture, EMRG format, events, scrolling, tree patching).
 Run `mix docs` to generate the full ExDoc site.
 
+## Repository Coding Preferences
+
+- Default to functional composition for collection building (`map`, `filter`, `flat_map`, `fold`, `collect`) instead of mutable accumulator loops.
+- Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
+- Prefer functions that return collections over functions that mutate passed-in output collections.
+
 ## Git Commit Guidelines
 
 - Do NOT include `Co-Authored-By` lines in commit messages

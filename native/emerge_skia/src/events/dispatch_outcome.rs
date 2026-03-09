@@ -36,6 +36,20 @@ pub struct ScrollRequestOut {
     pub dy: Milli,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowResizeReqOut {
+    pub width: u32,
+    pub height: u32,
+    pub scale: Milli,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextCursorReqOut {
+    pub target: NodeKey,
+    pub x: Milli,
+    pub extend_selection: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextCommandReqOut {
     pub target: NodeKey,
@@ -92,11 +106,11 @@ pub struct DispatchOutcome {
     pub focus_change: Option<Option<NodeKey>>,
     pub element_events: Vec<ElementEventOut>,
     pub scroll_requests: Vec<ScrollRequestOut>,
-    pub text_cursor: Vec<String>,
+    pub window_resize_requests: Vec<WindowResizeReqOut>,
+    pub text_cursor_requests: Vec<TextCursorReqOut>,
     pub text_command_requests: Vec<TextCommandReqOut>,
     pub text_edit_requests: Vec<TextEditReqOut>,
     pub text_preedit_requests: Vec<TextPreeditReqOut>,
-    pub hover: Vec<String>,
     pub style_runtime_requests: Vec<StyleRuntimeReqOut>,
     pub scrollbar_thumb_drag_requests: Vec<ScrollbarThumbDragReqOut>,
     pub scrollbar_hover_requests: Vec<ScrollbarHoverReqOut>,

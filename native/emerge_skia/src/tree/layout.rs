@@ -3244,7 +3244,7 @@ pub struct LayoutOutput {
 
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
-pub fn refresh(tree: &ElementTree) -> LayoutOutput {
+pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     let render_output = render_tree_with_meta(tree);
 
     LayoutOutput {

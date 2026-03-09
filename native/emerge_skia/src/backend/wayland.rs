@@ -325,7 +325,6 @@ impl App {
 
     fn text_commit_diag_enabled() -> bool {
         Self::env_flag_enabled("EMERGE_SKIA_TEXT_COMMIT_DIAG")
-            || Self::env_flag_enabled("EMERGE_SKIA_SHADOW_TEXT_DIAG")
     }
 
     fn preedit_cursor_to_char_range(

@@ -1,5 +1,6 @@
-use super::{EventNode, Rect, point_hits_node};
+use super::{EventNode, point_hits_node};
 use crate::tree::element::ElementId;
+use crate::tree::interaction::Rect;
 use crate::tree::scrollbar::{ScrollbarAxis, ScrollbarMetrics};
 
 #[derive(Clone, Copy, Debug)]
@@ -70,7 +71,6 @@ pub(crate) enum ScrollbarInteraction {
     Idle,
     Captured,
     Dragging(ScrollbarDragState),
-    SuppressMouseRelease,
 }
 
 impl ScrollbarInteraction {
@@ -84,18 +84,6 @@ impl ScrollbarInteraction {
 
     pub(crate) fn set_dragging(&mut self, drag: ScrollbarDragState) {
         *self = Self::Dragging(drag);
-    }
-
-    pub(crate) fn suppress_release(&mut self) {
-        *self = Self::SuppressMouseRelease;
-    }
-
-    pub(crate) fn take_release_suppression(&mut self) -> bool {
-        if matches!(self, Self::SuppressMouseRelease) {
-            *self = Self::Idle;
-            return true;
-        }
-        false
     }
 
     pub(crate) fn is_captured(&self) -> bool {

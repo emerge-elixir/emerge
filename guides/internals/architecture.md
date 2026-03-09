@@ -11,7 +11,7 @@ Multi-backend Skia renderer with:
 - Push-based input event delivery
 - EventProcessor thread for hit testing, click/scroll dispatch, and redraws
 - Rust-owned single-line text input editing (`cursor`, `insert/delete`,
-  `on_change` payload emission, `on_focus`/`on_blur` element events)
+  `on_change`-gated payload emission, `on_focus`/`on_blur` element events)
 - Rust-owned text selection and shortcut handling (`shift+arrows`,
   `ctrl/meta+a/c/x/v`)
 - Clipboard manager integration (OS clipboard + Linux PRIMARY with in-memory
