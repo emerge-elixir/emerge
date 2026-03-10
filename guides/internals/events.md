@@ -53,6 +53,17 @@ Each node stores:
 Registry order follows render traversal order. Hit testing scans in reverse, so
 topmost elements win.
 
+## Nearby Status
+
+Nearby positioning is currently visual-only.
+
+- nearby subtrees are rendered from nested EMRG attr payloads during the render pass
+- nearby nodes are not yet inserted into the retained event registry walk
+- current hit testing, hover, focus, and text-input runtime only see main-tree
+  `children`
+- direct-listener-registry work should treat nearby as first-class retained mounts
+  and preserve the same ordering described in `nearby-semantics.md`
+
 ## Hit Testing Behavior
 
 Current hit testing is:
@@ -189,6 +200,7 @@ whether `:change` element events are emitted.
 - Element events do not include pointer metadata payloads.
 - Right/middle buttons are not mapped to element-level down/up events.
 - No distinct scrollbar active/pressed visual state beyond hover width changes.
+- Nearby elements are not yet hit-testable or focusable through the event registry.
 
 ## Possible Extensions
 

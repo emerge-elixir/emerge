@@ -141,6 +141,26 @@ When runtime state requires followup listeners (click/press release, drag thresh
 3. If source does not exist, runtime drops that tracker/followup.
 4. Effective registry is then composed with deterministic overlay precedence.
 
+## Deferred Nearby Integration
+
+Nearby is intentionally not part of the current direct-listener base model yet.
+Visual nearby semantics are tracked in `nearby-semantics.md`; full interaction
+parity is deferred until registry integration can be done in one pass.
+
+When nearby is integrated into the direct-listener registry, these requirements
+must hold:
+
+- nearby nodes must be first-class retained mounts, not render-only decoded attrs
+- registry ordering must match render ordering for:
+  - `behind_content` between background and content
+  - parent `in_front` above child `in_front`
+  - sibling outside-nearby following source order
+- hit testing must use the same slot/clip geometry as rendering
+- nearby nodes need stable host-scoped identity so runtime hover/focus/text-input
+  state can survive rebuilds
+- root `in_front` must be able to opt into viewport-fixed behavior without adding
+  ad-hoc event-side exceptions
+
 ## on_click and on_press Behavior
 
 ### Shared pointer tracker flow

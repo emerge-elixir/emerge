@@ -1548,6 +1548,12 @@ defmodule Demo do
     column([width(fill()), spacing(16)], [
       section_title("Nearby Elements"),
       el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Nearby roots align from the host slot; in_front uses the host border-box and explicit px sizes can overflow."
+        )
+      ),
+      el(
         [
           width(fill()),
           height(px(160)),
@@ -1637,8 +1643,91 @@ defmodule Demo do
           ],
           text("Base")
         )
-      )
+      ),
+      section_title("Oversized inFront"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "The same 220x90 overlay is centered and bottom-aligned inside a 126x78 host. Clipping only changes visibility."
+        )
+      ),
+      row([width(fill()), spacing(12), align_top()], [
+        nearby_overflow_card(
+          "Overflow visible",
+          "No clip on the host, so the overlay spills past the border-box slot.",
+          false
+        ),
+        nearby_overflow_card(
+          "Overflow clipped",
+          "clip() trims the oversized overlay to the host clip bounds.",
+          true
+        )
+      ])
     ])
+  end
+
+  defp nearby_overflow_card(title, note, clipped?) do
+    host_attrs = [
+      width(px(126)),
+      height(px(78)),
+      center_x(),
+      center_y(),
+      Background.color({:color_rgb, {76, 76, 132}}),
+      Border.width(2),
+      Border.color({:color_rgb, {182, 194, 255}}),
+      Border.rounded(10),
+      in_front(nearby_oversized_front_overlay())
+    ]
+
+    host_attrs = if clipped?, do: [clip() | host_attrs], else: host_attrs
+
+    column(
+      [
+        width(fill()),
+        spacing(10),
+        padding(12),
+        Background.color({:color_rgb, {45, 45, 65}}),
+        Border.rounded(8)
+      ],
+      [
+        el([Font.size(13), Font.color(@light_text)], text(title)),
+        el([Font.size(11), Font.color(@dim_text)], text(note)),
+        el(
+          [
+            width(fill()),
+            height(px(180)),
+            Background.color({:color_rgba, {255, 255, 255, 12}}),
+            Border.rounded(8)
+          ],
+          el(
+            host_attrs,
+            el([center_x(), center_y(), Font.size(13), Font.color(:white)], text("Host"))
+          )
+        )
+      ]
+    )
+  end
+
+  defp nearby_oversized_front_overlay() do
+    el(
+      [
+        width(px(220)),
+        height(px(90)),
+        center_x(),
+        align_bottom(),
+        Background.color({:color_rgba, {235, 96, 140, 210}}),
+        Border.rounded(10),
+        Font.size(11),
+        Font.color(:white)
+      ],
+      column([center_x(), center_y(), spacing(4)], [
+        text("in_front 220x90"),
+        el(
+          [Font.size(10), Font.color({:color_rgba, {255, 255, 255, 220}})],
+          text("center_x + align_bottom")
+        )
+      ])
+    )
   end
 
   defp page_text() do

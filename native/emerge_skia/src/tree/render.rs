@@ -3,17 +3,18 @@
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 use super::attrs::{
-    Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, ImageFit, ImageSource,
-    Padding, TextAlign,
+    AlignX, AlignY, Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, ImageFit,
+    ImageSource, Padding, TextAlign,
 };
 use super::deserialize::decode_tree;
 use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{
-    Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance, layout_tree,
+    font_info_with_inheritance, layout_tree_with_context, AvailableSpace, Constraint, FontContext,
+    SkiaTextMeasurer,
 };
 use super::scrollbar;
 use crate::assets::{self, AssetStatus};
-use crate::renderer::{DrawCmd, make_font_with_style};
+use crate::renderer::{make_font_with_style, DrawCmd};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
@@ -88,6 +89,8 @@ fn render_element(
 
     let clip_state = begin_overflow_clipping(commands, frame, attrs);
 
+    render_nearby_behind(commands, frame, attrs, &element_context);
+
     match element.kind {
         ElementKind::Text => render_text_content(commands, frame, attrs, inherited),
         ElementKind::TextInput => {
@@ -130,7 +133,7 @@ fn render_element(
 
     finish_overflow_clipping(commands, frame, attrs, clip_state);
 
-    render_nearby_overlays(commands, frame, attrs);
+    render_nearby_overlays(commands, frame, attrs, &element_context);
 
     pop_element_transform(commands, transform_state);
 }
@@ -147,33 +150,102 @@ fn render_pre_layers(
     attrs: &Attrs,
     radius: Option<&BorderRadius>,
 ) {
-    render_nearby_behind(commands, frame, attrs);
     push_box_shadows(commands, frame, attrs, radius, false);
     push_background(commands, frame, attrs, radius);
     push_box_shadows(commands, frame, attrs, radius, true);
 }
 
-fn render_nearby_behind(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
+fn render_nearby_behind(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) {
     if let Some(behind_bytes) = &attrs.behind {
-        render_nearby_element(behind_bytes, frame, NearbyPosition::Behind, commands);
+        render_nearby_element(
+            behind_bytes,
+            frame,
+            NearbyPosition::Behind,
+            commands,
+            inherited,
+        );
     }
 }
 
-fn render_nearby_overlays(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
+fn render_nearby_overlays(
+    commands: &mut Vec<DrawCmd>,
+    frame: Frame,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) {
+    let has_overlays = attrs.above.is_some()
+        || attrs.below.is_some()
+        || attrs.on_left.is_some()
+        || attrs.on_right.is_some()
+        || attrs.in_front.is_some();
+
+    if !has_overlays {
+        return;
+    }
+
+    let clip = overflow_clip(frame, attrs);
+    if clip.is_some() {
+        let mode = if needs_compositing_clip(attrs) {
+            ClipMode::Hard
+        } else {
+            ClipMode::AntiAlias
+        };
+        push_overflow_clip(commands, clip.as_ref(), mode);
+    }
+
     if let Some(above_bytes) = &attrs.above {
-        render_nearby_element(above_bytes, frame, NearbyPosition::Above, commands);
+        render_nearby_element(
+            above_bytes,
+            frame,
+            NearbyPosition::Above,
+            commands,
+            inherited,
+        );
     }
     if let Some(below_bytes) = &attrs.below {
-        render_nearby_element(below_bytes, frame, NearbyPosition::Below, commands);
+        render_nearby_element(
+            below_bytes,
+            frame,
+            NearbyPosition::Below,
+            commands,
+            inherited,
+        );
     }
     if let Some(on_left_bytes) = &attrs.on_left {
-        render_nearby_element(on_left_bytes, frame, NearbyPosition::OnLeft, commands);
+        render_nearby_element(
+            on_left_bytes,
+            frame,
+            NearbyPosition::OnLeft,
+            commands,
+            inherited,
+        );
     }
     if let Some(on_right_bytes) = &attrs.on_right {
-        render_nearby_element(on_right_bytes, frame, NearbyPosition::OnRight, commands);
+        render_nearby_element(
+            on_right_bytes,
+            frame,
+            NearbyPosition::OnRight,
+            commands,
+            inherited,
+        );
     }
     if let Some(in_front_bytes) = &attrs.in_front {
-        render_nearby_element(in_front_bytes, frame, NearbyPosition::InFront, commands);
+        render_nearby_element(
+            in_front_bytes,
+            frame,
+            NearbyPosition::InFront,
+            commands,
+            inherited,
+        );
+    }
+
+    if clip.is_some() {
+        commands.push(DrawCmd::PopClip);
     }
 }
 
@@ -1541,6 +1613,7 @@ fn render_nearby_element(
     parent_frame: Frame,
     position: NearbyPosition,
     commands: &mut Vec<DrawCmd>,
+    inherited: &FontContext,
 ) {
     // Decode the nearby element tree from EMRG bytes
     let mut nearby_tree = match decode_tree(data) {
@@ -1552,60 +1625,42 @@ fn render_nearby_element(
         return;
     }
 
-    // Layout the nearby element with a large constraint (it will size to content)
-    let constraint = Constraint::new(10000.0, 10000.0);
-    layout_tree(&mut nearby_tree, constraint, 1.0, &SkiaTextMeasurer);
+    let constraint = nearby_constraint(parent_frame, position);
+    layout_tree_with_context(
+        &mut nearby_tree,
+        constraint,
+        1.0,
+        &SkiaTextMeasurer,
+        inherited,
+    );
 
     // Get the nearby element's computed size
     let Some(root_id) = nearby_tree.root.clone() else {
         return;
     };
-    let nearby_frame = {
+    let (nearby_frame, align_x, align_y) = {
         let Some(root) = nearby_tree.get(&root_id) else {
             return;
         };
         let Some(frame) = root.frame else {
             return;
         };
-        frame
+        (
+            frame,
+            root.attrs.align_x.unwrap_or_default(),
+            root.attrs.align_y.unwrap_or_default(),
+        )
     };
 
-    // Calculate the offset based on position
-    let (offset_x, offset_y) = match position {
-        NearbyPosition::Above => {
-            // Centered horizontally, positioned above
-            let x = parent_frame.x + (parent_frame.width - nearby_frame.width) / 2.0;
-            let y = parent_frame.y - nearby_frame.height;
-            (x, y)
-        }
-        NearbyPosition::Below => {
-            // Centered horizontally, positioned below
-            let x = parent_frame.x + (parent_frame.width - nearby_frame.width) / 2.0;
-            let y = parent_frame.y + parent_frame.height;
-            (x, y)
-        }
-        NearbyPosition::OnLeft => {
-            // Positioned to the left, centered vertically
-            let x = parent_frame.x - nearby_frame.width;
-            let y = parent_frame.y + (parent_frame.height - nearby_frame.height) / 2.0;
-            (x, y)
-        }
-        NearbyPosition::OnRight => {
-            // Positioned to the right, centered vertically
-            let x = parent_frame.x + parent_frame.width;
-            let y = parent_frame.y + (parent_frame.height - nearby_frame.height) / 2.0;
-            (x, y)
-        }
-        NearbyPosition::InFront | NearbyPosition::Behind => {
-            // Centered on the parent
-            let x = parent_frame.x + (parent_frame.width - nearby_frame.width) / 2.0;
-            let y = parent_frame.y + (parent_frame.height - nearby_frame.height) / 2.0;
-            (x, y)
-        }
-    };
+    let (target_x, target_y) =
+        nearby_origin(parent_frame, nearby_frame, position, align_x, align_y);
 
-    // Shift the entire nearby tree to the calculated position
-    shift_nearby_tree(&mut nearby_tree, offset_x, offset_y);
+    // Shift the entire nearby tree to the calculated position.
+    shift_nearby_tree(
+        &mut nearby_tree,
+        target_x - nearby_frame.x,
+        target_y - nearby_frame.y,
+    );
 
     // Render the nearby tree
     let mut focused = false;
@@ -1614,10 +1669,80 @@ fn render_nearby_element(
         &nearby_tree,
         &root_id,
         commands,
-        &FontContext::default(),
+        inherited,
         &mut focused,
         &mut cursor_area,
     );
+}
+
+fn nearby_constraint(parent_frame: Frame, position: NearbyPosition) -> Constraint {
+    match position {
+        NearbyPosition::InFront | NearbyPosition::Behind => {
+            Constraint::new(parent_frame.width, parent_frame.height)
+        }
+        NearbyPosition::Above | NearbyPosition::Below => Constraint::with_space(
+            AvailableSpace::Definite(parent_frame.width),
+            AvailableSpace::MaxContent,
+        ),
+        NearbyPosition::OnLeft | NearbyPosition::OnRight => Constraint::with_space(
+            AvailableSpace::MaxContent,
+            AvailableSpace::Definite(parent_frame.height),
+        ),
+    }
+}
+
+fn nearby_origin(
+    parent_frame: Frame,
+    nearby_frame: Frame,
+    position: NearbyPosition,
+    align_x: AlignX,
+    align_y: AlignY,
+) -> (f32, f32) {
+    let x = match position {
+        NearbyPosition::Above
+        | NearbyPosition::Below
+        | NearbyPosition::InFront
+        | NearbyPosition::Behind => aligned_x_in_slot(
+            parent_frame.x,
+            parent_frame.width,
+            nearby_frame.width,
+            align_x,
+        ),
+        NearbyPosition::OnLeft => parent_frame.x - nearby_frame.width,
+        NearbyPosition::OnRight => parent_frame.x + parent_frame.width,
+    };
+
+    let y = match position {
+        NearbyPosition::Above => parent_frame.y - nearby_frame.height,
+        NearbyPosition::Below => parent_frame.y + parent_frame.height,
+        NearbyPosition::OnLeft
+        | NearbyPosition::OnRight
+        | NearbyPosition::InFront
+        | NearbyPosition::Behind => aligned_y_in_slot(
+            parent_frame.y,
+            parent_frame.height,
+            nearby_frame.height,
+            align_y,
+        ),
+    };
+
+    (x, y)
+}
+
+fn aligned_x_in_slot(slot_x: f32, slot_width: f32, nearby_width: f32, align_x: AlignX) -> f32 {
+    match align_x {
+        AlignX::Left => slot_x,
+        AlignX::Center => slot_x + (slot_width - nearby_width) / 2.0,
+        AlignX::Right => slot_x + slot_width - nearby_width,
+    }
+}
+
+fn aligned_y_in_slot(slot_y: f32, slot_height: f32, nearby_height: f32, align_y: AlignY) -> f32 {
+    match align_y {
+        AlignY::Top => slot_y,
+        AlignY::Center => slot_y + (slot_height - nearby_height) / 2.0,
+        AlignY::Bottom => slot_y + slot_height - nearby_height,
+    }
 }
 
 /// Shift all frames in a nearby tree by the given offset.
@@ -1641,7 +1766,7 @@ fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::attrs::Attrs;
+    use crate::tree::attrs::{decode_attrs, Attrs};
     use crate::tree::element::Element;
     use crate::tree::serialize::encode_tree;
 
@@ -1719,11 +1844,9 @@ mod tests {
 
         let commands = render_tree(&tree);
 
-        assert!(
-            commands
-                .iter()
-                .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
-        );
+        assert!(commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _))));
     }
 
     #[test]
@@ -1765,11 +1888,9 @@ mod tests {
             .collect();
 
         assert_eq!(decoration_rects.len(), 2);
-        assert!(
-            decoration_rects
-                .iter()
-                .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
-        );
+        assert!(decoration_rects
+            .iter()
+            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
     }
 
     #[test]
@@ -1938,7 +2059,6 @@ mod tests {
 
     #[test]
     fn test_nearby_position_calculations() {
-        // Test Above: should be centered horizontally, positioned above
         let parent = Frame {
             x: 100.0,
             y: 100.0,
@@ -1955,66 +2075,94 @@ mod tests {
             content_width: 50.0,
             content_height: 20.0,
         };
+        let default_x = AlignX::Left;
+        let default_y = AlignY::Top;
 
-        // Above: x = 100 + (200 - 50) / 2 = 175, y = 100 - 20 = 80
-        let (x, y) = match NearbyPosition::Above {
-            NearbyPosition::Above => {
-                let x = parent.x + (parent.width - nearby.width) / 2.0;
-                let y = parent.y - nearby.height;
-                (x, y)
-            }
-            _ => unreachable!(),
-        };
+        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Above, default_x, default_y);
+        assert_eq!(x, 100.0);
+        assert_eq!(y, 80.0);
+
+        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Below, default_x, default_y);
+        assert_eq!(x, 100.0);
+        assert_eq!(y, 150.0);
+
+        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::OnLeft, default_x, default_y);
+        assert_eq!(x, 50.0);
+        assert_eq!(y, 100.0);
+
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::OnRight,
+            default_x,
+            default_y,
+        );
+        assert_eq!(x, 300.0);
+        assert_eq!(y, 100.0);
+
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::InFront,
+            default_x,
+            default_y,
+        );
+        assert_eq!(x, 100.0);
+        assert_eq!(y, 100.0);
+
+        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Behind, default_x, default_y);
+        assert_eq!(x, 100.0);
+        assert_eq!(y, 100.0);
+
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::Above,
+            AlignX::Center,
+            default_y,
+        );
         assert_eq!(x, 175.0);
         assert_eq!(y, 80.0);
 
-        // Below: x = 175, y = 100 + 50 = 150
-        let (x, y) = match NearbyPosition::Below {
-            NearbyPosition::Below => {
-                let x = parent.x + (parent.width - nearby.width) / 2.0;
-                let y = parent.y + parent.height;
-                (x, y)
-            }
-            _ => unreachable!(),
-        };
-        assert_eq!(x, 175.0);
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::Below,
+            AlignX::Right,
+            default_y,
+        );
+        assert_eq!(x, 250.0);
         assert_eq!(y, 150.0);
 
-        // OnLeft: x = 100 - 50 = 50, y = 100 + (50 - 20) / 2 = 115
-        let (x, y) = match NearbyPosition::OnLeft {
-            NearbyPosition::OnLeft => {
-                let x = parent.x - nearby.width;
-                let y = parent.y + (parent.height - nearby.height) / 2.0;
-                (x, y)
-            }
-            _ => unreachable!(),
-        };
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::OnLeft,
+            default_x,
+            AlignY::Center,
+        );
         assert_eq!(x, 50.0);
         assert_eq!(y, 115.0);
 
-        // OnRight: x = 100 + 200 = 300, y = 115
-        let (x, y) = match NearbyPosition::OnRight {
-            NearbyPosition::OnRight => {
-                let x = parent.x + parent.width;
-                let y = parent.y + (parent.height - nearby.height) / 2.0;
-                (x, y)
-            }
-            _ => unreachable!(),
-        };
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::OnRight,
+            default_x,
+            AlignY::Bottom,
+        );
         assert_eq!(x, 300.0);
-        assert_eq!(y, 115.0);
+        assert_eq!(y, 130.0);
 
-        // InFront: centered on parent x = 175, y = 115
-        let (x, y) = match NearbyPosition::InFront {
-            NearbyPosition::InFront => {
-                let x = parent.x + (parent.width - nearby.width) / 2.0;
-                let y = parent.y + (parent.height - nearby.height) / 2.0;
-                (x, y)
-            }
-            _ => unreachable!(),
-        };
-        assert_eq!(x, 175.0);
-        assert_eq!(y, 115.0);
+        let (x, y) = nearby_origin(
+            parent,
+            nearby,
+            NearbyPosition::InFront,
+            AlignX::Right,
+            AlignY::Bottom,
+        );
+        assert_eq!(x, 250.0);
+        assert_eq!(y, 130.0);
     }
 
     fn build_tree_with_attrs(mut attrs: Attrs) -> ElementTree {
@@ -2077,40 +2225,124 @@ mod tests {
         tree
     }
 
-    fn encode_nearby_el(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
-        fn attrs_raw(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
-            let mut raw = Vec::new();
-            raw.extend_from_slice(&3_u16.to_be_bytes());
-
-            raw.push(1);
-            raw.push(2);
-            raw.extend_from_slice(&width.to_be_bytes());
-
-            raw.push(2);
-            raw.push(2);
-            raw.extend_from_slice(&height.to_be_bytes());
-
-            raw.push(12);
-            raw.push(0);
-            raw.push(0);
-            raw.push(rgb.0);
-            raw.push(rgb.1);
-            raw.push(rgb.2);
-
-            raw
+    fn build_tree_with_child_frame(
+        mut parent_attrs: Attrs,
+        parent_frame: Frame,
+        mut child_attrs: Attrs,
+        child_frame: Frame,
+    ) -> ElementTree {
+        if parent_attrs.background.is_none() {
+            parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
         }
 
+        if child_attrs.background.is_none() {
+            child_attrs.background = Some(Background::Color(Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            }));
+        }
+
+        let parent_id = ElementId::from_term_bytes(vec![4]);
+        let child_id = ElementId::from_term_bytes(vec![5]);
+
+        let mut parent =
+            Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
+        parent.children = vec![child_id.clone()];
+        parent.frame = Some(parent_frame);
+
+        let mut child =
+            Element::with_attrs(child_id.clone(), ElementKind::El, Vec::new(), child_attrs);
+        child.frame = Some(child_frame);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(parent_id);
+        tree.insert(parent);
+        tree.insert(child);
+        tree
+    }
+
+    fn encode_attrs_raw(records: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        for record in records {
+            raw.extend_from_slice(&record);
+        }
+        raw
+    }
+
+    fn attr_width_px(width: f64) -> Vec<u8> {
+        let mut record = vec![1, 2];
+        record.extend_from_slice(&width.to_be_bytes());
+        record
+    }
+
+    fn attr_height_px(height: f64) -> Vec<u8> {
+        let mut record = vec![2, 2];
+        record.extend_from_slice(&height.to_be_bytes());
+        record
+    }
+
+    fn attr_width_fill() -> Vec<u8> {
+        vec![1, 0]
+    }
+
+    fn attr_height_fill() -> Vec<u8> {
+        vec![2, 0]
+    }
+
+    fn attr_background_rgb(rgb: (u8, u8, u8)) -> Vec<u8> {
+        vec![12, 0, 0, rgb.0, rgb.1, rgb.2]
+    }
+
+    fn attr_align_x(align_x: AlignX) -> Vec<u8> {
+        let variant = match align_x {
+            AlignX::Left => 0,
+            AlignX::Center => 1,
+            AlignX::Right => 2,
+        };
+        vec![5, variant]
+    }
+
+    fn attr_align_y(align_y: AlignY) -> Vec<u8> {
+        let variant = match align_y {
+            AlignY::Top => 0,
+            AlignY::Center => 1,
+            AlignY::Bottom => 2,
+        };
+        vec![6, variant]
+    }
+
+    fn attr_content(content: &str) -> Vec<u8> {
+        let mut record = vec![21];
+        record.extend_from_slice(&(content.len() as u16).to_be_bytes());
+        record.extend_from_slice(content.as_bytes());
+        record
+    }
+
+    fn encode_nearby_root(kind: ElementKind, attrs_raw: Vec<u8>) -> Vec<u8> {
         let id = ElementId::from_term_bytes(vec![77]);
-        let element = Element::with_attrs(
-            id.clone(),
-            ElementKind::El,
-            attrs_raw(width, height, rgb),
-            Attrs::default(),
-        );
+        let attrs = decode_attrs(&attrs_raw).expect("nearby attrs should decode");
+        let element = Element::with_attrs(id.clone(), kind, attrs_raw, attrs);
         let mut tree = ElementTree::new();
         tree.root = Some(id);
         tree.insert(element);
         encode_tree(&tree)
+    }
+
+    fn encode_nearby_el(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
+        encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_px(width),
+                attr_height_px(height),
+                attr_background_rgb(rgb),
+            ]),
+        )
+    }
+
+    fn encode_nearby_text(records: Vec<Vec<u8>>) -> Vec<u8> {
+        encode_nearby_root(ElementKind::Text, encode_attrs_raw(records))
     }
 
     #[test]
@@ -2321,9 +2553,102 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                DrawCmd::Rect(40.0, 20.0, 20.0, 10.0, 0xFF0000FF),
                 DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-                DrawCmd::Rect(40.0, 20.0, 20.0, 10.0, 0x0000FFFF),
+                DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF),
+                DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_behind_between_background_and_children() {
+        let behind = encode_nearby_el(20.0, 10.0, (255, 0, 0));
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        parent_attrs.behind = Some(behind);
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
+
+        let tree = build_tree_with_child_frame(
+            parent_attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+            child_attrs,
+            Frame {
+                x: 10.0,
+                y: 12.0,
+                width: 30.0,
+                height: 15.0,
+                content_width: 30.0,
+                content_height: 15.0,
+            },
+        );
+
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF),
+                DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_behind_inside_overflow_clip() {
+        let behind = encode_nearby_el(100.0, 50.0, (255, 0, 0));
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        parent_attrs.behind = Some(behind);
+        parent_attrs.clip_x = Some(true);
+        parent_attrs.clip_y = Some(true);
+        parent_attrs.padding = Some(Padding::Uniform(10.0));
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
+
+        let tree = build_tree_with_child_frame(
+            parent_attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+            child_attrs,
+            Frame {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+        );
+
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::PushClip(10.0, 10.0, 80.0, 30.0),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
+                DrawCmd::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF),
+                DrawCmd::PopClip,
             ]
         );
     }
@@ -2355,10 +2680,235 @@ mod tests {
             commands,
             vec![
                 DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-                DrawCmd::Rect(40.0, -10.0, 20.0, 10.0, 0x00FF00FF),
-                DrawCmd::Rect(40.0, 50.0, 20.0, 10.0, 0xFFFF00FF),
+                DrawCmd::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF),
+                DrawCmd::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF),
             ]
         );
+    }
+
+    #[test]
+    fn test_render_in_front_fill_uses_parent_border_box_slot() {
+        let in_front = encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_fill(),
+                attr_height_fill(),
+                attr_background_rgb((255, 0, 0)),
+            ]),
+        );
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.in_front = Some(in_front);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
+        let centered = encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_px(160.0),
+                attr_height_px(80.0),
+                attr_align_x(AlignX::Center),
+                attr_align_y(AlignY::Bottom),
+                attr_background_rgb((255, 0, 0)),
+            ]),
+        );
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.in_front = Some(centered);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_above_fill_width_uses_parent_slot() {
+        let above = encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_fill(),
+                attr_height_px(10.0),
+                attr_background_rgb((255, 0, 0)),
+            ]),
+        );
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.above = Some(above);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_on_right_fill_height_uses_parent_slot() {
+        let on_right = encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_px(20.0),
+                attr_height_fill(),
+                attr_background_rgb((255, 0, 0)),
+            ]),
+        );
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.on_right = Some(on_right);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_in_front_inside_overflow_clip() {
+        let in_front = encode_nearby_root(
+            ElementKind::El,
+            encode_attrs_raw(vec![
+                attr_width_fill(),
+                attr_height_fill(),
+                attr_background_rgb((255, 0, 0)),
+            ]),
+        );
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.in_front = Some(in_front);
+        attrs.clip_x = Some(true);
+        attrs.clip_y = Some(true);
+        attrs.padding = Some(Padding::Uniform(10.0));
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert_eq!(
+            commands,
+            vec![
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
+                DrawCmd::PushClip(10.0, 10.0, 80.0, 30.0),
+                DrawCmd::PopClip,
+                DrawCmd::PushClip(10.0, 10.0, 80.0, 30.0),
+                DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
+                DrawCmd::PopClip,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_nearby_text_inherits_parent_font_context() {
+        let in_front = encode_nearby_text(vec![attr_content("Hi")]);
+
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+        attrs.font_size = Some(24.0);
+        attrs.in_front = Some(in_front);
+
+        let tree = build_tree_with_frame(
+            attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+        let commands = render_tree(&tree);
+
+        assert!(commands.iter().any(|cmd| {
+            matches!(
+                cmd,
+                DrawCmd::TextWithFont(_, _, text, font_size, _, _, _, _)
+                    if text == "Hi" && (*font_size - 24.0).abs() < f32::EPSILON
+            )
+        }));
     }
 
     #[test]
@@ -2691,11 +3241,9 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert!(
-            !commands
-                .iter()
-                .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
-        );
+        assert!(!commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
     }
 
     #[test]
