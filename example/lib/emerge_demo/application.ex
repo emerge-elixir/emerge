@@ -1,19 +1,17 @@
 defmodule EmergeDemo.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc false
 
   use Application
 
   @impl true
   def start(_type, _args) do
-    children = [
-      # Starts a worker by calling: EmergeDemo.Worker.start_link(arg)
-      # {EmergeDemo.Worker, arg}
-    ]
+    children =
+      if Keyword.get(Application.get_env(:emerge_demo, __MODULE__, []), :auto_start?, true) do
+        [Supervisor.child_spec({EmergeDemo.Runtime, []}, restart: :temporary)]
+      else
+        []
+      end
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: EmergeDemo.Supervisor]
     Supervisor.start_link(children, opts)
   end

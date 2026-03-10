@@ -1,18 +1,11 @@
 defmodule EmergeDemo do
   @moduledoc """
-  Documentation for `EmergeDemo`.
+  Example Emerge application that renders a low-latency Membrane WiFi video
+  pipeline into an `EmergeSkia` video target.
   """
 
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> EmergeDemo.hello()
-      :world
-
-  """
-  def hello do
-    :world
+  @spec runtime_config() :: keyword()
+  def runtime_config do
+    Application.get_env(:emerge_demo, EmergeDemo.Runtime, [])
   end
 end
