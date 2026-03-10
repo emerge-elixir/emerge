@@ -256,6 +256,7 @@ pub struct Attrs {
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
+    pub video_target: Option<String>,
     pub text_align: Option<TextAlign>,
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
@@ -456,6 +457,7 @@ const TAG_ON_BLUR: u8 = 58;
 const TAG_FOCUSED: u8 = 59;
 const TAG_MOUSE_DOWN_STYLE: u8 = 60;
 const TAG_ON_PRESS: u8 = 61;
+const TAG_VIDEO_TARGET: u8 = 62;
 
 // =============================================================================
 // Decoder
@@ -618,6 +620,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             let height = cursor.read_f64()?;
             attrs.image_size = Some((width, height));
         }
+        TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",

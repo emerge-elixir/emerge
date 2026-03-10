@@ -65,7 +65,8 @@ defmodule Emerge.AttrCodec do
     on_blur: 58,
     focused: 59,
     mouse_down: 60,
-    on_press: 61
+    on_press: 61,
+    video_target: 62
   }
 
   @mouse_over_decorative_keys MapSet.new([
@@ -179,6 +180,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:image_src, value), do: encode_image_src(value)
   defp encode_value(:image_fit, value), do: encode_image_fit(value)
   defp encode_value(:image_size, value), do: encode_image_size(value)
+  defp encode_value(:video_target, value), do: encode_string(value)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -240,6 +242,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:image_src, rest), do: decode_image_src(rest)
   defp decode_value(:image_fit, rest), do: decode_image_fit(rest)
   defp decode_value(:image_size, rest), do: decode_image_size(rest)
+  defp decode_value(:video_target, rest), do: decode_string(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)

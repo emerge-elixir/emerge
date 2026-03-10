@@ -12,6 +12,7 @@ defmodule Emerge.Element do
           | :text
           | :text_input
           | :image
+          | :video
           | :none
           | :paragraph
 

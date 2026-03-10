@@ -461,6 +461,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         image_size: attrs
             .image_size
             .map(|(w, h)| (w * scale_f64, h * scale_f64)),
+        video_target: attrs.video_target.clone(),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
         paragraph_fragments: None,
@@ -725,7 +726,7 @@ fn measure_element<M: TextMeasurer>(
             }
         }
 
-        ElementKind::Image => {
+        ElementKind::Image | ElementKind::Video => {
             let (image_width, image_height) = if let Some((w, h)) = attrs.image_size {
                 (w, h)
             } else if let Some(source) = attrs.image_src.as_ref() {
@@ -1231,7 +1232,11 @@ fn resolve_element<M: TextMeasurer>(
     };
 
     match kind {
-        ElementKind::Text | ElementKind::TextInput | ElementKind::Image | ElementKind::None => {}
+        ElementKind::Text
+        | ElementKind::TextInput
+        | ElementKind::Image
+        | ElementKind::Video
+        | ElementKind::None => {}
         ElementKind::El => resolve_el_kind(tree, &params, &element_context, measurer),
         ElementKind::Row => resolve_row_kind(tree, &params, &element_context, measurer),
         ElementKind::WrappedRow => {

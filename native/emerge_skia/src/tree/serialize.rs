@@ -69,6 +69,7 @@ fn kind_tag(kind: ElementKind) -> u8 {
         ElementKind::TextColumn => 8,
         ElementKind::Image => 9,
         ElementKind::TextInput => 10,
+        ElementKind::Video => 11,
     }
 }
 
