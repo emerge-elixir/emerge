@@ -40,6 +40,7 @@ use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::renderer::{RenderState, Renderer};
+use crate::video::{VideoImportContext, VideoRegistry};
 
 // ============================================================================
 // Configuration
@@ -70,7 +71,15 @@ impl Default for WaylandConfig {
 pub enum UserEvent {
     Stop,
     Redraw,
+    VideoFrameAvailable,
 }
+
+pub struct WaylandStartupInfo {
+    pub proxy: EventLoopProxy<UserEvent>,
+    pub prime_video_supported: bool,
+}
+
+pub type WaylandStartupResult = Result<WaylandStartupInfo, String>;
 
 // ============================================================================
 // GL Environment
@@ -105,6 +114,8 @@ struct App {
     ime_cursor_area: Option<(f32, f32, f32, f32)>,
     ime_preedit_active: bool,
     text_commit_diag: bool,
+    video_registry: Arc<VideoRegistry>,
+    video_import: Option<VideoImportContext>,
 }
 
 impl App {
@@ -159,10 +170,18 @@ impl App {
 
     fn redraw(&mut self) {
         if let (Some(env), Some(renderer)) = (self.env.as_mut(), self.renderer.as_mut()) {
+            let mut video_needs_cleanup = false;
+            match renderer.sync_video_frames(&self.video_registry, self.video_import.as_ref()) {
+                Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                Err(err) => eprintln!("video sync failed: {err}"),
+            }
             renderer.render(&self.render_state);
             env.gl_surface
                 .swap_buffers(&env.gl_context)
                 .expect("swap_buffers failed");
+            if video_needs_cleanup {
+                self.queue_redraw();
+            }
         }
     }
 
@@ -360,6 +379,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Redraw => {
                 self.flush_render_updates();
+            }
+            UserEvent::VideoFrameAvailable => {
+                self.queue_redraw();
             }
         }
     }
@@ -559,7 +581,7 @@ impl ApplicationHandler<UserEvent> for App {
 fn create_window_and_renderer(
     event_loop: &EventLoop<UserEvent>,
     config: &WaylandConfig,
-) -> Result<(GlEnv, Renderer), String> {
+) -> Result<(GlEnv, Renderer, bool), String> {
     let window_attributes = WindowAttributes::default()
         .with_title(&config.title)
         .with_inner_size(LogicalSize::new(config.width, config.height));
@@ -589,10 +611,11 @@ fn create_window_and_renderer(
         .map_err(|err| format!("failed to get window handle: {err}"))?;
     let raw_window_handle = window_handle.as_raw();
 
-    let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
-    let fallback_context_attributes = ContextAttributesBuilder::new()
+    let context_attributes = ContextAttributesBuilder::new()
         .with_context_api(ContextApi::Gles(None))
         .build(Some(raw_window_handle));
+    let fallback_context_attributes =
+        ContextAttributesBuilder::new().build(Some(raw_window_handle));
 
     let not_current_gl_context = unsafe {
         gl_config
@@ -657,6 +680,8 @@ fn create_window_and_renderer(
     let num_samples = gl_config.num_samples() as usize;
     let stencil_size = gl_config.stencil_size() as usize;
 
+    let prime_video_supported = crate::video::wayland_prime_supported(&window);
+
     let renderer = Renderer::new_gl(
         (width, height),
         fb_info,
@@ -671,7 +696,7 @@ fn create_window_and_renderer(
         window,
     };
 
-    Ok((env, renderer))
+    Ok((env, renderer, prime_video_supported))
 }
 
 // ============================================================================
@@ -687,7 +712,8 @@ pub fn run(
     running_flag: Arc<AtomicBool>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
-    proxy_tx: Sender<EventLoopProxy<UserEvent>>,
+    video_registry: Arc<VideoRegistry>,
+    proxy_tx: Sender<WaylandStartupResult>,
 ) {
     // Allow running on non-main thread (required for NIF)
     #[cfg(target_os = "linux")]
@@ -696,7 +722,19 @@ pub fn run(
         EventLoop::<UserEvent>::with_user_event()
             .with_any_thread(true)
             .build()
-            .expect("Failed to create event loop")
+    };
+
+    #[cfg(target_os = "linux")]
+    let el = match el {
+        Ok(el) => el,
+        Err(err) => {
+            let message = format!("failed to create event loop: {err}");
+            let _ = proxy_tx.send(Err(message.clone()));
+            eprintln!("{message}");
+            running_flag.store(false, Ordering::Relaxed);
+            let _ = event_tx.send(EventMsg::Stop);
+            return;
+        }
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -705,9 +743,8 @@ pub fn run(
         .expect("Failed to create event loop");
 
     let proxy = el.create_proxy();
-    let _ = proxy_tx.send(proxy);
 
-    let (env, renderer) = match create_window_and_renderer(&el, &config) {
+    let (env, renderer, prime_video_supported) = match create_window_and_renderer(&el, &config) {
         Ok(values) => values,
         Err(err) => {
             eprintln!("Failed to initialize renderer: {err}");
@@ -717,7 +754,23 @@ pub fn run(
         }
     };
 
+    let _ = proxy_tx.send(Ok(WaylandStartupInfo {
+        proxy,
+        prime_video_supported,
+    }));
+
     let size = env.window.inner_size();
+    let video_import = if prime_video_supported {
+        match VideoImportContext::new_current() {
+            Ok(ctx) => Some(ctx),
+            Err(err) => {
+                eprintln!("prime video import unavailable: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let mut app = App {
         env: Some(env),
@@ -738,6 +791,8 @@ pub fn run(
         ime_cursor_area: None,
         ime_preedit_active: false,
         text_commit_diag: App::text_commit_diag_enabled(),
+        video_registry,
+        video_import,
     };
 
     app.apply_ime_state();
