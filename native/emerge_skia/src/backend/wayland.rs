@@ -106,7 +106,6 @@ struct App {
     window_size: (u32, u32),
     current_mods: u8,
     cursor_pos: (f32, f32),
-    is_focused: bool,
     is_occluded: bool,
     pending_redraw: bool,
     last_animation_frame: Instant,
@@ -120,7 +119,11 @@ struct App {
 
 impl App {
     fn can_present(&self) -> bool {
-        self.running && self.is_focused && !self.is_occluded
+        Self::present_allowed(self.running, self.is_occluded)
+    }
+
+    fn present_allowed(running: bool, is_occluded: bool) -> bool {
+        running && !is_occluded
     }
 
     fn queue_redraw(&mut self) {
@@ -176,6 +179,7 @@ impl App {
                 Err(err) => eprintln!("video sync failed: {err}"),
             }
             renderer.render(&self.render_state);
+            env.window.pre_present_notify();
             env.gl_surface
                 .swap_buffers(&env.gl_context)
                 .expect("swap_buffers failed");
@@ -550,14 +554,10 @@ impl ApplicationHandler<UserEvent> for App {
 
             // Window focus changed
             WindowEvent::Focused(focused) => {
-                self.is_focused = focused;
                 if !focused {
                     self.ime_preedit_active = false;
                 }
                 self.send_input_event(InputEvent::Focused { focused });
-                if self.can_present() && self.pending_redraw {
-                    self.queue_redraw();
-                }
             }
 
             WindowEvent::Occluded(occluded) => {
@@ -783,7 +783,6 @@ pub fn run(
         window_size: (size.width, size.height),
         current_mods: 0,
         cursor_pos: (0.0, 0.0),
-        is_focused: true,
         is_occluded: false,
         pending_redraw: false,
         last_animation_frame: Instant::now(),
@@ -827,5 +826,13 @@ mod tests {
         let text = "hello";
         let cursor = App::preedit_cursor_to_char_range(text, Some((4, 1)));
         assert_eq!(cursor, Some((1, 4)));
+    }
+
+    #[test]
+    fn present_allowed_depends_on_running_and_occlusion() {
+        assert!(App::present_allowed(true, false));
+        assert!(!App::present_allowed(false, false));
+        assert!(!App::present_allowed(true, true));
+        assert!(!App::present_allowed(false, true));
     }
 }
