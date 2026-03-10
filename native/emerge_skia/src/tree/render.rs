@@ -103,6 +103,7 @@ fn render_element(
             }
         }
         ElementKind::Image => render_image_content(commands, frame, attrs),
+        ElementKind::Video => render_video_content(commands, frame, attrs),
         _ => {}
     }
 
@@ -687,6 +688,28 @@ fn render_image_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs
     let (draw_x, draw_y, draw_w, draw_h) = content_rect(frame, attrs);
 
     push_image_for_source(commands, draw_x, draw_y, draw_w, draw_h, source, fit);
+}
+
+fn render_video_content(commands: &mut Vec<DrawCmd>, frame: Frame, attrs: &Attrs) {
+    let Some(target_id) = attrs.video_target.as_ref() else {
+        return;
+    };
+
+    let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
+    let (draw_x, draw_y, draw_w, draw_h) = content_rect(frame, attrs);
+
+    if draw_w <= 0.0 || draw_h <= 0.0 {
+        return;
+    }
+
+    commands.push(DrawCmd::Video(
+        draw_x,
+        draw_y,
+        draw_w,
+        draw_h,
+        target_id.clone(),
+        fit,
+    ));
 }
 
 fn render_paragraph_content(

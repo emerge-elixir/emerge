@@ -28,6 +28,7 @@ mod events;
 mod input;
 mod renderer;
 mod tree;
+mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
@@ -39,6 +40,7 @@ use events::spawn_event_actor;
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
 use tree::layout::layout_and_refresh_default;
+use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
@@ -67,13 +69,16 @@ enum BackendKind {
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend: BackendKind,
-    event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
+    event_proxy: Arc<Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>>,
     stop_flag: Arc<AtomicBool>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     render_tx: RenderSender,
     cursor_tx: Option<Sender<RenderMsg>>,
     render_counter: Arc<AtomicU64>,
+    video_registry: Arc<VideoRegistry>,
+    video_wake: VideoWake,
+    prime_video_supported: bool,
     log_render: bool,
     log_input: bool,
 }
@@ -422,12 +427,16 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     let initial_width = config.width;
     let initial_height = config.height;
+    let release_tx = video::spawn_release_worker();
+    let video_registry = Arc::new(VideoRegistry::new(release_tx));
+    let event_proxy = Arc::new(Mutex::new(None));
 
-    let (backend, event_proxy) = match config.backend {
+    let (backend, prime_video_supported) = match config.backend {
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let event_tx_clone = event_tx.clone();
+            let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
                 width: config.width,
@@ -440,13 +449,19 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     running_flag_clone,
                     event_tx_clone,
                     render_rx,
+                    video_registry_clone,
                     proxy_tx,
                 );
             });
 
-            let proxy = proxy_rx
+            let startup = proxy_rx
                 .recv()
-                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
+                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?
+                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+
+            if let Ok(mut guard) = event_proxy.lock() {
+                *guard = Some(startup.proxy.clone());
+            }
 
             spawn_tree_actor(
                 tree_rx,
@@ -455,13 +470,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
                     log_input,
-                    wayland_proxy: Some(proxy.clone()),
+                    wayland_proxy: Some(startup.proxy.clone()),
                     initial_width,
                     initial_height,
                 },
             );
 
-            (BackendKind::Wayland, Some(proxy))
+            (BackendKind::Wayland, startup.prime_video_supported)
         }
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
@@ -470,6 +485,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
             let drm_input_size = (initial_width, initial_height);
+            let video_registry_clone = Arc::clone(&video_registry);
 
             thread::spawn(move || {
                 let mut input = DrmInput::new(
@@ -506,6 +522,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         event_tx: event_tx_clone,
                         screen_tx,
                         render_counter: render_counter_clone,
+                        video_registry: video_registry_clone,
                     },
                     drm_config,
                 );
@@ -524,14 +541,20 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 },
             );
 
-            (BackendKind::Drm, None)
+            (BackendKind::Drm, true)
         }
+    };
+
+    let video_wake = if matches!(backend, BackendKind::Wayland) {
+        VideoWake::Wayland(Arc::clone(&event_proxy))
+    } else {
+        VideoWake::Noop
     };
 
     let resource = RendererResource {
         running_flag,
         backend,
-        event_proxy: Mutex::new(event_proxy),
+        event_proxy,
         stop_flag,
         tree_tx,
         event_tx,
@@ -542,6 +565,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             None
         },
         render_counter,
+        video_registry,
+        video_wake,
+        prime_video_supported,
         log_render,
         log_input,
     };
@@ -592,6 +618,50 @@ fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
 fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
     renderer.stop();
     atoms::ok()
+}
+
+#[rustler::nif]
+fn video_target_new(
+    renderer: ResourceArc<RendererResource>,
+    id: String,
+    width: u32,
+    height: u32,
+    mode: String,
+) -> Result<ResourceArc<VideoTargetResource>, String> {
+    let mode = VideoMode::parse(&mode)?;
+
+    if matches!(mode, VideoMode::Prime) && !renderer.prime_video_supported {
+        return Err(
+            "prime video targets require a real Wayland session or the DRM backend".to_string(),
+        );
+    }
+
+    let spec = video::VideoTargetSpec {
+        id: id.clone(),
+        width,
+        height,
+        mode,
+    };
+    renderer.video_registry.create_target(spec)?;
+
+    Ok(ResourceArc::new(VideoTargetResource {
+        id,
+        _width: width,
+        _height: height,
+        _mode: mode,
+        registry: Arc::clone(&renderer.video_registry),
+        wake: renderer.video_wake.clone(),
+    }))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_target_submit_prime(
+    target: ResourceArc<VideoTargetResource>,
+    desc: video::PrimeDesc,
+) -> Result<Atom, String> {
+    target.registry.submit_prime(&target.id, desc.into())?;
+    target.wake.notify();
+    Ok(atoms::ok())
 }
 
 #[rustler::nif]
@@ -918,7 +988,9 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
 // ============================================================================
 
 fn load(env: Env, _info: Term) -> bool {
-    env.register::<RendererResource>().is_ok() && env.register::<TreeResource>().is_ok()
+    env.register::<RendererResource>().is_ok()
+        && env.register::<TreeResource>().is_ok()
+        && env.register::<VideoTargetResource>().is_ok()
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);

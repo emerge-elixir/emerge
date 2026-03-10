@@ -18,7 +18,8 @@ defmodule Emerge.Serialization do
     paragraph: 7,
     text_column: 8,
     image: 9,
-    text_input: 10
+    text_input: 10,
+    video: 11
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)

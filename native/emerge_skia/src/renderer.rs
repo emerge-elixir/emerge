@@ -21,6 +21,7 @@ use skia_safe::{
 };
 
 use crate::tree::attrs::{BorderStyle, ImageFit};
+use crate::video::{RendererVideoState, VideoSyncResult};
 
 // ============================================================================
 // Draw Commands
@@ -93,6 +94,8 @@ pub enum DrawCmd {
     Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
     /// Image draw: x, y, w, h, image_id, fit
     Image(f32, f32, f32, f32, String, ImageFit),
+    /// Video draw: x, y, w, h, target_id, fit
+    Video(f32, f32, f32, f32, String, ImageFit),
     /// Loading placeholder: x, y, w, h
     ImageLoading(f32, f32, f32, f32),
     /// Failed placeholder: x, y, w, h
@@ -480,6 +483,7 @@ pub struct Renderer {
     surface: Surface,
     gr_context: Option<skia_safe::gpu::DirectContext>,
     source: SurfaceSource,
+    video_state: RendererVideoState,
 }
 
 impl Renderer {
@@ -508,6 +512,7 @@ impl Renderer {
                 num_samples,
                 stencil_size,
             },
+            video_state: RendererVideoState::default(),
         }
     }
 
@@ -517,7 +522,24 @@ impl Renderer {
             surface,
             gr_context: None,
             source: SurfaceSource::Raster,
+            video_state: RendererVideoState::default(),
         }
+    }
+
+    pub fn sync_video_frames(
+        &mut self,
+        registry: &Arc<crate::video::VideoRegistry>,
+        ctx: Option<&crate::video::VideoImportContext>,
+    ) -> Result<VideoSyncResult, String> {
+        let Some(gr_context) = self.gr_context.as_mut() else {
+            return Ok(VideoSyncResult::default());
+        };
+
+        let result = self.video_state.sync_pending(registry, gr_context, ctx)?;
+        if result.resources_changed {
+            gr_context.reset(None);
+        }
+        Ok(result)
     }
 
     /// Get mutable access to the underlying Skia surface.
@@ -803,7 +825,7 @@ impl Renderer {
 
                 DrawCmd::Image(x, y, w, h, image_id, fit) => {
                     let inside_hard_clip = hard_clip_depth > 0;
-                    draw_image_with_fit(
+                    draw_cached_image_with_fit(
                         canvas,
                         ImageDrawSpec {
                             rect: RectSpec {
@@ -817,6 +839,31 @@ impl Renderer {
                             inside_hard_clip,
                         },
                     );
+                }
+
+                DrawCmd::Video(x, y, w, h, target_id, fit) => {
+                    let inside_hard_clip = hard_clip_depth > 0;
+                    if let Some((image, image_width, image_height)) =
+                        self.video_state.image(target_id)
+                    {
+                        draw_image_with_fit(
+                            canvas,
+                            image,
+                            image_width,
+                            image_height,
+                            ImageDrawSpec {
+                                rect: RectSpec {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                },
+                                image_id: target_id,
+                                fit: *fit,
+                                inside_hard_clip,
+                            },
+                        );
+                    }
                 }
 
                 DrawCmd::ImageLoading(x, y, w, h) => {
@@ -1012,8 +1059,8 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
-fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
-    let RectSpec { x, y, w, h } = spec.rect;
+fn draw_cached_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
+    let RectSpec { w, h, .. } = spec.rect;
 
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -1023,10 +1070,22 @@ fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
         return;
     };
 
+    draw_image_with_fit(canvas, &cached.image, cached.width, cached.height, spec);
+}
+
+fn draw_image_with_fit(
+    canvas: &skia_safe::Canvas,
+    image: &Image,
+    image_width: u32,
+    image_height: u32,
+    spec: ImageDrawSpec<'_>,
+) {
+    let RectSpec { x, y, w, h } = spec.rect;
+
     match spec.fit {
         ImageFit::Contain | ImageFit::Cover => {
-            let src_w = cached.width as f32;
-            let src_h = cached.height as f32;
+            let src_w = image_width as f32;
+            let src_h = image_height as f32;
             let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
                 return;
             };
@@ -1043,7 +1102,7 @@ fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
                 dst_rect
             };
             canvas.draw_image_rect_with_sampling_options(
-                &cached.image,
+                image,
                 Some((&src_rect, SrcRectConstraint::Strict)),
                 dst_rect,
                 sampling,
@@ -1051,7 +1110,7 @@ fn draw_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
             );
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
-            draw_tiled_image(canvas, &cached.image, x, y, w, h, spec.fit);
+            draw_tiled_image(canvas, image, x, y, w, h, spec.fit);
         }
     }
 }

@@ -21,6 +21,7 @@ defmodule Emerge.UI do
   """
 
   alias Emerge.Element
+  alias EmergeSkia.VideoTarget
 
   @mouse_over_decorative_keys MapSet.new([
                                 :background,
@@ -258,6 +259,30 @@ defmodule Emerge.UI do
 
     %Element{
       type: :image,
+      id: id,
+      attrs: parsed,
+      children: []
+    }
+  end
+
+  @doc """
+  A video element backed by a renderer-owned video target.
+  """
+  def video(%VideoTarget{} = target, attrs \\ []) when is_list(attrs) do
+    parsed =
+      parse_attrs([
+        {:video_target, target.id},
+        {:image_size, {target.width, target.height}},
+        {:image_fit, :contain}
+        | attrs
+      ])
+
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :video,
       id: id,
       attrs: parsed,
       children: []

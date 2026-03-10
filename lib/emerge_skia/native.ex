@@ -126,6 +126,20 @@ defmodule EmergeSkia.Native do
   @spec is_running(reference()) :: boolean()
   def is_running(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc """
+  Create a renderer-owned video target.
+  """
+  @spec video_target_new(reference(), String.t(), pos_integer(), pos_integer(), String.t()) ::
+          reference() | {:error, String.t()}
+  def video_target_new(_renderer, _id, _width, _height, _mode),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Submit a DRM Prime descriptor to a video target.
+  """
+  @spec video_target_submit_prime(reference(), map()) :: :ok | {:error, String.t()}
+  def video_target_submit_prime(_target, _desc), do: :erlang.nif_error(:nif_not_loaded)
+
   # ===========================================================================
   # Raster Backend
   # ===========================================================================

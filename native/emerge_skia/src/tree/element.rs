@@ -28,6 +28,7 @@ pub enum ElementKind {
     Text,
     TextInput,
     Image,
+    Video,
     None,
     Paragraph,
 }
@@ -46,6 +47,7 @@ impl ElementKind {
             8 => Some(Self::TextColumn),
             9 => Some(Self::Image),
             10 => Some(Self::TextInput),
+            11 => Some(Self::Video),
             _ => None,
         }
     }
@@ -477,6 +479,7 @@ mod tests {
         assert_eq!(ElementKind::from_tag(8), Some(ElementKind::TextColumn));
         assert_eq!(ElementKind::from_tag(9), Some(ElementKind::Image));
         assert_eq!(ElementKind::from_tag(10), Some(ElementKind::TextInput));
+        assert_eq!(ElementKind::from_tag(11), Some(ElementKind::Video));
     }
 
     #[test]
