@@ -44,13 +44,13 @@
 
 use crate::actors::TreeMsg;
 use crate::input::{
-    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::tree::element::{Element, ElementId, ElementKind};
 use crate::tree::interaction::Rect;
 
 use super::{
-    dispatch_outcome::ElementEventKind, text_ops, TextInputCommandRequest, TextInputEditRequest,
+    TextInputCommandRequest, TextInputEditRequest, dispatch_outcome::ElementEventKind, text_ops,
 };
 
 /// Deterministic listener passes.
@@ -1553,18 +1553,18 @@ mod scroll_wheel {
 mod tests {
     use crate::actors::TreeMsg;
     use crate::input::{
-        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     };
     use crate::tree::attrs::{Attrs, MouseOverAttrs};
     use crate::tree::element::{Element, ElementId, ElementKind};
     use crate::tree::interaction::{ElementInteraction, Rect};
 
     use super::{
-        compose_effective_registry, listeners_for_element, registry_for_elements, BucketId,
-        ClickPressTracker, DragTrackerState, ElixirEvent, ListenerAction, ListenerCompute,
-        ListenerMatcher, ListenerMatcherKind, RuntimeChange, RuntimeOverlayState,
+        BucketId, ClickPressTracker, DragTrackerState, ElixirEvent, ListenerAction,
+        ListenerCompute, ListenerMatcher, ListenerMatcherKind, RuntimeChange, RuntimeOverlayState,
+        compose_effective_registry, listeners_for_element, registry_for_elements,
     };
-    use crate::events::{dispatch_outcome::ElementEventKind, TextInputCommandRequest};
+    use crate::events::{TextInputCommandRequest, dispatch_outcome::ElementEventKind};
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -2221,9 +2221,11 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::SetDragConsumed(false))
         ));
-        assert!(actions
-            .iter()
-            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
+        assert!(
+            actions
+                .iter()
+                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
+        );
     }
 
     #[test]
@@ -2625,18 +2627,29 @@ mod tests {
             listener.matcher,
             ListenerMatcher::TextCommitNoCtrlMeta
         )));
-        assert!(listeners
-            .iter()
-            .any(|(_, listener)| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
-        assert!(listeners
-            .iter()
-            .any(|(_, listener)| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
-        assert!(listeners
-            .iter()
-            .any(|(_, listener)| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
-        assert!(listeners
-            .iter()
-            .any(|(_, listener)| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
+        assert!(
+            listeners.iter().any(|(_, listener)| matches!(
+                listener.matcher,
+                ListenerMatcher::KeyBackspacePress
+            ))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|(_, listener)| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
+        );
+        assert!(
+            listeners.iter().any(|(_, listener)| matches!(
+                listener.matcher,
+                ListenerMatcher::KeyXPressCtrlOrMeta
+            ))
+        );
+        assert!(
+            listeners.iter().any(|(_, listener)| matches!(
+                listener.matcher,
+                ListenerMatcher::KeyVPressCtrlOrMeta
+            ))
+        );
 
         let commit_listener = listeners
             .iter()
@@ -2742,9 +2755,11 @@ mod tests {
         });
 
         assert_eq!(commit_actions.len(), 2);
-        assert!(commit_actions
-            .iter()
-            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
+        assert!(
+            commit_actions
+                .iter()
+                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
+        );
 
         let cut_listener = listeners
             .iter()
