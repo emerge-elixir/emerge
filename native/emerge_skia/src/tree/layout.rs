@@ -331,6 +331,17 @@ pub fn layout_tree<M: TextMeasurer>(
     scale: f32,
     measurer: &M,
 ) {
+    layout_tree_with_context(tree, constraint, scale, measurer, &FontContext::default());
+}
+
+/// Layout using an explicit inherited font context for the root element.
+pub fn layout_tree_with_context<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    measurer: &M,
+    inherited: &FontContext,
+) {
     let Some(root_id) = tree.root.clone() else {
         return;
     };
@@ -340,18 +351,10 @@ pub fn layout_tree<M: TextMeasurer>(
     apply_interaction_styles(tree);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, &root_id, measurer, &FontContext::default());
+    measure_element(tree, &root_id, measurer, inherited);
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(
-        tree,
-        &root_id,
-        constraint,
-        0.0,
-        0.0,
-        &FontContext::default(),
-        measurer,
-    );
+    resolve_element(tree, &root_id, constraint, 0.0, 0.0, inherited, measurer);
 }
 
 /// Layout with default Skia text measurer.

@@ -260,6 +260,9 @@ u16 len + bytes
 u32 len + EMRG subtree bytes
 ```
 
+Rendering/layout semantics for these nested trees are documented in
+`nearby-semantics.md`.
+
 ### State Styles (`mouse_over`, `focused`, `mouse_down`)
 ```
 u32 len + nested typed attr block

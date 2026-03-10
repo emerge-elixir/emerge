@@ -17,8 +17,6 @@ defmodule EmergeDemo.UI do
 
   @spec build_tree(VideoTarget.t(), map(), keyword()) :: Emerge.Element.t()
   def build_tree(%VideoTarget{} = target, runtime_state, config) do
-    video = Keyword.fetch!(config, :video)
-
     el(
       [
         width(fill()),
@@ -27,24 +25,21 @@ defmodule EmergeDemo.UI do
         in_front(overlay_panel(runtime_state, config))
       ],
       video(target, [
-        width(px(video[:width])),
-        height(px(video[:height])),
+        width(fill()),
+        height(fill()),
         image_fit(:contain)
       ])
     )
   end
 
   defp overlay_panel(runtime_state, config) do
-    el(
-      [move_x(-560), move_y(-250)],
-      column(
-        [spacing(14)],
-        [
-          row([spacing(14)], [info_panel(runtime_state, config), status_badge(runtime_state)]),
-          source_badge(config),
-          footer_badge(runtime_state, config)
-        ]
-      )
+    column(
+      [padding(20), spacing(14), width(fill())],
+      [
+        row([width(fill()), spacing(14)], [info_panel(runtime_state, config), status_badge(runtime_state)]),
+        source_badge(config),
+        footer_badge(runtime_state, config)
+      ]
     )
   end
 
@@ -84,6 +79,7 @@ defmodule EmergeDemo.UI do
 
     el(
       [
+        align_right(),
         padding(14),
         Background.color({:color_rgba, {6, 9, 13, 196}}),
         Border.rounded(999),
@@ -91,10 +87,10 @@ defmodule EmergeDemo.UI do
         Border.color(color),
         Border.shadow(offset: {0, 10}, blur: 26, color: {:color_rgba, {0, 0, 0, 110}})
       ],
-      row(
+      column(
         [spacing(10)],
         [
-          el([Font.size(14), Font.color(color)], text("LIVE")),
+          el([center_x(), Font.size(14), Font.color(color), Font.center()], text("LIVE")),
           el([Font.size(16), Font.color(@ink)], text(label))
         ]
       )
