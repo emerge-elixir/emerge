@@ -96,22 +96,6 @@ pub const ACTION_PRESS: u8 = 1;
 
 pub const SCROLL_LINE_PIXELS: f32 = 30.0;
 
-pub const EVENT_CLICK: u16 = 0x0001;
-pub const EVENT_SCROLL_X_NEG: u16 = 0x0002;
-pub const EVENT_SCROLL_X_POS: u16 = 0x0004;
-pub const EVENT_SCROLL_Y_NEG: u16 = 0x0008;
-pub const EVENT_SCROLL_Y_POS: u16 = 0x0010;
-pub const EVENT_MOUSE_DOWN: u16 = 0x0020;
-pub const EVENT_MOUSE_UP: u16 = 0x0040;
-pub const EVENT_MOUSE_ENTER: u16 = 0x0080;
-pub const EVENT_MOUSE_LEAVE: u16 = 0x0100;
-pub const EVENT_MOUSE_MOVE: u16 = 0x0200;
-pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
-pub const EVENT_TEXT_INPUT: u16 = 0x0800;
-pub const EVENT_MOUSE_DOWN_STYLE: u16 = 0x1000;
-pub const EVENT_PRESS: u16 = 0x2000;
-pub const EVENT_FOCUSABLE: u16 = 0x4000;
-
 // ============================================================================
 // Atoms
 // ============================================================================

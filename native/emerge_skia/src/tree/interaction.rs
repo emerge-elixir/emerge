@@ -303,3 +303,121 @@ pub fn point_in_rounded_rect(rect: Rect, radii: CornerRadii, x: f32, y: f32) -> 
 
     true
 }
+
+/// Returns whether `x`,`y` hits the element interaction region.
+pub fn point_hits_interaction(interaction: ElementInteraction, x: f32, y: f32) -> bool {
+    if !point_hits_subregion(interaction, interaction.hit_rect, None, x, y) {
+        return false;
+    }
+
+    if let Some(radii) = interaction.self_radii
+        && !point_in_rounded_rect(interaction.self_rect, radii, x, y)
+    {
+        return false;
+    }
+
+    true
+}
+
+/// Returns whether `x`,`y` hits a subregion constrained by an element interaction.
+pub fn point_hits_subregion(
+    interaction: ElementInteraction,
+    bounds: Rect,
+    radii: Option<CornerRadii>,
+    x: f32,
+    y: f32,
+) -> bool {
+    if !interaction.visible || !bounds.contains(x, y) {
+        return false;
+    }
+
+    if let (Some(rect), Some(radii)) = (interaction.clip_rect, interaction.clip_radii)
+        && !point_in_rounded_rect(rect, radii, x, y)
+    {
+        return false;
+    }
+
+    if let Some(radii) = radii
+        && !point_in_rounded_rect(bounds, clamp_radii(bounds, radii), x, y)
+    {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_hits_interaction_respects_self_radii() {
+        let interaction = ElementInteraction {
+            visible: true,
+            hit_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 50.0,
+            },
+            self_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 50.0,
+            },
+            self_radii: Some(CornerRadii {
+                tl: 10.0,
+                tr: 10.0,
+                br: 10.0,
+                bl: 10.0,
+            }),
+            clip_rect: None,
+            clip_radii: None,
+        };
+
+        assert!(!point_hits_interaction(interaction, 2.0, 2.0));
+        assert!(point_hits_interaction(interaction, 10.0, 2.0));
+    }
+
+    #[test]
+    fn point_hits_subregion_respects_parent_clip() {
+        let interaction = ElementInteraction {
+            visible: true,
+            hit_rect: Rect {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            },
+            self_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 40.0,
+            },
+            self_radii: None,
+            clip_rect: Some(Rect {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            }),
+            clip_radii: Some(CornerRadii {
+                tl: 10.0,
+                tr: 10.0,
+                br: 10.0,
+                bl: 10.0,
+            }),
+        };
+        let thumb = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+        };
+
+        assert!(!point_hits_subregion(interaction, thumb, None, 12.0, 12.0));
+        assert!(point_hits_subregion(interaction, thumb, None, 20.0, 12.0));
+    }
+}

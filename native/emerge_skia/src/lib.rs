@@ -166,6 +166,40 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
     }
 }
 
+fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
+    match msg {
+        TreeMsg::Batch(messages) => {
+            for nested in messages {
+                push_tree_message_flat(nested, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshDecision {
+    Skip,
+    UseCachedRebuild,
+    Recompute,
+}
+
+fn decide_refresh_action(
+    tree_changed: bool,
+    registry_requested: bool,
+    has_cached_rebuild: bool,
+) -> RefreshDecision {
+    if tree_changed {
+        RefreshDecision::Recompute
+    } else if registry_requested && has_cached_rebuild {
+        RefreshDecision::UseCachedRebuild
+    } else if registry_requested {
+        RefreshDecision::Recompute
+    } else {
+        RefreshDecision::Skip
+    }
+}
+
 // ============================================================================
 // NIF Functions
 // ============================================================================
@@ -220,11 +254,13 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
+        let mut cached_rebuild: Option<events::RegistryRebuildPayload> = None;
 
         while let Ok(msg) = tree_rx.recv() {
-            let mut messages = vec![msg];
+            let mut messages = Vec::new();
+            push_tree_message_flat(msg, &mut messages);
             while let Ok(next) = tree_rx.try_recv() {
-                messages.push(next);
+                push_tree_message_flat(next, &mut messages);
             }
 
             let mut scroll_acc = std::collections::HashMap::new();
@@ -235,15 +271,19 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             let mut mouse_over_active_state = std::collections::HashMap::new();
             let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut focused_active_state = std::collections::HashMap::new();
-            let mut changed = false;
+            let mut tree_changed = false;
+            let mut registry_requested = false;
 
             for message in messages {
                 match message {
                     TreeMsg::Stop => return,
+                    TreeMsg::Batch(_) => {
+                        unreachable!("tree batches must be flattened before processing")
+                    }
                     TreeMsg::UploadTree { bytes } => match tree::deserialize::decode_tree(&bytes) {
                         Ok(decoded) => {
                             tree = decoded;
-                            changed = true;
+                            tree_changed = true;
                         }
                         Err(err) => {
                             eprintln!("tree upload failed: {err}");
@@ -261,7 +301,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                             eprintln!("tree patch apply failed: {err}");
                             continue;
                         }
-                        changed = true;
+                        tree_changed = true;
                     }
                     TreeMsg::Resize {
                         width: w,
@@ -271,7 +311,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         width = w.max(1.0);
                         height = h.max(1.0);
                         scale = s;
-                        changed = true;
+                        tree_changed = true;
                     }
                     TreeMsg::ScrollRequest { element_id, dx, dy } => {
                         let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
@@ -311,7 +351,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         element_id,
                         content,
                     } => {
-                        changed |= tree.set_text_input_content(&element_id, content);
+                        tree_changed |= tree.set_text_input_content(&element_id, content);
                     }
                     TreeMsg::SetTextInputRuntime {
                         element_id,
@@ -321,7 +361,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         preedit,
                         preedit_cursor,
                     } => {
-                        changed |= tree.set_text_input_runtime(
+                        tree_changed |= tree.set_text_input_runtime(
                             &element_id,
                             focused,
                             cursor,
@@ -330,72 +370,84 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                             preedit_cursor,
                         );
                     }
+                    TreeMsg::RebuildRegistry => {
+                        registry_requested = true;
+                    }
                     TreeMsg::AssetStateChanged => {
-                        changed = true;
+                        tree_changed = true;
                     }
                 }
             }
 
             for (id, (dx, dy)) in scroll_acc {
-                changed |= tree.apply_scroll(&id, dx, dy);
+                tree_changed |= tree.apply_scroll(&id, dx, dy);
             }
 
             for (id, dx) in thumb_drag_x_acc {
-                changed |= tree.apply_scroll_x(&id, dx);
+                tree_changed |= tree.apply_scroll_x(&id, dx);
             }
 
             for (id, dy) in thumb_drag_y_acc {
-                changed |= tree.apply_scroll_y(&id, dy);
+                tree_changed |= tree.apply_scroll_y(&id, dy);
             }
 
             for (id, hovered) in hover_x_state {
-                changed |= tree.set_scrollbar_x_hover(&id, hovered);
+                tree_changed |= tree.set_scrollbar_x_hover(&id, hovered);
             }
 
             for (id, hovered) in hover_y_state {
-                changed |= tree.set_scrollbar_y_hover(&id, hovered);
+                tree_changed |= tree.set_scrollbar_y_hover(&id, hovered);
             }
 
             for (id, active) in mouse_over_active_state {
-                changed |= tree.set_mouse_over_active(&id, active);
+                tree_changed |= tree.set_mouse_over_active(&id, active);
             }
 
             for (id, active) in mouse_down_active_state {
-                changed |= tree.set_mouse_down_active(&id, active);
+                tree_changed |= tree.set_mouse_down_active(&id, active);
             }
 
             for (id, active) in focused_active_state {
-                changed |= tree.set_focused_active(&id, active);
+                tree_changed |= tree.set_focused_active(&id, active);
             }
 
-            if !changed {
-                continue;
-            }
+            match decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some())
+            {
+                RefreshDecision::Skip => continue,
+                RefreshDecision::UseCachedRebuild => {
+                    if let Some(rebuild) = cached_rebuild.clone() {
+                        send_event(&event_tx, EventMsg::RegistryUpdate { rebuild }, log_input);
+                    }
+                    continue;
+                }
+                RefreshDecision::Recompute => {
+                    assets::ensure_tree_sources(&tree);
 
-            assets::ensure_tree_sources(&tree);
+                    let constraint = tree::layout::Constraint::new(width, height);
+                    let output = layout_and_refresh_default(&mut tree, constraint, scale);
+                    cached_rebuild = Some(output.event_rebuild.clone());
+                    send_event(
+                        &event_tx,
+                        EventMsg::RegistryUpdate {
+                            rebuild: output.event_rebuild,
+                        },
+                        log_input,
+                    );
 
-            let constraint = tree::layout::Constraint::new(width, height);
-            let output = layout_and_refresh_default(&mut tree, constraint, scale);
-            send_event(
-                &event_tx,
-                EventMsg::RegistryUpdate {
-                    registry: output.event_registry,
-                },
-                log_input,
-            );
+                    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let animate = assets::has_pending_assets();
+                    render_sender.send_latest(RenderMsg::Commands {
+                        commands: output.commands,
+                        version,
+                        animate,
+                        ime_enabled: output.ime_enabled,
+                        ime_cursor_area: output.ime_cursor_area,
+                    });
 
-            let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let animate = assets::has_pending_assets();
-            render_sender.send_latest(RenderMsg::Commands {
-                commands: output.commands,
-                version,
-                animate,
-                ime_enabled: output.ime_enabled,
-                ime_cursor_area: output.ime_cursor_area,
-            });
-
-            if let Some(proxy) = wayland_proxy.as_ref() {
-                let _ = proxy.send_event(UserEvent::Redraw);
+                    if let Some(proxy) = wayland_proxy.as_ref() {
+                        let _ = proxy.send_event(UserEvent::Redraw);
+                    }
+                }
             }
         }
     })
@@ -981,6 +1033,65 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
     let mut binary = NewBinary::new(env, encoded.len());
     binary.as_mut_slice().copy_from_slice(&encoded);
     binary.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_tree_message_flat_expands_nested_batches_in_order() {
+        let mut out = Vec::new();
+        push_tree_message_flat(
+            TreeMsg::Batch(vec![
+                TreeMsg::RebuildRegistry,
+                TreeMsg::Batch(vec![
+                    TreeMsg::AssetStateChanged,
+                    TreeMsg::Resize {
+                        width: 10.0,
+                        height: 20.0,
+                        scale: 1.0,
+                    },
+                ]),
+            ]),
+            &mut out,
+        );
+
+        assert!(matches!(out[0], TreeMsg::RebuildRegistry));
+        assert!(matches!(out[1], TreeMsg::AssetStateChanged));
+        assert!(matches!(
+            out[2],
+            TreeMsg::Resize {
+                width: 10.0,
+                height: 20.0,
+                scale: 1.0,
+            }
+        ));
+    }
+
+    #[test]
+    fn decide_refresh_action_prefers_cache_for_registry_only_requests() {
+        assert_eq!(
+            decide_refresh_action(false, false, false),
+            RefreshDecision::Skip
+        );
+        assert_eq!(
+            decide_refresh_action(false, true, true),
+            RefreshDecision::UseCachedRebuild
+        );
+        assert_eq!(
+            decide_refresh_action(false, true, false),
+            RefreshDecision::Recompute
+        );
+        assert_eq!(
+            decide_refresh_action(true, false, true),
+            RefreshDecision::Recompute
+        );
+        assert_eq!(
+            decide_refresh_action(true, true, true),
+            RefreshDecision::Recompute
+        );
+    }
 }
 
 // ============================================================================
