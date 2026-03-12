@@ -1,58 +1,67 @@
 # Tree Encoding and Patching
 
-This document summarizes how Emerge assigns ids, builds patches, and serializes trees.
+This document summarizes how Emerge assigns ids, builds patches, and serializes
+trees.
 
 ## Identity Model
-- Users build pure `Emerge.Element` trees (`row/column/el/text`).
-- Identity is derived from `parent_id + kind + local_identity`.
-- `local_identity` is `{:k, key}` when a key is provided, otherwise `{:i, index}`.
-- Ids are generated via a fast hash of `{parent_id, kind, local_identity}`.
-- Keys (via `key/1`) must be unique across the whole tree; duplicates raise.
-- If any sibling has a key, all siblings must have keys.
 
-### Practical Rules
-- Use keys for dynamic lists and reorderable children.
-- Unkeyed children are matched by position; reordering will reassign ids.
+- Users build pure `Emerge.Element` trees.
+- Normal child identity is derived from `{parent_id, kind, local_identity}`.
+- `local_identity` is `{:k, key}` when a key is provided, otherwise `{:i, index}`.
+- Nearby root identity is derived from `{host_id, slot, local_identity}`.
+- Keys must be unique across the whole tree; duplicates raise.
+- If any siblings in a normal child list are keyed, all siblings in that list
+  must be keyed.
 
 ## Reconciliation
-`Emerge.Reconcile` compares the new tree to the previous vdom:
-- Matches children by key when present, otherwise by index + kind.
-- Reuses ids for matched nodes, assigns new ids for inserts.
-- Computes minimal patch operations:
-  - `:set_attrs` for changed attributes.
-  - `:set_children` when surviving children reorder.
-  - `:insert_subtree` for new nodes.
-  - `:remove` for deleted nodes.
 
-### `:set_children` optimization
-- If changes are only inserts/removes and the remaining children keep their relative order, `:set_children` is skipped.
-- If surviving children reorder, `:set_children` is emitted.
+`Emerge.Reconcile` keeps public nearby attrs but normalizes them internally into
+host-owned mount slots.
 
-## Patch Encoding
-Patches are encoded into a compact binary stream:
-- Each patch is tagged (`set_attrs`, `set_children`, `insert_subtree`, `remove`).
-- Ids are stored as `term_to_binary` with a length prefix.
-- `insert_subtree` embeds a full subtree serialization.
-- Runtime-only attributes (e.g., `scroll_x`, `scroll_y`) are stripped from `:set_attrs`.
-- Attribute values use typed v3 attribute block encodings described in `emrg-format.md`.
+- normal `children` reconcile by keyed-or-indexed sibling matching
+- nearby mounts reconcile per fixed slot
+- nearby changes do not flow through `:set_attrs`
+- nearby root replacement is structural (`:remove` + insert)
+
+## Patch Operations
+
+Current patch operations are:
+
+- `:set_attrs`
+- `:set_children`
+- `:insert_subtree`
+- `:insert_nearby_subtree`
+- `:remove`
+
+### Notes
+
+- `:set_children` only applies to normal child order.
+- Nearby uses fixed slots, so it does not need a `:set_nearby` reorder/update op.
+- Replacing a nearby root uses `:remove` for the old root and
+  `:insert_nearby_subtree` for the new root.
+- Runtime-only attrs are stripped from `:set_attrs` payloads.
+- Nearby attrs are also stripped from `:set_attrs`; they travel through
+  structural patch ops only.
 
 ## Full Tree Serialization
-`Emerge.Serialization.encode_tree/1` produces:
-- Header: `"EMRG"` + version + node count.
-- Per node:
-  - id (length + term binary)
-  - type tag
-  - attrs (length + typed attribute block)
-  - child ids (count + length-prefixed term binaries)
 
-Decoding rebuilds the tree by id references.
+`Emerge.Serialization.encode_tree/1` now emits EMRG v4.
+
+- Header: `"EMRG" + version + node_count`
+- Per node:
+  - id
+  - type tag
+  - attrs block (ordinary attrs only)
+  - child ids
+  - nearby mount refs
+
+Nearby is serialized as retained node edges, not as nested subtree blobs inside
+attr values.
 
 ## Typical Flow
-1. Build an element tree with `row/column/el`.
-2. Call `Emerge.diff_state_update/2` to:
-   - reconcile ids
-   - emit binary patches
-3. Send patches to the Rust side for incremental updates.
-4. Use `Emerge.encode_full/2` for the initial upload.
-5. AssetManager may trigger additional async rerenders as pending image sources
-   transition to ready/failed states.
+
+1. Build an element tree with public attrs, including nearby attrs when needed.
+2. Reconcile it against the previous vdom.
+3. Emit nearby-aware structural patches and attr patches.
+4. Send patches to Rust for incremental retained-tree updates.
+5. Use full-tree EMRG upload for initial tree state.

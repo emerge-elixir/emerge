@@ -1148,6 +1148,79 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_on_press_inside_release_clears_mouse_down_style() {
+        let element_id = ElementId::from_term_bytes(vec![21]);
+
+        let mut attrs = Attrs::default();
+        attrs.on_press = Some(true);
+        attrs.mouse_down = Some(MouseOverAttrs::default());
+        let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let press_msgs = drain_msgs(&tree_rx);
+        assert!(press_msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && *active
+        )));
+
+        let mut active_attrs = attrs;
+        active_attrs.mouse_down_active = Some(true);
+        active_attrs.focused_active = Some(true);
+        let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
+        let active_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[active_element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: Some(element_id.clone()),
+        };
+        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && !*active
+        )));
+    }
+
+    #[test]
     fn direct_runtime_dispatches_concrete_tab_focus_transition() {
         let mut first_attrs = Attrs::default();
         first_attrs.on_focus = Some(true);

@@ -9,7 +9,9 @@ use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
     TextFragment, preserve_runtime_scroll_attrs,
 };
-use super::element::{ElementId, ElementKind, ElementTree, Frame};
+use super::element::{
+    ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
+};
 use crate::assets;
 use std::collections::HashMap;
 
@@ -468,12 +470,6 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         text_align: attrs.text_align,
         content: attrs.content.clone(),
         paragraph_fragments: None,
-        above: attrs.above.clone(),
-        below: attrs.below.clone(),
-        on_left: attrs.on_left.clone(),
-        on_right: attrs.on_right.clone(),
-        in_front: attrs.in_front.clone(),
-        behind: attrs.behind.clone(),
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
         move_x: attrs.move_x.map(|v| v * scale_f64),
@@ -674,12 +670,25 @@ fn measure_element<M: TextMeasurer>(
         .unwrap_or_else(|| inherited.clone());
 
     // First measure all children with merged font context
-    let child_ids: Vec<ElementId> = tree.get(id).map(|e| e.children.clone()).unwrap_or_default();
+    let (child_ids, nearby_ids): (Vec<ElementId>, Vec<ElementId>) = tree
+        .get(id)
+        .map(|element| {
+            let nearby_ids = NearbySlot::PAINT_ORDER
+                .into_iter()
+                .filter_map(|slot| element.nearby.get(slot).cloned())
+                .collect();
+            (element.children.clone(), nearby_ids)
+        })
+        .unwrap_or_default();
 
     let child_sizes: Vec<IntrinsicSize> = child_ids
         .iter()
         .map(|child_id| measure_element(tree, child_id, measurer, &element_context))
         .collect();
+
+    for nearby_id in &nearby_ids {
+        let _ = measure_element(tree, nearby_id, measurer, &element_context);
+    }
 
     // Now measure this element
     let Some(element) = tree.get(id) else {
@@ -1253,6 +1262,7 @@ fn resolve_element<M: TextMeasurer>(
     }
 
     update_scroll_state(tree, id);
+    resolve_nearby_mounts(tree, id, &element_context, measurer);
 }
 
 /// Resolve final length from attribute, intrinsic, and constraint.
@@ -1270,6 +1280,132 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
             let inner_size = resolve_length(Some(inner), intrinsic, constraint);
             inner_size.min(*max_px as f32)
         }
+    }
+}
+
+fn resolve_nearby_mounts<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    host_id: &ElementId,
+    inherited: &FontContext,
+    measurer: &M,
+) {
+    let Some(host_frame) = tree.get(host_id).and_then(|element| element.frame) else {
+        return;
+    };
+
+    let nearby_roots: Vec<(NearbySlot, ElementId)> = tree
+        .get(host_id)
+        .map(|element| {
+            NearbySlot::PAINT_ORDER
+                .into_iter()
+                .filter_map(|slot| element.nearby.get(slot).cloned().map(|id| (slot, id)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (slot, nearby_id) in nearby_roots {
+        let constraint = nearby_constraint(host_frame, slot);
+        resolve_element(
+            tree,
+            &nearby_id,
+            constraint,
+            host_frame.x,
+            host_frame.y,
+            inherited,
+            measurer,
+        );
+
+        let Some((nearby_frame, align_x, align_y)) = tree.get(&nearby_id).and_then(|element| {
+            element.frame.map(|frame| {
+                (
+                    frame,
+                    element.attrs.align_x.unwrap_or_default(),
+                    element.attrs.align_y.unwrap_or_default(),
+                )
+            })
+        }) else {
+            continue;
+        };
+
+        let target_x = nearby_origin_x(host_frame, nearby_frame, slot, align_x);
+        let target_y = nearby_origin_y(host_frame, nearby_frame, slot, align_y);
+        shift_subtree(
+            tree,
+            &nearby_id,
+            target_x - nearby_frame.x,
+            target_y - nearby_frame.y,
+        );
+    }
+}
+
+fn nearby_constraint(parent_frame: Frame, slot: NearbySlot) -> Constraint {
+    match slot.spec().constraint_kind {
+        NearbyConstraintKind::HostBox => Constraint::new(parent_frame.width, parent_frame.height),
+        NearbyConstraintKind::HostWidthBand => Constraint::with_space(
+            AvailableSpace::Definite(parent_frame.width),
+            AvailableSpace::MaxContent,
+        ),
+        NearbyConstraintKind::HostHeightBand => Constraint::with_space(
+            AvailableSpace::MaxContent,
+            AvailableSpace::Definite(parent_frame.height),
+        ),
+    }
+}
+
+fn nearby_origin_x(
+    parent_frame: Frame,
+    nearby_frame: Frame,
+    slot: NearbySlot,
+    align_x: AlignX,
+) -> f32 {
+    match slot {
+        NearbySlot::BehindContent | NearbySlot::Above | NearbySlot::Below | NearbySlot::InFront => {
+            aligned_x_in_slot(
+                parent_frame.x,
+                parent_frame.width,
+                nearby_frame.width,
+                align_x,
+            )
+        }
+        NearbySlot::OnLeft => parent_frame.x - nearby_frame.width,
+        NearbySlot::OnRight => parent_frame.x + parent_frame.width,
+    }
+}
+
+fn nearby_origin_y(
+    parent_frame: Frame,
+    nearby_frame: Frame,
+    slot: NearbySlot,
+    align_y: AlignY,
+) -> f32 {
+    match slot {
+        NearbySlot::Above => parent_frame.y - nearby_frame.height,
+        NearbySlot::Below => parent_frame.y + parent_frame.height,
+        NearbySlot::BehindContent
+        | NearbySlot::OnLeft
+        | NearbySlot::OnRight
+        | NearbySlot::InFront => aligned_y_in_slot(
+            parent_frame.y,
+            parent_frame.height,
+            nearby_frame.height,
+            align_y,
+        ),
+    }
+}
+
+fn aligned_x_in_slot(slot_x: f32, slot_width: f32, nearby_width: f32, align_x: AlignX) -> f32 {
+    match align_x {
+        AlignX::Left => slot_x,
+        AlignX::Center => slot_x + (slot_width - nearby_width) / 2.0,
+        AlignX::Right => slot_x + slot_width - nearby_width,
+    }
+}
+
+fn aligned_y_in_slot(slot_y: f32, slot_height: f32, nearby_height: f32, align_y: AlignY) -> f32 {
+    match align_y {
+        AlignY::Top => slot_y,
+        AlignY::Center => slot_y + (slot_height - nearby_height) / 2.0,
+        AlignY::Bottom => slot_y + slot_height - nearby_height,
     }
 }
 
@@ -3226,7 +3362,14 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
                 frag.y += dy;
             }
         }
-        element.children.clone()
+
+        let mut child_ids = element.children.clone();
+        child_ids.extend(
+            NearbySlot::PAINT_ORDER
+                .into_iter()
+                .filter_map(|slot| element.nearby.get(slot).cloned()),
+        );
+        child_ids
     };
 
     for child_id in child_ids {

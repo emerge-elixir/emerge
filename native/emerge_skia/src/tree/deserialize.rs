@@ -8,16 +8,19 @@
 //!   - attr_len (4 bytes BE) + attr_bytes (typed attribute block)
 //!   - child_count (2 bytes BE)
 //!   - For each child: child_id_len (4 bytes BE) + child_id_bytes
+//!   - nearby_mask (1 byte)
+//!   - For each mounted nearby slot in fixed order: id_len (4 bytes BE) + id_bytes
 //!
 //! Attribute block format:
 //!   - attr_count (2 bytes BE)
 //!   - For each attr: tag (1 byte) + value (varies by tag)
 
 use super::attrs::{Attrs, decode_attrs};
-use super::element::{Element, ElementId, ElementKind, ElementTree};
+use super::element::{Element, ElementId, ElementKind, ElementTree, NearbyMounts, NearbySlot};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
+const LEGACY_VERSION: u8 = 3;
 
 /// Error type for deserialization failures.
 #[derive(Debug, Clone)]
@@ -96,6 +99,7 @@ struct RawNode {
     attrs_raw: Vec<u8>,
     attrs: Attrs,
     child_ids: Vec<ElementId>,
+    nearby: NearbyMounts,
 }
 
 /// Decode a full tree from the EMRG binary format.
@@ -109,7 +113,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     }
 
     let version = cursor.read_u8()?;
-    if version != VERSION {
+    if version != VERSION && version != LEGACY_VERSION {
         return Err(DecodeError::UnsupportedVersion(version));
     }
 
@@ -122,7 +126,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     // Parse all nodes
     let mut raw_nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
-        let node = decode_node(&mut cursor)?;
+        let node = decode_node(&mut cursor, version)?;
         raw_nodes.push(node);
     }
 
@@ -146,6 +150,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     for raw in raw_nodes {
         let mut element = Element::with_attrs(raw.id, raw.kind, raw.attrs_raw, raw.attrs);
         element.children = raw.child_ids;
+        element.nearby = raw.nearby;
         tree.insert(element);
     }
 
@@ -153,7 +158,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
 }
 
 /// Decode a single node from the cursor.
-fn decode_node(cursor: &mut Cursor) -> Result<RawNode, DecodeError> {
+fn decode_node(cursor: &mut Cursor, version: u8) -> Result<RawNode, DecodeError> {
     // Read ID
     let id_bytes = cursor.read_length_prefixed()?;
     let id = ElementId::from_term_bytes(id_bytes);
@@ -174,12 +179,26 @@ fn decode_node(cursor: &mut Cursor) -> Result<RawNode, DecodeError> {
         child_ids.push(ElementId::from_term_bytes(child_id_bytes));
     }
 
+    let mut nearby = NearbyMounts::default();
+    if version >= VERSION {
+        let nearby_mask = cursor.read_u8()?;
+        for (index, slot) in NearbySlot::PAINT_ORDER.into_iter().enumerate() {
+            if nearby_mask & (1 << index) == 0 {
+                continue;
+            }
+
+            let nearby_id_bytes = cursor.read_length_prefixed()?;
+            nearby.set(slot, Some(ElementId::from_term_bytes(nearby_id_bytes)));
+        }
+    }
+
     Ok(RawNode {
         id,
         kind,
         attrs_raw,
         attrs,
         child_ids,
+        nearby,
     })
 }
 
@@ -242,6 +261,7 @@ mod tests {
 
         // child_count = 0
         data.extend_from_slice(&0u16.to_be_bytes());
+        data.push(0);
 
         let tree = decode_tree(&data).unwrap();
         assert_eq!(tree.len(), 1);
@@ -276,6 +296,7 @@ mod tests {
 
         // child_count = 0
         data.extend_from_slice(&0u16.to_be_bytes());
+        data.push(0);
 
         let tree = decode_tree(&data).unwrap();
         let root_id = tree.root.as_ref().unwrap();

@@ -107,7 +107,13 @@ defmodule Emerge.DiffState do
     |> register_event(element, :on_focus, :focus)
     |> register_event(element, :on_blur, :blur)
     |> then(fn registry ->
-      Enum.reduce(element.children, registry, fn child, next_registry ->
+      registry =
+        Enum.reduce(element.children, registry, fn child, next_registry ->
+          collect_event_handlers(child, next_registry)
+        end)
+
+      Enum.reduce(Emerge.Tree.nearby_children(element), registry, fn {_slot, child},
+                                                                     next_registry ->
         collect_event_handlers(child, next_registry)
       end)
     end)

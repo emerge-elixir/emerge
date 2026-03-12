@@ -3,8 +3,6 @@ defmodule Emerge.AttrCodec do
   Compact encoding for element attribute maps.
   """
 
-  alias Emerge.Element
-
   @type_tag %{
     width: 1,
     height: 2,
@@ -26,12 +24,6 @@ defmodule Emerge.AttrCodec do
     font_weight: 19,
     font_style: 20,
     content: 21,
-    above: 22,
-    below: 23,
-    on_left: 24,
-    on_right: 25,
-    in_front: 26,
-    behind: 27,
     snap_layout: 28,
     snap_text_metrics: 29,
     text_align: 30,
@@ -94,6 +86,7 @@ defmodule Emerge.AttrCodec do
   def encode_attrs(attrs) when is_map(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()
+    |> Emerge.Tree.strip_nearby_attrs()
     |> Map.to_list()
     |> Enum.map(fn {key, value} ->
       tag = Map.fetch!(@type_tag, key)
@@ -144,12 +137,6 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:font_weight, value), do: encode_atom(value)
   defp encode_value(:font_style, value), do: encode_atom(value)
   defp encode_value(:content, value), do: encode_string(value)
-  defp encode_value(:above, value), do: encode_element(value)
-  defp encode_value(:below, value), do: encode_element(value)
-  defp encode_value(:on_left, value), do: encode_element(value)
-  defp encode_value(:on_right, value), do: encode_element(value)
-  defp encode_value(:in_front, value), do: encode_element(value)
-  defp encode_value(:behind, value), do: encode_element(value)
   defp encode_value(:snap_layout, value), do: encode_bool(value)
   defp encode_value(:snap_text_metrics, value), do: encode_bool(value)
   defp encode_value(:text_align, value), do: encode_text_align(value)
@@ -206,12 +193,6 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:font_weight, rest), do: decode_atom(rest)
   defp decode_value(:font_style, rest), do: decode_atom(rest)
   defp decode_value(:content, rest), do: decode_string(rest)
-  defp decode_value(:above, rest), do: decode_element(rest)
-  defp decode_value(:below, rest), do: decode_element(rest)
-  defp decode_value(:on_left, rest), do: decode_element(rest)
-  defp decode_value(:on_right, rest), do: decode_element(rest)
-  defp decode_value(:in_front, rest), do: decode_element(rest)
-  defp decode_value(:behind, rest), do: decode_element(rest)
   defp decode_value(:snap_layout, rest), do: decode_bool(rest)
   defp decode_value(:snap_text_metrics, rest), do: decode_bool(rest)
   defp decode_value(:text_align, rest), do: decode_text_align(rest)
@@ -650,23 +631,5 @@ defmodule Emerge.AttrCodec do
   defp decode_font(<<1, rest::binary>>) do
     {value, rest} = decode_string(rest)
     {value, rest}
-  end
-
-  defp encode_element(%Element{} = element) do
-    assigned =
-      if is_nil(element.id) do
-        {_vdom, assigned} = Emerge.Reconcile.assign_ids(element)
-        assigned
-      else
-        element
-      end
-
-    encoded = Emerge.Serialization.encode_tree(assigned)
-    <<byte_size(encoded)::unsigned-32, encoded::binary>>
-  end
-
-  defp decode_element(<<len::unsigned-32, rest::binary>>) do
-    <<encoded::binary-size(len), rest::binary>> = rest
-    {Emerge.Serialization.decode(encoded), rest}
   end
 end

@@ -1,11 +1,11 @@
 //! Serialization of the EMRG binary format.
 //!
-//! Produces EMRG v3 from an ElementTree.
+//! Produces EMRG v4 from an ElementTree.
 
-use super::element::{Element, ElementId, ElementKind, ElementTree};
+use super::element::{Element, ElementId, ElementKind, ElementTree, NearbySlot};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
 pub fn encode_tree(tree: &ElementTree) -> Vec<u8> {
     let Some(root_id) = tree.root.as_ref() else {
@@ -38,6 +38,7 @@ fn encode_node(out: &mut Vec<u8>, element: &Element) {
 
     encode_attrs(out, &element.attrs_raw);
     encode_children(out, &element.children);
+    encode_nearby(out, element);
 }
 
 fn encode_id(out: &mut Vec<u8>, id: &ElementId) {
@@ -54,6 +55,23 @@ fn encode_children(out: &mut Vec<u8>, children: &[ElementId]) {
     out.extend_from_slice(&(children.len() as u16).to_be_bytes());
     for child_id in children {
         encode_id(out, child_id);
+    }
+}
+
+fn encode_nearby(out: &mut Vec<u8>, element: &Element) {
+    let mut mask = 0u8;
+    let mut ids = Vec::new();
+
+    for (index, slot) in NearbySlot::PAINT_ORDER.into_iter().enumerate() {
+        if let Some(id) = element.nearby.get(slot) {
+            mask |= 1 << index;
+            ids.push(id);
+        }
+    }
+
+    out.push(mask);
+    for id in ids {
+        encode_id(out, id);
     }
 }
 
@@ -86,7 +104,7 @@ fn collect_nodes_inner<'a>(tree: &'a ElementTree, id: &ElementId, out: &mut Vec<
 
     out.push(element);
 
-    for child_id in &element.children {
-        collect_nodes_inner(tree, child_id, out);
-    }
+    element.for_each_paint_child(|child| {
+        collect_nodes_inner(tree, child.id, out);
+    });
 }

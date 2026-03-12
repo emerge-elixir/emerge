@@ -5,6 +5,8 @@ defmodule Emerge.Tree do
 
   alias Emerge.Element
 
+  @nearby_slots [:behind, :above, :on_right, :below, :on_left, :in_front]
+
   @type id_state :: %{
           explicit_seen: MapSet.t()
         }
@@ -105,6 +107,63 @@ defmodule Emerge.Tree do
   """
   def runtime_attrs do
     @runtime_attrs
+  end
+
+  @doc """
+  Return the fixed nearby mount order used across traversal and encoding.
+  """
+  def nearby_slots do
+    @nearby_slots
+  end
+
+  @doc """
+  Split nearby mount attrs from ordinary attrs.
+  """
+  def split_nearby_attrs(attrs) when is_map(attrs) do
+    nearby =
+      Enum.reduce(@nearby_slots, %{}, fn slot, acc ->
+        case Map.get(attrs, slot) do
+          %Element{} = element -> Map.put(acc, slot, element)
+          _ -> acc
+        end
+      end)
+
+    {Map.drop(attrs, @nearby_slots), nearby}
+  end
+
+  @doc """
+  Drop nearby mounts from an attrs map.
+  """
+  def strip_nearby_attrs(attrs) when is_map(attrs) do
+    Map.drop(attrs, @nearby_slots)
+  end
+
+  @doc """
+  Merge nearby mounts back into an attrs map.
+  """
+  def merge_nearby_attrs(attrs, nearby) when is_map(attrs) and is_map(nearby) do
+    Enum.reduce(@nearby_slots, attrs, fn slot, acc ->
+      case Map.get(nearby, slot) do
+        %Element{} = element -> Map.put(acc, slot, element)
+        _ -> acc
+      end
+    end)
+  end
+
+  @doc """
+  Return nearby mounted children in canonical order.
+  """
+  def nearby_children(%Element{} = element) do
+    nearby_children(element.attrs)
+  end
+
+  def nearby_children(attrs) when is_map(attrs) do
+    Enum.flat_map(@nearby_slots, fn slot ->
+      case Map.get(attrs, slot) do
+        %Element{} = element -> [{slot, element}]
+        _ -> []
+      end
+    end)
   end
 
   @doc """

@@ -6,10 +6,11 @@
 //!   - 2: set_children - id_len(4) + id + count(2) + [child_id_len(4) + child_id]...
 //!   - 3: insert_subtree - parent_len(4) + parent_id + index(2) + tree_len(4) + tree_bytes
 //!   - 4: remove - id_len(4) + id
+//!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
 
 use super::attrs::{decode_attrs, preserve_runtime_scroll_attrs};
 use super::deserialize::{DecodeError, decode_tree};
-use super::element::{ElementId, ElementTree};
+use super::element::{ElementId, ElementTree, NearbySlot};
 
 /// A single patch operation.
 #[derive(Debug, Clone)]
@@ -30,6 +31,13 @@ pub enum Patch {
         /// Index in parent's children list.
         index: usize,
         /// The subtree to insert.
+        subtree: ElementTree,
+    },
+
+    /// Insert a nearby-mounted subtree onto a host slot.
+    InsertNearbySubtree {
+        host_id: ElementId,
+        slot: NearbySlot,
         subtree: ElementTree,
     },
 
@@ -105,6 +113,7 @@ fn decode_patch(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
         2 => decode_set_children(cursor),
         3 => decode_insert_subtree(cursor),
         4 => decode_remove(cursor),
+        5 => decode_insert_nearby_subtree(cursor),
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown patch tag: {}",
             tag
@@ -166,6 +175,25 @@ fn decode_remove(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
     let id = ElementId::from_term_bytes(id_bytes);
 
     Ok(Patch::Remove { id })
+}
+
+fn decode_insert_nearby_subtree(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
+    let host_id_bytes = cursor.read_length_prefixed()?;
+    let host_id = ElementId::from_term_bytes(host_id_bytes);
+    let slot_tag = cursor.read_u8()?;
+    let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
+        DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
+    })?;
+
+    let tree_len = cursor.read_u32_be()? as usize;
+    let tree_bytes = cursor.read_bytes(tree_len)?;
+    let subtree = decode_tree(tree_bytes)?;
+
+    Ok(Patch::InsertNearbySubtree {
+        host_id,
+        slot,
+        subtree,
+    })
 }
 
 /// Check if the term bytes represent Erlang nil atom.
@@ -245,6 +273,26 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
             }
         }
 
+        Patch::InsertNearbySubtree {
+            host_id,
+            slot,
+            subtree,
+        } => {
+            let subtree_root_id = subtree
+                .root
+                .clone()
+                .ok_or_else(|| "InsertNearbySubtree: subtree has no root".to_string())?;
+
+            for (id, element) in subtree.nodes {
+                tree.nodes.insert(id, element);
+            }
+
+            let host = tree
+                .get_mut(&host_id)
+                .ok_or_else(|| "InsertNearbySubtree: host not found".to_string())?;
+            host.nearby.set(slot, Some(subtree_root_id));
+        }
+
         Patch::Remove { id } => {
             // Remove the node and all its descendants
             remove_subtree(tree, &id);
@@ -274,6 +322,11 @@ fn remove_subtree(tree: &mut ElementTree, id: &ElementId) {
     // (This is O(n) but patches are typically small)
     for element in tree.nodes.values_mut() {
         element.children.retain(|child_id| child_id != id);
+        for slot in NearbySlot::PAINT_ORDER {
+            if element.nearby.get(slot) == Some(id) {
+                element.nearby.set(slot, None);
+            }
+        }
     }
 }
 
@@ -284,6 +337,12 @@ fn collect_descendants(tree: &ElementTree, id: &ElementId, acc: &mut Vec<Element
     if let Some(element) = tree.get(id) {
         for child_id in &element.children {
             collect_descendants(tree, child_id, acc);
+        }
+
+        for slot in NearbySlot::PAINT_ORDER {
+            if let Some(nearby_id) = element.nearby.get(slot) {
+                collect_descendants(tree, nearby_id, acc);
+            }
         }
     }
 }

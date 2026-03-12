@@ -5,6 +5,7 @@ defmodule Emerge.Reconcile do
 
   alias Emerge.Element
   alias Emerge.Patch
+  alias Emerge.Tree
   alias Emerge.VNode
 
   @type result :: {VNode.t(), [Patch.patch()], Element.t()}
@@ -45,24 +46,31 @@ defmodule Emerge.Reconcile do
       patches = [{:remove, old.id}, {:insert_subtree, parent_id, index, assigned}]
       {new_vnode, patches, assigned, seen}
     else
+      {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
+
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
 
-      attrs = normalize_nearby_attrs(element.attrs)
-      assigned = %{element | id: id, children: child_elements, attrs: attrs}
+      {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
+        reconcile_nearby(old.nearby, nearby_elements, id, seen)
+
+      assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+      assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
 
       patches =
         []
-        |> maybe_set_attrs(old, assigned)
+        |> maybe_set_attrs(old, attrs, id)
         |> maybe_set_children(old, child_vnodes)
         |> Kernel.++(child_patches)
+        |> Kernel.++(nearby_patches)
 
       vnode = %VNode{
         id: id,
         kind: element.type,
         key: key,
-        attrs: assigned.attrs,
-        children: child_vnodes
+        attrs: attrs,
+        children: child_vnodes,
+        nearby: nearby_vnodes
       }
 
       {vnode, patches, assigned, seen}
@@ -191,6 +199,83 @@ defmodule Emerge.Reconcile do
     {Enum.reverse(child_vnodes), Enum.reverse(child_elements), removed ++ patches, seen}
   end
 
+  defp reconcile_nearby(old_nearby, new_nearby, host_id, seen) do
+    Enum.reduce(Tree.nearby_slots(), {%{}, %{}, [], seen}, fn slot,
+                                                              {vnodes, elements, patches, seen} ->
+      case {Map.get(old_nearby, slot), Map.get(new_nearby, slot)} do
+        {nil, nil} ->
+          {vnodes, elements, patches, seen}
+
+        {%VNode{} = old_vnode, nil} ->
+          {vnodes, elements, patches ++ [{:remove, old_vnode.id}], seen}
+
+        {nil, %Element{} = element} ->
+          {vnode, assigned, seen} = build_nearby_vnode(element, host_id, slot, seen)
+
+          {
+            Map.put(vnodes, slot, vnode),
+            Map.put(elements, slot, assigned),
+            patches ++ [{:insert_nearby_subtree, host_id, slot, assigned}],
+            seen
+          }
+
+        {%VNode{} = old_vnode, %Element{} = element} ->
+          {vnode, slot_patches, assigned, seen} =
+            reconcile_nearby_node(old_vnode, element, host_id, slot, seen)
+
+          {
+            Map.put(vnodes, slot, vnode),
+            Map.put(elements, slot, assigned),
+            patches ++ slot_patches,
+            seen
+          }
+      end
+    end)
+  end
+
+  defp reconcile_nearby_node(%VNode{} = old, %Element{} = element, host_id, slot, seen) do
+    parent_id = {:nearby, host_id, slot}
+    key = element_key(element)
+    seen = ensure_unique_key!(seen, key)
+    local_identity = local_identity(key, 0)
+    id = make_id(parent_id, element.type, local_identity)
+
+    if old.kind != element.type or old.id != id do
+      {vnode, assigned, seen} = build_vnode(element, parent_id, 0, seen)
+      patches = [{:remove, old.id}, {:insert_nearby_subtree, host_id, slot, assigned}]
+      {vnode, patches, assigned, seen}
+    else
+      {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
+
+      {child_vnodes, child_elements, child_patches, seen} =
+        reconcile_children(old.children, element.children, id, seen)
+
+      {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
+        reconcile_nearby(old.nearby, nearby_elements, id, seen)
+
+      assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+      assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
+
+      patches =
+        []
+        |> maybe_set_attrs(old, attrs, id)
+        |> maybe_set_children(old, child_vnodes)
+        |> Kernel.++(child_patches)
+        |> Kernel.++(nearby_patches)
+
+      vnode = %VNode{
+        id: id,
+        kind: element.type,
+        key: key,
+        attrs: attrs,
+        children: child_vnodes,
+        nearby: nearby_vnodes
+      }
+
+      {vnode, patches, assigned, seen}
+    end
+  end
+
   defp build_vnode(%Element{} = element, parent_id, index, seen) do
     key = element_key(element)
     seen = ensure_unique_key!(seen, key)
@@ -198,6 +283,7 @@ defmodule Emerge.Reconcile do
     id = make_id(parent_id, element.type, local_identity)
 
     _ = keyed_children?(element.children)
+    {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
 
     {child_vnodes, child_elements, seen} =
       element.children
@@ -210,21 +296,46 @@ defmodule Emerge.Reconcile do
     child_vnodes = Enum.reverse(child_vnodes)
     child_elements = Enum.reverse(child_elements)
 
-    attrs = normalize_nearby_attrs(element.attrs)
-    assigned = %{element | id: id, children: child_elements, attrs: attrs}
+    {nearby_vnodes, nearby_assigned, seen} = build_nearby_vnodes(nearby_elements, id, seen)
+
+    assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+    assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
 
     vnode = %VNode{
       id: id,
       kind: element.type,
       key: key,
-      attrs: assigned.attrs,
-      children: child_vnodes
+      attrs: attrs,
+      children: child_vnodes,
+      nearby: nearby_vnodes
     }
 
     {vnode, assigned, seen}
   end
 
-  defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, %Element{attrs: new_attrs, id: id}) do
+  defp build_nearby_vnodes(nearby_elements, host_id, seen) do
+    Enum.reduce(Tree.nearby_slots(), {%{}, %{}, seen}, fn slot, {vnodes, elements, seen} ->
+      case Map.get(nearby_elements, slot) do
+        %Element{} = element ->
+          {vnode, assigned, seen} = build_nearby_vnode(element, host_id, slot, seen)
+
+          {
+            Map.put(vnodes, slot, vnode),
+            Map.put(elements, slot, assigned),
+            seen
+          }
+
+        _ ->
+          {vnodes, elements, seen}
+      end
+    end)
+  end
+
+  defp build_nearby_vnode(%Element{} = element, host_id, slot, seen) do
+    build_vnode(element, {:nearby, host_id, slot}, 0, seen)
+  end
+
+  defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, new_attrs, id) do
     old_filtered = Emerge.Tree.strip_runtime_attrs(old_attrs)
     new_filtered = Emerge.Tree.strip_runtime_attrs(new_attrs)
 
@@ -278,26 +389,5 @@ defmodule Emerge.Reconcile do
 
   defp make_id(parent_id, kind, local_identity) do
     :erlang.phash2({parent_id, kind, local_identity})
-  end
-
-  defp normalize_nearby_attrs(attrs) when is_map(attrs) do
-    attrs
-    |> normalize_nearby_attr(:above)
-    |> normalize_nearby_attr(:below)
-    |> normalize_nearby_attr(:on_left)
-    |> normalize_nearby_attr(:on_right)
-    |> normalize_nearby_attr(:in_front)
-    |> normalize_nearby_attr(:behind)
-  end
-
-  defp normalize_nearby_attr(attrs, key) do
-    case Map.get(attrs, key) do
-      %Element{} = element ->
-        {_vdom, assigned} = assign_ids(element)
-        Map.put(attrs, key, assigned)
-
-      _ ->
-        attrs
-    end
   end
 end

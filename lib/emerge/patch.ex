@@ -4,11 +4,15 @@ defmodule Emerge.Patch do
   """
 
   alias Emerge.Element
+  alias Emerge.Tree
+
+  @type nearby_slot :: :behind | :above | :on_right | :below | :on_left | :in_front
 
   @type patch ::
           {:set_attrs, term(), map()}
           | {:set_children, term(), [term()]}
           | {:insert_subtree, term() | nil, non_neg_integer(), Element.t()}
+          | {:insert_nearby_subtree, term(), nearby_slot(), Element.t()}
           | {:remove, term()}
 
   @doc """
@@ -16,9 +20,8 @@ defmodule Emerge.Patch do
   """
   @spec diff(Element.t(), Element.t()) :: [patch()]
   def diff(old_tree, new_tree) do
-    old_nodes = index_nodes(old_tree)
-    new_nodes = index_nodes(new_tree)
-    parent_map = parent_index(new_tree)
+    %{nodes: old_nodes} = index_tree(old_tree)
+    %{nodes: new_nodes} = new_index = index_tree(new_tree)
 
     old_ids = MapSet.new(Map.keys(old_nodes))
     new_ids = MapSet.new(Map.keys(new_nodes))
@@ -30,20 +33,10 @@ defmodule Emerge.Patch do
 
     added_ids = MapSet.difference(new_ids, old_ids)
 
-    insert_roots =
-      added_ids
-      |> Enum.filter(fn id ->
-        parent_id = Map.get(parent_map, id)
-        is_nil(parent_id) or not MapSet.member?(added_ids, parent_id)
-      end)
-
     inserts =
-      insert_roots
-      |> Enum.map(fn id ->
-        parent_id = Map.get(parent_map, id)
-        index = child_index(parent_map, new_tree, id)
-        {:insert_subtree, parent_id, index, Map.fetch!(new_nodes, id)}
-      end)
+      added_ids
+      |> Enum.filter(&insert_root?(&1, new_index.mounts, added_ids))
+      |> Enum.map(&insert_patch(&1, new_nodes, new_index.mounts))
 
     updates =
       new_ids
@@ -53,9 +46,8 @@ defmodule Emerge.Patch do
         new = Map.fetch!(new_nodes, id)
 
         attrs_patch =
-          if Emerge.Tree.strip_runtime_attrs(old.attrs) !=
-               Emerge.Tree.strip_runtime_attrs(new.attrs) do
-            [{:set_attrs, id, Emerge.Tree.strip_runtime_attrs(new.attrs)}]
+          if comparable_attrs(old.attrs) != comparable_attrs(new.attrs) do
+            [{:set_attrs, id, comparable_attrs(new.attrs)}]
           else
             []
           end
@@ -129,6 +121,14 @@ defmodule Emerge.Patch do
     <<4, byte_size(id_bin)::unsigned-32, id_bin::binary>>
   end
 
+  defp encode_patch({:insert_nearby_subtree, host_id, slot, subtree}) do
+    subtree_bin = Emerge.Serialization.encode_tree(subtree)
+    host_bin = :erlang.term_to_binary(host_id)
+
+    <<5, byte_size(host_bin)::unsigned-32, host_bin::binary, nearby_slot_tag(slot)::unsigned-8,
+      byte_size(subtree_bin)::unsigned-32, subtree_bin::binary>>
+  end
+
   defp decode_patches(<<>>, acc), do: acc
 
   defp decode_patches(<<1, id_len::unsigned-32, rest::binary>>, acc) do
@@ -148,10 +148,7 @@ defmodule Emerge.Patch do
     decode_patches(rest, [{:set_children, id, children} | acc])
   end
 
-  defp decode_patches(
-         <<3, parent_len::unsigned-32, rest::binary>>,
-         acc
-       ) do
+  defp decode_patches(<<3, parent_len::unsigned-32, rest::binary>>, acc) do
     <<parent_bin::binary-size(parent_len), rest::binary>> = rest
     parent_id = :erlang.binary_to_term(parent_bin)
     <<index::unsigned-16, len::unsigned-32, rest::binary>> = rest
@@ -166,6 +163,16 @@ defmodule Emerge.Patch do
     decode_patches(rest, [{:remove, id} | acc])
   end
 
+  defp decode_patches(<<5, host_len::unsigned-32, rest::binary>>, acc) do
+    <<host_bin::binary-size(host_len), rest::binary>> = rest
+    host_id = :erlang.binary_to_term(host_bin)
+    <<slot_tag::unsigned-8, len::unsigned-32, rest::binary>> = rest
+    <<subtree_bin::binary-size(len), rest::binary>> = rest
+    subtree = Emerge.Serialization.decode(subtree_bin)
+    slot = nearby_slot_from_tag!(slot_tag)
+    decode_patches(rest, [{:insert_nearby_subtree, host_id, slot, subtree} | acc])
+  end
+
   defp decode_patches(_other, _acc) do
     raise ArgumentError, "invalid patch stream"
   end
@@ -178,48 +185,71 @@ defmodule Emerge.Patch do
     decode_child_ids(rest, count - 1, [id | acc])
   end
 
-  defp index_nodes(%Element{} = tree) do
-    tree
-    |> collect_nodes()
-    |> Map.new(fn node -> {node.id, node} end)
+  defp comparable_attrs(attrs) do
+    attrs
+    |> Tree.strip_nearby_attrs()
+    |> Tree.strip_runtime_attrs()
   end
 
-  defp collect_nodes(%Element{} = element) do
-    [element | Enum.flat_map(element.children, &collect_nodes/1)]
+  defp index_tree(%Element{} = tree) do
+    collect_index(tree, :root, %{nodes: %{}, mounts: %{}})
   end
 
-  defp parent_index(%Element{} = tree) do
-    parent_index(tree, nil, %{})
-  end
+  defp collect_index(%Element{} = element, mount, acc) do
+    acc = %{
+      nodes: Map.put(acc.nodes, element.id, element),
+      mounts: Map.put(acc.mounts, element.id, mount)
+    }
 
-  defp parent_index(%Element{} = element, parent_id, acc) do
-    acc = Map.put(acc, element.id, parent_id)
+    acc =
+      element.children
+      |> Enum.with_index()
+      |> Enum.reduce(acc, fn {child, index}, next_acc ->
+        collect_index(child, {:child, element.id, index}, next_acc)
+      end)
 
-    Enum.reduce(element.children, acc, fn child, acc_child ->
-      parent_index(child, element.id, acc_child)
+    Enum.reduce(Tree.nearby_children(element), acc, fn {slot, child}, next_acc ->
+      collect_index(child, {:nearby, element.id, slot}, next_acc)
     end)
+  end
+
+  defp insert_root?(id, mounts, added_ids) do
+    case Map.fetch!(mounts, id) do
+      :root -> true
+      {:child, parent_id, _index} -> not MapSet.member?(added_ids, parent_id)
+      {:nearby, host_id, _slot} -> not MapSet.member?(added_ids, host_id)
+    end
+  end
+
+  defp insert_patch(id, nodes, mounts) do
+    node = Map.fetch!(nodes, id)
+
+    case Map.fetch!(mounts, id) do
+      :root -> {:insert_subtree, nil, 0, node}
+      {:child, parent_id, index} -> {:insert_subtree, parent_id, index, node}
+      {:nearby, host_id, slot} -> {:insert_nearby_subtree, host_id, slot, node}
+    end
   end
 
   defp child_ids(children) do
     Enum.map(children, & &1.id)
   end
 
-  defp child_index(parent_map, %Element{} = tree, id) do
-    parent_id = Map.get(parent_map, id)
+  defp nearby_slot_tag(:behind), do: 1
+  defp nearby_slot_tag(:above), do: 2
+  defp nearby_slot_tag(:on_right), do: 3
+  defp nearby_slot_tag(:below), do: 4
+  defp nearby_slot_tag(:on_left), do: 5
+  defp nearby_slot_tag(:in_front), do: 6
 
-    cond do
-      is_nil(parent_id) ->
-        0
+  defp nearby_slot_from_tag!(1), do: :behind
+  defp nearby_slot_from_tag!(2), do: :above
+  defp nearby_slot_from_tag!(3), do: :on_right
+  defp nearby_slot_from_tag!(4), do: :below
+  defp nearby_slot_from_tag!(5), do: :on_left
+  defp nearby_slot_from_tag!(6), do: :in_front
 
-      true ->
-        parent = find_node(tree, parent_id)
-        parent.children |> child_ids() |> Enum.find_index(&(&1 == id)) || 0
-    end
-  end
-
-  defp find_node(%Element{id: id} = element, id), do: element
-
-  defp find_node(%Element{children: children}, id) do
-    Enum.find_value(children, fn child -> find_node(child, id) end)
+  defp nearby_slot_from_tag!(tag) do
+    raise ArgumentError, "invalid nearby slot tag: #{inspect(tag)}"
   end
 end
