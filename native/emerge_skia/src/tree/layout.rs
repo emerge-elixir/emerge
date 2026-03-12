@@ -3238,14 +3238,15 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree_with_meta;
-use crate::events::{EventNode, build_event_registry};
+use super::render::render_tree_with_rebuild;
+use crate::events::RegistryRebuildPayload;
 use crate::renderer::DrawCmd;
+use crate::tree::interaction as tree_interaction;
 
 /// Output of layout refresh: both render commands and event registry.
 pub struct LayoutOutput {
     pub commands: Vec<DrawCmd>,
-    pub event_registry: Vec<EventNode>,
+    pub event_rebuild: RegistryRebuildPayload,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
 }
@@ -3253,11 +3254,12 @@ pub struct LayoutOutput {
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree_with_meta(tree);
+    tree_interaction::populate_interaction(tree);
+    let render_output = render_tree_with_rebuild(tree);
 
     LayoutOutput {
         commands: render_output.commands,
-        event_registry: build_event_registry(tree),
+        event_rebuild: render_output.event_rebuild,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
     }

@@ -9,29 +9,39 @@ use super::attrs::{
 use super::deserialize::decode_tree;
 use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
 use super::layout::{
-    font_info_with_inheritance, layout_tree_with_context, AvailableSpace, Constraint, FontContext,
-    SkiaTextMeasurer,
+    AvailableSpace, Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance,
+    layout_tree_with_context,
 };
 use super::scrollbar;
 use crate::assets::{self, AssetStatus};
-use crate::renderer::{make_font_with_style, DrawCmd};
+use crate::events::{RegistryRebuildPayload, registry_builder};
+use crate::renderer::{DrawCmd, make_font_with_style};
 
 const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 
+#[cfg(test)]
 pub struct RenderOutput {
     pub commands: Vec<DrawCmd>,
     pub text_input_focused: bool,
     pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
+pub struct RenderWithRebuildOutput {
+    pub commands: Vec<DrawCmd>,
+    pub event_rebuild: RegistryRebuildPayload,
+    pub text_input_focused: bool,
+    pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
+}
+
 /// Render the tree to draw commands.
 /// Reads from pre-scaled attrs (layout pass must run first).
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
     render_tree_with_meta(tree).commands
 }
 
+#[cfg(test)]
 pub fn render_tree_with_meta(tree: &ElementTree) -> RenderOutput {
     let Some(root) = tree.root.as_ref() else {
         return RenderOutput {
@@ -51,9 +61,46 @@ pub fn render_tree_with_meta(tree: &ElementTree) -> RenderOutput {
         &FontContext::default(),
         &mut text_input_focused,
         &mut text_input_cursor_area,
+        None,
+        &[],
+        false,
     );
     RenderOutput {
         commands,
+        text_input_focused,
+        text_input_cursor_area,
+    }
+}
+
+pub(crate) fn render_tree_with_rebuild(tree: &ElementTree) -> RenderWithRebuildOutput {
+    let Some(root) = tree.root.as_ref() else {
+        return RenderWithRebuildOutput {
+            commands: Vec::new(),
+            event_rebuild: RegistryRebuildPayload::default(),
+            text_input_focused: false,
+            text_input_cursor_area: None,
+        };
+    };
+
+    let mut commands = Vec::new();
+    let mut text_input_focused = false;
+    let mut text_input_cursor_area = None;
+    let mut rebuild_acc = registry_builder::RegistryBuildAcc::default();
+    render_element(
+        tree,
+        root,
+        &mut commands,
+        &FontContext::default(),
+        &mut text_input_focused,
+        &mut text_input_cursor_area,
+        Some(&mut rebuild_acc),
+        &[],
+        true,
+    );
+
+    RenderWithRebuildOutput {
+        commands,
+        event_rebuild: registry_builder::finalize_registry_rebuild(rebuild_acc),
         text_input_focused,
         text_input_cursor_area,
     }
@@ -66,6 +113,9 @@ fn render_element(
     inherited: &FontContext,
     text_input_focused: &mut bool,
     text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
+    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
+    scroll_contexts: &[registry_builder::ScrollContext],
+    collect_events: bool,
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -82,6 +132,15 @@ fn render_element(
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(attrs);
+    let next_scroll_contexts = if collect_events {
+        if let Some(acc) = event_acc.as_deref_mut() {
+            registry_builder::accumulate_element_rebuild(acc, element, scroll_contexts)
+        } else {
+            scroll_contexts.to_vec()
+        }
+    } else {
+        scroll_contexts.to_vec()
+    };
 
     let transform_state = push_element_transform(commands, frame, attrs);
 
@@ -118,6 +177,9 @@ fn render_element(
             &element_context,
             text_input_focused,
             text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            &next_scroll_contexts,
+            collect_events,
         );
     } else {
         render_children_content(
@@ -128,6 +190,9 @@ fn render_element(
             attrs,
             text_input_focused,
             text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            &next_scroll_contexts,
+            collect_events,
         );
     }
 
@@ -791,6 +856,9 @@ fn render_paragraph_content(
     element_context: &FontContext,
     text_input_focused: &mut bool,
     text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
+    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
+    scroll_contexts: &[registry_builder::ScrollContext],
+    collect_events: bool,
 ) {
     let attrs = &element.attrs;
 
@@ -811,6 +879,9 @@ fn render_paragraph_content(
                 element_context,
                 text_input_focused,
                 text_input_cursor_area,
+                event_acc.as_deref_mut(),
+                scroll_contexts,
+                collect_events,
             );
         }
     }
@@ -848,6 +919,28 @@ fn render_paragraph_content(
             }
         }
     }
+
+    if collect_events {
+        if let Some(acc) = event_acc.as_deref_mut() {
+            for child_id in &element.children {
+                let should_render_float_child = tree.get(child_id).is_some_and(|child| {
+                    matches!(
+                        child.attrs.align_x,
+                        Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
+                    )
+                });
+
+                if !should_render_float_child {
+                    registry_builder::accumulate_subtree_rebuild(
+                        tree,
+                        child_id,
+                        acc,
+                        scroll_contexts,
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn render_children_content(
@@ -858,6 +951,9 @@ fn render_children_content(
     attrs: &Attrs,
     text_input_focused: &mut bool,
     text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
+    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
+    scroll_contexts: &[registry_builder::ScrollContext],
+    collect_events: bool,
 ) {
     let scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
     let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
@@ -877,6 +973,9 @@ fn render_children_content(
             element_context,
             text_input_focused,
             text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            scroll_contexts,
+            collect_events,
         );
     }
 
@@ -1672,6 +1771,9 @@ fn render_nearby_element(
         inherited,
         &mut focused,
         &mut cursor_area,
+        None,
+        &[],
+        false,
     );
 }
 
@@ -1766,7 +1868,7 @@ fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::attrs::{decode_attrs, Attrs};
+    use crate::tree::attrs::{Attrs, decode_attrs};
     use crate::tree::element::Element;
     use crate::tree::serialize::encode_tree;
 
@@ -1844,9 +1946,11 @@ mod tests {
 
         let commands = render_tree(&tree);
 
-        assert!(commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _))));
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
+        );
     }
 
     #[test]
@@ -1888,9 +1992,11 @@ mod tests {
             .collect();
 
         assert_eq!(decoration_rects.len(), 2);
-        assert!(decoration_rects
-            .iter()
-            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
+        assert!(
+            decoration_rects
+                .iter()
+                .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
+        );
     }
 
     #[test]
@@ -3241,9 +3347,11 @@ mod tests {
         let tree = build_tree_with_attrs(attrs);
         let commands = render_tree(&tree);
 
-        assert!(!commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
+        assert!(
+            !commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
+        );
     }
 
     #[test]

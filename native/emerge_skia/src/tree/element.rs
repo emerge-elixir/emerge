@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
-use super::attrs::{Attrs, ScrollbarHoverAxis};
+use super::attrs::{Attrs, ScrollbarHoverAxis, supports_mouse_over_tracking};
 use super::interaction::ElementInteraction;
 use std::collections::HashMap;
 
@@ -205,7 +205,7 @@ impl ElementTree {
             return false;
         };
 
-        if element.attrs.mouse_over.is_none() {
+        if !supports_mouse_over_tracking(&element.attrs) {
             if element.attrs.mouse_over_active.take().is_some() {
                 return true;
             }
@@ -633,6 +633,35 @@ mod tests {
             alpha: Some(0.6),
             ..Default::default()
         });
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 100.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.set_mouse_over_active(&id, true));
+        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(true));
+
+        assert!(!tree.set_mouse_over_active(&id, true));
+
+        assert!(tree.set_mouse_over_active(&id, false));
+        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(false));
+    }
+
+    #[test]
+    fn test_set_mouse_over_active_tracks_event_only_hover() {
+        let id = ElementId::from_term_bytes(vec![2]);
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_enter = Some(true);
+        attrs.on_mouse_leave = Some(true);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         element.frame = Some(Frame {
             x: 0.0,

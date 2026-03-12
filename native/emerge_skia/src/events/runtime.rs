@@ -1,7 +1,23 @@
-use std::{
-    collections::{HashMap, HashSet},
-    env, thread,
-};
+//! # Event Runtime
+//!
+//! This module runs the event actor side of the event system.
+//!
+//! It is responsible for:
+//!
+//! - receiving backend input
+//! - forwarding raw observer input
+//! - dispatching listener input against base + overlay listener state
+//! - managing transient runtime interaction state
+//! - buffering listener-lane input while listener data is stale
+//! - installing fresh rebuild payloads from the tree actor
+//!
+//! Dispatch uses:
+//!
+//! - `base_registry` for listener state rebuilt from the retained tree
+//! - `overlay_registry` for transient runtime follow-up listeners
+//! - `LayeredRegistryView` to read both in one precedence order without
+//!   materializing a merged registry
+use std::{collections::HashMap, thread};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use rustler::LocalPid;
@@ -10,75 +26,514 @@ use crate::{
     actors::{EventMsg, TreeMsg},
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{InputEvent, InputHandler},
-    renderer::make_font_with_style,
-    tree::{attrs::TextAlign, element::ElementId},
+    tree::{element::ElementId, scrollbar::ScrollbarAxis},
 };
 
-use super::dispatch_outcome::{DispatchOutcome, ElementEventKind};
 use super::{
-    EventNode, EventProcessor, TextInputCommandRequest, TextInputDescriptor, TextInputEditRequest,
-    TextInputPreeditRequest, blur_atom, change_atom, click_atom, focus_atom, mouse_down_atom,
-    mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
-    registry::TriggerId, send_element_event, send_element_event_with_string_payload,
-    send_input_event, text_ops,
+    ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom, click_atom,
+    focus_atom, mouse_down_atom, mouse_enter_atom, mouse_leave_atom, mouse_move_atom,
+    mouse_up_atom, press_atom,
+    registry_builder::{
+        self, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
+        RuntimeChange, RuntimeOverlayState,
+    },
+    scrollbar::ScrollbarNode,
+    send_element_event, send_element_event_with_string_payload, send_input_event,
 };
 
-#[derive(Clone, Debug)]
-struct TextInputSession {
-    descriptor: TextInputDescriptor,
-    content: String,
-    cursor: u32,
-    selection_anchor: Option<u32>,
-    preedit: Option<String>,
-    preedit_cursor: Option<(u32, u32)>,
-    focused: bool,
+/// Deferred effects collected from one listener dispatch.
+///
+/// Listener actions are processed in two phases:
+///
+/// - immediate side effects that must happen during collection
+///   - Elixir event forwarding
+///   - clipboard writes
+/// - deferred effects that are flushed after collection
+///   - runtime state changes
+///   - tree messages
+///
+/// If a listener emits Elixir events but no tree messages, flushing injects
+/// `TreeMsg::RebuildRegistry` so the tree actor will send fresh listener data.
+#[derive(Default)]
+struct PendingDispatchEffects {
+    tree_msgs: Vec<TreeMsg>,
+    runtime_changes: Vec<RuntimeChange>,
+    elixir_event_requires_rebuild: bool,
 }
 
-impl TextInputSession {
-    fn from_descriptor(descriptor: TextInputDescriptor) -> Self {
-        let len = text_char_len(&descriptor.content);
+impl PendingDispatchEffects {
+    fn collect(mut self, runtime: &mut DirectEventRuntime, action: ListenerAction) -> Self {
+        match action {
+            ListenerAction::TreeMsg(msg) => self.tree_msgs.push(msg),
+            ListenerAction::RuntimeChange(change) => self.runtime_changes.push(change),
+            ListenerAction::ElixirEvent(event) => {
+                self.elixir_event_requires_rebuild = true;
+                runtime.send_elixir_event(event);
+            }
+            ListenerAction::ClipboardWrite { target, text } => {
+                runtime.clipboard.set_text(target, &text);
+            }
+            ListenerAction::Semantic(_) => {
+                unreachable!("listener compute must resolve semantic actions")
+            }
+        }
+
+        self
+    }
+
+    fn flush(
+        mut self,
+        runtime: &mut DirectEventRuntime,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
+
+        if self.elixir_event_requires_rebuild && self.tree_msgs.is_empty() {
+            self.tree_msgs.push(TreeMsg::RebuildRegistry);
+        }
+
+        if self.elixir_event_requires_rebuild || !self.tree_msgs.is_empty() {
+            send_tree_messages(tree_tx, self.tree_msgs, log_render);
+            runtime.listener_lane.mark_stale();
+        }
+    }
+}
+
+/// Runtime dispatch context passed into listener computation.
+///
+/// This exposes:
+///
+/// - focused element state
+/// - current text input runtime state
+/// - clipboard access
+/// - base-only and layered redispatch helpers
+struct RuntimeListenerComputeCtx<'a> {
+    base_registry: &'a registry_builder::Registry,
+    overlay_registry: &'a registry_builder::Registry,
+    focused_id: Option<&'a ElementId>,
+    text_states: &'a HashMap<ElementId, TextInputState>,
+    clipboard: &'a mut ClipboardManager,
+}
+
+impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
+    fn focused_id(&self) -> Option<&ElementId> {
+        self.focused_id
+    }
+
+    fn text_input_state(&self, element_id: &ElementId) -> Option<TextInputState> {
+        self.text_states.get(element_id).cloned()
+    }
+
+    fn clipboard_text(&mut self, target: ClipboardTarget) -> Option<String> {
+        self.clipboard.get_text(target)
+    }
+
+    fn dispatch_base(&mut self, input: &ListenerInput) -> Vec<ListenerAction> {
+        self.base_registry.view().first_match(input, &[], self)
+    }
+
+    fn dispatch_effective_skip(
+        &mut self,
+        input: &ListenerInput,
+        skip_matchers: &[ListenerMatcherKind],
+    ) -> Vec<ListenerAction> {
+        registry_builder::LayeredRegistryView::new(self.overlay_registry, self.base_registry)
+            .first_match(input, skip_matchers, self)
+    }
+}
+
+/// Freshness state for the listener-matching path.
+///
+/// While stale, listener input is buffered and coalesced until a fresh
+/// `RegistryUpdate` is installed. Raw observer input forwarding continues
+/// independently.
+#[derive(Clone, Debug, Default)]
+struct ListenerLaneState {
+    stale: bool,
+    buffered_inputs: Vec<InputEvent>,
+}
+
+impl ListenerLaneState {
+    fn initially_stale() -> Self {
         Self {
-            content: descriptor.content.clone(),
-            descriptor,
-            cursor: len,
-            selection_anchor: None,
-            preedit: None,
-            preedit_cursor: None,
-            focused: false,
+            stale: true,
+            buffered_inputs: Vec::new(),
         }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    fn mark_stale(&mut self) {
+        self.stale = true;
+    }
+
+    fn buffer_input(&mut self, event: InputEvent) {
+        self.buffered_inputs.push(event);
+        let mut buffered = std::mem::take(&mut self.buffered_inputs);
+        self.buffered_inputs = coalesce_input_events(&mut buffered);
+    }
+
+    fn mark_fresh_and_take_buffered(&mut self) -> Vec<InputEvent> {
+        self.stale = false;
+        std::mem::take(&mut self.buffered_inputs)
     }
 }
 
-#[derive(Clone, Debug)]
-struct NoPredictionStats {
-    total: u64,
-    unclassified: u64,
-    by_trigger: Vec<u64>,
+/// In-memory event actor runtime.
+///
+/// This holds:
+///
+/// - rebuilt listener state from the tree actor
+/// - transient runtime interaction state
+/// - text/scrollbar reconciliation state
+/// - freshness/buffering state for listener dispatch
+struct DirectEventRuntime {
+    base_registry: registry_builder::Registry,
+    runtime_overlay: RuntimeOverlayState,
+    overlay_registry: registry_builder::Registry,
+    listener_lane: ListenerLaneState,
+    focused_id: Option<ElementId>,
+    text_states: HashMap<ElementId, TextInputState>,
+    scrollbar_nodes: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
+    input_handler: InputHandler,
+    input_target: Option<LocalPid>,
+    clipboard: ClipboardManager,
 }
 
-impl NoPredictionStats {
-    fn new() -> Self {
+impl DirectEventRuntime {
+    fn new(system_clipboard: bool) -> Self {
+        let base_registry = registry_builder::Registry::default();
+        let runtime_overlay = RuntimeOverlayState::default();
+        let overlay_registry =
+            registry_builder::build_runtime_overlay_registry(&base_registry, &runtime_overlay);
+
         Self {
-            total: 0,
-            unclassified: 0,
-            by_trigger: vec![0; TriggerId::COUNT],
+            base_registry,
+            runtime_overlay,
+            overlay_registry,
+            listener_lane: ListenerLaneState::initially_stale(),
+            focused_id: None,
+            text_states: HashMap::new(),
+            scrollbar_nodes: HashMap::new(),
+            input_handler: InputHandler::new(),
+            input_target: None,
+            clipboard: ClipboardManager::new(system_clipboard),
         }
     }
 
-    fn record(&mut self, trigger: Option<TriggerId>) {
-        self.total += 1;
-        if let Some(trigger) = trigger {
-            self.by_trigger[trigger.index()] += 1;
-        } else {
-            self.unclassified += 1;
+    fn set_input_mask(&mut self, mask: u32) {
+        self.input_handler.set_mask(mask);
+    }
+
+    fn set_input_target(&mut self, target: Option<LocalPid>) {
+        self.input_target = target;
+    }
+
+    fn handle_input_event(
+        &mut self,
+        event: InputEvent,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        let event = event.normalize_scroll();
+        forward_observer_input(&event, &self.input_handler, &self.input_target);
+
+        if self.listener_lane.is_stale() {
+            self.listener_lane.buffer_input(event);
+            return;
+        }
+
+        self.dispatch_event(event, tree_tx, log_render);
+    }
+
+    fn handle_registry_update(
+        &mut self,
+        rebuild: RegistryRebuildPayload,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        self.listener_lane.stale = false;
+        self.install_rebuild(rebuild, tree_tx, log_render);
+        if self.listener_lane.is_stale() {
+            return;
+        }
+
+        let buffered = self.listener_lane.mark_fresh_and_take_buffered();
+        self.replay_buffered(buffered, tree_tx, log_render);
+    }
+
+    fn install_rebuild(
+        &mut self,
+        rebuild: RegistryRebuildPayload,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        self.base_registry = rebuild.base_registry;
+        self.scrollbar_nodes = rebuild.scrollbars;
+
+        self.reconcile_runtime_overlay(&rebuild.text_inputs);
+        self.recompose_overlay_registry();
+        self.focused_id = rebuild.focused_id;
+
+        if reconcile_text_input_states(
+            &rebuild.text_inputs,
+            &mut self.text_states,
+            &self.focused_id,
+            tree_tx,
+            log_render,
+        ) {
+            self.listener_lane.mark_stale();
+        }
+    }
+
+    fn replay_buffered(
+        &mut self,
+        events: Vec<InputEvent>,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        for event in events {
+            if self.listener_lane.is_stale() {
+                self.listener_lane.buffer_input(event);
+                continue;
+            }
+            self.dispatch_event(event, tree_tx, log_render);
+        }
+    }
+
+    fn recompose_overlay_registry(&mut self) {
+        self.overlay_registry = registry_builder::build_runtime_overlay_registry(
+            &self.base_registry,
+            &self.runtime_overlay,
+        );
+    }
+
+    fn dispatch_event(&mut self, event: InputEvent, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+        let input = ListenerInput::Raw(event);
+        let actions = {
+            let mut ctx = RuntimeListenerComputeCtx {
+                base_registry: &self.base_registry,
+                overlay_registry: &self.overlay_registry,
+                focused_id: self.focused_id.as_ref(),
+                text_states: &self.text_states,
+                clipboard: &mut self.clipboard,
+            };
+            registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
+                .first_match(&input, &[], &mut ctx)
+        };
+
+        if !actions.is_empty() {
+            self.apply_listener_actions(actions, tree_tx, log_render);
+        }
+    }
+
+    fn apply_listener_actions(
+        &mut self,
+        actions: Vec<ListenerAction>,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        // Apply the ordered action list produced by one matched listener.
+        // Tree messages and runtime changes are collected first so they can be
+        // flushed in a controlled order after action collection completes.
+        actions
+            .into_iter()
+            .fold(PendingDispatchEffects::default(), |effects, action| {
+                effects.collect(self, action)
+            })
+            .flush(self, tree_tx, log_render);
+    }
+
+    fn apply_runtime_changes_and_recompose_if_needed(
+        &mut self,
+        runtime_changes: Vec<RuntimeChange>,
+    ) {
+        // Runtime changes may add or remove overlay listeners, so overlay
+        // listener state is rebuilt after the batch if any change requires it.
+        let recompose = runtime_changes
+            .iter()
+            .any(RuntimeChange::requires_registry_recompose);
+
+        runtime_changes
+            .into_iter()
+            .for_each(|change| self.apply_runtime_change(change));
+
+        if recompose {
+            self.recompose_overlay_registry();
+        }
+    }
+
+    fn send_elixir_event(&self, event: registry_builder::ElixirEvent) {
+        let Some(pid) = self.input_target else {
+            return;
+        };
+
+        let atom = event_kind_to_atom(event.kind);
+        match event.payload.as_deref() {
+            Some(value) => {
+                send_element_event_with_string_payload(pid, &event.element_id, atom, value)
+            }
+            None => send_element_event(pid, &event.element_id, atom),
+        }
+    }
+
+    fn apply_runtime_change(&mut self, change: RuntimeChange) {
+        match change {
+            RuntimeChange::StartClickPressTracker {
+                element_id,
+                matcher_kind,
+                emit_click,
+                emit_press_pointer,
+            } => {
+                self.runtime_overlay.click_press = Some(registry_builder::ClickPressTracker {
+                    element_id,
+                    matcher_kind,
+                    emit_click,
+                    emit_press_pointer,
+                });
+            }
+            RuntimeChange::StartDragTracker {
+                element_id,
+                matcher_kind,
+                origin_x,
+                origin_y,
+            } => {
+                self.runtime_overlay.drag = registry_builder::DragTrackerState::Candidate {
+                    element_id,
+                    matcher_kind,
+                    origin_x,
+                    origin_y,
+                };
+            }
+            RuntimeChange::PromoteDragTracker {
+                element_id,
+                matcher_kind,
+                last_x,
+                last_y,
+            } => {
+                self.runtime_overlay.drag = registry_builder::DragTrackerState::Active {
+                    element_id,
+                    matcher_kind,
+                    last_x,
+                    last_y,
+                };
+            }
+            RuntimeChange::ClearDragTracker => {
+                self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
+            }
+            RuntimeChange::UpdateDragTrackerPointer { last_x, last_y } => {
+                if let registry_builder::DragTrackerState::Active {
+                    last_x: ref mut current_x,
+                    last_y: ref mut current_y,
+                    ..
+                } = self.runtime_overlay.drag
+                {
+                    *current_x = last_x;
+                    *current_y = last_y;
+                }
+            }
+            RuntimeChange::ClearClickPressTracker => {
+                self.runtime_overlay.click_press = None;
+            }
+            RuntimeChange::StartScrollbarDrag { tracker } => {
+                self.runtime_overlay.scrollbar = Some(tracker);
+            }
+            RuntimeChange::UpdateScrollbarDragCurrentScroll { current_scroll } => {
+                if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
+                    tracker.current_scroll = current_scroll;
+                }
+            }
+            RuntimeChange::ClearScrollbarDrag => {
+                self.runtime_overlay.scrollbar = None;
+            }
+            RuntimeChange::StartTextDragTracker {
+                element_id,
+                matcher_kind,
+            } => {
+                self.runtime_overlay.text_drag = Some(registry_builder::TextDragTracker {
+                    element_id,
+                    matcher_kind,
+                });
+            }
+            RuntimeChange::ClearTextDragTracker => {
+                self.runtime_overlay.text_drag = None;
+            }
+            RuntimeChange::SetTextInputState { element_id, state } => {
+                self.apply_text_input_state(&element_id, state);
+            }
+        }
+    }
+
+    fn apply_text_input_state(&mut self, element_id: &ElementId, state: TextInputState) {
+        self.text_states.insert(element_id.clone(), state);
+    }
+
+    fn reconcile_runtime_overlay(&mut self, text_inputs: &HashMap<ElementId, TextInputState>) {
+        if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
+            && !base_has_source_listener(
+                &self.base_registry,
+                &click_press.element_id,
+                click_press.matcher_kind,
+            )
+        {
+            self.runtime_overlay.click_press = None;
+        }
+
+        match self.runtime_overlay.drag {
+            registry_builder::DragTrackerState::Inactive => {}
+            registry_builder::DragTrackerState::Candidate {
+                ref element_id,
+                matcher_kind,
+                ..
+            }
+            | registry_builder::DragTrackerState::Active {
+                ref element_id,
+                matcher_kind,
+                ..
+            } => {
+                if !base_has_source_listener(&self.base_registry, element_id, matcher_kind) {
+                    self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
+                }
+            }
+        }
+
+        if let Some(text_drag) = self.runtime_overlay.text_drag.as_ref()
+            && !text_inputs.contains_key(&text_drag.element_id)
+        {
+            self.runtime_overlay.text_drag = None;
+        }
+
+        if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
+            let key = scrollbar_key(&tracker.element_id, tracker.axis);
+            if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
+                tracker.track_start = node.track_start;
+                tracker.track_len = node.track_len;
+                tracker.thumb_len = node.thumb_len;
+                tracker.scroll_range = node.scroll_range;
+                tracker.current_scroll = node.scroll_offset;
+                tracker.pointer_offset = tracker.pointer_offset.clamp(0.0, node.thumb_len);
+            } else {
+                self.runtime_overlay.scrollbar = None;
+            }
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct PredictionMeta {
-    had_jobs: bool,
-    trigger_for_stats: Option<TriggerId>,
+fn base_has_source_listener(
+    base: &registry_builder::Registry,
+    element_id: &ElementId,
+    matcher_kind: ListenerMatcherKind,
+) -> bool {
+    base.view().any_precedence(|listener| {
+        listener.element_id.as_ref() == Some(element_id) && listener.matcher.kind() == matcher_kind
+    })
+}
+
+fn scrollbar_key(element_id: &ElementId, axis: ScrollbarAxis) -> (ElementId, ScrollbarAxis) {
+    (element_id.clone(), axis)
 }
 
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
@@ -94,24 +549,11 @@ fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     }
 }
 
-fn send_element_event_if_target(
-    target: Option<LocalPid>,
-    element_id: &ElementId,
-    event: rustler::Atom,
-) {
-    if let Some(pid) = target {
-        send_element_event(pid, element_id, event);
-    }
-}
-
-fn send_element_event_with_string_payload_if_target(
-    target: Option<LocalPid>,
-    element_id: &ElementId,
-    event: rustler::Atom,
-    value: &str,
-) {
-    if let Some(pid) = target {
-        send_element_event_with_string_payload(pid, element_id, event, value);
+fn send_tree_messages(tree_tx: &Sender<TreeMsg>, msgs: Vec<TreeMsg>, log_render: bool) {
+    match msgs.len() {
+        0 => {}
+        1 => send_tree(tree_tx, msgs.into_iter().next().unwrap(), log_render),
+        _ => send_tree(tree_tx, TreeMsg::Batch(msgs), log_render),
     }
 }
 
@@ -130,342 +572,25 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
     }
 }
 
-fn env_flag_enabled(name: &str) -> bool {
-    let Ok(value) = env::var(name) else {
-        return false;
-    };
-
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn event_is_dispatch_candidate(event: &InputEvent) -> bool {
-    match event {
-        InputEvent::CursorPos { .. }
-        | InputEvent::CursorButton { .. }
-        | InputEvent::CursorScroll { .. }
-        | InputEvent::CursorScrollLines { .. }
-        | InputEvent::Key { .. }
-        | InputEvent::TextCommit { .. }
-        | InputEvent::TextPreedit { .. }
-        | InputEvent::TextPreeditClear
-        | InputEvent::CursorEntered { .. }
-        | InputEvent::Focused { .. }
-        | InputEvent::Resized { .. } => true,
-    }
-}
-
-fn maybe_dump_no_prediction_stats(stats: &NoPredictionStats, reason: &str) {
-    eprintln!(
-        "no-prediction reason={reason} total={} unclassified={}",
-        stats.total, stats.unclassified
-    );
-
-    for (index, count) in stats.by_trigger.iter().copied().enumerate() {
-        if count == 0 {
-            continue;
-        }
-
-        eprintln!("no-prediction trigger_index={} count={}", index, count);
-    }
-}
-
-fn text_char_len(content: &str) -> u32 {
-    text_ops::text_char_len(content)
-}
-
-fn selected_range(cursor: u32, selection_anchor: Option<u32>) -> Option<(u32, u32)> {
-    let anchor = selection_anchor?;
-    if anchor == cursor {
-        return None;
-    }
-    Some((anchor.min(cursor), anchor.max(cursor)))
-}
-
-fn normalize_preedit_cursor(text: Option<&str>, cursor: Option<(u32, u32)>) -> Option<(u32, u32)> {
-    let text_len = text.map(text_char_len)?;
-    let (mut start, mut end) = cursor?;
-    start = start.min(text_len);
-    end = end.min(text_len);
-    if start > end {
-        std::mem::swap(&mut start, &mut end);
-    }
-    Some((start, end))
-}
-
-fn normalize_session_runtime(session: &mut TextInputSession) -> bool {
-    let mut changed = false;
-    let len = text_char_len(&session.content);
-
-    if session.cursor > len {
-        session.cursor = len;
-        changed = true;
-    }
-
-    if let Some(anchor) = session.selection_anchor {
-        let anchor = anchor.min(len);
-        let next_anchor = if anchor == session.cursor {
-            None
-        } else {
-            Some(anchor)
-        };
-        if session.selection_anchor != next_anchor {
-            session.selection_anchor = next_anchor;
-            changed = true;
-        }
-    }
-
-    if !session.focused {
-        if session.selection_anchor.take().is_some() {
-            changed = true;
-        }
-        if session.preedit.take().is_some() {
-            changed = true;
-        }
-        if session.preedit_cursor.take().is_some() {
-            changed = true;
-        }
-    } else {
-        let normalized =
-            normalize_preedit_cursor(session.preedit.as_deref(), session.preedit_cursor);
-        if session.preedit_cursor != normalized {
-            session.preedit_cursor = normalized;
-            changed = true;
-        }
-    }
-
-    changed
-}
-
-fn clear_preedit(session: &mut TextInputSession) -> bool {
-    let had_preedit = session.preedit.take().is_some();
-    let had_cursor = session.preedit_cursor.take().is_some();
-    had_preedit || had_cursor
-}
-
-fn selection_text(session: &TextInputSession) -> Option<String> {
-    let (start, end) = selected_range(session.cursor, session.selection_anchor)?;
-    Some(
-        session
-            .content
-            .chars()
-            .skip(start as usize)
-            .take((end - start) as usize)
-            .collect(),
-    )
-}
-
-fn apply_content_change(session: &mut TextInputSession, next_content: String, next_cursor: u32) {
-    session.content = next_content;
-    session.cursor = next_cursor.min(text_char_len(&session.content));
-    session.selection_anchor = None;
-    session.preedit = None;
-    session.preedit_cursor = None;
-}
-
-fn replace_selection_or_insert(
-    session: &mut TextInputSession,
-    insert_text: &str,
-) -> Option<String> {
-    text_ops::apply_insert(
-        &session.content,
-        session.cursor,
-        session.selection_anchor,
-        insert_text,
-    )
-    .map(|(next_content, next_cursor)| {
-        apply_content_change(session, next_content.clone(), next_cursor);
-        next_content
-    })
-}
-
-fn delete_backward(session: &mut TextInputSession) -> Option<String> {
-    text_ops::apply_backspace(&session.content, session.cursor, session.selection_anchor).map(
-        |(next_content, next_cursor)| {
-            apply_content_change(session, next_content.clone(), next_cursor);
-            next_content
-        },
-    )
-}
-
-fn delete_forward(session: &mut TextInputSession) -> Option<String> {
-    text_ops::apply_delete(&session.content, session.cursor, session.selection_anchor).map(
-        |(next_content, next_cursor)| {
-            apply_content_change(session, next_content.clone(), next_cursor);
-            next_content
-        },
-    )
-}
-
-fn cut_selection(session: &mut TextInputSession) -> Option<(String, String)> {
-    text_ops::cut_selection_content(&session.content, session.cursor, session.selection_anchor).map(
-        |(next_content, next_cursor, selected)| {
-            apply_content_change(session, next_content.clone(), next_cursor);
-            (next_content, selected)
-        },
-    )
-}
-
-fn sanitize_single_line_text(text: &str) -> String {
-    text.chars()
-        .filter_map(|ch| {
-            if ch == '\n' || ch == '\r' || ch == '\t' {
-                Some(' ')
-            } else if ch.is_control() {
-                None
-            } else {
-                Some(ch)
-            }
-        })
-        .collect()
-}
-
-fn move_cursor(session: &mut TextInputSession, next_cursor: u32, extend_selection: bool) -> bool {
-    let len = text_char_len(&session.content);
-    let next_cursor = next_cursor.min(len);
-    let mut changed = false;
-
-    if extend_selection {
-        let anchor = session.selection_anchor.unwrap_or(session.cursor);
-        let next_anchor = if anchor == next_cursor {
-            None
-        } else {
-            Some(anchor)
-        };
-        if session.selection_anchor != next_anchor {
-            session.selection_anchor = next_anchor;
-            changed = true;
-        }
-    } else if session.selection_anchor.take().is_some() {
-        changed = true;
-    }
-
-    if session.cursor != next_cursor {
-        session.cursor = next_cursor;
-        changed = true;
-    }
-
-    if clear_preedit(session) {
-        changed = true;
-    }
-
-    changed
-}
-
-fn measure_text_width(text: &str, descriptor: &TextInputDescriptor) -> f32 {
-    if text.is_empty() {
-        return 0.0;
-    }
-
-    let font = make_font_with_style(
-        &descriptor.font_family,
-        descriptor.font_weight,
-        descriptor.font_italic,
-        descriptor.font_size,
-    );
-
-    let mut total = 0.0;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        let glyph = ch.to_string();
-        let (glyph_width, _bounds) = font.measure_str(&glyph, None);
-        total += glyph_width;
-
-        if chars.peek().is_some() {
-            total += descriptor.letter_spacing;
-            if ch.is_whitespace() {
-                total += descriptor.word_spacing;
-            }
-        }
-    }
-
-    total
-}
-
-fn nearest_char_index_for_offset(
-    text: &str,
-    descriptor: &TextInputDescriptor,
-    offset_x: f32,
-) -> u32 {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return 0;
-    }
-
-    let font = make_font_with_style(
-        &descriptor.font_family,
-        descriptor.font_weight,
-        descriptor.font_italic,
-        descriptor.font_size,
-    );
-
-    let mut positions = Vec::with_capacity(chars.len() + 1);
-    positions.push(0.0);
-
-    let mut advance = 0.0;
-    for (idx, ch) in chars.iter().enumerate() {
-        let glyph = ch.to_string();
-        let (glyph_width, _bounds) = font.measure_str(&glyph, None);
-        advance += glyph_width;
-        if idx + 1 < chars.len() {
-            advance += descriptor.letter_spacing;
-            if ch.is_whitespace() {
-                advance += descriptor.word_spacing;
-            }
-        }
-        positions.push(advance);
-    }
-
-    for idx in 0..chars.len() {
-        let midpoint = positions[idx] + (positions[idx + 1] - positions[idx]) / 2.0;
-        if offset_x <= midpoint {
-            return idx as u32;
-        }
-    }
-
-    chars.len() as u32
-}
-
-fn cursor_from_click_x(session: &TextInputSession, x: f32) -> u32 {
-    let descriptor = &session.descriptor;
-    let text_width = measure_text_width(&session.content, descriptor);
-    let content_width =
-        (descriptor.frame_width - descriptor.inset_left - descriptor.inset_right).max(0.0);
-
-    let text_start_x = match descriptor.text_align {
-        TextAlign::Left => descriptor.frame_x + descriptor.inset_left,
-        TextAlign::Center => {
-            descriptor.frame_x + descriptor.inset_left + (content_width - text_width) / 2.0
-        }
-        TextAlign::Right => {
-            descriptor.frame_x + descriptor.frame_width - descriptor.inset_right - text_width
-        }
-    };
-
-    let local_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
-    nearest_char_index_for_offset(&session.content, descriptor, local_x)
-}
-
 fn send_runtime_update(
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
     element_id: &ElementId,
-    session: &TextInputSession,
-) {
+    state: &TextInputState,
+) -> bool {
     send_tree(
         tree_tx,
         TreeMsg::SetTextInputRuntime {
             element_id: element_id.clone(),
-            focused: session.focused,
-            cursor: Some(session.cursor),
-            selection_anchor: session.selection_anchor,
-            preedit: session.preedit.clone(),
-            preedit_cursor: session.preedit_cursor,
+            focused: state.focused,
+            cursor: Some(state.cursor),
+            selection_anchor: state.selection_anchor,
+            preedit: state.preedit.clone(),
+            preedit_cursor: state.preedit_cursor,
         },
         log_render,
     );
+    true
 }
 
 fn send_content_update(
@@ -473,7 +598,7 @@ fn send_content_update(
     log_render: bool,
     element_id: &ElementId,
     content: String,
-) {
+) -> bool {
     send_tree(
         tree_tx,
         TreeMsg::SetTextInputContent {
@@ -482,641 +607,109 @@ fn send_content_update(
         },
         log_render,
     );
+    true
 }
 
-fn emit_change_event(target: &Option<LocalPid>, element_id: &ElementId, value: &str) {
-    send_element_event_with_string_payload_if_target(
-        target.as_ref().copied(),
-        element_id,
-        change_atom(),
-        value,
-    );
-}
-
-fn emit_content_change_outputs(
-    target: &Option<LocalPid>,
+fn reconcile_text_input_states(
+    text_inputs: &HashMap<ElementId, TextInputState>,
+    states: &mut HashMap<ElementId, TextInputState>,
+    focused: &Option<ElementId>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
-    element_id: &ElementId,
-    session: &TextInputSession,
-    emit_change: bool,
-    next_content: String,
-) {
-    send_content_update(tree_tx, log_render, element_id, next_content.clone());
-    send_runtime_update(tree_tx, log_render, element_id, session);
-    if emit_change {
-        emit_change_event(target, element_id, &next_content);
+) -> bool {
+    fn text_input_runtime_mismatch(rebuild: &TextInputState, state: &TextInputState) -> bool {
+        rebuild.focused != state.focused
+            || rebuild.cursor != state.cursor
+            || rebuild.selection_anchor != state.selection_anchor
+            || rebuild.preedit != state.preedit
+            || rebuild.preedit_cursor != state.preedit_cursor
     }
+
+    fn reconcile_focused_text_input(
+        element_id: &ElementId,
+        rebuild_state: &TextInputState,
+        state: &mut TextInputState,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        let mut changed_tree = false;
+
+        state.copy_rebuild_metadata_from(rebuild_state);
+        if state.content != rebuild_state.content {
+            changed_tree |=
+                send_content_update(tree_tx, log_render, element_id, state.content.clone());
+        }
+
+        state.focused = true;
+        state.normalize_runtime();
+
+        if text_input_runtime_mismatch(rebuild_state, state) {
+            changed_tree |= send_runtime_update(tree_tx, log_render, element_id, state);
+        }
+
+        changed_tree
+    }
+
+    fn reset_unfocused_text_input_from_rebuild(
+        state: &mut TextInputState,
+        rebuild_state: &TextInputState,
+    ) {
+        *state = rebuild_state.clone();
+        let cursor = state.cursor;
+        let selection_anchor = state.selection_anchor;
+        let preedit = state.preedit.clone();
+        let preedit_cursor = state.preedit_cursor;
+        state.set_runtime(
+            false,
+            Some(cursor),
+            selection_anchor,
+            preedit,
+            preedit_cursor,
+        );
+    }
+
+    let mut changed_tree = false;
+
+    for (id, rebuild_state) in text_inputs {
+        let id = id.clone();
+        let should_focus = focused.as_ref().is_some_and(|focused_id| focused_id == &id);
+
+        let state = states
+            .entry(id.clone())
+            .or_insert_with(|| rebuild_state.clone());
+
+        if should_focus {
+            changed_tree |=
+                reconcile_focused_text_input(&id, rebuild_state, state, tree_tx, log_render);
+        } else {
+            reset_unfocused_text_input_from_rebuild(state, rebuild_state);
+        }
+    }
+
+    states.retain(|id, _| text_inputs.contains_key(id));
+    changed_tree
 }
 
 #[cfg(test)]
-fn change_payload_for_target(
-    predicted: &DispatchOutcome,
-    element_id: Option<&ElementId>,
-) -> Option<String> {
-    let target = super::dispatch_outcome::node_key(element_id?);
-    predicted
-        .element_events
-        .iter()
-        .find(|event| event.kind == ElementEventKind::Change && event.target == target)
-        .and_then(|event| event.payload.clone())
-}
-
-fn upsert_predicted_change_event(
-    predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    element_id: &ElementId,
-    next_content: String,
-) {
-    let target = super::dispatch_outcome::node_key(element_id);
-
-    if let Some(existing) = predicted
-        .element_events
-        .iter_mut()
-        .find(|event| event.kind == ElementEventKind::Change && event.target == target)
-    {
-        existing.payload = Some(next_content);
-    } else {
-        predicted
-            .element_events
-            .push(super::dispatch_outcome::ElementEventOut {
-                target,
-                kind: ElementEventKind::Change,
-                payload: Some(next_content),
-            });
-    }
-}
-
-fn remove_predicted_change_event(
-    predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    element_id: &ElementId,
-) {
-    let target = super::dispatch_outcome::node_key(element_id);
-    predicted
-        .element_events
-        .retain(|event| !(event.kind == ElementEventKind::Change && event.target == target));
-}
-
-fn enrich_predicted_command_change_events(
-    predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    allow_change_events: bool,
-    sessions: &HashMap<ElementId, TextInputSession>,
-    clipboard: &mut ClipboardManager,
-) {
-    let command_requests = predicted.text_command_requests.clone();
-    for request in command_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        let Some(session) = sessions.get(&element_id) else {
-            remove_predicted_change_event(predicted, &element_id);
-            continue;
-        };
-        if !allow_change_events || !session.descriptor.emit_change {
-            remove_predicted_change_event(predicted, &element_id);
-            continue;
-        }
-
-        let mut simulated_session = session.clone();
-        let next_content = match request.request {
-            TextInputCommandRequest::Cut => {
-                cut_selection(&mut simulated_session).map(|(next_content, _selected)| next_content)
-            }
-            TextInputCommandRequest::Paste => clipboard
-                .get_text(ClipboardTarget::Clipboard)
-                .and_then(|pasted| {
-                    let sanitized = sanitize_single_line_text(&pasted);
-                    replace_selection_or_insert(&mut simulated_session, &sanitized)
-                }),
-            TextInputCommandRequest::PastePrimary => clipboard
-                .get_text(ClipboardTarget::Primary)
-                .and_then(|pasted| {
-                    let sanitized = sanitize_single_line_text(&pasted);
-                    replace_selection_or_insert(&mut simulated_session, &sanitized)
-                }),
-            TextInputCommandRequest::SelectAll | TextInputCommandRequest::Copy => None,
-        };
-
-        if let Some(next_content) = next_content {
-            upsert_predicted_change_event(predicted, &element_id, next_content);
-        } else {
-            remove_predicted_change_event(predicted, &element_id);
-        }
-    }
-}
-
-fn enrich_predicted_edit_change_events(
-    predicted: &mut super::dispatch_outcome::DispatchOutcome,
-    sessions: &HashMap<ElementId, TextInputSession>,
-    allow_change_events: bool,
-) {
-    let edit_requests = predicted.text_edit_requests.clone();
-    for request in edit_requests {
-        let element_id = element_id_from_node_key(&request.target);
-
-        if !allow_change_events {
-            remove_predicted_change_event(predicted, &element_id);
-            continue;
-        }
-
-        let Some(session) = sessions.get(&element_id) else {
-            remove_predicted_change_event(predicted, &element_id);
-            continue;
-        };
-        if !session.descriptor.emit_change {
-            remove_predicted_change_event(predicted, &element_id);
-            continue;
-        }
-
-        let mut simulated_session = session.clone();
-        let next_content = match request.request {
-            TextInputEditRequest::MoveLeft { .. }
-            | TextInputEditRequest::MoveRight { .. }
-            | TextInputEditRequest::MoveHome { .. }
-            | TextInputEditRequest::MoveEnd { .. } => None,
-            TextInputEditRequest::Backspace => delete_backward(&mut simulated_session),
-            TextInputEditRequest::Delete => delete_forward(&mut simulated_session),
-            TextInputEditRequest::Insert(text) => {
-                replace_selection_or_insert(&mut simulated_session, &text)
-            }
-        };
-
-        if let Some(next_content) = next_content {
-            upsert_predicted_change_event(predicted, &element_id, next_content);
-        } else {
-            remove_predicted_change_event(predicted, &element_id);
-        }
-    }
-}
-
-fn element_id_from_node_key(key: &super::dispatch_outcome::NodeKey) -> ElementId {
-    ElementId(key.0.clone())
-}
-
-fn float_from_milli(value: super::dispatch_outcome::Milli) -> f32 {
-    value.0 as f32 / 1000.0
-}
-
-fn apply_dispatch_outcome(
-    outcome: DispatchOutcome,
-    processor: &mut EventProcessor,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-    sessions: &mut HashMap<ElementId, TextInputSession>,
-    focused: &mut Option<ElementId>,
-    clipboard: &mut ClipboardManager,
-) {
-    for request in &outcome.window_resize_requests {
-        send_tree(
-            tree_tx,
-            TreeMsg::Resize {
-                width: request.width as f32,
-                height: request.height as f32,
-                scale: float_from_milli(request.scale),
-            },
-            log_render,
-        );
-    }
-
-    if let Some(next_focus) = outcome.focus_change {
-        let next_focus = next_focus.as_ref().map(element_id_from_node_key);
-        apply_focus_change(
-            next_focus.clone(),
-            focused,
-            target,
-            sessions,
-            tree_tx,
-            log_render,
-        );
-        processor.set_focused_id_for_runtime(next_focus);
-    }
-
-    for request in outcome.text_cursor_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        if let Some(session) = sessions.get_mut(&element_id) {
-            let next_cursor = cursor_from_click_x(session, float_from_milli(request.x));
-            if move_cursor(session, next_cursor, request.extend_selection) {
-                send_runtime_update(tree_tx, log_render, &element_id, session);
-                if request.extend_selection {
-                    sync_primary_selection(session, clipboard);
-                }
-            }
-        }
-    }
-
-    for request in outcome.text_command_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        if let Some(session) = sessions.get_mut(&element_id) {
-            match request.request {
-                TextInputCommandRequest::SelectAll => {
-                    let len = text_char_len(&session.content);
-                    let mut changed = if len == 0 {
-                        session.selection_anchor.take().is_some()
-                    } else {
-                        let changed_cursor = session.cursor != len;
-                        let changed_anchor = session.selection_anchor != Some(0);
-                        session.cursor = len;
-                        session.selection_anchor = Some(0);
-                        changed_cursor || changed_anchor
-                    };
-
-                    if clear_preedit(session) {
-                        changed = true;
-                    }
-
-                    if changed {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        sync_primary_selection(session, clipboard);
-                    }
-                }
-                TextInputCommandRequest::Copy => {
-                    if let Some(selection) = selection_text(session)
-                        && !selection.is_empty()
-                    {
-                        clipboard.set_text(ClipboardTarget::Clipboard, &selection);
-                        clipboard.set_text(ClipboardTarget::Primary, &selection);
-                    }
-                }
-                TextInputCommandRequest::Cut => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some((next_content, selected)) = cut_selection(session) {
-                        clipboard.set_text(ClipboardTarget::Clipboard, &selected);
-                        clipboard.set_text(ClipboardTarget::Primary, &selected);
-                        emit_content_change_outputs(
-                            target,
-                            tree_tx,
-                            log_render,
-                            &element_id,
-                            session,
-                            emit_change,
-                            next_content,
-                        );
-                    }
-                }
-                TextInputCommandRequest::Paste => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some(pasted) = clipboard.get_text(ClipboardTarget::Clipboard) {
-                        let pasted = sanitize_single_line_text(&pasted);
-                        if let Some(next_content) = replace_selection_or_insert(session, &pasted) {
-                            emit_content_change_outputs(
-                                target,
-                                tree_tx,
-                                log_render,
-                                &element_id,
-                                session,
-                                emit_change,
-                                next_content,
-                            );
-                        }
-                    }
-                }
-                TextInputCommandRequest::PastePrimary => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some(pasted) = clipboard.get_text(ClipboardTarget::Primary) {
-                        let pasted = sanitize_single_line_text(&pasted);
-                        if let Some(next_content) = replace_selection_or_insert(session, &pasted) {
-                            emit_content_change_outputs(
-                                target,
-                                tree_tx,
-                                log_render,
-                                &element_id,
-                                session,
-                                emit_change,
-                                next_content,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for request in outcome.text_edit_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        if let Some(session) = sessions.get_mut(&element_id) {
-            match request.request {
-                TextInputEditRequest::MoveLeft { extend_selection } => {
-                    let next_cursor = if !extend_selection {
-                        if let Some((start, _end)) =
-                            selected_range(session.cursor, session.selection_anchor)
-                        {
-                            start
-                        } else {
-                            session.cursor.saturating_sub(1)
-                        }
-                    } else {
-                        session.cursor.saturating_sub(1)
-                    };
-
-                    if move_cursor(session, next_cursor, extend_selection) {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        if extend_selection {
-                            sync_primary_selection(session, clipboard);
-                        }
-                    }
-                }
-                TextInputEditRequest::MoveRight { extend_selection } => {
-                    let len = text_char_len(&session.content);
-                    let next_cursor = if !extend_selection {
-                        if let Some((_start, end)) =
-                            selected_range(session.cursor, session.selection_anchor)
-                        {
-                            end
-                        } else {
-                            (session.cursor + 1).min(len)
-                        }
-                    } else {
-                        (session.cursor + 1).min(len)
-                    };
-
-                    if move_cursor(session, next_cursor, extend_selection) {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        if extend_selection {
-                            sync_primary_selection(session, clipboard);
-                        }
-                    }
-                }
-                TextInputEditRequest::MoveHome { extend_selection } => {
-                    if move_cursor(session, 0, extend_selection) {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        if extend_selection {
-                            sync_primary_selection(session, clipboard);
-                        }
-                    }
-                }
-                TextInputEditRequest::MoveEnd { extend_selection } => {
-                    let len = text_char_len(&session.content);
-                    if move_cursor(session, len, extend_selection) {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                        if extend_selection {
-                            sync_primary_selection(session, clipboard);
-                        }
-                    }
-                }
-                TextInputEditRequest::Backspace => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some(next_content) = delete_backward(session) {
-                        emit_content_change_outputs(
-                            target,
-                            tree_tx,
-                            log_render,
-                            &element_id,
-                            session,
-                            emit_change,
-                            next_content,
-                        );
-                    }
-                }
-                TextInputEditRequest::Delete => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some(next_content) = delete_forward(session) {
-                        emit_content_change_outputs(
-                            target,
-                            tree_tx,
-                            log_render,
-                            &element_id,
-                            session,
-                            emit_change,
-                            next_content,
-                        );
-                    }
-                }
-                TextInputEditRequest::Insert(text) => {
-                    let emit_change = session.descriptor.emit_change;
-                    if let Some(next_content) = replace_selection_or_insert(session, &text) {
-                        emit_content_change_outputs(
-                            target,
-                            tree_tx,
-                            log_render,
-                            &element_id,
-                            session,
-                            emit_change,
-                            next_content,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    for request in outcome.text_preedit_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        if let Some(session) = sessions.get_mut(&element_id) {
-            match request.request {
-                TextInputPreeditRequest::Set { text, cursor } => {
-                    let next_preedit = if text.is_empty() { None } else { Some(text) };
-                    let next_cursor = normalize_preedit_cursor(next_preedit.as_deref(), cursor);
-
-                    let mut changed = false;
-                    if session.preedit != next_preedit {
-                        session.preedit = next_preedit;
-                        changed = true;
-                    }
-                    if session.preedit_cursor != next_cursor {
-                        session.preedit_cursor = next_cursor;
-                        changed = true;
-                    }
-
-                    if changed {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                    }
-                }
-                TextInputPreeditRequest::Clear => {
-                    if clear_preedit(session) {
-                        send_runtime_update(tree_tx, log_render, &element_id, session);
-                    }
-                }
-            }
-        }
-    }
-
-    for request in outcome.scrollbar_thumb_drag_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        match request.axis {
-            super::dispatch_outcome::ScrollbarAxisOut::X => send_tree(
-                tree_tx,
-                TreeMsg::ScrollbarThumbDragX {
-                    element_id,
-                    dx: float_from_milli(request.delta),
-                },
-                log_render,
-            ),
-            super::dispatch_outcome::ScrollbarAxisOut::Y => send_tree(
-                tree_tx,
-                TreeMsg::ScrollbarThumbDragY {
-                    element_id,
-                    dy: float_from_milli(request.delta),
-                },
-                log_render,
-            ),
-        }
-    }
-
-    for request in outcome.scroll_requests {
-        send_tree(
-            tree_tx,
-            TreeMsg::ScrollRequest {
-                element_id: element_id_from_node_key(&request.target),
-                dx: float_from_milli(request.dx),
-                dy: float_from_milli(request.dy),
-            },
-            log_render,
-        );
-    }
-
-    for request in outcome.scrollbar_hover_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        match request.axis {
-            super::dispatch_outcome::ScrollbarAxisOut::X => send_tree(
-                tree_tx,
-                TreeMsg::SetScrollbarXHover {
-                    element_id,
-                    hovered: request.hovered,
-                },
-                log_render,
-            ),
-            super::dispatch_outcome::ScrollbarAxisOut::Y => send_tree(
-                tree_tx,
-                TreeMsg::SetScrollbarYHover {
-                    element_id,
-                    hovered: request.hovered,
-                },
-                log_render,
-            ),
-        }
-    }
-
-    for request in outcome.style_runtime_requests {
-        let element_id = element_id_from_node_key(&request.target);
-        match request.kind {
-            super::dispatch_outcome::StyleRuntimeKind::MouseOver => send_tree(
-                tree_tx,
-                TreeMsg::SetMouseOverActive {
-                    element_id,
-                    active: request.active,
-                },
-                log_render,
-            ),
-            super::dispatch_outcome::StyleRuntimeKind::MouseDown => send_tree(
-                tree_tx,
-                TreeMsg::SetMouseDownActive {
-                    element_id,
-                    active: request.active,
-                },
-                log_render,
-            ),
-        }
-    }
-
-    if let Some(pid) = target.as_ref().copied() {
-        for event in outcome.element_events {
-            let element_id = element_id_from_node_key(&event.target);
-            match event.kind {
-                ElementEventKind::Focus | ElementEventKind::Blur | ElementEventKind::Change => {}
-                _ => {
-                    let atom = event_kind_to_atom(event.kind);
-                    if let Some(payload) = event.payload {
-                        send_element_event_with_string_payload(pid, &element_id, atom, &payload);
-                    } else {
-                        send_element_event(pid, &element_id, atom);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn advance_processor_state_after_event(processor: &mut EventProcessor, event: &InputEvent) {
-    processor.advance_runtime_state_after_event(event);
-}
-
-fn sync_primary_selection(session: &TextInputSession, clipboard: &mut ClipboardManager) {
-    if let Some(text) = selection_text(session)
-        && !text.is_empty()
-    {
-        clipboard.set_text(ClipboardTarget::Primary, &text);
-    }
-}
-
-fn reconcile_text_input_sessions(
-    registry: &[EventNode],
-    sessions: &mut HashMap<ElementId, TextInputSession>,
-    focused: &mut Option<ElementId>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-) {
-    let mut seen = HashSet::new();
-
-    for node in registry {
-        let Some(descriptor) = node.text_input.clone() else {
-            continue;
-        };
-
-        let id = node.id.clone();
-        seen.insert(id.clone());
-        let should_focus = focused.as_ref().is_some_and(|focused_id| focused_id == &id);
-
-        let session = sessions
-            .entry(id.clone())
-            .or_insert_with(|| TextInputSession::from_descriptor(descriptor.clone()));
-
-        let mut changed = false;
-        if session.descriptor != descriptor {
-            session.descriptor = descriptor.clone();
-        }
-
-        if session.content != descriptor.content {
-            if should_focus {
-                send_content_update(tree_tx, log_render, &id, session.content.clone());
-            } else {
-                session.content = descriptor.content;
-                session.selection_anchor = None;
-                session.preedit = None;
-                session.preedit_cursor = None;
-                changed = true;
-            }
-        }
-
-        if session.focused != should_focus {
-            session.focused = should_focus;
-            changed = true;
-        }
-
-        if normalize_session_runtime(session) {
-            changed = true;
-        }
-
-        if should_focus {
-            let content_len = text_char_len(&session.content);
-            session.descriptor.content = session.content.clone();
-            session.descriptor.content_len = content_len;
-            session.descriptor.cursor = session.cursor;
-            session.descriptor.selection_anchor = session.selection_anchor;
-        }
-
-        if changed {
-            send_runtime_update(tree_tx, log_render, &id, session);
-        }
-    }
-
-    sessions.retain(|id, _| seen.contains(id));
-}
-
-fn apply_focus_change(
+fn apply_focus_to(
     next_focus: Option<ElementId>,
+    reveal_scrolls: &[registry_builder::FocusRevealScroll],
     focused: &mut Option<ElementId>,
     target: &Option<LocalPid>,
-    sessions: &mut HashMap<ElementId, TextInputSession>,
+    states: &mut HashMap<ElementId, TextInputState>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
-) {
-    let previous_focus = focused.clone();
-    *focused = next_focus.clone();
-
-    if previous_focus == next_focus {
-        return;
-    }
-
-    if let Some(prev_id) = previous_focus {
-        send_element_event_if_target(target.as_ref().copied(), &prev_id, blur_atom());
+) -> bool {
+    fn blur_previous_focus(
+        prev_id: ElementId,
+        target: &Option<LocalPid>,
+        states: &mut HashMap<ElementId, TextInputState>,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        if let Some(pid) = target.as_ref().copied() {
+            send_element_event(pid, &prev_id, blur_atom());
+        }
 
         send_tree(
             tree_tx,
@@ -1127,17 +720,26 @@ fn apply_focus_change(
             log_render,
         );
 
-        if let Some(session) = sessions.get_mut(&prev_id) {
-            session.focused = false;
-            session.selection_anchor = None;
-            clear_preedit(session);
-            normalize_session_runtime(session);
-            send_runtime_update(tree_tx, log_render, &prev_id, session);
+        let mut changed_tree = true;
+        if let Some(state) = states.get_mut(&prev_id) {
+            let cursor = state.cursor;
+            state.set_runtime(false, Some(cursor), None, None, None);
+            changed_tree |= send_runtime_update(tree_tx, log_render, &prev_id, state);
         }
+
+        changed_tree
     }
 
-    if let Some(next_id) = next_focus {
-        send_element_event_if_target(target.as_ref().copied(), &next_id, focus_atom());
+    fn focus_next_element(
+        next_id: ElementId,
+        target: &Option<LocalPid>,
+        states: &mut HashMap<ElementId, TextInputState>,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        if let Some(pid) = target.as_ref().copied() {
+            send_element_event(pid, &next_id, focus_atom());
+        }
 
         send_tree(
             tree_tx,
@@ -1148,12 +750,64 @@ fn apply_focus_change(
             log_render,
         );
 
-        if let Some(session) = sessions.get_mut(&next_id) {
-            session.focused = true;
-            normalize_session_runtime(session);
-            send_runtime_update(tree_tx, log_render, &next_id, session);
+        let mut changed_tree = true;
+        if let Some(state) = states.get_mut(&next_id) {
+            let cursor = state.cursor;
+            let selection_anchor = state.selection_anchor;
+            let preedit = state.preedit.clone();
+            let preedit_cursor = state.preedit_cursor;
+            state.set_runtime(
+                true,
+                Some(cursor),
+                selection_anchor,
+                preedit,
+                preedit_cursor,
+            );
+            changed_tree |= send_runtime_update(tree_tx, log_render, &next_id, state);
         }
+
+        changed_tree
     }
+
+    fn emit_reveal_scroll_requests(
+        reveal_scrolls: &[registry_builder::FocusRevealScroll],
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        reveal_scrolls.iter().fold(false, |_, reveal| {
+            send_tree(
+                tree_tx,
+                TreeMsg::ScrollRequest {
+                    element_id: reveal.element_id.clone(),
+                    dx: reveal.dx,
+                    dy: reveal.dy,
+                },
+                log_render,
+            );
+            true
+        })
+    }
+
+    let previous_focus = focused.clone();
+    *focused = next_focus.clone();
+
+    if previous_focus == next_focus {
+        return false;
+    }
+
+    let mut changed_tree = false;
+
+    if let Some(prev_id) = previous_focus {
+        changed_tree |= blur_previous_focus(prev_id, target, states, tree_tx, log_render);
+    }
+
+    if let Some(next_id) = next_focus {
+        changed_tree |= focus_next_element(next_id, target, states, tree_tx, log_render);
+    }
+
+    changed_tree |= emit_reveal_scroll_requests(reveal_scrolls, tree_tx, log_render);
+
+    changed_tree
 }
 
 fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
@@ -1187,133 +841,15 @@ fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
     coalesced
 }
 
-fn preview_and_enrich_dispatch_outcome(
-    event: &InputEvent,
-    processor: &EventProcessor,
-    focused: Option<&ElementId>,
-    target: &Option<LocalPid>,
-    sessions: &HashMap<ElementId, TextInputSession>,
-    clipboard: &mut ClipboardManager,
-) -> (Option<DispatchOutcome>, PredictionMeta) {
-    let super::DispatchPreview {
-        outcome: mut predicted_outcome,
-        had_jobs,
-        trigger_for_stats,
-    } = processor.preview_dispatch_outcome(event, focused);
-
-    if let Some(mut predicted) = predicted_outcome.take() {
-        enrich_predicted_command_change_events(
-            &mut predicted,
-            target.is_some(),
-            sessions,
-            clipboard,
-        );
-
-        enrich_predicted_edit_change_events(&mut predicted, sessions, target.is_some());
-
-        predicted_outcome = Some(predicted);
-    }
-
-    (
-        predicted_outcome,
-        PredictionMeta {
-            had_jobs,
-            trigger_for_stats,
-        },
-    )
-}
-
 fn forward_observer_input(
     event: &InputEvent,
     input_handler: &InputHandler,
     target: &Option<LocalPid>,
 ) {
-    let forward_to_target = input_handler.accepts(event);
-    if let Some(pid) = target.as_ref()
-        && forward_to_target
+    if input_handler.accepts(event)
+        && let Some(pid) = target.as_ref()
     {
         send_input_event(*pid, event);
-    }
-}
-
-fn finalize_dispatch_for_event(
-    event: &InputEvent,
-    predicted_outcome: Option<DispatchOutcome>,
-    prediction_meta: PredictionMeta,
-    processor: &mut EventProcessor,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-    sessions: &mut HashMap<ElementId, TextInputSession>,
-    focused: &mut Option<ElementId>,
-    clipboard: &mut ClipboardManager,
-    no_prediction_stats: &mut NoPredictionStats,
-    no_prediction_verbose: bool,
-) {
-    if let Some(outcome) = predicted_outcome {
-        apply_dispatch_outcome(
-            outcome, processor, target, tree_tx, log_render, sessions, focused, clipboard,
-        );
-        advance_processor_state_after_event(processor, event);
-    } else if event_is_dispatch_candidate(event) {
-        advance_processor_state_after_event(processor, event);
-        if prediction_meta.had_jobs {
-            no_prediction_stats.record(prediction_meta.trigger_for_stats);
-        }
-        if no_prediction_verbose && prediction_meta.had_jobs {
-            eprintln!(
-                "no-prediction trigger={:?} event={:?}",
-                prediction_meta.trigger_for_stats, event
-            );
-        }
-    }
-}
-
-fn process_input_events(
-    events: &mut Vec<InputEvent>,
-    processor: &mut EventProcessor,
-    input_handler: &mut InputHandler,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-    sessions: &mut HashMap<ElementId, TextInputSession>,
-    focused: &mut Option<ElementId>,
-    clipboard: &mut ClipboardManager,
-    no_prediction_stats: &mut NoPredictionStats,
-    no_prediction_verbose: bool,
-) {
-    if events.is_empty() {
-        return;
-    }
-
-    let coalesced = coalesce_input_events(events);
-
-    for event in coalesced {
-        let (predicted_outcome, prediction_meta) = preview_and_enrich_dispatch_outcome(
-            &event,
-            processor,
-            focused.as_ref(),
-            target,
-            sessions,
-            clipboard,
-        );
-
-        forward_observer_input(&event, input_handler, target);
-
-        finalize_dispatch_for_event(
-            &event,
-            predicted_outcome,
-            prediction_meta,
-            processor,
-            target,
-            tree_tx,
-            log_render,
-            sessions,
-            focused,
-            clipboard,
-            no_prediction_stats,
-            no_prediction_verbose,
-        );
     }
 }
 
@@ -1324,115 +860,21 @@ pub(crate) fn spawn_event_actor(
     system_clipboard: bool,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut processor = EventProcessor::new();
-        let mut input_handler = InputHandler::new();
-        let mut target: Option<LocalPid> = None;
-        let mut sessions: HashMap<ElementId, TextInputSession> = HashMap::new();
-        let mut focused: Option<ElementId> = None;
-        let mut clipboard = ClipboardManager::new(system_clipboard);
+        let mut runtime = DirectEventRuntime::new(system_clipboard);
 
-        let mut no_prediction_stats = NoPredictionStats::new();
-        let no_prediction_verbose = env_flag_enabled("EMERGE_SKIA_NO_PRED_VERBOSE");
-
-        while let Ok(msg) = event_rx.recv() {
-            let mut messages = vec![msg];
-            while let Ok(next) = event_rx.try_recv() {
-                messages.push(next);
-            }
-
-            let mut pending_inputs = Vec::new();
-
-            for message in messages {
-                match message {
-                    EventMsg::InputEvent(event) => pending_inputs.push(event),
-                    EventMsg::RegistryUpdate { registry } => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                            &mut sessions,
-                            &mut focused,
-                            &mut clipboard,
-                            &mut no_prediction_stats,
-                            no_prediction_verbose,
-                        );
-
-                        processor.rebuild_registry(registry.clone());
-                        let next_focus = processor.focused_id();
-                        apply_focus_change(
-                            next_focus,
-                            &mut focused,
-                            &target,
-                            &mut sessions,
-                            &tree_tx,
-                            log_render,
-                        );
-                        reconcile_text_input_sessions(
-                            &registry,
-                            &mut sessions,
-                            &mut focused,
-                            &tree_tx,
-                            log_render,
-                        );
-                    }
-                    EventMsg::SetInputMask(mask) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                            &mut sessions,
-                            &mut focused,
-                            &mut clipboard,
-                            &mut no_prediction_stats,
-                            no_prediction_verbose,
-                        );
-                        input_handler.set_mask(mask);
-                    }
-                    EventMsg::SetInputTarget(pid) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                            &mut sessions,
-                            &mut focused,
-                            &mut clipboard,
-                            &mut no_prediction_stats,
-                            no_prediction_verbose,
-                        );
-                        target = pid;
-                    }
-                    EventMsg::Stop => {
-                        maybe_dump_no_prediction_stats(&no_prediction_stats, "stop");
-                        return;
-                    }
+        while let Ok(message) = event_rx.recv() {
+            match message {
+                EventMsg::InputEvent(event) => {
+                    runtime.handle_input_event(event, &tree_tx, log_render)
                 }
+                EventMsg::RegistryUpdate { rebuild } => {
+                    runtime.handle_registry_update(rebuild, &tree_tx, log_render)
+                }
+                EventMsg::SetInputMask(mask) => runtime.set_input_mask(mask),
+                EventMsg::SetInputTarget(target) => runtime.set_input_target(target),
+                EventMsg::Stop => return,
             }
-
-            process_input_events(
-                &mut pending_inputs,
-                &mut processor,
-                &mut input_handler,
-                &target,
-                &tree_tx,
-                log_render,
-                &mut sessions,
-                &mut focused,
-                &mut clipboard,
-                &mut no_prediction_stats,
-                no_prediction_verbose,
-            );
         }
-
-        maybe_dump_no_prediction_stats(&no_prediction_stats, "channel_closed");
     })
 }
 
@@ -1440,41 +882,37 @@ pub(crate) fn spawn_event_actor(
 mod tests {
     use std::collections::HashMap;
 
-    use crossbeam_channel::{Receiver, bounded};
+    use super::*;
+    use crate::events::registry_builder::{self, FocusRevealScroll};
+    use crate::events::{RegistryRebuildPayload, build_registry_rebuild};
+    use crate::tree::attrs::TextAlign;
+    use crate::tree::attrs::{Attrs, MouseOverAttrs};
+    use crate::tree::element::ElementId;
+    use crate::tree::element::{Element, ElementKind, ElementTree, Frame};
+    use crate::tree::interaction::{ElementInteraction, Rect};
+    use crossbeam_channel::bounded;
 
-    use super::{
-        DispatchOutcome, ElementEventKind, NoPredictionStats, TextInputSession,
-        change_payload_for_target, coalesce_input_events, enrich_predicted_command_change_events,
-        enrich_predicted_edit_change_events, process_input_events, reconcile_text_input_sessions,
-    };
-    use crate::{
-        actors::TreeMsg,
-        clipboard::ClipboardManager,
-        events::{
-            EventNode, EventProcessor, KeyScrollTargets, Rect, TextInputCommandRequest,
-            TextInputDescriptor, TextInputEditRequest,
-        },
-        input::{ACTION_PRESS, EVENT_MOUSE_LEAVE, EVENT_TEXT_INPUT, InputEvent, InputHandler},
-        tree::{attrs::TextAlign, element::ElementId},
-    };
-
-    fn make_text_input_descriptor(
+    fn make_text_input_state(
         content: &str,
         cursor: u32,
         selection_anchor: Option<u32>,
-    ) -> TextInputDescriptor {
-        TextInputDescriptor {
+        focused: bool,
+    ) -> TextInputState {
+        TextInputState {
             content: content.to_string(),
             content_len: content.chars().count() as u32,
             cursor,
             selection_anchor,
-            emit_change: true,
+            preedit: None,
+            preedit_cursor: None,
+            focused,
+            emit_change: false,
             frame_x: 0.0,
-            frame_width: 300.0,
+            frame_width: 100.0,
             inset_left: 0.0,
             inset_right: 0.0,
             text_align: TextAlign::Left,
-            font_family: "Inter".to_string(),
+            font_family: "default".to_string(),
             font_size: 16.0,
             font_weight: 400,
             font_italic: false,
@@ -1483,63 +921,15 @@ mod tests {
         }
     }
 
-    fn make_text_input_node(id: ElementId, descriptor: TextInputDescriptor) -> EventNode {
-        EventNode {
-            id,
-            hit_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 300.0,
-                height: 40.0,
-            },
-            visible: true,
-            flags: EVENT_TEXT_INPUT,
-            self_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 300.0,
-                height: 40.0,
-            },
-            self_radii: None,
-            clip_rect: None,
-            clip_radii: None,
-            scrollbar_x: None,
-            scrollbar_y: None,
-            key_scroll_targets: KeyScrollTargets::default(),
-            focus_reveal_scrolls: Vec::new(),
-            text_input: Some(descriptor),
-        }
-    }
-
-    fn make_mouse_leave_only_node(id: ElementId) -> EventNode {
-        EventNode {
-            id,
-            hit_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 60.0,
-            },
-            visible: true,
-            flags: EVENT_MOUSE_LEAVE,
-            self_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 60.0,
-            },
-            self_radii: None,
-            clip_rect: None,
-            clip_radii: None,
-            scrollbar_x: None,
-            scrollbar_y: None,
-            key_scroll_targets: KeyScrollTargets::default(),
-            focus_reveal_scrolls: Vec::new(),
-            text_input: None,
-        }
-    }
-
     fn drain_msgs(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            push_tree_msg_flat(msg, &mut out);
+        }
+        out
+    }
+
+    fn drain_raw_msgs(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
         let mut out = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             out.push(msg);
@@ -1547,512 +937,995 @@ mod tests {
         out
     }
 
-    fn push_change_event(predicted: &mut DispatchOutcome, id: &ElementId, payload: &str) {
-        predicted
-            .element_events
-            .push(super::super::dispatch_outcome::ElementEventOut {
-                target: super::super::dispatch_outcome::node_key(id),
-                kind: ElementEventKind::Change,
-                payload: Some(payload.to_string()),
-            });
+    fn push_tree_msg_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
+        match msg {
+            TreeMsg::Batch(messages) => {
+                for nested in messages {
+                    push_tree_msg_flat(nested, out);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    fn with_interaction(element: Element) -> Element {
+        with_interaction_rect(element, 0.0, 0.0, 100.0, 40.0)
+    }
+
+    fn with_interaction_rect(
+        mut element: Element,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Element {
+        element.interaction = Some(ElementInteraction {
+            visible: true,
+            hit_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            self_radii: None,
+            clip_rect: None,
+            clip_radii: None,
+        });
+        element
+    }
+
+    fn make_element(id: u8, kind: ElementKind, attrs: Attrs) -> Element {
+        Element::with_attrs(
+            ElementId::from_term_bytes(vec![id]),
+            kind,
+            Vec::new(),
+            attrs,
+        )
+    }
+
+    fn with_frame(mut element: Element, frame: Frame) -> Element {
+        element.frame = Some(frame);
+        element
     }
 
     #[test]
-    fn reconcile_keeps_focused_session_when_descriptor_is_stale() {
-        let id = ElementId::from_term_bytes(vec![201]);
-        let stale_descriptor = make_text_input_descriptor("abc", 3, None);
-        let registry = vec![make_text_input_node(id.clone(), stale_descriptor.clone())];
+    fn listener_lane_state_buffers_and_releases_coalesced_inputs() {
+        let mut lane = ListenerLaneState::initially_stale();
+        lane.buffer_input(InputEvent::CursorPos { x: 1.0, y: 1.0 });
+        lane.buffer_input(InputEvent::CursorPos { x: 3.0, y: 4.0 });
+        lane.buffer_input(InputEvent::CursorScroll {
+            dx: 1.0,
+            dy: -2.0,
+            x: 3.0,
+            y: 4.0,
+        });
+        lane.buffer_input(InputEvent::CursorScroll {
+            dx: 2.0,
+            dy: 1.0,
+            x: 5.0,
+            y: 6.0,
+        });
 
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(stale_descriptor);
-        session.content = "abcd".to_string();
-        session.cursor = 4;
-        session.selection_anchor = Some(2);
-        session.preedit = Some("x".to_string());
-        session.preedit_cursor = Some((0, 1));
-        session.focused = true;
-        sessions.insert(id.clone(), session);
+        let buffered = lane.mark_fresh_and_take_buffered();
+        assert_eq!(buffered.len(), 2);
+        assert!(matches!(
+            buffered[0],
+            InputEvent::CursorScroll { dx, dy, x, y }
+                if (dx - 3.0).abs() < f32::EPSILON
+                    && (dy + 1.0).abs() < f32::EPSILON
+                    && (x - 5.0).abs() < f32::EPSILON
+                    && (y - 6.0).abs() < f32::EPSILON
+        ));
+        assert!(
+            matches!(buffered[1], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+        );
+    }
 
-        let mut focused = Some(id.clone());
-        let (tx, rx) = bounded(16);
+    #[test]
+    fn apply_focus_to_switches_focus_and_emits_reveal_scrolls() {
+        let previous_id = ElementId::from_term_bytes(vec![210]);
+        let next_id = ElementId::from_term_bytes(vec![211]);
+        let scroll_id = ElementId::from_term_bytes(vec![212]);
 
-        reconcile_text_input_sessions(&registry, &mut sessions, &mut focused, &tx, false);
+        let mut previous = make_text_input_state("prev", 4, None, true);
+        previous.selection_anchor = Some(1);
+        previous.preedit = Some("x".to_string());
+        previous.preedit_cursor = Some((0, 1));
+        let next = make_text_input_state("next", 0, None, false);
 
-        let session = sessions
-            .get(&id)
-            .expect("focused session should still be present");
-        assert_eq!(session.content, "abcd");
-        assert_eq!(session.cursor, 4);
-        assert_eq!(session.selection_anchor, Some(2));
-        assert_eq!(session.preedit.as_deref(), Some("x"));
-        assert_eq!(session.preedit_cursor, Some((0, 1)));
-        assert_eq!(session.descriptor.content, "abcd");
-        assert_eq!(session.descriptor.cursor, 4);
-        assert_eq!(session.descriptor.selection_anchor, Some(2));
+        let mut sessions =
+            HashMap::from([(previous_id.clone(), previous), (next_id.clone(), next)]);
+        let mut focused = Some(previous_id.clone());
+        let (tree_tx, tree_rx) = bounded(32);
 
-        let msgs = drain_msgs(&rx);
+        assert!(apply_focus_to(
+            Some(next_id.clone()),
+            &[FocusRevealScroll {
+                element_id: scroll_id.clone(),
+                dx: 12.0,
+                dy: -8.0,
+            }],
+            &mut focused,
+            &None,
+            &mut sessions,
+            &tree_tx,
+            false,
+        ));
+
+        assert_eq!(focused, Some(next_id.clone()));
+        assert!(
+            !sessions
+                .get(&previous_id)
+                .expect("previous session")
+                .focused
+        );
+        assert!(sessions.get(&next_id).expect("next session").focused);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == previous_id && !*active
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == next_id && *active
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == scroll_id
+                    && (*dx - 12.0).abs() < f32::EPSILON
+                    && (*dy + 8.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn install_rebuild_reconciles_text_sessions_and_registry() {
+        let input_id = ElementId::from_term_bytes(vec![1]);
+        let descriptor = make_text_input_state("hello", 2, None, true);
+        let base_registry = registry_builder::Registry::default();
+        let rebuild = RegistryRebuildPayload {
+            base_registry,
+            text_inputs: HashMap::from([(input_id.clone(), descriptor.clone())]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        let state = runtime.text_states.get(&input_id).expect("state created");
+        assert_eq!(state, &descriptor);
+        assert_eq!(runtime.focused_id, Some(input_id));
+        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(!runtime.listener_lane.is_stale());
+    }
+
+    #[test]
+    fn direct_runtime_dispatches_mouse_down_style_activation() {
+        let mut attrs = Attrs::default();
+        attrs.mouse_down = Some(MouseOverAttrs::default());
+        let element = with_interaction(make_element(20, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![20]) && *active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_dispatches_concrete_tab_focus_transition() {
+        let mut first_attrs = Attrs::default();
+        first_attrs.on_focus = Some(true);
+        first_attrs.focused_active = Some(true);
+        let first = with_interaction(make_element(30, ElementKind::El, first_attrs));
+
+        let mut second_attrs = Attrs::default();
+        second_attrs.on_focus = Some(true);
+        let second = with_interaction(make_element(31, ElementKind::El, second_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[first, second]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![30])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: "tab".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![30]) && !*active
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![31]) && *active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_hover_without_press_does_not_scroll() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(10.0);
+        attrs.scroll_x_max = Some(100.0);
+        let element = with_interaction(make_element(40, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 15.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(
+            drain_msgs(&tree_rx)
+                .iter()
+                .all(|msg| !matches!(msg, TreeMsg::ScrollRequest { .. }))
+        );
+    }
+
+    #[test]
+    fn direct_runtime_scrollable_only_element_drag_scrolls_after_threshold() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(10.0);
+        attrs.scroll_x_max = Some(100.0);
+        let element = with_interaction(make_element(43, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 24.0, y: 10.0 }, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 30.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![43])
+                    && (*dx - 6.0).abs() < f32::EPSILON
+                    && dy.abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_nested_drag_scroll_prefers_child_over_parent() {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(10.0);
+        parent_attrs.scroll_y_max = Some(100.0);
+        let mut parent = with_interaction(make_element(73, ElementKind::El, parent_attrs));
+        parent.children = vec![ElementId::from_term_bytes(vec![74])];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.scrollbar_y = Some(true);
+        child_attrs.scroll_y = Some(20.0);
+        child_attrs.scroll_y_max = Some(100.0);
+        let child = with_interaction(make_element(74, ElementKind::El, child_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 24.0 }, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 30.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![74])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy - 6.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_wheel_scroll_propagates_to_parent_when_child_direction_blocked() {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(10.0);
+        parent_attrs.scroll_y_max = Some(100.0);
+        let mut parent = with_interaction(make_element(75, ElementKind::El, parent_attrs));
+        parent.children = vec![ElementId::from_term_bytes(vec![76])];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.scrollbar_y = Some(true);
+        child_attrs.scroll_y = Some(100.0);
+        child_attrs.scroll_y_max = Some(100.0);
+        let child = with_interaction(make_element(76, ElementKind::El, child_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorScroll {
+                dx: 0.0,
+                dy: -6.0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![75])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 6.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_batches_multiple_tree_messages_from_single_scroll_dispatch() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_x = Some(true);
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_x_max = Some(50.0);
+        attrs.scroll_y_max = Some(40.0);
+        let element = with_interaction(make_element(88, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorScroll {
+                dx: -12.0,
+                dy: -6.0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let raw = drain_raw_msgs(&tree_rx);
+        assert!(matches!(raw.as_slice(), [TreeMsg::Batch(msgs)] if msgs.len() == 2));
+        let flat: Vec<_> = raw
+            .into_iter()
+            .flat_map(|msg| {
+                let mut out = Vec::new();
+                push_tree_msg_flat(msg, &mut out);
+                out
+            })
+            .collect();
+        assert!(flat.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![88])
+                    && (*dx + 12.0).abs() < f32::EPSILON
+                    && dy.abs() < f32::EPSILON
+        )));
+        assert!(flat.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![88])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 6.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_drag_scroll_propagates_to_parent_when_child_direction_blocked() {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(10.0);
+        parent_attrs.scroll_y_max = Some(100.0);
+        let mut parent = with_interaction(make_element(77, ElementKind::El, parent_attrs));
+        parent.children = vec![ElementId::from_term_bytes(vec![78])];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.scrollbar_y = Some(true);
+        child_attrs.scroll_y = Some(100.0);
+        child_attrs.scroll_y_max = Some(100.0);
+        let child = with_interaction(make_element(78, ElementKind::El, child_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 24.0 }, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 18.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == ElementId::from_term_bytes(vec![77])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 6.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_scrollbar_thumb_press_and_move_drags_thumb() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(20.0);
+        let element = with_frame(
+            with_interaction(make_element(79, ElementKind::El, attrs)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 200.0,
+            },
+        );
+        let mut tree = ElementTree::new();
+        tree.root = Some(ElementId::from_term_bytes(vec![79]));
+        tree.insert(element);
+        let rebuild = build_registry_rebuild(&mut tree);
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 96.0,
+                y: 12.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(matches!(runtime.runtime_overlay.scrollbar, Some(_)));
+        assert!(msgs.is_empty());
+
+        let rebuild = build_registry_rebuild(&mut tree);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 96.0, y: 20.0 }, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollbarThumbDragY { element_id, .. }
+                if *element_id == ElementId::from_term_bytes(vec![79])
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_release_then_move_does_not_start_drag_scroll() {
+        let mut attrs = Attrs::default();
+        attrs.on_click = Some(true);
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(10.0);
+        attrs.scroll_x_max = Some(100.0);
+        let element = with_interaction(make_element(41, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(
+            msgs.iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry))
+        );
+
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 40.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(
+            msgs.iter()
+                .all(|msg| !matches!(msg, TreeMsg::ScrollRequest { .. }))
+        );
+    }
+
+    #[test]
+    fn direct_runtime_elixir_only_listener_marks_stale_and_requests_rebuild() {
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_move = Some(true);
+        let element = with_interaction(make_element(42, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(
+            msgs.iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry))
+        );
+    }
+
+    #[test]
+    fn direct_runtime_text_commit_updates_content() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![50]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![50])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "c".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == id && content == "abcd"
-        )));
-    }
-
-    #[test]
-    fn reconcile_applies_descriptor_content_when_unfocused() {
-        let id = ElementId::from_term_bytes(vec![202]);
-        let descriptor = make_text_input_descriptor("server", 6, None);
-        let registry = vec![make_text_input_node(id.clone(), descriptor.clone())];
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.content = "local".to_string();
-        session.cursor = 5;
-        session.selection_anchor = Some(0);
-        session.preedit = Some("x".to_string());
-        session.preedit_cursor = Some((0, 1));
-        session.focused = false;
-        sessions.insert(id.clone(), session);
-
-        let mut focused = None;
-        let (tx, rx) = bounded(16);
-
-        reconcile_text_input_sessions(&registry, &mut sessions, &mut focused, &tx, false);
-
-        let session = sessions
-            .get(&id)
-            .expect("unfocused session should still be present");
-        assert_eq!(session.content, "server");
-        assert_eq!(session.selection_anchor, None);
-        assert_eq!(session.preedit, None);
-        assert_eq!(session.preedit_cursor, None);
-
-        let msgs = drain_msgs(&rx);
-        assert!(!msgs.iter().any(|msg| matches!(
-            msg,
-            TreeMsg::SetTextInputContent { element_id, .. } if *element_id == id
+                if *element_id == ElementId::from_term_bytes(vec![50]) && content == "abc"
         )));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
-            TreeMsg::SetTextInputRuntime { element_id, .. } if *element_id == id
+            TreeMsg::SetTextInputRuntime { element_id, cursor, .. }
+                if *element_id == ElementId::from_term_bytes(vec![50]) && *cursor == Some(3)
+        )));
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![50]))
+            .expect("session updated after commit");
+        assert_eq!(session.content, "abc");
+        assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_backspace_updates_content() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![51]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![51])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: "backspace".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == ElementId::from_term_bytes(vec![51]) && content == "a"
+        )));
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![51]))
+            .expect("session updated after backspace");
+        assert_eq!(session.content, "a");
+        assert_eq!(session.cursor, 1);
+    }
+
+    #[test]
+    fn direct_runtime_focused_text_commit_survives_followup_rebuild() {
+        let input_id = ElementId::from_term_bytes(vec![53]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
+
+        let rebuild_ab = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element.clone()]),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let rebuild_abc = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state("abc", 3, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild_ab.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild_ab, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "c".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id.clone() && content == "abc"
+        )));
+
+        runtime.handle_registry_update(rebuild_abc, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id.clone() && content != "abc"
+        )));
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "d".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let session = runtime
+            .text_states
+            .get(&input_id)
+            .expect("session updated after rebuild");
+        assert_eq!(session.content, "abcd");
+        assert_eq!(session.cursor, 4);
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id.clone() && content == "abcd"
         )));
     }
 
     #[test]
-    fn enrich_predicted_edit_change_events_uses_session_state_for_text_commit() {
-        let id = ElementId::from_term_bytes(vec![203]);
-        let descriptor = make_text_input_descriptor("abc", 3, None);
+    fn direct_runtime_hover_leave_clears_hover_state_after_rebuild() {
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(false);
+        let element = with_interaction(make_element(52, ElementKind::El, attrs.clone()));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
 
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.content = "abcd".to_string();
-        session.cursor = 4;
-        session.focused = true;
-        sessions.insert(id.clone(), session);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![52]) && *active
+        )));
 
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_edit_requests
-            .push(super::super::dispatch_outcome::TextEditReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputEditRequest::Insert("e".to_string()),
-            });
-        push_change_event(&mut predicted, &id, "abce");
+        attrs.mouse_over_active = Some(true);
+        let active_element = with_interaction(make_element(52, ElementKind::El, attrs));
+        let active_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[active_element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
 
-        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
-
-        assert_eq!(
-            change_payload_for_target(&predicted, Some(&id)).as_deref(),
-            Some("abcde")
+        runtime.handle_input_event(
+            InputEvent::CursorEntered { entered: false },
+            &tree_tx,
+            false,
         );
 
-        let target = super::super::dispatch_outcome::node_key(&id);
-        let count = predicted
-            .element_events
-            .iter()
-            .filter(|event| event.kind == ElementEventKind::Change && event.target == target)
-            .count();
-        assert_eq!(count, 1);
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![52]) && !*active
+        )));
     }
 
     #[test]
-    fn enrich_predicted_command_change_events_uses_outcome_requests() {
-        let id = ElementId::from_term_bytes(vec![209]);
-        let descriptor = make_text_input_descriptor("abc", 3, None);
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_command_requests
-            .push(super::super::dispatch_outcome::TextCommandReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputCommandRequest::Paste,
-            });
-        push_change_event(&mut predicted, &id, "stale");
-
-        let mut clipboard = ClipboardManager::new(false);
-        clipboard.set_text(crate::clipboard::ClipboardTarget::Clipboard, "z");
-
-        enrich_predicted_command_change_events(&mut predicted, true, &sessions, &mut clipboard);
-
-        assert_eq!(
-            change_payload_for_target(&predicted, Some(&id)).as_deref(),
-            Some("abcz")
+    fn direct_runtime_unhovered_scrollable_elsewhere_does_not_mask_menu_hover_leave() {
+        let mut menu_attrs = Attrs::default();
+        menu_attrs.mouse_over = Some(MouseOverAttrs::default());
+        menu_attrs.mouse_over_active = Some(true);
+        let menu = with_interaction_rect(
+            make_element(54, ElementKind::El, menu_attrs),
+            0.0,
+            0.0,
+            100.0,
+            40.0,
         );
-    }
 
-    #[test]
-    fn enrich_predicted_edit_change_events_removes_noop_backspace_change() {
-        let id = ElementId::from_term_bytes(vec![204]);
-        let descriptor = make_text_input_descriptor("abc", 0, None);
+        let plain = with_interaction_rect(
+            make_element(55, ElementKind::El, Attrs::default()),
+            0.0,
+            45.0,
+            100.0,
+            10.0,
+        );
 
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.cursor = 0;
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_edit_requests
-            .push(super::super::dispatch_outcome::TextEditReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputEditRequest::Backspace,
-            });
-        push_change_event(&mut predicted, &id, "stale");
-
-        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
-
-        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
-    }
-
-    #[test]
-    fn enrich_predicted_edit_change_events_removes_change_when_not_allowed() {
-        let id = ElementId::from_term_bytes(vec![205]);
-        let descriptor = make_text_input_descriptor("abc", 3, None);
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_edit_requests
-            .push(super::super::dispatch_outcome::TextEditReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputEditRequest::Insert("x".to_string()),
-            });
-        push_change_event(&mut predicted, &id, "stale");
-
-        enrich_predicted_edit_change_events(&mut predicted, &sessions, false);
-
-        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
-    }
-
-    #[test]
-    fn enrich_predicted_edit_change_events_removes_change_when_on_change_disabled() {
-        let id = ElementId::from_term_bytes(vec![210]);
-        let mut descriptor = make_text_input_descriptor("abc", 3, None);
-        descriptor.emit_change = false;
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_edit_requests
-            .push(super::super::dispatch_outcome::TextEditReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputEditRequest::Insert("x".to_string()),
-            });
-        push_change_event(&mut predicted, &id, "stale");
-
-        enrich_predicted_edit_change_events(&mut predicted, &sessions, true);
-
-        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
-    }
-
-    #[test]
-    fn enrich_predicted_command_change_events_removes_change_when_on_change_disabled() {
-        let id = ElementId::from_term_bytes(vec![211]);
-        let mut descriptor = make_text_input_descriptor("abc", 3, None);
-        descriptor.emit_change = false;
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut predicted = DispatchOutcome::default();
-        predicted
-            .text_command_requests
-            .push(super::super::dispatch_outcome::TextCommandReqOut {
-                target: super::super::dispatch_outcome::node_key(&id),
-                request: TextInputCommandRequest::Paste,
-            });
-        push_change_event(&mut predicted, &id, "stale");
-
-        let mut clipboard = ClipboardManager::new(false);
-        clipboard.set_text(crate::clipboard::ClipboardTarget::Clipboard, "z");
-
-        enrich_predicted_command_change_events(&mut predicted, true, &sessions, &mut clipboard);
-
-        assert_eq!(change_payload_for_target(&predicted, Some(&id)), None);
-    }
-
-    #[test]
-    fn coalesce_input_events_merges_scroll_and_keeps_last_cursor() {
-        let mut events = vec![
-            InputEvent::Key {
-                key: "a".to_string(),
-                action: ACTION_PRESS,
-                mods: 0,
+        let mut scrollable_attrs = Attrs::default();
+        scrollable_attrs.scrollbar_y = Some(true);
+        scrollable_attrs.scroll_y = Some(10.0);
+        let scrollable = with_frame(
+            with_interaction_rect(
+                make_element(56, ElementKind::El, scrollable_attrs),
+                0.0,
+                60.0,
+                100.0,
+                40.0,
+            ),
+            Frame {
+                x: 0.0,
+                y: 60.0,
+                width: 100.0,
+                height: 40.0,
+                content_width: 100.0,
+                content_height: 200.0,
             },
-            InputEvent::CursorPos { x: 1.0, y: 2.0 },
-            InputEvent::CursorScroll {
-                dx: 1.0,
-                dy: 2.0,
-                x: 3.0,
-                y: 4.0,
-            },
-            InputEvent::Focused { focused: false },
-            InputEvent::CursorPos { x: 5.0, y: 6.0 },
-            InputEvent::CursorScroll {
-                dx: 0.5,
-                dy: -1.5,
-                x: 7.0,
-                y: 8.0,
-            },
-        ];
-
-        let coalesced = coalesce_input_events(&mut events);
-
-        assert!(events.is_empty());
-        assert_eq!(coalesced.len(), 4);
-        assert!(matches!(
-            &coalesced[0],
-            InputEvent::Key { key, action, mods } if key == "a" && *action == ACTION_PRESS && *mods == 0
-        ));
-        assert!(matches!(
-            &coalesced[1],
-            InputEvent::Focused { focused: false }
-        ));
-
-        match &coalesced[2] {
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                assert_eq!(*dx, 1.5);
-                assert_eq!(*dy, 0.5);
-                assert_eq!(*x, 7.0);
-                assert_eq!(*y, 8.0);
-            }
-            _ => panic!("expected merged cursor scroll event"),
-        }
-
-        match &coalesced[3] {
-            InputEvent::CursorPos { x, y } => {
-                assert_eq!(*x, 5.0);
-                assert_eq!(*y, 6.0);
-            }
-            _ => panic!("expected final cursor position event"),
-        }
-    }
-
-    #[test]
-    fn process_input_events_resize_is_dispatch_driven_and_no_prediction_neutral() {
-        let mut processor = EventProcessor::new();
-        let mut input_handler = InputHandler::new();
-        let target = None;
-        let (tree_tx, tree_rx) = bounded(32);
-        let mut sessions = HashMap::new();
-        let mut focused = None;
-        let mut clipboard = ClipboardManager::new(false);
-        let mut no_prediction_stats = NoPredictionStats::new();
-
-        let mut events = vec![InputEvent::Resized {
-            width: 800,
-            height: 600,
-            scale_factor: 2.0,
-        }];
-
-        process_input_events(
-            &mut events,
-            &mut processor,
-            &mut input_handler,
-            &target,
-            &tree_tx,
-            false,
-            &mut sessions,
-            &mut focused,
-            &mut clipboard,
-            &mut no_prediction_stats,
-            false,
         );
 
-        assert_eq!(no_prediction_stats.total, 0);
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
 
-        let messages = drain_msgs(&tree_rx);
-        assert_eq!(messages.len(), 1);
-        assert!(matches!(
-            &messages[0],
-            TreeMsg::Resize {
-                width,
-                height,
-                scale,
-            } if *width == 800.0 && *height == 600.0 && *scale == 2.0
-        ));
-    }
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
 
-    #[test]
-    fn process_input_events_applies_dispatch_text_cursor_requests() {
-        let id = ElementId::from_term_bytes(vec![207]);
-        let descriptor = make_text_input_descriptor("abcd", 0, None);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 50.0 }, &tree_tx, false);
 
-        let mut processor = EventProcessor::new();
-        processor.rebuild_registry(vec![make_text_input_node(id.clone(), descriptor.clone())]);
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.cursor = 0;
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut input_handler = InputHandler::new();
-        let target = None;
-        let (tree_tx, _tree_rx) = bounded(32);
-        let mut focused = Some(id.clone());
-        let mut clipboard = ClipboardManager::new(false);
-        let mut no_prediction_stats = NoPredictionStats::new();
-
-        let mut events = vec![InputEvent::CursorButton {
-            button: "left".to_string(),
-            action: ACTION_PRESS,
-            mods: 0,
-            x: 0.0,
-            y: 10.0,
-        }];
-
-        process_input_events(
-            &mut events,
-            &mut processor,
-            &mut input_handler,
-            &target,
-            &tree_tx,
-            false,
-            &mut sessions,
-            &mut focused,
-            &mut clipboard,
-            &mut no_prediction_stats,
-            false,
-        );
-
-        let session = sessions
-            .get(&id)
-            .expect("text session should exist after cursor request");
-        assert_eq!(session.cursor, 0);
-        assert_eq!(no_prediction_stats.total, 0);
-    }
-
-    #[test]
-    fn matched_dispatch_job_with_empty_outcome_does_not_increment_no_prediction() {
-        let id = ElementId::from_term_bytes(vec![208]);
-        let descriptor = make_text_input_descriptor("abc", 3, None);
-
-        let mut processor = EventProcessor::new();
-        processor.rebuild_registry(vec![make_text_input_node(id.clone(), descriptor.clone())]);
-        processor.focused_id = Some(id.clone());
-
-        let mut sessions = HashMap::new();
-        let mut session = TextInputSession::from_descriptor(descriptor);
-        session.focused = true;
-        sessions.insert(id.clone(), session);
-
-        let mut input_handler = InputHandler::new();
-        let target = None;
-        let (tree_tx, _tree_rx) = bounded(32);
-        let mut focused = Some(id);
-        let mut clipboard = ClipboardManager::new(false);
-        let mut no_prediction_stats = NoPredictionStats::new();
-
-        let mut events = vec![InputEvent::Key {
-            key: "a".to_string(),
-            action: ACTION_PRESS,
-            mods: 0,
-        }];
-
-        process_input_events(
-            &mut events,
-            &mut processor,
-            &mut input_handler,
-            &target,
-            &tree_tx,
-            false,
-            &mut sessions,
-            &mut focused,
-            &mut clipboard,
-            &mut no_prediction_stats,
-            false,
-        );
-
-        assert_eq!(no_prediction_stats.total, 0);
-        assert_eq!(no_prediction_stats.unclassified, 0);
-    }
-
-    #[test]
-    fn no_prediction_still_advances_hover_state_for_leave_only_target() {
-        let id = ElementId::from_term_bytes(vec![206]);
-
-        let mut processor = EventProcessor::new();
-        processor.rebuild_registry(vec![make_mouse_leave_only_node(id)]);
-
-        let mut input_handler = InputHandler::new();
-        let target = None;
-        let (tree_tx, _tree_rx) = bounded(32);
-        let mut sessions = HashMap::new();
-        let mut focused = None;
-        let mut clipboard = ClipboardManager::new(false);
-        let mut no_prediction_stats = NoPredictionStats::new();
-
-        let mut first = vec![InputEvent::CursorPos { x: 10.0, y: 10.0 }];
-        process_input_events(
-            &mut first,
-            &mut processor,
-            &mut input_handler,
-            &target,
-            &tree_tx,
-            false,
-            &mut sessions,
-            &mut focused,
-            &mut clipboard,
-            &mut no_prediction_stats,
-            false,
-        );
-        assert_eq!(no_prediction_stats.total, 1);
-
-        let mut second = vec![InputEvent::CursorEntered { entered: false }];
-        process_input_events(
-            &mut second,
-            &mut processor,
-            &mut input_handler,
-            &target,
-            &tree_tx,
-            false,
-            &mut sessions,
-            &mut focused,
-            &mut clipboard,
-            &mut no_prediction_stats,
-            false,
-        );
-
-        assert_eq!(
-            no_prediction_stats.total, 1,
-            "leave-only hover target should emit prediction on window-leave after state advancement"
-        );
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == ElementId::from_term_bytes(vec![54]) && !*active
+        )));
     }
 }

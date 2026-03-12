@@ -329,7 +329,7 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
         }
     }
 
-    if incoming.mouse_over.is_none() {
+    if !supports_mouse_over_tracking(incoming) {
         incoming.mouse_over_active = None;
     }
 
@@ -339,6 +339,12 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
 
     normalize_scrollbar_hover_axis(incoming);
     normalize_text_input_runtime(incoming);
+}
+
+pub fn supports_mouse_over_tracking(attrs: &Attrs) -> bool {
+    attrs.mouse_over.is_some()
+        || attrs.on_mouse_enter.unwrap_or(false)
+        || attrs.on_mouse_leave.unwrap_or(false)
 }
 
 fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
@@ -1593,6 +1599,21 @@ mod tests {
             alpha: Some(0.5),
             ..Default::default()
         });
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_over_active, Some(true));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_event_only_hover_active() {
+        let mut existing = Attrs::default();
+        existing.on_mouse_enter = Some(true);
+        existing.on_mouse_leave = Some(true);
+        existing.mouse_over_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        incoming.on_mouse_enter = Some(true);
+        incoming.on_mouse_leave = Some(true);
 
         preserve_runtime_scroll_attrs(&existing, &mut incoming);
         assert_eq!(incoming.mouse_over_active, Some(true));

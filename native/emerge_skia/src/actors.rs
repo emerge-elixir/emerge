@@ -1,6 +1,6 @@
 use rustler::LocalPid;
 
-use crate::events::EventNode;
+use crate::events::RegistryRebuildPayload;
 use crate::input::InputEvent;
 use crate::renderer::DrawCmd;
 use crate::tree::element::ElementId;
@@ -63,13 +63,15 @@ pub enum TreeMsg {
         preedit: Option<String>,
         preedit_cursor: Option<(u32, u32)>,
     },
+    Batch(Vec<TreeMsg>),
+    RebuildRegistry,
     AssetStateChanged,
     Stop,
 }
 
 pub enum EventMsg {
     InputEvent(InputEvent),
-    RegistryUpdate { registry: Vec<EventNode> },
+    RegistryUpdate { rebuild: RegistryRebuildPayload },
     SetInputMask(u32),
     SetInputTarget(Option<LocalPid>),
     Stop,
