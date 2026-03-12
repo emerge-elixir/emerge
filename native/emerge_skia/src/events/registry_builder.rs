@@ -46,7 +46,9 @@ use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
-use crate::tree::element::{Element, ElementId, ElementKind, ElementTree};
+#[cfg(test)]
+use crate::tree::element::NearbySlot;
+use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, RetainedPaintPhase};
 use crate::tree::interaction::{self as tree_interaction, CornerRadii, ElementInteraction, Rect};
 use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
 
@@ -717,36 +719,14 @@ fn runtime_click_press_release_listener(
     let source = runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
     let region = runtime_press_region_from_source(source)?;
 
-    let actions: Vec<ListenerAction> = [
-        tracker.emit_click.then(|| {
-            ListenerAction::ElixirEvent(ElixirEvent {
-                element_id: tracker.element_id.clone(),
-                kind: ElementEventKind::Click,
-                payload: None,
-            })
-        }),
-        tracker.emit_press_pointer.then(|| {
-            ListenerAction::ElixirEvent(ElixirEvent {
-                element_id: tracker.element_id.clone(),
-                kind: ElementEventKind::Press,
-                payload: None,
-            })
-        }),
-        Some(ListenerAction::RuntimeChange(
-            RuntimeChange::ClearClickPressTracker,
-        )),
-        Some(ListenerAction::RuntimeChange(
-            RuntimeChange::ClearDragTracker,
-        )),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    (!actions.is_empty()).then(|| Listener {
+    Some(Listener {
         element_id: Some(tracker.element_id.clone()),
         matcher: ListenerMatcher::CursorButtonLeftReleaseInside { region },
-        compute: ListenerCompute::Static { actions },
+        compute: ListenerCompute::ClickPressReleaseFollowupToBase {
+            element_id: tracker.element_id.clone(),
+            emit_click: tracker.emit_click,
+            emit_press_pointer: tracker.emit_press_pointer,
+        },
     })
 }
 
@@ -1608,6 +1588,12 @@ pub enum ListenerCompute {
         element_id: ElementId,
         extend_selection: bool,
     },
+    /// Emit pointer click/press followups, then redispatch raw release into the base registry.
+    ClickPressReleaseFollowupToBase {
+        element_id: ElementId,
+        emit_click: bool,
+        emit_press_pointer: bool,
+    },
     /// Promote drag threshold tracking using cursor-move payload.
     PromoteDragTrackerFromCursorPos {
         element_id: ElementId,
@@ -1743,6 +1729,38 @@ impl ListenerCompute {
                     *extend_selection,
                 ))
                 .collect(),
+            ListenerCompute::ClickPressReleaseFollowupToBase {
+                element_id,
+                emit_click,
+                emit_press_pointer,
+            } => match input.raw() {
+                Some(InputEvent::CursorButton { button, action, .. })
+                    if button == "left" && *action == ACTION_RELEASE =>
+                {
+                    ctx.dispatch_base(input)
+                        .into_iter()
+                        .chain((*emit_click).then(|| {
+                            ListenerAction::ElixirEvent(ElixirEvent {
+                                element_id: element_id.clone(),
+                                kind: ElementEventKind::Click,
+                                payload: None,
+                            })
+                        }))
+                        .chain((*emit_press_pointer).then(|| {
+                            ListenerAction::ElixirEvent(ElixirEvent {
+                                element_id: element_id.clone(),
+                                kind: ElementEventKind::Press,
+                                payload: None,
+                            })
+                        }))
+                        .chain([
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                        ])
+                        .collect()
+                }
+                _ => Vec::new(),
+            },
             ListenerCompute::PromoteDragTrackerFromCursorPos {
                 element_id,
                 matcher_kind,
@@ -3687,9 +3705,14 @@ pub(crate) fn accumulate_subtree_rebuild(
     };
 
     let next_scroll_contexts = accumulate_element_rebuild(acc, element, scroll_contexts);
-    for child_id in &element.children {
-        accumulate_subtree_rebuild(tree, child_id, acc, &next_scroll_contexts);
-    }
+    element.for_each_paint_child(|child| {
+        let next_contexts = match child.phase {
+            RetainedPaintPhase::Children => &next_scroll_contexts,
+            RetainedPaintPhase::BehindContent | RetainedPaintPhase::Overlay(_) => scroll_contexts,
+        };
+
+        accumulate_subtree_rebuild(tree, child.id, acc, next_contexts);
+    });
 }
 
 pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuildPayload {
@@ -3716,7 +3739,13 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
 fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
     let child_ids: HashSet<ElementId> = elements
         .iter()
-        .flat_map(|element| element.children.iter().cloned())
+        .flat_map(|element| {
+            element.children.iter().cloned().chain(
+                NearbySlot::PAINT_ORDER
+                    .into_iter()
+                    .filter_map(|slot| element.nearby.get(slot).cloned()),
+            )
+        })
         .collect();
 
     elements
@@ -5518,7 +5547,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_rematerializes_click_release_followup_from_source() {
+    fn compose_combined_registry_click_release_followup_redispatches_base_release() {
         let mut attrs = Attrs::default();
         attrs.on_click = Some(true);
         let element = with_interaction(make_element(27, attrs), true);
@@ -5536,8 +5565,13 @@ mod tests {
             text_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
 
-        let actions = first_matching_actions(
+        let actions = first_matching_actions_with_ctx(
             &combined,
             &InputEvent::CursorButton {
                 button: "left".to_string(),
@@ -5546,6 +5580,7 @@ mod tests {
                 x: 10.0,
                 y: 10.0,
             },
+            &mut ctx,
         );
 
         assert!(matches!(
@@ -5581,8 +5616,13 @@ mod tests {
             text_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
 
-        let actions = first_matching_actions(
+        let actions = first_matching_actions_with_ctx(
             &combined,
             &InputEvent::CursorButton {
                 button: "left".to_string(),
@@ -5591,9 +5631,62 @@ mod tests {
                 x: 10.0,
                 y: 10.0,
             },
+            &mut ctx,
         );
 
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn compose_combined_registry_on_press_release_includes_base_mouse_down_clear() {
+        let mut attrs = Attrs::default();
+        attrs.on_press = Some(true);
+        attrs.mouse_down = Some(MouseOverAttrs::default());
+        attrs.mouse_down_active = Some(true);
+        let element = with_interaction(make_element(91, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: Some(ClickPressTracker {
+                element_id: ElementId::from_term_bytes(vec![91]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                emit_click: false,
+                emit_press_pointer: true,
+            }),
+            drag: DragTrackerState::Inactive,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active }),
+                ListenerAction::ElixirEvent(ElixirEvent { kind, .. }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+            ] if *element_id == ElementId::from_term_bytes(vec![91])
+                && !*active
+                && *kind == ElementEventKind::Press
+        ));
     }
 
     #[test]

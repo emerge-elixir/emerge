@@ -2,39 +2,42 @@
 
 ## Purpose
 
-This document records the intended nearby behavior for `above`, `below`,
+This document records the retained nearby model for `above`, `below`,
 `on_left`, `on_right`, `in_front`, and `behind_content`.
 
-It also records the current architectural split:
+Public Elixir API remains attr-shaped, but nearby is now a first-class retained
+mount relation internally.
 
-- visual nearby semantics are implemented now
-- event/focus/state parity is deferred until nearby is integrated into the
-  retained event system
+## Retained Model
 
-The target reference is elm-ui's intended nearby model, not current CSS border-box
-quirks.
+- Elixir still exposes nearby through `Emerge.UI` attrs.
+- Reconciliation splits nearby out of normal attrs and treats each slot as a
+  host-owned mount.
+- Nearby root ids are host-scoped. The nearby root id is derived from
+  `{host_id, slot, local_identity}`.
+- EMRG v4 stores nearby as node-level mount refs, not attr-embedded EMRG blobs.
+- Rust stores nearby roots on `Element.nearby`, not in `Attrs`.
+- Layout computes nearby frames once and render, interaction, and listener
+  rebuild all consume that retained geometry.
 
-## Current Data Model
+## Canonical Traversal Order
 
-- Elixir exposes nearby through `Emerge.UI` attrs (`above`, `below`, `on_left`,
-  `on_right`, `in_front`, `behind_content`).
-- EMRG encodes each nearby attr as `u32 len + EMRG subtree bytes`.
-- Rust stores those payloads in `Attrs` as raw nested subtree bytes.
-- nearby roots still receive normal element ids during Elixir reconciliation
-  before serialization.
-- Rust currently decodes, lays out, and renders nearby on demand during the render
-  pass.
+Nearby uses the same retained order for paint-sensitive traversal, hit testing,
+listener precedence, and focus order:
 
-Consequences of the current model:
+1. host element
+2. `behind_content`
+3. normal `children`
+4. `above`
+5. `on_right`
+6. `below`
+7. `on_left`
+8. `in_front`
 
-- nearby visuals can be correct without changing the main tree model
-- nearby is not yet a first-class retained subtree for interaction/runtime state
-- id stability exists at serialization time, but Rust does not yet preserve nearby
-  runtime state against those ids because nearby is not retained in the main tree
+This is the order exposed by `Element::for_each_paint_child(...)` on the Rust
+side.
 
-## Visual Slot Model
-
-Nearby layout is driven by a slot owned by the host element.
+## Slot Geometry
 
 ### `in_front`
 
@@ -43,13 +46,13 @@ Nearby layout is driven by a slot owned by the host element.
 - active alignment axes: horizontal and vertical
 - `width fill`: fills slot width
 - `height fill`: fills slot height
-- explicit sizes may exceed the slot and overflow
+- explicit sizes may overflow the slot
 
 ### `behind_content`
 
 - same slot geometry as `in_front`
 - same fill and overflow rules as `in_front`
-- rendered between host background and host content
+- rendered after host background/pre-layers and before normal children
 
 ### `above`
 
@@ -58,7 +61,7 @@ Nearby layout is driven by a slot owned by the host element.
 - default origin: host left edge, above host top
 - active alignment axis: horizontal only
 - `width fill`: fills host width
-- `height fill`: does not stretch; it behaves like content-sized height
+- `height fill`: remains content-sized
 
 ### `below`
 
@@ -72,7 +75,7 @@ Nearby layout is driven by a slot owned by the host element.
 - default origin: host top edge, left of host
 - active alignment axis: vertical only
 - `height fill`: fills host height
-- `width fill`: does not stretch; it behaves like content-sized width
+- `width fill`: remains content-sized
 
 ### `on_right`
 
@@ -87,102 +90,35 @@ Nearby root alignment uses the nearby root element's own `align_x` / `align_y`.
 - `on_left` / `on_right`: use `align_y`; ignore `align_x`
 - `in_front` / `behind_content`: use both axes
 
-Default nearby alignment is start/start:
+Default nearby alignment is start/start (`left`, `top`).
 
-- horizontal default: left
-- vertical default: top
+## Clip And Scroll Semantics
 
-Examples:
+- nearby inherits ancestor clip lineage
+- nearby also respects the host overflow clip when rendered/hit-tested through a
+  clipped host
+- nearby does **not** inherit the host content scroll translation
+- normal children do inherit the host content scroll translation
 
-- `in_front` + `centerX`: center horizontally inside the host slot
-- `in_front` + `alignBottom`: pin bottom edge to host bottom edge
-- `above` + `alignRight`: pin right edge to host right edge
-- `on_right` + `centerY`: center vertically against host height
+That distinction is important: nearby is retained with the host, but it is not a
+flow child and it is not part of the host scrollable content plane.
 
-## Fill And Overflow Rules
+## Consequences
 
-- `fill` only stretches on the slot axis
-- explicit `px` sizes are never auto-clamped to the slot
-- when explicit size exceeds slot size, overflow direction depends on alignment:
-  - start alignment overflows toward positive space
-  - center alignment overflows on both sides
-  - end alignment overflows toward negative space
+- nearby is hit-testable
+- nearby participates in listener rebuilds
+- nearby participates in focus order
+- nearby hover/focus/text-input runtime state is preserved like normal retained
+  nodes
+- listener precedence now matches nearby paint order automatically
 
-Examples for a `100px` wide host and a `160px` wide `in_front` child:
+## Key Files
 
-- default / `alignLeft`: `x = 0`, visible span `0..160`
-- `centerX`: `x = -30`, visible span `-30..130`
-- `alignRight`: `x = -60`, visible span `-60..100`
-
-## Render And Clip Order
-
-Current visual ordering:
-
-1. host transform
-2. host shadows/background
-3. host overflow clip begins
-4. `behind_content`
-5. host content / children
-6. host border / scrollbars
-7. front nearby (`above`, `below`, `on_left`, `on_right`, `in_front`)
-8. host transform restore
-
-Clip behavior:
-
-- `behind_content` renders under the active host overflow clip
-- front nearby re-applies the host overflow clip before drawing
-- ancestor clips remain active, so nearby still respects ancestor clip lineage
-- no clip is introduced from border radius alone; clip semantics come from overflow
-  clipping (`clip_x`, `clip_y`, scroll clipping)
-
-Important distinction:
-
-- slot geometry uses the host border-box for `in_front` / `behind_content`
-- clip geometry still uses normal overflow clip rules, which may clip to padded
-  content bounds on clipped axes
-
-## Ordering Semantics Across The Tree
-
-Current render traversal preserves these useful elm-ui-style properties:
-
-- parent `in_front` renders after child `in_front`
-- parent `behind_content` renders before child overlays but after the parent's
-  background
-- later siblings render after earlier siblings, so overlapping outside-nearby on
-  sibling hosts follows source order
-
-## Known Current Limits
-
-Nearby is still visual-only.
-
-- nearby is not included in rebuilt listener data
-- nearby is not hit-testable
-- nearby focus/text-input runtime state is not preserved as first-class node state
-- root `in_front` does not yet have a viewport-fixed special case
-
-## Deferred Full-Parity Requirements
-
-When nearby is integrated into the retained event system, it should move from
-render-local subtrees to first-class retained mounts.
-
-Requirements for that later phase:
-
-- nearby geometry must be computed once and shared by render, hit testing, and
-  listener registry construction
-- nearby nodes need host-scoped stable identity so runtime hover/focus/text-input
-  state survives tree rebuilds
-- listener precedence must match nearby render order
-- clip and rounded-corner decisions must come from the same geometry source used
-  by rendering
-- root `in_front` should gain a viewport-fixed mode equivalent to elm-ui layout
-  overlays
-
-## Files To Revisit Later
-
-- `native/emerge_skia/src/tree/render.rs`
-- `native/emerge_skia/src/tree/layout.rs`
-- `native/emerge_skia/src/tree/interaction.rs`
-- `native/emerge_skia/src/events.rs`
-- `native/emerge_skia/src/events/registry_builder.rs`
 - `lib/emerge/reconcile.ex`
-- `lib/emerge/diff_state.ex`
+- `lib/emerge/serialization.ex`
+- `lib/emerge/patch.ex`
+- `native/emerge_skia/src/tree/element.rs`
+- `native/emerge_skia/src/tree/layout.rs`
+- `native/emerge_skia/src/tree/render.rs`
+- `native/emerge_skia/src/tree/interaction.rs`
+- `native/emerge_skia/src/events/registry_builder.rs`

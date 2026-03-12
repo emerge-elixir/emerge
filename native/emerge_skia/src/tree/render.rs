@@ -3,15 +3,11 @@
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 use super::attrs::{
-    AlignX, AlignY, Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, ImageFit,
-    ImageSource, Padding, TextAlign,
+    Attrs, Background, BorderRadius, BorderStyle, BorderWidth, Color, ImageFit, ImageSource,
+    Padding, TextAlign,
 };
-use super::deserialize::decode_tree;
-use super::element::{Element, ElementId, ElementKind, ElementTree, Frame};
-use super::layout::{
-    AvailableSpace, Constraint, FontContext, SkiaTextMeasurer, font_info_with_inheritance,
-    layout_tree_with_context,
-};
+use super::element::{Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot};
+use super::layout::{FontContext, font_info_with_inheritance};
 use super::scrollbar;
 use crate::assets::{self, AssetStatus};
 use crate::events::{RegistryRebuildPayload, registry_builder};
@@ -148,7 +144,18 @@ fn render_element(
 
     let clip_state = begin_overflow_clipping(commands, frame, attrs);
 
-    render_nearby_behind(commands, frame, attrs, &element_context);
+    render_nearby_slot(
+        tree,
+        element,
+        NearbySlot::BehindContent,
+        commands,
+        &element_context,
+        text_input_focused,
+        text_input_cursor_area,
+        event_acc.as_deref_mut(),
+        scroll_contexts,
+        collect_events,
+    );
 
     match element.kind {
         ElementKind::Text => render_text_content(commands, frame, attrs, inherited),
@@ -198,7 +205,17 @@ fn render_element(
 
     finish_overflow_clipping(commands, frame, attrs, clip_state);
 
-    render_nearby_overlays(commands, frame, attrs, &element_context);
+    render_nearby_overlays(
+        tree,
+        element,
+        commands,
+        &element_context,
+        text_input_focused,
+        text_input_cursor_area,
+        event_acc.as_deref_mut(),
+        scroll_contexts,
+        collect_events,
+    );
 
     pop_element_transform(commands, transform_state);
 }
@@ -220,34 +237,25 @@ fn render_pre_layers(
     push_box_shadows(commands, frame, attrs, radius, true);
 }
 
-fn render_nearby_behind(
-    commands: &mut Vec<DrawCmd>,
-    frame: Frame,
-    attrs: &Attrs,
-    inherited: &FontContext,
-) {
-    if let Some(behind_bytes) = &attrs.behind {
-        render_nearby_element(
-            behind_bytes,
-            frame,
-            NearbyPosition::Behind,
-            commands,
-            inherited,
-        );
-    }
-}
-
 fn render_nearby_overlays(
+    tree: &ElementTree,
+    element: &Element,
     commands: &mut Vec<DrawCmd>,
-    frame: Frame,
-    attrs: &Attrs,
     inherited: &FontContext,
+    text_input_focused: &mut bool,
+    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
+    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
+    scroll_contexts: &[registry_builder::ScrollContext],
+    collect_events: bool,
 ) {
-    let has_overlays = attrs.above.is_some()
-        || attrs.below.is_some()
-        || attrs.on_left.is_some()
-        || attrs.on_right.is_some()
-        || attrs.in_front.is_some();
+    let Some(frame) = element.frame else {
+        return;
+    };
+
+    let attrs = &element.attrs;
+    let has_overlays = NearbySlot::OVERLAY_PAINT_ORDER
+        .into_iter()
+        .any(|slot| element.nearby.get(slot).is_some());
 
     if !has_overlays {
         return;
@@ -263,55 +271,53 @@ fn render_nearby_overlays(
         push_overflow_clip(commands, clip.as_ref(), mode);
     }
 
-    if let Some(above_bytes) = &attrs.above {
-        render_nearby_element(
-            above_bytes,
-            frame,
-            NearbyPosition::Above,
+    for slot in NearbySlot::OVERLAY_PAINT_ORDER {
+        render_nearby_slot(
+            tree,
+            element,
+            slot,
             commands,
             inherited,
-        );
-    }
-    if let Some(below_bytes) = &attrs.below {
-        render_nearby_element(
-            below_bytes,
-            frame,
-            NearbyPosition::Below,
-            commands,
-            inherited,
-        );
-    }
-    if let Some(on_left_bytes) = &attrs.on_left {
-        render_nearby_element(
-            on_left_bytes,
-            frame,
-            NearbyPosition::OnLeft,
-            commands,
-            inherited,
-        );
-    }
-    if let Some(on_right_bytes) = &attrs.on_right {
-        render_nearby_element(
-            on_right_bytes,
-            frame,
-            NearbyPosition::OnRight,
-            commands,
-            inherited,
-        );
-    }
-    if let Some(in_front_bytes) = &attrs.in_front {
-        render_nearby_element(
-            in_front_bytes,
-            frame,
-            NearbyPosition::InFront,
-            commands,
-            inherited,
+            text_input_focused,
+            text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            scroll_contexts,
+            collect_events,
         );
     }
 
     if clip.is_some() {
         commands.push(DrawCmd::PopClip);
     }
+}
+
+fn render_nearby_slot(
+    tree: &ElementTree,
+    element: &Element,
+    slot: NearbySlot,
+    commands: &mut Vec<DrawCmd>,
+    inherited: &FontContext,
+    text_input_focused: &mut bool,
+    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
+    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
+    scroll_contexts: &[registry_builder::ScrollContext],
+    collect_events: bool,
+) {
+    let Some(nearby_id) = element.nearby.get(slot) else {
+        return;
+    };
+
+    render_element(
+        tree,
+        nearby_id,
+        commands,
+        inherited,
+        text_input_focused,
+        text_input_cursor_area,
+        event_acc.as_deref_mut(),
+        scroll_contexts,
+        collect_events,
+    );
 }
 
 fn push_box_shadows(
@@ -1691,172 +1697,6 @@ fn text_offset_for_char_index(
     total
 }
 
-// =============================================================================
-// Nearby Element Rendering
-// =============================================================================
-
-/// Position for nearby elements relative to the parent.
-#[derive(Clone, Copy, Debug)]
-enum NearbyPosition {
-    Above,
-    Below,
-    OnLeft,
-    OnRight,
-    InFront,
-    Behind,
-}
-
-/// Decode, layout, and render a nearby element.
-fn render_nearby_element(
-    data: &[u8],
-    parent_frame: Frame,
-    position: NearbyPosition,
-    commands: &mut Vec<DrawCmd>,
-    inherited: &FontContext,
-) {
-    // Decode the nearby element tree from EMRG bytes
-    let mut nearby_tree = match decode_tree(data) {
-        Ok(tree) => tree,
-        Err(_) => return,
-    };
-
-    if nearby_tree.is_empty() {
-        return;
-    }
-
-    let constraint = nearby_constraint(parent_frame, position);
-    layout_tree_with_context(
-        &mut nearby_tree,
-        constraint,
-        1.0,
-        &SkiaTextMeasurer,
-        inherited,
-    );
-
-    // Get the nearby element's computed size
-    let Some(root_id) = nearby_tree.root.clone() else {
-        return;
-    };
-    let (nearby_frame, align_x, align_y) = {
-        let Some(root) = nearby_tree.get(&root_id) else {
-            return;
-        };
-        let Some(frame) = root.frame else {
-            return;
-        };
-        (
-            frame,
-            root.attrs.align_x.unwrap_or_default(),
-            root.attrs.align_y.unwrap_or_default(),
-        )
-    };
-
-    let (target_x, target_y) =
-        nearby_origin(parent_frame, nearby_frame, position, align_x, align_y);
-
-    // Shift the entire nearby tree to the calculated position.
-    shift_nearby_tree(
-        &mut nearby_tree,
-        target_x - nearby_frame.x,
-        target_y - nearby_frame.y,
-    );
-
-    // Render the nearby tree
-    let mut focused = false;
-    let mut cursor_area = None;
-    render_element(
-        &nearby_tree,
-        &root_id,
-        commands,
-        inherited,
-        &mut focused,
-        &mut cursor_area,
-        None,
-        &[],
-        false,
-    );
-}
-
-fn nearby_constraint(parent_frame: Frame, position: NearbyPosition) -> Constraint {
-    match position {
-        NearbyPosition::InFront | NearbyPosition::Behind => {
-            Constraint::new(parent_frame.width, parent_frame.height)
-        }
-        NearbyPosition::Above | NearbyPosition::Below => Constraint::with_space(
-            AvailableSpace::Definite(parent_frame.width),
-            AvailableSpace::MaxContent,
-        ),
-        NearbyPosition::OnLeft | NearbyPosition::OnRight => Constraint::with_space(
-            AvailableSpace::MaxContent,
-            AvailableSpace::Definite(parent_frame.height),
-        ),
-    }
-}
-
-fn nearby_origin(
-    parent_frame: Frame,
-    nearby_frame: Frame,
-    position: NearbyPosition,
-    align_x: AlignX,
-    align_y: AlignY,
-) -> (f32, f32) {
-    let x = match position {
-        NearbyPosition::Above
-        | NearbyPosition::Below
-        | NearbyPosition::InFront
-        | NearbyPosition::Behind => aligned_x_in_slot(
-            parent_frame.x,
-            parent_frame.width,
-            nearby_frame.width,
-            align_x,
-        ),
-        NearbyPosition::OnLeft => parent_frame.x - nearby_frame.width,
-        NearbyPosition::OnRight => parent_frame.x + parent_frame.width,
-    };
-
-    let y = match position {
-        NearbyPosition::Above => parent_frame.y - nearby_frame.height,
-        NearbyPosition::Below => parent_frame.y + parent_frame.height,
-        NearbyPosition::OnLeft
-        | NearbyPosition::OnRight
-        | NearbyPosition::InFront
-        | NearbyPosition::Behind => aligned_y_in_slot(
-            parent_frame.y,
-            parent_frame.height,
-            nearby_frame.height,
-            align_y,
-        ),
-    };
-
-    (x, y)
-}
-
-fn aligned_x_in_slot(slot_x: f32, slot_width: f32, nearby_width: f32, align_x: AlignX) -> f32 {
-    match align_x {
-        AlignX::Left => slot_x,
-        AlignX::Center => slot_x + (slot_width - nearby_width) / 2.0,
-        AlignX::Right => slot_x + slot_width - nearby_width,
-    }
-}
-
-fn aligned_y_in_slot(slot_y: f32, slot_height: f32, nearby_height: f32, align_y: AlignY) -> f32 {
-    match align_y {
-        AlignY::Top => slot_y,
-        AlignY::Center => slot_y + (slot_height - nearby_height) / 2.0,
-        AlignY::Bottom => slot_y + slot_height - nearby_height,
-    }
-}
-
-/// Shift all frames in a nearby tree by the given offset.
-fn shift_nearby_tree(tree: &mut ElementTree, offset_x: f32, offset_y: f32) {
-    for element in tree.nodes.values_mut() {
-        if let Some(ref mut frame) = element.frame {
-            frame.x += offset_x;
-            frame.y += offset_y;
-        }
-    }
-}
-
 /// Extract a uniform radius value from a BorderRadius, or 0.0 if per-corner.
 fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
     match radius {
@@ -1868,9 +1708,8 @@ fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::attrs::{Attrs, decode_attrs};
+    use crate::tree::attrs::{AlignX, AlignY, Attrs};
     use crate::tree::element::Element;
-    use crate::tree::serialize::encode_tree;
 
     #[test]
     fn test_named_colors() {
@@ -2184,66 +2023,48 @@ mod tests {
         let default_x = AlignX::Left;
         let default_y = AlignY::Top;
 
-        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Above, default_x, default_y);
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::Above, default_x, default_y);
         assert_eq!(x, 100.0);
         assert_eq!(y, 80.0);
 
-        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Below, default_x, default_y);
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::Below, default_x, default_y);
         assert_eq!(x, 100.0);
         assert_eq!(y, 150.0);
 
-        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::OnLeft, default_x, default_y);
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::OnLeft, default_x, default_y);
         assert_eq!(x, 50.0);
         assert_eq!(y, 100.0);
 
-        let (x, y) = nearby_origin(
-            parent,
-            nearby,
-            NearbyPosition::OnRight,
-            default_x,
-            default_y,
-        );
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::OnRight, default_x, default_y);
         assert_eq!(x, 300.0);
         assert_eq!(y, 100.0);
 
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::InFront, default_x, default_y);
+        assert_eq!(x, 100.0);
+        assert_eq!(y, 100.0);
+
         let (x, y) = nearby_origin(
             parent,
             nearby,
-            NearbyPosition::InFront,
+            NearbySlot::BehindContent,
             default_x,
             default_y,
         );
         assert_eq!(x, 100.0);
         assert_eq!(y, 100.0);
 
-        let (x, y) = nearby_origin(parent, nearby, NearbyPosition::Behind, default_x, default_y);
-        assert_eq!(x, 100.0);
-        assert_eq!(y, 100.0);
-
-        let (x, y) = nearby_origin(
-            parent,
-            nearby,
-            NearbyPosition::Above,
-            AlignX::Center,
-            default_y,
-        );
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::Above, AlignX::Center, default_y);
         assert_eq!(x, 175.0);
         assert_eq!(y, 80.0);
 
-        let (x, y) = nearby_origin(
-            parent,
-            nearby,
-            NearbyPosition::Below,
-            AlignX::Right,
-            default_y,
-        );
+        let (x, y) = nearby_origin(parent, nearby, NearbySlot::Below, AlignX::Right, default_y);
         assert_eq!(x, 250.0);
         assert_eq!(y, 150.0);
 
         let (x, y) = nearby_origin(
             parent,
             nearby,
-            NearbyPosition::OnLeft,
+            NearbySlot::OnLeft,
             default_x,
             AlignY::Center,
         );
@@ -2253,7 +2074,7 @@ mod tests {
         let (x, y) = nearby_origin(
             parent,
             nearby,
-            NearbyPosition::OnRight,
+            NearbySlot::OnRight,
             default_x,
             AlignY::Bottom,
         );
@@ -2263,7 +2084,7 @@ mod tests {
         let (x, y) = nearby_origin(
             parent,
             nearby,
-            NearbyPosition::InFront,
+            NearbySlot::InFront,
             AlignX::Right,
             AlignY::Bottom,
         );
@@ -2368,87 +2189,72 @@ mod tests {
         tree
     }
 
-    fn encode_attrs_raw(records: Vec<Vec<u8>>) -> Vec<u8> {
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&(records.len() as u16).to_be_bytes());
-        for record in records {
-            raw.extend_from_slice(&record);
-        }
-        raw
+    fn mount_nearby(
+        tree: &mut ElementTree,
+        host_id: &ElementId,
+        slot: NearbySlot,
+        kind: ElementKind,
+        attrs: Attrs,
+        frame: Frame,
+        id_byte: u8,
+    ) {
+        let nearby_id = ElementId::from_term_bytes(vec![id_byte]);
+        let mut nearby = Element::with_attrs(nearby_id.clone(), kind, Vec::new(), attrs);
+        nearby.frame = Some(frame);
+        tree.insert(nearby);
+        tree.get_mut(host_id)
+            .expect("host should exist")
+            .nearby
+            .set(slot, Some(nearby_id));
     }
 
-    fn attr_width_px(width: f64) -> Vec<u8> {
-        let mut record = vec![1, 2];
-        record.extend_from_slice(&width.to_be_bytes());
-        record
+    fn solid_fill_attrs(rgb: (u8, u8, u8)) -> Attrs {
+        let mut attrs = Attrs::default();
+        attrs.background = Some(Background::Color(Color::Rgb {
+            r: rgb.0,
+            g: rgb.1,
+            b: rgb.2,
+        }));
+        attrs
     }
 
-    fn attr_height_px(height: f64) -> Vec<u8> {
-        let mut record = vec![2, 2];
-        record.extend_from_slice(&height.to_be_bytes());
-        record
-    }
-
-    fn attr_width_fill() -> Vec<u8> {
-        vec![1, 0]
-    }
-
-    fn attr_height_fill() -> Vec<u8> {
-        vec![2, 0]
-    }
-
-    fn attr_background_rgb(rgb: (u8, u8, u8)) -> Vec<u8> {
-        vec![12, 0, 0, rgb.0, rgb.1, rgb.2]
-    }
-
-    fn attr_align_x(align_x: AlignX) -> Vec<u8> {
-        let variant = match align_x {
-            AlignX::Left => 0,
-            AlignX::Center => 1,
-            AlignX::Right => 2,
+    #[cfg(test)]
+    fn nearby_origin(
+        parent_frame: Frame,
+        nearby_frame: Frame,
+        slot: NearbySlot,
+        align_x: AlignX,
+        align_y: AlignY,
+    ) -> (f32, f32) {
+        let x = match slot {
+            NearbySlot::BehindContent
+            | NearbySlot::Above
+            | NearbySlot::Below
+            | NearbySlot::InFront => match align_x {
+                AlignX::Left => parent_frame.x,
+                AlignX::Center => parent_frame.x + (parent_frame.width - nearby_frame.width) / 2.0,
+                AlignX::Right => parent_frame.x + parent_frame.width - nearby_frame.width,
+            },
+            NearbySlot::OnLeft => parent_frame.x - nearby_frame.width,
+            NearbySlot::OnRight => parent_frame.x + parent_frame.width,
         };
-        vec![5, variant]
-    }
 
-    fn attr_align_y(align_y: AlignY) -> Vec<u8> {
-        let variant = match align_y {
-            AlignY::Top => 0,
-            AlignY::Center => 1,
-            AlignY::Bottom => 2,
+        let y = match slot {
+            NearbySlot::Above => parent_frame.y - nearby_frame.height,
+            NearbySlot::Below => parent_frame.y + parent_frame.height,
+            NearbySlot::BehindContent
+            | NearbySlot::OnLeft
+            | NearbySlot::OnRight
+            | NearbySlot::InFront => match align_y {
+                AlignY::Top => parent_frame.y,
+                AlignY::Center => {
+                    parent_frame.y + (parent_frame.height - nearby_frame.height) / 2.0
+                }
+                AlignY::Bottom => parent_frame.y + parent_frame.height - nearby_frame.height,
+            },
         };
-        vec![6, variant]
-    }
 
-    fn attr_content(content: &str) -> Vec<u8> {
-        let mut record = vec![21];
-        record.extend_from_slice(&(content.len() as u16).to_be_bytes());
-        record.extend_from_slice(content.as_bytes());
-        record
-    }
-
-    fn encode_nearby_root(kind: ElementKind, attrs_raw: Vec<u8>) -> Vec<u8> {
-        let id = ElementId::from_term_bytes(vec![77]);
-        let attrs = decode_attrs(&attrs_raw).expect("nearby attrs should decode");
-        let element = Element::with_attrs(id.clone(), kind, attrs_raw, attrs);
-        let mut tree = ElementTree::new();
-        tree.root = Some(id);
-        tree.insert(element);
-        encode_tree(&tree)
-    }
-
-    fn encode_nearby_el(width: f64, height: f64, rgb: (u8, u8, u8)) -> Vec<u8> {
-        encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_px(width),
-                attr_height_px(height),
-                attr_background_rgb(rgb),
-            ]),
-        )
-    }
-
-    fn encode_nearby_text(records: Vec<Vec<u8>>) -> Vec<u8> {
-        encode_nearby_root(ElementKind::Text, encode_attrs_raw(records))
+        (x, y)
     }
 
     #[test]
@@ -2635,15 +2441,9 @@ mod tests {
 
     #[test]
     fn test_render_nearby_behind_and_in_front_order() {
-        let behind = encode_nearby_el(20.0, 10.0, (255, 0, 0));
-        let in_front = encode_nearby_el(20.0, 10.0, (0, 0, 255));
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.behind = Some(behind);
-        attrs.in_front = Some(in_front);
-
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2653,6 +2453,39 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::BehindContent,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            10,
+        );
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::InFront,
+            ElementKind::El,
+            solid_fill_attrs((0, 0, 255)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            11,
         );
         let commands = render_tree(&tree);
 
@@ -2668,16 +2501,13 @@ mod tests {
 
     #[test]
     fn test_render_behind_between_background_and_children() {
-        let behind = encode_nearby_el(20.0, 10.0, (255, 0, 0));
-
         let mut parent_attrs = Attrs::default();
         parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        parent_attrs.behind = Some(behind);
 
         let mut child_attrs = Attrs::default();
         child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
 
-        let tree = build_tree_with_child_frame(
+        let mut tree = build_tree_with_child_frame(
             parent_attrs,
             Frame {
                 x: 0.0,
@@ -2697,6 +2527,23 @@ mod tests {
                 content_height: 15.0,
             },
         );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::BehindContent,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            12,
+        );
 
         let commands = render_tree(&tree);
 
@@ -2712,11 +2559,8 @@ mod tests {
 
     #[test]
     fn test_render_behind_inside_overflow_clip() {
-        let behind = encode_nearby_el(100.0, 50.0, (255, 0, 0));
-
         let mut parent_attrs = Attrs::default();
         parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        parent_attrs.behind = Some(behind);
         parent_attrs.clip_x = Some(true);
         parent_attrs.clip_y = Some(true);
         parent_attrs.padding = Some(Padding::Uniform(10.0));
@@ -2724,7 +2568,7 @@ mod tests {
         let mut child_attrs = Attrs::default();
         child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
 
-        let tree = build_tree_with_child_frame(
+        let mut tree = build_tree_with_child_frame(
             parent_attrs,
             Frame {
                 x: 0.0,
@@ -2744,6 +2588,23 @@ mod tests {
                 content_height: 10.0,
             },
         );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::BehindContent,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+            13,
+        );
 
         let commands = render_tree(&tree);
 
@@ -2761,15 +2622,10 @@ mod tests {
 
     #[test]
     fn test_render_nearby_above_below_order_after_parent() {
-        let above = encode_nearby_el(20.0, 10.0, (0, 255, 0));
-        let below = encode_nearby_el(20.0, 10.0, (255, 255, 0));
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.above = Some(above);
-        attrs.below = Some(below);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2779,6 +2635,39 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::Above,
+            ElementKind::El,
+            solid_fill_attrs((0, 255, 0)),
+            Frame {
+                x: 0.0,
+                y: -10.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            14,
+        );
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::Below,
+            ElementKind::El,
+            solid_fill_attrs((255, 255, 0)),
+            Frame {
+                x: 0.0,
+                y: 50.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            15,
         );
         let commands = render_tree(&tree);
 
@@ -2794,20 +2683,10 @@ mod tests {
 
     #[test]
     fn test_render_in_front_fill_uses_parent_border_box_slot() {
-        let in_front = encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_fill(),
-                attr_height_fill(),
-                attr_background_rgb((255, 0, 0)),
-            ]),
-        );
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.in_front = Some(in_front);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2817,6 +2696,23 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::InFront,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+            16,
         );
         let commands = render_tree(&tree);
 
@@ -2831,22 +2727,10 @@ mod tests {
 
     #[test]
     fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
-        let centered = encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_px(160.0),
-                attr_height_px(80.0),
-                attr_align_x(AlignX::Center),
-                attr_align_y(AlignY::Bottom),
-                attr_background_rgb((255, 0, 0)),
-            ]),
-        );
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.in_front = Some(centered);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2856,6 +2740,23 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::InFront,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: -30.0,
+                y: -30.0,
+                width: 160.0,
+                height: 80.0,
+                content_width: 160.0,
+                content_height: 80.0,
+            },
+            17,
         );
         let commands = render_tree(&tree);
 
@@ -2870,20 +2771,10 @@ mod tests {
 
     #[test]
     fn test_render_above_fill_width_uses_parent_slot() {
-        let above = encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_fill(),
-                attr_height_px(10.0),
-                attr_background_rgb((255, 0, 0)),
-            ]),
-        );
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.above = Some(above);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2893,6 +2784,23 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::Above,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: -10.0,
+                width: 100.0,
+                height: 10.0,
+                content_width: 100.0,
+                content_height: 10.0,
+            },
+            18,
         );
         let commands = render_tree(&tree);
 
@@ -2907,20 +2815,10 @@ mod tests {
 
     #[test]
     fn test_render_on_right_fill_height_uses_parent_slot() {
-        let on_right = encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_px(20.0),
-                attr_height_fill(),
-                attr_background_rgb((255, 0, 0)),
-            ]),
-        );
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.on_right = Some(on_right);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2930,6 +2828,23 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::OnRight,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 100.0,
+                y: 0.0,
+                width: 20.0,
+                height: 50.0,
+                content_width: 20.0,
+                content_height: 50.0,
+            },
+            19,
         );
         let commands = render_tree(&tree);
 
@@ -2944,23 +2859,13 @@ mod tests {
 
     #[test]
     fn test_render_in_front_inside_overflow_clip() {
-        let in_front = encode_nearby_root(
-            ElementKind::El,
-            encode_attrs_raw(vec![
-                attr_width_fill(),
-                attr_height_fill(),
-                attr_background_rgb((255, 0, 0)),
-            ]),
-        );
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-        attrs.in_front = Some(in_front);
         attrs.clip_x = Some(true);
         attrs.clip_y = Some(true);
         attrs.padding = Some(Padding::Uniform(10.0));
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -2970,6 +2875,23 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::InFront,
+            ElementKind::El,
+            solid_fill_attrs((255, 0, 0)),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+            20,
         );
         let commands = render_tree(&tree);
 
@@ -2988,14 +2910,11 @@ mod tests {
 
     #[test]
     fn test_nearby_text_inherits_parent_font_context() {
-        let in_front = encode_nearby_text(vec![attr_content("Hi")]);
-
         let mut attrs = Attrs::default();
         attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
         attrs.font_size = Some(24.0);
-        attrs.in_front = Some(in_front);
 
-        let tree = build_tree_with_frame(
+        let mut tree = build_tree_with_frame(
             attrs,
             Frame {
                 x: 0.0,
@@ -3005,6 +2924,25 @@ mod tests {
                 content_width: 100.0,
                 content_height: 50.0,
             },
+        );
+        let host_id = tree.root.clone().unwrap();
+        let mut nearby_attrs = Attrs::default();
+        nearby_attrs.content = Some("Hi".to_string());
+        mount_nearby(
+            &mut tree,
+            &host_id,
+            NearbySlot::InFront,
+            ElementKind::Text,
+            nearby_attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 20.0,
+                height: 10.0,
+                content_width: 20.0,
+                content_height: 10.0,
+            },
+            21,
         );
         let commands = render_tree(&tree);
 

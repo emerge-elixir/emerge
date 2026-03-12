@@ -544,15 +544,14 @@ They are retained tree/runtime state used by layout/style merging.
 
 ## Nearby Status
 
-Nearby remains render-only.
+Nearby now participates in the retained tree/event model.
 
-- nearby subtrees are rendered during the render pass
-- the combined render/event rebuild walk intentionally excludes nearby from
-  registry accumulation
-- nearby elements are therefore still not hit-testable, focusable, or
-  text-interactive through the retained event system
-
-Nearby is the main remaining gap in feature parity with normal elements.
+- nearby mounts are retained on host elements, not decoded ad hoc during render
+- layout computes nearby frames once and shares them with render, hit testing,
+  and listener rebuilds
+- nearby traversal order now participates in listener precedence and focus order
+- nearby nodes are hit-testable, focusable, and preserve runtime state like
+  normal retained nodes
 
 ## Current Limits
 
@@ -560,7 +559,6 @@ Nearby is the main remaining gap in feature parity with normal elements.
 - no double-click semantics
 - no pointer metadata payloads on element events
 - no right/middle element-level down/up events
-- no nearby event integration yet
 - no multi-touch or gesture event model yet
 
 ## Key Files

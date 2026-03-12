@@ -269,13 +269,6 @@ pub struct Attrs {
     pub space_evenly: Option<bool>,
     /// Runtime-only: computed paragraph text fragments (not decoded from binary).
     pub paragraph_fragments: Option<Vec<TextFragment>>,
-    // Nearby elements stored as raw EMRG bytes (decoded lazily)
-    pub above: Option<Vec<u8>>,
-    pub below: Option<Vec<u8>>,
-    pub on_left: Option<Vec<u8>>,
-    pub on_right: Option<Vec<u8>>,
-    pub in_front: Option<Vec<u8>>,
-    pub behind: Option<Vec<u8>>,
 }
 
 /// Preserve runtime-only fields across attr replacement.
@@ -423,12 +416,6 @@ const TAG_FONT: u8 = 18;
 const TAG_FONT_WEIGHT: u8 = 19;
 const TAG_FONT_STYLE: u8 = 20;
 const TAG_CONTENT: u8 = 21;
-const TAG_ABOVE: u8 = 22;
-const TAG_BELOW: u8 = 23;
-const TAG_ON_LEFT: u8 = 24;
-const TAG_ON_RIGHT: u8 = 25;
-const TAG_IN_FRONT: u8 = 26;
-const TAG_BEHIND: u8 = 27;
 const TAG_SNAP_LAYOUT: u8 = 28;
 const TAG_SNAP_TEXT_METRICS: u8 = 29;
 const TAG_TEXT_ALIGN: u8 = 30;
@@ -575,12 +562,6 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_FONT_WEIGHT => attrs.font_weight = Some(decode_font_weight(cursor)?),
         TAG_FONT_STYLE => attrs.font_style = Some(decode_font_style(cursor)?),
         TAG_CONTENT => attrs.content = Some(cursor.read_string_u16()?),
-        TAG_ABOVE => attrs.above = Some(cursor.read_bytes_u32()?),
-        TAG_BELOW => attrs.below = Some(cursor.read_bytes_u32()?),
-        TAG_ON_LEFT => attrs.on_left = Some(cursor.read_bytes_u32()?),
-        TAG_ON_RIGHT => attrs.on_right = Some(cursor.read_bytes_u32()?),
-        TAG_IN_FRONT => attrs.in_front = Some(cursor.read_bytes_u32()?),
-        TAG_BEHIND => attrs.behind = Some(cursor.read_bytes_u32()?),
         TAG_SNAP_LAYOUT => attrs.snap_layout = Some(cursor.read_bool()?),
         TAG_SNAP_TEXT_METRICS => attrs.snap_text_metrics = Some(cursor.read_bool()?),
         TAG_TEXT_ALIGN => attrs.text_align = Some(decode_text_align(cursor)?),

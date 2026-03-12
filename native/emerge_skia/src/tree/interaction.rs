@@ -5,7 +5,7 @@
 //! derived from layout output and ancestor clip/scroll context.
 
 use super::attrs::{BorderRadius, Padding};
-use super::element::{ElementId, ElementTree, Frame};
+use super::element::{ElementId, ElementTree, Frame, RetainedPaintPhase};
 
 /// Axis-aligned rectangle in world coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -219,16 +219,28 @@ fn collect_interaction(
             element.interaction = None;
         }
 
+        let mut children = Vec::new();
+        element.for_each_paint_child(|child| {
+            children.push((child.id.clone(), child.phase));
+        });
+
         (
-            element.children.clone(),
+            children,
             offset_x + scroll_x,
             offset_y + scroll_y,
             next_clip,
         )
     };
 
-    for child_id in children {
-        collect_interaction(tree, &child_id, child_offset_x, child_offset_y, next_clip);
+    for (child_id, phase) in children {
+        let (next_offset_x, next_offset_y) = match phase {
+            RetainedPaintPhase::Children => (child_offset_x, child_offset_y),
+            RetainedPaintPhase::BehindContent | RetainedPaintPhase::Overlay(_) => {
+                (offset_x, offset_y)
+            }
+        };
+
+        collect_interaction(tree, &child_id, next_offset_x, next_offset_y, next_clip);
     }
 }
 

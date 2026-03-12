@@ -70,6 +70,158 @@ pub struct Frame {
     pub content_height: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NearbySlot {
+    BehindContent,
+    Above,
+    OnRight,
+    Below,
+    OnLeft,
+    InFront,
+}
+
+impl NearbySlot {
+    pub const PAINT_ORDER: [Self; 6] = [
+        Self::BehindContent,
+        Self::Above,
+        Self::OnRight,
+        Self::Below,
+        Self::OnLeft,
+        Self::InFront,
+    ];
+
+    pub const OVERLAY_PAINT_ORDER: [Self; 5] = [
+        Self::Above,
+        Self::OnRight,
+        Self::Below,
+        Self::OnLeft,
+        Self::InFront,
+    ];
+
+    pub fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::BehindContent),
+            2 => Some(Self::Above),
+            3 => Some(Self::OnRight),
+            4 => Some(Self::Below),
+            5 => Some(Self::OnLeft),
+            6 => Some(Self::InFront),
+            _ => None,
+        }
+    }
+
+    pub fn spec(self) -> NearbySlotSpec {
+        match self {
+            Self::BehindContent => NearbySlotSpec {
+                phase: RetainedPaintPhase::BehindContent,
+                constraint_kind: NearbyConstraintKind::HostBox,
+                align_x_active: true,
+                align_y_active: true,
+            },
+            Self::Above => NearbySlotSpec {
+                phase: RetainedPaintPhase::Overlay(self),
+                constraint_kind: NearbyConstraintKind::HostWidthBand,
+                align_x_active: true,
+                align_y_active: false,
+            },
+            Self::OnRight => NearbySlotSpec {
+                phase: RetainedPaintPhase::Overlay(self),
+                constraint_kind: NearbyConstraintKind::HostHeightBand,
+                align_x_active: false,
+                align_y_active: true,
+            },
+            Self::Below => NearbySlotSpec {
+                phase: RetainedPaintPhase::Overlay(self),
+                constraint_kind: NearbyConstraintKind::HostWidthBand,
+                align_x_active: true,
+                align_y_active: false,
+            },
+            Self::OnLeft => NearbySlotSpec {
+                phase: RetainedPaintPhase::Overlay(self),
+                constraint_kind: NearbyConstraintKind::HostHeightBand,
+                align_x_active: false,
+                align_y_active: true,
+            },
+            Self::InFront => NearbySlotSpec {
+                phase: RetainedPaintPhase::Overlay(self),
+                constraint_kind: NearbyConstraintKind::HostBox,
+                align_x_active: true,
+                align_y_active: true,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NearbyMounts {
+    pub behind_content: Option<ElementId>,
+    pub above: Option<ElementId>,
+    pub on_right: Option<ElementId>,
+    pub below: Option<ElementId>,
+    pub on_left: Option<ElementId>,
+    pub in_front: Option<ElementId>,
+}
+
+impl NearbyMounts {
+    pub fn get(&self, slot: NearbySlot) -> Option<&ElementId> {
+        match slot {
+            NearbySlot::BehindContent => self.behind_content.as_ref(),
+            NearbySlot::Above => self.above.as_ref(),
+            NearbySlot::OnRight => self.on_right.as_ref(),
+            NearbySlot::Below => self.below.as_ref(),
+            NearbySlot::OnLeft => self.on_left.as_ref(),
+            NearbySlot::InFront => self.in_front.as_ref(),
+        }
+    }
+
+    pub fn set(&mut self, slot: NearbySlot, id: Option<ElementId>) {
+        match slot {
+            NearbySlot::BehindContent => self.behind_content = id,
+            NearbySlot::Above => self.above = id,
+            NearbySlot::OnRight => self.on_right = id,
+            NearbySlot::Below => self.below = id,
+            NearbySlot::OnLeft => self.on_left = id,
+            NearbySlot::InFront => self.in_front = id,
+        }
+    }
+
+    pub fn for_each_overlay_in_paint_order(&self, mut f: impl FnMut(NearbySlot, &ElementId)) {
+        for slot in NearbySlot::OVERLAY_PAINT_ORDER {
+            if let Some(id) = self.get(slot) {
+                f(slot, id);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetainedPaintPhase {
+    BehindContent,
+    Children,
+    Overlay(NearbySlot),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NearbyConstraintKind {
+    HostBox,
+    HostWidthBand,
+    HostHeightBand,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NearbySlotSpec {
+    pub phase: RetainedPaintPhase,
+    pub constraint_kind: NearbyConstraintKind,
+    pub align_x_active: bool,
+    pub align_y_active: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PaintChildRef<'a> {
+    pub id: &'a ElementId,
+    pub phase: RetainedPaintPhase,
+}
+
 /// A single element in the UI tree.
 #[derive(Clone, Debug)]
 pub struct Element {
@@ -91,6 +243,9 @@ pub struct Element {
     /// Child element IDs (order matters).
     pub children: Vec<ElementId>,
 
+    /// Host-owned nearby mount roots.
+    pub nearby: NearbyMounts,
+
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
 
@@ -109,9 +264,33 @@ impl Element {
             base_attrs: attrs.clone(),
             attrs,
             children: Vec::new(),
+            nearby: NearbyMounts::default(),
             frame: None,
             interaction: None,
         }
+    }
+
+    pub fn for_each_paint_child(&self, mut f: impl FnMut(PaintChildRef<'_>)) {
+        if let Some(id) = self.nearby.get(NearbySlot::BehindContent) {
+            f(PaintChildRef {
+                id,
+                phase: RetainedPaintPhase::BehindContent,
+            });
+        }
+
+        for id in &self.children {
+            f(PaintChildRef {
+                id,
+                phase: RetainedPaintPhase::Children,
+            });
+        }
+
+        self.nearby.for_each_overlay_in_paint_order(|slot, id| {
+            f(PaintChildRef {
+                id,
+                phase: RetainedPaintPhase::Overlay(slot),
+            });
+        });
     }
 }
 

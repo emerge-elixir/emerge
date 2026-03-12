@@ -318,6 +318,7 @@ defmodule Emerge.AttrCodecTest do
   defp normalize_attrs(attrs) do
     attrs
     |> Emerge.Tree.strip_runtime_attrs()
+    |> Emerge.Tree.strip_nearby_attrs()
     |> Enum.map(fn {key, value} -> {key, normalize_value(value)} end)
     |> Map.new()
   end
