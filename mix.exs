@@ -19,7 +19,6 @@ defmodule Emerge.MixProject do
           "guides/internals/feature-roadmap.md",
           "guides/internals/emrg-format.md",
           "guides/internals/events.md",
-          "guides/internals/scrolling.md",
           "guides/internals/tree-patching.md"
         ],
         groups_for_extras: [
