@@ -8,7 +8,8 @@ This document records the intended nearby behavior for `above`, `below`,
 It also records the current architectural split:
 
 - visual nearby semantics are implemented now
-- event/focus/state parity is deferred until direct-listener registry work is ready
+- event/focus/state parity is deferred until nearby is integrated into the
+  retained event system
 
 The target reference is elm-ui's intended nearby model, not current CSS border-box
 quirks.
@@ -154,15 +155,15 @@ Current render traversal preserves these useful elm-ui-style properties:
 
 Nearby is still visual-only.
 
-- nearby is not included in the retained event registry
+- nearby is not included in rebuilt listener data
 - nearby is not hit-testable
 - nearby focus/text-input runtime state is not preserved as first-class node state
 - root `in_front` does not yet have a viewport-fixed special case
 
 ## Deferred Full-Parity Requirements
 
-When direct-listener registry work is ready, nearby should move from render-local
-subtrees to first-class retained mounts.
+When nearby is integrated into the retained event system, it should move from
+render-local subtrees to first-class retained mounts.
 
 Requirements for that later phase:
 

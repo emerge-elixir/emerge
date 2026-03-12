@@ -1,141 +1,532 @@
 # Events System
 
-This document describes the current retained-mode event architecture for
-EmergeSkia.
+This document describes the current event architecture used by EmergeSkia.
 
 ## Overview
 
-- Rust owns hit testing, pointer state, hover state, click detection, scroll
-  request generation, interaction-style activation (`mouse_over`, `focused`,
-  `mouse_down`), and focused text-input editing state.
-- Elixir owns payload routing (`{pid, msg}`) keyed by encoded `element_id`.
-- EMRG encodes event attributes as presence flags only (no payloads).
-- Scrollbar-specific hit testing and interaction state live in
-  `native/emerge_skia/src/events/scrollbar.rs` and are coordinated by
-  `EventProcessor`.
-- Wayland text input is IME-aware (`Ime::Preedit` + `Ime::Commit`), while DRM
-  currently emits simple text commits from key mapping.
+EmergeSkia keeps event state in the retained UI tree and dispatches input by
+matching it against listeners rebuilt from that tree in precedence order.
 
-## End-to-End Event Flow
+- The tree actor owns tree mutation, layout, rendering, and `base_registry`
+  rebuilds.
+- The event actor owns listener dispatch, runtime overlay state, and input
+  buffering while listener data is stale.
+- Listener dispatch is
+  `InputEvent -> ListenerInput -> first matching listener in precedence order -> ordered ListenerAction list`.
+- The rebuild output is generated during the same main-tree walk that produces
+  draw commands.
 
-```
-Backend input (Wayland/DRM)
+At a high level:
+
+- Rust owns hit testing, hover/focus/button state activation, scroll behavior,
+  scrollbar behavior, and focused text-input runtime.
+- Elixir owns payload routing for emitted element events.
+
+## Actors And Responsibilities
+
+### Tree Actor
+
+The tree actor:
+
+- receives `TreeMsg` mutations
+- applies and coalesces those mutations against the retained tree
+- runs `layout_and_refresh_default(...)` when the tree actually changed
+- produces:
+  - draw commands
+  - IME state
+  - `RegistryRebuildPayload`
+- sends `EventMsg::RegistryUpdate { rebuild }` to the event actor
+- sends render commands to the render thread
+
+### Event Actor
+
+The event actor:
+
+- receives backend `InputEvent`s
+- forwards raw observer input to the configured input target
+- dispatches listener input against the current precedence order
+- owns runtime overlay state such as:
+  - click/press trackers
+  - drag trackers
+  - scrollbar drag trackers
+  - text-drag trackers
+- buffers listener-lane input while listener data is stale
+- installs fresh registry rebuilds from the tree actor
+- rebuilds overlay listeners from runtime state after registry changes
+
+### Render Thread
+
+The render thread only consumes draw commands and IME state. It does not perform
+event matching.
+
+## End-To-End Flow
+
+```text
+Backend input
   -> InputEvent
   -> Event actor
-       -> sends raw input event to target pid
-       -> EventProcessor uses registry for hit testing
-            -> emits element event {:emerge_skia_event, {element_id_bin, event_atom}}
-  -> Elixir looks up element_id_bin + event_atom
-  -> Elixir dispatches stored {pid, msg}
+       -> observer lane forwards raw input (mask-gated)
+       -> listener lane dispatches current precedence order
+       -> matched listener emits ordered actions
+            -> TreeMsg batch
+            -> Elixir element event
+            -> runtime state mutation
+  -> Tree actor
+       -> drains and flattens queued TreeMsg batches
+       -> applies/coalesces tree mutations
+       -> if tree changed: layout + render + rebuild base listener data
+       -> if only registry rebuild was requested: may reuse cached rebuild
+       -> sends EventMsg::RegistryUpdate { rebuild }
+       -> sends RenderMsg::Commands
+  -> Event actor
+       -> installs rebuild
+       -> reconciles retained rebuild state
+       -> rebuilds overlay listeners
+       -> replays buffered listener-lane input
 ```
 
-Notes:
+## Listener Data
 
-- Raw input events and element events are both delivered as
-  `{:emerge_skia_event, ...}`.
-- `element_id_bin` is the `term_to_binary` payload for the element id.
-- Element events may include payloads (for example, text input change events
-  include the latest string value).
+The event system uses two listener registries:
 
-## Event Registry
+- `base_registry`
+  - built by the tree actor from the retained tree during refresh
+- `overlay_registry`
+  - rebuilt by the event actor from transient runtime state
 
-After each tree upload, patch, scroll-driven update, or asset-state update,
-Rust rebuilds the event registry from the current tree.
+Dispatch uses one logical precedence order:
 
-Each node stores:
+- overlay listeners outrank base listeners
+- later-painted children outrank parents and earlier siblings
+- within one element, builder code is written in precedence order
 
-- target id
-- hit rectangle
-- event flags
-- self rounded-corner data
-- active clip rectangle and clip rounded-corner data
+The rebuild payload sent from tree actor to event actor contains:
 
-Registry order follows render traversal order. Hit testing scans in reverse, so
-topmost elements win.
+- `base_registry`
+- `text_inputs: HashMap<ElementId, TextInputState>`
+- `scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>`
+- `focused_id`
 
-## Nearby Status
+## Precedence Order
 
-Nearby positioning is currently visual-only.
+Listener precedence matches visual precedence.
 
-- nearby subtrees are rendered from nested EMRG attr payloads during the render pass
-- nearby nodes are not yet inserted into the retained event registry walk
-- current hit testing, hover, focus, and text-input runtime only see main-tree
-  `children`
-- direct-listener-registry work should treat nearby as first-class retained mounts
-  and preserve the same ordering described in `nearby-semantics.md`
+- The tree walk follows paint order.
+- Children are accumulated after their parents.
+- Later-painted descendants therefore outrank earlier siblings and parents.
+- Within one element, listeners are assembled in explicit precedence order.
 
-## Hit Testing Behavior
+There is no bubbling, capture, or handler-side fallback chain. Precedence is
+the only conflict rule.
 
-Current hit testing is:
+## Listener Inputs
 
-- clip-aware (including inherited clip intersections)
-- padding-aware for clip regions
-- rounded-corner-aware (self and active clip)
-- scroll-offset-aware for descendants of scrollable containers
+Listeners can match either backend input directly or derived internal input.
 
-Flag filtering happens before geometric checks, so non-listener nodes do not
-block listeners behind them.
+Current internal listener inputs are:
 
-## Click, Hover, and Button Behavior
+- `Raw(InputEvent)`
+- `ScrollDirection`
+- `PointerLeave`
+- `PointerEnter`
 
-- `on_click` is emitted on left-button press+release on the same element.
-- `on_press` uses the same left-button press+release activation as `on_click`.
-- `on_press` is also emitted when a focused pressable element receives `Enter`.
-- `on_mouse_down` and `on_mouse_up` are emitted for left button only.
-- Hover state tracks topmost hit and emits `:mouse_enter`, `:mouse_leave`, and
-  `:mouse_move` based on listener flags.
-- Focusable inputs emit `:focus` when they gain focus and `:blur` when focus leaves.
-- A drag deadzone suppresses click when pointer movement exceeds the threshold
-  during a press.
+This keeps one listener model while still allowing multi-step behavior such as
+directional scroll dispatch and pointer lifecycle ordering.
 
-## State Styling Behavior
+## Dispatch
 
-- `mouse_over` is a style attribute, not an emitted element event.
-- EventProcessor hit tests for the topmost node with `mouse_over` and sends
-  tree requests as the active element changes.
-- Tree updates use `TreeMsg::SetMouseOverActive { element_id, active }`.
-- `mouse_down` is also style-only; EventProcessor toggles runtime state with
-  `TreeMsg::SetMouseDownActive { element_id, active }` on left press/release.
-- `focused` is style-only and is activated from runtime focus state
-  (`focused_active`) on focused inputs.
-- Layout merges active style blocks in this order: `mouse_over -> focused ->
-  mouse_down`. Later styles win on attribute conflicts.
-- Supported decorative attrs in state styles are: `background`,
-  `border_color`, `box_shadow`, `font_color`, `font_size`,
-  `font_underline`, `font_strike`, `font_letter_spacing`,
-  `font_word_spacing`, `move_x`, `move_y`, `rotate`, `scale`, and `alpha`.
+Dispatch is deterministic.
 
-## Scroll-Related Event Behavior
+For one dispatch:
 
-- Wheel and drag scrolling both use the same registry.
-- Arrow-key scrolling also uses registry matchers.
-- Directional scroll flags are computed from current offset vs max offset.
-- EventProcessor converts pointer movement/wheel deltas and keyboard navigation
-  into scroll requests to the tree actor.
-- Scrollbar track/thumb hit testing and thumb drag are implemented (track click
-  snaps thumb to cursor, then drag continues from that point).
-- Scrollbar hover emits axis-specific hover updates for thumb styling.
-- After scroll changes, layout/render output and event registry are refreshed to
-  keep hit testing aligned with visible content.
+1. scan listeners in precedence order
+2. first matching listener wins
+3. compute its ordered actions
+4. apply those actions in order
+5. stop that dispatch
 
-## Asset-Triggered Refreshes
+There is no bubbling, capture, or handler-side fallback chain.
 
-- Image assets load asynchronously in Rust (`AssetManager` actor).
-- Asset completion/failure sends `TreeMsg::AssetStateChanged`.
-- Tree actor reruns layout/render and pushes a fresh event registry so hit bounds
-  stay aligned with final image geometry.
+## Splitter Listeners
 
-## Elixir Responsibilities
+Some behavior is implemented by top overlay listeners that turn one physical
+input into a sequence of derived listener inputs.
 
-- Build and maintain `%{element_id_bin => %{event => {pid, msg}}}` in diff
-  state.
-- Encode event attrs as presence flags in EMRG (`on_click`, `on_mouse_*`,
-  `on_press`, `on_change`, `on_focus`, `on_blur`).
-- Encode `mouse_over`, `focused`, and `mouse_down` as typed decorative attr
-  blocks (no payload routing).
-- On Rust element events, resolve and forward stored payloads.
+### Scroll Splitter
+
+Physical scroll input may contain both `dx` and `dy`.
+
+The runtime installs a top overlay scroll splitter listener that:
+
+- matches raw scroll input
+- splits it into directional component inputs
+- runs those derived inputs back through the base registry
+- aggregates the returned actions
+
+This lets one physical input resolve horizontal and vertical scrolling
+independently while keeping normal first-match dispatch.
+
+### Pointer Lifecycle Splitter
+
+Pointer lifecycle ordering is preserved explicitly.
+
+For pointer movement and left-button release inside the window, the splitter
+runs:
+
+1. synthetic `PointerLeave`
+2. raw pointer input
+3. synthetic `PointerEnter`
+
+For window leave, it runs:
+
+1. synthetic `PointerLeave`
+2. raw window-leave input
+
+This preserves leave -> raw -> enter semantics without separate runtime-specific
+dispatch passes.
+
+## Freshness, Rebuilds, And Buffered Input
+
+The event runtime has two lanes:
+
+- listener lane
+- observer lane
+
+Observer lane:
+
+- forwards raw input immediately
+- continues forwarding while the listener lane is stale
+
+Listener lane:
+
+- dispatches only while fresh
+- buffers/coalesces input while stale
+- resumes after `EventMsg::RegistryUpdate`
+
+The listener lane becomes stale when a matched listener produces:
+
+- at least one `TreeMsg`, or
+- at least one Elixir element event
+
+Runtime-only overlay mutations do not make listener data stale by themselves.
+
+If a matched listener emits Elixir events but no tree messages, the event actor
+adds `TreeMsg::RebuildRegistry` so the tree actor will still send a fresh
+`RegistryUpdate`.
+
+`EventMsg::RegistryUpdate` is the freshness signal. Installing it:
+
+- replaces `base_registry`
+- updates retained scrollbar/text rebuild state
+- rebuilds `overlay_registry`
+- replays buffered input if reconciliation did not immediately stale the lane
+  again
+
+## Tree Message Batching
+
+The event actor groups tree messages emitted by one listener dispatch.
+
+- one tree message is sent directly
+- multiple tree messages are sent as `TreeMsg::Batch(Vec<TreeMsg>)`
+
+The tree actor then:
+
+- receives one message
+- drains everything currently queued
+- flattens any nested `Batch(...)`
+- processes one flat message list
+
+Tree-side coalescing happens before refresh:
+
+- `ScrollRequest` values accumulate per element
+- scrollbar thumb drag deltas accumulate per element
+- hover and active state messages are last-write-wins per element
+- text content/runtime updates are applied in message order
+
+This is why one listener producing several tree-side actions normally causes one
+tree refresh, not one refresh per message.
+
+### Cached Registry Rebuilds
+
+The tree actor caches the latest `RegistryRebuildPayload`.
+
+If it receives only `TreeMsg::RebuildRegistry` and the tree did not actually
+change, it can resend the cached rebuild to the event actor without rerunning
+layout/render/rebuild.
+
+If no cached rebuild exists yet, it falls back to a full refresh.
+
+## Hit Testing And Interaction Geometry
+
+Hit testing uses `tree::interaction` as the source of truth.
+
+Current matching is:
+
+- clip-aware
+- rounded-corner-aware
+- scroll-aware
+- based on retained interaction geometry computed before refresh
+
+Refresh begins with an interaction pre-pass:
+
+- `populate_interaction(tree)`
+
+The combined render/rebuild walk then consumes that interaction data for both
+drawing and listener accumulation.
+
+## Pointer Behavior
+
+### Click And Press
+
+Pointer `on_click` and pointer `on_press` share the same left-button tracker
+flow:
+
+- left press starts:
+  - click/press tracker
+  - drag tracker candidate
+- drag threshold promotion drops the click/press tracker
+- release followups are looked up again from the current base registry
+
+`on_press` also has focused keyboard `Enter` support.
+
+### Mouse Down / Mouse Up
+
+- `on_mouse_down` is left-button only
+- `on_mouse_up` is left-button only
+- `on_mouse_up` remains targeted to the release location
+- some style-clear behavior is release-anywhere, leave, or blur-driven
+
+### Hover
+
+Hover tracking is listener-driven and based on retained hover state.
+
+- event-only hover and style hover both retain hover-active state
+- hover enter/leave listeners are built from current retained state
+- `:mouse_enter`, `:mouse_leave`, and `:mouse_move` are emitted only when the
+  corresponding listener flags exist
+- pointer lifecycle transitions are resolved as leave -> raw -> enter
+- raw move handles hover transitions while the pointer stays inside the same
+  element
+
+Scrollbar thumb hover is element-local:
+
+- raw move computes thumb enter/leave while the pointer remains inside the
+  element
+- element leave clears any active scrollbar hover
+- there are no separate scrollbar enter/leave dispatch passes
+
+### Style Activation
+
+These are style-only tree/runtime states, not element events:
+
+- `mouse_over`
+- `mouse_down`
+- `focused`
+
+They are activated by tree messages such as:
+
+- `TreeMsg::SetMouseOverActive`
+- `TreeMsg::SetMouseDownActive`
+- `TreeMsg::SetFocusedActive`
+
+Layout then merges active style blocks in this order:
+
+- `mouse_over`
+- `focused`
+- `mouse_down`
+
+Later style layers win on conflicts.
+
+## Scroll Behavior
+
+Wheel, drag-scroll, and key-scroll all use the same directional availability
+model.
+
+### Directional Listener Registration
+
+A scrollable element only registers listeners for directions it can currently
+satisfy:
+
+- `x-` if `scroll_x > 0`
+- `x+` if `scroll_x < scroll_x_max`
+- `y-` if `scroll_y > 0`
+- `y+` if `scroll_y < scroll_y_max`
+
+If an element cannot scroll in a direction, it does not register a listener for
+that direction at all.
+
+This is what allows propagation to parents naturally: if the child has no
+matching listener for that direction, the parent can win through normal
+precedence order.
+
+### Wheel And Trackpad Scroll
+
+Physical scroll input may contain both `dx` and `dy`.
+
+The runtime handles that by installing a top overlay scroll splitter listener:
+
+- it matches raw scroll input
+- splits it into directional component inputs
+- runs those derived inputs back through the base registry
+- aggregates the returned actions
+
+This preserves first-match dispatch while letting one physical input resolve
+both horizontal and vertical scrolling independently.
+
+### Drag Scroll
+
+Drag scroll uses the same path as wheel scroll after drag activation.
+
+- pointer movement becomes synthetic scroll input
+- that synthetic input is split into directional components
+- those components are run back through the base registry
+
+So drag scroll and wheel scroll follow the same propagation and precedence
+rules.
+
+### Key Scroll
+
+Arrow-key scrolling is ordinary per-element listener matching in the base
+registry.
+
+It uses the same directional availability rules as wheel and drag scroll.
+
+There is no separate fallback key-scroll subsystem.
+
+### Scrollbar Hover And Drag
+
+Scrollbar behavior is also listener-driven.
+
+- scrollbar hover is computed by the element's raw move listener
+- element leave clears active scrollbar hover
+- thumb or track press starts runtime scrollbar drag state
+- thumb drag emits `ScrollbarThumbDragX` / `ScrollbarThumbDragY`
+- release clears scrollbar drag state
+
+Scrollbar press listeners are more specific than the generic element-wide
+left-press listener, so scrollbar drag starts from the scrollbar region rather
+than from generic click/drag bootstrap.
+
+### Scroll State And Clamping
+
+Scroll state is owned in Rust.
+
+Per axis, retained state includes:
+
+- offset
+- max offset
+
+Clamping rules:
+
+- offsets are clamped to `[0, max]`
+- if max shrinks, offset clamps toward start
+- if max grows and previous offset was at end, end anchoring is preserved
+- if a scrollbar axis is disabled, that axis offset and max are cleared
+
+### Scroll Rendering Notes
+
+Rendering applies scroll state directly:
+
+- child content renders under translated scroll offset
+- clip rects are padding-aware
+- scrollbar thumb geometry is derived from viewport/content ratio and current
+  offset
+- hover is axis-specific and widens thumb thickness for the hovered axis
+
+## Focus Behavior
+
+Focusable elements are not limited to text inputs.
+
+Current focusable behavior includes elements that are:
+
+- text inputs
+- pressable
+- explicitly focus-listening (`on_focus`, `on_blur`)
+
+### Focus Changes
+
+Focus transitions are expanded into concrete actions such as:
+
+- blur element event
+- focus element event
+- `SetFocusedActive`
+- text-input runtime sync
+- reveal scroll requests
+
+Reveal scroll requests are precomputed during rebuild from retained scroll
+contexts and emitted during the focus transition itself.
+
+### Tab And Shift-Tab
+
+Tab handling is global, but derived from paint-order focus entries gathered
+during the rebuild walk.
+
+Behavior is:
+
+- no focused element:
+  - `Tab` -> first painted focusable
+  - `Shift-Tab` -> last painted focusable
+- focused element:
+  - `Tab` -> focusable painted after it
+  - `Shift-Tab` -> focusable painted before it
+
+Window blur clears focus through a window-level blur listener.
+
+## Text Input State
+
+Text input state is modeled with unified `TextInputState`.
+
+It contains both live editing state and layout metadata used for caret
+hit-testing:
+
+- content
+- cursor
+- selection anchor
+- preedit text
+- preedit cursor range
+- focused flag
+- `emit_change`
+- text frame, alignment, and font metadata
+
+### Editing Semantics
+
+- text editing works regardless of `on_change`
+- `on_change` only gates emitted `:change` element events
+- typed insertion, backspace, delete, cut, paste, and selection replacement are
+  handled in Rust
+- focused cursor, selection, and preedit state are preserved across rebuilds
+- focused runtime edit state remains the source of truth across rebuilds
+- rebuild metadata refreshes geometry and style data used by later editing and
+  caret hit-testing
+
+### Selection And Clipboard
+
+- selection is tracked by cursor + selection anchor
+- mouse drag selects text in focused single-line inputs
+- `Shift` with arrows/home/end extends selection
+- Linux PRIMARY selection is tracked separately
+- middle mouse button pastes from PRIMARY
+- copy/cut/update of PRIMARY selection happens in Rust runtime
+
+## Observer Input And Elixir Responsibilities
+
+Raw input forwarding is separate from listener dispatch.
+
+Observer input:
+
+- is forwarded to the configured input target
+- is filtered by the current input mask
+- continues while the listener lane is stale
+
+Elixir responsibilities remain:
+
+- build the `%{element_id_bin => %{event_atom => {pid, msg}}}` routing map
+- encode event attrs as presence flags in EMRG
+- receive Rust-emitted element events and forward stored payload routes
 
 ## Supported Element Events
+
+Current emitted element events are:
 
 - `:click`
 - `:press`
@@ -144,67 +535,39 @@ block listeners behind them.
 - `:mouse_enter`
 - `:mouse_leave`
 - `:mouse_move`
-- `:change` (text input, payload includes latest value; emitted only when `on_change` is set)
-- `:focus` (focusable inputs)
-- `:blur` (focusable inputs)
+- `:change`
+- `:focus`
+- `:blur`
 
-`mouse_over`, `focused`, and `mouse_down` do not emit element events; they are
-applied as runtime styling in Rust.
+`mouse_over`, `mouse_down`, and `focused` styling do not emit element events.
+They are retained tree/runtime state used by layout/style merging.
 
-## Raw Text Input Events
+## Nearby Status
 
-Backends send raw text input events to the configured input target process:
+Nearby remains render-only.
 
-- `{:text_commit, {text, modifiers}}`
-- `{:text_preedit, {text, cursor_range}}`
-- `:text_preedit_clear`
+- nearby subtrees are rendered during the render pass
+- the combined render/event rebuild walk intentionally excludes nearby from
+  registry accumulation
+- nearby elements are therefore still not hit-testable, focusable, or
+  text-interactive through the retained event system
 
-Text commit events mutate focused text-input content in Rust. Preedit events
-track composition state for IME workflows and do not emit `:change` by
-themselves.
-
-Text editing remains active without `on_change`; `on_change` gates only
-whether `:change` element events are emitted.
-
-## Text Selection and Clipboard Shortcuts
-
-- Selection is tracked in Rust runtime attrs (`cursor` + `selection_anchor`) and
-  is not encoded in EMRG.
-- Mouse drag selects text within focused single-line inputs.
-- Tab cycles focus across all rendered focusable inputs (including clipped
-  descendants).
-- Shift+Tab cycles focus in reverse order.
-- Focus changes can emit registry-derived scroll requests so the focused element
-  is brought into view.
-- If left/right/home/end cannot move a focused text cursor (already at bound),
-  the key can fall back to ancestor scrolling via registry matchers.
-- If no focused directional matcher is available, arrow keys fall back to the
-  first visible root-first scrollable that can scroll in that direction.
-- Shift+arrow/home/end extends selection.
-- Ctrl/Meta shortcuts are handled in Rust for focused text inputs:
-  - `A` select all
-  - `C` copy selection
-  - `X` cut selection
-  - `V` paste text
-- Linux PRIMARY selection is tracked separately and updated from current
-  selection/copy/cut.
-- Middle mouse button pastes from Linux PRIMARY selection into focused text
-  inputs.
-- Cut, paste, and typed insertion replace the selected range when present and
-  emit `:change` with updated value when `on_change` is set.
+Nearby is the main remaining gap in feature parity with normal elements.
 
 ## Current Limits
 
-- No bubbling/capture propagation.
-- No double-click semantics.
-- Element events do not include pointer metadata payloads.
-- Right/middle buttons are not mapped to element-level down/up events.
-- No distinct scrollbar active/pressed visual state beyond hover width changes.
-- Nearby elements are not yet hit-testable or focusable through the event registry.
+- no bubbling or capture propagation
+- no double-click semantics
+- no pointer metadata payloads on element events
+- no right/middle element-level down/up events
+- no nearby event integration yet
+- no multi-touch or gesture event model yet
 
-## Possible Extensions
+## Key Files
 
-- Optional metadata payloads for element events (position/modifiers/button).
-- Optional bubbling/capture model.
-- Optional multiple input targets.
-- Multi-touch pointer ids and gesture hooks.
+- `native/emerge_skia/src/events.rs`
+- `native/emerge_skia/src/events/registry_builder.rs`
+- `native/emerge_skia/src/events/runtime.rs`
+- `native/emerge_skia/src/lib.rs`
+- `native/emerge_skia/src/tree/layout.rs`
+- `native/emerge_skia/src/tree/render.rs`
