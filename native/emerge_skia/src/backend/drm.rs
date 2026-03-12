@@ -30,6 +30,7 @@ use crate::actors::{EventMsg, RenderMsg};
 use crate::cursor::CursorState;
 use crate::input::InputEvent;
 use crate::renderer::{RenderState, Renderer};
+use crate::video::{VideoImportContext, VideoRegistry};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
 
@@ -715,6 +716,7 @@ pub struct DrmRunContext {
     pub event_tx: Sender<EventMsg>,
     pub screen_tx: Sender<(u32, u32)>,
     pub render_counter: Arc<AtomicU64>,
+    pub video_registry: Arc<VideoRegistry>,
 }
 
 pub fn run(context: DrmRunContext, config: DrmRunConfig) {
@@ -726,6 +728,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         event_tx,
         screen_tx,
         render_counter,
+        video_registry,
     } = context;
 
     let card = match open_card(config.card_path.as_deref()) {
@@ -928,6 +931,13 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 continue;
             }
         };
+        let video_import = match VideoImportContext::new_current() {
+            Ok(ctx) => Some(ctx),
+            Err(err) => {
+                eprintln!("prime video import unavailable: {err}");
+                None
+            }
+        };
 
         let mode_blob = match card.create_property_blob(&mode) {
             Ok(blob) => blob,
@@ -1011,6 +1021,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
         let mut last_animation_frame = Instant::now();
+        let mut last_video_generation = video_registry.generation();
 
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -1046,6 +1057,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         commands,
                         version,
                         animate,
+                        ..
                     } => {
                         render_state.commands = commands;
                         render_state.render_version = version;
@@ -1108,11 +1120,22 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 last_animation_frame = Instant::now();
             }
 
+            let video_generation = video_registry.generation();
+            if video_generation != last_video_generation {
+                pending_render = true;
+                last_video_generation = video_generation;
+            }
+
             last_cursor_pos = cursor_pos;
             last_cursor_visible = cursor_visible;
 
             if pending_render {
                 let frame_version = render_state.render_version;
+                let mut video_needs_cleanup = false;
+                match renderer.sync_video_frames(&video_registry, video_import.as_ref()) {
+                    Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                    Err(err) => eprintln!("video sync failed: {err}"),
+                }
                 renderer.render(&render_state);
                 if cursor_plane.is_none() && cursor_visible {
                     draw_software_cursor(&mut renderer, cursor_pos, dimensions);
@@ -1173,7 +1196,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                 drop(current_bo.take());
                 current_bo = Some(next_bo);
-                pending_render = false;
+                pending_render = video_needs_cleanup;
             }
             std::thread::sleep(Duration::from_millis(4));
         }

@@ -59,12 +59,20 @@ defmodule Emerge.AttrCodec do
     box_shadow: 52,
     image_src: 53,
     image_fit: 54,
-    image_size: 55
+    image_size: 55,
+    on_change: 56,
+    on_focus: 57,
+    on_blur: 58,
+    focused: 59,
+    mouse_down: 60,
+    on_press: 61,
+    video_target: 62
   }
 
   @mouse_over_decorative_keys MapSet.new([
                                 :background,
                                 :border_color,
+                                :box_shadow,
                                 :font_color,
                                 :font_size,
                                 :font_underline,
@@ -77,6 +85,8 @@ defmodule Emerge.AttrCodec do
                                 :scale,
                                 :alpha
                               ])
+
+  @state_style_keys [:mouse_over, :focused, :mouse_down]
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
 
@@ -152,12 +162,15 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:scroll_x, value), do: encode_f64(value)
   defp encode_value(:scroll_y, value), do: encode_f64(value)
   defp encode_value(:on_click, _value), do: encode_bool(true)
+  defp encode_value(:on_press, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_down, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_up, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_enter, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_leave, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_move, _value), do: encode_bool(true)
   defp encode_value(:mouse_over, value), do: encode_mouse_over(value)
+  defp encode_value(:focused, value), do: encode_focused(value)
+  defp encode_value(:mouse_down, value), do: encode_mouse_down_style(value)
   defp encode_value(:font_underline, value), do: encode_bool(value)
   defp encode_value(:font_strike, value), do: encode_bool(value)
   defp encode_value(:font_letter_spacing, value), do: encode_f64(value)
@@ -167,6 +180,10 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:image_src, value), do: encode_image_src(value)
   defp encode_value(:image_fit, value), do: encode_image_fit(value)
   defp encode_value(:image_size, value), do: encode_image_size(value)
+  defp encode_value(:video_target, value), do: encode_string(value)
+  defp encode_value(:on_change, _value), do: encode_bool(true)
+  defp encode_value(:on_focus, _value), do: encode_bool(true)
+  defp encode_value(:on_blur, _value), do: encode_bool(true)
 
   defp decode_value(:width, rest), do: decode_length(rest)
   defp decode_value(:height, rest), do: decode_length(rest)
@@ -207,12 +224,15 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:scroll_x, rest), do: decode_f64(rest)
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
   defp decode_value(:on_click, rest), do: decode_bool(rest)
+  defp decode_value(:on_press, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_down, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_up, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_enter, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_leave, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_move, rest), do: decode_bool(rest)
   defp decode_value(:mouse_over, rest), do: decode_mouse_over(rest)
+  defp decode_value(:focused, rest), do: decode_focused(rest)
+  defp decode_value(:mouse_down, rest), do: decode_mouse_down_style(rest)
   defp decode_value(:font_underline, rest), do: decode_bool(rest)
   defp decode_value(:font_strike, rest), do: decode_bool(rest)
   defp decode_value(:font_letter_spacing, rest), do: decode_f64(rest)
@@ -222,33 +242,50 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:image_src, rest), do: decode_image_src(rest)
   defp decode_value(:image_fit, rest), do: decode_image_fit(rest)
   defp decode_value(:image_size, rest), do: decode_image_size(rest)
+  defp decode_value(:video_target, rest), do: decode_string(rest)
+  defp decode_value(:on_change, rest), do: decode_bool(rest)
+  defp decode_value(:on_focus, rest), do: decode_bool(rest)
+  defp decode_value(:on_blur, rest), do: decode_bool(rest)
 
-  defp encode_mouse_over(value) when is_map(value) do
-    validate_mouse_over_attrs!(value)
+  defp encode_mouse_over(value) when is_map(value), do: encode_state_style(value, :mouse_over)
+
+  defp encode_focused(value) when is_map(value), do: encode_state_style(value, :focused)
+
+  defp encode_mouse_down_style(value) when is_map(value),
+    do: encode_state_style(value, :mouse_down)
+
+  defp encode_state_style(value, style_key) when is_map(value) do
+    validate_state_style_attrs!(value, style_key)
     encoded = encode_attrs(value)
     <<byte_size(encoded)::unsigned-32, encoded::binary>>
   end
 
-  defp decode_mouse_over(<<len::unsigned-32, rest::binary>>) do
+  defp decode_mouse_over(rest), do: decode_state_style(rest)
+
+  defp decode_focused(rest), do: decode_state_style(rest)
+
+  defp decode_mouse_down_style(rest), do: decode_state_style(rest)
+
+  defp decode_state_style(<<len::unsigned-32, rest::binary>>) do
     <<attrs_bin::binary-size(len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
   end
 
-  defp validate_mouse_over_attrs!(attrs) when is_map(attrs) do
+  defp validate_state_style_attrs!(attrs, style_key) when is_map(attrs) do
     allowed =
       @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
 
     Enum.each(attrs, fn {key, _value} ->
       cond do
-        key == :mouse_over ->
-          raise ArgumentError, "mouse_over does not support nested mouse_over"
+        key in @state_style_keys ->
+          raise ArgumentError, "#{style_key} does not support nested #{key}"
 
         MapSet.member?(@mouse_over_decorative_keys, key) ->
           :ok
 
         true ->
           raise ArgumentError,
-                "mouse_over only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+                "#{style_key} only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
       end
     end)
   end

@@ -48,15 +48,37 @@ defmodule Emerge.DiffState do
   @spec dispatch_event(t(), binary(), atom()) :: :ok
   def dispatch_event(%__MODULE__{event_registry: registry}, id_bin, event)
       when is_binary(id_bin) and is_atom(event) do
+    dispatch_event_with_payload(%__MODULE__{event_registry: registry}, id_bin, event, :no_payload)
+  end
+
+  @spec dispatch_event(t(), binary(), atom(), term()) :: :ok
+  def dispatch_event(%__MODULE__{event_registry: registry}, id_bin, event, payload)
+      when is_binary(id_bin) and is_atom(event) do
+    dispatch_event_with_payload(
+      %__MODULE__{event_registry: registry},
+      id_bin,
+      event,
+      {:with_payload, payload}
+    )
+  end
+
+  defp dispatch_event_with_payload(%__MODULE__{event_registry: registry}, id_bin, event, payload) do
     case lookup_event(%__MODULE__{event_registry: registry}, id_bin, event) do
-      {pid, msg} when is_pid(pid) ->
-        send(pid, msg)
+      {:ok, {pid, msg}} when is_pid(pid) ->
+        send(pid, dispatch_message(msg, payload))
         :ok
 
       _ ->
         :ok
     end
   end
+
+  defp dispatch_message(msg, :no_payload), do: msg
+
+  defp dispatch_message(msg, {:with_payload, payload}) when is_tuple(msg),
+    do: Tuple.insert_at(msg, tuple_size(msg), payload)
+
+  defp dispatch_message(msg, {:with_payload, payload}), do: {msg, payload}
 
   @spec lookup_event(t(), binary(), atom()) :: {:ok, {pid(), term()}} | :error
   def lookup_event(%__MODULE__{event_registry: registry}, id_bin, event)
@@ -75,11 +97,15 @@ defmodule Emerge.DiffState do
   defp collect_event_handlers(%Emerge.Element{} = element, acc) do
     acc
     |> register_event(element, :on_click, :click)
+    |> register_event(element, :on_press, :press)
     |> register_event(element, :on_mouse_down, :mouse_down)
     |> register_event(element, :on_mouse_up, :mouse_up)
     |> register_event(element, :on_mouse_enter, :mouse_enter)
     |> register_event(element, :on_mouse_leave, :mouse_leave)
     |> register_event(element, :on_mouse_move, :mouse_move)
+    |> register_event(element, :on_change, :change)
+    |> register_event(element, :on_focus, :focus)
+    |> register_event(element, :on_blur, :blur)
     |> then(fn registry ->
       Enum.reduce(element.children, registry, fn child, next_registry ->
         collect_event_handlers(child, next_registry)

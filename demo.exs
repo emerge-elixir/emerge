@@ -18,7 +18,14 @@ argv =
       input_log: :boolean,
       render_log: :boolean
     ],
-    aliases: [b: :backend, c: :card, w: :width, h: :height, i: :input_log, r: :render_log]
+    aliases: [
+      b: :backend,
+      c: :card,
+      w: :width,
+      h: :height,
+      i: :input_log,
+      r: :render_log
+    ]
   )
 
 backend = Keyword.get(cli_opts, :backend, "wayland")
@@ -40,7 +47,11 @@ start_opts = if card, do: Keyword.put(start_opts, :drm_card, card), else: start_
 start_opts = if input_log, do: Keyword.put(start_opts, :input_log, true), else: start_opts
 start_opts = if render_log, do: Keyword.put(start_opts, :render_log, true), else: start_opts
 
-startup_detail = if card, do: " backend=#{backend} card=#{card}", else: " backend=#{backend}"
+startup_detail =
+  if card,
+    do: " backend=#{backend} card=#{card}",
+    else: " backend=#{backend}"
+
 IO.puts("Starting EmergeSkia demo..." <> startup_detail)
 
 blocked_root = Path.join(System.tmp_dir!(), "emerge_skia_demo_blocked")
@@ -138,6 +149,16 @@ end
 
 Process.put(:clock_time, clock_now.())
 Process.put(:hover_manual_active, false)
+Process.put(:demo_input_value, "quick brown fox")
+Process.put(:demo_input_preedit, nil)
+Process.put(:demo_input_preedit_cursor, nil)
+Process.put(:demo_input_focused, false)
+Process.put(:demo_input_focus_count, 0)
+Process.put(:demo_input_blur_count, 0)
+Process.put(:demo_button_focused, false)
+Process.put(:demo_button_press_count, 0)
+Process.put(:demo_button_focus_count, 0)
+Process.put(:demo_button_blur_count, 0)
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -178,6 +199,19 @@ defmodule Demo do
     action_str = if action == 1, do: "pressed", else: "released"
     mods_str = if mods == [], do: "", else: " [#{Enum.join(mods, ", ")}]"
     "Key: #{key} #{action_str}#{mods_str}"
+  end
+
+  def format_event({:text_commit, {text, mods}}) do
+    mods_str = if mods == [], do: "", else: " [#{Enum.join(mods, ", ")}]"
+    "Text commit: #{inspect(text)}#{mods_str}"
+  end
+
+  def format_event({:text_preedit, {text, cursor}}) do
+    "Text preedit: #{inspect(text)} cursor=#{inspect(cursor)}"
+  end
+
+  def format_event(:text_preedit_clear) do
+    "Text preedit: cleared"
   end
 
   def format_event({:cursor_entered, entered}) do
@@ -304,6 +338,7 @@ defmodule Demo do
       {"Unstable List", :unstable_list},
       {"Nearby", :nearby},
       {"Text", :text},
+      {"Input", :input},
       {"Borders", :borders},
       {"Assets", :assets}
     ]
@@ -326,7 +361,7 @@ defmodule Demo do
           end)
         ),
         el([Font.size(12), Font.color(@dim_text)], text("Navigation")),
-        el([Font.size(11), Font.color(@dim_text)], text("Click pages to switch"))
+        el([Font.size(11), Font.color(@dim_text)], text("Click or focus + Enter to switch"))
       ]
     )
   end
@@ -391,6 +426,7 @@ defmodule Demo do
       :unstable_list -> page_unstable_list(unstable_items)
       :nearby -> page_nearby()
       :text -> page_text()
+      :input -> page_input()
       :borders -> page_borders()
       :assets -> page_assets()
       _ -> page_overview()
@@ -656,6 +692,297 @@ defmodule Demo do
             text("runtime allowlist: #{runtime_allowlist_root}")
           ),
           el([Font.size(11), Font.color(@dim_text)], text("font asset: #{font_source}"))
+        ])
+      )
+    ])
+  end
+
+  defp page_input() do
+    value = Process.get(:demo_input_value, "quick brown fox")
+    preedit = Process.get(:demo_input_preedit, nil)
+    preedit_cursor = Process.get(:demo_input_preedit_cursor, nil)
+    focused = Process.get(:demo_input_focused, false)
+    focus_count = Process.get(:demo_input_focus_count, 0)
+    blur_count = Process.get(:demo_input_blur_count, 0)
+    button_focused = Process.get(:demo_button_focused, false)
+    button_press_count = Process.get(:demo_button_press_count, 0)
+    button_focus_count = Process.get(:demo_button_focus_count, 0)
+    button_blur_count = Process.get(:demo_button_blur_count, 0)
+
+    {status_label, status_bg, status_text, input_border_color, input_border_width} =
+      if focused do
+        {
+          "Focused",
+          {:color_rgb, {72, 96, 70}},
+          {:color_rgb, {227, 244, 223}},
+          {:color_rgb, {228, 183, 104}},
+          1
+        }
+      else
+        {
+          "Blurred",
+          {:color_rgb, {72, 74, 102}},
+          {:color_rgb, {220, 224, 240}},
+          {:color_rgb, {120, 130, 175}},
+          1
+        }
+      end
+
+    value_label =
+      case value do
+        "" -> "(empty)"
+        _ -> value
+      end
+
+    preedit_label =
+      case preedit do
+        nil -> "(none)"
+        "" -> "(empty)"
+        _ -> preedit
+      end
+
+    {button_state_label, button_state_bg, button_state_text} =
+      if button_focused do
+        {
+          "Focused",
+          {:color_rgb, {70, 96, 82}},
+          {:color_rgb, {224, 244, 236}}
+        }
+      else
+        {
+          "Blurred",
+          {:color_rgb, {72, 74, 102}},
+          {:color_rgb, {220, 224, 240}}
+        }
+      end
+
+    column([width(fill()), spacing(16)], [
+      section_title("Input"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Text input: tab/shift+tab focus cycle, click/drag select, shift+arrows, ctrl/meta+a/c/x/v, middle-click paste, backspace/delete."
+        )
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color({:color_rgb, {48, 48, 72}}),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          Emerge.UI.Input.text(value, [
+            width(fill()),
+            padding_xy(10, 8),
+            Font.size(16),
+            Font.color(:white),
+            Background.color({:color_rgb, {62, 62, 94}}),
+            Border.rounded(8),
+            Border.width(input_border_width),
+            Border.color(input_border_color),
+            on_change({self(), {:demo_event, :input_changed}}),
+            on_focus({self(), {:demo_event, :input_focus}}),
+            on_blur({self(), {:demo_event, :input_blur}})
+          ]),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "on_change emits each edit from Rust; on_focus/on_blur fire on focus transitions."
+            )
+          ),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color(status_bg),
+                Border.rounded(999)
+              ],
+              el([Font.size(11), Font.color(status_text)], text("State: #{status_label}"))
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {64, 74, 106}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {205, 216, 246}})],
+                text("focus: #{focus_count}")
+              )
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {78, 68, 100}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {228, 212, 246}})],
+                text("blur: #{blur_count}")
+              )
+            )
+          ]),
+          el(
+            [Font.size(12), Font.color({:color_rgb, {225, 228, 244}})],
+            text("Value: #{value_label}")
+          ),
+          el([Font.size(11), Font.color(@dim_text)], text("Length: #{String.length(value)}")),
+          el([Font.size(11), Font.color(@dim_text)], text("Preedit: #{preedit_label}")),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text("Preedit cursor: #{inspect(preedit_cursor)}")
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color({:color_rgb, {46, 50, 72}}),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          el(
+            [Font.size(12), Font.color({:color_rgb, {225, 230, 244}})],
+            text("Declarative interaction styles")
+          ),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "No focus/down handlers required: styles come from mouse_over, focused, and mouse_down."
+            )
+          ),
+          Emerge.UI.Input.text("Style showcase input", [
+            width(fill()),
+            padding_xy(10, 8),
+            Font.size(16),
+            Font.color({:color_rgb, {228, 232, 246}}),
+            Background.color({:color_rgb, {58, 62, 90}}),
+            Border.rounded(8),
+            Border.width(1),
+            Border.color({:color_rgb, {110, 120, 162}}),
+            mouse_over([
+              Background.color({:color_rgb, {64, 70, 100}}),
+              Border.color({:color_rgb, {132, 143, 189}})
+            ]),
+            focused([
+              Background.color({:color_rgb, {70, 78, 112}}),
+              Border.color({:color_rgb, {164, 188, 236}})
+            ]),
+            mouse_down([
+              Background.color({:color_rgb, {63, 70, 100}}),
+              Border.color({:color_rgb, {224, 186, 124}}),
+              move_y(1)
+            ])
+          ]),
+          el(
+            [Font.size(10), Font.color(@dim_text)],
+            text("Merge order: mouse_over -> focused -> mouse_down (later styles win conflicts).")
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color({:color_rgb, {46, 50, 72}}),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          el(
+            [Font.size(12), Font.color({:color_rgb, {225, 230, 244}})],
+            text("Input.button + on_press")
+          ),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text("Press fires on click, and also on Enter when this button is focused.")
+          ),
+          Emerge.UI.Input.button("Run action", [
+            width(fill()),
+            padding_xy(10, 8),
+            Font.size(14),
+            Font.color({:color_rgb, {230, 234, 246}}),
+            Background.color({:color_rgb, {58, 62, 90}}),
+            Border.rounded(8),
+            Border.width(1),
+            Border.color({:color_rgb, {110, 120, 162}}),
+            on_press({self(), {:demo_event, :button_press}}),
+            on_focus({self(), {:demo_event, :button_focus}}),
+            on_blur({self(), {:demo_event, :button_blur}}),
+            mouse_over([
+              Background.color({:color_rgb, {64, 70, 100}}),
+              Border.color({:color_rgb, {132, 143, 189}})
+            ]),
+            focused([
+              Border.color({:color_rgb, {166, 186, 236}}),
+              Border.glow({:color_rgba, {132, 158, 232, 100}}, 2)
+            ]),
+            mouse_down([
+              Background.color({:color_rgb, {56, 60, 88}}),
+              Border.color({:color_rgb, {176, 190, 228}}),
+              Border.inner_shadow(
+                offset: {0, 1},
+                blur: 6,
+                size: 1,
+                color: {:color_rgba, {0, 0, 0, 120}}
+              ),
+              move_y(1)
+            ])
+          ]),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color(button_state_bg),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color(button_state_text)],
+                text("State: #{button_state_label}")
+              )
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {66, 74, 108}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {208, 218, 246}})],
+                text("press: #{button_press_count}")
+              )
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {64, 82, 96}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {210, 238, 236}})],
+                text("focus: #{button_focus_count}")
+              )
+            ),
+            el(
+              [
+                padding_xy(10, 5),
+                Background.color({:color_rgb, {78, 68, 100}}),
+                Border.rounded(999)
+              ],
+              el(
+                [Font.size(11), Font.color({:color_rgb, {228, 212, 246}})],
+                text("blur: #{button_blur_count}")
+              )
+            )
+          ]),
+          el(
+            [Font.size(10), Font.color(@dim_text)],
+            text("Try Tab/Shift+Tab to focus this button, then press Enter to trigger on_press.")
+          )
         ])
       )
     ])
@@ -1221,6 +1548,12 @@ defmodule Demo do
     column([width(fill()), spacing(16)], [
       section_title("Nearby Elements"),
       el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Nearby roots align from the host slot; in_front uses the host border-box and explicit px sizes can overflow."
+        )
+      ),
+      el(
         [
           width(fill()),
           height(px(160)),
@@ -1310,8 +1643,91 @@ defmodule Demo do
           ],
           text("Base")
         )
-      )
+      ),
+      section_title("Oversized inFront"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "The same 220x90 overlay is centered and bottom-aligned inside a 126x78 host. Clipping only changes visibility."
+        )
+      ),
+      row([width(fill()), spacing(12), align_top()], [
+        nearby_overflow_card(
+          "Overflow visible",
+          "No clip on the host, so the overlay spills past the border-box slot.",
+          false
+        ),
+        nearby_overflow_card(
+          "Overflow clipped",
+          "clip() trims the oversized overlay to the host clip bounds.",
+          true
+        )
+      ])
     ])
+  end
+
+  defp nearby_overflow_card(title, note, clipped?) do
+    host_attrs = [
+      width(px(126)),
+      height(px(78)),
+      center_x(),
+      center_y(),
+      Background.color({:color_rgb, {76, 76, 132}}),
+      Border.width(2),
+      Border.color({:color_rgb, {182, 194, 255}}),
+      Border.rounded(10),
+      in_front(nearby_oversized_front_overlay())
+    ]
+
+    host_attrs = if clipped?, do: [clip() | host_attrs], else: host_attrs
+
+    column(
+      [
+        width(fill()),
+        spacing(10),
+        padding(12),
+        Background.color({:color_rgb, {45, 45, 65}}),
+        Border.rounded(8)
+      ],
+      [
+        el([Font.size(13), Font.color(@light_text)], text(title)),
+        el([Font.size(11), Font.color(@dim_text)], text(note)),
+        el(
+          [
+            width(fill()),
+            height(px(180)),
+            Background.color({:color_rgba, {255, 255, 255, 12}}),
+            Border.rounded(8)
+          ],
+          el(
+            host_attrs,
+            el([center_x(), center_y(), Font.size(13), Font.color(:white)], text("Host"))
+          )
+        )
+      ]
+    )
+  end
+
+  defp nearby_oversized_front_overlay() do
+    el(
+      [
+        width(px(220)),
+        height(px(90)),
+        center_x(),
+        align_bottom(),
+        Background.color({:color_rgba, {235, 96, 140, 210}}),
+        Border.rounded(10),
+        Font.size(11),
+        Font.color(:white)
+      ],
+      column([center_x(), center_y(), spacing(4)], [
+        text("in_front 220x90"),
+        el(
+          [Font.size(10), Font.color({:color_rgba, {255, 255, 255, 220}})],
+          text("center_x + align_bottom")
+        )
+      ])
+    )
   end
 
   defp page_text() do
@@ -2451,29 +2867,58 @@ defmodule Demo do
     active = page == current_page
 
     bg = if active, do: @blue, else: {:color_rgb, {45, 45, 65}}
+    pressed_bg = if active, do: {:color_rgb, {55, 82, 206}}, else: {:color_rgb, {40, 42, 60}}
     text_color = if active, do: @light_text, else: @dim_text
+    border_color = if active, do: {:color_rgb, {126, 148, 230}}, else: {:color_rgb, {86, 92, 122}}
 
     hover_attrs =
       if active do
-        []
+        [
+          mouse_over([
+            Background.color({:color_rgb, {74, 108, 240}}),
+            Font.color(@light_text),
+            Border.color({:color_rgb, {152, 174, 246}})
+          ])
+        ]
       else
         [
           mouse_over([
             Background.color({:color_rgb, {70, 70, 100}}),
-            Font.color(@light_text)
+            Font.color(@light_text),
+            Border.color({:color_rgb, {132, 142, 186}})
           ])
         ]
       end
 
-    el(
+    Emerge.UI.Input.button(
+      label,
       [
+        key({:menu, page}),
         width(fill()),
-        padding(10),
+        padding_xy(10, 8),
         Background.color(bg),
         Border.rounded(10),
-        on_click({self(), {:demo_nav, page}})
-      ] ++ hover_attrs,
-      el([Font.size(12), Font.color(text_color)], text(label))
+        Border.width(1),
+        Border.color(border_color),
+        Font.size(12),
+        Font.color(text_color),
+        on_press({self(), {:demo_nav, page}}),
+        focused([
+          Border.color({:color_rgb, {166, 186, 236}}),
+          Border.glow({:color_rgba, {132, 158, 232, 110}}, 2)
+        ]),
+        mouse_down([
+          Background.color(pressed_bg),
+          Border.color({:color_rgb, {176, 190, 228}}),
+          Border.inner_shadow(
+            offset: {0, 1},
+            blur: 6,
+            size: 1,
+            color: {:color_rgba, {0, 0, 0, 120}}
+          ),
+          move_y(1)
+        ])
+      ] ++ hover_attrs
     )
   end
 
@@ -2731,8 +3176,52 @@ defmodule Demo do
               {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
           end
 
+        {id_bin, event_type, payload} when is_binary(id_bin) and is_atom(event_type) ->
+          case Emerge.lookup_event(state, id_bin, event_type) do
+            {:ok, {pid, msg}} when pid == self() ->
+              msg_with_payload =
+                if is_tuple(msg),
+                  do: Tuple.insert_at(msg, tuple_size(msg), payload),
+                  else: {msg, payload}
+
+              {next_state, _changed} =
+                process_event(
+                  msg_with_payload,
+                  state,
+                  {mouse_pos, event_log, size, scale, current_page, last_move_label,
+                   unstable_items}
+                )
+
+              next_state
+
+            _ ->
+              Emerge.dispatch_event(state, id_bin, event_type, payload)
+
+              {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+          end
+
         _ ->
           {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+      end
+
+    preedit_changed =
+      case event do
+        {:text_preedit, {text, cursor}} when is_binary(text) ->
+          previous_text = Process.get(:demo_input_preedit, nil)
+          previous_cursor = Process.get(:demo_input_preedit_cursor, nil)
+          Process.put(:demo_input_preedit, text)
+          Process.put(:demo_input_preedit_cursor, cursor)
+          previous_text != text or previous_cursor != cursor
+
+        :text_preedit_clear ->
+          previous_text = Process.get(:demo_input_preedit, nil)
+          previous_cursor = Process.get(:demo_input_preedit_cursor, nil)
+          Process.put(:demo_input_preedit, nil)
+          Process.put(:demo_input_preedit_cursor, nil)
+          previous_text != nil or previous_cursor != nil
+
+        _ ->
+          false
       end
 
     new_mouse_pos =
@@ -2758,7 +3247,7 @@ defmodule Demo do
 
     changed =
       new_mouse_pos != mouse_pos or new_log != event_log or new_size != size or
-        new_scale != scale
+        new_scale != scale or preedit_changed
 
     {{new_mouse_pos, new_log, new_size, new_scale, current_page, last_move_label, unstable_items},
      changed}
@@ -2810,6 +3299,116 @@ defmodule Demo do
     entry = if active, do: "Manual hover: enter", else: "Manual hover: leave"
     new_log = Enum.take([entry | event_log], 20)
     changed = previous != active or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :input_changed, value},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       )
+       when is_binary(value) do
+    previous = Process.get(:demo_input_value, "")
+    Process.put(:demo_input_value, value)
+    Process.put(:demo_input_preedit, nil)
+    Process.put(:demo_input_preedit_cursor, nil)
+
+    changed_value = value != previous
+
+    new_log =
+      if changed_value do
+        preview =
+          if String.length(value) > 42, do: String.slice(value, 0, 39) <> "...", else: value
+
+        Enum.take(["Input change: #{preview}" | event_log], 20)
+      else
+        event_log
+      end
+
+    changed = changed_value or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :input_focus},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_input_focused, false)
+    count = Process.get(:demo_input_focus_count, 0) + 1
+
+    Process.put(:demo_input_focused, true)
+    Process.put(:demo_input_focus_count, count)
+
+    new_log = Enum.take(["Input focus (#{count})" | event_log], 20)
+    changed = !previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :input_blur},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_input_focused, false)
+    count = Process.get(:demo_input_blur_count, 0) + 1
+
+    Process.put(:demo_input_focused, false)
+    Process.put(:demo_input_blur_count, count)
+
+    new_log = Enum.take(["Input blur (#{count})" | event_log], 20)
+    changed = previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :button_press},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    count = Process.get(:demo_button_press_count, 0) + 1
+    Process.put(:demo_button_press_count, count)
+
+    new_log = Enum.take(["Button press (#{count})" | event_log], 20)
+    changed = new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :button_focus},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_button_focused, false)
+    count = Process.get(:demo_button_focus_count, 0) + 1
+
+    Process.put(:demo_button_focused, true)
+    Process.put(:demo_button_focus_count, count)
+
+    new_log = Enum.take(["Button focus (#{count})" | event_log], 20)
+    changed = !previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :button_blur},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_button_focused, false)
+    count = Process.get(:demo_button_blur_count, 0) + 1
+
+    Process.put(:demo_button_focused, false)
+    Process.put(:demo_button_blur_count, count)
+
+    new_log = Enum.take(["Button blur (#{count})" | event_log], 20)
+    changed = previous or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end

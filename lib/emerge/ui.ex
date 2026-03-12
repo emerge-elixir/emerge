@@ -21,10 +21,12 @@ defmodule Emerge.UI do
   """
 
   alias Emerge.Element
+  alias EmergeSkia.VideoTarget
 
   @mouse_over_decorative_keys MapSet.new([
                                 :background,
                                 :border_color,
+                                :box_shadow,
                                 :font_color,
                                 :font_size,
                                 :font_underline,
@@ -37,6 +39,8 @@ defmodule Emerge.UI do
                                 :scale,
                                 :alpha
                               ])
+
+  @state_style_keys [:mouse_over, :focused, :mouse_down]
 
   @override_warning_store_key :emerge_ui_override_warnings
 
@@ -262,6 +266,60 @@ defmodule Emerge.UI do
   end
 
   @doc """
+  A video element backed by a renderer-owned video target.
+  """
+  def video(%VideoTarget{} = target, attrs \\ []) when is_list(attrs) do
+    parsed =
+      parse_attrs([
+        {:video_target, target.id},
+        {:image_size, {target.width, target.height}},
+        {:image_fit, :contain}
+        | attrs
+      ])
+
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :video,
+      id: id,
+      attrs: parsed,
+      children: []
+    }
+  end
+
+  @doc false
+  def __text_input__(value, attrs) when is_binary(value) and is_list(attrs) do
+    parsed = parse_attrs([{:content, value} | attrs])
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :text_input,
+      id: id,
+      attrs: parsed,
+      children: []
+    }
+  end
+
+  @doc false
+  def __input_button__(label, attrs) when is_binary(label) and is_list(attrs) do
+    parsed = parse_attrs(attrs)
+    {key, parsed} = Map.pop(parsed, :key)
+    id = key
+    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+
+    %Element{
+      type: :el,
+      id: id,
+      attrs: parsed,
+      children: [text(label)]
+    }
+  end
+
+  @doc """
   An empty element that takes up no space.
   """
   def none do
@@ -390,6 +448,9 @@ defmodule Emerge.UI do
   @doc "Register a click handler payload for this element"
   def on_click({pid, _msg} = payload) when is_pid(pid), do: {:on_click, payload}
 
+  @doc "Register a press handler payload for this element"
+  def on_press({pid, _msg} = payload) when is_pid(pid), do: {:on_press, payload}
+
   @doc "Register a mouse down handler payload for this element"
   def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
 
@@ -405,8 +466,25 @@ defmodule Emerge.UI do
   @doc "Register a mouse move handler payload for this element"
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
 
+  @doc "Register a change handler payload for this input element"
+  def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
+
+  @doc "Register a focus handler payload for this input element"
+  def on_focus({pid, _msg} = payload) when is_pid(pid), do: {:on_focus, payload}
+
+  @doc "Register a blur handler payload for this input element"
+  def on_blur({pid, _msg} = payload) when is_pid(pid), do: {:on_blur, payload}
+
   @doc "Apply decorative attributes while pointer is over the element"
-  def mouse_over(attrs) when is_list(attrs), do: {:mouse_over, parse_mouse_over_attrs(attrs)}
+  def mouse_over(attrs) when is_list(attrs),
+    do: {:mouse_over, parse_state_style_attrs(attrs, :mouse_over)}
+
+  @doc "Apply decorative attributes while this input is focused"
+  def focused(attrs) when is_list(attrs), do: {:focused, parse_state_style_attrs(attrs, :focused)}
+
+  @doc "Apply decorative attributes while left mouse button is pressed"
+  def mouse_down(attrs) when is_list(attrs),
+    do: {:mouse_down, parse_state_style_attrs(attrs, :mouse_down)}
 
   # ============================================
   # TRANSFORMS
@@ -474,21 +552,40 @@ defmodule Emerge.UI do
       end)
 
     validate_scrollbar_clipping!(parsed)
-    validate_mouse_over_payload!(parsed)
+    validate_state_style_payloads!(parsed)
     parsed
   end
 
-  defp parse_mouse_over_attrs(attrs) do
+  defp parse_state_style_attrs(attrs, style_key) do
     parsed =
       Enum.reduce(attrs, %{}, fn
-        {key, value}, acc -> Map.put(acc, key, value)
-        other, acc when is_map(other) -> Map.merge(acc, other)
-        _, acc -> acc
+        {key, value}, acc ->
+          put_state_style_attr(acc, key, value)
+
+        other, acc when is_map(other) ->
+          Enum.reduce(other, acc, fn {key, value}, map_acc ->
+            put_state_style_attr(map_acc, key, value)
+          end)
+
+        _, acc ->
+          acc
       end)
 
-    validate_mouse_over_attrs!(parsed)
+    validate_decorative_attrs!(parsed, style_key)
     parsed
   end
+
+  defp put_state_style_attr(acc, :box_shadow, value) when is_map(value) do
+    existing = Map.get(acc, :box_shadow, [])
+    Map.put(acc, :box_shadow, existing ++ [value])
+  end
+
+  defp put_state_style_attr(acc, :box_shadow, value) when is_list(value) do
+    existing = Map.get(acc, :box_shadow, [])
+    Map.put(acc, :box_shadow, existing ++ value)
+  end
+
+  defp put_state_style_attr(acc, key, value), do: Map.put(acc, key, value)
 
   defp put_attr(acc, :box_shadow, value, _warn_overrides) do
     existing = Map.get(acc, :box_shadow, [])
@@ -523,35 +620,41 @@ defmodule Emerge.UI do
     end
   end
 
-  defp validate_mouse_over_payload!(attrs) do
-    case Map.get(attrs, :mouse_over) do
+  defp validate_state_style_payloads!(attrs) do
+    Enum.each(@state_style_keys, fn style_key ->
+      validate_state_style_payload!(attrs, style_key)
+    end)
+  end
+
+  defp validate_state_style_payload!(attrs, style_key) do
+    case Map.get(attrs, style_key) do
       nil ->
         :ok
 
-      mouse_over_attrs when is_map(mouse_over_attrs) ->
-        validate_mouse_over_attrs!(mouse_over_attrs)
+      style_attrs when is_map(style_attrs) ->
+        validate_decorative_attrs!(style_attrs, style_key)
 
       other ->
         raise ArgumentError,
-              "mouse_over must be a list/map of decorative attributes, got: #{inspect(other)}"
+              "#{style_key} must be a list/map of decorative attributes, got: #{inspect(other)}"
     end
   end
 
-  defp validate_mouse_over_attrs!(attrs) do
+  defp validate_decorative_attrs!(attrs, style_key) do
     allowed =
       @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
 
     Enum.each(attrs, fn {key, _value} ->
       cond do
-        key == :mouse_over ->
-          raise ArgumentError, "mouse_over does not support nested mouse_over"
+        key in @state_style_keys ->
+          raise ArgumentError, "#{style_key} does not support nested #{key}"
 
         MapSet.member?(@mouse_over_decorative_keys, key) ->
           :ok
 
         true ->
           raise ArgumentError,
-                "mouse_over only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+                "#{style_key} only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
       end
     end)
   end
@@ -737,5 +840,19 @@ defmodule Emerge.UI do
 
     @doc "Center text within element"
     def center, do: {:text_align, :center}
+  end
+
+  defmodule Input do
+    @moduledoc "Input elements"
+
+    @doc "Single-line text input"
+    def text(value, attrs \\ []) when is_binary(value) and is_list(attrs) do
+      Emerge.UI.__text_input__(value, attrs)
+    end
+
+    @doc "Button input with text label"
+    def button(label, attrs \\ []) when is_binary(label) and is_list(attrs) do
+      Emerge.UI.__input_button__(label, attrs)
+    end
   end
 end

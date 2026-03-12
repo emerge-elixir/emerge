@@ -421,6 +421,60 @@ defmodule EmergeSkia.EmrgRoundtripTest do
     assert text_child.type == :text
   end
 
+  test "EMRG roundtrip preserves text_input element" do
+    tree =
+      Emerge.UI.Input.text("quick brown fox", [
+        width(px(260)),
+        Emerge.UI.Font.size(14.0),
+        on_change({self(), :changed}),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred}),
+        focused([alpha(0.85), move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
+        mouse_down([
+          move_y(-1),
+          scale(0.97),
+          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
+        ])
+      ])
+
+    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
+    encoded = Emerge.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Serialization.decode(roundtrip)
+
+    assert assigned.type == :text_input
+    assert decoded.type == :text_input
+    assert decoded.attrs.content == "quick brown fox"
+    assert decoded.attrs.font_size == 14.0
+    assert decoded.attrs.on_change == true
+    assert decoded.attrs.on_focus == true
+    assert decoded.attrs.on_blur == true
+
+    assert decoded.attrs.focused == %{
+             alpha: 0.85,
+             move_x: 1.0,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 0.0, blur: 6.0, size: 3.0, color: :cyan, inset: false}
+             ]
+           }
+
+    assert decoded.attrs.mouse_down == %{
+             move_y: -1.0,
+             scale: 0.97,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 1.0, blur: 6.0, size: 1.0, color: :black, inset: true}
+             ]
+           }
+  end
+
   test "EMRG roundtrip preserves new border features" do
     tree =
       el(

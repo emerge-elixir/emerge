@@ -5,7 +5,7 @@ pub const SCROLLBAR_THICKNESS: f32 = 5.0;
 pub const SCROLLBAR_THICKNESS_HOVER: f32 = 7.0;
 pub const SCROLLBAR_MIN_LENGTH: f32 = 24.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScrollbarAxis {
     X,
     Y,

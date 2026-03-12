@@ -54,12 +54,12 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Nearby Positioning
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| above | ✅ | ✅ | ✅ | Centered horizontally above |
-| below | ✅ | ✅ | ✅ | Centered horizontally below |
-| onLeft | ✅ | ✅ | ✅ | Centered vertically left |
-| onRight | ✅ | ✅ | ✅ | Centered vertically right |
-| inFront | ✅ | ✅ | ✅ | Centered overlay |
-| behindContent | ✅ | ✅ | ✅ | Centered underlay |
+| above | ✅ | ✅ | ✅ | Left-start above host; `width fill` uses host width |
+| below | ✅ | ✅ | ✅ | Left-start below host; `width fill` uses host width |
+| onLeft | ✅ | ✅ | ✅ | Top-start left of host; `height fill` uses host height |
+| onRight | ✅ | ✅ | ✅ | Top-start right of host; `height fill` uses host height |
+| inFront | ✅ | ✅ | ✅ | Border-box slot; fill uses both axes; explicit size may overflow |
+| behindContent | ✅ | ✅ | ✅ | Border-box slot between background and content |
 
 #### Background
 | Feature | Elixir API | Layout | Render | Notes |
