@@ -36,8 +36,17 @@ pub enum InputEvent {
     /// Keyboard key pressed/released
     Key { key: String, action: u8, mods: u8 },
 
-    /// Text input (character typed)
-    Codepoint { codepoint: char, mods: u8 },
+    /// Text input commit (may contain multiple chars)
+    TextCommit { text: String, mods: u8 },
+
+    /// IME preedit text update for focused text input
+    TextPreedit {
+        text: String,
+        cursor: Option<(u32, u32)>,
+    },
+
+    /// IME preedit text cleared
+    TextPreeditClear,
 
     /// Cursor entered/exited window
     CursorEntered { entered: bool },
@@ -87,18 +96,6 @@ pub const ACTION_PRESS: u8 = 1;
 
 pub const SCROLL_LINE_PIXELS: f32 = 30.0;
 
-pub const EVENT_CLICK: u16 = 0x0001;
-pub const EVENT_SCROLL_X_NEG: u16 = 0x0002;
-pub const EVENT_SCROLL_X_POS: u16 = 0x0004;
-pub const EVENT_SCROLL_Y_NEG: u16 = 0x0008;
-pub const EVENT_SCROLL_Y_POS: u16 = 0x0010;
-pub const EVENT_MOUSE_DOWN: u16 = 0x0020;
-pub const EVENT_MOUSE_UP: u16 = 0x0040;
-pub const EVENT_MOUSE_ENTER: u16 = 0x0080;
-pub const EVENT_MOUSE_LEAVE: u16 = 0x0100;
-pub const EVENT_MOUSE_MOVE: u16 = 0x0200;
-pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
-
 // ============================================================================
 // Atoms
 // ============================================================================
@@ -106,7 +103,9 @@ pub const EVENT_MOUSE_OVER_STYLE: u16 = 0x0400;
 rustler::atoms! {
     emerge_skia_event,
     key,
-    codepoint,
+    text_commit,
+    text_preedit,
+    text_preedit_clear,
     cursor_pos,
     cursor_button,
     cursor_scroll,
@@ -127,20 +126,13 @@ rustler::atoms! {
 /// Handles input event filtering and delivery to Elixir.
 pub struct InputHandler {
     mask: u32,
-    cursor_pos: (f32, f32),
 }
 
 impl InputHandler {
     pub fn new() -> Self {
         Self {
             mask: INPUT_MASK_ALL,
-            cursor_pos: (0.0, 0.0),
         }
-    }
-
-    /// Update cursor position (used for button/scroll events)
-    pub fn set_cursor_pos(&mut self, x: f32, y: f32) {
-        self.cursor_pos = (x, y);
     }
 
     /// Set the input mask for filtering events
@@ -152,7 +144,9 @@ impl InputHandler {
     pub fn accepts(&self, event: &InputEvent) -> bool {
         let event_mask = match &event {
             InputEvent::Key { .. } => INPUT_MASK_KEY,
-            InputEvent::Codepoint { .. } => INPUT_MASK_CODEPOINT,
+            InputEvent::TextCommit { .. }
+            | InputEvent::TextPreedit { .. }
+            | InputEvent::TextPreeditClear => INPUT_MASK_CODEPOINT,
             InputEvent::CursorPos { .. } => INPUT_MASK_CURSOR_POS,
             InputEvent::CursorButton { .. } => INPUT_MASK_CURSOR_BUTTON,
             InputEvent::CursorScroll { .. } | InputEvent::CursorScrollLines { .. } => {
@@ -251,13 +245,16 @@ impl Encoder for InputEvent {
                 (key(), (key_atom, *action, mods)).encode(env)
             }
 
-            InputEvent::Codepoint {
-                codepoint: cp,
-                mods,
-            } => {
+            InputEvent::TextCommit { text, mods } => {
                 let mods = InputEvent::mods_to_terms(env, *mods);
-                (codepoint(), (cp.to_string(), mods)).encode(env)
+                (text_commit(), (text.clone(), mods)).encode(env)
             }
+
+            InputEvent::TextPreedit { text, cursor } => {
+                (text_preedit(), (text.clone(), *cursor)).encode(env)
+            }
+
+            InputEvent::TextPreeditClear => text_preedit_clear().encode(env),
 
             InputEvent::CursorEntered { entered } => (cursor_entered(), *entered).encode(env),
 

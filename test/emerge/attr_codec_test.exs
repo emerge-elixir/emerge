@@ -100,6 +100,13 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == %{on_click: true}
   end
 
+  test "encode/decode on_press presence" do
+    attrs = %{on_press: {self(), :pressed}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_press: true}
+  end
+
   test "encode/decode mouse event presence" do
     attrs = %{
       on_mouse_down: {self(), :down},
@@ -120,6 +127,20 @@ defmodule Emerge.AttrCodecTest do
            }
   end
 
+  test "encode/decode on_change presence" do
+    attrs = %{on_change: {self(), :changed}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_change: true}
+  end
+
+  test "encode/decode focus event presence" do
+    attrs = %{on_focus: {self(), :focused}, on_blur: {self(), :blurred}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{on_focus: true, on_blur: true}
+  end
+
   test "encode/decode mouse_over decorative attrs" do
     attrs = %{
       mouse_over: %{
@@ -136,6 +157,30 @@ defmodule Emerge.AttrCodecTest do
         rotate: 12,
         scale: 1.1,
         alpha: 0.75
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode focused and mouse_down decorative attrs" do
+    attrs = %{
+      focused: %{
+        font_size: 18,
+        font_color: :white,
+        alpha: 0.6,
+        box_shadow: [
+          %{offset_x: 0, offset_y: 0, blur: 8, size: 2, color: :cyan, inset: false}
+        ]
+      },
+      mouse_down: %{
+        border_color: {:color_rgb, {10, 20, 30}},
+        move_y: -2,
+        box_shadow: [
+          %{offset_x: 0, offset_y: 1, blur: 6, size: 1, color: :black, inset: true}
+        ]
       }
     }
 
@@ -220,6 +265,12 @@ defmodule Emerge.AttrCodecTest do
   test "mouse_over rejects nested mouse_over" do
     assert_raise ArgumentError, ~r/mouse_over does not support nested mouse_over/, fn ->
       AttrCodec.encode_attrs(%{mouse_over: %{mouse_over: %{alpha: 0.5}}})
+    end
+  end
+
+  test "focused rejects nested mouse_over" do
+    assert_raise ArgumentError, ~r/focused does not support nested mouse_over/, fn ->
+      AttrCodec.encode_attrs(%{focused: %{mouse_over: %{alpha: 0.5}}})
     end
   end
 

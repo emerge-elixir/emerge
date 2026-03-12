@@ -21,12 +21,14 @@ use skia_safe::Font;
 mod actors;
 mod assets;
 mod backend;
+mod clipboard;
 mod cursor;
 mod drm_input;
 mod events;
 mod input;
 mod renderer;
 mod tree;
+mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
@@ -34,11 +36,11 @@ use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use drm_input::DrmInput;
-use events::{EventProcessor, MouseOverRequest, ScrollbarHoverRequest, ScrollbarThumbDragRequest};
-use input::{InputEvent, InputHandler};
+use events::spawn_event_actor;
 use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
 use tree::layout::layout_and_refresh_default;
+use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
@@ -67,13 +69,16 @@ enum BackendKind {
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend: BackendKind,
-    event_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>,
+    event_proxy: Arc<Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>>,
     stop_flag: Arc<AtomicBool>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     render_tx: RenderSender,
     cursor_tx: Option<Sender<RenderMsg>>,
     render_counter: Arc<AtomicU64>,
+    video_registry: Arc<VideoRegistry>,
+    video_wake: VideoWake,
+    prime_video_supported: bool,
     log_render: bool,
     log_input: bool,
 }
@@ -161,6 +166,40 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
     }
 }
 
+fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
+    match msg {
+        TreeMsg::Batch(messages) => {
+            for nested in messages {
+                push_tree_message_flat(nested, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshDecision {
+    Skip,
+    UseCachedRebuild,
+    Recompute,
+}
+
+fn decide_refresh_action(
+    tree_changed: bool,
+    registry_requested: bool,
+    has_cached_rebuild: bool,
+) -> RefreshDecision {
+    if tree_changed {
+        RefreshDecision::Recompute
+    } else if registry_requested && has_cached_rebuild {
+        RefreshDecision::UseCachedRebuild
+    } else if registry_requested {
+        RefreshDecision::Recompute
+    } else {
+        RefreshDecision::Skip
+    }
+}
+
 // ============================================================================
 // NIF Functions
 // ============================================================================
@@ -215,11 +254,13 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
+        let mut cached_rebuild: Option<events::RegistryRebuildPayload> = None;
 
         while let Ok(msg) = tree_rx.recv() {
-            let mut messages = vec![msg];
+            let mut messages = Vec::new();
+            push_tree_message_flat(msg, &mut messages);
             while let Ok(next) = tree_rx.try_recv() {
-                messages.push(next);
+                push_tree_message_flat(next, &mut messages);
             }
 
             let mut scroll_acc = std::collections::HashMap::new();
@@ -228,15 +269,21 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             let mut hover_x_state = std::collections::HashMap::new();
             let mut hover_y_state = std::collections::HashMap::new();
             let mut mouse_over_active_state = std::collections::HashMap::new();
-            let mut changed = false;
+            let mut mouse_down_active_state = std::collections::HashMap::new();
+            let mut focused_active_state = std::collections::HashMap::new();
+            let mut tree_changed = false;
+            let mut registry_requested = false;
 
             for message in messages {
                 match message {
                     TreeMsg::Stop => return,
+                    TreeMsg::Batch(_) => {
+                        unreachable!("tree batches must be flattened before processing")
+                    }
                     TreeMsg::UploadTree { bytes } => match tree::deserialize::decode_tree(&bytes) {
                         Ok(decoded) => {
                             tree = decoded;
-                            changed = true;
+                            tree_changed = true;
                         }
                         Err(err) => {
                             eprintln!("tree upload failed: {err}");
@@ -254,7 +301,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                             eprintln!("tree patch apply failed: {err}");
                             continue;
                         }
-                        changed = true;
+                        tree_changed = true;
                     }
                     TreeMsg::Resize {
                         width: w,
@@ -264,7 +311,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         width = w.max(1.0);
                         height = h.max(1.0);
                         scale = s;
-                        changed = true;
+                        tree_changed = true;
                     }
                     TreeMsg::ScrollRequest { element_id, dx, dy } => {
                         let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
@@ -294,295 +341,114 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     TreeMsg::SetMouseOverActive { element_id, active } => {
                         mouse_over_active_state.insert(element_id, active);
                     }
+                    TreeMsg::SetMouseDownActive { element_id, active } => {
+                        mouse_down_active_state.insert(element_id, active);
+                    }
+                    TreeMsg::SetFocusedActive { element_id, active } => {
+                        focused_active_state.insert(element_id, active);
+                    }
+                    TreeMsg::SetTextInputContent {
+                        element_id,
+                        content,
+                    } => {
+                        tree_changed |= tree.set_text_input_content(&element_id, content);
+                    }
+                    TreeMsg::SetTextInputRuntime {
+                        element_id,
+                        focused,
+                        cursor,
+                        selection_anchor,
+                        preedit,
+                        preedit_cursor,
+                    } => {
+                        tree_changed |= tree.set_text_input_runtime(
+                            &element_id,
+                            focused,
+                            cursor,
+                            selection_anchor,
+                            preedit,
+                            preedit_cursor,
+                        );
+                    }
+                    TreeMsg::RebuildRegistry => {
+                        registry_requested = true;
+                    }
                     TreeMsg::AssetStateChanged => {
-                        changed = true;
+                        tree_changed = true;
                     }
                 }
             }
 
             for (id, (dx, dy)) in scroll_acc {
-                changed |= tree.apply_scroll(&id, dx, dy);
+                tree_changed |= tree.apply_scroll(&id, dx, dy);
             }
 
             for (id, dx) in thumb_drag_x_acc {
-                changed |= tree.apply_scroll_x(&id, dx);
+                tree_changed |= tree.apply_scroll_x(&id, dx);
             }
 
             for (id, dy) in thumb_drag_y_acc {
-                changed |= tree.apply_scroll_y(&id, dy);
+                tree_changed |= tree.apply_scroll_y(&id, dy);
             }
 
             for (id, hovered) in hover_x_state {
-                changed |= tree.set_scrollbar_x_hover(&id, hovered);
+                tree_changed |= tree.set_scrollbar_x_hover(&id, hovered);
             }
 
             for (id, hovered) in hover_y_state {
-                changed |= tree.set_scrollbar_y_hover(&id, hovered);
+                tree_changed |= tree.set_scrollbar_y_hover(&id, hovered);
             }
 
             for (id, active) in mouse_over_active_state {
-                changed |= tree.set_mouse_over_active(&id, active);
+                tree_changed |= tree.set_mouse_over_active(&id, active);
             }
 
-            if !changed {
-                continue;
+            for (id, active) in mouse_down_active_state {
+                tree_changed |= tree.set_mouse_down_active(&id, active);
             }
 
-            assets::ensure_tree_sources(&tree);
-
-            let constraint = tree::layout::Constraint::new(width, height);
-            let output = layout_and_refresh_default(&mut tree, constraint, scale);
-            send_event(
-                &event_tx,
-                EventMsg::RegistryUpdate {
-                    registry: output.event_registry,
-                },
-                log_input,
-            );
-
-            let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let animate = assets::has_pending_assets();
-            render_sender.send_latest(RenderMsg::Commands {
-                commands: output.commands,
-                version,
-                animate,
-            });
-
-            if let Some(proxy) = wayland_proxy.as_ref() {
-                let _ = proxy.send_event(UserEvent::Redraw);
-            }
-        }
-    })
-}
-
-fn process_input_events(
-    events: &mut Vec<InputEvent>,
-    processor: &mut EventProcessor,
-    input_handler: &mut InputHandler,
-    target: &Option<LocalPid>,
-    tree_tx: &Sender<TreeMsg>,
-    log_render: bool,
-) {
-    if events.is_empty() {
-        return;
-    }
-
-    let mut coalesced = Vec::new();
-    let mut last_cursor: Option<InputEvent> = None;
-    let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
-
-    for event in events.drain(..) {
-        let event = event.normalize_scroll();
-        match event {
-            InputEvent::CursorPos { .. } => {
-                last_cursor = Some(event);
-            }
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                scroll_acc = Some(match scroll_acc {
-                    Some((acc_dx, acc_dy, _, _)) => (acc_dx + dx, acc_dy + dy, x, y),
-                    None => (dx, dy, x, y),
-                });
-            }
-            other => coalesced.push(other),
-        }
-    }
-
-    if let Some((dx, dy, x, y)) = scroll_acc {
-        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
-    }
-    if let Some(cursor) = last_cursor {
-        coalesced.push(cursor);
-    }
-
-    for event in coalesced {
-        if let InputEvent::Resized {
-            width,
-            height,
-            scale_factor,
-        } = &event
-        {
-            send_tree(
-                tree_tx,
-                TreeMsg::Resize {
-                    width: *width as f32,
-                    height: *height as f32,
-                    scale: *scale_factor,
-                },
-                log_render,
-            );
-        }
-
-        if !input_handler.accepts(&event) {
-            continue;
-        }
-
-        if let InputEvent::CursorPos { x, y } = &event {
-            input_handler.set_cursor_pos(*x, *y);
-        }
-
-        if let Some(pid) = target.as_ref() {
-            let pid = *pid;
-            events::send_input_event(pid, &event);
-
-            if let Some(clicked_id) = processor.detect_click(&event) {
-                events::send_element_event(pid, &clicked_id, events::click_atom());
+            for (id, active) in focused_active_state {
+                tree_changed |= tree.set_focused_active(&id, active);
             }
 
-            if let Some((mouse_id, mouse_event)) = processor.detect_mouse_button_event(&event) {
-                events::send_element_event(pid, &mouse_id, mouse_event);
-            }
-
-            for (hover_id, hover_event) in processor.handle_hover_event(&event) {
-                events::send_element_event(pid, &hover_id, hover_event);
-            }
-        } else {
-            processor.detect_click(&event);
-            processor.detect_mouse_button_event(&event);
-            processor.handle_hover_event(&event);
-        }
-
-        for request in processor.scrollbar_thumb_drag_requests(&event) {
-            match request {
-                ScrollbarThumbDragRequest::X { element_id, dx } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::ScrollbarThumbDragX { element_id, dx },
-                        log_render,
-                    );
+            match decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some())
+            {
+                RefreshDecision::Skip => continue,
+                RefreshDecision::UseCachedRebuild => {
+                    if let Some(rebuild) = cached_rebuild.clone() {
+                        send_event(&event_tx, EventMsg::RegistryUpdate { rebuild }, log_input);
+                    }
+                    continue;
                 }
-                ScrollbarThumbDragRequest::Y { element_id, dy } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::ScrollbarThumbDragY { element_id, dy },
-                        log_render,
-                    );
-                }
-            }
-        }
+                RefreshDecision::Recompute => {
+                    assets::ensure_tree_sources(&tree);
 
-        for (id, dx, dy) in processor.scroll_requests(&event) {
-            send_tree(
-                tree_tx,
-                TreeMsg::ScrollRequest {
-                    element_id: id,
-                    dx,
-                    dy,
-                },
-                log_render,
-            );
-        }
-
-        for request in processor.scrollbar_hover_requests(&event) {
-            match request {
-                ScrollbarHoverRequest::X {
-                    element_id,
-                    hovered,
-                } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetScrollbarXHover {
-                            element_id,
-                            hovered,
+                    let constraint = tree::layout::Constraint::new(width, height);
+                    let output = layout_and_refresh_default(&mut tree, constraint, scale);
+                    cached_rebuild = Some(output.event_rebuild.clone());
+                    send_event(
+                        &event_tx,
+                        EventMsg::RegistryUpdate {
+                            rebuild: output.event_rebuild,
                         },
-                        log_render,
+                        log_input,
                     );
-                }
-                ScrollbarHoverRequest::Y {
-                    element_id,
-                    hovered,
-                } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetScrollbarYHover {
-                            element_id,
-                            hovered,
-                        },
-                        log_render,
-                    );
-                }
-            }
-        }
 
-        for request in processor.mouse_over_requests(&event) {
-            match request {
-                MouseOverRequest::SetMouseOverActive { element_id, active } => {
-                    send_tree(
-                        tree_tx,
-                        TreeMsg::SetMouseOverActive { element_id, active },
-                        log_render,
-                    );
-                }
-            }
-        }
-    }
-}
+                    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let animate = assets::has_pending_assets();
+                    render_sender.send_latest(RenderMsg::Commands {
+                        commands: output.commands,
+                        version,
+                        animate,
+                        ime_enabled: output.ime_enabled,
+                        ime_cursor_area: output.ime_cursor_area,
+                    });
 
-fn spawn_event_actor(
-    event_rx: Receiver<EventMsg>,
-    tree_tx: Sender<TreeMsg>,
-    log_render: bool,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut processor = EventProcessor::new();
-        let mut input_handler = InputHandler::new();
-        let mut target: Option<LocalPid> = None;
-
-        while let Ok(msg) = event_rx.recv() {
-            let mut messages = vec![msg];
-            while let Ok(next) = event_rx.try_recv() {
-                messages.push(next);
-            }
-
-            let mut pending_inputs = Vec::new();
-
-            for message in messages {
-                match message {
-                    EventMsg::InputEvent(event) => pending_inputs.push(event),
-                    EventMsg::RegistryUpdate { registry } => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        processor.rebuild_registry(registry);
+                    if let Some(proxy) = wayland_proxy.as_ref() {
+                        let _ = proxy.send_event(UserEvent::Redraw);
                     }
-                    EventMsg::SetInputMask(mask) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        input_handler.set_mask(mask);
-                    }
-                    EventMsg::SetInputTarget(pid) => {
-                        process_input_events(
-                            &mut pending_inputs,
-                            &mut processor,
-                            &mut input_handler,
-                            &target,
-                            &tree_tx,
-                            log_render,
-                        );
-                        target = pid;
-                    }
-                    EventMsg::Stop => return,
                 }
             }
-
-            process_input_events(
-                &mut pending_inputs,
-                &mut processor,
-                &mut input_handler,
-                &target,
-                &tree_tx,
-                log_render,
-            );
         }
     })
 }
@@ -608,16 +474,21 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     assets::start(tree_tx.clone(), log_render);
 
-    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render);
+    let system_clipboard = matches!(config.backend, BackendKind::Wayland);
+    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render, system_clipboard);
 
     let initial_width = config.width;
     let initial_height = config.height;
+    let release_tx = video::spawn_release_worker();
+    let video_registry = Arc::new(VideoRegistry::new(release_tx));
+    let event_proxy = Arc::new(Mutex::new(None));
 
-    let (backend, event_proxy) = match config.backend {
+    let (backend, prime_video_supported) = match config.backend {
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let event_tx_clone = event_tx.clone();
+            let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
                 width: config.width,
@@ -630,13 +501,19 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     running_flag_clone,
                     event_tx_clone,
                     render_rx,
+                    video_registry_clone,
                     proxy_tx,
                 );
             });
 
-            let proxy = proxy_rx
+            let startup = proxy_rx
                 .recv()
-                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?;
+                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?
+                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+
+            if let Ok(mut guard) = event_proxy.lock() {
+                *guard = Some(startup.proxy.clone());
+            }
 
             spawn_tree_actor(
                 tree_rx,
@@ -645,13 +522,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
                     log_input,
-                    wayland_proxy: Some(proxy.clone()),
+                    wayland_proxy: Some(startup.proxy.clone()),
                     initial_width,
                     initial_height,
                 },
             );
 
-            (BackendKind::Wayland, Some(proxy))
+            (BackendKind::Wayland, startup.prime_video_supported)
         }
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
@@ -660,6 +537,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
             let drm_input_size = (initial_width, initial_height);
+            let video_registry_clone = Arc::clone(&video_registry);
 
             thread::spawn(move || {
                 let mut input = DrmInput::new(
@@ -696,6 +574,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         event_tx: event_tx_clone,
                         screen_tx,
                         render_counter: render_counter_clone,
+                        video_registry: video_registry_clone,
                     },
                     drm_config,
                 );
@@ -714,14 +593,20 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 },
             );
 
-            (BackendKind::Drm, None)
+            (BackendKind::Drm, true)
         }
+    };
+
+    let video_wake = if matches!(backend, BackendKind::Wayland) {
+        VideoWake::Wayland(Arc::clone(&event_proxy))
+    } else {
+        VideoWake::Noop
     };
 
     let resource = RendererResource {
         running_flag,
         backend,
-        event_proxy: Mutex::new(event_proxy),
+        event_proxy,
         stop_flag,
         tree_tx,
         event_tx,
@@ -732,6 +617,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             None
         },
         render_counter,
+        video_registry,
+        video_wake,
+        prime_video_supported,
         log_render,
         log_input,
     };
@@ -785,12 +673,58 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
 }
 
 #[rustler::nif]
+fn video_target_new(
+    renderer: ResourceArc<RendererResource>,
+    id: String,
+    width: u32,
+    height: u32,
+    mode: String,
+) -> Result<ResourceArc<VideoTargetResource>, String> {
+    let mode = VideoMode::parse(&mode)?;
+
+    if matches!(mode, VideoMode::Prime) && !renderer.prime_video_supported {
+        return Err(
+            "prime video targets require a real Wayland session or the DRM backend".to_string(),
+        );
+    }
+
+    let spec = video::VideoTargetSpec {
+        id: id.clone(),
+        width,
+        height,
+        mode,
+    };
+    renderer.video_registry.create_target(spec)?;
+
+    Ok(ResourceArc::new(VideoTargetResource {
+        id,
+        _width: width,
+        _height: height,
+        _mode: mode,
+        registry: Arc::clone(&renderer.video_registry),
+        wake: renderer.video_wake.clone(),
+    }))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_target_submit_prime(
+    target: ResourceArc<VideoTargetResource>,
+    desc: video::PrimeDesc,
+) -> Result<Atom, String> {
+    target.registry.submit_prime(&target.id, desc.into())?;
+    target.wake.notify();
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
 fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
     let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
     renderer.render_tx.send_latest(RenderMsg::Commands {
         commands,
         version,
         animate: false,
+        ime_enabled: false,
+        ime_cursor_area: None,
     });
     if renderer.backend == BackendKind::Wayland
         && let Ok(guard) = renderer.event_proxy.lock()
@@ -888,7 +822,7 @@ fn is_running(renderer: ResourceArc<RendererResource>) -> bool {
 ///
 /// Mask bits:
 /// - 0x01: Key events
-/// - 0x02: Codepoint (text input) events
+/// - 0x02: Text input commit/preedit events
 /// - 0x04: Cursor position events
 /// - 0x08: Cursor button events
 /// - 0x10: Cursor scroll events
@@ -1101,12 +1035,73 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
     binary.into()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_tree_message_flat_expands_nested_batches_in_order() {
+        let mut out = Vec::new();
+        push_tree_message_flat(
+            TreeMsg::Batch(vec![
+                TreeMsg::RebuildRegistry,
+                TreeMsg::Batch(vec![
+                    TreeMsg::AssetStateChanged,
+                    TreeMsg::Resize {
+                        width: 10.0,
+                        height: 20.0,
+                        scale: 1.0,
+                    },
+                ]),
+            ]),
+            &mut out,
+        );
+
+        assert!(matches!(out[0], TreeMsg::RebuildRegistry));
+        assert!(matches!(out[1], TreeMsg::AssetStateChanged));
+        assert!(matches!(
+            out[2],
+            TreeMsg::Resize {
+                width: 10.0,
+                height: 20.0,
+                scale: 1.0,
+            }
+        ));
+    }
+
+    #[test]
+    fn decide_refresh_action_prefers_cache_for_registry_only_requests() {
+        assert_eq!(
+            decide_refresh_action(false, false, false),
+            RefreshDecision::Skip
+        );
+        assert_eq!(
+            decide_refresh_action(false, true, true),
+            RefreshDecision::UseCachedRebuild
+        );
+        assert_eq!(
+            decide_refresh_action(false, true, false),
+            RefreshDecision::Recompute
+        );
+        assert_eq!(
+            decide_refresh_action(true, false, true),
+            RefreshDecision::Recompute
+        );
+        assert_eq!(
+            decide_refresh_action(true, true, true),
+            RefreshDecision::Recompute
+        );
+    }
+}
+
 // ============================================================================
 // NIF Registration
 // ============================================================================
 
 fn load(env: Env, _info: Term) -> bool {
-    env.register::<RendererResource>().is_ok() && env.register::<TreeResource>().is_ok()
+    env.register::<RendererResource>().is_ok()
+        && env.register::<TreeResource>().is_ok()
+        && env.register::<VideoTargetResource>().is_ok()
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);

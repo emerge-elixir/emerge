@@ -111,6 +111,89 @@ defmodule Emerge.SerializationTest do
     assert decoded.attrs.image_fit == :cover
   end
 
+  test "text_input roundtrip preserves content and handlers" do
+    layout =
+      Emerge.UI.Input.text("hello", [
+        width(px(280)),
+        on_change({self(), :changed}),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred}),
+        focused([alpha(0.9), move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
+        mouse_down([
+          move_y(-1),
+          scale(0.98),
+          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
+        ])
+      ])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert tree.type == :text_input
+    assert decoded.type == :text_input
+    assert decoded.attrs.content == "hello"
+    assert decoded.attrs.on_change == true
+    assert decoded.attrs.on_focus == true
+    assert decoded.attrs.on_blur == true
+
+    assert decoded.attrs.focused == %{
+             alpha: 0.9,
+             move_x: 2.0,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 0.0, blur: 6.0, size: 3.0, color: :cyan, inset: false}
+             ]
+           }
+
+    assert decoded.attrs.mouse_down == %{
+             move_y: -1.0,
+             scale: 0.98,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 1.0, blur: 6.0, size: 1.0, color: :black, inset: true}
+             ]
+           }
+  end
+
+  test "input button roundtrip preserves press and focus handlers" do
+    layout =
+      Emerge.UI.Input.button("Save", [
+        on_press({self(), :pressed}),
+        on_focus({self(), :focused}),
+        on_blur({self(), :blurred}),
+        focused([alpha(0.9), Emerge.UI.Border.glow(:cyan, 2)]),
+        mouse_down([
+          move_y(-1),
+          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 5, size: 1, color: :black)
+        ])
+      ])
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert tree.type == :el
+    assert decoded.type == :el
+    assert decoded.attrs.on_press == true
+    assert decoded.attrs.on_focus == true
+    assert decoded.attrs.on_blur == true
+
+    assert decoded.attrs.focused == %{
+             alpha: 0.9,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 0.0, blur: 4.0, size: 2.0, color: :cyan, inset: false}
+             ]
+           }
+
+    assert decoded.attrs.mouse_down == %{
+             move_y: -1.0,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 1.0, blur: 5.0, size: 1.0, color: :black, inset: true}
+             ]
+           }
+
+    assert length(decoded.children) == 1
+    assert hd(decoded.children).type == :text
+    assert hd(decoded.children).attrs.content == "Save"
+  end
+
   defp strip_runtime(%Emerge.Element{} = element) do
     %{
       element

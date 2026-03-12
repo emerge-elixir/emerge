@@ -167,6 +167,7 @@ pub enum ScrollbarHoverAxis {
 pub struct MouseOverAttrs {
     pub background: Option<Background>,
     pub border_color: Option<Color>,
+    pub box_shadows: Option<Vec<BoxShadow>>,
     pub font_color: Option<Color>,
     pub font_size: Option<f64>,
     pub font_underline: Option<bool>,
@@ -220,8 +221,21 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
+    pub on_press: Option<bool>,
+    pub on_change: Option<bool>,
+    pub on_focus: Option<bool>,
+    pub on_blur: Option<bool>,
     pub mouse_over: Option<MouseOverAttrs>,
+    pub focused: Option<MouseOverAttrs>,
+    pub mouse_down: Option<MouseOverAttrs>,
     pub mouse_over_active: Option<bool>,
+    pub mouse_down_active: Option<bool>,
+    pub focused_active: Option<bool>,
+    pub text_input_focused: Option<bool>,
+    pub text_input_cursor: Option<u32>,
+    pub text_input_selection_anchor: Option<u32>,
+    pub text_input_preedit: Option<String>,
+    pub text_input_preedit_cursor: Option<(u32, u32)>,
     pub clip_y: Option<bool>,
     pub clip_x: Option<bool>,
     pub background: Option<Background>,
@@ -242,6 +256,7 @@ pub struct Attrs {
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
+    pub video_target: Option<String>,
     pub text_align: Option<TextAlign>,
     pub content: Option<String>,
     pub snap_layout: Option<bool>,
@@ -263,8 +278,10 @@ pub struct Attrs {
     pub behind: Option<Vec<u8>>,
 }
 
-/// Preserve runtime-only scrollbar fields across attr replacement.
+/// Preserve runtime-only fields across attr replacement.
 pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
+    let content_changed = incoming.content != existing.content;
+
     if incoming.scroll_x.is_none() {
         incoming.scroll_x = existing.scroll_x;
     }
@@ -283,12 +300,51 @@ pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
     if incoming.mouse_over_active.is_none() {
         incoming.mouse_over_active = existing.mouse_over_active;
     }
+    if incoming.mouse_down_active.is_none() {
+        incoming.mouse_down_active = existing.mouse_down_active;
+    }
+    if incoming.focused_active.is_none() {
+        incoming.focused_active = existing.focused_active;
+    }
+    if incoming.text_input_focused.is_none() {
+        incoming.text_input_focused = existing.text_input_focused;
+    }
+    if incoming.text_input_cursor.is_none() {
+        incoming.text_input_cursor = existing.text_input_cursor;
+    }
+    if incoming.text_input_selection_anchor.is_none() {
+        incoming.text_input_selection_anchor = existing.text_input_selection_anchor;
+    }
 
-    if incoming.mouse_over.is_none() {
+    if content_changed {
+        incoming.text_input_selection_anchor = None;
+        incoming.text_input_preedit = None;
+        incoming.text_input_preedit_cursor = None;
+    } else {
+        if incoming.text_input_preedit.is_none() {
+            incoming.text_input_preedit = existing.text_input_preedit.clone();
+        }
+        if incoming.text_input_preedit_cursor.is_none() {
+            incoming.text_input_preedit_cursor = existing.text_input_preedit_cursor;
+        }
+    }
+
+    if !supports_mouse_over_tracking(incoming) {
         incoming.mouse_over_active = None;
     }
 
+    if incoming.mouse_down.is_none() {
+        incoming.mouse_down_active = None;
+    }
+
     normalize_scrollbar_hover_axis(incoming);
+    normalize_text_input_runtime(incoming);
+}
+
+pub fn supports_mouse_over_tracking(attrs: &Attrs) -> bool {
+    attrs.mouse_over.is_some()
+        || attrs.on_mouse_enter.unwrap_or(false)
+        || attrs.on_mouse_leave.unwrap_or(false)
 }
 
 fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
@@ -300,6 +356,46 @@ fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
             attrs.scrollbar_hover_axis = None;
         }
         _ => {}
+    }
+}
+
+fn normalize_text_input_runtime(attrs: &mut Attrs) {
+    let content_len = attrs
+        .content
+        .as_ref()
+        .map(|content| content.chars().count() as u32)
+        .unwrap_or(0);
+
+    if let Some(cursor) = attrs.text_input_cursor {
+        attrs.text_input_cursor = Some(cursor.min(content_len));
+    } else if attrs.text_input_focused.unwrap_or(false) {
+        attrs.text_input_cursor = Some(content_len);
+    }
+
+    if let Some(anchor) = attrs.text_input_selection_anchor {
+        let clamped_anchor = anchor.min(content_len);
+        let cursor = attrs.text_input_cursor.unwrap_or(content_len);
+        if clamped_anchor == cursor {
+            attrs.text_input_selection_anchor = None;
+        } else {
+            attrs.text_input_selection_anchor = Some(clamped_anchor);
+        }
+    }
+
+    if attrs.text_input_preedit.is_none() {
+        attrs.text_input_preedit_cursor = None;
+    } else if let Some((start, end)) = attrs.text_input_preedit_cursor {
+        let preedit_len = attrs
+            .text_input_preedit
+            .as_ref()
+            .map(|value| value.chars().count() as u32)
+            .unwrap_or(0);
+        let mut start = start.min(preedit_len);
+        let mut end = end.min(preedit_len);
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        attrs.text_input_preedit_cursor = Some((start, end));
     }
 }
 
@@ -361,6 +457,13 @@ const TAG_BOX_SHADOW: u8 = 52;
 const TAG_IMAGE_SRC: u8 = 53;
 const TAG_IMAGE_FIT: u8 = 54;
 const TAG_IMAGE_SIZE: u8 = 55;
+const TAG_ON_CHANGE: u8 = 56;
+const TAG_ON_FOCUS: u8 = 57;
+const TAG_ON_BLUR: u8 = 58;
+const TAG_FOCUSED: u8 = 59;
+const TAG_MOUSE_DOWN_STYLE: u8 = 60;
+const TAG_ON_PRESS: u8 = 61;
+const TAG_VIDEO_TARGET: u8 = 62;
 
 // =============================================================================
 // Decoder
@@ -499,7 +602,17 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_ENTER => attrs.on_mouse_enter = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
-        TAG_MOUSE_OVER => attrs.mouse_over = Some(decode_mouse_over_attrs(cursor)?),
+        TAG_ON_PRESS => attrs.on_press = Some(cursor.read_bool()?),
+        TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
+        TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
+        TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
+        TAG_MOUSE_OVER => {
+            attrs.mouse_over = Some(decode_decorative_style_attrs(cursor, "mouse_over")?)
+        }
+        TAG_FOCUSED => attrs.focused = Some(decode_decorative_style_attrs(cursor, "focused")?),
+        TAG_MOUSE_DOWN_STYLE => {
+            attrs.mouse_down = Some(decode_decorative_style_attrs(cursor, "mouse_down")?)
+        }
         TAG_FONT_UNDERLINE => attrs.font_underline = Some(cursor.read_bool()?),
         TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
         TAG_FONT_LETTER_SPACING => attrs.font_letter_spacing = Some(cursor.read_f64()?),
@@ -513,6 +626,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             let height = cursor.read_f64()?;
             attrs.image_size = Some((width, height));
         }
+        TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -523,7 +637,10 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
     Ok(())
 }
 
-fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, DecodeError> {
+fn decode_decorative_style_attrs(
+    cursor: &mut AttrCursor,
+    style_name: &str,
+) -> Result<MouseOverAttrs, DecodeError> {
     let data = cursor.read_bytes_u32()?;
     let mut nested = AttrCursor::new(&data);
     let mut out = MouseOverAttrs::default();
@@ -539,6 +656,7 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
         match tag {
             TAG_BACKGROUND => out.background = Some(decode_background(&mut nested)?),
             TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
+            TAG_BOX_SHADOW => out.box_shadows = Some(decode_box_shadows(&mut nested)?),
             TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
             TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
             TAG_FONT_UNDERLINE => out.font_underline = Some(nested.read_bool()?),
@@ -552,8 +670,8 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
             TAG_ALPHA => out.alpha = Some(nested.read_f64()?),
             _ => {
                 return Err(DecodeError::InvalidStructure(format!(
-                    "mouse_over supports decorative attrs only, got tag: {}",
-                    tag
+                    "{} supports decorative attrs only, got tag: {}",
+                    style_name, tag
                 )));
             }
         }
@@ -561,8 +679,9 @@ fn decode_mouse_over_attrs(cursor: &mut AttrCursor) -> Result<MouseOverAttrs, De
 
     if nested.remaining() != 0 {
         return Err(DecodeError::InvalidStructure(format!(
-            "mouse_over has {} trailing bytes",
-            nested.remaining()
+            "{} has {} trailing bytes",
+            style_name,
+            nested.remaining(),
         )));
     }
 
@@ -1069,6 +1188,37 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_mouse_over_box_shadows() {
+        // nested: attr_count=1, box_shadow with one inset named-color shadow
+        let mut nested = vec![0, 1, 52, 1];
+        nested.extend_from_slice(&1.0_f64.to_be_bytes());
+        nested.extend_from_slice(&(-2.0_f64).to_be_bytes());
+        nested.extend_from_slice(&3.0_f64.to_be_bytes());
+        nested.extend_from_slice(&4.0_f64.to_be_bytes());
+        nested.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
+        nested.push(1);
+
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let mouse_over = attrs.mouse_over.unwrap();
+        let shadows = mouse_over
+            .box_shadows
+            .expect("mouse_over shadows should decode");
+        assert_eq!(shadows.len(), 1);
+
+        let shadow = &shadows[0];
+        assert_eq!(shadow.offset_x, 1.0);
+        assert_eq!(shadow.offset_y, -2.0);
+        assert_eq!(shadow.blur, 3.0);
+        assert_eq!(shadow.size, 4.0);
+        assert_eq!(shadow.color, Color::Named("red".to_string()));
+        assert!(shadow.inset);
+    }
+
+    #[test]
     fn test_decode_mouse_over_font_decoration_and_spacing() {
         // nested: underline=true, strike=true, letter_spacing=2.0, word_spacing=4.0
         let mut nested = vec![0, 4, 47, 1, 48, 1, 49];
@@ -1104,12 +1254,90 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_focused_and_mouse_down_styles() {
+        let mut focused_nested = vec![0, 1, 35];
+        focused_nested.extend_from_slice(&0.25_f64.to_be_bytes());
+
+        let mut mouse_down_nested = vec![0, 2, 31];
+        mouse_down_nested.extend_from_slice(&4.0_f64.to_be_bytes());
+        mouse_down_nested.push(52);
+        mouse_down_nested.push(1);
+        mouse_down_nested.extend_from_slice(&0.5_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&0.5_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&2.0_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&1.0_f64.to_be_bytes());
+        mouse_down_nested.extend_from_slice(&[2, 0, 4, b'c', b'y', b'a', b'n']);
+        mouse_down_nested.push(0);
+
+        let mut data = vec![0, 2, 59];
+        data.extend_from_slice(&(focused_nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&focused_nested);
+        data.push(60);
+        data.extend_from_slice(&(mouse_down_nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&mouse_down_nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.focused.as_ref().and_then(|style| style.alpha),
+            Some(0.25)
+        );
+        assert_eq!(
+            attrs.mouse_down.as_ref().and_then(|style| style.move_x),
+            Some(4.0)
+        );
+        let mouse_down_shadow = attrs
+            .mouse_down
+            .as_ref()
+            .and_then(|style| style.box_shadows.as_ref())
+            .and_then(|shadows| shadows.first())
+            .expect("mouse_down shadow should decode");
+        assert_eq!(mouse_down_shadow.blur, 2.0);
+        assert_eq!(mouse_down_shadow.color, Color::Named("cyan".to_string()));
+    }
+
+    #[test]
+    fn test_decode_focused_rejects_non_decorative_tag() {
+        let nested = vec![0, 1, 1, 0];
+        let mut data = vec![0, 1, 59];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let err = decode_attrs(&data).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("focused supports decorative attrs only")
+        );
+    }
+
+    #[test]
     fn test_decode_border_width_uniform() {
         // 1 attr, tag=14 (border_width), variant=0 (uniform), f64=3.0
         let mut data = vec![0, 1, 14, 0];
         data.extend_from_slice(&3.0_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.border_width, Some(BorderWidth::Uniform(3.0)));
+    }
+
+    #[test]
+    fn test_decode_on_change() {
+        let data = [0, 1, 56, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_change, Some(true));
+    }
+
+    #[test]
+    fn test_decode_focus_events() {
+        let data = [0, 2, 57, 1, 58, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_focus, Some(true));
+        assert_eq!(attrs.on_blur, Some(true));
+    }
+
+    #[test]
+    fn test_decode_on_press() {
+        let data = [0, 1, 61, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_press, Some(true));
     }
 
     #[test]
@@ -1377,6 +1605,21 @@ mod tests {
     }
 
     #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_event_only_hover_active() {
+        let mut existing = Attrs::default();
+        existing.on_mouse_enter = Some(true);
+        existing.on_mouse_leave = Some(true);
+        existing.mouse_over_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        incoming.on_mouse_enter = Some(true);
+        incoming.on_mouse_leave = Some(true);
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_over_active, Some(true));
+    }
+
+    #[test]
     fn test_preserve_runtime_scroll_attrs_clears_mouse_over_active_without_mouse_over() {
         let mut existing = Attrs::default();
         existing.mouse_over = Some(MouseOverAttrs {
@@ -1388,5 +1631,106 @@ mod tests {
         let mut incoming = Attrs::default();
         preserve_runtime_scroll_attrs(&existing, &mut incoming);
         assert_eq!(incoming.mouse_over_active, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_mouse_down_active() {
+        let mut existing = Attrs::default();
+        existing.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_down_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        incoming.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_down_active, Some(true));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_mouse_down_active_without_mouse_down() {
+        let mut existing = Attrs::default();
+        existing.mouse_down = Some(MouseOverAttrs {
+            alpha: Some(0.5),
+            ..Default::default()
+        });
+        existing.mouse_down_active = Some(true);
+
+        let mut incoming = Attrs::default();
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+        assert_eq!(incoming.mouse_down_active, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_preserves_text_input_runtime_state() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_focused = Some(true);
+        existing.text_input_cursor = Some(4);
+        existing.text_input_selection_anchor = Some(1);
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("hello".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_focused, Some(true));
+        assert_eq!(incoming.text_input_cursor, Some(4));
+        assert_eq!(incoming.text_input_selection_anchor, Some(1));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_preedit_when_content_changes() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_selection_anchor = Some(1);
+        existing.text_input_preedit = Some("ka".to_string());
+        existing.text_input_preedit_cursor = Some((2, 2));
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("world".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_selection_anchor, None);
+        assert_eq!(incoming.text_input_preedit, None);
+        assert_eq!(incoming.text_input_preedit_cursor, None);
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clamps_and_orders_preedit_cursor() {
+        let mut existing = Attrs::default();
+        existing.content = Some("hello".to_string());
+        existing.text_input_preedit = Some("abc".to_string());
+        existing.text_input_preedit_cursor = Some((5, 1));
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("hello".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_preedit.as_deref(), Some("abc"));
+        assert_eq!(incoming.text_input_preedit_cursor, Some((1, 3)));
+    }
+
+    #[test]
+    fn test_preserve_runtime_scroll_attrs_clears_selection_when_anchor_equals_cursor() {
+        let mut existing = Attrs::default();
+        existing.content = Some("abc".to_string());
+        existing.text_input_cursor = Some(2);
+        existing.text_input_selection_anchor = Some(2);
+
+        let mut incoming = Attrs::default();
+        incoming.content = Some("abc".to_string());
+
+        preserve_runtime_scroll_attrs(&existing, &mut incoming);
+
+        assert_eq!(incoming.text_input_cursor, Some(2));
+        assert_eq!(incoming.text_input_selection_anchor, None);
     }
 }

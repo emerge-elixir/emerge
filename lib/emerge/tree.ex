@@ -22,6 +22,11 @@ defmodule Emerge.Tree do
     :__layer,
     :scroll_capture,
     :mouse_over_active,
+    :mouse_down_active,
+    :focused_active,
+    :text_input_focused,
+    :text_input_cursor,
+    :text_input_selection_anchor,
     :nearby_behind,
     :nearby_in_front,
     :nearby_outside,
@@ -41,6 +46,11 @@ defmodule Emerge.Tree do
     :__layer,
     :scroll_capture,
     :mouse_over_active,
+    :mouse_down_active,
+    :focused_active,
+    :text_input_focused,
+    :text_input_cursor,
+    :text_input_selection_anchor,
     :__attrs_hash
   ]
 

@@ -43,9 +43,11 @@ defmodule EmergeSkia do
   """
 
   alias EmergeSkia.Native
+  alias EmergeSkia.VideoTarget
 
   @type renderer :: reference()
   @type color :: non_neg_integer()
+  @type video_target :: VideoTarget.t()
 
   @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
   @default_runtime_max_file_size 25_000_000
@@ -94,6 +96,11 @@ defmodule EmergeSkia do
       hw_cursor = Keyword.get(opts, :hw_cursor, true)
       input_log = Keyword.get(opts, :input_log, false)
       render_log = Keyword.get(opts, :render_log, false)
+
+      if Keyword.has_key?(opts, :dispatch_mode) do
+        raise ArgumentError,
+              "dispatch_mode option has been removed; EmergeSkia now runs a single dispatch engine"
+      end
 
       backend =
         case backend do
@@ -171,6 +178,56 @@ defmodule EmergeSkia do
   @spec running?(renderer()) :: boolean()
   def running?(renderer) do
     Native.is_running(renderer)
+  end
+
+  @doc """
+  Create a renderer-owned video target.
+
+  V1 supports fixed-size `:prime` targets only.
+  """
+  @spec video_target(renderer(), keyword()) :: {:ok, video_target()} | {:error, term()}
+  def video_target(renderer, opts) when is_list(opts) do
+    opts = Keyword.new(opts)
+    id = Keyword.get_lazy(opts, :id, fn -> "video-#{System.unique_integer([:positive])}" end)
+    width = Keyword.fetch!(opts, :width)
+    height = Keyword.fetch!(opts, :height)
+    mode = Keyword.get(opts, :mode, :prime)
+
+    if !is_binary(id) do
+      raise ArgumentError, "video target id must be a binary"
+    end
+
+    if !is_integer(width) or width <= 0 do
+      raise ArgumentError, "video target width must be a positive integer"
+    end
+
+    if !is_integer(height) or height <= 0 do
+      raise ArgumentError, "video target height must be a positive integer"
+    end
+
+    if mode != :prime do
+      raise ArgumentError, "video target mode must be :prime in v1"
+    end
+
+    case Native.video_target_new(renderer, id, width, height, Atom.to_string(mode)) do
+      {:ok, ref} when is_reference(ref) ->
+        {:ok, %VideoTarget{id: id, width: width, height: height, mode: mode, ref: ref}}
+
+      ref when is_reference(ref) ->
+        {:ok, %VideoTarget{id: id, width: width, height: height, mode: mode, ref: ref}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Submit a DRM Prime descriptor to a video target.
+  """
+  @spec submit_prime(video_target(), map()) :: :ok | {:error, term()}
+  def submit_prime(%VideoTarget{mode: :prime, ref: ref}, desc) when is_map(desc) do
+    Native.video_target_submit_prime(ref, desc)
+    |> normalize_native_ok()
   end
 
   @doc """

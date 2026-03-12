@@ -10,6 +10,7 @@
 pub mod attrs;
 pub mod deserialize;
 pub mod element;
+pub mod interaction;
 pub mod layout;
 pub mod patch;
 pub mod render;

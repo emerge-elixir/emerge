@@ -3,6 +3,7 @@
 //! This backend creates a window using winit and renders to it via OpenGL/Skia.
 
 use std::{
+    env,
     ffi::CString,
     num::NonZeroU32,
     sync::{
@@ -27,8 +28,8 @@ use raw_window_handle::HasWindowHandle;
 use skia_safe::gpu::gl::FramebufferInfo;
 use winit::{
     application::ApplicationHandler,
-    dpi::LogicalSize,
-    event::{ElementState, MouseButton, WindowEvent},
+    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+    event::{ElementState, Ime, MouseButton, WindowEvent},
     event_loop::{EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
@@ -39,6 +40,7 @@ use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
 use crate::renderer::{RenderState, Renderer};
+use crate::video::{VideoImportContext, VideoRegistry};
 
 // ============================================================================
 // Configuration
@@ -69,7 +71,15 @@ impl Default for WaylandConfig {
 pub enum UserEvent {
     Stop,
     Redraw,
+    VideoFrameAvailable,
 }
+
+pub struct WaylandStartupInfo {
+    pub proxy: EventLoopProxy<UserEvent>,
+    pub prime_video_supported: bool,
+}
+
+pub type WaylandStartupResult = Result<WaylandStartupInfo, String>;
 
 // ============================================================================
 // GL Environment
@@ -96,15 +106,24 @@ struct App {
     window_size: (u32, u32),
     current_mods: u8,
     cursor_pos: (f32, f32),
-    is_focused: bool,
     is_occluded: bool,
     pending_redraw: bool,
     last_animation_frame: Instant,
+    ime_enabled: bool,
+    ime_cursor_area: Option<(f32, f32, f32, f32)>,
+    ime_preedit_active: bool,
+    text_commit_diag: bool,
+    video_registry: Arc<VideoRegistry>,
+    video_import: Option<VideoImportContext>,
 }
 
 impl App {
     fn can_present(&self) -> bool {
-        self.running && self.is_focused && !self.is_occluded
+        Self::present_allowed(self.running, self.is_occluded)
+    }
+
+    fn present_allowed(running: bool, is_occluded: bool) -> bool {
+        running && !is_occluded
     }
 
     fn queue_redraw(&mut self) {
@@ -154,10 +173,19 @@ impl App {
 
     fn redraw(&mut self) {
         if let (Some(env), Some(renderer)) = (self.env.as_mut(), self.renderer.as_mut()) {
+            let mut video_needs_cleanup = false;
+            match renderer.sync_video_frames(&self.video_registry, self.video_import.as_ref()) {
+                Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                Err(err) => eprintln!("video sync failed: {err}"),
+            }
             renderer.render(&self.render_state);
+            env.window.pre_present_notify();
             env.gl_surface
                 .swap_buffers(&env.gl_context)
                 .expect("swap_buffers failed");
+            if video_needs_cleanup {
+                self.queue_redraw();
+            }
         }
     }
 
@@ -167,16 +195,24 @@ impl App {
 
     fn drain_render_commands(&mut self) -> bool {
         let mut updated = false;
+        let mut ime_changed = false;
         while let Ok(msg) = self.render_rx.try_recv() {
             match msg {
                 RenderMsg::Commands {
                     commands,
                     version,
                     animate,
+                    ime_enabled,
+                    ime_cursor_area,
                 } => {
                     self.render_state.commands = commands;
                     self.render_state.render_version = version;
                     self.render_state.animate = animate;
+                    if self.ime_enabled != ime_enabled || self.ime_cursor_area != ime_cursor_area {
+                        self.ime_enabled = ime_enabled;
+                        self.ime_cursor_area = ime_cursor_area;
+                        ime_changed = true;
+                    }
                     updated = true;
                 }
                 RenderMsg::Stop => {
@@ -185,7 +221,29 @@ impl App {
                 RenderMsg::CursorUpdate { .. } => {}
             }
         }
+
+        if ime_changed {
+            self.apply_ime_state();
+        }
+
         updated
+    }
+
+    fn apply_ime_state(&self) {
+        let Some(env) = &self.env else {
+            return;
+        };
+
+        env.window.set_ime_allowed(self.ime_enabled);
+
+        if self.ime_enabled
+            && let Some((x, y, width, height)) = self.ime_cursor_area
+        {
+            let px = PhysicalPosition::new(x.round() as i32, y.round() as i32);
+            let size =
+                PhysicalSize::new(width.max(1.0).ceil() as u32, height.max(1.0).ceil() as u32);
+            env.window.set_ime_cursor_area(px, size);
+        }
     }
 
     fn mouse_button_name(button: MouseButton) -> &'static str {
@@ -245,6 +303,72 @@ impl App {
             Key::Dead(_) => "dead".to_string(),
         }
     }
+
+    fn normalize_commit_text(text: &str) -> Option<String> {
+        let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        if filtered.is_empty() {
+            None
+        } else {
+            Some(filtered)
+        }
+    }
+
+    fn env_flag_enabled(name: &str) -> bool {
+        let Ok(value) = env::var(name) else {
+            return false;
+        };
+
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    fn truncate_for_log(value: &str, max_chars: usize) -> String {
+        let mut chars = value.chars();
+        let truncated: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            format!("{truncated}...")
+        } else {
+            truncated
+        }
+    }
+
+    fn maybe_log_text_commit_source(&self, source: &str, text: &str) {
+        if !self.text_commit_diag {
+            return;
+        }
+
+        let truncated = Self::truncate_for_log(text, 80);
+        eprintln!(
+            "text-commit source={} mods={} text={:?}",
+            source, self.current_mods, truncated
+        );
+    }
+
+    fn text_commit_diag_enabled() -> bool {
+        Self::env_flag_enabled("EMERGE_SKIA_TEXT_COMMIT_DIAG")
+    }
+
+    fn preedit_cursor_to_char_range(
+        text: &str,
+        cursor: Option<(usize, usize)>,
+    ) -> Option<(u32, u32)> {
+        let (start, end) = cursor?;
+        let mut start = Self::byte_index_to_char_index(text, start);
+        let mut end = Self::byte_index_to_char_index(text, end);
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        Some((start, end))
+    }
+
+    fn byte_index_to_char_index(text: &str, byte_index: usize) -> u32 {
+        let clamped = byte_index.min(text.len());
+        text.char_indices()
+            .take_while(|(idx, _)| *idx < clamped)
+            .count() as u32
+    }
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -259,6 +383,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Redraw => {
                 self.flush_render_updates();
+            }
+            UserEvent::VideoFrameAvailable => {
+                self.queue_redraw();
             }
         }
     }
@@ -364,7 +491,48 @@ impl ApplicationHandler<UserEvent> for App {
                     action,
                     mods: self.current_mods,
                 });
+
+                if action == ACTION_PRESS
+                    && !self.ime_preedit_active
+                    && let Some(text) = event.text
+                    && let Some(commit) = Self::normalize_commit_text(text.as_ref())
+                {
+                    self.maybe_log_text_commit_source("keyboard", &commit);
+                    self.send_input_event(InputEvent::TextCommit {
+                        text: commit,
+                        mods: self.current_mods,
+                    });
+                }
             }
+
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Preedit(text, cursor) => {
+                    self.ime_preedit_active = !text.is_empty();
+                    if text.is_empty() {
+                        self.send_input_event(InputEvent::TextPreeditClear);
+                    } else {
+                        let cursor = Self::preedit_cursor_to_char_range(&text, cursor);
+                        self.send_input_event(InputEvent::TextPreedit { text, cursor });
+                    }
+                }
+                Ime::Commit(text) => {
+                    self.ime_preedit_active = false;
+                    if let Some(commit) = Self::normalize_commit_text(&text) {
+                        self.maybe_log_text_commit_source("ime", &commit);
+                        self.send_input_event(InputEvent::TextCommit {
+                            text: commit,
+                            mods: self.current_mods,
+                        });
+                    }
+                }
+                Ime::Disabled => {
+                    self.ime_preedit_active = false;
+                    self.send_input_event(InputEvent::TextPreeditClear);
+                }
+                Ime::Enabled => {
+                    self.ime_preedit_active = false;
+                }
+            },
 
             // Modifier state changed
             WindowEvent::ModifiersChanged(mods) => {
@@ -386,11 +554,10 @@ impl ApplicationHandler<UserEvent> for App {
 
             // Window focus changed
             WindowEvent::Focused(focused) => {
-                self.is_focused = focused;
-                self.send_input_event(InputEvent::Focused { focused });
-                if self.can_present() && self.pending_redraw {
-                    self.queue_redraw();
+                if !focused {
+                    self.ime_preedit_active = false;
                 }
+                self.send_input_event(InputEvent::Focused { focused });
             }
 
             WindowEvent::Occluded(occluded) => {
@@ -414,7 +581,7 @@ impl ApplicationHandler<UserEvent> for App {
 fn create_window_and_renderer(
     event_loop: &EventLoop<UserEvent>,
     config: &WaylandConfig,
-) -> Result<(GlEnv, Renderer), String> {
+) -> Result<(GlEnv, Renderer, bool), String> {
     let window_attributes = WindowAttributes::default()
         .with_title(&config.title)
         .with_inner_size(LogicalSize::new(config.width, config.height));
@@ -444,10 +611,11 @@ fn create_window_and_renderer(
         .map_err(|err| format!("failed to get window handle: {err}"))?;
     let raw_window_handle = window_handle.as_raw();
 
-    let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
-    let fallback_context_attributes = ContextAttributesBuilder::new()
+    let context_attributes = ContextAttributesBuilder::new()
         .with_context_api(ContextApi::Gles(None))
         .build(Some(raw_window_handle));
+    let fallback_context_attributes =
+        ContextAttributesBuilder::new().build(Some(raw_window_handle));
 
     let not_current_gl_context = unsafe {
         gl_config
@@ -512,6 +680,8 @@ fn create_window_and_renderer(
     let num_samples = gl_config.num_samples() as usize;
     let stencil_size = gl_config.stencil_size() as usize;
 
+    let prime_video_supported = crate::video::wayland_prime_supported(&window);
+
     let renderer = Renderer::new_gl(
         (width, height),
         fb_info,
@@ -526,7 +696,7 @@ fn create_window_and_renderer(
         window,
     };
 
-    Ok((env, renderer))
+    Ok((env, renderer, prime_video_supported))
 }
 
 // ============================================================================
@@ -542,7 +712,8 @@ pub fn run(
     running_flag: Arc<AtomicBool>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
-    proxy_tx: Sender<EventLoopProxy<UserEvent>>,
+    video_registry: Arc<VideoRegistry>,
+    proxy_tx: Sender<WaylandStartupResult>,
 ) {
     // Allow running on non-main thread (required for NIF)
     #[cfg(target_os = "linux")]
@@ -551,7 +722,19 @@ pub fn run(
         EventLoop::<UserEvent>::with_user_event()
             .with_any_thread(true)
             .build()
-            .expect("Failed to create event loop")
+    };
+
+    #[cfg(target_os = "linux")]
+    let el = match el {
+        Ok(el) => el,
+        Err(err) => {
+            let message = format!("failed to create event loop: {err}");
+            let _ = proxy_tx.send(Err(message.clone()));
+            eprintln!("{message}");
+            running_flag.store(false, Ordering::Relaxed);
+            let _ = event_tx.send(EventMsg::Stop);
+            return;
+        }
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -560,18 +743,34 @@ pub fn run(
         .expect("Failed to create event loop");
 
     let proxy = el.create_proxy();
-    let _ = proxy_tx.send(proxy);
 
-    let (env, renderer) = match create_window_and_renderer(&el, &config) {
+    let (env, renderer, prime_video_supported) = match create_window_and_renderer(&el, &config) {
         Ok(values) => values,
         Err(err) => {
             eprintln!("Failed to initialize renderer: {err}");
             running_flag.store(false, Ordering::Relaxed);
+            let _ = event_tx.send(EventMsg::Stop);
             return;
         }
     };
 
+    let _ = proxy_tx.send(Ok(WaylandStartupInfo {
+        proxy,
+        prime_video_supported,
+    }));
+
     let size = env.window.inner_size();
+    let video_import = if prime_video_supported {
+        match VideoImportContext::new_current() {
+            Ok(ctx) => Some(ctx),
+            Err(err) => {
+                eprintln!("prime video import unavailable: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let mut app = App {
         env: Some(env),
@@ -584,12 +783,56 @@ pub fn run(
         window_size: (size.width, size.height),
         current_mods: 0,
         cursor_pos: (0.0, 0.0),
-        is_focused: true,
         is_occluded: false,
         pending_redraw: false,
         last_animation_frame: Instant::now(),
+        ime_enabled: false,
+        ime_cursor_area: None,
+        ime_preedit_active: false,
+        text_commit_diag: App::text_commit_diag_enabled(),
+        video_registry,
+        video_import,
     };
 
+    app.apply_ime_state();
     app.redraw();
     el.run_app(&mut app).expect("run_app failed");
+    let _ = app.event_tx.send(EventMsg::Stop);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn normalize_commit_text_filters_control_chars() {
+        assert_eq!(App::normalize_commit_text("abc"), Some("abc".to_string()));
+        assert_eq!(
+            App::normalize_commit_text("a\u{0008}b"),
+            Some("ab".to_string())
+        );
+        assert_eq!(App::normalize_commit_text("\u{0000}\n\t"), None);
+    }
+
+    #[test]
+    fn preedit_cursor_to_char_range_converts_byte_indices() {
+        let text = "Aé日";
+        let cursor = App::preedit_cursor_to_char_range(text, Some((1, text.len())));
+        assert_eq!(cursor, Some((1, 3)));
+    }
+
+    #[test]
+    fn preedit_cursor_to_char_range_orders_indices() {
+        let text = "hello";
+        let cursor = App::preedit_cursor_to_char_range(text, Some((4, 1)));
+        assert_eq!(cursor, Some((1, 4)));
+    }
+
+    #[test]
+    fn present_allowed_depends_on_running_and_occlusion() {
+        assert!(App::present_allowed(true, false));
+        assert!(!App::present_allowed(false, false));
+        assert!(!App::present_allowed(true, true));
+        assert!(!App::present_allowed(false, true));
+    }
 }
