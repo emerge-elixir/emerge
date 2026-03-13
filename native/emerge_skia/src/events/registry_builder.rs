@@ -46,11 +46,15 @@ use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
-#[cfg(test)]
-use crate::tree::element::NearbySlot;
-use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, RetainedPaintPhase};
-use crate::tree::interaction::{self as tree_interaction, CornerRadii, ElementInteraction, Rect};
-use crate::tree::scrollbar::{self as tree_scrollbar, ScrollbarAxis};
+use crate::tree::element::{
+    Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
+};
+use crate::tree::geometry::{
+    ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_clip, point_hits_shape,
+    point_in_rounded_rect,
+};
+use crate::tree::scene::ResolvedNodeState;
+use crate::tree::scrollbar::ScrollbarAxis;
 
 use super::{
     ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest, TextInputEditRequest,
@@ -237,44 +241,54 @@ pub struct ClickPressTracker {
 /// Pointer-sensitive region backed by element interaction geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PointerRegion {
-    interaction: ElementInteraction,
+    visible: bool,
+    inherited_clip: Option<ClipShape>,
+    self_shape: ShapeBounds,
+    visible_bounds: Rect,
     bounds: Rect,
     radii: Option<CornerRadii>,
 }
 
 impl PointerRegion {
-    fn for_element(interaction: ElementInteraction) -> Self {
+    fn for_state(state: &ResolvedNodeState) -> Self {
         Self {
-            interaction,
-            bounds: interaction.hit_rect,
+            visible: state.visible,
+            inherited_clip: state.inherited_clip,
+            self_shape: state.self_shape,
+            visible_bounds: state.visible_bounds,
+            bounds: state.visible_bounds,
             radii: None,
         }
     }
 
-    fn for_subregion(
-        interaction: ElementInteraction,
-        bounds: Rect,
-        radii: Option<CornerRadii>,
-    ) -> Self {
+    fn for_subregion(state: &ResolvedNodeState, bounds: Rect, radii: Option<CornerRadii>) -> Self {
         Self {
-            interaction,
+            visible: state.visible,
+            inherited_clip: state.inherited_clip,
+            self_shape: state.self_shape,
+            visible_bounds: state.visible_bounds,
             bounds,
             radii,
         }
     }
 
     fn contains(self, x: f32, y: f32) -> bool {
+        if !self.visible || !self.bounds.contains(x, y) {
+            return false;
+        }
+
+        if let Some(clip) = self.inherited_clip.filter(|clip| clip.radii.is_some())
+            && !point_hits_clip(clip, x, y)
+        {
+            return false;
+        }
+
         match self.radii {
-            None if self.bounds == self.interaction.hit_rect => {
-                tree_interaction::point_hits_interaction(self.interaction, x, y)
+            None if self.bounds == self.visible_bounds => point_hits_shape(self.self_shape, x, y),
+            None => true,
+            Some(radii) => {
+                point_in_rounded_rect(self.bounds, clamp_radii(self.bounds, radii), x, y)
             }
-            _ => tree_interaction::point_hits_subregion(
-                self.interaction,
-                self.bounds,
-                self.radii,
-                x,
-                y,
-            ),
         }
     }
 }
@@ -2194,8 +2208,12 @@ fn scroll_tree_actions_from_directional_input(
     }
 }
 
-fn scrollbar_hover_compute_for_element(element: &Element) -> Option<ScrollbarHoverCompute> {
-    let (scrollbar_x, scrollbar_y) = scrollbar_nodes_for_element(element);
+fn scrollbar_hover_compute_for_element(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<ScrollbarHoverCompute> {
+    let state = state?;
+    let (scrollbar_x, scrollbar_y) = scrollbar_nodes_for_state(state);
     if scrollbar_x.is_none() && scrollbar_y.is_none() {
         return None;
     }
@@ -2210,14 +2228,18 @@ fn scrollbar_hover_compute_for_element(element: &Element) -> Option<ScrollbarHov
         element_id: element.id.clone(),
         current_axis,
         x_region: scrollbar_x
-            .and_then(|scrollbar| pointer_region_for_subregion(element, scrollbar.thumb_rect)),
+            .and_then(|scrollbar| pointer_region_for_subregion(state, scrollbar.thumb_rect)),
         y_region: scrollbar_y
-            .and_then(|scrollbar| pointer_region_for_subregion(element, scrollbar.thumb_rect)),
+            .and_then(|scrollbar| pointer_region_for_subregion(state, scrollbar.thumb_rect)),
     })
 }
 
-fn active_scrollbar_hover_compute_for_element(element: &Element) -> Option<ScrollbarHoverCompute> {
-    scrollbar_hover_compute_for_element(element).filter(|compute| compute.current_axis.is_some())
+fn active_scrollbar_hover_compute_for_element(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<ScrollbarHoverCompute> {
+    scrollbar_hover_compute_for_element(element, state)
+        .filter(|compute| compute.current_axis.is_some())
 }
 
 fn scrollbar_hover_axis_at_position(
@@ -3214,7 +3236,7 @@ fn tree_scrollbar_target_from_pointer(
 }
 
 /// Slot builder for one deterministic element listener position.
-type ElementSlotBuilder = fn(&Element) -> Option<Listener>;
+type ElementSlotBuilder = fn(&Element, Option<&ResolvedNodeState>) -> Option<Listener>;
 
 /// Deterministic slot order for base element listener assembly.
 ///
@@ -3249,34 +3271,25 @@ const ELEMENT_LISTENER_SLOTS: &[ElementSlotBuilder] = &[
 /// Return pointer region only when interaction data exists and is visible.
 ///
 /// Pointer-driven slots use this gate; non-pointer features should not.
-fn pointer_region_for_element(element: &Element) -> Option<PointerRegion> {
-    let interaction = element.interaction?;
-    interaction
-        .visible
-        .then_some(PointerRegion::for_element(interaction))
+fn pointer_region_for_element(state: &ResolvedNodeState) -> Option<PointerRegion> {
+    state.visible.then_some(PointerRegion::for_state(state))
 }
 
-fn pointer_region_for_subregion(element: &Element, bounds: Rect) -> Option<PointerRegion> {
-    let interaction = element.interaction?;
-    interaction
+fn pointer_region_for_subregion(state: &ResolvedNodeState, bounds: Rect) -> Option<PointerRegion> {
+    state
         .visible
-        .then_some(PointerRegion::for_subregion(interaction, bounds, None))
+        .then_some(PointerRegion::for_subregion(state, bounds, None))
 }
 
-fn scrollbar_nodes_for_element(
-    element: &Element,
+fn scrollbar_nodes_for_state(
+    state: &ResolvedNodeState,
 ) -> (Option<ScrollbarNode>, Option<ScrollbarNode>) {
-    let (frame, self_rect) = match (element.frame, element.interaction) {
-        (Some(frame), Some(interaction)) if interaction.visible => (frame, interaction.self_rect),
-        _ => return (None, None),
-    };
-    let node_offset_x = frame.x - self_rect.x;
-    let node_offset_y = frame.y - self_rect.y;
-
-    let scrollbar_x = tree_scrollbar::horizontal_metrics(frame, &element.attrs)
-        .map(|metrics| scrollbar_node_from_metrics(metrics, node_offset_x, node_offset_y));
-    let scrollbar_y = tree_scrollbar::vertical_metrics(frame, &element.attrs)
-        .map(|metrics| scrollbar_node_from_metrics(metrics, node_offset_x, node_offset_y));
+    let scrollbar_x = state
+        .scrollbar_x
+        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0));
+    let scrollbar_y = state
+        .scrollbar_y
+        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0));
     (scrollbar_x, scrollbar_y)
 }
 
@@ -3423,6 +3436,7 @@ fn focus_to_element_action(
 
 fn emit_element_listeners_with_focus_meta(
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     focus_meta: Option<&ElementFocusMeta>,
     out: &mut PrecedenceEmitter<'_>,
 ) {
@@ -3431,12 +3445,15 @@ fn emit_element_listeners_with_focus_meta(
     out.emit_all(
         ELEMENT_LISTENER_SLOTS
             .iter()
-            .filter_map(|build| build(element)),
+            .filter_map(|build| build(element, state)),
     );
-    out.emit_opt(slot_primary_left_press(element, focus_meta));
-    emit_scroll_listeners_for_element(element, out);
+    out.emit_opt(slot_primary_left_press(element, state, focus_meta));
+    emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
-    out.emit_opt(slot_middle_paste_primary_press(element, focus_meta));
+    out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
+    if state.is_some_and(|state| state.front_nearby_subtree) {
+        emit_front_nearby_blockers_for_element(element, state, out);
+    }
 }
 
 fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut PrecedenceEmitter<'_>) {
@@ -3556,14 +3573,15 @@ fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
 
 fn local_focus_meta_for_element(
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     scroll_contexts: &[ScrollContext],
 ) -> (Option<ElementFocusMeta>, Vec<ScrollContext>) {
     let mut next_scroll_contexts = scroll_contexts.to_vec();
-    let Some(interaction) = element.interaction else {
+    let Some(state) = state else {
         return (None, next_scroll_contexts);
     };
 
-    let self_rect = interaction.self_rect;
+    let self_rect = Rect::from_frame(state.adjusted_frame);
     if let Some(frame) = element.frame {
         let (left, top, right, bottom) = padding_sides(element);
         let content_rect = Rect {
@@ -3632,6 +3650,7 @@ fn local_focus_meta_for_element(
 pub(crate) fn accumulate_element_rebuild(
     acc: &mut RegistryBuildAcc,
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     scroll_contexts: &[ScrollContext],
 ) -> Vec<ScrollContext> {
     if acc.focused_id.is_none() && element.attrs.focused_active.unwrap_or(false) {
@@ -3639,15 +3658,14 @@ pub(crate) fn accumulate_element_rebuild(
     }
 
     let (local_focus_meta, next_scroll_contexts) =
-        local_focus_meta_for_element(element, scroll_contexts);
+        local_focus_meta_for_element(element, state, scroll_contexts);
 
-    if let (Some(frame), Some(interaction)) = (element.frame, element.interaction) {
-        let adjusted_rect = interaction.self_rect;
-        let node_offset_x = frame.x - adjusted_rect.x;
-        let node_offset_y = frame.y - adjusted_rect.y;
+    if let Some(state) = state {
+        let adjusted_rect = Rect::from_frame(state.adjusted_frame);
 
-        if let Some(scrollbar) = tree_scrollbar::horizontal_metrics(frame, &element.attrs)
-            .map(|metrics| scrollbar_node_from_metrics(metrics, node_offset_x, node_offset_y))
+        if let Some(scrollbar) = state
+            .scrollbar_x
+            .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0))
         {
             let previous = acc
                 .scrollbars
@@ -3658,8 +3676,9 @@ pub(crate) fn accumulate_element_rebuild(
             );
         }
 
-        if let Some(scrollbar) = tree_scrollbar::vertical_metrics(frame, &element.attrs)
-            .map(|metrics| scrollbar_node_from_metrics(metrics, node_offset_x, node_offset_y))
+        if let Some(scrollbar) = state
+            .scrollbar_y
+            .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0))
         {
             let previous = acc
                 .scrollbars
@@ -3688,7 +3707,7 @@ pub(crate) fn accumulate_element_rebuild(
     }
 
     acc.registry.in_precedence_order(|out| {
-        emit_element_listeners_with_focus_meta(element, local_focus_meta.as_ref(), out)
+        emit_element_listeners_with_focus_meta(element, state, local_focus_meta.as_ref(), out)
     });
 
     next_scroll_contexts
@@ -3699,20 +3718,57 @@ pub(crate) fn accumulate_subtree_rebuild(
     element_id: &ElementId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
+    scene_ctx: crate::tree::scene::SceneContext,
 ) {
     let Some(element) = tree.get(element_id) else {
         return;
     };
 
-    let next_scroll_contexts = accumulate_element_rebuild(acc, element, scroll_contexts);
-    element.for_each_paint_child(|child| {
-        let next_contexts = match child.phase {
-            RetainedPaintPhase::Children => &next_scroll_contexts,
-            RetainedPaintPhase::BehindContent | RetainedPaintPhase::Overlay(_) => scroll_contexts,
-        };
+    let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
+    let next_scroll_contexts =
+        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts);
 
-        accumulate_subtree_rebuild(tree, child.id, acc, next_contexts);
+    if let Some(behind_id) = element.nearby.get(NearbySlot::BehindContent) {
+        accumulate_subtree_rebuild(
+            tree,
+            behind_id,
+            acc,
+            scroll_contexts,
+            state
+                .map(|resolved| {
+                    crate::tree::scene::child_context(resolved, RetainedPaintPhase::BehindContent)
+                })
+                .unwrap_or_default(),
+        );
+    }
+
+    let child_scene_ctx = state
+        .map(|resolved| crate::tree::scene::child_context(resolved, RetainedPaintPhase::Children))
+        .unwrap_or_default();
+    element.for_each_retained_child(tree, |child| match child.mode {
+        RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
+            accumulate_subtree_rebuild(tree, child.id, acc, &next_scroll_contexts, child_scene_ctx);
+        }
     });
+
+    for slot in NearbySlot::OVERLAY_PAINT_ORDER {
+        if let Some(overlay_id) = element.nearby.get(slot) {
+            accumulate_subtree_rebuild(
+                tree,
+                overlay_id,
+                acc,
+                scroll_contexts,
+                state
+                    .map(|resolved| {
+                        crate::tree::scene::child_context(
+                            resolved,
+                            RetainedPaintPhase::Overlay(slot),
+                        )
+                    })
+                    .unwrap_or_default(),
+            );
+        }
+    }
 }
 
 pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuildPayload {
@@ -3769,10 +3825,14 @@ fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
 /// - local wheel-scroll listeners for scrollable elements
 #[cfg(test)]
 pub fn listeners_for_element(element: &Element) -> Vec<Listener> {
-    let (focus_meta, _) = local_focus_meta_for_element(element, &[]);
+    let state = crate::tree::scene::resolve_node_state(
+        element,
+        crate::tree::scene::SceneContext::default(),
+    );
+    let (focus_meta, _) = local_focus_meta_for_element(element, state.as_ref(), &[]);
     let mut registry = Registry::default();
     registry.in_precedence_order(|out| {
-        emit_element_listeners_with_focus_meta(element, focus_meta.as_ref(), out)
+        emit_element_listeners_with_focus_meta(element, state.as_ref(), focus_meta.as_ref(), out)
     });
     registry.precedence_listeners()
 }
@@ -3791,7 +3851,13 @@ pub fn registry_for_elements(elements: &[Element]) -> Registry {
     let mut acc = RegistryBuildAcc::default();
 
     for root_id in &root_ids {
-        accumulate_subtree_rebuild(&tree, root_id, &mut acc, &[]);
+        accumulate_subtree_rebuild(
+            &tree,
+            root_id,
+            &mut acc,
+            &[],
+            crate::tree::scene::SceneContext::default(),
+        );
     }
 
     finalize_registry_rebuild(acc).base_registry
@@ -3865,44 +3931,60 @@ fn emit_key_scroll_listeners_for_element(element: &Element, out: &mut Precedence
     );
 }
 
-fn slot_scrollbar_thumb_press_y(element: &Element) -> Option<Listener> {
-    let (_, scrollbar_y) = scrollbar_nodes_for_element(element);
+fn slot_scrollbar_thumb_press_y(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let (_, scrollbar_y) = scrollbar_nodes_for_state(state?);
     let scrollbar = scrollbar_y?;
     Some(scrollbar_press_listener(
         element,
+        state,
         scrollbar,
         ScrollbarHitArea::Thumb,
         scrollbar.thumb_rect,
     ))
 }
 
-fn slot_scrollbar_thumb_press_x(element: &Element) -> Option<Listener> {
-    let (scrollbar_x, _) = scrollbar_nodes_for_element(element);
+fn slot_scrollbar_thumb_press_x(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let (scrollbar_x, _) = scrollbar_nodes_for_state(state?);
     let scrollbar = scrollbar_x?;
     Some(scrollbar_press_listener(
         element,
+        state,
         scrollbar,
         ScrollbarHitArea::Thumb,
         scrollbar.thumb_rect,
     ))
 }
 
-fn slot_scrollbar_track_press_y(element: &Element) -> Option<Listener> {
-    let (_, scrollbar_y) = scrollbar_nodes_for_element(element);
+fn slot_scrollbar_track_press_y(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let (_, scrollbar_y) = scrollbar_nodes_for_state(state?);
     let scrollbar = scrollbar_y?;
     Some(scrollbar_press_listener(
         element,
+        state,
         scrollbar,
         ScrollbarHitArea::Track,
         scrollbar.track_rect,
     ))
 }
 
-fn slot_scrollbar_track_press_x(element: &Element) -> Option<Listener> {
-    let (scrollbar_x, _) = scrollbar_nodes_for_element(element);
+fn slot_scrollbar_track_press_x(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let (scrollbar_x, _) = scrollbar_nodes_for_state(state?);
     let scrollbar = scrollbar_x?;
     Some(scrollbar_press_listener(
         element,
+        state,
         scrollbar,
         ScrollbarHitArea::Track,
         scrollbar.track_rect,
@@ -3911,12 +3993,13 @@ fn slot_scrollbar_track_press_x(element: &Element) -> Option<Listener> {
 
 fn scrollbar_press_listener(
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     scrollbar: ScrollbarNode,
     area: ScrollbarHitArea,
     rect: Rect,
 ) -> Listener {
-    let region =
-        pointer_region_for_subregion(element, rect).expect("scrollbar press needs interaction");
+    let region = pointer_region_for_subregion(state.expect("scrollbar press needs state"), rect)
+        .expect("scrollbar press needs interaction");
     Listener {
         element_id: Some(element.id.clone()),
         matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
@@ -3948,9 +4031,10 @@ fn scrollbar_axis_for_node(node: ScrollbarNode) -> ScrollbarAxis {
 /// click/press tracker bootstrap.
 fn slot_primary_left_press(
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     focus_meta: Option<&ElementFocusMeta>,
 ) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+    let region = pointer_region_for_element(state?)?;
     let matcher = ListenerMatcher::CursorButtonLeftPressInside { region };
     let matcher_kind = matcher.kind();
     let actions: Vec<_> = mouse_events::left_press_actions(element)
@@ -4000,7 +4084,7 @@ fn slot_primary_left_press(
 }
 
 /// Build Left-key listener for focused text inputs.
-fn slot_key_left_press(element: &Element) -> Option<Listener> {
+fn slot_key_left_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyLeftPressNoCtrlAltMeta,
@@ -4009,7 +4093,7 @@ fn slot_key_left_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Right-key listener for focused text inputs.
-fn slot_key_right_press(element: &Element) -> Option<Listener> {
+fn slot_key_right_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyRightPressNoCtrlAltMeta,
@@ -4018,7 +4102,7 @@ fn slot_key_right_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Home-key listener for focused text inputs.
-fn slot_key_home_press(element: &Element) -> Option<Listener> {
+fn slot_key_home_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyHomePressNoCtrlAltMeta,
@@ -4027,7 +4111,7 @@ fn slot_key_home_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build End-key listener for focused text inputs.
-fn slot_key_end_press(element: &Element) -> Option<Listener> {
+fn slot_key_end_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyEndPressNoCtrlAltMeta,
@@ -4053,8 +4137,11 @@ fn slot_text_key_edit(
 ///
 /// Emits `on_mouse_up` for the element under the release location and clears
 /// mouse-down style when that release is also inside the element.
-fn slot_primary_left_release(element: &Element) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+fn slot_primary_left_release(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let region = pointer_region_for_element(state?)?;
     let actions: Vec<ListenerAction> = [
         mouse_events::left_release_actions(element),
         mouse_down_style::left_release_actions(element),
@@ -4070,7 +4157,10 @@ fn slot_primary_left_release(element: &Element) -> Option<Listener> {
     })
 }
 
-fn slot_mouse_down_release_anywhere(element: &Element) -> Option<Listener> {
+fn slot_mouse_down_release_anywhere(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let actions = mouse_down_style::left_release_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
@@ -4083,10 +4173,14 @@ fn slot_mouse_down_release_anywhere(element: &Element) -> Option<Listener> {
 /// Build primary cursor-position listener.
 ///
 /// Emits move actions for `on_mouse_move` and updates element-local scrollbar hover.
-fn slot_primary_cursor_pos(element: &Element) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+fn slot_primary_cursor_pos(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let state = state?;
+    let region = pointer_region_for_element(state)?;
     let actions = mouse_events::cursor_pos_actions(element);
-    let scrollbar_hover = scrollbar_hover_compute_for_element(element);
+    let scrollbar_hover = scrollbar_hover_compute_for_element(element, Some(state));
 
     (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
         element_id: Some(element.id.clone()),
@@ -4099,7 +4193,7 @@ fn slot_primary_cursor_pos(element: &Element) -> Option<Listener> {
 }
 
 /// Build Enter key press listener for focused `on_press` behavior.
-fn slot_key_enter_press(element: &Element) -> Option<Listener> {
+fn slot_key_enter_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let actions = on_press_keyboard::enter_press_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
@@ -4110,7 +4204,7 @@ fn slot_key_enter_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build text-commit listener for focused text inputs.
-fn slot_text_commit(element: &Element) -> Option<Listener> {
+fn slot_text_commit(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
@@ -4121,7 +4215,10 @@ fn slot_text_commit(element: &Element) -> Option<Listener> {
 }
 
 /// Build Backspace-key listener for focused text inputs.
-fn slot_key_backspace_press(element: &Element) -> Option<Listener> {
+fn slot_key_backspace_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
@@ -4135,7 +4232,10 @@ fn slot_key_backspace_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Delete-key listener for focused text inputs.
-fn slot_key_delete_press(element: &Element) -> Option<Listener> {
+fn slot_key_delete_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
@@ -4149,7 +4249,10 @@ fn slot_key_delete_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Ctrl/Meta+A select-all command listener for focused text inputs.
-fn slot_key_select_all_press(element: &Element) -> Option<Listener> {
+fn slot_key_select_all_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
     let actions =
         text_input_commands::command_actions(&element_id, TextInputCommandRequest::SelectAll);
@@ -4162,7 +4265,7 @@ fn slot_key_select_all_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Ctrl/Meta+C copy command listener for focused text inputs.
-fn slot_key_copy_press(element: &Element) -> Option<Listener> {
+fn slot_key_copy_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
     let actions = text_input_commands::command_actions(&element_id, TextInputCommandRequest::Copy);
 
@@ -4174,7 +4277,7 @@ fn slot_key_copy_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Ctrl/Meta+X cut command listener for focused text inputs.
-fn slot_key_cut_press(element: &Element) -> Option<Listener> {
+fn slot_key_cut_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
     let actions = text_input_commands::command_actions(&element_id, TextInputCommandRequest::Cut);
 
@@ -4186,7 +4289,7 @@ fn slot_key_cut_press(element: &Element) -> Option<Listener> {
 }
 
 /// Build Ctrl/Meta+V paste command listener for focused text inputs.
-fn slot_key_paste_press(element: &Element) -> Option<Listener> {
+fn slot_key_paste_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
     let actions = text_input_commands::command_actions(&element_id, TextInputCommandRequest::Paste);
 
@@ -4200,9 +4303,10 @@ fn slot_key_paste_press(element: &Element) -> Option<Listener> {
 /// Build middle-button paste-primary command listener for text inputs.
 fn slot_middle_paste_primary_press(
     element: &Element,
+    state: Option<&ResolvedNodeState>,
     focus_meta: Option<&ElementFocusMeta>,
 ) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+    let region = pointer_region_for_element(state?)?;
     text_input_emit_change(element)?;
     let actions: Vec<_> = focus_meta
         .filter(|focus_meta| !focus_meta.is_currently_focused)
@@ -4226,7 +4330,7 @@ fn slot_middle_paste_primary_press(
 }
 
 /// Build IME preedit listener for focused text inputs.
-fn slot_text_preedit(element: &Element) -> Option<Listener> {
+fn slot_text_preedit(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
@@ -4237,7 +4341,10 @@ fn slot_text_preedit(element: &Element) -> Option<Listener> {
 }
 
 /// Build IME preedit-clear listener for focused text inputs.
-fn slot_text_preedit_clear(element: &Element) -> Option<Listener> {
+fn slot_text_preedit_clear(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
@@ -4250,8 +4357,8 @@ fn slot_text_preedit_clear(element: &Element) -> Option<Listener> {
 /// Build cursor-enter listener.
 ///
 /// Emits enter actions only when hover is currently inactive.
-fn slot_cursor_enter(element: &Element) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+fn slot_cursor_enter(element: &Element, state: Option<&ResolvedNodeState>) -> Option<Listener> {
+    let region = pointer_region_for_element(state?)?;
     let actions = hover::enter_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
@@ -4264,8 +4371,9 @@ fn slot_cursor_enter(element: &Element) -> Option<Listener> {
 /// Build cursor-leave listener.
 ///
 /// Aggregates hover leave actions and mouse-down style clear into one listener.
-fn slot_cursor_leave(element: &Element) -> Option<Listener> {
-    let region = pointer_region_for_element(element)?;
+fn slot_cursor_leave(element: &Element, state: Option<&ResolvedNodeState>) -> Option<Listener> {
+    let state = state?;
+    let region = pointer_region_for_element(state)?;
     let actions: Vec<ListenerAction> = [
         hover::leave_actions(element),
         mouse_down_style::leave_actions(element),
@@ -4273,7 +4381,7 @@ fn slot_cursor_leave(element: &Element) -> Option<Listener> {
     .into_iter()
     .flatten()
     .collect();
-    let scrollbar_hover = active_scrollbar_hover_compute_for_element(element);
+    let scrollbar_hover = active_scrollbar_hover_compute_for_element(element, Some(state));
 
     (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
         element_id: Some(element.id.clone()),
@@ -4286,8 +4394,12 @@ fn slot_cursor_leave(element: &Element) -> Option<Listener> {
 }
 
 /// Build primary scroll listeners.
-fn emit_scroll_listeners_for_element(element: &Element, out: &mut PrecedenceEmitter<'_>) {
-    let Some(region) = pointer_region_for_element(element) else {
+fn emit_scroll_listeners_for_element(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+    out: &mut PrecedenceEmitter<'_>,
+) {
+    let Some(region) = state.and_then(pointer_region_for_element) else {
         return;
     };
 
@@ -4305,7 +4417,67 @@ fn emit_scroll_listeners_for_element(element: &Element, out: &mut PrecedenceEmit
     );
 }
 
-fn slot_mouse_down_window_blur_clear(element: &Element) -> Option<Listener> {
+fn emit_front_nearby_blockers_for_element(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+    out: &mut PrecedenceEmitter<'_>,
+) {
+    let Some(region) = state.and_then(pointer_region_for_element) else {
+        return;
+    };
+
+    let blocker = || ListenerCompute::Static {
+        actions: Vec::new(),
+    };
+
+    out.emit_all([
+        Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
+            compute: blocker(),
+        },
+        Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorButtonLeftReleaseInside { region },
+            compute: blocker(),
+        },
+        Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorButtonMiddlePressInside { region },
+            compute: blocker(),
+        },
+        Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorLocationInside { region },
+            compute: blocker(),
+        },
+        Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorPosInside { region },
+            compute: blocker(),
+        },
+    ]);
+
+    out.emit_all(
+        [
+            ScrollDirection::XNeg,
+            ScrollDirection::XPos,
+            ScrollDirection::YNeg,
+            ScrollDirection::YPos,
+        ]
+        .into_iter()
+        .map(|direction| Listener {
+            element_id: Some(element.id.clone()),
+            matcher: ListenerMatcher::CursorScrollInsideDirection { region, direction },
+            compute: blocker(),
+        }),
+    );
+}
+
+fn slot_mouse_down_window_blur_clear(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let actions = mouse_down_style::window_blur_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
@@ -4636,8 +4808,8 @@ mod tests {
     };
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{Attrs, MouseOverAttrs, ScrollbarHoverAxis};
-    use crate::tree::element::{Element, ElementId, ElementKind, Frame};
-    use crate::tree::interaction::{ElementInteraction, Rect};
+    use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
+    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds};
     use crate::tree::scrollbar::ScrollbarAxis;
 
     use super::{
@@ -4668,64 +4840,118 @@ mod tests {
         )
     }
 
-    fn build_interaction(visible: bool) -> ElementInteraction {
-        ElementInteraction {
+    fn build_pointer_region(visible: bool) -> PointerRegion {
+        let rect = if visible {
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            }
+        } else {
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            }
+        };
+
+        PointerRegion {
             visible,
-            hit_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 40.0,
-            },
-            self_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 40.0,
-            },
-            self_radii: None,
-            clip_rect: None,
-            clip_radii: None,
+            inherited_clip: None,
+            self_shape: ShapeBounds { rect, radii: None },
+            visible_bounds: rect,
+            bounds: rect,
+            radii: None,
         }
     }
 
-    fn build_pointer_region(visible: bool) -> PointerRegion {
-        PointerRegion::for_element(build_interaction(visible))
+    fn build_clipped_rounded_region() -> PointerRegion {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 50.0,
+            height: 50.0,
+        };
+
+        PointerRegion {
+            visible: true,
+            inherited_clip: Some(ClipShape {
+                rect,
+                radii: Some(CornerRadii {
+                    tl: 10.0,
+                    tr: 10.0,
+                    br: 10.0,
+                    bl: 10.0,
+                }),
+            }),
+            self_shape: ShapeBounds { rect, radii: None },
+            visible_bounds: rect,
+            bounds: rect,
+            radii: None,
+        }
     }
 
-    fn build_clipped_rounded_interaction() -> ElementInteraction {
-        ElementInteraction {
-            visible: true,
-            hit_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 50.0,
-                height: 50.0,
-            },
-            self_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 50.0,
-                height: 50.0,
-            },
-            self_radii: None,
-            clip_rect: Some(Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 50.0,
-                height: 50.0,
-            }),
-            clip_radii: Some(crate::tree::interaction::CornerRadii {
-                tl: 10.0,
-                tr: 10.0,
-                br: 10.0,
-                bl: 10.0,
-            }),
+    fn build_pointer_subregion(
+        region: PointerRegion,
+        bounds: Rect,
+        radii: Option<CornerRadii>,
+    ) -> PointerRegion {
+        PointerRegion {
+            bounds,
+            radii,
+            ..region
         }
     }
 
     fn with_interaction(mut element: Element, visible: bool) -> Element {
-        element.interaction = Some(build_interaction(visible));
+        let rect = if visible {
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            }
+        } else {
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            }
+        };
+        let frame = Frame {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            content_width: rect.width,
+            content_height: rect.height,
+        };
+        element.frame = Some(frame);
+        element
+    }
+
+    fn with_interaction_rect(mut element: Element, visible: bool, hit_rect: Rect) -> Element {
+        let rect = if visible {
+            hit_rect
+        } else {
+            Rect {
+                width: 0.0,
+                height: 0.0,
+                ..hit_rect
+            }
+        };
+        let frame = Frame {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            content_width: rect.width,
+            content_height: rect.height,
+        };
+        element.frame = Some(frame);
         element
     }
 
@@ -5115,7 +5341,7 @@ mod tests {
 
     #[test]
     fn pointer_matchers_respect_clipped_rounded_interaction() {
-        let region = PointerRegion::for_element(build_clipped_rounded_interaction());
+        let region = build_clipped_rounded_region();
         let matcher = ListenerMatcher::CursorButtonLeftPressInside { region };
 
         assert!(!matcher.matches(&InputEvent::CursorButton {
@@ -5149,8 +5375,8 @@ mod tests {
         let region = build_pointer_region(true);
         let a = ListenerMatcher::CursorButtonLeftPressInside { region };
         let b = ListenerMatcher::CursorButtonLeftPressInside {
-            region: PointerRegion::for_subregion(
-                build_interaction(true),
+            region: build_pointer_subregion(
+                build_pointer_region(true),
                 Rect {
                     x: 50.0,
                     y: 50.0,
@@ -5403,6 +5629,144 @@ mod tests {
             outside_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
                 if *element_id == ElementId::from_term_bytes(vec![60]) && !*active
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_front_nearby_blocker_suppresses_underlying_mouse_down() {
+        let mut host = with_interaction_rect(
+            make_element(80, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+        host.children = vec![ElementId::from_term_bytes(vec![81])];
+        host.nearby.set(
+            NearbySlot::InFront,
+            Some(ElementId::from_term_bytes(vec![82])),
+        );
+
+        let mut underlying_attrs = Attrs::default();
+        underlying_attrs.on_mouse_down = Some(true);
+        let underlying = with_interaction_rect(
+            make_element(81, underlying_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+
+        let overlay = with_interaction_rect(
+            make_element(82, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, underlying, overlay]);
+
+        let covered_actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 50.0,
+                y: 10.0,
+            },
+        );
+        assert!(covered_actions.is_empty());
+
+        let uncovered_actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 120.0,
+                y: 10.0,
+            },
+        );
+        assert!(matches!(
+            uncovered_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ElementId::from_term_bytes(vec![81])
+                    && *kind == ElementEventKind::MouseDown
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_front_nearby_real_listener_precedes_blocker() {
+        let mut host = with_interaction_rect(
+            make_element(83, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+        host.children = vec![ElementId::from_term_bytes(vec![84])];
+        host.nearby.set(
+            NearbySlot::InFront,
+            Some(ElementId::from_term_bytes(vec![85])),
+        );
+
+        let mut underlying_attrs = Attrs::default();
+        underlying_attrs.on_mouse_down = Some(true);
+        let underlying = with_interaction_rect(
+            make_element(84, underlying_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_down = Some(true);
+        let overlay = with_interaction_rect(
+            make_element(85, overlay_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, underlying, overlay]);
+
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 50.0,
+                y: 10.0,
+            },
+        );
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ElementId::from_term_bytes(vec![85])
+                    && *kind == ElementEventKind::MouseDown
         ));
     }
 
@@ -7016,6 +7380,143 @@ mod tests {
             leave_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
                 if *element_id == ElementId::from_term_bytes(vec![46]) && !*hovered
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_nested_scrolled_child_hover_uses_screen_space_position() {
+        let wrapper_id = ElementId::from_term_bytes(vec![92]);
+        let target_id = ElementId::from_term_bytes(vec![93]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(20.0);
+        parent_attrs.scroll_y_max = Some(120.0);
+        let mut parent = with_frame(
+            make_element(91, parent_attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 180.0,
+            },
+        );
+        parent.children = vec![wrapper_id.clone()];
+
+        let mut wrapper = with_frame(
+            make_element(92, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 30.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 60.0,
+            },
+        );
+        wrapper.children = vec![target_id.clone()];
+
+        let mut target_attrs = Attrs::default();
+        target_attrs.on_mouse_move = Some(true);
+        let target = with_frame(
+            make_element(93, target_attrs),
+            Frame {
+                x: 0.0,
+                y: 40.0,
+                width: 120.0,
+                height: 20.0,
+                content_width: 120.0,
+                content_height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[parent, wrapper, target]);
+        let hit_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 10.0, y: 25.0 });
+        let miss_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 10.0, y: 45.0 });
+
+        assert!(matches!(
+            hit_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == target_id && *kind == ElementEventKind::MouseMove
+        ));
+        assert!(
+            miss_actions.is_empty(),
+            "screen-space hover should miss the target at its pre-scroll position"
+        );
+    }
+
+    #[test]
+    fn registry_for_elements_scrolled_child_scrollbar_hover_uses_screen_space_thumb_rect() {
+        let child_id = ElementId::from_term_bytes(vec![95]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(40.0);
+        parent_attrs.scroll_y_max = Some(160.0);
+        let mut parent = with_frame(
+            make_element(94, parent_attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+                content_width: 120.0,
+                content_height: 240.0,
+            },
+        );
+        parent.children = vec![child_id.clone()];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.scrollbar_y = Some(true);
+        child_attrs.scroll_y = Some(10.0);
+        child_attrs.scroll_y_max = Some(100.0);
+        let child = with_frame(
+            make_element(95, child_attrs),
+            Frame {
+                x: 10.0,
+                y: 60.0,
+                width: 80.0,
+                height: 40.0,
+                content_width: 80.0,
+                content_height: 180.0,
+            },
+        );
+
+        let parent_state = crate::tree::scene::resolve_node_state(
+            &parent,
+            crate::tree::scene::SceneContext::default(),
+        )
+        .expect("parent state should resolve");
+        let child_state = crate::tree::scene::resolve_node_state(
+            &child,
+            crate::tree::scene::child_context(
+                parent_state,
+                crate::tree::element::RetainedPaintPhase::Children,
+            ),
+        )
+        .expect("child state should resolve");
+        let thumb = super::scrollbar_nodes_for_state(&child_state)
+            .1
+            .expect("child scrollbar should exist")
+            .thumb_rect;
+
+        let registry = registry_for_elements(&[parent, child]);
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorPos {
+                x: thumb.x + thumb.width / 2.0,
+                y: thumb.y + thumb.height / 2.0,
+            },
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
+                if *element_id == child_id && *hovered
         ));
     }
 

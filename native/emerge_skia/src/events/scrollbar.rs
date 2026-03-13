@@ -1,4 +1,4 @@
-use crate::tree::interaction::Rect;
+use crate::tree::geometry::Rect;
 use crate::tree::scrollbar::{ScrollbarAxis, ScrollbarMetrics};
 
 #[derive(Clone, Copy, Debug, PartialEq)]

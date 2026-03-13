@@ -404,20 +404,11 @@ defmodule Emerge.UI do
   @doc "Distribute children with equal gaps between them"
   def space_evenly, do: {:space_evenly, true}
 
-  @doc "Render a vertical scrollbar when content overflows (implies clip_y)"
+  @doc "Render a vertical scrollbar when content overflows"
   def scrollbar_y, do: {:scrollbar_y, true}
 
-  @doc "Render a horizontal scrollbar when content overflows (implies clip_x)"
+  @doc "Render a horizontal scrollbar when content overflows"
   def scrollbar_x, do: {:scrollbar_x, true}
-
-  @doc "Clip content on both axes (helper for clip_x + clip_y)"
-  def clip, do: %{clip_x: true, clip_y: true}
-
-  @doc "Clip content on the horizontal axis"
-  def clip_x, do: {:clip_x, true}
-
-  @doc "Clip content on the vertical axis"
-  def clip_y, do: {:clip_y, true}
 
   # ============================================
   # ALIGNMENT
@@ -662,18 +653,6 @@ defmodule Emerge.UI do
   defp validate_scrollbar_clipping!(attrs) do
     if Map.get(attrs, :id) do
       raise ArgumentError, "id is not supported; use key instead"
-    end
-
-    if Map.get(attrs, :clip) do
-      raise ArgumentError, "clip is not supported; use clip_x and clip_y"
-    end
-
-    if Map.get(attrs, :scrollbar_x) && Map.get(attrs, :clip_x) do
-      raise ArgumentError, "scrollbar_x implies clip_x; do not set clip_x with scrollbar_x"
-    end
-
-    if Map.get(attrs, :scrollbar_y) && Map.get(attrs, :clip_y) do
-      raise ArgumentError, "scrollbar_y implies clip_y; do not set clip_y with scrollbar_y"
     end
   end
 

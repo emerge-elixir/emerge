@@ -426,8 +426,6 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         text_input_selection_anchor: attrs.text_input_selection_anchor,
         text_input_preedit: attrs.text_input_preedit.clone(),
         text_input_preedit_cursor: attrs.text_input_preedit_cursor,
-        clip_y: attrs.clip_y,
-        clip_x: attrs.clip_x,
         background: attrs.background.clone(),
         border_radius: attrs
             .border_radius
@@ -3381,10 +3379,9 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree_with_rebuild;
+use super::render::render_tree;
 use crate::events::RegistryRebuildPayload;
 use crate::renderer::DrawCmd;
-use crate::tree::interaction as tree_interaction;
 
 /// Output of layout refresh: both render commands and event registry.
 pub struct LayoutOutput {
@@ -3397,8 +3394,7 @@ pub struct LayoutOutput {
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    tree_interaction::populate_interaction(tree);
-    let render_output = render_tree_with_rebuild(tree);
+    let render_output = render_tree(tree);
 
     LayoutOutput {
         commands: render_output.commands,

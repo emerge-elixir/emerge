@@ -80,7 +80,7 @@ Notable tag coverage includes:
 ```text
 width, height, padding, spacing, spacing_xy
 align_x, align_y, text_align
-scrollbar_x, scrollbar_y, scroll_x, scroll_y, clip_x, clip_y
+scrollbar_x, scrollbar_y, scroll_x, scroll_y
 background, border_radius, border_width, border_style, border_color, box_shadow
 font, font_size, font_color, font_weight, font_style
 font_underline, font_strike, font_letter_spacing, font_word_spacing

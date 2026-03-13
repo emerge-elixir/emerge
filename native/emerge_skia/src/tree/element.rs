@@ -3,7 +3,6 @@
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
 use super::attrs::{Attrs, ScrollbarHoverAxis, supports_mouse_over_tracking};
-use super::interaction::ElementInteraction;
 use std::collections::HashMap;
 
 /// Unique identifier for an element, derived from Erlang term.
@@ -219,7 +218,18 @@ pub struct NearbySlotSpec {
 #[derive(Clone, Copy, Debug)]
 pub struct PaintChildRef<'a> {
     pub id: &'a ElementId,
-    pub phase: RetainedPaintPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetainedChildMode {
+    Scope,
+    InlineEventOnly,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedChildRef<'a> {
+    pub id: &'a ElementId,
+    pub mode: RetainedChildMode,
 }
 
 /// A single element in the UI tree.
@@ -248,9 +258,6 @@ pub struct Element {
 
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
-
-    /// Computed interaction geometry (populated by interaction pass).
-    pub interaction: Option<ElementInteraction>,
 }
 
 impl Element {
@@ -266,31 +273,70 @@ impl Element {
             children: Vec::new(),
             nearby: NearbyMounts::default(),
             frame: None,
-            interaction: None,
         }
     }
 
     pub fn for_each_paint_child(&self, mut f: impl FnMut(PaintChildRef<'_>)) {
         if let Some(id) = self.nearby.get(NearbySlot::BehindContent) {
-            f(PaintChildRef {
-                id,
-                phase: RetainedPaintPhase::BehindContent,
-            });
+            f(PaintChildRef { id });
         }
 
         for id in &self.children {
-            f(PaintChildRef {
-                id,
-                phase: RetainedPaintPhase::Children,
-            });
+            f(PaintChildRef { id });
         }
 
         self.nearby.for_each_overlay_in_paint_order(|slot, id| {
-            f(PaintChildRef {
-                id,
-                phase: RetainedPaintPhase::Overlay(slot),
-            });
+            let _ = slot;
+            f(PaintChildRef { id });
         });
+    }
+
+    pub fn for_each_retained_child(
+        &self,
+        tree: &ElementTree,
+        mut f: impl FnMut(RetainedChildRef<'_>),
+    ) {
+        if self.kind == ElementKind::Paragraph {
+            for id in &self.children {
+                if paragraph_child_mode(tree, id) == RetainedChildMode::Scope {
+                    f(RetainedChildRef {
+                        id,
+                        mode: RetainedChildMode::Scope,
+                    });
+                }
+            }
+
+            for id in &self.children {
+                if paragraph_child_mode(tree, id) == RetainedChildMode::InlineEventOnly {
+                    f(RetainedChildRef {
+                        id,
+                        mode: RetainedChildMode::InlineEventOnly,
+                    });
+                }
+            }
+        } else {
+            for id in &self.children {
+                f(RetainedChildRef {
+                    id,
+                    mode: RetainedChildMode::Scope,
+                });
+            }
+        }
+    }
+}
+
+fn paragraph_child_mode(tree: &ElementTree, child_id: &ElementId) -> RetainedChildMode {
+    let is_float_child = tree.get(child_id).is_some_and(|child| {
+        matches!(
+            child.attrs.align_x,
+            Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
+        )
+    });
+
+    if is_float_child {
+        RetainedChildMode::Scope
+    } else {
+        RetainedChildMode::InlineEventOnly
     }
 }
 
@@ -645,6 +691,7 @@ fn normalize_preedit_cursor(text: Option<&str>, cursor: Option<(u32, u32)>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::attrs::AlignX;
 
     #[test]
     fn test_element_kind_from_tag() {
@@ -1060,5 +1107,97 @@ mod tests {
             Some("x".to_string()),
             None,
         ));
+    }
+
+    #[test]
+    fn test_for_each_retained_child_paragraph_orders_float_before_inline() {
+        let paragraph_id = ElementId::from_term_bytes(vec![10]);
+        let inline_id = ElementId::from_term_bytes(vec![11]);
+        let float_id = ElementId::from_term_bytes(vec![12]);
+
+        let mut paragraph = Element::with_attrs(
+            paragraph_id.clone(),
+            ElementKind::Paragraph,
+            Vec::new(),
+            Attrs::default(),
+        );
+        paragraph.children = vec![inline_id.clone(), float_id.clone()];
+
+        let inline = Element::with_attrs(
+            inline_id.clone(),
+            ElementKind::Text,
+            Vec::new(),
+            Attrs::default(),
+        );
+
+        let mut float_attrs = Attrs::default();
+        float_attrs.align_x = Some(AlignX::Left);
+        let float = Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(paragraph_id.clone());
+        tree.insert(paragraph);
+        tree.insert(inline);
+        tree.insert(float);
+
+        let mut visited = Vec::new();
+        tree.get(&paragraph_id)
+            .expect("paragraph should exist")
+            .for_each_retained_child(&tree, |child| visited.push((child.id.clone(), child.mode)));
+
+        assert_eq!(
+            visited,
+            vec![
+                (float_id, RetainedChildMode::Scope),
+                (inline_id, RetainedChildMode::InlineEventOnly),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_for_each_retained_child_non_paragraph_preserves_order_as_scope() {
+        let row_id = ElementId::from_term_bytes(vec![20]);
+        let first_id = ElementId::from_term_bytes(vec![21]);
+        let second_id = ElementId::from_term_bytes(vec![22]);
+
+        let mut row = Element::with_attrs(
+            row_id.clone(),
+            ElementKind::Row,
+            Vec::new(),
+            Attrs::default(),
+        );
+        row.children = vec![first_id.clone(), second_id.clone()];
+
+        let first = Element::with_attrs(
+            first_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        let second = Element::with_attrs(
+            second_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(row_id.clone());
+        tree.insert(row);
+        tree.insert(first);
+        tree.insert(second);
+
+        let mut visited = Vec::new();
+        tree.get(&row_id)
+            .expect("row should exist")
+            .for_each_retained_child(&tree, |child| visited.push((child.id.clone(), child.mode)));
+
+        assert_eq!(
+            visited,
+            vec![
+                (first_id, RetainedChildMode::Scope),
+                (second_id, RetainedChildMode::Scope),
+            ]
+        );
     }
 }

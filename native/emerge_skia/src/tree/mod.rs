@@ -10,9 +10,11 @@
 pub mod attrs;
 pub mod deserialize;
 pub mod element;
-pub mod interaction;
+pub mod geometry;
 pub mod layout;
 pub mod patch;
 pub mod render;
+pub mod render_lower;
+pub mod scene;
 pub mod scrollbar;
 pub mod serialize;

@@ -1,0 +1,380 @@
+use super::element::{Element, Frame, RetainedPaintPhase};
+use super::geometry::{ClipShape, ShapeBounds, visible_bounds};
+use super::scrollbar as tree_scrollbar;
+use super::scrollbar::ScrollbarMetrics;
+
+#[derive(Clone, Copy, Debug)]
+struct LocalSceneGeometry {
+    self_shape: ShapeBounds,
+    host_clip: ClipShape,
+    scrollbar_x: Option<ScrollbarMetrics>,
+    scrollbar_y: Option<ScrollbarMetrics>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SceneContext {
+    pub scroll_dx: f32,
+    pub scroll_dy: f32,
+    pub visible_clip: Option<ClipShape>,
+    pub front_nearby_subtree: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedNodeState {
+    pub frame: Frame,
+    pub adjusted_frame: Frame,
+    pub self_shape: ShapeBounds,
+    pub host_clip: ClipShape,
+    pub inherited_clip: Option<ClipShape>,
+    pub visible_bounds: super::geometry::Rect,
+    pub visible: bool,
+    pub child_visible_clip: ClipShape,
+    pub scrollbar_x: Option<ScrollbarMetrics>,
+    pub scrollbar_y: Option<ScrollbarMetrics>,
+    pub local_scroll_x: f32,
+    pub local_scroll_y: f32,
+    pub front_nearby_subtree: bool,
+}
+
+impl ResolvedNodeState {
+    fn accumulated_scroll(self) -> (f32, f32) {
+        (
+            self.frame.x - self.adjusted_frame.x,
+            self.frame.y - self.adjusted_frame.y,
+        )
+    }
+}
+
+pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<ResolvedNodeState> {
+    let frame = element.frame?;
+    let scene = local_scene_geometry(frame, &element.attrs);
+
+    let adjusted_frame = Frame {
+        x: frame.x - ctx.scroll_dx,
+        y: frame.y - ctx.scroll_dy,
+        ..frame
+    };
+    let self_shape = scene.self_shape.offset(ctx.scroll_dx, ctx.scroll_dy);
+    let inherited_clip = if ctx.front_nearby_subtree {
+        None
+    } else {
+        ctx.visible_clip
+    };
+    let visible_bounds = visible_bounds(self_shape, inherited_clip);
+    let visible = visible_bounds.width > 0.0 && visible_bounds.height > 0.0;
+    let host_clip = scene.host_clip.offset(ctx.scroll_dx, ctx.scroll_dy);
+    let child_visible_clip = inherited_clip
+        .map(|clip| super::geometry::intersect_clip(Some(clip), host_clip))
+        .unwrap_or(host_clip);
+
+    let scrollbar_x = scene
+        .scrollbar_x
+        .map(|metrics| offset_scrollbar_metrics(metrics, ctx));
+    let scrollbar_y = scene
+        .scrollbar_y
+        .map(|metrics| offset_scrollbar_metrics(metrics, ctx));
+
+    Some(ResolvedNodeState {
+        frame,
+        adjusted_frame,
+        self_shape,
+        host_clip,
+        inherited_clip,
+        visible_bounds,
+        visible,
+        child_visible_clip,
+        scrollbar_x,
+        scrollbar_y,
+        local_scroll_x: element.attrs.scroll_x.unwrap_or(0.0) as f32,
+        local_scroll_y: element.attrs.scroll_y.unwrap_or(0.0) as f32,
+        front_nearby_subtree: ctx.front_nearby_subtree,
+    })
+}
+
+fn local_scene_geometry(frame: Frame, attrs: &super::attrs::Attrs) -> LocalSceneGeometry {
+    LocalSceneGeometry {
+        self_shape: super::geometry::self_shape(frame, attrs),
+        host_clip: super::geometry::host_clip_shape(frame, attrs),
+        scrollbar_x: tree_scrollbar::horizontal_metrics(frame, attrs),
+        scrollbar_y: tree_scrollbar::vertical_metrics(frame, attrs),
+    }
+}
+
+pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> SceneContext {
+    let (scroll_dx, scroll_dy) = state.accumulated_scroll();
+
+    match phase {
+        RetainedPaintPhase::Children => SceneContext {
+            scroll_dx: scroll_dx + state.local_scroll_x,
+            scroll_dy: scroll_dy + state.local_scroll_y,
+            visible_clip: Some(state.child_visible_clip),
+            front_nearby_subtree: state.front_nearby_subtree,
+        },
+        RetainedPaintPhase::BehindContent => SceneContext {
+            scroll_dx,
+            scroll_dy,
+            visible_clip: Some(state.child_visible_clip),
+            front_nearby_subtree: state.front_nearby_subtree,
+        },
+        RetainedPaintPhase::Overlay(_) => SceneContext {
+            scroll_dx,
+            scroll_dy,
+            visible_clip: None,
+            front_nearby_subtree: true,
+        },
+    }
+}
+
+fn offset_scrollbar_metrics(metrics: ScrollbarMetrics, ctx: SceneContext) -> ScrollbarMetrics {
+    ScrollbarMetrics {
+        track_x: metrics.track_x - ctx.scroll_dx,
+        track_y: metrics.track_y - ctx.scroll_dy,
+        thumb_x: metrics.thumb_x - ctx.scroll_dx,
+        thumb_y: metrics.thumb_y - ctx.scroll_dy,
+        track_start: metrics.track_start
+            - match metrics.axis {
+                super::scrollbar::ScrollbarAxis::X => ctx.scroll_dx,
+                super::scrollbar::ScrollbarAxis::Y => ctx.scroll_dy,
+            },
+        thumb_start: metrics.thumb_start
+            - match metrics.axis {
+                super::scrollbar::ScrollbarAxis::X => ctx.scroll_dx,
+                super::scrollbar::ScrollbarAxis::Y => ctx.scroll_dy,
+            },
+        ..metrics
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::attrs::Attrs;
+    use crate::tree::element::{Element, ElementId, ElementKind};
+    use crate::tree::geometry::Rect;
+
+    fn make_element(id: u8, attrs: Attrs, frame: Frame) -> Element {
+        let mut element = Element::with_attrs(
+            ElementId::from_term_bytes(vec![id]),
+            ElementKind::El,
+            Vec::new(),
+            attrs,
+        );
+        element.frame = Some(frame);
+        element
+    }
+
+    #[test]
+    fn child_context_always_applies_host_clip_for_children() {
+        let parent = make_element(
+            1,
+            Attrs::default(),
+            Frame {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+
+        let state = resolve_node_state(
+            &parent,
+            SceneContext {
+                visible_clip: Some(ClipShape {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 400.0,
+                        height: 300.0,
+                    },
+                    radii: None,
+                }),
+                ..SceneContext::default()
+            },
+        )
+        .expect("state should resolve");
+
+        let child_ctx = child_context(state, RetainedPaintPhase::Children);
+        assert_eq!(
+            child_ctx.visible_clip,
+            Some(state.child_visible_clip),
+            "all hosts should tighten child visibility to the host clip"
+        );
+    }
+
+    #[test]
+    fn child_context_always_applies_host_clip_for_behind_content() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        let parent = make_element(
+            2,
+            attrs,
+            Frame {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 50.0,
+            },
+        );
+
+        let state = resolve_node_state(
+            &parent,
+            SceneContext {
+                visible_clip: Some(ClipShape {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 400.0,
+                        height: 300.0,
+                    },
+                    radii: None,
+                }),
+                ..SceneContext::default()
+            },
+        )
+        .expect("state should resolve");
+
+        let child_ctx = child_context(state, RetainedPaintPhase::BehindContent);
+        assert_eq!(
+            child_ctx.visible_clip,
+            Some(state.child_visible_clip),
+            "behind content should render inside the host clip"
+        );
+    }
+
+    #[test]
+    fn resolve_node_state_keeps_scrolled_inherited_clip_in_screen_space() {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(20.0);
+        let parent = make_element(
+            3,
+            parent_attrs,
+            Frame {
+                x: 0.0,
+                y: 100.0,
+                width: 120.0,
+                height: 50.0,
+                content_width: 120.0,
+                content_height: 150.0,
+            },
+        );
+        let child = make_element(
+            4,
+            Attrs::default(),
+            Frame {
+                x: 0.0,
+                y: 130.0,
+                width: 120.0,
+                height: 20.0,
+                content_width: 120.0,
+                content_height: 20.0,
+            },
+        );
+
+        let parent_state = resolve_node_state(&parent, SceneContext::default())
+            .expect("parent state should resolve");
+        let child_state = resolve_node_state(
+            &child,
+            child_context(parent_state, RetainedPaintPhase::Children),
+        )
+        .expect("child state should resolve");
+
+        assert_eq!(child_state.adjusted_frame.y, 110.0);
+        assert_eq!(
+            child_state.inherited_clip,
+            Some(parent_state.child_visible_clip),
+            "child inherited clip should stay in screen space after parent scroll"
+        );
+    }
+
+    #[test]
+    fn resolve_node_state_uses_current_frame_geometry() {
+        let frame = Frame {
+            x: 40.0,
+            y: 60.0,
+            width: 120.0,
+            height: 50.0,
+            content_width: 120.0,
+            content_height: 140.0,
+        };
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        let mut element = make_element(8, attrs, frame);
+        element.frame = Some(frame);
+
+        let state =
+            resolve_node_state(&element, SceneContext::default()).expect("state should resolve");
+
+        assert_eq!(state.self_shape.rect.x, 40.0);
+        assert_eq!(state.self_shape.rect.y, 60.0);
+        assert_eq!(state.host_clip.rect.x, 40.0);
+        assert_eq!(state.host_clip.rect.y, 60.0);
+        assert_eq!(state.scrollbar_y.expect("scrollbar").track_y, 60.0);
+    }
+
+    #[test]
+    fn child_context_accumulates_ancestor_and_local_scroll_for_grandchildren() {
+        let mut root_attrs = Attrs::default();
+        root_attrs.scrollbar_y = Some(true);
+        root_attrs.scroll_y = Some(20.0);
+        let root = make_element(
+            5,
+            root_attrs,
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+                content_width: 120.0,
+                content_height: 200.0,
+            },
+        );
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.scrollbar_y = Some(true);
+        child_attrs.scroll_y = Some(5.0);
+        let child = make_element(
+            6,
+            child_attrs,
+            Frame {
+                x: 0.0,
+                y: 30.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 120.0,
+            },
+        );
+
+        let grandchild = make_element(
+            7,
+            Attrs::default(),
+            Frame {
+                x: 0.0,
+                y: 50.0,
+                width: 120.0,
+                height: 20.0,
+                content_width: 120.0,
+                content_height: 20.0,
+            },
+        );
+
+        let root_state =
+            resolve_node_state(&root, SceneContext::default()).expect("root state should resolve");
+        let child_state = resolve_node_state(
+            &child,
+            child_context(root_state, RetainedPaintPhase::Children),
+        )
+        .expect("child state should resolve");
+        let grandchild_ctx = child_context(child_state, RetainedPaintPhase::Children);
+        let grandchild_state =
+            resolve_node_state(&grandchild, grandchild_ctx).expect("grandchild should resolve");
+
+        assert_eq!(grandchild_ctx.scroll_dy, 25.0);
+        assert_eq!(grandchild_state.adjusted_frame.y, 25.0);
+    }
+}

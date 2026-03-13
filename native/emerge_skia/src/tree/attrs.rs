@@ -236,8 +236,6 @@ pub struct Attrs {
     pub text_input_selection_anchor: Option<u32>,
     pub text_input_preedit: Option<String>,
     pub text_input_preedit_cursor: Option<(u32, u32)>,
-    pub clip_y: Option<bool>,
-    pub clip_x: Option<bool>,
     pub background: Option<Background>,
     pub border_radius: Option<BorderRadius>,
     pub border_width: Option<BorderWidth>,
@@ -404,8 +402,6 @@ const TAG_ALIGN_X: u8 = 5;
 const TAG_ALIGN_Y: u8 = 6;
 const TAG_SCROLLBAR_Y: u8 = 7;
 const TAG_SCROLLBAR_X: u8 = 8;
-const TAG_CLIP_Y: u8 = 10;
-const TAG_CLIP_X: u8 = 11;
 const TAG_BACKGROUND: u8 = 12;
 const TAG_BORDER_RADIUS: u8 = 13;
 const TAG_BORDER_WIDTH: u8 = 14;
@@ -550,8 +546,6 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ALIGN_Y => attrs.align_y = Some(decode_align_y(cursor)?),
         TAG_SCROLLBAR_Y => attrs.scrollbar_y = Some(cursor.read_bool()?),
         TAG_SCROLLBAR_X => attrs.scrollbar_x = Some(cursor.read_bool()?),
-        TAG_CLIP_Y => attrs.clip_y = Some(cursor.read_bool()?),
-        TAG_CLIP_X => attrs.clip_x = Some(cursor.read_bool()?),
         TAG_BACKGROUND => attrs.background = Some(decode_background(cursor)?),
         TAG_BORDER_RADIUS => attrs.border_radius = Some(decode_radius(cursor)?),
         TAG_BORDER_WIDTH => attrs.border_width = Some(decode_border_width(cursor)?),

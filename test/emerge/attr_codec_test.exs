@@ -15,8 +15,6 @@ defmodule Emerge.AttrCodecTest do
       align_y: :bottom,
       scrollbar_y: true,
       scrollbar_x: false,
-      clip_y: false,
-      clip_x: true,
       background: {:gradient, {:color_rgb, {10, 20, 30}}, {:color_rgb, {40, 50, 60}}, 45},
       border_radius: {2, 3, 4, 5},
       border_width: 1,
