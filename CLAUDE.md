@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI agents when working with code in this repository.
 
 ## Build & Development Commands
 
@@ -23,33 +23,50 @@ cargo build --release           # Build release (mix compile does this automatic
 
 ## Architecture
 
-EmergeSkia is a minimal Skia renderer for Elixir, designed as a lightweight alternative to Scenic for the Emerge layout engine. It uses Rustler to bridge Elixir and Rust.
+Emerge is a GUI framework for elixir that sits on top of EmergeSkia
+EmergeSkia is a layout engine and input system in Rust using Skia to renderer on various backend.
+EmergeSkia is implemented as Rustler NIF to bridge Elixir and Rust.
 
 ### Data Flow
 
+Rendering
 ```
-Elixir: EmergeSkia.render(renderer, commands)
+Elixir: EmergeSkia.upload_tree(renderer, tree)
     │
-    │  Vec<DrawCmd> decoded via manual Decoder impl
+    │  EMRG binary decoded to ElementTree
     ▼
-Rust NIF: commands stored in Arc<Mutex<RendererState>>
+Rust tree actor: layout_and_refresh_default(tree, constraint, scale)
     │
-    │  Event proxy triggers redraw
+    │  produces Vec<DrawCmd> + event rebuild
     ▼
 Render thread: SkiaRenderer.render() draws to GPU surface
     │
     ▼
-winit window (Wayland)
+backend: winit window (Wayland) / libdrm / raster...
+
+```
+
+Events
+```
+backend: winit window (Wayland) / libinput
+    │
+    │ Raw Input Events 
+    ▼
+Rust event actor: event processing and translation
+    │
+    │  TreeActorEvents/Elixir messages
+    ▼
+TreeActor:rerender / Elixir: event forwarding 
+
 ```
 
 ### Key Components
 
 **Elixir Side:**
-- `EmergeSkia` (`lib/emerge_skia.ex`) - Public API: `start/3`, `render/2`, `measure_text/2`, `stop/1`
+- `EmergeSkia` (`lib/emerge_skia.ex`) - Public API: `start/1`, `upload_tree/2`, `patch_tree/3`, `render_to_pixels/2`, `measure_text/2`, `stop/1`
 - `EmergeSkia.Native` (`lib/emerge_skia/native.ex`) - Rustler NIF bindings
 
 **Rust Side** (`native/emerge_skia/src/lib.rs`):
-- `DrawCmd` enum with manual `Decoder` impl - handles tuples >7 elements that `NifTaggedEnum` can't
 - `SkiaRenderer` - wraps Skia surface/context, executes draw commands
 - `RendererResource` - NIF resource holding render state and event proxy
 - `App` - winit `ApplicationHandler` managing window events

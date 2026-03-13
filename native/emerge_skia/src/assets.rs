@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
 use sha2::{Digest, Sha256};
@@ -162,21 +163,67 @@ pub fn configure(config: AssetConfig) {
 }
 
 pub fn ensure_tree_sources(tree: &ElementTree) {
-    for element in tree.nodes.values() {
-        if let Some(source) = element.attrs.image_src.as_ref() {
-            ensure_source(source);
-        }
+    collect_tree_sources(tree).iter().for_each(ensure_source);
+}
 
-        if let Some(Background::Image { source, .. }) = element.attrs.background.as_ref() {
-            ensure_source(source);
-        }
+pub fn snapshot_tree_sources(tree: &ElementTree) {
+    let sources = collect_tree_sources(tree);
 
-        if let Some(mouse_over) = element.attrs.mouse_over.as_ref()
-            && let Some(Background::Image { source, .. }) = mouse_over.background.as_ref()
-        {
-            ensure_source(source);
-        }
+    let guard = match global().lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+
+    if guard.tx.is_some() {
+        drop(guard);
+        sources.iter().for_each(ensure_source);
+        return;
     }
+
+    if let Ok(mut state) = guard.state.lock() {
+        state.pending_count = 0;
+        sources.iter().for_each(|source| {
+            state
+                .sources
+                .insert(source.clone(), snapshot_status_for_source(source));
+        });
+    }
+}
+
+pub fn resolve_tree_sources_sync(
+    tree: &ElementTree,
+    timeout: Option<Duration>,
+) -> Result<(), String> {
+    let sources = collect_tree_sources(tree);
+
+    let guard = global()
+        .lock()
+        .map_err(|_| "failed to lock asset global state".to_string())?;
+
+    let state = Arc::clone(&guard.state);
+    drop(guard);
+
+    let config = state
+        .lock()
+        .map_err(|_| "failed to lock asset state".to_string())?
+        .config
+        .clone();
+
+    let deadline = timeout.map(|duration| Instant::now() + duration);
+
+    for source in sources {
+        ensure_deadline(deadline)?;
+        let status = blocking_status_for_source(&source, &config);
+        ensure_deadline(deadline)?;
+
+        let mut state = state
+            .lock()
+            .map_err(|_| "failed to lock asset state".to_string())?;
+        state.sources.insert(source, status);
+        state.pending_count = 0;
+    }
+
+    Ok(())
 }
 
 pub fn ensure_source(source: &ImageSource) {
@@ -305,61 +352,131 @@ impl Worker {
         source: &ImageSource,
         config: &AssetConfig,
     ) -> Result<ResolvedAsset, String> {
-        match source {
-            ImageSource::Id(id) => {
-                let (width, height) =
-                    image_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
-                Ok(ResolvedAsset {
+        load_source(source, config)
+    }
+}
+
+fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
+    tree.nodes
+        .values()
+        .flat_map(|element| {
+            element
+                .attrs
+                .image_src
+                .iter()
+                .cloned()
+                .chain(
+                    element
+                        .attrs
+                        .background
+                        .iter()
+                        .filter_map(background_image_source),
+                )
+                .chain(
+                    element
+                        .attrs
+                        .mouse_over
+                        .iter()
+                        .filter_map(|mouse_over| mouse_over.background.as_ref())
+                        .filter_map(background_image_source),
+                )
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn background_image_source(background: &Background) -> Option<ImageSource> {
+    match background {
+        Background::Image { source, .. } => Some(source.clone()),
+        _ => None,
+    }
+}
+
+fn snapshot_status_for_source(source: &ImageSource) -> AssetStatus {
+    match source {
+        ImageSource::Id(id) => {
+            image_dimensions(id).map_or(AssetStatus::Pending, |(width, height)| {
+                AssetStatus::Ready(ResolvedAsset {
                     id: id.clone(),
                     width,
                     height,
                 })
-            }
-            ImageSource::Logical(logical) => {
-                let path = self.resolve_logical_path(logical, config)?;
-                self.load_path(&path)
-            }
-            ImageSource::RuntimePath(path) => {
-                let resolved = resolve_runtime_path(path, config)?;
-                self.load_path(&resolved)
-            }
+            })
+        }
+        ImageSource::Logical(_) | ImageSource::RuntimePath(_) => AssetStatus::Pending,
+    }
+}
+
+fn blocking_status_for_source(source: &ImageSource, config: &AssetConfig) -> AssetStatus {
+    load_source(source, config).map_or(AssetStatus::Failed, AssetStatus::Ready)
+}
+
+fn ensure_deadline(deadline: Option<Instant>) -> Result<(), String> {
+    if let Some(deadline) = deadline
+        && Instant::now() > deadline
+    {
+        return Err("asset preload timed out".to_string());
+    }
+
+    Ok(())
+}
+
+fn load_source(source: &ImageSource, config: &AssetConfig) -> Result<ResolvedAsset, String> {
+    match source {
+        ImageSource::Id(id) => {
+            let (width, height) =
+                image_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
+            Ok(ResolvedAsset {
+                id: id.clone(),
+                width,
+                height,
+            })
+        }
+        ImageSource::Logical(logical) => {
+            let path = resolve_logical_path(logical, config)?;
+            load_path(&path)
+        }
+        ImageSource::RuntimePath(path) => {
+            let resolved = resolve_runtime_path(path, config)?;
+            load_path(&resolved)
+        }
+    }
+}
+
+fn load_path(path: &Path) -> Result<ResolvedAsset, String> {
+    let bytes =
+        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+
+    let id = canonical_image_id(&bytes);
+
+    let (width, height) = match image_dimensions(&id) {
+        Some((w, h)) => (w, h),
+        None => insert_image(&id, &bytes)?,
+    };
+
+    Ok(ResolvedAsset { id, width, height })
+}
+
+fn resolve_logical_path(logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
+    let relative = logical_asset_relative_path(logical)?;
+
+    if config.sources.is_empty() {
+        return Err("asset sources are empty".to_string());
+    }
+
+    for source in &config.sources {
+        let source_root = PathBuf::from(source);
+        let candidate = source_root.join(&relative);
+        if fs::metadata(&candidate)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
+            return Ok(candidate);
         }
     }
 
-    fn load_path(&self, path: &Path) -> Result<ResolvedAsset, String> {
-        let bytes =
-            fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-
-        let id = canonical_image_id(&bytes);
-
-        let (width, height) = match image_dimensions(&id) {
-            Some((w, h)) => (w, h),
-            None => insert_image(&id, &bytes)?,
-        };
-
-        Ok(ResolvedAsset { id, width, height })
-    }
-
-    fn resolve_logical_path(&self, logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
-        let relative = logical_asset_relative_path(logical)?;
-
-        if config.sources.is_empty() {
-            return Err("asset sources are empty".to_string());
-        }
-
-        for source in &config.sources {
-            let source_root = PathBuf::from(source);
-            let candidate = source_root.join(&relative);
-            if fs::metadata(&candidate)
-                .map(|metadata| metadata.is_file())
-                .unwrap_or(false)
-            {
-                return Ok(candidate);
-            }
-        }
-
-        Err(format!("logical asset not found: {logical}"))
-    }
+    Err(format!("logical asset not found: {logical}"))
 }
 
 fn send_tree_update(tree_tx: &Sender<TreeMsg>, log_render: bool) {

@@ -1,15 +1,9 @@
 defmodule EmergeSkia do
   @moduledoc """
-  Minimal Skia renderer for Emerge layout engine.
+  Minimal Skia renderer for the Emerge layout engine.
 
-  This library provides direct Skia rendering without the overhead of Scenic.
-  It exposes a simple command-based API optimized for Emerge's needs:
-
-  - Rectangles (solid and rounded)
-  - Text rendering
-  - Linear gradients
-  - Clipping (for scroll containers)
-  - Transform stack (save/restore)
+  This library renders retained Emerge trees through the native Rust layout,
+  event, and Skia pipeline.
 
   ## Example
 
@@ -22,12 +16,23 @@ defmodule EmergeSkia do
           height: 600
         )
 
-      # Render commands
-      EmergeSkia.render(renderer, [
-        {:rect, 0, 0, 800, 600, 0xFFFFFFFF},           # White background
-        {:rounded_rect, 50, 50, 200, 100, 8, 0x3366FFFF}, # Blue rounded rect
-        {:text, 60, 110, "Hello!", 24.0, 0xFFFFFFFF},  # White text
-      ])
+      import Emerge.UI
+
+      tree =
+        el(
+          [
+            width(px(220)),
+            height(px(80)),
+            Emerge.UI.Background.color(0x3366FFFF),
+            Emerge.UI.Border.rounded(10),
+            padding(16),
+            Emerge.UI.Font.color(0xFFFFFFFF),
+            Emerge.UI.Font.size(24)
+          ],
+          text("Hello!")
+        )
+
+      {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
       # Stop when done
       EmergeSkia.stop(renderer)
@@ -52,6 +57,7 @@ defmodule EmergeSkia do
   @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
   @default_runtime_max_file_size 25_000_000
   @default_font_extensions [".ttf", ".otf", ".ttc"]
+  @default_asset_timeout_ms 30_000
 
   @doc """
   Start a new renderer window.
@@ -231,28 +237,6 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Render a list of draw commands to the window.
-
-  ## Commands
-
-  - `{:clear, color}` - Clear with color
-  - `{:rect, x, y, w, h, fill}` - Filled rectangle
-  - `{:rounded_rect, x, y, w, h, radius, fill}` - Rounded rectangle
-  - `{:border, x, y, w, h, radius, width, color}` - Rectangle border/stroke
-  - `{:text, x, y, text, font_size, fill}` - Text at baseline position
-  - `{:gradient, x, y, w, h, from, to, angle}` - Linear gradient rectangle
-  - `{:push_clip, x, y, w, h}` - Push clipping rectangle (also saves state)
-  - `:pop_clip` - Pop clipping (also restores state)
-  - `{:translate, x, y}` - Translate subsequent drawing
-  - `:save` - Save canvas state
-  - `:restore` - Restore canvas state
-  """
-  @spec render(renderer(), list()) :: :ok
-  def render(renderer, commands) do
-    Native.render(renderer, commands)
-  end
-
-  @doc """
   Upload a full EMRG tree, run layout, and render.
 
   Window dimensions come from the initial start config and are updated
@@ -348,25 +332,99 @@ defmodule EmergeSkia do
   # ===========================================================================
 
   @doc """
-  Render commands to an RGBA pixel buffer (synchronous, no window).
+  Render a tree to an RGBA pixel buffer (synchronous, no window).
 
-  This is useful for testing, headless rendering, and generating images.
-  Each call creates a fresh CPU surface, renders, and returns the pixels.
+  This is useful for testing, headless rendering, and image generation.
+  Each call creates a fresh CPU surface, runs layout, renders the tree, and
+  returns the pixels.
+
+  ## Options
+
+  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
+  - `width` - Output width in pixels (**required**)
+  - `height` - Output height in pixels (**required**)
+  - `scale` - Layout scale factor (default: `1.0`)
+  - `assets` - Asset runtime policy options (same shape as `start/1`)
+  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
+  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
 
   Returns a binary containing RGBA pixel data (4 bytes per pixel, row-major order).
   The binary size is `width * height * 4` bytes.
 
   ## Example
 
-      pixels = EmergeSkia.render_to_pixels(100, 100, [
-        {:rect, 0, 0, 100, 100, 0xFF0000FF},  # Red background
-        {:text, 10, 50, "Hi", 24.0, 0xFFFFFFFF}
-      ])
+      import Emerge.UI
+
+      pixels =
+        EmergeSkia.render_to_pixels(
+          el(
+            [width(px(100)), height(px(100)), Emerge.UI.Background.color(0xFF0000FF)],
+            none()
+          ),
+          otp_app: :my_app,
+          width: 100,
+          height: 100
+        )
+
       # pixels is 100 * 100 * 4 = 40000 bytes
   """
-  @spec render_to_pixels(non_neg_integer(), non_neg_integer(), list()) :: binary()
-  def render_to_pixels(width, height, commands) do
-    Native.render_to_pixels(width, height, commands)
+  @spec render_to_pixels(Emerge.Element.t(), keyword()) :: binary()
+  def render_to_pixels(tree, opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      opts = Keyword.new(opts)
+      asset_config = normalize_asset_config!(opts)
+      width = opts |> Keyword.fetch!(:width) |> normalize_positive_integer!(":width")
+      height = opts |> Keyword.fetch!(:height) |> normalize_positive_integer!(":height")
+      scale = opts |> Keyword.get(:scale, 1.0) |> normalize_positive_number!(":scale")
+
+      asset_mode =
+        opts
+        |> Keyword.get(:asset_mode, :await)
+        |> normalize_asset_mode!()
+
+      asset_timeout_ms =
+        opts
+        |> Keyword.get(:asset_timeout_ms, @default_asset_timeout_ms)
+        |> normalize_positive_integer!(":asset_timeout_ms")
+
+      with :ok <- preload_font_assets(asset_config) do
+        state = Emerge.diff_state_new()
+        {full_bin, _state, _assigned} = Emerge.encode_full(state, tree)
+
+        case Native.render_tree_to_pixels_nif(
+               full_bin,
+               width,
+               height,
+               scale,
+               [asset_config.priv_dir],
+               asset_config.runtime_enabled,
+               asset_config.runtime_allowlist,
+               asset_config.runtime_follow_symlinks,
+               asset_config.runtime_max_file_size,
+               asset_config.runtime_extensions,
+               asset_mode,
+               asset_timeout_ms
+             ) do
+          pixels when is_binary(pixels) ->
+            pixels
+
+          {:ok, pixels} when is_binary(pixels) ->
+            pixels
+
+          {:error, reason} ->
+            raise "render_tree_to_pixels failed: #{reason}"
+
+          other ->
+            raise "render_tree_to_pixels returned unexpected result: #{inspect(other)}"
+        end
+      else
+        {:error, reason} ->
+          raise "render_tree_to_pixels failed: #{inspect(reason)}"
+      end
+    else
+      raise ArgumentError,
+            "EmergeSkia.render_to_pixels/2 expects a keyword list, for example: EmergeSkia.render_to_pixels(tree, otp_app: :my_app, width: 800, height: 600)"
+    end
   end
 
   @doc """
@@ -795,6 +853,36 @@ defmodule EmergeSkia do
       true ->
         raise ArgumentError, "#{field_name} must be a keyword list or map, got: #{inspect(value)}"
     end
+  end
+
+  defp normalize_positive_integer!(value, _field_name)
+       when is_integer(value) and value > 0,
+       do: value
+
+  defp normalize_positive_integer!(value, field_name) do
+    raise ArgumentError, "#{field_name} must be a positive integer, got: #{inspect(value)}"
+  end
+
+  defp normalize_positive_number!(value, _field_name)
+       when is_integer(value) and value > 0,
+       do: value / 1.0
+
+  defp normalize_positive_number!(value, _field_name)
+       when is_float(value) and value > 0.0,
+       do: value
+
+  defp normalize_positive_number!(value, field_name) do
+    raise ArgumentError, "#{field_name} must be a positive number, got: #{inspect(value)}"
+  end
+
+  defp normalize_asset_mode!(:await), do: "await"
+  defp normalize_asset_mode!(:snapshot), do: "snapshot"
+  defp normalize_asset_mode!("await"), do: "await"
+  defp normalize_asset_mode!("snapshot"), do: "snapshot"
+
+  defp normalize_asset_mode!(value) do
+    raise ArgumentError,
+          ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
   end
 
   defp otp_app_priv_dir!(otp_app) do

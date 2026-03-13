@@ -41,24 +41,6 @@ defmodule EmergeSkia.Native do
   def stop(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Render a list of draw commands.
-
-  Commands are tagged tuples like:
-  - `{:rect, x, y, w, h, fill_color}`
-  - `{:rounded_rect, x, y, w, h, radius, fill_color}`
-  - `{:border, x, y, w, h, radius, width, color}`
-  - `{:text, x, y, text, font_size, fill_color}`
-  - `{:gradient, x, y, w, h, from_color, to_color, angle}`
-  - `{:push_clip, x, y, w, h}`
-  - `:pop_clip`
-  - `{:translate, x, y}`
-  - `:save`
-  - `:restore`
-  """
-  @spec render(reference(), list()) :: :ok
-  def render(_renderer, _commands), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
   Upload a full EMRG tree, run layout, and render immediately.
   Window dimensions come from the initial start config and resize events.
   """
@@ -145,15 +127,40 @@ defmodule EmergeSkia.Native do
   # ===========================================================================
 
   @doc """
-  Render commands to an RGBA pixel buffer (synchronous, no window).
+  Render a tree to an RGBA pixel buffer (synchronous, no window).
 
-  Returns a binary containing RGBA pixel data (4 bytes per pixel, row-major).
-  The binary size is `width * height * 4` bytes.
-
-  Useful for testing, headless rendering, and image generation.
+  The tree is provided as an encoded EMRG binary. Asset policy mirrors
+  `EmergeSkia.start/1`, with an additional offscreen asset mode.
   """
-  @spec render_to_pixels(non_neg_integer(), non_neg_integer(), list()) :: binary()
-  def render_to_pixels(_width, _height, _commands), do: :erlang.nif_error(:nif_not_loaded)
+  @spec render_tree_to_pixels_nif(
+          binary(),
+          pos_integer(),
+          pos_integer(),
+          float(),
+          [String.t()],
+          boolean(),
+          [String.t()],
+          boolean(),
+          non_neg_integer(),
+          [String.t()],
+          String.t(),
+          pos_integer()
+        ) :: {:ok, binary()} | {:error, String.t()}
+  def render_tree_to_pixels_nif(
+        _data,
+        _width,
+        _height,
+        _scale,
+        _sources,
+        _runtime_enabled,
+        _allowlist,
+        _follow_symlinks,
+        _max_file_size,
+        _extensions,
+        _asset_mode,
+        _asset_timeout_ms
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
   # Input Handling

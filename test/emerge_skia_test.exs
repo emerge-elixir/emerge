@@ -1,11 +1,51 @@
 defmodule EmergeSkiaTest do
   use ExUnit.Case
   doctest EmergeSkia
+  import Emerge.UI
 
   test "render_to_pixels returns RGBA binary" do
-    pixels = EmergeSkia.render_to_pixels(10, 10, [{:rect, 0, 0, 10, 10, 0xFF0000FF}])
+    tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
+
+    pixels =
+      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+
     # 10x10 pixels, 4 bytes each = 400 bytes
     assert byte_size(pixels) == 400
+  end
+
+  test "render_to_pixels supports snapshot placeholders" do
+    tree = image("demo_images/missing.jpg", [width(px(32)), height(px(24))])
+
+    snapshot =
+      EmergeSkia.render_to_pixels(
+        tree,
+        otp_app: :emerge,
+        width: 32,
+        height: 24,
+        asset_mode: :snapshot
+      )
+
+    awaited =
+      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 32, height: 24)
+
+    assert byte_size(snapshot) == 32 * 24 * 4
+    assert byte_size(awaited) == 32 * 24 * 4
+    refute snapshot == awaited
+  end
+
+  test "render_to_pixels await mode resolves logical image assets" do
+    good_tree = image("demo_images/static.jpg", [width(px(32)), height(px(24))])
+    bad_tree = image("demo_images/missing.jpg", [width(px(32)), height(px(24))])
+
+    good =
+      EmergeSkia.render_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
+
+    bad =
+      EmergeSkia.render_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
+
+    assert byte_size(good) == 32 * 24 * 4
+    assert byte_size(bad) == 32 * 24 * 4
+    refute good == bad
   end
 
   test "input mask constants" do
