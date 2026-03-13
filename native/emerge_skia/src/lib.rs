@@ -1,7 +1,7 @@
 //! EmergeSkia NIF - Minimal Skia renderer for Elixir.
 //!
-//! This crate provides a Rustler NIF that exposes Skia rendering to Elixir
-//! through a simple command-based API.
+//! This crate provides a Rustler NIF that exposes tree upload, layout,
+//! rendering, and headless rasterization for Emerge.
 
 use std::{
     sync::{
@@ -37,7 +37,7 @@ use backend::raster::{RasterBackend, RasterConfig};
 use backend::wayland::{self, UserEvent, WaylandConfig};
 use drm_input::DrmInput;
 use events::spawn_event_actor;
-use renderer::{DrawCmd, RenderState, get_default_typeface, load_font, set_render_log_enabled};
+use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use tree::element::ElementTree;
 use tree::layout::layout_and_refresh_default;
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
@@ -66,6 +66,24 @@ enum BackendKind {
     Drm,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OffscreenAssetMode {
+    Await,
+    Snapshot,
+}
+
+impl OffscreenAssetMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "await" => Ok(Self::Await),
+            "snapshot" => Ok(Self::Snapshot),
+            other => Err(format!(
+                "invalid offscreen asset mode: {other}; expected 'await' or 'snapshot'"
+            )),
+        }
+    }
+}
+
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend: BackendKind,
@@ -75,7 +93,6 @@ struct RendererResource {
     event_tx: Sender<EventMsg>,
     render_tx: RenderSender,
     cursor_tx: Option<Sender<RenderMsg>>,
-    render_counter: Arc<AtomicU64>,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
     prime_video_supported: bool,
@@ -616,7 +633,6 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         } else {
             None
         },
-        render_counter,
         video_registry,
         video_wake,
         prime_video_supported,
@@ -715,29 +731,6 @@ fn video_target_submit_prime(
     target.wake.notify();
     Ok(atoms::ok())
 }
-
-#[rustler::nif]
-fn render(renderer: ResourceArc<RendererResource>, commands: Vec<DrawCmd>) -> Atom {
-    let version = renderer.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    renderer.render_tx.send_latest(RenderMsg::Commands {
-        commands,
-        version,
-        animate: false,
-        ime_enabled: false,
-        ime_cursor_area: None,
-    });
-    if renderer.backend == BackendKind::Wayland
-        && let Ok(guard) = renderer.event_proxy.lock()
-        && let Some(proxy) = guard.as_ref()
-    {
-        let _ = proxy.send_event(UserEvent::Redraw);
-    }
-    atoms::ok()
-}
-
-// ============================================================================
-// Tree -> Layout -> Render Pipeline
-// ============================================================================
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Result<Atom, String> {
@@ -858,22 +851,50 @@ fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPi
 // Raster NIF Functions
 // ============================================================================
 
-/// Render commands to an RGBA pixel buffer (synchronous, no window).
-///
-/// This is useful for testing, headless rendering, and image generation.
-/// Each call creates a fresh CPU surface, renders, and returns the pixels.
-#[rustler::nif]
-fn render_to_pixels(
-    env: Env,
+/// Render an encoded tree to an RGBA pixel buffer (synchronous, no window).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn render_tree_to_pixels_nif<'a>(
+    env: Env<'a>,
+    data: Binary,
     width: u32,
     height: u32,
-    commands: Vec<DrawCmd>,
-) -> NifResult<Binary> {
+    scale: f32,
+    sources: Vec<String>,
+    runtime_enabled: bool,
+    allowlist: Vec<String>,
+    follow_symlinks: bool,
+    max_file_size: u64,
+    extensions: Vec<String>,
+    asset_mode: String,
+    asset_timeout_ms: u64,
+) -> Result<Binary<'a>, String> {
+    let mode = OffscreenAssetMode::parse(&asset_mode)?;
+    let mut tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+
+    assets::configure(AssetConfig {
+        sources,
+        runtime_enabled,
+        runtime_allowlist: allowlist,
+        runtime_follow_symlinks: follow_symlinks,
+        runtime_max_file_size: max_file_size,
+        runtime_extensions: extensions,
+    });
+
+    match mode {
+        OffscreenAssetMode::Await => {
+            assets::resolve_tree_sources_sync(&tree, Some(Duration::from_millis(asset_timeout_ms)))?
+        }
+        OffscreenAssetMode::Snapshot => assets::snapshot_tree_sources(&tree),
+    }
+
+    let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+    let output = layout_and_refresh_default(&mut tree, constraint, scale);
+
     let config = RasterConfig { width, height };
-    let mut backend = RasterBackend::new(&config).map_err(|e| rustler::Error::Term(Box::new(e)))?;
+    let mut backend = RasterBackend::new(&config)?;
 
     let state = RenderState {
-        commands,
+        commands: output.commands,
         ..Default::default()
     };
 

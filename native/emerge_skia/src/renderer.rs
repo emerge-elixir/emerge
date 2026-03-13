@@ -1,7 +1,7 @@
 //! Backend-agnostic Skia renderer.
 //!
 //! This module contains:
-//! - `DrawCmd` enum and decoder for Elixir terms
+//! - `DrawCmd` enum for backend-agnostic paint and state commands
 //! - `RenderState` for holding commands between frames
 //! - `Renderer` struct that executes draw commands on a Skia surface
 //! - Font cache for text rendering
@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rustler::{Atom, Decoder, Error as RustlerError, Term};
 use skia_safe::{
     BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, Matrix,
     MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions,
@@ -27,31 +26,8 @@ use crate::video::{RendererVideoState, VideoSyncResult};
 // Draw Commands
 // ============================================================================
 
-mod cmd_atoms {
-    rustler::atoms! {
-        clear,
-        rect,
-        rounded_rect,
-        border,
-        text,
-        gradient,
-        image,
-        push_clip,
-        pop_clip,
-        translate,
-        save,
-        restore,
-        contain,
-        cover,
-        repeat,
-        repeat_x,
-        repeat_y,
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawCmd {
-    Clear(u32),
     Rect(f32, f32, f32, f32, u32),
     RoundedRect(f32, f32, f32, f32, f32, u32),
     RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
@@ -87,7 +63,6 @@ pub enum DrawCmd {
     Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     /// Inner (inset) shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
     InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    Text(f32, f32, String, f32, u32),
     /// Text with custom font: x, y, text, font_size, color, family, weight, italic
     TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
     /// Gradient: x, y, w, h, from_color, to_color, angle, radius
@@ -103,9 +78,6 @@ pub enum DrawCmd {
     PushClip(f32, f32, f32, f32),
     PushClipRounded(f32, f32, f32, f32, f32),
     PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
-    PushClipHard(f32, f32, f32, f32),
-    PushClipRoundedHard(f32, f32, f32, f32, f32),
-    PushClipRoundedCornersHard(f32, f32, f32, f32, f32, f32, f32, f32),
     PopClip,
     Translate(f32, f32),
     Rotate(f32),
@@ -113,114 +85,6 @@ pub enum DrawCmd {
     SaveLayerAlpha(f32),
     Save,
     Restore,
-}
-
-impl<'a> Decoder<'a> for DrawCmd {
-    fn decode(term: Term<'a>) -> Result<Self, RustlerError> {
-        // Handle bare atoms first
-        if let Ok(atom) = term.decode::<Atom>() {
-            if atom == cmd_atoms::pop_clip() {
-                return Ok(DrawCmd::PopClip);
-            } else if atom == cmd_atoms::save() {
-                return Ok(DrawCmd::Save);
-            } else if atom == cmd_atoms::restore() {
-                return Ok(DrawCmd::Restore);
-            }
-            return Err(RustlerError::BadArg);
-        }
-
-        // Handle tuples
-        let tuple = rustler::types::tuple::get_tuple(term)?;
-        if tuple.is_empty() {
-            return Err(RustlerError::BadArg);
-        }
-
-        let tag: Atom = tuple[0].decode()?;
-
-        if tag == cmd_atoms::clear() && tuple.len() == 2 {
-            Ok(DrawCmd::Clear(tuple[1].decode()?))
-        } else if tag == cmd_atoms::rect() && tuple.len() == 6 {
-            Ok(DrawCmd::Rect(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-            ))
-        } else if tag == cmd_atoms::rounded_rect() && tuple.len() == 7 {
-            Ok(DrawCmd::RoundedRect(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-                tuple[6].decode()?,
-            ))
-        } else if tag == cmd_atoms::border() && tuple.len() == 8 {
-            Ok(DrawCmd::Border(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-                tuple[6].decode()?,
-                tuple[7].decode()?,
-                BorderStyle::Solid,
-            ))
-        } else if tag == cmd_atoms::text() && tuple.len() == 6 {
-            Ok(DrawCmd::Text(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-            ))
-        } else if tag == cmd_atoms::gradient() && tuple.len() == 8 {
-            Ok(DrawCmd::Gradient(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-                tuple[6].decode()?,
-                tuple[7].decode()?,
-                0.0,
-            ))
-        } else if tag == cmd_atoms::image() && tuple.len() == 7 {
-            let fit_atom: Atom = tuple[6].decode()?;
-            let fit = if fit_atom == cmd_atoms::cover() {
-                ImageFit::Cover
-            } else if fit_atom == cmd_atoms::repeat() {
-                ImageFit::Repeat
-            } else if fit_atom == cmd_atoms::repeat_x() {
-                ImageFit::RepeatX
-            } else if fit_atom == cmd_atoms::repeat_y() {
-                ImageFit::RepeatY
-            } else {
-                ImageFit::Contain
-            };
-
-            Ok(DrawCmd::Image(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-                tuple[5].decode()?,
-                fit,
-            ))
-        } else if tag == cmd_atoms::push_clip() && tuple.len() == 5 {
-            Ok(DrawCmd::PushClip(
-                tuple[1].decode()?,
-                tuple[2].decode()?,
-                tuple[3].decode()?,
-                tuple[4].decode()?,
-            ))
-        } else if tag == cmd_atoms::translate() && tuple.len() == 3 {
-            Ok(DrawCmd::Translate(tuple[1].decode()?, tuple[2].decode()?))
-        } else {
-            Err(RustlerError::BadArg)
-        }
-    }
 }
 
 // ============================================================================
@@ -571,17 +435,8 @@ impl Renderer {
         let canvas = self.surface.canvas();
         canvas.clear(state.clear_color);
 
-        let typeface = get_default_typeface();
-        let typeface = typeface.as_ref();
-        let mut clip_stack: Vec<bool> = Vec::new();
-        let mut hard_clip_depth: usize = 0;
-
         for cmd in &state.commands {
             match cmd {
-                DrawCmd::Clear(color) => {
-                    canvas.clear(color_from_u32(*color));
-                }
-
                 DrawCmd::Rect(x, y, w, h, fill) => {
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     let mut paint = Paint::default();
@@ -769,14 +624,6 @@ impl Renderer {
                     canvas.restore();
                 }
 
-                DrawCmd::Text(x, y, text, font_size, fill) => {
-                    let font = Font::new(typeface, *font_size);
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*fill));
-                    paint.set_anti_alias(true);
-                    canvas.draw_str(text, (*x, *y), &font, &paint);
-                }
-
                 DrawCmd::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
                     let font = make_font_with_style(family, *weight, *italic, *font_size);
                     let mut paint = Paint::default();
@@ -824,7 +671,6 @@ impl Renderer {
                 }
 
                 DrawCmd::Image(x, y, w, h, image_id, fit) => {
-                    let inside_hard_clip = hard_clip_depth > 0;
                     draw_cached_image_with_fit(
                         canvas,
                         ImageDrawSpec {
@@ -836,13 +682,11 @@ impl Renderer {
                             },
                             image_id,
                             fit: *fit,
-                            inside_hard_clip,
                         },
                     );
                 }
 
                 DrawCmd::Video(x, y, w, h, target_id, fit) => {
-                    let inside_hard_clip = hard_clip_depth > 0;
                     if let Some((image, image_width, image_height)) =
                         self.video_state.image(target_id)
                     {
@@ -860,7 +704,6 @@ impl Renderer {
                                 },
                                 image_id: target_id,
                                 fit: *fit,
-                                inside_hard_clip,
                             },
                         );
                     }
@@ -878,7 +721,6 @@ impl Renderer {
                     canvas.save();
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
-                    clip_stack.push(false);
                 }
 
                 DrawCmd::PushClipRounded(x, y, w, h, radius) => {
@@ -886,7 +728,6 @@ impl Renderer {
                     let rect = Rect::from_xywh(*x, *y, *w, *h);
                     let rrect = RRect::new_rect_xy(rect, *radius, *radius);
                     canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
-                    clip_stack.push(false);
                 }
 
                 DrawCmd::PushClipRoundedCorners(x, y, w, h, tl, tr, br, bl) => {
@@ -900,53 +741,10 @@ impl Renderer {
                     ];
                     let rrect = RRect::new_rect_radii(rect, &radii);
                     canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
-                    clip_stack.push(false);
-                }
-
-                DrawCmd::PushClipHard(x, y, w, h) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let expanded = snap_outset_rect_to_device(canvas, rect);
-                    canvas.clip_rect(expanded, skia_safe::ClipOp::Intersect, false);
-                    clip_stack.push(true);
-                    hard_clip_depth += 1;
-                }
-
-                DrawCmd::PushClipRoundedHard(x, y, w, h, radius) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let expanded = snap_outset_rect_to_device(canvas, rect);
-                    let (outset_x, outset_y) = rect_outset_amount(rect, expanded);
-                    let radius = (*radius + outset_x.max(outset_y)).max(0.0);
-                    let rrect = RRect::new_rect_xy(expanded, radius, radius);
-                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, false);
-                    clip_stack.push(true);
-                    hard_clip_depth += 1;
-                }
-
-                DrawCmd::PushClipRoundedCornersHard(x, y, w, h, tl, tr, br, bl) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let expanded = snap_outset_rect_to_device(canvas, rect);
-                    let (outset_x, outset_y) = rect_outset_amount(rect, expanded);
-                    let dr = outset_x.max(outset_y);
-                    let radii = [
-                        Point::new(*tl + dr, *tl + dr),
-                        Point::new(*tr + dr, *tr + dr),
-                        Point::new(*br + dr, *br + dr),
-                        Point::new(*bl + dr, *bl + dr),
-                    ];
-                    let rrect = RRect::new_rect_radii(expanded, &radii);
-                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, false);
-                    clip_stack.push(true);
-                    hard_clip_depth += 1;
                 }
 
                 DrawCmd::PopClip => {
                     canvas.restore();
-                    if clip_stack.pop().unwrap_or(false) {
-                        hard_clip_depth = hard_clip_depth.saturating_sub(1);
-                    }
                 }
 
                 DrawCmd::Translate(x, y) => {
@@ -1026,7 +824,6 @@ struct ImageDrawSpec<'a> {
     rect: RectSpec,
     image_id: &'a str,
     fit: ImageFit,
-    inside_hard_clip: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1096,11 +893,6 @@ fn draw_image_with_fit(
 
             let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
             let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
-            let dst_rect = if spec.inside_hard_clip && matches!(spec.fit, ImageFit::Cover) {
-                snap_outset_rect_to_device(canvas, dst_rect)
-            } else {
-                dst_rect
-            };
             canvas.draw_image_rect_with_sampling_options(
                 image,
                 Some((&src_rect, SrcRectConstraint::Strict)),
@@ -1151,6 +943,7 @@ fn tile_modes_for_fit(fit: ImageFit) -> Option<(TileMode, TileMode)> {
     }
 }
 
+#[cfg(test)]
 fn snap_outset_rect_to_device(canvas: &skia_safe::Canvas, rect: Rect) -> Rect {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return rect;
@@ -1194,6 +987,7 @@ fn snap_outset_rect_to_device(canvas: &skia_safe::Canvas, rect: Rect) -> Rect {
     )
 }
 
+#[cfg(test)]
 fn rect_outset_amount(original: Rect, expanded: Rect) -> (f32, f32) {
     let outset_x = (original.left() - expanded.left())
         .max(expanded.right() - original.right())
@@ -1687,6 +1481,28 @@ mod tests {
         pixels
     }
 
+    fn render_with_canvas_to_pixels(
+        width: u32,
+        height: u32,
+        draw: impl FnOnce(&skia_safe::Canvas),
+    ) -> Vec<u8> {
+        let info = skia_safe::ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let mut surface = skia_safe::surfaces::raster(&info, None, None)
+            .expect("raster surface should be created for renderer test");
+        let canvas = surface.canvas();
+        canvas.clear(Color::TRANSPARENT);
+        draw(canvas);
+
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+        pixels
+    }
+
     fn render_single_command_to_pixels(width: u32, height: u32, cmd: DrawCmd) -> Vec<u8> {
         render_commands_to_pixels(width, height, vec![cmd])
     }
@@ -2090,42 +1906,58 @@ mod tests {
         let inner_r = (radius - border).max(0.0);
 
         let render_scene = |background_color: u32| {
-            render_commands_to_pixels(
-                80,
-                60,
-                vec![
-                    DrawCmd::RoundedRect(
-                        outer_x,
-                        outer_y,
-                        outer_w,
-                        outer_h,
-                        radius,
-                        background_color,
-                    ),
-                    DrawCmd::PushClipRounded(outer_x, outer_y, outer_w, outer_h, radius),
-                    DrawCmd::PushClipRoundedHard(inner_x, inner_y, inner_w, inner_h, inner_r),
-                    DrawCmd::Image(
-                        inner_x,
-                        inner_y,
-                        inner_w,
-                        inner_h,
-                        image_id.to_string(),
-                        ImageFit::Cover,
-                    ),
-                    DrawCmd::PopClip,
-                    DrawCmd::Border(
-                        outer_x,
-                        outer_y,
-                        outer_w,
-                        outer_h,
-                        radius,
-                        border,
-                        0xD6DCECDD,
-                        BorderStyle::Solid,
-                    ),
-                    DrawCmd::PopClip,
-                ],
-            )
+            render_with_canvas_to_pixels(80, 60, |canvas| {
+                let outer_rect = Rect::from_xywh(outer_x, outer_y, outer_w, outer_h);
+                let outer_rrect = RRect::new_rect_xy(outer_rect, radius, radius);
+
+                let mut background_paint = Paint::default();
+                background_paint.set_color(color_from_u32(background_color));
+                background_paint.set_anti_alias(true);
+                canvas.draw_rrect(outer_rrect, &background_paint);
+
+                canvas.save();
+                canvas.clip_rrect(outer_rrect, skia_safe::ClipOp::Intersect, true);
+
+                let inner_rect = Rect::from_xywh(inner_x, inner_y, inner_w, inner_h);
+                let expanded = snap_outset_rect_to_device(canvas, inner_rect);
+                let (outset_x, outset_y) = rect_outset_amount(inner_rect, expanded);
+                let expanded_radius = (inner_r + outset_x.max(outset_y)).max(0.0);
+                let inner_rrect = RRect::new_rect_xy(expanded, expanded_radius, expanded_radius);
+
+                canvas.save();
+                canvas.clip_rrect(inner_rrect, skia_safe::ClipOp::Intersect, false);
+                draw_cached_image_with_fit(
+                    canvas,
+                    ImageDrawSpec {
+                        rect: RectSpec {
+                            x: inner_x,
+                            y: inner_y,
+                            w: inner_w,
+                            h: inner_h,
+                        },
+                        image_id,
+                        fit: ImageFit::Cover,
+                    },
+                );
+                canvas.restore();
+
+                draw_border(
+                    canvas,
+                    BorderDrawSpec {
+                        rect: RectSpec {
+                            x: outer_x,
+                            y: outer_y,
+                            w: outer_w,
+                            h: outer_h,
+                        },
+                        corners: [radius, radius, radius, radius],
+                        insets: EdgeInsets::uniform(border),
+                        color: 0xD6DCECDD,
+                        style: BorderStyle::Solid,
+                    },
+                );
+                canvas.restore();
+            })
         };
 
         let dark_bg_pixels = render_scene(0x05070BFF);
