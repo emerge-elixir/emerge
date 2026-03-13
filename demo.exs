@@ -347,6 +347,7 @@ defmodule Demo do
       [
         width(px(220)),
         height(fill()),
+        scrollbar_y(),
         padding(12),
         spacing(12),
         Background.color(@event_bg),
@@ -415,22 +416,29 @@ defmodule Demo do
   end
 
   defp render_page(current_page, last_move_label, unstable_items) do
-    case current_page do
-      :overview -> page_overview()
-      :layout -> page_layout()
-      :scroll -> page_scroll()
-      :alignment -> page_alignment()
-      :transforms -> page_transforms()
-      :events -> page_events(last_move_label)
-      :hover -> page_hover()
-      :unstable_list -> page_unstable_list(unstable_items)
-      :nearby -> page_nearby()
-      :text -> page_text()
-      :input -> page_input()
-      :borders -> page_borders()
-      :assets -> page_assets()
-      _ -> page_overview()
-    end
+    page =
+      case current_page do
+        :overview -> page_overview()
+        :layout -> page_layout()
+        :scroll -> page_scroll()
+        :alignment -> page_alignment()
+        :transforms -> page_transforms()
+        :events -> page_events(last_move_label)
+        :hover -> page_hover()
+        :unstable_list -> page_unstable_list(unstable_items)
+        :nearby -> page_nearby()
+        :text -> page_text()
+        :input -> page_input()
+        :borders -> page_borders()
+        :assets -> page_assets()
+        _ -> page_overview()
+      end
+
+    with_page_key(page, current_page)
+  end
+
+  defp with_page_key(%Emerge.Element{} = page, current_page) do
+    %{page | id: {:page, current_page}}
   end
 
   defp page_overview() do
@@ -998,8 +1006,7 @@ defmodule Demo do
             width(shrink()),
             padding(10),
             Background.color({:color_rgb, {55, 70, 90}}),
-            Border.rounded(8),
-            clip()
+            Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Shrink")),
@@ -1011,8 +1018,7 @@ defmodule Demo do
             width(fill()),
             padding(10),
             Background.color({:color_rgb, {70, 80, 95}}),
-            Border.rounded(8),
-            clip()
+            Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Fill")),
@@ -1477,8 +1483,58 @@ defmodule Demo do
           ],
           text("Centered content")
         )
+      ),
+      column(
+        [
+          width(fill()),
+          Border.rounded(12),
+          width(px(365)),
+          Background.color({:color_rgb, {255, 255, 255}})
+        ],
+        [forecast_now(), forecast_week()]
       )
     ])
+  end
+
+  defp forecast_now() do
+    row(
+      [
+        width(fill()),
+        Background.color({:color_rgb, {240, 237, 248}}),
+        padding(16)
+      ],
+      [
+        el(
+          [width(fill()), Border.width(1), Border.color({:color_rgb, {0, 0, 0}})],
+          column(
+            [center_x(), Font.color({:color_rgb, {26, 31, 39}}), Font.bold(), spacing(10)],
+            [
+              row([spacing(16)], [text("CL"), text("68°")]),
+              row([], [text("Partly Cloudy")])
+            ]
+          )
+        ),
+        el(
+          [width(fill()), Border.width(1), Border.color({:color_rgb, {0, 0, 0}})],
+          column(
+            [
+              center_x(),
+              Font.color({:color_rgb, {26, 31, 39}}),
+              Font.bold(),
+              spacing(10)
+            ],
+            [
+              row([spacing(16)], [text("65%"), text("WI"), text("8 mph")]),
+              row([spacing(12)], [text("H: 72°"), text("L: 63°")])
+            ]
+          )
+        )
+      ]
+    )
+  end
+
+  defp forecast_week() do
+    row([width(fill()), height(px(120))], [])
   end
 
   defp page_transforms() do
@@ -1651,22 +1707,14 @@ defmodule Demo do
           "The same 220x90 overlay is centered and bottom-aligned inside a 126x78 host. Clipping only changes visibility."
         )
       ),
-      row([width(fill()), spacing(12), align_top()], [
-        nearby_overflow_card(
-          "Overflow visible",
-          "No clip on the host, so the overlay spills past the border-box slot.",
-          false
-        ),
-        nearby_overflow_card(
-          "Overflow clipped",
-          "clip() trims the oversized overlay to the host clip bounds.",
-          true
-        )
-      ])
+      nearby_overflow_card(
+        "Escapes host bounds",
+        "The overlay spills past the border-box slot and still paints above the host."
+      )
     ])
   end
 
-  defp nearby_overflow_card(title, note, clipped?) do
+  defp nearby_overflow_card(title, note) do
     host_attrs = [
       width(px(126)),
       height(px(78)),
@@ -1678,8 +1726,6 @@ defmodule Demo do
       Border.rounded(10),
       in_front(nearby_oversized_front_overlay())
     ]
-
-    host_attrs = if clipped?, do: [clip() | host_attrs], else: host_attrs
 
     column(
       [
@@ -2674,7 +2720,6 @@ defmodule Demo do
         Border.width(1),
         Border.color({:color_rgba, {214, 220, 236, 220}}),
         Border.rounded(8),
-        clip(),
         in_front(asset_preview_mode_badge(mode_label))
       ],
       image(source, [width(fill()), height(fill()), image_fit(fit)])
@@ -2690,7 +2735,6 @@ defmodule Demo do
         Border.width(1),
         Border.color({:color_rgba, {214, 220, 236, 220}}),
         Border.rounded(8),
-        clip(),
         in_front(asset_preview_mode_badge(mode_label))
       ],
       none()
@@ -2787,8 +2831,7 @@ defmodule Demo do
         Background.color({:color_rgb, {24, 24, 36}}),
         Border.width(1),
         Border.color({:color_rgba, {214, 220, 236, 220}}),
-        Border.rounded(8),
-        clip()
+        Border.rounded(8)
       ],
       image(source, [width(fill()), height(fill()), image_fit(fit)])
     )
@@ -2804,8 +2847,7 @@ defmodule Demo do
         Background.image(source, fit: fit),
         Border.width(1),
         Border.color({:color_rgba, {214, 220, 236, 220}}),
-        Border.rounded(8),
-        clip()
+        Border.rounded(8)
       ],
       el(
         [
@@ -3611,7 +3653,6 @@ defmodule Demo do
       [
         width(fill()),
         on_click({self(), {:feature_click, title}}),
-        clip(),
         spacing(8),
         padding(15),
         Background.color(bg_color),

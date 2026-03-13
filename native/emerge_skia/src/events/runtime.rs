@@ -883,13 +883,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::events::RegistryRebuildPayload;
     use crate::events::registry_builder::{self, FocusRevealScroll};
-    use crate::events::{RegistryRebuildPayload, build_registry_rebuild};
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{Attrs, MouseOverAttrs};
     use crate::tree::element::ElementId;
     use crate::tree::element::{Element, ElementKind, ElementTree, Frame};
-    use crate::tree::interaction::{ElementInteraction, Rect};
+    use crate::tree::render::render_tree;
     use crossbeam_channel::bounded;
 
     fn make_text_input_state(
@@ -959,23 +959,13 @@ mod tests {
         width: f32,
         height: f32,
     ) -> Element {
-        element.interaction = Some(ElementInteraction {
-            visible: true,
-            hit_rect: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
-            self_rect: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
-            self_radii: None,
-            clip_rect: None,
-            clip_radii: None,
+        element.frame = Some(Frame {
+            x,
+            y,
+            width,
+            height,
+            content_width: width,
+            content_height: height,
         });
         element
     }
@@ -1573,7 +1563,7 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.root = Some(ElementId::from_term_bytes(vec![79]));
         tree.insert(element);
-        let rebuild = build_registry_rebuild(&mut tree);
+        let rebuild = render_tree(&tree).event_rebuild;
 
         let (tree_tx, tree_rx) = bounded(32);
         let mut runtime = DirectEventRuntime::new(false);
@@ -1595,7 +1585,7 @@ mod tests {
         assert!(matches!(runtime.runtime_overlay.scrollbar, Some(_)));
         assert!(msgs.is_empty());
 
-        let rebuild = build_registry_rebuild(&mut tree);
+        let rebuild = render_tree(&tree).event_rebuild;
         runtime.handle_registry_update(rebuild, &tree_tx, false);
         let _ = drain_msgs(&tree_rx);
         assert!(!runtime.listener_lane.is_stale());

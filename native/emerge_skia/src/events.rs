@@ -38,11 +38,9 @@ use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
 use crate::tree::element::{Element, ElementId};
+use crate::tree::geometry::Rect;
 #[cfg(test)]
-use crate::tree::interaction as tree_interaction;
-use crate::tree::interaction::Rect;
-#[cfg(test)]
-use crate::tree::render::render_tree_with_rebuild;
+use crate::tree::render::render_tree;
 use crate::tree::scrollbar::ScrollbarAxis;
 
 pub mod registry_builder;
@@ -470,19 +468,6 @@ impl Default for RegistryRebuildPayload {
     }
 }
 
-#[cfg(test)]
-/// Test helper that rebuilds listener/event state from a tree without running
-/// the full actor pipeline.
-pub fn build_registry_rebuild(tree: &mut ElementTree) -> RegistryRebuildPayload {
-    let Some(_root) = tree.root.clone() else {
-        return RegistryRebuildPayload::default();
-    };
-
-    tree_interaction::populate_interaction(tree);
-
-    render_tree_with_rebuild(tree).event_rebuild
-}
-
 fn text_input_state(element: &Element, adjusted_rect: Rect) -> TextInputState {
     let content = element.base_attrs.content.clone().unwrap_or_default();
     let content_len = content.chars().count() as u32;
@@ -712,7 +697,7 @@ mod tests {
         tree.insert(root);
         tree.insert(child);
 
-        let rebuild = build_registry_rebuild(&mut tree);
+        let rebuild = render_tree(&tree).event_rebuild;
         assert_eq!(
             rebuild.focused_id,
             Some(ElementId::from_term_bytes(vec![2]))
