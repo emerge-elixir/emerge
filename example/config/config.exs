@@ -1,6 +1,6 @@
 import Config
 
-config :logger, level: :info
+config :logger, level: :debug
 
 env_integer = fn name, default ->
   case System.get_env(name) do
@@ -29,7 +29,7 @@ env_list = fn name, default ->
   end
 end
 
-default_key_path = Path.expand("../../../nerves-wifibroadcast/gs.key", __DIR__)
+default_key_path = Path.expand("../gs.key", __DIR__)
 
 config :emerge_demo, EmergeDemo.Application, auto_start?: true
 
@@ -48,7 +48,7 @@ config :emerge_demo, EmergeDemo.Runtime,
     mode: :prime
   ],
   pipeline: [
-    interfaces: env_list.("EMERGE_DEMO_INTERFACES", ["wlan0", "wlan1"]),
+    interfaces: env_list.("EMERGE_DEMO_INTERFACES", ["wlan1", "wlan2"]),
     key_path: env_string.("EMERGE_DEMO_KEY_PATH", default_key_path),
     link_id: env_integer.("EMERGE_DEMO_LINK_ID", 7_669_206),
     decoder: env_string.("EMERGE_DEMO_DECODER", "/dev/dri/renderD128"),

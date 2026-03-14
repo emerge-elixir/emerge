@@ -20,7 +20,6 @@ The example does not configure interfaces or start any external radio setup.
 ## Run
 
 ```bash
-cd example
 mix deps.get
 mix run --no-halt
 ```
@@ -37,11 +36,11 @@ mix run --no-halt
 - `EMERGE_DEMO_VIDEO_WIDTH=1920`
 - `EMERGE_DEMO_VIDEO_HEIGHT=1080`
 
-Defaults live in `example/config/config.exs`.
+Defaults live in `config/config.exs`.
 
 ## Behavior
 
 - Creates a fixed-size prime `EmergeSkia` video target
-- Starts a Membrane pipeline using `Radio.Source -> Decrypt -> ReorderFec -> PayloadUnwrap -> RTP -> H265 -> PrimeDecoder`
+- Starts a Membrane pipeline using `Radio.Source -> Decrypt -> ReorderFec -> PayloadUnwrap -> RTP -> H265 -> Decoder`
 - Submits `%Membrane.PrimeDesc{}` frames directly into the renderer target
 - Shows a translucent overlay panel above the video so composition stays obvious
