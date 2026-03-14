@@ -2,7 +2,7 @@ use super::super::*;
 use super::common::*;
 
 #[test]
-fn test_layout_row_fill_portion_with_content_parent() {
+fn test_layout_row_weighted_fill_with_content_parent() {
     let mut tree = ElementTree::new();
 
     let mut row_attrs = Attrs::default();
@@ -15,14 +15,14 @@ fn test_layout_row_fill_portion_with_content_parent() {
         let mut a = Attrs::default();
         a.content = Some("AAAA".to_string());
         a.font_size = Some(10.0);
-        a.width = Some(Length::FillPortion(2.0));
+        a.width = Some(Length::FillWeighted(2.0));
         a
     });
     let child2 = make_element("c2", ElementKind::Text, {
         let mut a = Attrs::default();
         a.content = Some("BB".to_string());
         a.font_size = Some(10.0);
-        a.width = Some(Length::FillPortion(1.0));
+        a.width = Some(Length::FillWeighted(1.0));
         a
     });
 
@@ -51,7 +51,7 @@ fn test_layout_row_fill_portion_with_content_parent() {
 }
 
 #[test]
-fn test_layout_column_fill_portion_with_content_parent() {
+fn test_layout_column_weighted_fill_with_content_parent() {
     let mut tree = ElementTree::new();
 
     let mut col_attrs = Attrs::default();
@@ -64,14 +64,14 @@ fn test_layout_column_fill_portion_with_content_parent() {
         let mut a = Attrs::default();
         a.content = Some("Hi".to_string());
         a.font_size = Some(12.0);
-        a.height = Some(Length::FillPortion(2.0));
+        a.height = Some(Length::FillWeighted(2.0));
         a
     });
     let child2 = make_element("c2", ElementKind::Text, {
         let mut a = Attrs::default();
         a.content = Some("Yo".to_string());
         a.font_size = Some(14.0);
-        a.height = Some(Length::FillPortion(1.0));
+        a.height = Some(Length::FillWeighted(1.0));
         a
     });
 
@@ -1104,13 +1104,13 @@ fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
 }
 
 #[test]
-fn test_row_fill_portion_distribution() {
+fn test_row_weighted_fill_distribution() {
     let mut tree = ElementTree::new();
 
     // Row with 300px width, containing:
-    // - child1: fillPortion(1) -> 1/6 of 300 = 50px
-    // - child2: fillPortion(2) -> 2/6 of 300 = 100px
-    // - child3: fillPortion(3) -> 3/6 of 300 = 150px
+    // - child1: weighted fill 1 -> 1/6 of 300 = 50px
+    // - child2: weighted fill 2 -> 2/6 of 300 = 100px
+    // - child3: weighted fill 3 -> 3/6 of 300 = 150px
     let mut row_attrs = Attrs::default();
     row_attrs.width = Some(Length::Px(300.0));
 
@@ -1118,19 +1118,19 @@ fn test_row_fill_portion_distribution() {
 
     let child1 = make_element("c1", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(1.0));
+        a.width = Some(Length::FillWeighted(1.0));
         a.height = Some(Length::Px(30.0));
         a
     });
     let child2 = make_element("c2", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(2.0));
+        a.width = Some(Length::FillWeighted(2.0));
         a.height = Some(Length::Px(30.0));
         a
     });
     let child3 = make_element("c3", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(3.0));
+        a.width = Some(Length::FillWeighted(3.0));
         a.height = Some(Length::Px(30.0));
         a
     });
@@ -1173,13 +1173,13 @@ fn test_row_fill_portion_distribution() {
 }
 
 #[test]
-fn test_row_fill_portion_with_fixed() {
+fn test_row_weighted_fill_with_fixed() {
     let mut tree = ElementTree::new();
 
     // Row with 400px width, containing:
     // - child1: 100px fixed
-    // - child2: fillPortion(1) -> 1/3 of remaining 300 = 100px
-    // - child3: fillPortion(2) -> 2/3 of remaining 300 = 200px
+    // - child2: weighted fill 1 -> 1/3 of remaining 300 = 100px
+    // - child3: weighted fill 2 -> 2/3 of remaining 300 = 200px
     let mut row_attrs = Attrs::default();
     row_attrs.width = Some(Length::Px(400.0));
 
@@ -1193,13 +1193,13 @@ fn test_row_fill_portion_with_fixed() {
     });
     let child2 = make_element("c2", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(1.0));
+        a.width = Some(Length::FillWeighted(1.0));
         a.height = Some(Length::Px(30.0));
         a
     });
     let child3 = make_element("c3", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(2.0));
+        a.width = Some(Length::FillWeighted(2.0));
         a.height = Some(Length::Px(30.0));
         a
     });
@@ -1237,13 +1237,13 @@ fn test_row_fill_portion_with_fixed() {
 }
 
 #[test]
-fn test_column_fill_portion_distribution() {
+fn test_column_weighted_fill_distribution() {
     let mut tree = ElementTree::new();
 
     // Column with 300px height, containing:
-    // - child1: fillPortion(1) -> 1/6 of 300 = 50px
-    // - child2: fillPortion(2) -> 2/6 of 300 = 100px
-    // - child3: fillPortion(3) -> 3/6 of 300 = 150px
+    // - child1: weighted fill 1 -> 1/6 of 300 = 50px
+    // - child2: weighted fill 2 -> 2/6 of 300 = 100px
+    // - child3: weighted fill 3 -> 3/6 of 300 = 150px
     let mut col_attrs = Attrs::default();
     col_attrs.height = Some(Length::Px(300.0));
 
@@ -1252,19 +1252,19 @@ fn test_column_fill_portion_distribution() {
     let child1 = make_element("c1", ElementKind::El, {
         let mut a = Attrs::default();
         a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillPortion(1.0));
+        a.height = Some(Length::FillWeighted(1.0));
         a
     });
     let child2 = make_element("c2", ElementKind::El, {
         let mut a = Attrs::default();
         a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillPortion(2.0));
+        a.height = Some(Length::FillWeighted(2.0));
         a
     });
     let child3 = make_element("c3", ElementKind::El, {
         let mut a = Attrs::default();
         a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillPortion(3.0));
+        a.height = Some(Length::FillWeighted(3.0));
         a
     });
 
@@ -1306,12 +1306,12 @@ fn test_column_fill_portion_distribution() {
 }
 
 #[test]
-fn test_fill_and_fill_portion_mixed() {
+fn test_fill_and_weighted_fill_mixed() {
     let mut tree = ElementTree::new();
 
     // Row with 400px, containing:
-    // - child1: fill (= fillPortion(1))
-    // - child2: fillPortion(3)
+    // - child1: fill (= weighted fill 1)
+    // - child2: weighted fill 3
     // Total portions = 1 + 3 = 4
     // c1: 400 * 1/4 = 100
     // c2: 400 * 3/4 = 300
@@ -1322,13 +1322,13 @@ fn test_fill_and_fill_portion_mixed() {
 
     let child1 = make_element("c1", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Fill); // Equivalent to FillPortion(1)
+        a.width = Some(Length::Fill); // Equivalent to weighted fill 1
         a.height = Some(Length::Px(30.0));
         a
     });
     let child2 = make_element("c2", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(3.0));
+        a.width = Some(Length::FillWeighted(3.0));
         a.height = Some(Length::Px(30.0));
         a
     });
@@ -1567,7 +1567,7 @@ fn test_row_with_mixed_alignments_and_vertical() {
 }
 
 #[test]
-fn test_row_fill_portion_with_minimum_wrapper_clamps_individual_child() {
+fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
     let mut tree = ElementTree::new();
 
     let mut row_attrs = Attrs::default();
@@ -1578,13 +1578,13 @@ fn test_row_fill_portion_with_minimum_wrapper_clamps_individual_child() {
 
     let min_fill = make_element("min_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Minimum(180.0, Box::new(Length::FillPortion(1.0))));
+        a.width = Some(Length::Minimum(180.0, Box::new(Length::FillWeighted(1.0))));
         a.height = Some(Length::Px(20.0));
         a
     });
     let plain_fill = make_element("plain_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::FillPortion(1.0));
+        a.width = Some(Length::FillWeighted(1.0));
         a.height = Some(Length::Px(20.0));
         a
     });
@@ -1609,14 +1609,14 @@ fn test_row_fill_portion_with_minimum_wrapper_clamps_individual_child() {
     let first = tree.get(&min_fill_id).unwrap().frame.unwrap();
     let second = tree.get(&plain_fill_id).unwrap().frame.unwrap();
 
-    // Base fill share is 150/150, but Minimum(180, fill_portion(1)) clamps first child.
+    // Base fill share is 150/150, but Minimum(180, weighted fill 1) clamps first child.
     assert_eq!(first.width, 180.0);
     assert_eq!(second.width, 150.0);
     assert_eq!(second.x, 180.0);
 }
 
 #[test]
-fn test_column_fill_portion_with_maximum_wrapper_clamps_individual_child() {
+fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
     let mut tree = ElementTree::new();
 
     let mut col_attrs = Attrs::default();
@@ -1627,13 +1627,13 @@ fn test_column_fill_portion_with_maximum_wrapper_clamps_individual_child() {
 
     let max_fill = make_element("max_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.height = Some(Length::Maximum(60.0, Box::new(Length::FillPortion(1.0))));
+        a.height = Some(Length::Maximum(60.0, Box::new(Length::FillWeighted(1.0))));
         a.width = Some(Length::Px(40.0));
         a
     });
     let plain_fill = make_element("plain_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.height = Some(Length::FillPortion(1.0));
+        a.height = Some(Length::FillWeighted(1.0));
         a.width = Some(Length::Px(40.0));
         a
     });
@@ -1658,7 +1658,7 @@ fn test_column_fill_portion_with_maximum_wrapper_clamps_individual_child() {
     let first = tree.get(&max_fill_id).unwrap().frame.unwrap();
     let second = tree.get(&plain_fill_id).unwrap().frame.unwrap();
 
-    // Base fill share is 150/150, but Maximum(60, fill_portion(1)) clamps first child.
+    // Base fill share is 150/150, but Maximum(60, weighted fill 1) clamps first child.
     assert_eq!(first.height, 60.0);
     assert_eq!(second.height, 150.0);
     assert_eq!(second.y, 60.0);

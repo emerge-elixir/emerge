@@ -5,7 +5,8 @@ defmodule Emerge.Reconcile do
 
   alias Emerge.Element
   alias Emerge.Patch
-  alias Emerge.Tree
+  alias Emerge.Tree.Attrs, as: TreeAttrs
+  alias Emerge.Tree.Nearby
   alias Emerge.VNode
 
   @type result :: {VNode.t(), [Patch.patch()], Element.t()}
@@ -46,7 +47,7 @@ defmodule Emerge.Reconcile do
       patches = [{:remove, old.id}, {:insert_subtree, parent_id, index, assigned}]
       {new_vnode, patches, assigned, seen}
     else
-      {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
+      {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
 
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
@@ -54,7 +55,7 @@ defmodule Emerge.Reconcile do
       {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
         reconcile_nearby(old.nearby, nearby_elements, id, seen)
 
-      assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+      assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
       assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
 
       patches =
@@ -200,8 +201,8 @@ defmodule Emerge.Reconcile do
   end
 
   defp reconcile_nearby(old_nearby, new_nearby, host_id, seen) do
-    Enum.reduce(Tree.nearby_slots(), {%{}, %{}, [], seen}, fn slot,
-                                                              {vnodes, elements, patches, seen} ->
+    Enum.reduce(Nearby.nearby_slots(), {%{}, %{}, [], seen}, fn slot,
+                                                                {vnodes, elements, patches, seen} ->
       case {Map.get(old_nearby, slot), Map.get(new_nearby, slot)} do
         {nil, nil} ->
           {vnodes, elements, patches, seen}
@@ -245,7 +246,7 @@ defmodule Emerge.Reconcile do
       patches = [{:remove, old.id}, {:insert_nearby_subtree, host_id, slot, assigned}]
       {vnode, patches, assigned, seen}
     else
-      {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
+      {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
 
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
@@ -253,7 +254,7 @@ defmodule Emerge.Reconcile do
       {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
         reconcile_nearby(old.nearby, nearby_elements, id, seen)
 
-      assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+      assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
       assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
 
       patches =
@@ -283,7 +284,7 @@ defmodule Emerge.Reconcile do
     id = make_id(parent_id, element.type, local_identity)
 
     _ = keyed_children?(element.children)
-    {attrs, nearby_elements} = Tree.split_nearby_attrs(element.attrs)
+    {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
 
     {child_vnodes, child_elements, seen} =
       element.children
@@ -298,7 +299,7 @@ defmodule Emerge.Reconcile do
 
     {nearby_vnodes, nearby_assigned, seen} = build_nearby_vnodes(nearby_elements, id, seen)
 
-    assigned_attrs = Tree.merge_nearby_attrs(attrs, nearby_assigned)
+    assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
     assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
 
     vnode = %VNode{
@@ -314,7 +315,7 @@ defmodule Emerge.Reconcile do
   end
 
   defp build_nearby_vnodes(nearby_elements, host_id, seen) do
-    Enum.reduce(Tree.nearby_slots(), {%{}, %{}, seen}, fn slot, {vnodes, elements, seen} ->
+    Enum.reduce(Nearby.nearby_slots(), {%{}, %{}, seen}, fn slot, {vnodes, elements, seen} ->
       case Map.get(nearby_elements, slot) do
         %Element{} = element ->
           {vnode, assigned, seen} = build_nearby_vnode(element, host_id, slot, seen)
@@ -336,8 +337,8 @@ defmodule Emerge.Reconcile do
   end
 
   defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, new_attrs, id) do
-    old_filtered = Emerge.Tree.strip_runtime_attrs(old_attrs)
-    new_filtered = Emerge.Tree.strip_runtime_attrs(new_attrs)
+    old_filtered = TreeAttrs.strip_runtime_attrs(old_attrs)
+    new_filtered = TreeAttrs.strip_runtime_attrs(new_attrs)
 
     if old_filtered != new_filtered do
       [{:set_attrs, id, new_filtered} | patches]

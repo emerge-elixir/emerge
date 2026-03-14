@@ -4,6 +4,7 @@ defmodule Emerge.DiffState do
   """
 
   alias Emerge.Reconcile
+  alias Emerge.Tree.Nearby
   alias Emerge.VNode
 
   @type t :: %__MODULE__{
@@ -112,8 +113,7 @@ defmodule Emerge.DiffState do
           collect_event_handlers(child, next_registry)
         end)
 
-      Enum.reduce(Emerge.Tree.nearby_children(element), registry, fn {_slot, child},
-                                                                     next_registry ->
+      Enum.reduce(Nearby.nearby_children(element), registry, fn {_slot, child}, next_registry ->
         collect_event_handlers(child, next_registry)
       end)
     end)

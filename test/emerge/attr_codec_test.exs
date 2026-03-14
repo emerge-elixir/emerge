@@ -29,12 +29,12 @@ defmodule Emerge.AttrCodecTest do
       font_letter_spacing: 1.25,
       font_word_spacing: 2.5,
       content: "Hello",
-      above: el(text("above")),
-      below: el(text("below")),
-      on_left: el(text("left")),
-      on_right: el(text("right")),
-      in_front: el(text("front")),
-      behind: el(text("behind")),
+      above: el([], text("above")),
+      below: el([], text("below")),
+      on_left: el([], text("left")),
+      on_right: el([], text("right")),
+      in_front: el([], text("front")),
+      behind: el([], text("behind")),
       snap_layout: true,
       snap_text_metrics: true,
       move_x: 12.5,
@@ -69,7 +69,7 @@ defmodule Emerge.AttrCodecTest do
   test "encode/decode length variants" do
     attrs = %{
       width: {:minimum, 80, :content},
-      height: {:maximum, 120, {:fill_portion, 2}}
+      height: {:maximum, 120, {:fill, 2}}
     }
 
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
@@ -187,6 +187,22 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode direct state style maps normalize single box shadows" do
+    shadow = %{offset_x: 0, offset_y: 1, blur: 6, size: 2, color: :black, inset: true}
+
+    attrs = %{mouse_over: %{alpha: 0.75, box_shadow: shadow}}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) ==
+             normalize_attrs(%{mouse_over: %{alpha: 0.75, box_shadow: [shadow]}})
+  end
+
+  test "state style encoding rejects invalid nested values" do
+    assert_raise ArgumentError, ~r/mouse_over expects :font_size to be a number/, fn ->
+      AttrCodec.encode_attrs(%{mouse_over: %{font_size: "large"}})
+    end
+  end
+
   # ============================================
   # Per-edge border_width round-trip
   # ============================================
@@ -239,6 +255,13 @@ defmodule Emerge.AttrCodecTest do
     assert decoded_shadow.size == 4.0
     assert decoded_shadow.color == :red
     assert decoded_shadow.inset == false
+  end
+
+  test "encode/decode top-level single box_shadow map normalizes to list" do
+    shadow = %{offset_x: 2, offset_y: 3, blur: 8, size: 4, color: :red, inset: false}
+    decoded = %{box_shadow: shadow} |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(%{box_shadow: [shadow]})
   end
 
   test "encode/decode multiple box_shadows preserves order" do

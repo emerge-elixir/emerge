@@ -163,6 +163,6 @@ runtime path security, and async Rust-side loading/caching behavior.
 | fill | 0 | (no data) |
 | content | 1 | (no data) |
 | px | 2 | f64 |
-| fill_portion | 3 | f64 |
+| fill (weighted) | 3 | f64 |
 | minimum | 4 | f64 + inner length |
 | maximum | 5 | f64 + inner length |

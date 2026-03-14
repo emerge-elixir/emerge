@@ -16,7 +16,7 @@ pub enum Length {
     Fill,
     Content,
     Px(f64),
-    FillPortion(f64),
+    FillWeighted(f64),
     /// Minimum constraint: the resolved length must be at least this many pixels.
     Minimum(f64, Box<Length>),
     /// Maximum constraint: the resolved length must be at most this many pixels.
@@ -669,7 +669,7 @@ fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
         0 => Ok(Length::Fill),
         1 => Ok(Length::Content),
         2 => Ok(Length::Px(cursor.read_f64()?)),
-        3 => Ok(Length::FillPortion(cursor.read_f64()?)),
+        3 => Ok(Length::FillWeighted(cursor.read_f64()?)),
         4 => {
             // Minimum: min_px (f64) + inner length
             let min_px = cursor.read_f64()?;

@@ -104,7 +104,7 @@ defmodule Emerge.ReconcileTest do
       column([width(:fill)], [
         column([width(:fill)], [
           el([key(:one)], text("One")),
-          el(text("Two"))
+          el([], text("Two"))
         ])
       ])
 

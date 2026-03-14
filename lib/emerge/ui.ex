@@ -6,8 +6,9 @@ defmodule Emerge.UI do
 
       import Emerge.UI
 
-      el([width(fill()), height(px(100)), padding(20), Background.color(:navy)],
-        text("Hello World", [Font.size(24), Font.color(:white)])
+      el(
+        [width(fill()), height(px(100)), padding(20), Background.color(:navy)],
+        text("Hello World")
       )
 
       row([spacing(20), padding(10)], [
@@ -20,27 +21,76 @@ defmodule Emerge.UI do
       ])
   """
 
+  alias Emerge.AttrSchema
+  alias Emerge.AttrValidation
   alias Emerge.Element
+  alias Emerge.Tree.Attrs, as: TreeAttrs
   alias EmergeSkia.VideoTarget
 
-  @mouse_over_decorative_keys MapSet.new([
-                                :background,
-                                :border_color,
-                                :box_shadow,
-                                :font_color,
-                                :font_size,
-                                :font_underline,
-                                :font_strike,
-                                :font_letter_spacing,
-                                :font_word_spacing,
-                                :move_x,
-                                :move_y,
-                                :rotate,
-                                :scale,
-                                :alpha
-                              ])
+  @state_style_key_set AttrSchema.state_style_key_set()
 
-  @state_style_keys [:mouse_over, :focused, :mouse_down]
+  @public_attr_keys MapSet.new([
+                      :key,
+                      :width,
+                      :height,
+                      :padding,
+                      :spacing,
+                      :spacing_xy,
+                      :space_evenly,
+                      :scrollbar_y,
+                      :scrollbar_x,
+                      :align_x,
+                      :align_y,
+                      :background,
+                      :border_radius,
+                      :border_width,
+                      :border_color,
+                      :font_size,
+                      :font_color,
+                      :font,
+                      :font_weight,
+                      :font_style,
+                      :snap_layout,
+                      :snap_text_metrics,
+                      :text_align,
+                      :move_x,
+                      :move_y,
+                      :rotate,
+                      :scale,
+                      :alpha,
+                      :space_evenly,
+                      :on_click,
+                      :on_press,
+                      :on_mouse_down,
+                      :on_mouse_up,
+                      :on_mouse_enter,
+                      :on_mouse_leave,
+                      :on_mouse_move,
+                      :mouse_over,
+                      :focused,
+                      :mouse_down,
+                      :font_underline,
+                      :font_strike,
+                      :font_letter_spacing,
+                      :font_word_spacing,
+                      :border_style,
+                      :box_shadow,
+                      :image_fit,
+                      :on_change,
+                      :on_focus,
+                      :on_blur,
+                      :above,
+                      :below,
+                      :on_left,
+                      :on_right,
+                      :in_front,
+                      :behind
+                    ])
+
+  @reserved_attr_keys MapSet.new(
+                        TreeAttrs.runtime_attrs() ++
+                          [:id, :content, :image_src, :image_size, :video_target]
+                      )
 
   @override_warning_store_key :emerge_ui_override_warnings
 
@@ -57,21 +107,10 @@ defmodule Emerge.UI do
 
       el([padding(10), Font.size(20), Font.color(:white)], text("Hello"))
   """
-  def el(attrs, child) when is_list(attrs) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :el,
-      id: id,
-      attrs: parsed,
-      children: [child]
-    }
+  def el(attrs, child) do
+    {attrs, child} = prepare_single_child!("el/2", attrs, child)
+    build_element(attrs, :el, [child])
   end
-
-  def el(child), do: el([], child)
 
   @doc """
   A row lays out children horizontally.
@@ -79,26 +118,15 @@ defmodule Emerge.UI do
   ## Example
 
       row([spacing(20)], [
-        el(text("A")),
-        el(text("B")),
-        el(text("C"))
+        el([], text("A")),
+        el([], text("B")),
+        el([], text("C"))
       ])
   """
-  def row(attrs, children) when is_list(attrs) and is_list(children) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :row,
-      id: id,
-      attrs: parsed,
-      children: children
-    }
+  def row(attrs, children) do
+    {attrs, children} = prepare_children!("row/2", attrs, children)
+    build_element(attrs, :row, children)
   end
-
-  def row(children) when is_list(children), do: row([], children)
 
   @doc """
   A wrapped row lays out children horizontally and wraps onto new lines.
@@ -106,26 +134,15 @@ defmodule Emerge.UI do
   ## Example
 
       wrapped_row([spacing(12)], [
-        el(text("One")),
-        el(text("Two")),
-        el(text("Three"))
+        el([], text("One")),
+        el([], text("Two")),
+        el([], text("Three"))
       ])
   """
-  def wrapped_row(attrs, children) when is_list(attrs) and is_list(children) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :wrapped_row,
-      id: id,
-      attrs: parsed,
-      children: children
-    }
+  def wrapped_row(attrs, children) do
+    {attrs, children} = prepare_children!("wrapped_row/2", attrs, children)
+    build_element(attrs, :wrapped_row, children)
   end
-
-  def wrapped_row(children) when is_list(children), do: wrapped_row([], children)
 
   @doc """
   A column lays out children vertically.
@@ -137,21 +154,10 @@ defmodule Emerge.UI do
         text("Line 2")
       ])
   """
-  def column(attrs, children) when is_list(attrs) and is_list(children) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :column,
-      id: id,
-      attrs: parsed,
-      children: children
-    }
+  def column(attrs, children) do
+    {attrs, children} = prepare_children!("column/2", attrs, children)
+    build_element(attrs, :column, children)
   end
-
-  def column(children) when is_list(children), do: column([], children)
 
   @doc """
   A text column lays out paragraph-oriented content vertically.
@@ -170,25 +176,14 @@ defmodule Emerge.UI do
         paragraph([spacing(4)], [text("Second paragraph")])
       ])
   """
-  def text_column(attrs, children) when is_list(attrs) and is_list(children) do
-    defaults = [width(fill()), height(content())]
+  def text_column(attrs, children) do
+    {attrs, children} = prepare_children!("text_column/2", attrs, children)
 
-    default_attrs = parse_attrs(defaults, warn_overrides: false)
-    user_attrs = parse_attrs(attrs)
-    parsed = Map.merge(default_attrs, user_attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :text_column,
-      id: id,
-      attrs: parsed,
-      children: children
-    }
+    attrs
+    |> Map.put_new(:width, fill())
+    |> Map.put_new(:height, content())
+    |> build_element(:text_column, children)
   end
-
-  def text_column(children) when is_list(children), do: text_column([], children)
 
   @doc """
   A paragraph lays out inline text children with word wrapping.
@@ -207,26 +202,19 @@ defmodule Emerge.UI do
         text(", this wraps automatically.")
       ])
   """
-  def paragraph(attrs, children) when is_list(attrs) and is_list(children) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :paragraph,
-      id: id,
-      attrs: parsed,
-      children: children
-    }
+  def paragraph(attrs, children) do
+    {attrs, children} = prepare_children!("paragraph/2", attrs, children)
+    build_element(attrs, :paragraph, children)
   end
 
-  def paragraph(children) when is_list(children), do: paragraph([], children)
-
   @doc """
-  A text element. Can only be used as a child of `el`.
+  A text element.
 
-  To style text, apply Font attributes to the parent el:
+  It can live on its own as a content leaf, but it does not wrap by default.
+
+  Use `paragraph/2` or `text_column/2` for wrapped text flows.
+
+  To style text, apply Font attributes on the surrounding container:
 
       el([Font.size(20), Font.color(:white)], text("Hello"))
 
@@ -235,14 +223,11 @@ defmodule Emerge.UI do
       text("Hello")
   """
   def text(content) when is_binary(content) do
-    attrs = %{content: content}
-    attrs = Map.put(attrs, :__attrs_hash, Emerge.Tree.attrs_hash(attrs))
+    build_element(%{content: content}, :text, [])
+  end
 
-    %Element{
-      type: :text,
-      attrs: attrs,
-      children: []
-    }
+  def text(other) do
+    raise ArgumentError, "text/1 expects a binary string, got: #{inspect(other)}"
   end
 
   @doc """
@@ -251,72 +236,46 @@ defmodule Emerge.UI do
   `source` can be a verified `~m"..."` reference, logical asset path,
   runtime file path, or `{:id, image_id}`.
   """
-  def image(source, attrs \\ []) when is_list(attrs) do
-    parsed = parse_attrs([{:image_src, source} | attrs])
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+  def image(attrs, source) do
+    attrs = prepare_attrs!("image/2", attrs)
+    source = validate_image_source!("image/2", source)
 
-    %Element{
-      type: :image,
-      id: id,
-      attrs: parsed,
-      children: []
-    }
+    attrs
+    |> Map.put(:image_src, source)
+    |> build_element(:image, [])
   end
 
   @doc """
   A video element backed by a renderer-owned video target.
   """
-  def video(%VideoTarget{} = target, attrs \\ []) when is_list(attrs) do
-    parsed =
-      parse_attrs([
-        {:video_target, target.id},
-        {:image_size, {target.width, target.height}},
-        {:image_fit, :contain}
-        | attrs
-      ])
+  def video(attrs, target) do
+    attrs = prepare_attrs!("video/2", attrs)
+    target = validate_video_target!("video/2", target)
 
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
-
-    %Element{
-      type: :video,
-      id: id,
-      attrs: parsed,
-      children: []
-    }
+    attrs
+    |> Map.put_new(:image_fit, :contain)
+    |> Map.put(:video_target, target.id)
+    |> Map.put(:image_size, {target.width, target.height})
+    |> build_element(:video, [])
   end
 
   @doc false
-  def __text_input__(value, attrs) when is_binary(value) and is_list(attrs) do
-    parsed = parse_attrs([{:content, value} | attrs])
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+  def __text_input__(attrs, value) do
+    attrs = prepare_attrs!("Input.text/2", attrs)
+    value = validate_binary_string!("Input.text/2", value)
 
-    %Element{
-      type: :text_input,
-      id: id,
-      attrs: parsed,
-      children: []
-    }
+    attrs
+    |> Map.put(:content, value)
+    |> build_element(:text_input, [])
   end
 
   @doc false
-  def __input_button__(label, attrs) when is_binary(label) and is_list(attrs) do
-    parsed = parse_attrs(attrs)
-    {key, parsed} = Map.pop(parsed, :key)
-    id = key
-    parsed = Map.put(parsed, :__attrs_hash, Emerge.Tree.attrs_hash(parsed))
+  def __input_button__(attrs, label) do
+    attrs = prepare_attrs!("Input.button/2", attrs)
+    label = validate_binary_string!("Input.button/2", label)
 
-    %Element{
-      type: :el,
-      id: id,
-      attrs: parsed,
-      children: [text(label)]
-    }
+    attrs
+    |> build_element(:el, [text(label)])
   end
 
   @doc """
@@ -336,27 +295,24 @@ defmodule Emerge.UI do
   @doc "Set width to a specific pixel value"
   def width({:px, _} = val), do: {:width, val}
   def width(:fill), do: {:width, :fill}
+  def width({:fill, _} = val), do: {:width, val}
   def width(:content), do: {:width, :content}
-  def width({:fill_portion, _} = val), do: {:width, val}
   def width({:minimum, _, _} = val), do: {:width, val}
   def width({:maximum, _, _} = val), do: {:width, val}
 
   @doc "Set height to a specific pixel value"
   def height({:px, _} = val), do: {:height, val}
   def height(:fill), do: {:height, :fill}
+  def height({:fill, _} = val), do: {:height, val}
   def height(:content), do: {:height, :content}
-  def height({:fill_portion, _} = val), do: {:height, val}
   def height({:minimum, _, _} = val), do: {:height, val}
   def height({:maximum, _, _} = val), do: {:height, val}
 
   @doc "Pixel size helper"
   def px(n) when is_number(n), do: {:px, n}
 
-  @doc "Fill available space"
+  @doc "Fill available space. Use `{:fill, n}` for weighted distribution."
   def fill, do: :fill
-
-  @doc "Fill a portion of available space (for weighted distribution)"
-  def fill_portion(n) when is_number(n), do: {:fill_portion, n}
 
   @doc "Size to content"
   def content, do: :content
@@ -525,62 +481,33 @@ defmodule Emerge.UI do
   # ATTRIBUTE PARSING
   # ============================================
 
-  defp parse_attrs(attrs, opts \\ []) do
+  defp parse_attrs(attrs, attrs_owner, opts \\ []) do
     warn_overrides = Keyword.get(opts, :warn_overrides, true)
 
     parsed =
-      Enum.reduce(attrs, %{}, fn
-        {key, value}, acc ->
-          put_attr(acc, key, value, warn_overrides)
+      Enum.reduce(attrs, %{}, fn attr, acc ->
+        {key, value} = validate_attr_entry!(attrs_owner, attr)
 
-        other, acc when is_map(other) ->
-          Enum.reduce(other, acc, fn
-            {key, value}, map_acc -> put_attr(map_acc, key, value, warn_overrides)
-          end)
+        case key do
+          :box_shadow ->
+            put_attr(acc, key, value, false)
 
-        _, acc ->
-          acc
+          _ ->
+            put_attr(acc, key, value, warn_overrides)
+        end
       end)
 
-    validate_scrollbar_clipping!(parsed)
-    validate_state_style_payloads!(parsed)
     parsed
   end
 
   defp parse_state_style_attrs(attrs, style_key) do
-    parsed =
-      Enum.reduce(attrs, %{}, fn
-        {key, value}, acc ->
-          put_state_style_attr(acc, key, value)
-
-        other, acc when is_map(other) ->
-          Enum.reduce(other, acc, fn {key, value}, map_acc ->
-            put_state_style_attr(map_acc, key, value)
-          end)
-
-        _, acc ->
-          acc
-      end)
-
-    validate_decorative_attrs!(parsed, style_key)
-    parsed
+    attrs = validate_attrs_list!("#{style_key}/1", attrs)
+    AttrValidation.normalize_state_style!(style_key, attrs)
   end
-
-  defp put_state_style_attr(acc, :box_shadow, value) when is_map(value) do
-    existing = Map.get(acc, :box_shadow, [])
-    Map.put(acc, :box_shadow, existing ++ [value])
-  end
-
-  defp put_state_style_attr(acc, :box_shadow, value) when is_list(value) do
-    existing = Map.get(acc, :box_shadow, [])
-    Map.put(acc, :box_shadow, existing ++ value)
-  end
-
-  defp put_state_style_attr(acc, key, value), do: Map.put(acc, key, value)
 
   defp put_attr(acc, :box_shadow, value, _warn_overrides) do
     existing = Map.get(acc, :box_shadow, [])
-    Map.put(acc, :box_shadow, existing ++ [value])
+    Map.put(acc, :box_shadow, existing ++ List.wrap(value))
   end
 
   defp put_attr(acc, key, value, warn_overrides) do
@@ -611,49 +538,355 @@ defmodule Emerge.UI do
     end
   end
 
-  defp validate_state_style_payloads!(attrs) do
-    Enum.each(@state_style_keys, fn style_key ->
-      validate_state_style_payload!(attrs, style_key)
-    end)
-  end
+  defp validate_attr_entry!(attrs_owner, {key, value}) when is_atom(key) do
+    cond do
+      key == :id ->
+        raise ArgumentError, "id is not supported; use key instead"
 
-  defp validate_state_style_payload!(attrs, style_key) do
-    case Map.get(attrs, style_key) do
-      nil ->
-        :ok
-
-      style_attrs when is_map(style_attrs) ->
-        validate_decorative_attrs!(style_attrs, style_key)
-
-      other ->
+      MapSet.member?(@reserved_attr_keys, key) ->
         raise ArgumentError,
-              "#{style_key} must be a list/map of decorative attributes, got: #{inspect(other)}"
+              "#{attrs_owner} does not allow internal attribute #{inspect(key)} in public attrs"
+
+      MapSet.member?(@state_style_key_set, key) ->
+        {key, AttrValidation.normalize_state_style!(key, value)}
+
+      MapSet.member?(@public_attr_keys, key) ->
+        validate_public_attr_value!(attrs_owner, key, value)
+        {key, value}
+
+      true ->
+        raise ArgumentError,
+              "#{attrs_owner} does not support attribute #{inspect(key)}"
     end
   end
 
-  defp validate_decorative_attrs!(attrs, style_key) do
-    allowed =
-      @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
+  defp validate_attr_entry!(attrs_owner, other) do
+    raise ArgumentError,
+          "#{attrs_owner} expects attributes to be {key, value} tuples, got: #{inspect(other)}"
+  end
 
-    Enum.each(attrs, fn {key, _value} ->
-      cond do
-        key in @state_style_keys ->
-          raise ArgumentError, "#{style_key} does not support nested #{key}"
+  defp validate_public_attr_value!(_attrs_owner, :key, _value), do: :ok
 
-        MapSet.member?(@mouse_over_decorative_keys, key) ->
+  defp validate_public_attr_value!(attrs_owner, :width, value),
+    do: validate_length!(attrs_owner, :width, value)
+
+  defp validate_public_attr_value!(attrs_owner, :height, value),
+    do: validate_length!(attrs_owner, :height, value)
+
+  defp validate_public_attr_value!(attrs_owner, :padding, value),
+    do: validate_padding!(attrs_owner, value)
+
+  defp validate_public_attr_value!(attrs_owner, :spacing, value),
+    do: validate_number_attr!(attrs_owner, :spacing, value)
+
+  defp validate_public_attr_value!(_attrs_owner, :spacing_xy, {x, y})
+       when is_number(x) and is_number(y),
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :spacing_xy, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :spacing_xy to be {x, y} with numeric values, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, key, value)
+       when key in [:space_evenly, :scrollbar_y, :scrollbar_x, :snap_layout, :snap_text_metrics] and
+              is_boolean(value),
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [:space_evenly, :scrollbar_y, :scrollbar_x, :snap_layout, :snap_text_metrics] do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be a boolean, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, :align_x, value)
+       when value in [:left, :center, :right],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :align_x, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :align_x to be one of :left, :center, or :right, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, :align_y, value)
+       when value in [:top, :center, :bottom],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :align_y, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :align_y to be one of :top, :center, or :bottom, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(attrs_owner, :background, value),
+    do: AttrValidation.normalize_decorative_value!(attrs_owner, :background, value)
+
+  defp validate_public_attr_value!(attrs_owner, :border_radius, value),
+    do: validate_radius!(attrs_owner, :border_radius, value)
+
+  defp validate_public_attr_value!(attrs_owner, :border_width, value),
+    do: validate_radius!(attrs_owner, :border_width, value)
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [:border_color, :font_color],
+       do: AttrValidation.normalize_decorative_value!(attrs_owner, key, value)
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [
+              :font_size,
+              :move_x,
+              :move_y,
+              :rotate,
+              :scale,
+              :alpha,
+              :font_letter_spacing,
+              :font_word_spacing
+            ],
+       do: AttrValidation.normalize_decorative_value!(attrs_owner, key, value)
+
+  defp validate_public_attr_value!(_attrs_owner, :font, value)
+       when is_atom(value) or is_binary(value),
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :font, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :font to be an atom or binary, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, key, value)
+       when key in [:font_weight, :font_style] and is_atom(value),
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [:font_weight, :font_style] do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be an atom, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, :text_align, value)
+       when value in [:left, :center, :right],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :text_align, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :text_align to be one of :left, :center, or :right, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [
+              :on_click,
+              :on_press,
+              :on_mouse_down,
+              :on_mouse_up,
+              :on_mouse_enter,
+              :on_mouse_leave,
+              :on_mouse_move,
+              :on_change,
+              :on_focus,
+              :on_blur
+            ],
+       do: validate_event_payload!(attrs_owner, key, value)
+
+  defp validate_public_attr_value!(_attrs_owner, key, value)
+       when key in [:font_underline, :font_strike] and is_boolean(value),
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [:font_underline, :font_strike] do
+    AttrValidation.normalize_decorative_value!(attrs_owner, key, value)
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, :border_style, value)
+       when value in [:solid, :dashed, :dotted],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :border_style, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :border_style to be :solid, :dashed, or :dotted, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(attrs_owner, :box_shadow, value),
+    do: AttrValidation.normalize_decorative_value!(attrs_owner, :box_shadow, value)
+
+  defp validate_public_attr_value!(_attrs_owner, :image_fit, value)
+       when value in [:contain, :cover],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, :image_fit, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :image_fit to be :contain or :cover, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(_attrs_owner, key, %Element{} = _value)
+       when key in [:above, :below, :on_left, :on_right, :in_front, :behind],
+       do: :ok
+
+  defp validate_public_attr_value!(attrs_owner, key, value)
+       when key in [:above, :below, :on_left, :on_right, :in_front, :behind] do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be an Emerge element, got: #{inspect(value)}"
+  end
+
+  defp build_element(attrs, type, children) when is_map(attrs) do
+    {key, attrs} = Map.pop(attrs, :key)
+    attrs = Map.put(attrs, :__attrs_hash, TreeAttrs.attrs_hash(attrs))
+
+    %Element{
+      type: type,
+      id: key,
+      attrs: attrs,
+      children: children
+    }
+  end
+
+  defp prepare_attrs!(function_name, attrs) do
+    attrs = validate_attrs_list!(function_name, attrs)
+    parse_attrs(attrs, function_name)
+  end
+
+  defp prepare_single_child!(function_name, attrs, child) do
+    attrs = validate_attrs_list!(function_name, attrs)
+    child = validate_child_element!(function_name, child)
+
+    {parse_attrs(attrs, function_name), child}
+  end
+
+  defp prepare_children!(function_name, attrs, children) do
+    attrs = validate_attrs_list!(function_name, attrs)
+    children = validate_children_list!(function_name, children)
+
+    {parse_attrs(attrs, function_name), children}
+  end
+
+  defp validate_attrs_list!(_function_name, attrs) when is_list(attrs), do: attrs
+
+  defp validate_attrs_list!(function_name, other) do
+    raise ArgumentError,
+          "#{function_name} expects the first argument to be a list of attributes, got: #{inspect(other)}"
+  end
+
+  defp validate_child_element!(_function_name, %Element{} = child), do: child
+
+  defp validate_child_element!(function_name, children) when is_list(children) do
+    raise ArgumentError,
+          "#{function_name} expects the second argument to be a single child element, got a list: #{inspect(children)}. " <>
+            "Use row/2, column/2, wrapped_row/2, paragraph/2, or text_column/2 for multiple children."
+  end
+
+  defp validate_child_element!(function_name, other) do
+    raise ArgumentError,
+          "#{function_name} expects the second argument to be a single child element, got: #{inspect(other)}"
+  end
+
+  defp validate_children_list!(function_name, children) when is_list(children) do
+    Enum.each(children, fn child ->
+      case child do
+        %Element{} ->
           :ok
 
-        true ->
+        other ->
           raise ArgumentError,
-                "#{style_key} only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
+                "#{function_name} expects every child to be an Emerge element, got: #{inspect(other)}"
       end
     end)
+
+    children
   end
 
-  defp validate_scrollbar_clipping!(attrs) do
-    if Map.get(attrs, :id) do
-      raise ArgumentError, "id is not supported; use key instead"
-    end
+  defp validate_children_list!(function_name, other) do
+    container_name = function_name |> String.split("/") |> hd()
+
+    raise ArgumentError,
+          "#{function_name} expects the second argument to be a list of child elements, got: #{inspect(other)}. " <>
+            "Use #{container_name}(attrs, [child]) for a single child."
+  end
+
+  defp validate_binary_string!(_function_name, value) when is_binary(value), do: value
+
+  defp validate_binary_string!(function_name, other) do
+    raise ArgumentError,
+          "#{function_name} expects the second argument to be a binary string, got: #{inspect(other)}"
+  end
+
+  defp validate_video_target!(_function_name, %VideoTarget{} = target), do: target
+
+  defp validate_video_target!(function_name, other) do
+    raise ArgumentError,
+          "#{function_name} expects the second argument to be an EmergeSkia.VideoTarget, got: #{inspect(other)}"
+  end
+
+  defp validate_length!(_attrs_owner, _key, :fill), do: :ok
+  defp validate_length!(_attrs_owner, _key, :content), do: :ok
+  defp validate_length!(_attrs_owner, _key, {:px, value}) when is_number(value), do: :ok
+  defp validate_length!(_attrs_owner, _key, {:fill, value}) when is_number(value), do: :ok
+
+  defp validate_length!(attrs_owner, key, {:minimum, min_px, inner}) when is_number(min_px) do
+    validate_length!(attrs_owner, key, inner)
+  end
+
+  defp validate_length!(attrs_owner, key, {:maximum, max_px, inner}) when is_number(max_px) do
+    validate_length!(attrs_owner, key, inner)
+  end
+
+  defp validate_length!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be a supported length value, got: #{inspect(value)}"
+  end
+
+  defp validate_padding!(_attrs_owner, value) when is_number(value), do: :ok
+
+  defp validate_padding!(_attrs_owner, {top, right, bottom, left})
+       when is_number(top) and is_number(right) and is_number(bottom) and is_number(left),
+       do: :ok
+
+  defp validate_padding!(_attrs_owner, {vertical, horizontal})
+       when is_number(vertical) and is_number(horizontal),
+       do: :ok
+
+  defp validate_padding!(_attrs_owner, %{top: top, right: right, bottom: bottom, left: left})
+       when is_number(top) and is_number(right) and is_number(bottom) and is_number(left),
+       do: :ok
+
+  defp validate_padding!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :padding to be a number, {vertical, horizontal}, {top, right, bottom, left}, or padding map, got: #{inspect(value)}"
+  end
+
+  defp validate_radius!(_attrs_owner, _key, value) when is_number(value), do: :ok
+
+  defp validate_radius!(_attrs_owner, _key, {a, b, c, d})
+       when is_number(a) and is_number(b) and is_number(c) and is_number(d),
+       do: :ok
+
+  defp validate_radius!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be a number or a 4-value tuple, got: #{inspect(value)}"
+  end
+
+  defp validate_number_attr!(_attrs_owner, _key, value) when is_number(value), do: :ok
+
+  defp validate_number_attr!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be a number, got: #{inspect(value)}"
+  end
+
+  defp validate_event_payload!(_attrs_owner, _key, {pid, _message}) when is_pid(pid), do: :ok
+
+  defp validate_event_payload!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be a {pid, message} tuple, got: #{inspect(value)}"
+  end
+
+  defp validate_image_source!(_attrs_owner, %Emerge.Assets.Ref{path: path} = source)
+       when is_binary(path), do: source
+
+  defp validate_image_source!(_attrs_owner, {:id, id}) when is_binary(id), do: {:id, id}
+  defp validate_image_source!(_attrs_owner, {:path, path}) when is_binary(path), do: {:path, path}
+  defp validate_image_source!(_attrs_owner, path) when is_binary(path), do: path
+  defp validate_image_source!(_attrs_owner, path) when is_atom(path), do: path
+
+  defp validate_image_source!(attrs_owner, other) do
+    raise ArgumentError,
+          "#{attrs_owner} expects an image source to be a binary, atom, ~m reference, {:id, id}, or {:path, path}, got: #{inspect(other)}"
   end
 
   # ============================================
@@ -825,13 +1058,13 @@ defmodule Emerge.UI do
     @moduledoc "Input elements"
 
     @doc "Single-line text input"
-    def text(value, attrs \\ []) when is_binary(value) and is_list(attrs) do
-      Emerge.UI.__text_input__(value, attrs)
+    def text(attrs, value) do
+      Emerge.UI.__text_input__(attrs, value)
     end
 
     @doc "Button input with text label"
-    def button(label, attrs \\ []) when is_binary(label) and is_list(attrs) do
-      Emerge.UI.__input_button__(label, attrs)
+    def button(attrs, label) do
+      Emerge.UI.__input_button__(attrs, label)
     end
   end
 end

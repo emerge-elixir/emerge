@@ -5,6 +5,7 @@ defmodule Emerge.UITest do
   import Emerge.UI
 
   alias Emerge.UI.{Background, Border, Font}
+  alias EmergeSkia.VideoTarget
 
   test "mouse_over stores decorative attrs" do
     element =
@@ -110,6 +111,23 @@ defmodule Emerge.UITest do
            ]
   end
 
+  test "direct state style maps normalize single box shadows" do
+    shadow = %{offset_x: 0, offset_y: 1, blur: 6, size: 2, color: :black, inset: true}
+
+    element = el([{:mouse_over, %{alpha: 0.75, box_shadow: shadow}}], text("hi"))
+
+    assert element.attrs.mouse_over == %{
+             alpha: 0.75,
+             box_shadow: [shadow]
+           }
+  end
+
+  test "direct state style maps validate nested values" do
+    assert_raise ArgumentError, ~r/mouse_over expects :font_size to be a number/, fn ->
+      el([{:mouse_over, %{font_size: "large"}}], text("bad"))
+    end
+  end
+
   test "focused rejects non-decorative attrs" do
     assert_raise ArgumentError, ~r/focused only supports decorative attributes/, fn ->
       el([focused([width(fill())])], text("bad"))
@@ -135,12 +153,19 @@ defmodule Emerge.UITest do
     assert length(element.children) == 2
   end
 
-  test "paragraph/1 creates paragraph with default attrs" do
-    element = paragraph([text("Hello")])
+  test "paragraph/2 creates paragraph with explicit children list" do
+    element = paragraph([], [text("Hello")])
 
     assert element.type == :paragraph
     assert element.attrs == %{__attrs_hash: Emerge.Tree.attrs_hash(%{})}
     assert length(element.children) == 1
+  end
+
+  test "row/2 accepts an empty children list" do
+    element = row([], [])
+
+    assert element.type == :row
+    assert element.children == []
   end
 
   test "paragraph supports key attribute" do
@@ -168,7 +193,7 @@ defmodule Emerge.UITest do
   test "text_column allows overriding default width and height" do
     element =
       text_column([width(px(420)), height(px(300))], [
-        paragraph([text("Body")])
+        paragraph([], [text("Body")])
       ])
 
     assert element.type == :text_column
@@ -177,11 +202,61 @@ defmodule Emerge.UITest do
   end
 
   test "text_column supports key attribute" do
-    element = text_column([key(:doc), spacing(10)], [paragraph([text("Hello")])])
+    element = text_column([key(:doc), spacing(10)], [paragraph([], [text("Hello")])])
 
     assert element.type == :text_column
     assert element.id == :doc
     assert element.attrs.spacing == 10
+  end
+
+  test "el/2 rejects a children list as the second argument" do
+    assert_raise ArgumentError,
+                 ~r/el\/2 expects the second argument to be a single child element, got a list/,
+                 fn ->
+                   el([], [text("Hello")])
+                 end
+  end
+
+  test "row/2 requires the second argument to be a child element list" do
+    assert_raise ArgumentError,
+                 ~r/row\/2 expects the second argument to be a list of child elements, got:/,
+                 fn ->
+                   row([], text("Hello"))
+                 end
+  end
+
+  test "row/2 validates every child entry" do
+    assert_raise ArgumentError, ~r/row\/2 expects every child to be an Emerge element/, fn ->
+      row([], [width(fill())])
+    end
+  end
+
+  test "container constructors validate the attrs list" do
+    assert_raise ArgumentError,
+                 ~r/el\/2 expects the first argument to be a list of attributes, got:/,
+                 fn ->
+                   el(:bad_attrs, text("Hello"))
+                 end
+  end
+
+  test "unknown attrs are rejected" do
+    assert_raise ArgumentError, ~r/el\/2 does not support attribute :unknown_attr/, fn ->
+      el([{:unknown_attr, 1}], text("Hello"))
+    end
+  end
+
+  test "internal attrs are rejected from the public DSL" do
+    assert_raise ArgumentError, ~r/id is not supported; use key instead/, fn ->
+      el([{:id, :legacy}], text("Hello"))
+    end
+  end
+
+  test "malformed attr entries are rejected" do
+    assert_raise ArgumentError,
+                 ~r/el\/2 expects attributes to be \{key, value\} tuples, got:/,
+                 fn ->
+                   el([:bad_attr], text("Hello"))
+                 end
   end
 
   test "warns when an attribute key is overridden with a different value" do
@@ -292,20 +367,33 @@ defmodule Emerge.UITest do
   test "text_column default width and height overrides do not emit warnings" do
     stderr =
       capture_io(:stderr, fn ->
-        _ = text_column([width(px(420)), height(px(300))], [paragraph([text("Body")])])
+        _ = text_column([width(px(420)), height(px(300))], [paragraph([], [text("Body")])])
       end)
 
     assert stderr == ""
   end
 
   test "image creates an image element" do
-    element = image("img_logo", [width(px(120)), height(px(80)), image_fit(:cover)])
+    element = image([width(px(120)), height(px(80)), image_fit(:cover)], "img_logo")
 
     assert element.type == :image
     assert element.attrs.image_src == "img_logo"
     assert element.attrs.image_fit == :cover
     assert element.attrs.width == {:px, 120}
     assert element.attrs.height == {:px, 80}
+    assert element.children == []
+  end
+
+  test "video creates a video element" do
+    target = %VideoTarget{id: "preview", width: 640, height: 360, mode: :prime, ref: make_ref()}
+
+    element = video([width(px(160)), image_fit(:cover)], target)
+
+    assert element.type == :video
+    assert element.attrs.video_target == "preview"
+    assert element.attrs.image_size == {640, 360}
+    assert element.attrs.image_fit == :cover
+    assert element.attrs.width == {:px, 160}
     assert element.children == []
   end
 
@@ -324,11 +412,14 @@ defmodule Emerge.UITest do
 
   test "Input.text creates a text_input element" do
     element =
-      Emerge.UI.Input.text("hello", [
-        key(:search),
-        width(px(240)),
-        on_change({self(), :search_changed})
-      ])
+      Emerge.UI.Input.text(
+        [
+          key(:search),
+          width(px(240)),
+          on_change({self(), :search_changed})
+        ],
+        "hello"
+      )
 
     assert element.type == :text_input
     assert element.id == :search
@@ -340,13 +431,16 @@ defmodule Emerge.UITest do
 
   test "Input.button creates an el with text label and handlers" do
     element =
-      Emerge.UI.Input.button("Save", [
-        key(:save_btn),
-        width(px(160)),
-        on_press({self(), :save_pressed}),
-        on_focus({self(), :save_focused}),
-        on_blur({self(), :save_blurred})
-      ])
+      Emerge.UI.Input.button(
+        [
+          key(:save_btn),
+          width(px(160)),
+          on_press({self(), :save_pressed}),
+          on_focus({self(), :save_focused}),
+          on_blur({self(), :save_blurred})
+        ],
+        "Save"
+      )
 
     assert element.type == :el
     assert element.id == :save_btn
@@ -359,6 +453,40 @@ defmodule Emerge.UITest do
     [label] = element.children
     assert label.type == :text
     assert label.attrs.content == "Save"
+  end
+
+  test "image/2 validates attrs are first" do
+    assert_raise ArgumentError,
+                 ~r/image\/2 expects the first argument to be a list of attributes, got:/,
+                 fn ->
+                   image("img_logo", [width(px(120)), height(px(80))])
+                 end
+  end
+
+  test "video/2 validates attrs are first" do
+    target = %VideoTarget{id: "preview", width: 640, height: 360, mode: :prime, ref: make_ref()}
+
+    assert_raise ArgumentError,
+                 ~r/video\/2 expects the first argument to be a list of attributes, got:/,
+                 fn ->
+                   video(target, [width(px(160))])
+                 end
+  end
+
+  test "Input.text/2 validates attrs are first" do
+    assert_raise ArgumentError,
+                 ~r/Input\.text\/2 expects the first argument to be a list of attributes, got:/,
+                 fn ->
+                   Emerge.UI.Input.text("hello", [key(:search)])
+                 end
+  end
+
+  test "Input.button/2 validates attrs are first" do
+    assert_raise ArgumentError,
+                 ~r/Input\.button\/2 expects the first argument to be a list of attributes, got:/,
+                 fn ->
+                   Emerge.UI.Input.button("Save", [key(:save_btn)])
+                 end
   end
 
   test "padding_xy expands to per-edge padding" do

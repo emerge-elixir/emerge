@@ -38,8 +38,8 @@ defmodule Emerge.SerializationTest do
   test "encode assigns ids and returns a binary" do
     layout =
       row([spacing(10)], [
-        el(text("a")),
-        el(text("b"))
+        el([], text("a")),
+        el([], text("b"))
       ])
 
     {binary, tree} = Serialization.encode(layout)
@@ -55,8 +55,8 @@ defmodule Emerge.SerializationTest do
       column([spacing(8)], [
         el([padding(4)], text("hello")),
         row([spacing(2)], [
-          el(text("a")),
-          el(text("b"))
+          el([], text("a")),
+          el([], text("b"))
         ])
       ])
 
@@ -100,7 +100,7 @@ defmodule Emerge.SerializationTest do
   end
 
   test "image roundtrip preserves image attrs" do
-    layout = image("img_banner", [width(px(300)), height(px(120)), image_fit(:cover)])
+    layout = image([width(px(300)), height(px(120)), image_fit(:cover)], "img_banner")
 
     {binary, tree} = Serialization.encode(layout)
     decoded = Serialization.decode(binary)
@@ -113,18 +113,21 @@ defmodule Emerge.SerializationTest do
 
   test "text_input roundtrip preserves content and handlers" do
     layout =
-      Emerge.UI.Input.text("hello", [
-        width(px(280)),
-        on_change({self(), :changed}),
-        on_focus({self(), :focused}),
-        on_blur({self(), :blurred}),
-        focused([alpha(0.9), move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
-        mouse_down([
-          move_y(-1),
-          scale(0.98),
-          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
-        ])
-      ])
+      Emerge.UI.Input.text(
+        [
+          width(px(280)),
+          on_change({self(), :changed}),
+          on_focus({self(), :focused}),
+          on_blur({self(), :blurred}),
+          focused([alpha(0.9), move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
+          mouse_down([
+            move_y(-1),
+            scale(0.98),
+            Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
+          ])
+        ],
+        "hello"
+      )
 
     {binary, tree} = Serialization.encode(layout)
     decoded = Serialization.decode(binary)
@@ -155,16 +158,19 @@ defmodule Emerge.SerializationTest do
 
   test "input button roundtrip preserves press and focus handlers" do
     layout =
-      Emerge.UI.Input.button("Save", [
-        on_press({self(), :pressed}),
-        on_focus({self(), :focused}),
-        on_blur({self(), :blurred}),
-        focused([alpha(0.9), Emerge.UI.Border.glow(:cyan, 2)]),
-        mouse_down([
-          move_y(-1),
-          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 5, size: 1, color: :black)
-        ])
-      ])
+      Emerge.UI.Input.button(
+        [
+          on_press({self(), :pressed}),
+          on_focus({self(), :focused}),
+          on_blur({self(), :blurred}),
+          focused([alpha(0.9), Emerge.UI.Border.glow(:cyan, 2)]),
+          mouse_down([
+            move_y(-1),
+            Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 5, size: 1, color: :black)
+          ])
+        ],
+        "Save"
+      )
 
     {binary, tree} = Serialization.encode(layout)
     decoded = Serialization.decode(binary)
@@ -192,6 +198,30 @@ defmodule Emerge.SerializationTest do
     assert length(decoded.children) == 1
     assert hd(decoded.children).type == :text
     assert hd(decoded.children).attrs.content == "Save"
+  end
+
+  test "direct state style maps are normalized before serialization" do
+    shadow = %{offset_x: 0, offset_y: 1, blur: 6, size: 2, color: :black, inset: true}
+
+    layout =
+      el(
+        [
+          {:mouse_over, %{alpha: 0.75, box_shadow: shadow}}
+        ],
+        text("Hello")
+      )
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert tree.attrs.mouse_over == %{alpha: 0.75, box_shadow: [shadow]}
+
+    assert decoded.attrs.mouse_over == %{
+             alpha: 0.75,
+             box_shadow: [
+               %{offset_x: 0.0, offset_y: 1.0, blur: 6.0, size: 2.0, color: :black, inset: true}
+             ]
+           }
   end
 
   defp strip_runtime(%Emerge.Element{} = element) do

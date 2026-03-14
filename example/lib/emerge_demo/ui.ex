@@ -24,11 +24,14 @@ defmodule EmergeDemo.UI do
         Background.gradient({:color_rgb, {4, 6, 10}}, {:color_rgb, {12, 18, 28}}, 90),
         in_front(overlay_panel(runtime_state, config))
       ],
-      video(target, [
-        width(fill()),
-        height(fill()),
-        image_fit(:contain)
-      ])
+      video(
+        [
+          width(fill()),
+          height(fill()),
+          image_fit(:contain)
+        ],
+        target
+      )
     )
   end
 
@@ -36,7 +39,10 @@ defmodule EmergeDemo.UI do
     column(
       [padding(20), spacing(14), width(fill())],
       [
-        row([width(fill()), spacing(14)], [info_panel(runtime_state, config), status_badge(runtime_state)]),
+        row([width(fill()), spacing(14)], [
+          info_panel(runtime_state, config),
+          status_badge(runtime_state)
+        ]),
         source_badge(config),
         footer_badge(runtime_state, config)
       ]

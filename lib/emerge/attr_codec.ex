@@ -3,6 +3,10 @@ defmodule Emerge.AttrCodec do
   Compact encoding for element attribute maps.
   """
 
+  alias Emerge.AttrValidation
+  alias Emerge.Tree.Attrs, as: TreeAttrs
+  alias Emerge.Tree.Nearby
+
   @type_tag %{
     width: 1,
     height: 2,
@@ -59,32 +63,13 @@ defmodule Emerge.AttrCodec do
     video_target: 62
   }
 
-  @mouse_over_decorative_keys MapSet.new([
-                                :background,
-                                :border_color,
-                                :box_shadow,
-                                :font_color,
-                                :font_size,
-                                :font_underline,
-                                :font_strike,
-                                :font_letter_spacing,
-                                :font_word_spacing,
-                                :move_x,
-                                :move_y,
-                                :rotate,
-                                :scale,
-                                :alpha
-                              ])
-
-  @state_style_keys [:mouse_over, :focused, :mouse_down]
-
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
 
   @spec encode_attrs(map()) :: binary()
   def encode_attrs(attrs) when is_map(attrs) do
     attrs
-    |> Emerge.Tree.strip_runtime_attrs()
-    |> Emerge.Tree.strip_nearby_attrs()
+    |> TreeAttrs.strip_runtime_attrs()
+    |> Nearby.strip_nearby_attrs()
     |> Map.to_list()
     |> Enum.map(fn {key, value} ->
       tag = Map.fetch!(@type_tag, key)
@@ -222,16 +207,14 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)
 
-  defp encode_mouse_over(value) when is_map(value), do: encode_state_style(value, :mouse_over)
+  defp encode_mouse_over(value), do: encode_state_style(value, :mouse_over)
 
-  defp encode_focused(value) when is_map(value), do: encode_state_style(value, :focused)
+  defp encode_focused(value), do: encode_state_style(value, :focused)
 
-  defp encode_mouse_down_style(value) when is_map(value),
-    do: encode_state_style(value, :mouse_down)
+  defp encode_mouse_down_style(value), do: encode_state_style(value, :mouse_down)
 
-  defp encode_state_style(value, style_key) when is_map(value) do
-    validate_state_style_attrs!(value, style_key)
-    encoded = encode_attrs(value)
+  defp encode_state_style(value, style_key) do
+    encoded = style_key |> AttrValidation.normalize_state_style!(value) |> encode_attrs()
     <<byte_size(encoded)::unsigned-32, encoded::binary>>
   end
 
@@ -244,25 +227,6 @@ defmodule Emerge.AttrCodec do
   defp decode_state_style(<<len::unsigned-32, rest::binary>>) do
     <<attrs_bin::binary-size(len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
-  end
-
-  defp validate_state_style_attrs!(attrs, style_key) when is_map(attrs) do
-    allowed =
-      @mouse_over_decorative_keys |> Enum.map(&inspect/1) |> Enum.sort() |> Enum.join(", ")
-
-    Enum.each(attrs, fn {key, _value} ->
-      cond do
-        key in @state_style_keys ->
-          raise ArgumentError, "#{style_key} does not support nested #{key}"
-
-        MapSet.member?(@mouse_over_decorative_keys, key) ->
-          :ok
-
-        true ->
-          raise ArgumentError,
-                "#{style_key} only supports decorative attributes; got #{inspect(key)}. Allowed: #{allowed}"
-      end
-    end)
   end
 
   defp encode_bool(true), do: <<1>>
@@ -309,7 +273,6 @@ defmodule Emerge.AttrCodec do
   defp encode_length(:fill), do: <<0>>
   defp encode_length(:content), do: <<1>>
   defp encode_length({:px, value}), do: <<2, encode_f64(value)::binary>>
-  defp encode_length({:fill_portion, value}), do: <<3, encode_f64(value)::binary>>
   defp encode_length({:fill, value}), do: <<3, encode_f64(value)::binary>>
 
   defp encode_length({:minimum, min_px, inner}),
@@ -328,7 +291,7 @@ defmodule Emerge.AttrCodec do
 
   defp decode_length(<<3, rest::binary>>) do
     {value, rest} = decode_f64(rest)
-    {{:fill_portion, value}, rest}
+    {{:fill, value}, rest}
   end
 
   defp decode_length(<<4, rest::binary>>) do
@@ -434,7 +397,8 @@ defmodule Emerge.AttrCodec do
   defp decode_border_style(<<1, rest::binary>>), do: {:dashed, rest}
   defp decode_border_style(<<2, rest::binary>>), do: {:dotted, rest}
 
-  defp encode_box_shadow(shadows) when is_list(shadows) do
+  defp encode_box_shadow(shadows) do
+    shadows = AttrValidation.normalize_decorative_value!("box_shadow", :box_shadow, shadows)
     count = length(shadows)
 
     encoded =

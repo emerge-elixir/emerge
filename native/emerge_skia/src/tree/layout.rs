@@ -626,7 +626,7 @@ fn scale_length(length: &Length, scale: f32) -> Length {
         }
         Length::Fill => Length::Fill,
         Length::Content => Length::Content,
-        Length::FillPortion(p) => Length::FillPortion(*p),
+        Length::FillWeighted(weight) => Length::FillWeighted(*weight),
     }
 }
 
@@ -840,7 +840,7 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
     match length {
         Some(Length::Px(px)) => *px as f32,
         Some(Length::Content) | None => intrinsic,
-        Some(Length::Fill) | Some(Length::FillPortion(_)) => intrinsic, // Will expand in resolve
+        Some(Length::Fill) | Some(Length::FillWeighted(_)) => intrinsic, // Will expand in resolve
         Some(Length::Minimum(min_px, inner)) => {
             let inner_size = resolve_intrinsic_length(Some(inner), intrinsic);
             inner_size.max(*min_px as f32)
@@ -1269,7 +1269,7 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
         Some(Length::Px(px)) => *px as f32,
         Some(Length::Content) | None => intrinsic.min(constraint),
         Some(Length::Fill) => constraint,
-        Some(Length::FillPortion(_)) => constraint, // Simplified: treat as fill
+        Some(Length::FillWeighted(_)) => constraint, // Simplified: treat as fill
         Some(Length::Minimum(min_px, inner)) => {
             let inner_size = resolve_length(Some(inner), intrinsic, constraint);
             inner_size.max(*min_px as f32)
@@ -1417,14 +1417,14 @@ fn is_content_length(length: Option<&Length>) -> bool {
     }
 }
 
-/// Get the portion value for a fill-based length.
-/// Returns 1.0 for Fill, the portion value for FillPortion, or 0.0 for non-fill.
-fn get_fill_portion(length: Option<&Length>) -> f32 {
+/// Get the weight value for a fill-based length.
+/// Returns 1.0 for Fill, the configured weight for FillWeighted, or 0.0 for non-fill.
+fn get_fill_weight(length: Option<&Length>) -> f32 {
     match length {
         Some(Length::Fill) => 1.0,
-        Some(Length::FillPortion(portion)) => *portion as f32,
+        Some(Length::FillWeighted(weight)) => *weight as f32,
         Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
-            get_fill_portion(Some(inner))
+            get_fill_weight(Some(inner))
         }
         _ => 0.0,
     }
@@ -1633,7 +1633,7 @@ fn build_row_layout_plan(
     options: RowChildrenOptions,
     content_width: f32,
 ) -> RowLayoutPlan {
-    // First pass: calculate fill_portion distribution.
+    // First pass: calculate weighted fill distribution.
     let mut total_portions = 0.0_f32;
     let mut fixed_width = 0.0_f32;
 
@@ -1643,7 +1643,7 @@ fn build_row_layout_plan(
         };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
         let portion = if options.allow_fill_width {
-            get_fill_portion(child.attrs.width.as_ref())
+            get_fill_weight(child.attrs.width.as_ref())
         } else {
             0.0
         };
@@ -1684,7 +1684,7 @@ fn build_row_layout_plan(
         };
         let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
         let portion = if options.allow_fill_width {
-            get_fill_portion(child.attrs.width.as_ref())
+            get_fill_weight(child.attrs.width.as_ref())
         } else {
             0.0
         };
@@ -1952,7 +1952,7 @@ fn build_column_layout_plan(
     options: ColumnChildrenOptions,
     content_height: f32,
 ) -> ColumnLayoutPlan {
-    // First pass: calculate fill_portion distribution.
+    // First pass: calculate weighted fill distribution.
     let mut total_portions = 0.0_f32;
     let mut fixed_height = 0.0_f32;
 
@@ -1962,7 +1962,7 @@ fn build_column_layout_plan(
         };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
         let portion = if options.allow_fill_height {
-            get_fill_portion(child.attrs.height.as_ref())
+            get_fill_weight(child.attrs.height.as_ref())
         } else {
             0.0
         };
@@ -2000,7 +2000,7 @@ fn build_column_layout_plan(
         };
         let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
         let portion = if options.allow_fill_height {
-            get_fill_portion(child.attrs.height.as_ref())
+            get_fill_weight(child.attrs.height.as_ref())
         } else {
             0.0
         };

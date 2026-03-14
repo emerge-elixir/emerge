@@ -124,7 +124,7 @@ defmodule Emerge.DiffStateTest do
     layout =
       row([key(:root)], [
         el([key(:a)], text("a")),
-        el(text("u1")),
+        el([], text("u1")),
         el([key(:b)], text("b"))
       ])
 
@@ -186,18 +186,18 @@ defmodule Emerge.DiffStateTest do
 
     layout1 =
       row([key(:root)], [
-        el(text("a")),
-        el(text("b")),
-        el(text("c"))
+        el([], text("a")),
+        el([], text("b")),
+        el([], text("c"))
       ])
 
     {_bin1, state, assigned1} = Emerge.diff_state_update(state, layout1)
 
     layout2 =
       row([key(:root)], [
-        el(text("c")),
-        el(text("a")),
-        el(text("b"))
+        el([], text("c")),
+        el([], text("a")),
+        el([], text("b"))
       ])
 
     {_bin2, _state, assigned2} = Emerge.diff_state_update(state, layout2)
@@ -216,7 +216,7 @@ defmodule Emerge.DiffStateTest do
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
-        el(text("u1")),
+        el([], text("u1")),
         el([key(:b)], text("b"))
       ])
 
@@ -226,7 +226,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "on_change is registered in event registry" do
-    layout = Emerge.UI.Input.text("hello", [key(:field), on_change({self(), :changed})])
+    layout = Emerge.UI.Input.text([key(:field), on_change({self(), :changed})], "hello")
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
@@ -236,11 +236,14 @@ defmodule Emerge.DiffStateTest do
 
   test "on_focus and on_blur are registered in event registry" do
     layout =
-      Emerge.UI.Input.text("hello", [
-        key(:field),
-        on_focus({self(), :focused}),
-        on_blur({self(), :blurred})
-      ])
+      Emerge.UI.Input.text(
+        [
+          key(:field),
+          on_focus({self(), :focused}),
+          on_blur({self(), :blurred})
+        ],
+        "hello"
+      )
 
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
@@ -253,10 +256,13 @@ defmodule Emerge.DiffStateTest do
 
   test "on_press is registered in event registry" do
     layout =
-      Emerge.UI.Input.button("Save", [
-        key(:save),
-        on_press({self(), :pressed})
-      ])
+      Emerge.UI.Input.button(
+        [
+          key(:save),
+          on_press({self(), :pressed})
+        ],
+        "Save"
+      )
 
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
@@ -267,14 +273,17 @@ defmodule Emerge.DiffStateTest do
 
   test "text input registers click and mouse handlers alongside on_change" do
     layout =
-      Emerge.UI.Input.text("hello", [
-        key(:field),
-        on_click({self(), :clicked}),
-        on_mouse_enter({self(), :entered}),
-        on_mouse_leave({self(), :left}),
-        on_mouse_move({self(), :moved}),
-        on_change({self(), :changed})
-      ])
+      Emerge.UI.Input.text(
+        [
+          key(:field),
+          on_click({self(), :clicked}),
+          on_mouse_enter({self(), :entered}),
+          on_mouse_leave({self(), :left}),
+          on_mouse_move({self(), :moved}),
+          on_change({self(), :changed})
+        ],
+        "hello"
+      )
 
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
@@ -288,7 +297,7 @@ defmodule Emerge.DiffStateTest do
 
   test "dispatch_event with payload appends payload to tuple message" do
     layout =
-      Emerge.UI.Input.text("hello", [key(:field), on_change({self(), {:changed, :field}})])
+      Emerge.UI.Input.text([key(:field), on_change({self(), {:changed, :field}})], "hello")
 
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
@@ -298,7 +307,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "dispatch_event with payload wraps non-tuple message" do
-    layout = Emerge.UI.Input.text("hello", [key(:field), on_change({self(), :changed})])
+    layout = Emerge.UI.Input.text([key(:field), on_change({self(), :changed})], "hello")
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
@@ -308,11 +317,14 @@ defmodule Emerge.DiffStateTest do
 
   test "dispatch_event routes focus and blur events" do
     layout =
-      Emerge.UI.Input.text("hello", [
-        key(:field),
-        on_focus({self(), :focused}),
-        on_blur({self(), :blurred})
-      ])
+      Emerge.UI.Input.text(
+        [
+          key(:field),
+          on_focus({self(), :focused}),
+          on_blur({self(), :blurred})
+        ],
+        "hello"
+      )
 
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
@@ -325,7 +337,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "dispatch_event routes press events" do
-    layout = Emerge.UI.Input.button("Save", [key(:save), on_press({self(), :pressed})])
+    layout = Emerge.UI.Input.button([key(:save), on_press({self(), :pressed})], "Save")
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 

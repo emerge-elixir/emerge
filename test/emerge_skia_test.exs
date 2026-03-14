@@ -14,7 +14,7 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels supports snapshot placeholders" do
-    tree = image("demo_images/missing.jpg", [width(px(32)), height(px(24))])
+    tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
 
     snapshot =
       EmergeSkia.render_to_pixels(
@@ -34,8 +34,8 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels await mode resolves logical image assets" do
-    good_tree = image("demo_images/static.jpg", [width(px(32)), height(px(24))])
-    bad_tree = image("demo_images/missing.jpg", [width(px(32)), height(px(24))])
+    good_tree = image([width(px(32)), height(px(24))], "demo_images/static.jpg")
+    bad_tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
 
     good =
       EmergeSkia.render_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)

@@ -4,57 +4,13 @@ defmodule Emerge.Tree do
   """
 
   alias Emerge.Element
-
-  @nearby_slots [:behind, :above, :on_right, :below, :on_left, :in_front]
+  alias Emerge.Reconcile
+  alias Emerge.Tree.Attrs
+  alias Emerge.Tree.Nearby
 
   @type id_state :: %{
           explicit_seen: MapSet.t()
         }
-
-  @runtime_attrs [
-    :scroll_x,
-    :scroll_y,
-    :scroll_max,
-    :scroll_max_x,
-    :scroll_bounds,
-    :scroll_clip_bounds,
-    :clip_bounds,
-    :clip_content,
-    :text_baseline_offset,
-    :__layer,
-    :scroll_capture,
-    :mouse_over_active,
-    :mouse_down_active,
-    :focused_active,
-    :text_input_focused,
-    :text_input_cursor,
-    :text_input_selection_anchor,
-    :nearby_behind,
-    :nearby_in_front,
-    :nearby_outside,
-    :__attrs_hash
-  ]
-
-  @volatile_attrs [
-    :scroll_x,
-    :scroll_y,
-    :scroll_max,
-    :scroll_max_x,
-    :scroll_bounds,
-    :scroll_clip_bounds,
-    :clip_bounds,
-    :clip_content,
-    :text_baseline_offset,
-    :__layer,
-    :scroll_capture,
-    :mouse_over_active,
-    :mouse_down_active,
-    :focused_active,
-    :text_input_focused,
-    :text_input_cursor,
-    :text_input_selection_anchor,
-    :__attrs_hash
-  ]
 
   @doc """
   Assign ids to elements missing an id.
@@ -64,7 +20,7 @@ defmodule Emerge.Tree do
 
   def assign_ids(%Element{} = element, state) do
     state = reset_explicit_seen(state)
-    {_, assigned} = Emerge.Reconcile.assign_ids(element)
+    {_, assigned} = Reconcile.assign_ids(element)
     {assigned, state}
   end
 
@@ -72,7 +28,7 @@ defmodule Emerge.Tree do
     state = reset_explicit_seen(state)
 
     Enum.map_reduce(elements, state, fn element, acc ->
-      {_, assigned} = Emerge.Reconcile.assign_ids(element)
+      {_, assigned} = Reconcile.assign_ids(element)
       {assigned, acc}
     end)
   end
@@ -90,87 +46,65 @@ defmodule Emerge.Tree do
     %{explicit_seen: MapSet.new()}
   end
 
-  defp normalize_attrs(attrs) do
-    Map.drop(attrs, @volatile_attrs)
-  end
-
   @doc """
   Compute a hash of attributes excluding volatile fields.
   """
   @spec attrs_hash(map()) :: non_neg_integer()
   def attrs_hash(attrs) when is_map(attrs) do
-    :erlang.phash2(normalize_attrs(attrs))
+    Attrs.attrs_hash(attrs)
   end
 
   @doc """
   Return the list of runtime-only attributes.
   """
   def runtime_attrs do
-    @runtime_attrs
+    Attrs.runtime_attrs()
   end
 
   @doc """
   Return the fixed nearby mount order used across traversal and encoding.
   """
   def nearby_slots do
-    @nearby_slots
+    Nearby.nearby_slots()
   end
 
   @doc """
   Split nearby mount attrs from ordinary attrs.
   """
   def split_nearby_attrs(attrs) when is_map(attrs) do
-    nearby =
-      Enum.reduce(@nearby_slots, %{}, fn slot, acc ->
-        case Map.get(attrs, slot) do
-          %Element{} = element -> Map.put(acc, slot, element)
-          _ -> acc
-        end
-      end)
-
-    {Map.drop(attrs, @nearby_slots), nearby}
+    Nearby.split_nearby_attrs(attrs)
   end
 
   @doc """
   Drop nearby mounts from an attrs map.
   """
   def strip_nearby_attrs(attrs) when is_map(attrs) do
-    Map.drop(attrs, @nearby_slots)
+    Nearby.strip_nearby_attrs(attrs)
   end
 
   @doc """
   Merge nearby mounts back into an attrs map.
   """
   def merge_nearby_attrs(attrs, nearby) when is_map(attrs) and is_map(nearby) do
-    Enum.reduce(@nearby_slots, attrs, fn slot, acc ->
-      case Map.get(nearby, slot) do
-        %Element{} = element -> Map.put(acc, slot, element)
-        _ -> acc
-      end
-    end)
+    Nearby.merge_nearby_attrs(attrs, nearby)
   end
 
   @doc """
   Return nearby mounted children in canonical order.
   """
   def nearby_children(%Element{} = element) do
-    nearby_children(element.attrs)
+    Nearby.nearby_children(element)
   end
 
   def nearby_children(attrs) when is_map(attrs) do
-    Enum.flat_map(@nearby_slots, fn slot ->
-      case Map.get(attrs, slot) do
-        %Element{} = element -> [{slot, element}]
-        _ -> []
-      end
-    end)
+    Nearby.nearby_children(attrs)
   end
 
   @doc """
   Drop runtime-only attributes from an attrs map.
   """
   def strip_runtime_attrs(attrs) when is_map(attrs) do
-    Map.drop(attrs, @runtime_attrs)
+    Attrs.strip_runtime_attrs(attrs)
   end
 
   defp reset_explicit_seen(state) do

@@ -4,7 +4,8 @@ defmodule Emerge.Patch do
   """
 
   alias Emerge.Element
-  alias Emerge.Tree
+  alias Emerge.Tree.Attrs, as: TreeAttrs
+  alias Emerge.Tree.Nearby
 
   @type nearby_slot :: :behind | :above | :on_right | :below | :on_left | :in_front
 
@@ -187,8 +188,8 @@ defmodule Emerge.Patch do
 
   defp comparable_attrs(attrs) do
     attrs
-    |> Tree.strip_nearby_attrs()
-    |> Tree.strip_runtime_attrs()
+    |> Nearby.strip_nearby_attrs()
+    |> TreeAttrs.strip_runtime_attrs()
   end
 
   defp index_tree(%Element{} = tree) do
@@ -208,7 +209,7 @@ defmodule Emerge.Patch do
         collect_index(child, {:child, element.id, index}, next_acc)
       end)
 
-    Enum.reduce(Tree.nearby_children(element), acc, fn {slot, child}, next_acc ->
+    Enum.reduce(Nearby.nearby_children(element), acc, fn {slot, child}, next_acc ->
       collect_index(child, {:nearby, element.id, slot}, next_acc)
     end)
   end
