@@ -6,8 +6,8 @@ defmodule EmergeDemo.WiFiPipeline2 do
   require Membrane.Pad
 
   alias Membrane.{H265, RTP}
-  alias NervesWifibroadcast.Membrane.Radio.Source, as: RadioSource
-  alias NervesWifibroadcast.Membrane.WFB.{Decrypt, PayloadUnwrap, ReorderFec}
+  alias Wifibroadcast.Membrane.Radio.Source, as: RadioSource
+  alias Wifibroadcast.Membrane.WFB.{Decrypt, PayloadUnwrap, ReorderFec}
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -31,7 +31,7 @@ defmodule EmergeDemo.WiFiPipeline2 do
       |> child(:video_parser, %H265.Parser{
         generate_best_effort_timestamps: %{framerate: framerate}
       })
-      |> child(:video_decoder, %H265.PrimeDecoder{
+      |> child(:video_decoder, %H265.Decoder{
         hw_device: decoder,
         decoder: :vaapi,
         output: :prime
