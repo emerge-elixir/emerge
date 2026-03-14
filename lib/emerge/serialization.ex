@@ -5,7 +5,7 @@ defmodule Emerge.Serialization do
 
   alias Emerge.Element
   alias Emerge.Reconcile
-  alias Emerge.Tree
+  alias Emerge.Tree.Nearby
 
   @version 4
 
@@ -120,7 +120,7 @@ defmodule Emerge.Serialization do
       end)
 
     nearby =
-      Enum.reduce(Tree.nearby_slots(), %{}, fn slot, acc ->
+      Enum.reduce(Nearby.nearby_slots(), %{}, fn slot, acc ->
         case Map.get(node.nearby_ids, slot) do
           nil -> acc
           nearby_id -> Map.put(acc, slot, build_node(nearby_id, node_map))
@@ -130,14 +130,14 @@ defmodule Emerge.Serialization do
     %Element{
       type: node.type,
       id: node.id,
-      attrs: Tree.merge_nearby_attrs(node.attrs, nearby),
+      attrs: Nearby.merge_nearby_attrs(node.attrs, nearby),
       children: children,
       frame: nil
     }
   end
 
   defp collect_nodes(%Element{} = element) do
-    {attrs, nearby} = Tree.split_nearby_attrs(element.attrs)
+    {attrs, nearby} = Nearby.split_nearby_attrs(element.attrs)
 
     [
       %{
@@ -148,7 +148,7 @@ defmodule Emerge.Serialization do
         nearby: nearby
       }
       | Enum.flat_map(element.children, &collect_nodes/1) ++
-          Enum.flat_map(Tree.nearby_children(element), fn {_slot, child} ->
+          Enum.flat_map(Nearby.nearby_children(element), fn {_slot, child} ->
             collect_nodes(child)
           end)
     ]
@@ -172,7 +172,7 @@ defmodule Emerge.Serialization do
   end
 
   defp encode_nearby(nearby) do
-    Tree.nearby_slots()
+    Nearby.nearby_slots()
     |> Enum.with_index()
     |> Enum.reduce({0, []}, fn {slot, index}, {mask, ids} ->
       case Map.get(nearby, slot) do
@@ -183,7 +183,7 @@ defmodule Emerge.Serialization do
   end
 
   defp decode_nearby(rest, mask) do
-    Tree.nearby_slots()
+    Nearby.nearby_slots()
     |> Enum.with_index()
     |> Enum.reduce({%{}, rest}, fn {slot, index}, {nearby, next_rest} ->
       if Bitwise.band(mask, Bitwise.bsl(1, index)) == 0 do

@@ -25,9 +25,9 @@ column([width(fill()), height(fill()), space_evenly()), padding(20)], [
 
   # Two content cards where left is bigger to right by 2:1 ratio
   row([spacing(12), padding(20)], [
-    el([width(fill_portion(2)), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
+    el([width({:fill, 2}), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
       text("Left Card")),
-    el([width(fill_portion(1), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+    el([width({:fill, 1}), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
       text("Right Card"))
   ])
 
@@ -50,15 +50,16 @@ Markup is defined by simple elixir functions, no templating or xml style things.
 
 ### Layout elements
 
-Each element is a function accepting
-2 arguments, a list of attributes, and a child/list of children. 
+Each container element takes 2 arguments: a list of attributes and its child or children.
 
-Basic building block is `el/2`, `el` only accepts one child,
-usually `text/1` which is a content construct
-and cannot live on it's own without `el` as it's parent.
+The basic building block is `el/2`, which always accepts exactly one child element.
+Use `el([], none())` for an empty element.
 
-If you want element to have multiple children 
-you can use `row`, `column` and `wrapped_row`
+`text/1` is a standalone content element. It does not wrap by default.
+Use `paragraph/2` and `text_column/2` for wrapped text flows.
+
+If you want an element to have multiple children, use `row/2`, `column/2`, `wrapped_row/2`,
+`paragraph/2`, or `text_column/2`.
 
 ### Layout sizing
 
@@ -68,7 +69,7 @@ attributes where px is number.
 Sizing can also be relative to elements peer element:
 - `shrink` attribute will shrink an element to fit it's contents it is also a default.
 - `fill` Fill the available space. The available space will be split evenly between elements that have width fill.
-- `fill_portion(n)` Fill available space by ratio. `fill` == `fill_portion(1)`
+- `{:fill, n}` Fill available space by ratio. `fill` is equivalent to `{:fill, 1}`
 - `min(px)`/`max(px)` Define min/max size of an element, can be used in combination with `shrink`/`fill`
 
 ### Spacing
@@ -138,7 +139,7 @@ defmodule MyApp.UI do
 
   def view do
     column([spacing(16)], [
-      image(~m"images/logo.png", [width(px(120)), height(px(120))]),
+      image([width(px(120)), height(px(120))], ~m"images/logo.png"),
       el([
         width(px(320)),
         height(px(180)),

@@ -70,7 +70,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               text("Hello")
             )
           ),
-          row([spacing(8.0), align_top(), width({:fill_portion, 2.0})], [
+          row([spacing(8.0), align_top(), width({:fill, 2.0})], [
             el(
               [
                 padding(6.0),
@@ -129,7 +129,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
           el(
             [
               {:padding, %{top: 1.0, right: 3.0, bottom: 5.0, left: 7.0}},
-              width({:fill_portion, 1.0}),
+              width({:fill, 1.0}),
               height(:content),
               align_right(),
               center_y(),
@@ -423,19 +423,22 @@ defmodule EmergeSkia.EmrgRoundtripTest do
 
   test "EMRG roundtrip preserves text_input element" do
     tree =
-      Emerge.UI.Input.text("quick brown fox", [
-        width(px(260)),
-        Emerge.UI.Font.size(14.0),
-        on_change({self(), :changed}),
-        on_focus({self(), :focused}),
-        on_blur({self(), :blurred}),
-        focused([alpha(0.85), move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
-        mouse_down([
-          move_y(-1),
-          scale(0.97),
-          Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
-        ])
-      ])
+      Emerge.UI.Input.text(
+        [
+          width(px(260)),
+          Emerge.UI.Font.size(14.0),
+          on_change({self(), :changed}),
+          on_focus({self(), :focused}),
+          on_blur({self(), :blurred}),
+          focused([alpha(0.85), move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
+          mouse_down([
+            move_y(-1),
+            scale(0.97),
+            Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
+          ])
+        ],
+        "quick brown fox"
+      )
 
     {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
     encoded = Emerge.Serialization.encode_tree(assigned)
@@ -551,7 +554,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
   test "EMRG roundtrip preserves image element and background image" do
     tree =
       column([spacing(10.0)], [
-        image("img_photo", [width(px(320)), height(px(180)), image_fit(:cover)]),
+        image([width(px(320)), height(px(180)), image_fit(:cover)], "img_photo"),
         el(
           [width(px(200)), height(px(80)), Emerge.UI.Background.image("img_bg", fit: :contain)],
           none()

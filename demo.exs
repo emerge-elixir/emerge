@@ -781,19 +781,22 @@ defmodule Demo do
           Border.rounded(10)
         ],
         column([spacing(10)], [
-          Emerge.UI.Input.text(value, [
-            width(fill()),
-            padding_xy(10, 8),
-            Font.size(16),
-            Font.color(:white),
-            Background.color({:color_rgb, {62, 62, 94}}),
-            Border.rounded(8),
-            Border.width(input_border_width),
-            Border.color(input_border_color),
-            on_change({self(), {:demo_event, :input_changed}}),
-            on_focus({self(), {:demo_event, :input_focus}}),
-            on_blur({self(), {:demo_event, :input_blur}})
-          ]),
+          Emerge.UI.Input.text(
+            [
+              width(fill()),
+              padding_xy(10, 8),
+              Font.size(16),
+              Font.color(:white),
+              Background.color({:color_rgb, {62, 62, 94}}),
+              Border.rounded(8),
+              Border.width(input_border_width),
+              Border.color(input_border_color),
+              on_change({self(), {:demo_event, :input_changed}}),
+              on_focus({self(), {:demo_event, :input_focus}}),
+              on_blur({self(), {:demo_event, :input_blur}})
+            ],
+            value
+          ),
           el(
             [Font.size(11), Font.color(@dim_text)],
             text(
@@ -863,29 +866,32 @@ defmodule Demo do
               "No focus/down handlers required: styles come from mouse_over, focused, and mouse_down."
             )
           ),
-          Emerge.UI.Input.text("Style showcase input", [
-            width(fill()),
-            padding_xy(10, 8),
-            Font.size(16),
-            Font.color({:color_rgb, {228, 232, 246}}),
-            Background.color({:color_rgb, {58, 62, 90}}),
-            Border.rounded(8),
-            Border.width(1),
-            Border.color({:color_rgb, {110, 120, 162}}),
-            mouse_over([
-              Background.color({:color_rgb, {64, 70, 100}}),
-              Border.color({:color_rgb, {132, 143, 189}})
-            ]),
-            focused([
-              Background.color({:color_rgb, {70, 78, 112}}),
-              Border.color({:color_rgb, {164, 188, 236}})
-            ]),
-            mouse_down([
-              Background.color({:color_rgb, {63, 70, 100}}),
-              Border.color({:color_rgb, {224, 186, 124}}),
-              move_y(1)
-            ])
-          ]),
+          Emerge.UI.Input.text(
+            [
+              width(fill()),
+              padding_xy(10, 8),
+              Font.size(16),
+              Font.color({:color_rgb, {228, 232, 246}}),
+              Background.color({:color_rgb, {58, 62, 90}}),
+              Border.rounded(8),
+              Border.width(1),
+              Border.color({:color_rgb, {110, 120, 162}}),
+              mouse_over([
+                Background.color({:color_rgb, {64, 70, 100}}),
+                Border.color({:color_rgb, {132, 143, 189}})
+              ]),
+              focused([
+                Background.color({:color_rgb, {70, 78, 112}}),
+                Border.color({:color_rgb, {164, 188, 236}})
+              ]),
+              mouse_down([
+                Background.color({:color_rgb, {63, 70, 100}}),
+                Border.color({:color_rgb, {224, 186, 124}}),
+                move_y(1)
+              ])
+            ],
+            "Style showcase input"
+          ),
           el(
             [Font.size(10), Font.color(@dim_text)],
             text("Merge order: mouse_over -> focused -> mouse_down (later styles win conflicts).")
@@ -909,38 +915,41 @@ defmodule Demo do
             [Font.size(11), Font.color(@dim_text)],
             text("Press fires on click, and also on Enter when this button is focused.")
           ),
-          Emerge.UI.Input.button("Run action", [
-            width(fill()),
-            padding_xy(10, 8),
-            Font.size(14),
-            Font.color({:color_rgb, {230, 234, 246}}),
-            Background.color({:color_rgb, {58, 62, 90}}),
-            Border.rounded(8),
-            Border.width(1),
-            Border.color({:color_rgb, {110, 120, 162}}),
-            on_press({self(), {:demo_event, :button_press}}),
-            on_focus({self(), {:demo_event, :button_focus}}),
-            on_blur({self(), {:demo_event, :button_blur}}),
-            mouse_over([
-              Background.color({:color_rgb, {64, 70, 100}}),
-              Border.color({:color_rgb, {132, 143, 189}})
-            ]),
-            focused([
-              Border.color({:color_rgb, {166, 186, 236}}),
-              Border.glow({:color_rgba, {132, 158, 232, 100}}, 2)
-            ]),
-            mouse_down([
-              Background.color({:color_rgb, {56, 60, 88}}),
-              Border.color({:color_rgb, {176, 190, 228}}),
-              Border.inner_shadow(
-                offset: {0, 1},
-                blur: 6,
-                size: 1,
-                color: {:color_rgba, {0, 0, 0, 120}}
-              ),
-              move_y(1)
-            ])
-          ]),
+          Emerge.UI.Input.button(
+            [
+              width(fill()),
+              padding_xy(10, 8),
+              Font.size(14),
+              Font.color({:color_rgb, {230, 234, 246}}),
+              Background.color({:color_rgb, {58, 62, 90}}),
+              Border.rounded(8),
+              Border.width(1),
+              Border.color({:color_rgb, {110, 120, 162}}),
+              on_press({self(), {:demo_event, :button_press}}),
+              on_focus({self(), {:demo_event, :button_focus}}),
+              on_blur({self(), {:demo_event, :button_blur}}),
+              mouse_over([
+                Background.color({:color_rgb, {64, 70, 100}}),
+                Border.color({:color_rgb, {132, 143, 189}})
+              ]),
+              focused([
+                Border.color({:color_rgb, {166, 186, 236}}),
+                Border.glow({:color_rgba, {132, 158, 232, 100}}, 2)
+              ]),
+              mouse_down([
+                Background.color({:color_rgb, {56, 60, 88}}),
+                Border.color({:color_rgb, {176, 190, 228}}),
+                Border.inner_shadow(
+                  offset: {0, 1},
+                  blur: 6,
+                  size: 1,
+                  color: {:color_rgba, {0, 0, 0, 120}}
+                ),
+                move_y(1)
+              ])
+            ],
+            "Run action"
+          ),
           wrapped_row([width(fill()), spacing_xy(8, 8)], [
             el(
               [
@@ -1029,7 +1038,7 @@ defmodule Demo do
       row([width(fill()), spacing(8)], [
         el(
           [
-            width(fill_portion(1)),
+            width({:fill, 1}),
             padding(8),
             Background.color({:color_rgb, {65, 70, 100}}),
             Border.rounded(8)
@@ -1038,7 +1047,7 @@ defmodule Demo do
         ),
         el(
           [
-            width(fill_portion(2)),
+            width({:fill, 2}),
             padding(8),
             Background.color({:color_rgb, {65, 80, 110}}),
             Border.rounded(8)
@@ -1047,7 +1056,7 @@ defmodule Demo do
         ),
         el(
           [
-            width(fill_portion(3)),
+            width({:fill, 3}),
             padding(8),
             Background.color({:color_rgb, {65, 90, 120}}),
             Border.rounded(8)
@@ -2722,7 +2731,7 @@ defmodule Demo do
         Border.rounded(8),
         in_front(asset_preview_mode_badge(mode_label))
       ],
-      image(source, [width(fill()), height(fill()), image_fit(fit)])
+      image([width(fill()), height(fill()), image_fit(fit)], source)
     )
   end
 
@@ -2833,7 +2842,7 @@ defmodule Demo do
         Border.color({:color_rgba, {214, 220, 236, 220}}),
         Border.rounded(8)
       ],
-      image(source, [width(fill()), height(fill()), image_fit(fit)])
+      image([width(fill()), height(fill()), image_fit(fit)], source)
     )
   end
 
@@ -2933,7 +2942,6 @@ defmodule Demo do
       end
 
     Emerge.UI.Input.button(
-      label,
       [
         key({:menu, page}),
         width(fill()),
@@ -2960,7 +2968,8 @@ defmodule Demo do
           ),
           move_y(1)
         ])
-      ] ++ hover_attrs
+      ] ++ hover_attrs,
+      label
     )
   end
 

@@ -363,18 +363,18 @@ defmodule Emerge.PatchTest do
 
     layout1 =
       row([key(:root)], [
-        el(text("a")),
-        el(text("b")),
-        el(text("c"))
+        el([], text("a")),
+        el([], text("b")),
+        el([], text("c"))
       ])
 
     {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
-        el(text("c")),
-        el(text("a")),
-        el(text("b"))
+        el([], text("c")),
+        el([], text("a")),
+        el([], text("b"))
       ])
 
     {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
@@ -406,7 +406,7 @@ defmodule Emerge.PatchTest do
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
-        el(text("u1")),
+        el([], text("u1")),
         el([key(:b)], text("b"))
       ])
 
@@ -650,32 +650,41 @@ defmodule Emerge.PatchTest do
   defp normalize_value(value), do: value
 
   defp demo_tree(scroll_y) do
-    content_attrs =
-      [
-        width(fill()),
-        height(fill()),
-        padding(8),
-        scrollbar_y(),
-        Background.color({:color_rgb, {40, 40, 60}}),
-        Border.rounded(6)
-      ]
-      |> maybe_add_scroll(scroll_y)
-
-    column([key(:root)], [
-      row([width(fill())], [
-        column([width(px(120)), padding(6)], [
-          el(text("Menu"))
-        ]),
-        column(content_attrs, [
-          el([Font.size(14), Font.color(:white)], text("Page")),
-          el([Font.size(12), Font.color({:color_rgb, {180, 180, 200}})], text("Content"))
+    tree =
+      column([key(:root)], [
+        row([width(fill())], [
+          column([width(px(120)), padding(6)], [
+            el([], text("Menu"))
+          ]),
+          column(
+            [
+              width(fill()),
+              height(fill()),
+              padding(8),
+              scrollbar_y(),
+              Background.color({:color_rgb, {40, 40, 60}}),
+              Border.rounded(6)
+            ],
+            [
+              el([Font.size(14), Font.color(:white)], text("Page")),
+              el([Font.size(12), Font.color({:color_rgb, {180, 180, 200}})], text("Content"))
+            ]
+          )
         ])
       ])
-    ])
+
+    maybe_add_scroll(tree, scroll_y)
   end
 
-  defp maybe_add_scroll(attrs, nil), do: attrs
-  defp maybe_add_scroll(attrs, value), do: [{:scroll_y, value} | attrs]
+  defp maybe_add_scroll(tree, nil), do: tree
+
+  defp maybe_add_scroll(
+         %Emerge.Element{children: [%Emerge.Element{children: [menu, content]} = row]} = tree,
+         value
+       ) do
+    updated_content = %{content | attrs: Map.put(content.attrs, :scroll_y, value)}
+    %{tree | children: [%{row | children: [menu, updated_content]}]}
+  end
 
   defp unwrap_binary({:ok, bin}) when is_binary(bin), do: bin
   defp unwrap_binary(bin) when is_binary(bin), do: bin
