@@ -47,16 +47,16 @@ defmodule EmergeSkia do
   - `0x00000080` = Black at 50% opacity
   """
 
+  alias EmergeSkia.Assets
   alias EmergeSkia.Native
+  alias EmergeSkia.Options
+  alias EmergeSkia.TreeRenderer
   alias EmergeSkia.VideoTarget
 
   @type renderer :: reference()
   @type color :: non_neg_integer()
   @type video_target :: VideoTarget.t()
 
-  @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
-  @default_runtime_max_file_size 25_000_000
-  @default_font_extensions [".ttf", ".otf", ".ttc"]
   @default_asset_timeout_ms 30_000
 
   @doc """
@@ -91,58 +91,22 @@ defmodule EmergeSkia do
   """
   @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
   def start(opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      opts = Keyword.new(opts)
-      asset_config = normalize_asset_config!(opts)
-      backend = Keyword.get(opts, :backend, :wayland)
-      title = Keyword.get(opts, :title, "Emerge")
-      width = Keyword.get(opts, :width, 800)
-      height = Keyword.get(opts, :height, 600)
-      drm_card = Keyword.get(opts, :drm_card)
-      hw_cursor = Keyword.get(opts, :hw_cursor, true)
-      input_log = Keyword.get(opts, :input_log, false)
-      render_log = Keyword.get(opts, :render_log, false)
+    opts = Options.normalize_start_keyword_opts!(opts)
+    asset_config = Assets.normalize_asset_config!(opts)
 
-      if Keyword.has_key?(opts, :dispatch_mode) do
-        raise ArgumentError,
-              "dispatch_mode option has been removed; EmergeSkia now runs a single dispatch engine"
-      end
+    case Native.start_opts(Options.build_start_native_opts!(opts)) do
+      ref when is_reference(ref) ->
+        case Assets.initialize_renderer_assets(ref, asset_config) do
+          :ok ->
+            {:ok, ref}
 
-      backend =
-        case backend do
-          value when is_atom(value) -> Atom.to_string(value)
-          value when is_binary(value) -> value
-          _ -> raise ArgumentError, "backend must be an atom or string"
+          {:error, reason} ->
+            _ = Native.stop(ref)
+            {:error, reason}
         end
 
-      drm_card = if is_nil(drm_card), do: nil, else: to_string(drm_card)
-
-      case Native.start_opts(%{
-             backend: backend,
-             title: title,
-             width: width,
-             height: height,
-             drm_card: drm_card,
-             hw_cursor: hw_cursor,
-             input_log: input_log,
-             render_log: render_log
-           }) do
-        ref when is_reference(ref) ->
-          case initialize_renderer_assets(ref, asset_config) do
-            :ok ->
-              {:ok, ref}
-
-            {:error, reason} ->
-              _ = Native.stop(ref)
-              {:error, reason}
-          end
-
-        error ->
-          {:error, error}
-      end
-    else
-      raise ArgumentError,
-            "EmergeSkia.start/1 expects a keyword list, for example: EmergeSkia.start(otp_app: :my_app, ...)"
+      error ->
+        {:error, error}
     end
   end
 
@@ -245,16 +209,7 @@ defmodule EmergeSkia do
   @spec upload_tree(renderer(), Emerge.Element.t()) ::
           {Emerge.DiffState.t(), Emerge.Element.t()}
   def upload_tree(renderer, tree) do
-    state = Emerge.diff_state_new()
-    {full_bin, state, assigned} = Emerge.encode_full(state, tree)
-
-    case Native.renderer_upload(renderer, full_bin) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, reason} -> raise "renderer_upload failed: #{reason}"
-    end
-
-    {state, assigned}
+    TreeRenderer.upload_tree(renderer, tree)
   end
 
   @doc """
@@ -266,15 +221,7 @@ defmodule EmergeSkia do
   @spec patch_tree(renderer(), Emerge.DiffState.t(), Emerge.Element.t()) ::
           {Emerge.DiffState.t(), Emerge.Element.t()}
   def patch_tree(renderer, state, tree) do
-    {patch_bin, state, assigned} = Emerge.diff_state_update(state, tree)
-
-    case Native.renderer_patch(renderer, patch_bin) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, reason} -> raise "renderer_patch failed: #{reason}"
-    end
-
-    {state, assigned}
+    TreeRenderer.patch_tree(renderer, state, tree)
   end
 
   @doc """
@@ -321,10 +268,7 @@ defmodule EmergeSkia do
   @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
           :ok | {:error, term()}
   def load_font_file(name, weight, italic, path) do
-    case File.read(path) do
-      {:ok, data} -> normalize_native_ok(Native.load_font_nif(name, weight, italic, data))
-      {:error, reason} -> {:error, reason}
-    end
+    Assets.load_font_file(name, weight, italic, path)
   end
 
   # ===========================================================================
@@ -370,61 +314,7 @@ defmodule EmergeSkia do
   """
   @spec render_to_pixels(Emerge.Element.t(), keyword()) :: binary()
   def render_to_pixels(tree, opts) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      opts = Keyword.new(opts)
-      asset_config = normalize_asset_config!(opts)
-      width = opts |> Keyword.fetch!(:width) |> normalize_positive_integer!(":width")
-      height = opts |> Keyword.fetch!(:height) |> normalize_positive_integer!(":height")
-      scale = opts |> Keyword.get(:scale, 1.0) |> normalize_positive_number!(":scale")
-
-      asset_mode =
-        opts
-        |> Keyword.get(:asset_mode, :await)
-        |> normalize_asset_mode!()
-
-      asset_timeout_ms =
-        opts
-        |> Keyword.get(:asset_timeout_ms, @default_asset_timeout_ms)
-        |> normalize_positive_integer!(":asset_timeout_ms")
-
-      with :ok <- preload_font_assets(asset_config) do
-        state = Emerge.diff_state_new()
-        {full_bin, _state, _assigned} = Emerge.encode_full(state, tree)
-
-        case Native.render_tree_to_pixels_nif(
-               full_bin,
-               width,
-               height,
-               scale,
-               [asset_config.priv_dir],
-               asset_config.runtime_enabled,
-               asset_config.runtime_allowlist,
-               asset_config.runtime_follow_symlinks,
-               asset_config.runtime_max_file_size,
-               asset_config.runtime_extensions,
-               asset_mode,
-               asset_timeout_ms
-             ) do
-          pixels when is_binary(pixels) ->
-            pixels
-
-          {:ok, pixels} when is_binary(pixels) ->
-            pixels
-
-          {:error, reason} ->
-            raise "render_tree_to_pixels failed: #{reason}"
-
-          other ->
-            raise "render_tree_to_pixels returned unexpected result: #{inspect(other)}"
-        end
-      else
-        {:error, reason} ->
-          raise "render_tree_to_pixels failed: #{inspect(reason)}"
-      end
-    else
-      raise ArgumentError,
-            "EmergeSkia.render_to_pixels/2 expects a keyword list, for example: EmergeSkia.render_to_pixels(tree, otp_app: :my_app, width: 800, height: 600)"
-    end
+    TreeRenderer.render_to_pixels(tree, opts, @default_asset_timeout_ms)
   end
 
   @doc """
@@ -582,317 +472,8 @@ defmodule EmergeSkia do
     Native.set_input_target(renderer, pid)
   end
 
-  defp initialize_renderer_assets(renderer, asset_config) do
-    with :ok <- configure_assets_for_renderer(renderer, asset_config),
-         :ok <- preload_font_assets(asset_config) do
-      :ok
-    end
-  end
-
-  defp configure_assets_for_renderer(renderer, asset_config) do
-    case Native.configure_assets_nif(
-           renderer,
-           [asset_config.priv_dir],
-           asset_config.runtime_enabled,
-           asset_config.runtime_allowlist,
-           asset_config.runtime_follow_symlinks,
-           asset_config.runtime_max_file_size,
-           asset_config.runtime_extensions
-         ) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:configure_assets_failed, reason}}
-      other -> {:error, {:configure_assets_failed, other}}
-    end
-  end
-
-  defp preload_font_assets(%{fonts: []}), do: :ok
-
-  defp preload_font_assets(%{fonts: fonts, priv_dir: priv_dir}) do
-    Enum.reduce_while(fonts, :ok, fn font, :ok ->
-      absolute_path = Path.join(priv_dir, font.source)
-
-      case File.read(absolute_path) do
-        {:ok, data} ->
-          case normalize_native_ok(
-                 Native.load_font_nif(font.family, font.weight, font.italic, data)
-               ) do
-            :ok ->
-              {:cont, :ok}
-
-            {:error, reason} ->
-              {:halt,
-               {:error,
-                {:font_asset_load_failed,
-                 %{font: font_key(font), source: font.source, reason: reason}}}}
-          end
-
-        {:error, reason} ->
-          {:halt,
-           {:error,
-            {:font_asset_read_failed,
-             %{font: font_key(font), source: font.source, path: absolute_path, reason: reason}}}}
-      end
-    end)
-  end
-
   defp normalize_native_ok(:ok), do: :ok
   defp normalize_native_ok({:ok, _}), do: :ok
   defp normalize_native_ok({:error, reason}), do: {:error, reason}
   defp normalize_native_ok(other), do: {:error, {:unexpected_native_result, other}}
-
-  defp normalize_asset_config!(opts) do
-    otp_app =
-      case Keyword.fetch(opts, :otp_app) do
-        {:ok, value} when is_atom(value) ->
-          value
-
-        {:ok, value} ->
-          raise ArgumentError,
-                "otp_app must be an atom, got: #{inspect(value)}"
-
-        :error ->
-          raise ArgumentError,
-                "missing required :otp_app option; use EmergeSkia.start(otp_app: :my_app, ...)"
-      end
-
-    assets_opts =
-      opts
-      |> Keyword.get(:assets, [])
-      |> normalize_keyword_or_map!("assets")
-
-    runtime_opts =
-      assets_opts
-      |> Keyword.get(:runtime_paths, [])
-      |> normalize_keyword_or_map!("assets.runtime_paths")
-
-    runtime_allowlist =
-      runtime_opts
-      |> Keyword.get(:allowlist, [])
-      |> normalize_path_list!("assets.runtime_paths.allowlist")
-
-    runtime_extensions =
-      runtime_opts
-      |> Keyword.get(:extensions, @default_runtime_extensions)
-      |> normalize_string_list!("assets.runtime_paths.extensions")
-
-    fonts =
-      assets_opts
-      |> Keyword.get(:fonts, [])
-      |> normalize_fonts!()
-
-    runtime_max_file_size =
-      Keyword.get(runtime_opts, :max_file_size, @default_runtime_max_file_size)
-
-    runtime_enabled = Keyword.get(runtime_opts, :enabled, false)
-    runtime_follow_symlinks = Keyword.get(runtime_opts, :follow_symlinks, false)
-
-    if not is_boolean(runtime_enabled) do
-      raise ArgumentError, "assets.runtime_paths.enabled must be a boolean"
-    end
-
-    if not is_boolean(runtime_follow_symlinks) do
-      raise ArgumentError, "assets.runtime_paths.follow_symlinks must be a boolean"
-    end
-
-    if not (is_integer(runtime_max_file_size) and runtime_max_file_size > 0) do
-      raise ArgumentError, "assets.runtime_paths.max_file_size must be a positive integer"
-    end
-
-    %{
-      otp_app: otp_app,
-      priv_dir: otp_app_priv_dir!(otp_app),
-      runtime_enabled: runtime_enabled,
-      runtime_allowlist: runtime_allowlist,
-      runtime_follow_symlinks: runtime_follow_symlinks,
-      runtime_max_file_size: runtime_max_file_size,
-      runtime_extensions: runtime_extensions,
-      fonts: fonts
-    }
-  end
-
-  defp normalize_fonts!(fonts) do
-    entries = normalize_list!(fonts, "assets.fonts")
-
-    normalized =
-      Enum.map(entries, fn entry ->
-        opts = normalize_keyword_or_map!(entry, "assets.fonts[]")
-
-        family =
-          opts
-          |> Keyword.fetch!(:family)
-          |> normalize_non_empty_string!("assets.fonts[].family")
-
-        source =
-          opts
-          |> Keyword.fetch!(:source)
-          |> normalize_font_source!()
-
-        weight =
-          opts
-          |> Keyword.get(:weight, 400)
-          |> normalize_font_weight!()
-
-        italic =
-          opts
-          |> Keyword.get(:italic, false)
-          |> normalize_boolean!("assets.fonts[].italic")
-
-        extension = Path.extname(source) |> String.downcase()
-
-        if extension not in @default_font_extensions do
-          raise ArgumentError,
-                "assets.fonts[].source extension must be one of #{inspect(@default_font_extensions)}, got: #{inspect(source)}"
-        end
-
-        %{
-          family: family,
-          source: source,
-          weight: weight,
-          italic: italic
-        }
-      end)
-
-    ensure_unique_fonts!(normalized)
-    normalized
-  end
-
-  defp normalize_path_list!(list, field_name) do
-    strings = normalize_string_list!(list, field_name)
-    Enum.map(strings, &Path.expand/1)
-  end
-
-  defp normalize_list!(list, _field_name) when is_list(list), do: list
-
-  defp normalize_list!(value, field_name) do
-    raise ArgumentError, "#{field_name} must be a list, got: #{inspect(value)}"
-  end
-
-  defp normalize_string_list!(list, field_name) do
-    if not (is_list(list) and Enum.all?(list, &is_binary/1)) do
-      raise ArgumentError, "#{field_name} must be a list of strings"
-    end
-
-    list
-  end
-
-  defp normalize_non_empty_string!(value, field_name) when is_binary(value) do
-    case String.trim(value) do
-      "" -> raise ArgumentError, "#{field_name} must not be empty"
-      trimmed -> trimmed
-    end
-  end
-
-  defp normalize_non_empty_string!(value, field_name) do
-    raise ArgumentError, "#{field_name} must be a string, got: #{inspect(value)}"
-  end
-
-  defp normalize_boolean!(value, _field_name) when is_boolean(value), do: value
-
-  defp normalize_boolean!(value, field_name) do
-    raise ArgumentError, "#{field_name} must be a boolean, got: #{inspect(value)}"
-  end
-
-  defp normalize_font_weight!(weight) when is_integer(weight) and weight in 100..900, do: weight
-
-  defp normalize_font_weight!(weight) do
-    raise ArgumentError,
-          "assets.fonts[].weight must be an integer between 100 and 900, got: #{inspect(weight)}"
-  end
-
-  defp normalize_font_source!(%Emerge.Assets.Ref{path: path}) when is_binary(path) do
-    normalize_logical_source!(path)
-  end
-
-  defp normalize_font_source!(path) when is_binary(path) do
-    normalize_logical_source!(path)
-  end
-
-  defp normalize_font_source!(other) do
-    raise ArgumentError,
-          "assets.fonts[].source must be a logical string path or %Emerge.Assets.Ref{}, got: #{inspect(other)}"
-  end
-
-  defp normalize_logical_source!(path) do
-    normalized =
-      path
-      |> String.trim()
-      |> String.trim_leading("/")
-
-    if normalized == "" do
-      raise ArgumentError, "assets.fonts[].source must not be empty"
-    end
-
-    if Enum.any?(Path.split(normalized), &(&1 == "..")) do
-      raise ArgumentError,
-            "assets.fonts[].source must be relative and may not contain '..': #{inspect(path)}"
-    end
-
-    normalized
-  end
-
-  defp ensure_unique_fonts!(fonts) do
-    keys = Enum.map(fonts, &font_key/1)
-    duplicates = keys -- Enum.uniq(keys)
-
-    if duplicates != [] do
-      duplicates = duplicates |> Enum.uniq() |> Enum.map(&inspect/1) |> Enum.join(", ")
-      raise ArgumentError, "duplicate assets.fonts entries for variants: #{duplicates}"
-    end
-  end
-
-  defp font_key(%{family: family, weight: weight, italic: italic}), do: {family, weight, italic}
-
-  defp normalize_keyword_or_map!(value, field_name) do
-    cond do
-      is_map(value) ->
-        Map.to_list(value)
-
-      is_list(value) and Keyword.keyword?(value) ->
-        Keyword.new(value)
-
-      true ->
-        raise ArgumentError, "#{field_name} must be a keyword list or map, got: #{inspect(value)}"
-    end
-  end
-
-  defp normalize_positive_integer!(value, _field_name)
-       when is_integer(value) and value > 0,
-       do: value
-
-  defp normalize_positive_integer!(value, field_name) do
-    raise ArgumentError, "#{field_name} must be a positive integer, got: #{inspect(value)}"
-  end
-
-  defp normalize_positive_number!(value, _field_name)
-       when is_integer(value) and value > 0,
-       do: value / 1.0
-
-  defp normalize_positive_number!(value, _field_name)
-       when is_float(value) and value > 0.0,
-       do: value
-
-  defp normalize_positive_number!(value, field_name) do
-    raise ArgumentError, "#{field_name} must be a positive number, got: #{inspect(value)}"
-  end
-
-  defp normalize_asset_mode!(:await), do: "await"
-  defp normalize_asset_mode!(:snapshot), do: "snapshot"
-  defp normalize_asset_mode!("await"), do: "await"
-  defp normalize_asset_mode!("snapshot"), do: "snapshot"
-
-  defp normalize_asset_mode!(value) do
-    raise ArgumentError,
-          ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
-  end
-
-  defp otp_app_priv_dir!(otp_app) do
-    case :code.priv_dir(otp_app) do
-      path when is_list(path) ->
-        List.to_string(path)
-
-      _ ->
-        raise ArgumentError,
-              "could not resolve priv dir for otp_app #{inspect(otp_app)}; ensure the application is part of your release"
-    end
-  end
 end
