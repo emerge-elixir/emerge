@@ -4,7 +4,7 @@ defmodule Emerge.UITest do
   import ExUnit.CaptureIO
   import Emerge.UI
 
-  alias Emerge.UI.{Background, Border, Font}
+  alias Emerge.UI.{Background, Border, Font, Svg}
   alias EmergeSkia.VideoTarget
 
   test "mouse_over stores decorative attrs" do
@@ -14,6 +14,7 @@ defmodule Emerge.UITest do
           mouse_over([
             Background.color(:red),
             Font.color(:white),
+            Svg.color(:cyan),
             Font.size(18),
             Font.underline(),
             Font.strike(),
@@ -29,6 +30,7 @@ defmodule Emerge.UITest do
     assert element.attrs.mouse_over == %{
              background: :red,
              font_color: :white,
+             svg_color: :cyan,
              font_size: 18,
              font_underline: true,
              font_strike: true,
@@ -44,6 +46,21 @@ defmodule Emerge.UITest do
     assert Font.strike() == {:font_strike, true}
     assert Font.letter_spacing(2.5) == {:font_letter_spacing, 2.5}
     assert Font.word_spacing(4) == {:font_word_spacing, 4}
+  end
+
+  test "svg/2 accepts Svg.color and marks svg expectations" do
+    element = svg([width(px(24)), height(px(24)), Svg.color(:white)], "icons/cloud.svg")
+
+    assert element.type == :image
+    assert element.attrs.image_src == "icons/cloud.svg"
+    assert element.attrs.svg_color == :white
+    assert element.attrs.svg_expected == true
+  end
+
+  test "image/2 rejects Svg.color attrs" do
+    assert_raise ArgumentError, ~r/image\/2 does not support attribute :svg_color/, fn ->
+      image([width(px(24)), height(px(24)), Svg.color(:white)], "icons/cloud.svg")
+    end
   end
 
   test "mouse_over rejects non-decorative attrs" do

@@ -89,7 +89,7 @@ defmodule Emerge.UI do
 
   @reserved_attr_keys MapSet.new(
                         TreeAttrs.runtime_attrs() ++
-                          [:id, :content, :image_src, :image_size, :video_target]
+                          [:id, :content, :image_src, :image_size, :video_target, :svg_expected]
                       )
 
   @override_warning_store_key :emerge_ui_override_warnings
@@ -242,6 +242,22 @@ defmodule Emerge.UI do
 
     attrs
     |> Map.put(:image_src, source)
+    |> build_element(:image, [])
+  end
+
+  @doc """
+  An SVG element.
+
+  Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
+  template tinting to all visible pixels.
+  """
+  def svg(attrs, source) do
+    attrs = prepare_attrs!("svg/2", attrs, extra_public_attr_keys: [:svg_color])
+    source = validate_image_source!("svg/2", source)
+
+    attrs
+    |> Map.put(:image_src, source)
+    |> Map.put(:svg_expected, true)
     |> build_element(:image, [])
   end
 
@@ -483,10 +499,11 @@ defmodule Emerge.UI do
 
   defp parse_attrs(attrs, attrs_owner, opts \\ []) do
     warn_overrides = Keyword.get(opts, :warn_overrides, true)
+    extra_public_attr_keys = MapSet.new(Keyword.get(opts, :extra_public_attr_keys, []))
 
     parsed =
       Enum.reduce(attrs, %{}, fn attr, acc ->
-        {key, value} = validate_attr_entry!(attrs_owner, attr)
+        {key, value} = validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys)
 
         case key do
           :box_shadow ->
@@ -538,7 +555,8 @@ defmodule Emerge.UI do
     end
   end
 
-  defp validate_attr_entry!(attrs_owner, {key, value}) when is_atom(key) do
+  defp validate_attr_entry!(attrs_owner, {key, value}, extra_public_attr_keys)
+       when is_atom(key) do
     cond do
       key == :id ->
         raise ArgumentError, "id is not supported; use key instead"
@@ -550,7 +568,7 @@ defmodule Emerge.UI do
       MapSet.member?(@state_style_key_set, key) ->
         {key, AttrValidation.normalize_state_style!(key, value)}
 
-      MapSet.member?(@public_attr_keys, key) ->
+      MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
         validate_public_attr_value!(attrs_owner, key, value)
         {key, value}
 
@@ -560,7 +578,7 @@ defmodule Emerge.UI do
     end
   end
 
-  defp validate_attr_entry!(attrs_owner, other) do
+  defp validate_attr_entry!(attrs_owner, other, _extra_public_attr_keys) do
     raise ArgumentError,
           "#{attrs_owner} expects attributes to be {key, value} tuples, got: #{inspect(other)}"
   end
@@ -629,6 +647,9 @@ defmodule Emerge.UI do
   defp validate_public_attr_value!(attrs_owner, key, value)
        when key in [:border_color, :font_color],
        do: AttrValidation.normalize_decorative_value!(attrs_owner, key, value)
+
+  defp validate_public_attr_value!(attrs_owner, :svg_color, value),
+    do: AttrValidation.normalize_decorative_value!(attrs_owner, :svg_color, value)
 
   defp validate_public_attr_value!(attrs_owner, key, value)
        when key in [
@@ -738,9 +759,9 @@ defmodule Emerge.UI do
     }
   end
 
-  defp prepare_attrs!(function_name, attrs) do
+  defp prepare_attrs!(function_name, attrs, opts \\ []) do
     attrs = validate_attrs_list!(function_name, attrs)
-    parse_attrs(attrs, function_name)
+    parse_attrs(attrs, function_name, opts)
   end
 
   defp prepare_single_child!(function_name, attrs, child) do
@@ -928,6 +949,13 @@ defmodule Emerge.UI do
 
     @doc "Tile a background image on the Y axis"
     def tiled_y(source), do: {:background, {:image, source, :repeat_y}}
+  end
+
+  defmodule Svg do
+    @moduledoc "SVG-specific styling attributes"
+
+    @doc "Apply template tinting to all visible SVG pixels"
+    def color(c), do: {:svg_color, c}
   end
 
   defmodule Border do

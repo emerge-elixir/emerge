@@ -31,7 +31,7 @@ defmodule Emerge.AttrValidation do
   end
 
   def normalize_decorative_value!(attrs_owner, key, value)
-      when key in [:border_color, :font_color] do
+      when key in [:border_color, :font_color, :svg_color] do
     validate_color_attr!(attrs_owner, key, value)
     value
   end

@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use resvg::usvg;
 use skia_safe::{
-    BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, Matrix,
-    MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions,
-    Shader, Surface, TileMode, Typeface, Vector,
-    canvas::SrcRectConstraint,
+    BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter,
+    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect,
+    SamplingOptions, Shader, Surface, TileMode, Typeface, Vector,
+    canvas::{SaveLayerRec, SrcRectConstraint},
     dash_path_effect,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
@@ -70,8 +70,8 @@ pub enum DrawCmd {
     TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
     /// Gradient: x, y, w, h, from_color, to_color, angle, radius
     Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
-    /// Image draw: x, y, w, h, image_id, fit
-    Image(f32, f32, f32, f32, String, ImageFit),
+    /// Image draw: x, y, w, h, image_id, fit, optional template tint
+    Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
     /// Video draw: x, y, w, h, target_id, fit
     Video(f32, f32, f32, f32, String, ImageFit),
     /// Loading placeholder: x, y, w, h
@@ -288,6 +288,12 @@ enum CachedAssetKind {
     Vector(usvg::Tree),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetKind {
+    Raster,
+    Vector,
+}
+
 #[derive(Clone)]
 struct CachedAsset {
     kind: CachedAssetKind,
@@ -354,6 +360,13 @@ fn cached_asset(id: &str) -> Option<Arc<CachedAsset>> {
 
 pub fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
     cached_asset(id).map(|cached| (cached.width, cached.height))
+}
+
+pub fn asset_kind(id: &str) -> Option<AssetKind> {
+    cached_asset(id).map(|cached| match &cached.kind {
+        CachedAssetKind::Raster(_) => AssetKind::Raster,
+        CachedAssetKind::Vector(_) => AssetKind::Vector,
+    })
 }
 
 fn rendered_vector_key(asset_id: &str, width: u32, height: u32) -> RenderedVectorKey {
@@ -863,7 +876,7 @@ impl Renderer {
                     }
                 }
 
-                DrawCmd::Image(x, y, w, h, image_id, fit) => {
+                DrawCmd::Image(x, y, w, h, image_id, fit, svg_tint) => {
                     draw_cached_asset_with_fit(
                         canvas,
                         ImageDrawSpec {
@@ -875,6 +888,7 @@ impl Renderer {
                             },
                             image_id,
                             fit: *fit,
+                            svg_tint: *svg_tint,
                         },
                     );
                 }
@@ -897,6 +911,7 @@ impl Renderer {
                                 },
                                 image_id: target_id,
                                 fit: *fit,
+                                svg_tint: None,
                             },
                         );
                     }
@@ -1017,6 +1032,7 @@ struct ImageDrawSpec<'a> {
     rect: RectSpec,
     image_id: &'a str,
     fit: ImageFit,
+    svg_tint: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1098,16 +1114,18 @@ fn draw_image_with_fit(
 
             let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
             let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
-            canvas.draw_image_rect_with_sampling_options(
+            draw_image_rect_with_optional_template_tint(
+                canvas,
                 image,
                 Some((&src_rect, SrcRectConstraint::Strict)),
                 dst_rect,
                 sampling,
                 &paint,
+                spec.svg_tint,
             );
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
-            draw_tiled_image(canvas, image, x, y, w, h, spec.fit);
+            draw_tiled_image(canvas, image, x, y, w, h, spec.fit, spec.svg_tint);
         }
     }
 }
@@ -1121,7 +1139,69 @@ fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f3
     paint.set_anti_alias(false);
     let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
     let dst_rect = Rect::from_xywh(x, y, w, h);
-    canvas.draw_image_rect_with_sampling_options(image, None, dst_rect, sampling, &paint);
+    draw_image_rect_with_optional_template_tint(
+        canvas, image, None, dst_rect, sampling, &paint, None,
+    );
+}
+
+fn draw_image_fill_rect_tinted(
+    canvas: &skia_safe::Canvas,
+    image: &Image,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    tint: Option<u32>,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    if tint.is_none() {
+        draw_image_fill_rect(canvas, image, x, y, w, h);
+        return;
+    }
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(false);
+    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+    let dst_rect = Rect::from_xywh(x, y, w, h);
+    draw_image_rect_with_optional_template_tint(
+        canvas, image, None, dst_rect, sampling, &paint, tint,
+    );
+}
+
+fn draw_image_rect_with_optional_template_tint(
+    canvas: &skia_safe::Canvas,
+    image: &Image,
+    src: Option<(&Rect, SrcRectConstraint)>,
+    dst_rect: Rect,
+    sampling: SamplingOptions,
+    paint: &Paint,
+    tint: Option<u32>,
+) {
+    if let Some(tint) = tint {
+        draw_with_template_tint(canvas, dst_rect, tint, |canvas| {
+            canvas.draw_image_rect_with_sampling_options(image, src, dst_rect, sampling, paint);
+        });
+    } else {
+        canvas.draw_image_rect_with_sampling_options(image, src, dst_rect, sampling, paint);
+    }
+}
+
+fn draw_with_template_tint<F>(canvas: &skia_safe::Canvas, bounds: Rect, tint: u32, draw: F)
+where
+    F: FnOnce(&skia_safe::Canvas),
+{
+    let layer_rec = SaveLayerRec::default().bounds(&bounds);
+    canvas.save_layer(&layer_rec);
+    draw(canvas);
+
+    let mut tint_paint = Paint::default();
+    tint_paint.set_color(color_from_u32(tint));
+    tint_paint.set_blend_mode(BlendMode::SrcIn);
+    canvas.draw_rect(bounds, &tint_paint);
+    canvas.restore();
 }
 
 fn get_or_rasterize_vector_variant(
@@ -1172,7 +1252,15 @@ fn draw_vector_asset_with_fit(
                 let clip = Rect::from_xywh(x, y, w, h);
                 canvas.clip_rect(clip, skia_safe::ClipOp::Intersect, true);
             }
-            draw_image_fill_rect(canvas, &image, draw_x, draw_y, draw_w, draw_h);
+            draw_image_fill_rect_tinted(
+                canvas,
+                &image,
+                draw_x,
+                draw_y,
+                draw_w,
+                draw_h,
+                spec.svg_tint,
+            );
             canvas.restore();
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
@@ -1182,7 +1270,7 @@ fn draw_vector_asset_with_fit(
                 return;
             };
 
-            draw_tiled_image(canvas, &image, x, y, w, h, spec.fit);
+            draw_tiled_image(canvas, &image, x, y, w, h, spec.fit, spec.svg_tint);
         }
     }
 }
@@ -1195,6 +1283,7 @@ fn draw_tiled_image(
     w: f32,
     h: f32,
     fit: ImageFit,
+    tint: Option<u32>,
 ) {
     let Some(tile_modes) = tile_modes_for_fit(fit) else {
         return;
@@ -1211,7 +1300,13 @@ fn draw_tiled_image(
     paint.set_shader(shader);
 
     let dst_rect = Rect::from_xywh(x, y, w, h);
-    canvas.draw_rect(dst_rect, &paint);
+    if let Some(tint) = tint {
+        draw_with_template_tint(canvas, dst_rect, tint, |canvas| {
+            canvas.draw_rect(dst_rect, &paint);
+        });
+    } else {
+        canvas.draw_rect(dst_rect, &paint);
+    }
 }
 
 fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<Image> {
@@ -2127,6 +2222,7 @@ mod tests {
                 15.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2179,6 +2275,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
 
@@ -2214,6 +2311,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::RepeatX,
+                None,
             )],
         );
 
@@ -2248,6 +2346,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::RepeatY,
+                None,
             )],
         );
 
@@ -2286,6 +2385,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2320,6 +2420,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
 
@@ -2329,6 +2430,80 @@ mod tests {
         assert_eq!(rgba_at(&pixels, 8, 1, 1), (255, 255, 0, 255));
         assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 2, 0));
         assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 0, 2));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_cover_fit_template_tint_flattens_visible_pixels() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_cover_fit_template_tint_flattens_visible_pixels";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+                <rect x="0" y="0" width="1" height="1" fill="#ff0000"/>
+                <rect x="1" y="0" width="1" height="1" fill="#00ff00"/>
+                <rect x="0" y="1" width="1" height="1" fill="#0000ff"/>
+                <rect x="1" y="1" width="1" height="1" fill="#ffff00"/>
+            </svg>
+        "##;
+
+        cache_test_svg_asset(image_id, 2, 2, svg);
+
+        let pixels = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+                Some(0xFFFFFFFF),
+            )],
+        );
+
+        assert_eq!(rgba_at(&pixels, 8, 1, 1), (255, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 6, 1), (255, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 6), (255, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 6, 6), (255, 255, 255, 255));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_repeat_fit_template_tint_flattens_tiled_pixels() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_repeat_fit_template_tint_flattens_tiled_pixels";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+                <rect x="0" y="0" width="1" height="1" fill="#ff0000"/>
+                <rect x="1" y="0" width="1" height="1" fill="#00ff00"/>
+                <rect x="0" y="1" width="1" height="1" fill="#0000ff"/>
+                <rect x="1" y="1" width="1" height="1" fill="#ffff00"/>
+            </svg>
+        "##;
+
+        cache_test_svg_asset(image_id, 2, 2, svg);
+
+        let pixels = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+                Some(0x00FFFFFF),
+            )],
+        );
+
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), (0, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 0), (0, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 0, 1), (0, 255, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 2, 2), (0, 255, 255, 255));
 
         remove_asset(image_id);
     }
@@ -2357,6 +2532,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
         let second = render_commands_to_pixels(
@@ -2369,6 +2545,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2402,6 +2579,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
         render_commands_to_pixels(
@@ -2414,6 +2592,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2449,6 +2628,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
         let second = render_commands_to_pixels(
@@ -2461,6 +2641,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
 
@@ -2499,6 +2680,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2519,6 +2701,7 @@ mod tests {
                 4.0,
                 image_id.to_string(),
                 ImageFit::Cover,
+                None,
             )],
         );
 
@@ -2552,6 +2735,7 @@ mod tests {
                 513.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
         render_commands_to_pixels(
@@ -2564,6 +2748,7 @@ mod tests {
                 513.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
+                None,
             )],
         );
 
@@ -2634,6 +2819,7 @@ mod tests {
                         },
                         image_id,
                         fit: ImageFit::Cover,
+                        svg_tint: None,
                     },
                 );
                 canvas.restore();

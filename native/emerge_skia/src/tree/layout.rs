@@ -452,6 +452,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         }),
         font_size: attrs.font_size.map(|s| s * scale_f64),
         font_color: attrs.font_color.clone(),
+        svg_color: attrs.svg_color.clone(),
+        svg_expected: attrs.svg_expected,
         font: attrs.font.clone(),
         font_weight: attrs.font_weight.clone(),
         font_style: attrs.font_style.clone(),
@@ -497,6 +499,7 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
                 .collect()
         }),
         font_color: attrs.font_color.clone(),
+        svg_color: attrs.svg_color.clone(),
         font_size: attrs.font_size.map(|v| v * scale),
         font_underline: attrs.font_underline,
         font_strike: attrs.font_strike,
@@ -544,6 +547,9 @@ fn apply_decorative_style(attrs: &mut Attrs, style: &MouseOverAttrs) {
     }
     if let Some(font_color) = style.font_color.clone() {
         attrs.font_color = Some(font_color);
+    }
+    if let Some(svg_color) = style.svg_color.clone() {
+        attrs.svg_color = Some(svg_color);
     }
     if let Some(font_size) = style.font_size {
         attrs.font_size = Some(font_size);
