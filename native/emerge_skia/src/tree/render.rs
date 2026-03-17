@@ -91,6 +91,7 @@ fn build_element_scope(
     let radius = attrs.border_radius.as_ref();
     let scene_state = resolve_node_state(element, scene_ctx);
     let render_frame = scene_state
+        .as_ref()
         .map(|state| state.adjusted_frame)
         .unwrap_or(frame);
 
@@ -136,7 +137,7 @@ fn build_element_scope(
         event_acc.as_deref_mut(),
         &next_scroll_contexts,
         collect_events,
-        scene_state,
+        scene_state.clone(),
     ) {
         scope.items.push(RenderItem::Scope(content_scope));
     }
@@ -154,7 +155,7 @@ fn build_element_scope(
         event_acc.as_deref_mut(),
         scroll_contexts,
         collect_events,
-        scene_state,
+        scene_state.clone(),
     ) {
         scope.items.push(RenderItem::Scope(front_scope));
     }
@@ -204,7 +205,7 @@ fn build_host_content_scope(
         event_acc.as_deref_mut(),
         scroll_contexts,
         collect_events,
-        scene_state,
+        scene_state.clone(),
     ) {
         items.push(RenderItem::Scope(behind_scope));
     }
@@ -228,7 +229,7 @@ fn build_host_content_scope(
             event_acc.as_deref_mut(),
             scroll_contexts,
             collect_events,
-            scene_state,
+            scene_state.clone(),
         ));
     } else if let Some(children_scope) = build_children_scope(
         tree,
@@ -239,7 +240,7 @@ fn build_host_content_scope(
         event_acc.as_deref_mut(),
         scroll_contexts,
         collect_events,
-        scene_state,
+        scene_state.clone(),
     ) {
         items.push(RenderItem::Scope(children_scope));
     }
@@ -255,6 +256,7 @@ fn build_host_content_scope(
     }
 
     let host_clip = scene_state
+        .as_ref()
         .map(|state| state.host_clip)
         .unwrap_or_else(|| super::geometry::host_clip_shape(render_frame, attrs));
 
@@ -292,7 +294,7 @@ fn build_front_nearby_scope(
             event_acc.as_deref_mut(),
             scroll_contexts,
             collect_events,
-            scene_state,
+            scene_state.clone(),
         ) {
             items.push(RenderItem::Scope(scope));
         }
@@ -360,6 +362,7 @@ fn build_children_scope(
             scroll_contexts,
             collect_events,
             scene_state
+                .clone()
                 .map(|state| {
                     next_scene_context(state, super::element::RetainedPaintPhase::Children)
                 })
@@ -387,8 +390,9 @@ fn build_paragraph_items(
     scene_state: Option<super::scene::ResolvedNodeState>,
 ) -> Vec<RenderItem> {
     let mut items = Vec::new();
-    let child_scene_ctx = paragraph_children_scene_context(scene_state);
+    let child_scene_ctx = paragraph_children_scene_context(scene_state.clone());
     let fragment_offset = scene_state
+        .as_ref()
         .map(|state| {
             (
                 state.adjusted_frame.x - state.frame.x,
@@ -404,12 +408,12 @@ fn build_paragraph_items(
                 child.id,
                 element_context,
                 text_input_focused,
-                text_input_cursor_area,
-                event_acc.as_deref_mut(),
-                scroll_contexts,
-                collect_events,
-                child_scene_ctx,
-            ) {
+                    text_input_cursor_area,
+                    event_acc.as_deref_mut(),
+                    scroll_contexts,
+                    collect_events,
+                    child_scene_ctx.clone(),
+                ) {
                 items.push(RenderItem::Scope(scope));
             }
         }
@@ -420,7 +424,7 @@ fn build_paragraph_items(
                     child.id,
                     acc,
                     scroll_contexts,
-                    child_scene_ctx,
+                    child_scene_ctx.clone(),
                 );
             }
         }
