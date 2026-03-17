@@ -2,7 +2,7 @@ use super::box_model::{border_radius_uniform, content_rect};
 use super::color::color_to_u32;
 use super::scope::{RenderItem, RenderScope};
 use crate::assets::{self, AssetStatus};
-use crate::renderer::DrawCmd;
+use crate::renderer::{AssetKind, DrawCmd};
 use crate::tree::attrs::{
     Attrs, Background, BorderRadius, BorderStyle, BorderWidth, ImageFit, ImageSource,
 };
@@ -92,7 +92,8 @@ pub(super) fn build_background_items(
             border_radius_uniform(radius),
         ))],
         Background::Image { source, fit } => {
-            let image_item = paint_item_for_image_source(Rect::from_frame(frame), source, *fit);
+            let image_item =
+                paint_item_for_image_source(Rect::from_frame(frame), source, *fit, None, false);
             let shape = geometry_self_shape(frame, attrs);
             let clip = ClipShape {
                 rect: shape.rect,
@@ -128,6 +129,8 @@ pub(super) fn render_image_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
         },
         source,
         fit,
+        attrs.svg_color.as_ref().map(color_to_u32),
+        attrs.svg_expected.unwrap_or(false),
     )
     .into_iter()
     .map(RenderItem::Draw)
@@ -156,7 +159,13 @@ pub(super) fn render_video_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
     ))]
 }
 
-fn paint_item_for_image_source(rect: Rect, source: &ImageSource, fit: ImageFit) -> Option<DrawCmd> {
+fn paint_item_for_image_source(
+    rect: Rect,
+    source: &ImageSource,
+    fit: ImageFit,
+    svg_tint: Option<u32>,
+    svg_expected: bool,
+) -> Option<DrawCmd> {
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
@@ -164,14 +173,35 @@ fn paint_item_for_image_source(rect: Rect, source: &ImageSource, fit: ImageFit) 
     assets::ensure_source(source);
 
     match assets::source_status(source) {
-        Some(AssetStatus::Ready(asset)) => Some(DrawCmd::Image(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            asset.id,
-            fit,
-        )),
+        Some(AssetStatus::Ready(asset)) => {
+            let asset_is_vector = matches!(
+                crate::renderer::asset_kind(&asset.id),
+                Some(AssetKind::Vector)
+            );
+
+            if svg_expected && !asset_is_vector {
+                Some(DrawCmd::ImageFailed(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                ))
+            } else {
+                Some(DrawCmd::Image(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    asset.id,
+                    fit,
+                    if svg_expected && asset_is_vector {
+                        svg_tint
+                    } else {
+                        None
+                    },
+                ))
+            }
+        }
         Some(AssetStatus::Failed) => Some(DrawCmd::ImageFailed(
             rect.x,
             rect.y,

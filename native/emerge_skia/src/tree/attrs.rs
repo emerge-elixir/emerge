@@ -169,6 +169,7 @@ pub struct MouseOverAttrs {
     pub border_color: Option<Color>,
     pub box_shadows: Option<Vec<BoxShadow>>,
     pub font_color: Option<Color>,
+    pub svg_color: Option<Color>,
     pub font_size: Option<f64>,
     pub font_underline: Option<bool>,
     pub font_strike: Option<bool>,
@@ -251,6 +252,8 @@ pub struct Attrs {
     pub font_strike: Option<bool>,
     pub font_letter_spacing: Option<f64>,
     pub font_word_spacing: Option<f64>,
+    pub svg_color: Option<Color>,
+    pub svg_expected: Option<bool>,
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
@@ -447,6 +450,8 @@ const TAG_FOCUSED: u8 = 59;
 const TAG_MOUSE_DOWN_STYLE: u8 = 60;
 const TAG_ON_PRESS: u8 = 61;
 const TAG_VIDEO_TARGET: u8 = 62;
+const TAG_SVG_COLOR: u8 = 63;
+const TAG_SVG_EXPECTED: u8 = 64;
 
 // =============================================================================
 // Decoder
@@ -592,6 +597,8 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_FONT_STRIKE => attrs.font_strike = Some(cursor.read_bool()?),
         TAG_FONT_LETTER_SPACING => attrs.font_letter_spacing = Some(cursor.read_f64()?),
         TAG_FONT_WORD_SPACING => attrs.font_word_spacing = Some(cursor.read_f64()?),
+        TAG_SVG_COLOR => attrs.svg_color = Some(decode_color(cursor)?),
+        TAG_SVG_EXPECTED => attrs.svg_expected = Some(cursor.read_bool()?),
         TAG_BORDER_STYLE => attrs.border_style = Some(decode_border_style(cursor)?),
         TAG_BOX_SHADOW => attrs.box_shadows = Some(decode_box_shadows(cursor)?),
         TAG_IMAGE_SRC => attrs.image_src = Some(decode_image_source(cursor)?),
@@ -633,6 +640,7 @@ fn decode_decorative_style_attrs(
             TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
             TAG_BOX_SHADOW => out.box_shadows = Some(decode_box_shadows(&mut nested)?),
             TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
+            TAG_SVG_COLOR => out.svg_color = Some(decode_color(&mut nested)?),
             TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
             TAG_FONT_UNDERLINE => out.font_underline = Some(nested.read_bool()?),
             TAG_FONT_STRIKE => out.font_strike = Some(nested.read_bool()?),
@@ -1461,6 +1469,39 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn test_decode_svg_color_and_expected() {
+        let data = vec![0, 2, TAG_SVG_COLOR, 0, 10, 20, 30, TAG_SVG_EXPECTED, 1];
+
+        let attrs = decode_attrs(&data).unwrap();
+
+        assert_eq!(
+            attrs.svg_color,
+            Some(Color::Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })
+        );
+        assert_eq!(attrs.svg_expected, Some(true));
+    }
+
+    #[test]
+    fn test_decode_mouse_over_svg_color() {
+        let nested = vec![0, 1, TAG_SVG_COLOR, 0, 1, 2, 3];
+
+        let mut data = vec![0, 1, TAG_MOUSE_OVER];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+
+        assert_eq!(
+            attrs.mouse_over.and_then(|style| style.svg_color),
+            Some(Color::Rgb { r: 1, g: 2, b: 3 })
+        );
     }
 
     #[test]

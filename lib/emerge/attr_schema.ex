@@ -6,6 +6,7 @@ defmodule Emerge.AttrSchema do
     :border_color,
     :box_shadow,
     :font_color,
+    :svg_color,
     :font_size,
     :font_underline,
     :font_strike,

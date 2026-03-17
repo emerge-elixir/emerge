@@ -60,7 +60,9 @@ defmodule Emerge.AttrCodec do
     focused: 59,
     mouse_down: 60,
     on_press: 61,
-    video_target: 62
+    video_target: 62,
+    svg_color: 63,
+    svg_expected: 64
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -148,6 +150,8 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:image_src, value), do: encode_image_src(value)
   defp encode_value(:image_fit, value), do: encode_image_fit(value)
   defp encode_value(:image_size, value), do: encode_image_size(value)
+  defp encode_value(:svg_color, value), do: encode_color(value)
+  defp encode_value(:svg_expected, value), do: encode_bool(value)
   defp encode_value(:video_target, value), do: encode_string(value)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
@@ -202,6 +206,8 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:image_src, rest), do: decode_image_src(rest)
   defp decode_value(:image_fit, rest), do: decode_image_fit(rest)
   defp decode_value(:image_size, rest), do: decode_image_size(rest)
+  defp decode_value(:svg_color, rest), do: decode_color(rest)
+  defp decode_value(:svg_expected, rest), do: decode_bool(rest)
   defp decode_value(:video_target, rest), do: decode_string(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)

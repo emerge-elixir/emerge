@@ -3,6 +3,8 @@ defmodule EmergeSkiaTest do
   doctest EmergeSkia
   import Emerge.UI
 
+  alias Emerge.UI.Svg
+
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4
     <<_::binary-size(offset), r, g, b, a, _::binary>> = pixels
@@ -64,6 +66,50 @@ defmodule EmergeSkiaTest do
     assert rgba_at(pixels, 8, 6, 1) == {0, 255, 0, 255}
     assert rgba_at(pixels, 8, 1, 6) == {0, 0, 255, 255}
     assert rgba_at(pixels, 8, 6, 6) == {255, 255, 0, 255}
+  end
+
+  test "render_to_pixels svg/2 preserves original multicolor SVGs by default" do
+    tree = svg([width(px(8)), height(px(8)), image_fit(:cover)], "demo_images/tile_quad.svg")
+
+    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+
+    assert byte_size(pixels) == 8 * 8 * 4
+    assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
+    assert rgba_at(pixels, 8, 6, 1) == {0, 255, 0, 255}
+    assert rgba_at(pixels, 8, 1, 6) == {0, 0, 255, 255}
+    assert rgba_at(pixels, 8, 6, 6) == {255, 255, 0, 255}
+  end
+
+  test "render_to_pixels svg/2 applies template tint when Svg.color is set" do
+    tree =
+      svg(
+        [
+          width(px(8)),
+          height(px(8)),
+          image_fit(:cover),
+          Svg.color({:color_rgb, {255, 255, 255}})
+        ],
+        "demo_images/tile_quad.svg"
+      )
+
+    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+
+    assert byte_size(pixels) == 8 * 8 * 4
+    assert rgba_at(pixels, 8, 1, 1) == {255, 255, 255, 255}
+    assert rgba_at(pixels, 8, 6, 1) == {255, 255, 255, 255}
+    assert rgba_at(pixels, 8, 1, 6) == {255, 255, 255, 255}
+    assert rgba_at(pixels, 8, 6, 6) == {255, 255, 255, 255}
+  end
+
+  test "render_to_pixels svg/2 fails when source resolves to raster" do
+    bad_tree = svg([width(px(32)), height(px(24))], "demo_images/static.jpg")
+    failed_tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
+
+    bad = EmergeSkia.render_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
+    failed = EmergeSkia.render_to_pixels(failed_tree, otp_app: :emerge, width: 32, height: 24)
+
+    assert byte_size(bad) == 32 * 24 * 4
+    assert bad == failed
   end
 
   test "render_to_pixels resolves logical SVG background repeat assets" do

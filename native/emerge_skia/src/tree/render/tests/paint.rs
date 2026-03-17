@@ -1,6 +1,20 @@
 use super::super::paint::SCROLLBAR_COLOR;
 use super::common::*;
 use super::*;
+use resvg::usvg;
+
+const DEMO_STATIC_JPEG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../priv/demo_images/static.jpg"
+));
+
+fn insert_test_svg_asset(id: &str, svg: &str) {
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+
+    let tree = usvg::Tree::from_str(svg, &options).expect("test SVG should parse");
+    crate::renderer::insert_vector_asset(id, tree).expect("test SVG should insert");
+}
 
 #[test]
 fn test_render_image_source_pending_emits_loading_placeholder() {
@@ -29,6 +43,88 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
         commands
             .iter()
             .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
+    );
+}
+
+#[test]
+fn test_render_svg_source_with_color_emits_tinted_image_command() {
+    let image_id = "paint_svg_tinted_image_command";
+    insert_test_svg_asset(
+        image_id,
+        r##"
+        <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+          <rect x="0" y="0" width="2" height="2" fill="#ff0000" />
+        </svg>
+        "##,
+    );
+
+    let id = ElementId::from_term_bytes(vec![19]);
+    let mut attrs = Attrs::default();
+    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
+    attrs.image_fit = Some(ImageFit::Contain);
+    attrs.svg_expected = Some(true);
+    attrs.svg_color = Some(Color::Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    });
+
+    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    element.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 20.0,
+        height: 20.0,
+        content_width: 20.0,
+        content_height: 20.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(id);
+    tree.insert(element);
+
+    let commands = render_tree(&tree);
+
+    assert!(commands.iter().any(|cmd| {
+        matches!(
+            cmd,
+            DrawCmd::Image(_, _, _, _, asset_id, ImageFit::Contain, Some(0xFFFFFFFF)) if asset_id == image_id
+        )
+    }));
+}
+
+#[test]
+fn test_render_svg_source_rejects_raster_asset_ids() {
+    let image_id = "paint_svg_rejects_raster_asset_id";
+    crate::renderer::insert_raster_asset(image_id, DEMO_STATIC_JPEG)
+        .expect("test JPEG should insert");
+
+    let id = ElementId::from_term_bytes(vec![20]);
+    let mut attrs = Attrs::default();
+    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
+    attrs.image_fit = Some(ImageFit::Contain);
+    attrs.svg_expected = Some(true);
+
+    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    element.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 20.0,
+        height: 20.0,
+        content_width: 20.0,
+        content_height: 20.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(id);
+    tree.insert(element);
+
+    let commands = render_tree(&tree);
+
+    assert!(
+        commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::ImageFailed(0.0, 0.0, 20.0, 20.0)))
     );
 }
 
