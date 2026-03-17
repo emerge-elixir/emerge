@@ -123,6 +123,9 @@ mix run demo.exs
 EmergeSkia resolves image **sources** asynchronously in the Rust pipeline after
 `EmergeSkia.upload_tree/2` and `EmergeSkia.patch_tree/3`.
 
+`image/2` and `Background.image/2` support raster formats plus self-contained SVGs.
+SVG text uses system font matching; relative subresources and external SVG fonts are not loaded.
+
 Supported source forms:
 
 - `~m"images/logo.png"` (compile-time verified static path)
@@ -176,7 +179,7 @@ Configure assets when starting the renderer. `otp_app` is required:
         allowlist: [],
         follow_symlinks: false,
         max_file_size: 25_000_000,
-        extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+        extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
       ]
     ]
   )
