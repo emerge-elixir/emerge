@@ -70,6 +70,7 @@ required_demo_assets = [
   "runtime.jpg",
   "fallback.jpg",
   "tile_bird_small.jpg",
+  "template_cloud.svg",
   "weather_sun.svg",
   "weather_cloud.svg",
   "weather_rain.svg"
@@ -180,7 +181,7 @@ spawn(fn -> clock_loop.(clock_loop) end)
 defmodule Demo do
   import Emerge.UI
 
-  alias Emerge.UI.{Font, Background, Border}
+  alias Emerge.UI.{Font, Background, Border, Svg}
 
   @dark_bg {:color_rgba, {26, 26, 46, 255}}
   @blue {:color_rgba, {67, 97, 238, 255}}
@@ -521,6 +522,7 @@ defmodule Demo do
     runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
     static_source = "demo_images/static.jpg"
     bird_tile_source = "demo_images/tile_bird_small.jpg"
+    template_cloud_source = "demo_images/template_cloud.svg"
     sun_source = "demo_images/weather_sun.svg"
     cloud_source = "demo_images/weather_cloud.svg"
     rain_source = "demo_images/weather_rain.svg"
@@ -556,11 +558,11 @@ defmodule Demo do
       Enum.flat_map(fit_frames, fn {label, {frame_w, frame_h}} ->
         Enum.map([:contain, :cover], fn fit ->
           fit_demo_card(
-            "SVG image/2",
+            "svg/2",
             label,
             {frame_w, frame_h},
             fit,
-            :element,
+            :svg,
             cloud_source
           )
         end)
@@ -598,7 +600,7 @@ defmodule Demo do
           title: "Static SVG source",
           source_label: ~s(source: "demo_images/weather_sun.svg"),
           status: {"Source root", :source},
-          preview: {:image, sun_source, :contain, "svg :contain"}
+          preview: {:svg, sun_source, :contain, "svg :contain"}
         },
         %{
           title: "Restricted source",
@@ -693,14 +695,15 @@ defmodule Demo do
         {"Rain", "Same source file reused for small forecast markers and larger detail art.",
          rain_source}
       ]),
+      svg_tint_showcase(template_cloud_source, "demo_images/tile_quad.svg"),
       el(
         [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
-        text("SVG image/2 fit behavior")
+        text("svg/2 fit behavior")
       ),
       el(
         [Font.size(11), Font.color(@dim_text)],
         text(
-          "The same weather icon uses the regular contain/cover rules inside wide, tall, and square frames."
+          "The same SVG source uses the regular contain/cover rules inside wide, tall, and square frames."
         )
       ),
       centered_wrapped_cards(svg_fit_cards, 960),
@@ -2817,10 +2820,10 @@ defmodule Demo do
             el([Font.size(22), Font.color(:white)], text("Weekly forecast")),
             el(
               [Font.size(12), Font.color({:color_rgb, {226, 238, 249}})],
-              text("North Shore boardwalk · local SVG weather icons rendered with image/2")
+              text("North Shore boardwalk · local SVG weather icons rendered with svg/2")
             ),
             row([width(fill()), spacing(8)], [
-              weather_badge("SVG via image/2", {:color_rgba, {5, 20, 34, 105}}),
+              weather_badge("SVG via svg/2", {:color_rgba, {5, 20, 34, 105}}),
               weather_badge("C primary", {:color_rgba, {28, 83, 49, 140}}),
               weather_badge("F secondary", {:color_rgba, {64, 52, 20, 130}})
             ])
@@ -2878,7 +2881,7 @@ defmodule Demo do
             Background.color(icon_glow),
             Border.rounded(999)
           ],
-          image(
+          svg(
             [width(fill()), height(fill()), image_fit(:contain)],
             weather_icon_source(kind)
           )
@@ -3008,7 +3011,7 @@ defmodule Demo do
                 Border.rounded(10)
               ],
               column([center_x(), center_y(), spacing(8)], [
-                image([width(px(size)), height(px(size)), image_fit(:contain)], source),
+                svg([width(px(size)), height(px(size)), image_fit(:contain)], source),
                 el(
                   [Font.size(10), Font.color({:color_rgb, {213, 219, 234}})],
                   text("#{size}px")
@@ -3016,6 +3019,106 @@ defmodule Demo do
               ])
             )
           end)
+        )
+      ])
+    )
+  end
+
+  defp svg_tint_showcase(source, multicolor_source) do
+    cards = [
+      {"Original", "svg/2 keeps the source stroke color when no tint is set.", nil, "default"},
+      {"White tint", "Template tint turns every visible pixel white.", :white,
+       "Svg.color(:white)"},
+      {"Cyan tint", "Same icon, now themed for cool accents and status states.",
+       {:color_rgb, {110, 198, 255}}, "Svg.color(cyan)"},
+      {"Amber tint", "Warm tint for highlights, alerts, and seasonal accents.",
+       {:color_rgb, {255, 209, 102}}, "Svg.color(amber)"}
+    ]
+
+    column([spacing(12)], [
+      section_title("SVG tint"),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text(
+          "svg/2 preserves original colors by default. Svg.color/1 applies template tint to all visible pixels while keeping alpha and edge smoothing."
+        )
+      ),
+      centered_wrapped_cards(
+        Enum.map(cards, fn {label, note, tint, tint_label} ->
+          svg_tint_card(source, label, note, tint, tint_label)
+        end),
+        960
+      ),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text(
+          "Tint also overrides multicolor SVGs, so illustrations and logos flatten into one themed silhouette when Svg.color/1 is set."
+        )
+      ),
+      centered_wrapped_cards(
+        [
+          svg_tint_card(
+            multicolor_source,
+            "Multicolor original",
+            "The source keeps its four quadrant colors when rendered without tint.",
+            nil,
+            "tile_quad.svg"
+          ),
+          svg_tint_card(
+            multicolor_source,
+            "Multicolor tinted",
+            "A single tint overrides all visible colors while preserving the alpha edges.",
+            {:color_rgb, {110, 198, 255}},
+            "Svg.color(cyan)"
+          )
+        ],
+        960
+      )
+    ])
+  end
+
+  defp svg_tint_card(source, label, note, tint, tint_label) do
+    svg_attrs =
+      [width(px(72)), height(px(72)), image_fit(:contain)] ++
+        if(tint, do: [Svg.color(tint)], else: [])
+
+    badge_tone =
+      case tint do
+        nil -> {:color_rgba, {80, 98, 122, 150}}
+        :white -> {:color_rgba, {110, 116, 132, 180}}
+        {:color_rgb, {110, 198, 255}} -> {:color_rgba, {52, 124, 170, 185}}
+        {:color_rgb, {255, 209, 102}} -> {:color_rgba, {138, 96, 28, 190}}
+      end
+
+    el(
+      [
+        width(px(228)),
+        padding(12),
+        spacing(10),
+        Background.color({:color_rgb, {46, 48, 72}}),
+        Border.rounded(12)
+      ],
+      column([spacing(10)], [
+        row([width(fill()), spacing(8)], [
+          el([width(fill()), Font.size(12), Font.color(:white)], text(label)),
+          weather_badge("svg/2", badge_tone)
+        ]),
+        el([Font.size(10), Font.color(@dim_text)], text(note)),
+        el(
+          [
+            center_x(),
+            width(px(132)),
+            height(px(120)),
+            Background.color({:color_rgb, {28, 31, 46}}),
+            Border.width(1),
+            Border.color({:color_rgba, {214, 220, 236, 90}}),
+            Border.rounded(12)
+          ],
+          el([center_x(), center_y()], svg(svg_attrs, source))
+        ),
+        el(
+          [Font.size(10), Font.color({:color_rgb, {213, 219, 234}})],
+          text(tint_label)
         )
       ])
     )
@@ -3032,6 +3135,20 @@ defmodule Demo do
         in_front(asset_preview_mode_badge(mode_label))
       ],
       image([width(fill()), height(fill()), image_fit(fit)], source)
+    )
+  end
+
+  defp asset_behavior_preview({:svg, source, fit, mode_label}) do
+    el(
+      [
+        width(fill()),
+        height(fill()),
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8),
+        in_front(asset_preview_mode_badge(mode_label))
+      ],
+      svg([width(fill()), height(fill()), image_fit(fit)], source)
     )
   end
 
@@ -3143,6 +3260,22 @@ defmodule Demo do
         Border.rounded(8)
       ],
       image([width(fill()), height(fill()), image_fit(fit)], source)
+    )
+  end
+
+  defp fit_demo_preview(:svg, source, fit, {frame_w, frame_h}) do
+    el(
+      [
+        center_x(),
+        center_y(),
+        width(px(frame_w)),
+        height(px(frame_h)),
+        Background.color({:color_rgb, {24, 24, 36}}),
+        Border.width(1),
+        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.rounded(8)
+      ],
+      svg([width(fill()), height(fill()), image_fit(fit)], source)
     )
   end
 
