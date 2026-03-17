@@ -4,7 +4,7 @@ defmodule EmergeSkia.Assets do
   alias EmergeSkia.Native
   alias EmergeSkia.Options
 
-  @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+  @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
   @default_runtime_max_file_size 25_000_000
   @default_font_extensions [".ttf", ".otf", ".ttc"]
 

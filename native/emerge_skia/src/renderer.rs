@@ -7,9 +7,12 @@
 //! - Font cache for text rendering
 
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use resvg::usvg;
 use skia_safe::{
     BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter, Matrix,
     MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect, SamplingOptions,
@@ -280,40 +283,197 @@ pub fn get_default_typeface() -> Arc<Typeface> {
 }
 
 #[derive(Clone)]
-struct CachedImage {
-    image: Image,
+enum CachedAssetKind {
+    Raster(Image),
+    Vector(usvg::Tree),
+}
+
+#[derive(Clone)]
+struct CachedAsset {
+    kind: CachedAssetKind,
     width: u32,
     height: u32,
 }
 
-static IMAGE_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedImage>>>> = OnceLock::new();
-
-fn get_image_cache() -> &'static Mutex<HashMap<String, Arc<CachedImage>>> {
-    IMAGE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RenderedVectorKey {
+    asset_id: String,
+    width: u32,
+    height: u32,
 }
 
-fn cached_image(id: &str) -> Option<Arc<CachedImage>> {
-    let cache = get_image_cache().lock().ok()?;
+#[derive(Clone)]
+struct RenderedVectorVariant {
+    image: Image,
+    bytes: usize,
+    last_used: u64,
+}
+
+struct RenderedVectorCache {
+    entries: HashMap<RenderedVectorKey, RenderedVectorVariant>,
+    total_bytes: usize,
+    access_clock: u64,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+const RENDERED_VECTOR_CACHE_MAX_ENTRIES: usize = 256;
+const RENDERED_VECTOR_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES: usize = 1024 * 1024;
+
+impl Default for RenderedVectorCache {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            total_bytes: 0,
+            access_clock: 0,
+            max_entries: RENDERED_VECTOR_CACHE_MAX_ENTRIES,
+            max_bytes: RENDERED_VECTOR_CACHE_MAX_BYTES,
+        }
+    }
+}
+
+static ASSET_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedAsset>>>> = OnceLock::new();
+static RENDERED_VECTOR_CACHE: OnceLock<Mutex<RenderedVectorCache>> = OnceLock::new();
+
+#[cfg(test)]
+static VECTOR_RASTERIZATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn get_asset_cache() -> &'static Mutex<HashMap<String, Arc<CachedAsset>>> {
+    ASSET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_rendered_vector_cache() -> &'static Mutex<RenderedVectorCache> {
+    RENDERED_VECTOR_CACHE.get_or_init(|| Mutex::new(RenderedVectorCache::default()))
+}
+
+fn cached_asset(id: &str) -> Option<Arc<CachedAsset>> {
+    let cache = get_asset_cache().lock().ok()?;
     cache.get(id).cloned()
 }
 
-pub fn image_dimensions(id: &str) -> Option<(u32, u32)> {
-    cached_image(id).map(|cached| (cached.width, cached.height))
+pub fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
+    cached_asset(id).map(|cached| (cached.width, cached.height))
 }
 
-pub fn insert_image(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
+fn rendered_vector_key(asset_id: &str, width: u32, height: u32) -> RenderedVectorKey {
+    RenderedVectorKey {
+        asset_id: asset_id.to_string(),
+        width,
+        height,
+    }
+}
+
+fn rendered_variant_bytes(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)
+}
+
+fn should_cache_rendered_variant(width: u32, height: u32) -> bool {
+    rendered_variant_bytes(width, height)
+        .map(|bytes| bytes <= RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES)
+        .unwrap_or(false)
+}
+
+fn next_rendered_vector_access_stamp(cache: &mut RenderedVectorCache) -> u64 {
+    cache.access_clock = cache.access_clock.wrapping_add(1);
+    cache.access_clock
+}
+
+fn lookup_rendered_vector_variant(asset_id: &str, width: u32, height: u32) -> Option<Image> {
+    let mut cache = get_rendered_vector_cache().lock().ok()?;
+    let key = rendered_vector_key(asset_id, width, height);
+    let stamp = next_rendered_vector_access_stamp(&mut cache);
+    let variant = cache.entries.get_mut(&key)?;
+    variant.last_used = stamp;
+    Some(variant.image.clone())
+}
+
+fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
+    while cache.entries.len() > cache.max_entries || cache.total_bytes > cache.max_bytes {
+        let Some(oldest_key) = cache
+            .entries
+            .iter()
+            .min_by_key(|(_, variant)| variant.last_used)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+
+        if let Some(variant) = cache.entries.remove(&oldest_key) {
+            cache.total_bytes = cache.total_bytes.saturating_sub(variant.bytes);
+        }
+    }
+}
+
+fn store_rendered_vector_variant(asset_id: &str, width: u32, height: u32, image: &Image) {
+    if !should_cache_rendered_variant(width, height) {
+        return;
+    }
+
+    let Some(bytes) = rendered_variant_bytes(width, height) else {
+        return;
+    };
+
+    let Ok(mut cache) = get_rendered_vector_cache().lock() else {
+        return;
+    };
+
+    let key = rendered_vector_key(asset_id, width, height);
+    if let Some(existing) = cache.entries.remove(&key) {
+        cache.total_bytes = cache.total_bytes.saturating_sub(existing.bytes);
+    }
+
+    let stamp = next_rendered_vector_access_stamp(&mut cache);
+    cache.entries.insert(
+        key,
+        RenderedVectorVariant {
+            image: image.clone(),
+            bytes,
+            last_used: stamp,
+        },
+    );
+    cache.total_bytes = cache.total_bytes.saturating_add(bytes);
+    evict_rendered_vector_variants_if_needed(&mut cache);
+}
+
+fn clear_rendered_vector_variants(asset_id: &str) {
+    let Ok(mut cache) = get_rendered_vector_cache().lock() else {
+        return;
+    };
+
+    let mut retained = HashMap::with_capacity(cache.entries.len());
+    let mut total_bytes = 0usize;
+
+    for (key, variant) in cache.entries.drain() {
+        if key.asset_id == asset_id {
+            continue;
+        }
+
+        total_bytes = total_bytes.saturating_add(variant.bytes);
+        retained.insert(key, variant);
+    }
+
+    cache.entries = retained;
+    cache.total_bytes = total_bytes;
+}
+
+pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
     let image = Image::from_encoded(Data::new_copy(data))
         .ok_or_else(|| "failed to decode image data".to_string())?;
 
     let width = image.width().max(0) as u32;
     let height = image.height().max(0) as u32;
 
-    let cache = get_image_cache();
+    clear_rendered_vector_variants(id);
+
+    let cache = get_asset_cache();
     let mut cache = cache.lock().map_err(|_| "image cache lock poisoned")?;
     cache.insert(
         id.to_string(),
-        Arc::new(CachedImage {
-            image,
+        Arc::new(CachedAsset {
+            kind: CachedAssetKind::Raster(image),
             width,
             height,
         }),
@@ -322,11 +482,44 @@ pub fn insert_image(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), String> {
+    let width = tree.size().width().ceil().max(1.0) as u32;
+    let height = tree.size().height().ceil().max(1.0) as u32;
+
+    clear_rendered_vector_variants(id);
+
+    let cache = get_asset_cache();
+    let mut cache = cache.lock().map_err(|_| "asset cache lock poisoned")?;
+    cache.insert(
+        id.to_string(),
+        Arc::new(CachedAsset {
+            kind: CachedAssetKind::Vector(tree),
+            width,
+            height,
+        }),
+    );
+
+    Ok((width, height))
+}
+
+fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option<Image> {
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let data = Data::new_copy(rgba_pixels);
+    skia_safe::images::raster_from_data(&info, data, (width * 4) as usize)
+}
+
 #[cfg(test)]
-fn remove_image(id: &str) {
-    if let Ok(mut cache) = get_image_cache().lock() {
+fn remove_asset(id: &str) {
+    if let Ok(mut cache) = get_asset_cache().lock() {
         cache.remove(id);
     }
+
+    clear_rendered_vector_variants(id);
 }
 
 // ============================================================================
@@ -671,7 +864,7 @@ impl Renderer {
                 }
 
                 DrawCmd::Image(x, y, w, h, image_id, fit) => {
-                    draw_cached_image_with_fit(
+                    draw_cached_asset_with_fit(
                         canvas,
                         ImageDrawSpec {
                             rect: RectSpec {
@@ -856,18 +1049,30 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
-fn draw_cached_image_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
+fn draw_cached_asset_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
     let RectSpec { w, h, .. } = spec.rect;
 
     if w <= 0.0 || h <= 0.0 {
         return;
     }
 
-    let Some(cached) = cached_image(spec.image_id) else {
+    let Some(cached) = cached_asset(spec.image_id) else {
         return;
     };
 
-    draw_image_with_fit(canvas, &cached.image, cached.width, cached.height, spec);
+    match &cached.kind {
+        CachedAssetKind::Raster(image) => {
+            draw_image_with_fit(canvas, image, cached.width, cached.height, spec)
+        }
+        CachedAssetKind::Vector(tree) => draw_vector_asset_with_fit(
+            canvas,
+            spec.image_id,
+            tree,
+            cached.width,
+            cached.height,
+            spec,
+        ),
+    }
 }
 
 fn draw_image_with_fit(
@@ -907,6 +1112,81 @@ fn draw_image_with_fit(
     }
 }
 
+fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f32, w: f32, h: f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(false);
+    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+    let dst_rect = Rect::from_xywh(x, y, w, h);
+    canvas.draw_image_rect_with_sampling_options(image, None, dst_rect, sampling, &paint);
+}
+
+fn get_or_rasterize_vector_variant(
+    asset_id: &str,
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+) -> Option<Image> {
+    if let Some(image) = lookup_rendered_vector_variant(asset_id, width, height) {
+        return Some(image);
+    }
+
+    let image = rasterize_vector_tree(tree, width, height)?;
+    store_rendered_vector_variant(asset_id, width, height, &image);
+    Some(image)
+}
+
+fn draw_vector_asset_with_fit(
+    canvas: &skia_safe::Canvas,
+    asset_id: &str,
+    tree: &usvg::Tree,
+    asset_width: u32,
+    asset_height: u32,
+    spec: ImageDrawSpec<'_>,
+) {
+    let RectSpec { x, y, w, h } = spec.rect;
+
+    match spec.fit {
+        ImageFit::Contain | ImageFit::Cover => {
+            let src_w = asset_width as f32;
+            let src_h = asset_height as f32;
+            let Some((draw_x, draw_y, draw_w, draw_h)) =
+                compute_vector_fit_rect(src_w, src_h, x, y, w, h, spec.fit)
+            else {
+                return;
+            };
+
+            let raster_width = draw_w.ceil().max(1.0) as u32;
+            let raster_height = draw_h.ceil().max(1.0) as u32;
+            let Some(image) =
+                get_or_rasterize_vector_variant(asset_id, tree, raster_width, raster_height)
+            else {
+                return;
+            };
+
+            canvas.save();
+            if matches!(spec.fit, ImageFit::Cover) {
+                let clip = Rect::from_xywh(x, y, w, h);
+                canvas.clip_rect(clip, skia_safe::ClipOp::Intersect, true);
+            }
+            draw_image_fill_rect(canvas, &image, draw_x, draw_y, draw_w, draw_h);
+            canvas.restore();
+        }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
+            let Some(image) =
+                get_or_rasterize_vector_variant(asset_id, tree, asset_width, asset_height)
+            else {
+                return;
+            };
+
+            draw_tiled_image(canvas, &image, x, y, w, h, spec.fit);
+        }
+    }
+}
+
 fn draw_tiled_image(
     canvas: &skia_safe::Canvas,
     image: &Image,
@@ -932,6 +1212,87 @@ fn draw_tiled_image(
 
     let dst_rect = Rect::from_xywh(x, y, w, h);
     canvas.draw_rect(dst_rect, &paint);
+}
+
+fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<Image> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    #[cfg(test)]
+    VECTOR_RASTERIZATION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let src_w = tree.size().width();
+    let src_h = tree.size().height();
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return None;
+    }
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    let transform =
+        resvg::tiny_skia::Transform::from_scale(width as f32 / src_w, height as f32 / src_h);
+    let mut pixmap_mut = pixmap.as_mut();
+    resvg::render(tree, transform, &mut pixmap_mut);
+
+    raster_image_from_rgba(width, height, pixmap.data())
+}
+
+#[cfg(test)]
+fn clear_rendered_vector_cache() {
+    if let Ok(mut cache) = get_rendered_vector_cache().lock() {
+        *cache = RenderedVectorCache::default();
+    }
+}
+
+#[cfg(test)]
+fn rendered_vector_cache_entry_count() -> usize {
+    get_rendered_vector_cache()
+        .lock()
+        .map(|cache| cache.entries.len())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn reset_vector_rasterization_count() {
+    VECTOR_RASTERIZATION_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn vector_rasterization_count() -> usize {
+    VECTOR_RASTERIZATION_COUNT.load(Ordering::Relaxed)
+}
+
+fn compute_vector_fit_rect(
+    src_w: f32,
+    src_h: f32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    fit: ImageFit,
+) -> Option<(f32, f32, f32, f32)> {
+    if src_w <= 0.0 || src_h <= 0.0 || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+
+    let scale_x = w / src_w;
+    let scale_y = h / src_h;
+    if !scale_x.is_finite() || !scale_y.is_finite() {
+        return None;
+    }
+
+    let scale = match fit {
+        ImageFit::Contain => scale_x.min(scale_y),
+        ImageFit::Cover => scale_x.max(scale_y),
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => return None,
+    };
+
+    let draw_w = src_w * scale;
+    let draw_h = src_h * scale;
+    let draw_x = x + (w - draw_w) * 0.5;
+    let draw_y = y + (h - draw_h) * 0.5;
+
+    Some((draw_x, draw_y, draw_w, draw_h))
 }
 
 fn tile_modes_for_fit(fit: ImageFit) -> Option<(TileMode, TileMode)> {
@@ -1528,17 +1889,43 @@ mod tests {
         let image = skia_safe::images::raster_from_data(&info, data, (width * 4) as usize)
             .expect("test image should be created from RGBA pixels");
 
-        let mut cache = get_image_cache()
+        let mut cache = get_asset_cache()
             .lock()
-            .expect("image cache lock for test image insertion");
+            .expect("asset cache lock for test image insertion");
         cache.insert(
             id.to_string(),
-            Arc::new(CachedImage {
-                image,
+            Arc::new(CachedAsset {
+                kind: CachedAssetKind::Raster(image),
                 width,
                 height,
             }),
         );
+    }
+
+    fn cache_test_svg_asset(id: &str, width: u32, height: u32, svg: &str) {
+        let mut options = usvg::Options::default();
+        options.fontdb_mut().load_system_fonts();
+
+        let tree = usvg::Tree::from_data_nested(svg.as_bytes(), &options)
+            .expect("test SVG should parse into a vector tree");
+        assert_eq!(tree.size().width().ceil() as u32, width);
+        assert_eq!(tree.size().height().ceil() as u32, height);
+
+        insert_vector_asset(id, tree).expect("test SVG should insert into asset cache");
+    }
+
+    fn reset_vector_cache_test_state() {
+        clear_rendered_vector_cache();
+        reset_vector_rasterization_count();
+    }
+
+    fn vector_cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static VECTOR_CACHE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+        VECTOR_CACHE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("vector cache test lock")
     }
 
     fn max_alpha_in_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> u8 {
@@ -1767,7 +2154,7 @@ mod tests {
             );
         }
 
-        remove_image(image_id);
+        remove_asset(image_id);
     }
 
     #[test]
@@ -1805,7 +2192,7 @@ mod tests {
         assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 0, 2));
         assert_eq!(rgba_at(&pixels, 8, 1, 1), rgba_at(&pixels, 8, 3, 3));
 
-        remove_image(image_id);
+        remove_asset(image_id);
     }
 
     #[test]
@@ -1839,7 +2226,7 @@ mod tests {
         assert_eq!(rgba_at(&pixels, 20, 5, 9).3, 0);
         assert_eq!(rgba_at(&pixels, 20, 11, 12).3, 0);
 
-        remove_image(image_id);
+        remove_asset(image_id);
     }
 
     #[test]
@@ -1873,7 +2260,317 @@ mod tests {
         assert_eq!(rgba_at(&pixels, 20, 7, 6).3, 0);
         assert_eq!(rgba_at(&pixels, 20, 12, 12).3, 0);
 
-        remove_image(image_id);
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_cover_fit_draws_vector_asset() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_cover_fit_draws_vector_asset";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="4" viewBox="0 0 8 4">
+                <rect x="0" y="0" width="4" height="4" fill="#ff0000"/>
+                <rect x="4" y="0" width="4" height="4" fill="#00ff00"/>
+            </svg>
+        "##;
+
+        cache_test_svg_asset(image_id, 8, 4, svg);
+
+        let pixels = render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        assert_eq!(rgba_at(&pixels, 4, 0, 2), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 4, 3, 2), (0, 255, 0, 255));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_repeat_fit_tiles_both_axes() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_repeat_fit_tiles_both_axes";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+                <rect x="0" y="0" width="1" height="1" fill="#ff0000"/>
+                <rect x="1" y="0" width="1" height="1" fill="#00ff00"/>
+                <rect x="0" y="1" width="1" height="1" fill="#0000ff"/>
+                <rect x="1" y="1" width="1" height="1" fill="#ffff00"/>
+            </svg>
+        "##;
+
+        cache_test_svg_asset(image_id, 2, 2, svg);
+
+        let pixels = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 0), (0, 255, 0, 255));
+        assert_eq!(rgba_at(&pixels, 8, 0, 1), (0, 0, 255, 255));
+        assert_eq!(rgba_at(&pixels, 8, 1, 1), (255, 255, 0, 255));
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 2, 0));
+        assert_eq!(rgba_at(&pixels, 8, 0, 0), rgba_at(&pixels, 8, 0, 2));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_cover_fit_reuses_cached_rendered_variant() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_cover_fit_reuses_cached_rendered_variant";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="4" viewBox="0 0 8 4">
+                <rect x="0" y="0" width="4" height="4" fill="#ff0000"/>
+                <rect x="4" y="0" width="4" height="4" fill="#00ff00"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 8, 4, svg);
+
+        let first = render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+        let second = render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(vector_rasterization_count(), 1);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_different_sizes_cache_separate_variants() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_different_sizes_cache_separate_variants";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="4" viewBox="0 0 8 4">
+                <rect x="0" y="0" width="8" height="4" fill="#00aaff"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 8, 4, svg);
+
+        render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+        render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        assert_eq!(vector_rasterization_count(), 2);
+        assert_eq!(rendered_vector_cache_entry_count(), 2);
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_repeat_fit_reuses_cached_tile_variant() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_repeat_fit_reuses_cached_tile_variant";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+                <rect x="0" y="0" width="1" height="1" fill="#ff0000"/>
+                <rect x="1" y="0" width="1" height="1" fill="#00ff00"/>
+                <rect x="0" y="1" width="1" height="1" fill="#0000ff"/>
+                <rect x="1" y="1" width="1" height="1" fill="#ffff00"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 2, 2, svg);
+
+        let first = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+        let second = render_commands_to_pixels(
+            8,
+            8,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                8.0,
+                8.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(vector_rasterization_count(), 1);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_replacing_asset_id_invalidates_rendered_variants() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_replacing_asset_id_invalidates_rendered_variants";
+        let red_svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" viewBox="0 0 4 4">
+                <rect x="0" y="0" width="4" height="4" fill="#ff0000"/>
+            </svg>
+        "##;
+        let blue_svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" viewBox="0 0 4 4">
+                <rect x="0" y="0" width="4" height="4" fill="#0000ff"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 4, 4, red_svg);
+
+        let red_pixels = render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        assert_eq!(vector_rasterization_count(), 1);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
+        assert_eq!(rgba_at(&red_pixels, 4, 1, 1), (255, 0, 0, 255));
+
+        cache_test_svg_asset(image_id, 4, 4, blue_svg);
+        assert_eq!(rendered_vector_cache_entry_count(), 0);
+
+        let blue_pixels = render_commands_to_pixels(
+            4,
+            4,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                4.0,
+                4.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+            )],
+        );
+
+        assert_eq!(vector_rasterization_count(), 2);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
+        assert_eq!(rgba_at(&blue_pixels, 4, 1, 1), (0, 0, 255, 255));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_large_variant_skips_render_cache() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_large_variant_skips_render_cache";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="513" height="513" viewBox="0 0 513 513">
+                <rect x="0" y="0" width="513" height="513" fill="#ff5500"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 513, 513, svg);
+
+        render_commands_to_pixels(
+            513,
+            513,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                513.0,
+                513.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+        render_commands_to_pixels(
+            513,
+            513,
+            vec![DrawCmd::Image(
+                0.0,
+                0.0,
+                513.0,
+                513.0,
+                image_id.to_string(),
+                ImageFit::Repeat,
+            )],
+        );
+
+        assert_eq!(vector_rasterization_count(), 2);
+        assert_eq!(rendered_vector_cache_entry_count(), 0);
+
+        remove_asset(image_id);
     }
 
     #[test]
@@ -1926,7 +2623,7 @@ mod tests {
 
                 canvas.save();
                 canvas.clip_rrect(inner_rrect, skia_safe::ClipOp::Intersect, false);
-                draw_cached_image_with_fit(
+                draw_cached_asset_with_fit(
                     canvas,
                     ImageDrawSpec {
                         rect: RectSpec {
@@ -2013,7 +2710,7 @@ mod tests {
             band_count
         );
 
-        remove_image(image_id);
+        remove_asset(image_id);
     }
 
     #[test]

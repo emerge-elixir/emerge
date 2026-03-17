@@ -6,10 +6,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
+use resvg::usvg;
 use sha2::{Digest, Sha256};
 
 use crate::actors::TreeMsg;
-use crate::renderer::{image_dimensions, insert_image};
+use crate::renderer::{asset_dimensions, insert_raster_asset, insert_vector_asset};
 use crate::tree::attrs::{Background, ImageSource};
 use crate::tree::element::ElementTree;
 
@@ -38,6 +39,7 @@ impl Default for AssetConfig {
                 ".webp".to_string(),
                 ".gif".to_string(),
                 ".bmp".to_string(),
+                ".svg".to_string(),
             ],
         }
     }
@@ -228,7 +230,7 @@ pub fn resolve_tree_sources_sync(
 
 pub fn ensure_source(source: &ImageSource) {
     if let ImageSource::Id(id) = source
-        && let Some((width, height)) = image_dimensions(id)
+        && let Some((width, height)) = asset_dimensions(id)
     {
         if let Ok(guard) = global().lock()
             && let Ok(mut state) = guard.state.lock()
@@ -396,7 +398,7 @@ fn background_image_source(background: &Background) -> Option<ImageSource> {
 fn snapshot_status_for_source(source: &ImageSource) -> AssetStatus {
     match source {
         ImageSource::Id(id) => {
-            image_dimensions(id).map_or(AssetStatus::Pending, |(width, height)| {
+            asset_dimensions(id).map_or(AssetStatus::Pending, |(width, height)| {
                 AssetStatus::Ready(ResolvedAsset {
                     id: id.clone(),
                     width,
@@ -426,7 +428,7 @@ fn load_source(source: &ImageSource, config: &AssetConfig) -> Result<ResolvedAss
     match source {
         ImageSource::Id(id) => {
             let (width, height) =
-                image_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
+                asset_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
             Ok(ResolvedAsset {
                 id: id.clone(),
                 width,
@@ -448,14 +450,47 @@ fn load_path(path: &Path) -> Result<ResolvedAsset, String> {
     let bytes =
         fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
 
-    let id = canonical_image_id(&bytes);
+    let id = canonical_asset_id(&bytes);
 
-    let (width, height) = match image_dimensions(&id) {
+    let (width, height) = match asset_dimensions(&id) {
         Some((w, h)) => (w, h),
-        None => insert_image(&id, &bytes)?,
+        None if path_is_svg(path) => load_svg_asset(path, &id, &bytes)?,
+        None => insert_raster_asset(&id, &bytes)?,
     };
 
     Ok(ResolvedAsset { id, width, height })
+}
+
+fn load_svg_asset(path: &Path, id: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+
+    let tree = usvg::Tree::from_data_nested(bytes, &options)
+        .map_err(|err| format!("failed to parse SVG {}: {err}", path.display()))?;
+
+    let (width, height) = svg_dimensions(&tree).unwrap_or((64, 64));
+    insert_vector_asset(id, tree)
+        .map(|_| (width, height))
+        .map_err(|reason| format!("failed to cache SVG {}: {reason}", path.display()))
+}
+
+fn svg_dimensions(tree: &usvg::Tree) -> Option<(u32, u32)> {
+    positive_dimensions(tree.size().width(), tree.size().height())
+}
+
+fn positive_dimensions(width: f32, height: f32) -> Option<(u32, u32)> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    Some((width.ceil().max(1.0) as u32, height.ceil().max(1.0) as u32))
+}
+
+fn path_is_svg(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("svg"))
+        .unwrap_or(false)
 }
 
 fn resolve_logical_path(logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
@@ -542,7 +577,7 @@ fn logical_asset_relative_path(logical: &str) -> Result<PathBuf, String> {
     Ok(out)
 }
 
-fn canonical_image_id(data: &[u8]) -> String {
+fn canonical_asset_id(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let digest = hasher.finalize();

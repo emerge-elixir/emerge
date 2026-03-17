@@ -80,7 +80,7 @@ defmodule EmergeSkia do
   - `runtime_paths.allowlist` (default: `[]`)
   - `runtime_paths.follow_symlinks` (default: `false`)
   - `runtime_paths.max_file_size` (default: `25_000_000`)
-  - `runtime_paths.extensions` (default image extension allowlist)
+  - `runtime_paths.extensions` (default image/SVG extension allowlist)
   - `fonts` (default: `[]`)
 
   Each `assets.fonts` entry supports:

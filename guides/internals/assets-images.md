@@ -2,6 +2,9 @@
 
 This guide describes the EMRG v3 image asset pipeline.
 
+`image/2` and `Background.image/2` support raster formats plus self-contained SVGs.
+SVG text uses system font matching; relative subresources and external SVG fonts are not loaded in v1.
+
 ## Design Goals
 
 - Keep UI APIs source-based (`~m"..."`, logical paths, runtime paths).
@@ -29,7 +32,7 @@ In EMRG v3 these are encoded as typed image sources:
 1. Elixir uploads/patches tree sources as-is (no Elixir-side file IO).
 2. Rust tree actor requests missing sources from `AssetManager` actor.
 3. `AssetManager` resolves logical paths from the configured OTP app `priv` root (or validates runtime paths) and reads files asynchronously.
-4. On success, image bytes are decoded and inserted into native cache.
+4. On success, raster bytes are decoded or SVGs are parsed into a cached vector tree.
 5. `AssetManager` notifies tree actor, which triggers relayout/rerender.
 
 Startup/config flow:
@@ -48,7 +51,7 @@ Render behavior while waiting:
 Source status state machine:
 
 - missing -> `pending` (request queued)
-- `pending` -> `ready` (decoded + cached)
+- `pending` -> `ready` (decoded/parsed + cached)
 - `pending` -> `failed` (blocked, unreadable, decode error, or missing)
 
 There is no strict/lenient runtime mode and no fail-fast path for image load
@@ -129,7 +132,7 @@ EmergeSkia.start(
       allowlist: [],
       follow_symlinks: false,
       max_file_size: 25_000_000,
-      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
     ]
   ]
 )

@@ -3,6 +3,12 @@ defmodule EmergeSkiaTest do
   doctest EmergeSkia
   import Emerge.UI
 
+  defp rgba_at(pixels, width, x, y) do
+    offset = (y * width + x) * 4
+    <<_::binary-size(offset), r, g, b, a, _::binary>> = pixels
+    {r, g, b, a}
+  end
+
   test "render_to_pixels returns RGBA binary" do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
 
@@ -46,6 +52,40 @@ defmodule EmergeSkiaTest do
     assert byte_size(good) == 32 * 24 * 4
     assert byte_size(bad) == 32 * 24 * 4
     refute good == bad
+  end
+
+  test "render_to_pixels resolves logical SVG image assets" do
+    tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "demo_images/tile_quad.svg")
+
+    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+
+    assert byte_size(pixels) == 8 * 8 * 4
+    assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
+    assert rgba_at(pixels, 8, 6, 1) == {0, 255, 0, 255}
+    assert rgba_at(pixels, 8, 1, 6) == {0, 0, 255, 255}
+    assert rgba_at(pixels, 8, 6, 6) == {255, 255, 0, 255}
+  end
+
+  test "render_to_pixels resolves logical SVG background repeat assets" do
+    tree =
+      el(
+        [
+          width(px(8)),
+          height(px(8)),
+          Emerge.UI.Background.image("demo_images/tile_quad.svg", fit: :repeat)
+        ],
+        none()
+      )
+
+    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+
+    assert byte_size(pixels) == 8 * 8 * 4
+    assert rgba_at(pixels, 8, 0, 0) == {255, 0, 0, 255}
+    assert rgba_at(pixels, 8, 1, 0) == {0, 255, 0, 255}
+    assert rgba_at(pixels, 8, 0, 1) == {0, 0, 255, 255}
+    assert rgba_at(pixels, 8, 1, 1) == {255, 255, 0, 255}
+    assert rgba_at(pixels, 8, 0, 0) == rgba_at(pixels, 8, 2, 0)
+    assert rgba_at(pixels, 8, 0, 0) == rgba_at(pixels, 8, 0, 2)
   end
 
   test "input mask constants" do
