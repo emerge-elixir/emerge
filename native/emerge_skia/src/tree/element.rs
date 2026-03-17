@@ -258,6 +258,9 @@ pub struct Element {
 
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
+
+    /// Intrinsic frame captured during measurement pass before resolution mutates `frame`.
+    pub measured_frame: Option<Frame>,
 }
 
 impl Element {
@@ -273,6 +276,7 @@ impl Element {
             children: Vec::new(),
             nearby: NearbyMounts::default(),
             frame: None,
+            measured_frame: None,
         }
     }
 

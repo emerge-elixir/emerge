@@ -10,7 +10,7 @@ use super::attrs::{
     TextFragment, preserve_runtime_scroll_attrs,
 };
 use super::element::{
-    ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
+    Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
 };
 use crate::assets;
 use std::collections::HashMap;
@@ -822,14 +822,16 @@ fn measure_element<M: TextMeasurer>(
 
     // Store intrinsic size in frame temporarily (will be replaced in resolve pass)
     if let Some(element) = tree.get_mut(id) {
-        element.frame = Some(Frame {
+        let measured_frame = Frame {
             x: 0.0,
             y: 0.0,
             width: intrinsic.width,
             height: intrinsic.height,
             content_width: intrinsic.width,
             content_height: intrinsic.height,
-        });
+        };
+        element.frame = Some(measured_frame);
+        element.measured_frame = Some(measured_frame);
     }
 
     intrinsic
@@ -870,6 +872,8 @@ fn resolve_element_sizing(
     inherited: &FontContext,
     intrinsic: IntrinsicSize,
     constraint: Constraint,
+    prefer_fill_width: bool,
+    prefer_fill_height: bool,
 ) -> ElementSizing {
     // For text elements with non-Left alignment (direct or inherited), fill width.
     let text_should_fill_width = kind == ElementKind::Text
@@ -881,7 +885,7 @@ fn resolve_element_sizing(
 
     // Resolve final dimensions.
     // Use intrinsic size as default for content-based constraints.
-    let available_width = if text_should_fill_width {
+    let available_width = if text_should_fill_width || prefer_fill_width {
         // Text with alignment should fill available width.
         constraint.width
     } else if kind == ElementKind::Paragraph && is_content_length(attrs.width.as_ref()) {
@@ -898,7 +902,9 @@ fn resolve_element_sizing(
         constraint.width
     };
 
-    let available_height = if is_content_length(attrs.height.as_ref()) {
+    let available_height = if prefer_fill_height {
+        constraint.height
+    } else if is_content_length(attrs.height.as_ref()) {
         match attrs.height.as_ref() {
             Some(Length::Minimum(_, inner)) if is_content_length(Some(inner)) => {
                 AvailableSpace::MinContent
@@ -914,7 +920,7 @@ fn resolve_element_sizing(
     let max_height = effective_constraint.max_height(intrinsic.height);
 
     // For text with alignment, use fill behavior for width.
-    let width = if text_should_fill_width {
+    let width = if text_should_fill_width || prefer_fill_width {
         max_width
     } else {
         resolve_length(attrs.width.as_ref(), intrinsic.width, max_width)
@@ -927,6 +933,53 @@ fn resolve_element_sizing(
         width,
         height,
     }
+}
+
+fn length_requests_fill(length: Option<&Length>) -> bool {
+    match length {
+        Some(Length::Fill) | Some(Length::FillWeighted(_)) => true,
+        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
+            length_requests_fill(Some(inner))
+        }
+        _ => false,
+    }
+}
+
+fn container_prefers_fill_width(
+    tree: &ElementTree,
+    kind: ElementKind,
+    attrs: &Attrs,
+    child_ids: &[ElementId],
+    constraint: Constraint,
+) -> bool {
+    attrs.width.is_none()
+        && constraint.width.is_definite()
+        && matches!(kind, ElementKind::Column | ElementKind::TextColumn)
+        && child_ids.iter().any(|child_id| {
+            tree.get(child_id)
+                .map(|child| length_requests_fill(child.attrs.width.as_ref()))
+                .unwrap_or(false)
+        })
+}
+
+fn container_prefers_fill_height(
+    tree: &ElementTree,
+    kind: ElementKind,
+    attrs: &Attrs,
+    child_ids: &[ElementId],
+    constraint: Constraint,
+) -> bool {
+    attrs.height.is_none()
+        && constraint.height.is_definite()
+        && matches!(
+            kind,
+            ElementKind::Row | ElementKind::WrappedRow | ElementKind::El
+        )
+        && child_ids.iter().any(|child_id| {
+            tree.get(child_id)
+                .map(|child| length_requests_fill(child.attrs.height.as_ref()))
+                .unwrap_or(false)
+        })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1197,7 +1250,20 @@ fn resolve_element<M: TextMeasurer>(
     // Check if this element is scrollable (scrollbars only)
     let is_scrollable = scroll_x_enabled || scroll_y_enabled;
 
-    let sizing = resolve_element_sizing(kind, &attrs, inherited, intrinsic, constraint);
+    let prefer_fill_width =
+        container_prefers_fill_width(tree, kind, &attrs, &child_ids, constraint);
+    let prefer_fill_height =
+        container_prefers_fill_height(tree, kind, &attrs, &child_ids, constraint);
+
+    let sizing = resolve_element_sizing(
+        kind,
+        &attrs,
+        inherited,
+        intrinsic,
+        constraint,
+        prefer_fill_width,
+        prefer_fill_height,
+    );
     let available_width = sizing.available_width;
     let available_height = sizing.available_height;
     let width = sizing.width;
@@ -1527,6 +1593,72 @@ fn child_align_y(tree: &ElementTree, child_id: &ElementId) -> AlignY {
         .unwrap_or_default()
 }
 
+fn child_measured_width(tree: &ElementTree, child_id: &ElementId) -> f32 {
+    tree.get(child_id)
+        .and_then(|child| child.measured_frame.or(child.frame))
+        .map(|frame| frame.width)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn child_measured_height(tree: &ElementTree, child_id: &ElementId) -> f32 {
+    tree.get(child_id)
+        .and_then(|child| child.measured_frame.or(child.frame))
+        .map(|frame| frame.height)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn planned_row_child_width(
+    child: &Element,
+    measured_width: f32,
+    allow_fill_width: bool,
+    width_per_portion: f32,
+) -> f32 {
+    let portion = if allow_fill_width {
+        get_fill_weight(child.attrs.width.as_ref())
+    } else {
+        0.0
+    };
+
+    if portion > 0.0 {
+        resolve_length(
+            child.attrs.width.as_ref(),
+            measured_width,
+            width_per_portion * portion,
+        )
+    } else {
+        resolve_length(child.attrs.width.as_ref(), measured_width, measured_width)
+    }
+}
+
+fn planned_column_child_height(
+    child: &Element,
+    measured_height: f32,
+    allow_fill_height: bool,
+    height_per_portion: f32,
+) -> f32 {
+    let portion = if allow_fill_height {
+        get_fill_weight(child.attrs.height.as_ref())
+    } else {
+        0.0
+    };
+
+    if portion > 0.0 {
+        resolve_length(
+            child.attrs.height.as_ref(),
+            measured_height,
+            height_per_portion * portion,
+        )
+    } else {
+        resolve_length(
+            child.attrs.height.as_ref(),
+            measured_height,
+            measured_height,
+        )
+    }
+}
+
 // =============================================================================
 // Child Resolution by Element Type
 // =============================================================================
@@ -1641,7 +1773,7 @@ fn build_row_layout_plan(
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
+        let measured_width = child_measured_width(tree, child_id);
         let portion = if options.allow_fill_width {
             get_fill_weight(child.attrs.width.as_ref())
         } else {
@@ -1650,7 +1782,7 @@ fn build_row_layout_plan(
         if portion > 0.0 {
             total_portions += portion;
         } else {
-            fixed_width += resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic);
+            fixed_width += planned_row_child_width(child, measured_width, false, 0.0);
         }
     }
 
@@ -1682,18 +1814,13 @@ fn build_row_layout_plan(
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        let intrinsic = child.frame.map(|f| f.width).unwrap_or(0.0);
-        let portion = if options.allow_fill_width {
-            get_fill_weight(child.attrs.width.as_ref())
-        } else {
-            0.0
-        };
-        let base_width = if portion > 0.0 {
-            width_per_portion * portion
-        } else {
-            resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic)
-        };
-        let width = resolve_length(child.attrs.width.as_ref(), intrinsic, base_width);
+        let measured_width = child_measured_width(tree, child_id);
+        let width = planned_row_child_width(
+            child,
+            measured_width,
+            options.allow_fill_width,
+            width_per_portion,
+        );
         child_widths.insert(child_id.clone(), width);
 
         match child.attrs.align_x.unwrap_or_default() {
@@ -1960,7 +2087,7 @@ fn build_column_layout_plan(
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
+        let measured_height = child_measured_height(tree, child_id);
         let portion = if options.allow_fill_height {
             get_fill_weight(child.attrs.height.as_ref())
         } else {
@@ -1969,7 +2096,7 @@ fn build_column_layout_plan(
         if portion > 0.0 {
             total_portions += portion;
         } else {
-            fixed_height += resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic);
+            fixed_height += planned_column_child_height(child, measured_height, false, 0.0);
         }
     }
 
@@ -1998,18 +2125,13 @@ fn build_column_layout_plan(
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        let intrinsic = child.frame.map(|f| f.height).unwrap_or(0.0);
-        let portion = if options.allow_fill_height {
-            get_fill_weight(child.attrs.height.as_ref())
-        } else {
-            0.0
-        };
-        let base_height = if portion > 0.0 {
-            height_per_portion * portion
-        } else {
-            resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic)
-        };
-        let height = resolve_length(child.attrs.height.as_ref(), intrinsic, base_height);
+        let measured_height = child_measured_height(tree, child_id);
+        let height = planned_column_child_height(
+            child,
+            measured_height,
+            options.allow_fill_height,
+            height_per_portion,
+        );
         child_heights.insert(child_id.clone(), height);
 
         match child.attrs.align_y.unwrap_or_default() {
@@ -2689,13 +2811,24 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     let mut current_line_width = 0.0;
 
     for child_id in child_ids {
+        let Some(_child) = tree.get(child_id) else {
+            continue;
+        };
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        let intrinsic_width = child.frame.map(|f| f.width).unwrap_or(0.0);
-        let intrinsic_height = child.frame.map(|f| f.height).unwrap_or(0.0);
-
-        let child_width = resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic_width);
+        let intrinsic_width = child_measured_width(tree, child_id);
+        let intrinsic_height = child_measured_height(tree, child_id);
+        let child_width = if get_fill_weight(child.attrs.width.as_ref()) > 0.0 {
+            resolve_length(child.attrs.width.as_ref(), intrinsic_width, content.width)
+        } else {
+            resolve_length(child.attrs.width.as_ref(), intrinsic_width, intrinsic_width)
+        };
+        let child_height = resolve_length(
+            child.attrs.height.as_ref(),
+            intrinsic_height,
+            intrinsic_height,
+        );
 
         // Check if we need to wrap
         let would_exceed = !current_line.is_empty()
@@ -2710,7 +2843,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             current_line_width += options.spacing_x;
         }
         current_line_width += child_width;
-        current_line.push((child_id.clone(), child_width, intrinsic_height));
+        current_line.push((child_id.clone(), child_width, child_height));
     }
 
     if !current_line.is_empty() {
