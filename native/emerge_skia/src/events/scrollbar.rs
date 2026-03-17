@@ -1,8 +1,10 @@
 use crate::tree::geometry::Rect;
 use crate::tree::scrollbar::{ScrollbarAxis, ScrollbarMetrics};
+use crate::tree::transform::Affine2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollbarNode {
+    pub axis: ScrollbarAxis,
     pub track_rect: Rect,
     pub thumb_rect: Rect,
     pub track_start: f32,
@@ -11,6 +13,7 @@ pub struct ScrollbarNode {
     pub thumb_len: f32,
     pub scroll_offset: f32,
     pub scroll_range: f32,
+    pub screen_to_local: Option<Affine2>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,8 +26,10 @@ pub(crate) fn scrollbar_node_from_metrics(
     metrics: ScrollbarMetrics,
     offset_x: f32,
     offset_y: f32,
+    screen_to_local: Option<Affine2>,
 ) -> ScrollbarNode {
     ScrollbarNode {
+        axis: metrics.axis,
         track_rect: Rect {
             x: metrics.track_x - offset_x,
             y: metrics.track_y - offset_y,
@@ -51,5 +56,6 @@ pub(crate) fn scrollbar_node_from_metrics(
         thumb_len: metrics.thumb_len,
         scroll_offset: metrics.scroll_offset,
         scroll_range: metrics.scroll_range,
+        screen_to_local,
     }
 }

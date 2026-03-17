@@ -1262,7 +1262,75 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text("Last move target: #{move_label}")
-      )
+      ),
+      section_title("Transformed Hit Testing"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "The faint outline shows the original slot. Pointer events should follow the transformed card you see in front."
+        )
+      ),
+      wrapped_row([width(fill()), spacing_xy(14, 14)], [
+        transformed_event_showcase(
+          "Translated Move",
+          "move_x(40), move_y(14)",
+          "Hover glow and move tracking both follow the shifted card.",
+          [move_x(40), move_y(14)],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {92, 120, 176}}),
+              Border.color({:color_rgb, {190, 216, 255}}),
+              Border.glow({:color_rgba, {110, 160, 255, 90}}, 2),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_move],
+          {:color_rgb, {68, 92, 138}}
+        ),
+        transformed_event_showcase(
+          "Rotated Hover",
+          "rotate(16)",
+          "Enter, leave, and hover styling all follow the painted angle.",
+          [rotate(16)],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {128, 94, 162}}),
+              Border.color({:color_rgb, {228, 198, 255}}),
+              Border.glow({:color_rgba, {196, 132, 255, 92}}, 2),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_enter, :mouse_leave],
+          {:color_rgb, {100, 74, 126}}
+        ),
+        transformed_event_showcase(
+          "Scaled Press",
+          "scale(1.18)",
+          "Hover glow and mouse_down inset both stay on the scaled shape.",
+          [scale(1.18)],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {104, 124, 96}}),
+              Border.color({:color_rgb, {220, 236, 204}}),
+              Border.glow({:color_rgba, {160, 212, 136, 82}}, 2),
+              Font.color(:white)
+            ]),
+            mouse_down([
+              Background.color({:color_rgb, {72, 88, 64}}),
+              Border.color({:color_rgb, {214, 228, 194}}),
+              Border.inner_shadow(
+                offset: {0, 1},
+                blur: 6,
+                size: 1,
+                color: {:color_rgba, {0, 0, 0, 120}}
+              ),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_down, :mouse_up],
+          {:color_rgb, {86, 104, 78}}
+        )
+      ])
     ])
   end
 
@@ -4124,6 +4192,112 @@ defmodule Demo do
         )
       ])
     )
+  end
+
+  defp transformed_event_showcase(
+         label,
+         transform_note,
+         instruction,
+         transform_attrs,
+         state_attrs,
+         events,
+         bg_color
+       ) do
+    column(
+      [width(px(238)), spacing(8)],
+      [
+        el([Font.size(13), Font.color(@light_text)], text(label)),
+        el([Font.size(11), Font.color(@dim_text)], text(instruction)),
+        el(
+          [
+            width(fill()),
+            padding(12),
+            Background.color({:color_rgb, {44, 44, 66}}),
+            Border.rounded(10)
+          ],
+          column([spacing(8)], [
+            el(
+              [
+                width(fill()),
+                height(px(150)),
+                Background.color({:color_rgba, {255, 255, 255, 12}}),
+                Border.rounded(12)
+              ],
+              el(
+                [
+                  width(px(128)),
+                  height(px(82)),
+                  center_x(),
+                  center_y(),
+                  Background.color({:color_rgba, {255, 255, 255, 8}}),
+                  Border.width(1),
+                  Border.color({:color_rgba, {208, 216, 240, 110}}),
+                  Border.rounded(12),
+                  in_front(
+                    transformed_event_target(
+                      label,
+                      transform_note,
+                      transform_attrs,
+                      state_attrs,
+                      events,
+                      bg_color
+                    )
+                  )
+                ],
+                el(
+                  [
+                    center_x(),
+                    align_bottom(),
+                    move_y(-8),
+                    Font.size(9),
+                    Font.color({:color_rgba, {215, 222, 242, 170}})
+                  ],
+                  text("Original slot")
+                )
+              )
+            ),
+            el(
+              [Font.size(10), Font.color({:color_rgb, {204, 214, 236}})],
+              text(transform_note)
+            )
+          ])
+        )
+      ]
+    )
+  end
+
+  defp transformed_event_target(
+         label,
+         transform_note,
+         transform_attrs,
+         state_attrs,
+         events,
+         bg_color
+       ) do
+    el(
+      [
+        width(px(128)),
+        height(px(82)),
+        center_x(),
+        center_y(),
+        padding(12),
+        Background.color(bg_color),
+        Border.width(1),
+        Border.color({:color_rgba, {245, 248, 255, 120}}),
+        Border.rounded(12)
+      ] ++ transform_attrs ++ state_attrs ++ event_attrs(events, label),
+      column([center_x(), center_y(), spacing(5)], [
+        el([Font.size(13), Font.color(:white)], text(label)),
+        el(
+          [Font.size(10), Font.color({:color_rgba, {245, 248, 255, 215}})],
+          text(transform_note)
+        )
+      ])
+    )
+  end
+
+  defp event_attrs(events, label) do
+    Enum.map(events, &event_attr(&1, label))
   end
 
   defp event_attr(:mouse_down, label),

@@ -506,19 +506,20 @@ impl DirectEventRuntime {
             self.runtime_overlay.text_drag = None;
         }
 
-        if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
-            let key = scrollbar_key(&tracker.element_id, tracker.axis);
-            if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
-                tracker.track_start = node.track_start;
-                tracker.track_len = node.track_len;
-                tracker.thumb_len = node.thumb_len;
-                tracker.scroll_range = node.scroll_range;
-                tracker.current_scroll = node.scroll_offset;
-                tracker.pointer_offset = tracker.pointer_offset.clamp(0.0, node.thumb_len);
-            } else {
-                self.runtime_overlay.scrollbar = None;
+            if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
+                let key = scrollbar_key(&tracker.element_id, tracker.axis);
+                if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
+                    tracker.track_start = node.track_start;
+                    tracker.track_len = node.track_len;
+                    tracker.thumb_len = node.thumb_len;
+                    tracker.scroll_range = node.scroll_range;
+                    tracker.current_scroll = node.scroll_offset;
+                    tracker.pointer_offset = tracker.pointer_offset.clamp(0.0, node.thumb_len);
+                    tracker.screen_to_local = node.screen_to_local;
+                } else {
+                    self.runtime_overlay.scrollbar = None;
+                }
             }
-        }
     }
 }
 
@@ -911,6 +912,7 @@ mod tests {
             frame_width: 100.0,
             inset_left: 0.0,
             inset_right: 0.0,
+            screen_to_local: Some(crate::tree::transform::Affine2::identity()),
             text_align: TextAlign::Left,
             font_family: "default".to_string(),
             font_size: 16.0,
