@@ -65,16 +65,25 @@ demo_priv_dir =
 demo_image_root = Path.join(demo_priv_dir, "demo_images")
 demo_font_root = Path.join(demo_priv_dir, "demo_fonts")
 
-required_demo_images = ["static.jpg", "runtime.jpg", "fallback.jpg", "tile_bird_small.jpg"]
+required_demo_assets = [
+  "static.jpg",
+  "runtime.jpg",
+  "fallback.jpg",
+  "tile_bird_small.jpg",
+  "weather_sun.svg",
+  "weather_cloud.svg",
+  "weather_rain.svg"
+]
+
 required_demo_fonts = ["Lobster-Regular.ttf"]
 
-missing_demo_images =
-  Enum.filter(required_demo_images, fn file_name ->
+missing_demo_assets =
+  Enum.filter(required_demo_assets, fn file_name ->
     not File.regular?(Path.join(demo_image_root, file_name))
   end)
 
-if missing_demo_images != [] do
-  raise "missing demo image assets in #{demo_image_root}: #{Enum.join(missing_demo_images, ", ")}"
+if missing_demo_assets != [] do
+  raise "missing demo assets in #{demo_image_root}: #{Enum.join(missing_demo_assets, ", ")}"
 end
 
 missing_demo_fonts =
@@ -110,7 +119,7 @@ start_opts =
       allowlist: [demo_image_root],
       follow_symlinks: false,
       max_file_size: 25_000_000,
-      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+      extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
     ]
   )
 
@@ -512,7 +521,11 @@ defmodule Demo do
     runtime_path = Process.get(:demo_runtime_image_path, "runtime.jpg")
     static_source = "demo_images/static.jpg"
     bird_tile_source = "demo_images/tile_bird_small.jpg"
+    sun_source = "demo_images/weather_sun.svg"
+    cloud_source = "demo_images/weather_cloud.svg"
+    rain_source = "demo_images/weather_rain.svg"
     font_source = Process.get(:demo_font_source, "demo_fonts/Lobster-Regular.ttf")
+    weather_forecast = weather_forecast_data()
 
     restricted_path =
       Process.get(:demo_restricted_image_path, "/tmp/emerge_skia_demo_blocked/blocked.jpg")
@@ -535,6 +548,20 @@ defmodule Demo do
             fit,
             :element,
             static_source
+          )
+        end)
+      end)
+
+    svg_fit_cards =
+      Enum.flat_map(fit_frames, fn {label, {frame_w, frame_h}} ->
+        Enum.map([:contain, :cover], fn fit ->
+          fit_demo_card(
+            "SVG image/2",
+            label,
+            {frame_w, frame_h},
+            fit,
+            :element,
+            cloud_source
           )
         end)
       end)
@@ -566,6 +593,12 @@ defmodule Demo do
           source_label: "source: {:path, runtime.jpg}",
           status: {"Allowlisted", :runtime},
           preview: {:image, {:path, runtime_path}, :cover, "image :cover"}
+        },
+        %{
+          title: "Static SVG source",
+          source_label: ~s(source: "demo_images/weather_sun.svg"),
+          status: {"Source root", :source},
+          preview: {:image, sun_source, :contain, "svg :contain"}
         },
         %{
           title: "Restricted source",
@@ -642,9 +675,35 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Assets resolve from otp_app priv or runtime paths, then render through image/2, Background helpers, and startup-loaded font assets."
+          "Assets resolve from otp_app priv or runtime paths, then render through image/2, Background helpers, startup-loaded font assets, and vector SVG icons."
         )
       ),
+      section_title("SVG Weather"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "A hardcoded seven-day forecast using local SVG icons. Temperatures lead with Celsius and keep Fahrenheit as the quieter secondary scale."
+        )
+      ),
+      weather_widget_card(weather_forecast),
+      svg_weather_scale_showcase([
+        {"Sun", "Bright icon reused from forecast cells to oversized hero scale.", sun_source},
+        {"Cloud", "Soft neutral linework rendered across compact and roomy card slots.",
+         cloud_source},
+        {"Rain", "Same source file reused for small forecast markers and larger detail art.",
+         rain_source}
+      ]),
+      el(
+        [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
+        text("SVG image/2 fit behavior")
+      ),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text(
+          "The same weather icon uses the regular contain/cover rules inside wide, tall, and square frames."
+        )
+      ),
+      centered_wrapped_cards(svg_fit_cards, 960),
       section_title("Source"),
       el(
         [Font.size(11), Font.color(@dim_text)],
@@ -674,7 +733,9 @@ defmodule Demo do
       centered_wrapped_cards(background_cards, 936),
       el(
         [Font.size(10), Font.color(@dim_text)],
-        text("Tile source: demo_images/tile_bird_small.jpg (160x120)")
+        text(
+          "Tile source: demo_images/tile_bird_small.jpg (160x120). SVG backgrounds are also supported through the same API."
+        )
       ),
       el(
         [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
@@ -2716,6 +2777,245 @@ defmodule Demo do
               text(sample)
             )
           ])
+        )
+      ])
+    )
+  end
+
+  defp weather_forecast_data() do
+    [
+      %{day: "Mon", kind: :sun, high_c: 22, low_c: 13, precip: "5%"},
+      %{day: "Tue", kind: :cloud, high_c: 19, low_c: 12, precip: "20%"},
+      %{day: "Wed", kind: :rain, high_c: 16, low_c: 10, precip: "70%"},
+      %{day: "Thu", kind: :cloud, high_c: 18, low_c: 11, precip: "25%"},
+      %{day: "Fri", kind: :sun, high_c: 24, low_c: 14, precip: "5%"},
+      %{day: "Sat", kind: :rain, high_c: 17, low_c: 9, precip: "80%"},
+      %{day: "Sun", kind: :sun, high_c: 23, low_c: 13, precip: "10%"}
+    ]
+  end
+
+  defp weather_widget_card(days) do
+    counts = Enum.frequencies_by(days, & &1.kind)
+
+    summary =
+      "#{Map.get(counts, :sun, 0)} sunny, #{Map.get(counts, :cloud, 0)} cloudy, #{Map.get(counts, :rain, 0)} rainy across the week"
+
+    el(
+      [
+        width(fill()),
+        padding(16),
+        spacing(14),
+        Background.gradient({:color_rgb, {16, 52, 102}}, {:color_rgb, {44, 132, 182}}, 90),
+        Border.rounded(18),
+        Border.width(1),
+        Border.color({:color_rgba, {204, 233, 255, 120}}),
+        Border.glow({:color_rgba, {66, 156, 230, 90}}, 4)
+      ],
+      column([spacing(14)], [
+        row([width(fill()), spacing(12)], [
+          column([width(fill()), spacing(6)], [
+            el([Font.size(22), Font.color(:white)], text("Weekly forecast")),
+            el(
+              [Font.size(12), Font.color({:color_rgb, {226, 238, 249}})],
+              text("North Shore boardwalk · local SVG weather icons rendered with image/2")
+            ),
+            row([width(fill()), spacing(8)], [
+              weather_badge("SVG via image/2", {:color_rgba, {5, 20, 34, 105}}),
+              weather_badge("C primary", {:color_rgba, {28, 83, 49, 140}}),
+              weather_badge("F secondary", {:color_rgba, {64, 52, 20, 130}})
+            ])
+          ]),
+          column([spacing(8)], [
+            el(
+              [
+                padding_each(5, 10, 5, 10),
+                Background.color({:color_rgba, {6, 24, 40, 110}}),
+                Border.rounded(999),
+                Font.size(11),
+                Font.color(:white)
+              ],
+              text("Hardcoded sample")
+            ),
+            el(
+              [Font.size(11), Font.color({:color_rgb, {220, 236, 248}})],
+              text(summary)
+            )
+          ])
+        ]),
+        el(
+          [
+            width(fill()),
+            padding(10),
+            Background.color({:color_rgba, {5, 20, 34, 95}}),
+            Border.rounded(14)
+          ],
+          wrapped_row([width(fill()), spacing_xy(10, 10)], Enum.map(days, &weather_day_card/1))
+        )
+      ])
+    )
+  end
+
+  defp weather_day_card(%{day: day, kind: kind, high_c: high_c, low_c: low_c, precip: precip}) do
+    {icon_glow, accent, detail_bg} = weather_icon_tone(kind)
+
+    el(
+      [
+        width(px(118)),
+        padding(10),
+        spacing(8),
+        Background.color({:color_rgba, {8, 18, 30, 145}}),
+        Border.rounded(14),
+        Border.width(1),
+        Border.color({:color_rgba, {226, 238, 248, 60}})
+      ],
+      column([center_x(), spacing(8)], [
+        el([Font.size(12), Font.color(:white)], text(day)),
+        el(
+          [
+            width(px(58)),
+            height(px(58)),
+            padding(8),
+            Background.color(icon_glow),
+            Border.rounded(999)
+          ],
+          image(
+            [width(fill()), height(fill()), image_fit(:contain)],
+            weather_icon_source(kind)
+          )
+        ),
+        el(
+          [Font.size(11), Font.color({:color_rgb, {232, 238, 248}})],
+          text(weather_condition_label(kind))
+        ),
+        weather_temp_line("HI", high_c, accent),
+        weather_temp_line("LO", low_c, {:color_rgb, {214, 223, 236}}),
+        el(
+          [
+            padding_each(3, 8, 3, 8),
+            Background.color(detail_bg),
+            Border.rounded(999),
+            Font.size(9),
+            Font.color(:white)
+          ],
+          text("precip #{precip}")
+        )
+      ])
+    )
+  end
+
+  defp weather_temp_line(label, temp_c, primary_color) do
+    row([center_x(), spacing(6)], [
+      el([Font.size(9), Font.color(@dim_text)], text(label)),
+      el([Font.size(15), Font.color(primary_color)], text("#{temp_c}C")),
+      el(
+        [Font.size(11), Font.color({:color_rgb, {218, 226, 239}})],
+        text("#{celsius_to_fahrenheit(temp_c)}F")
+      )
+    ])
+  end
+
+  defp weather_badge(label, bg_color) do
+    el(
+      [
+        padding_each(4, 8, 4, 8),
+        Background.color(bg_color),
+        Border.rounded(999),
+        Font.size(10),
+        Font.color(:white)
+      ],
+      text(label)
+    )
+  end
+
+  defp weather_icon_source(:sun), do: "demo_images/weather_sun.svg"
+  defp weather_icon_source(:cloud), do: "demo_images/weather_cloud.svg"
+  defp weather_icon_source(:rain), do: "demo_images/weather_rain.svg"
+
+  defp weather_condition_label(:sun), do: "Sunny"
+  defp weather_condition_label(:cloud), do: "Cloudy"
+  defp weather_condition_label(:rain), do: "Rain"
+
+  defp weather_icon_tone(:sun) do
+    {
+      {:color_rgba, {255, 209, 102, 34}},
+      {:color_rgb, {255, 215, 110}},
+      {:color_rgba, {102, 74, 18, 170}}
+    }
+  end
+
+  defp weather_icon_tone(:cloud) do
+    {
+      {:color_rgba, {198, 212, 233, 34}},
+      {:color_rgb, {224, 232, 243}},
+      {:color_rgba, {65, 84, 108, 170}}
+    }
+  end
+
+  defp weather_icon_tone(:rain) do
+    {
+      {:color_rgba, {110, 198, 255, 34}},
+      {:color_rgb, {136, 224, 255}},
+      {:color_rgba, {32, 88, 114, 175}}
+    }
+  end
+
+  defp celsius_to_fahrenheit(temp_c) do
+    round(temp_c * 9 / 5 + 32)
+  end
+
+  defp svg_weather_scale_showcase(specs) do
+    cards =
+      Enum.map(specs, fn {label, note, source} -> svg_weather_scale_card(label, note, source) end)
+
+    column([spacing(12)], [
+      el([Font.size(12), Font.color({:color_rgb, {205, 214, 229}})], text("SVG scaling")),
+      el(
+        [Font.size(11), Font.color(@dim_text)],
+        text(
+          "The same icon files stay crisp across compact forecast markers and larger showcase sizes."
+        )
+      ),
+      centered_wrapped_cards(cards, 960)
+    ])
+  end
+
+  defp svg_weather_scale_card(label, note, source) do
+    sizes = [24, 48, 80]
+
+    el(
+      [
+        width(px(300)),
+        padding(12),
+        spacing(10),
+        Background.color({:color_rgb, {50, 50, 74}}),
+        Border.rounded(12)
+      ],
+      column([spacing(10)], [
+        row([width(fill()), spacing(8)], [
+          el([width(fill()), Font.size(12), Font.color(:white)], text(label)),
+          weather_badge("SVG", {:color_rgba, {66, 89, 122, 170}})
+        ]),
+        el([Font.size(10), Font.color(@dim_text)], text(note)),
+        row(
+          [width(fill()), spacing(8)],
+          Enum.map(sizes, fn size ->
+            el(
+              [
+                width(px(86)),
+                height(px(118)),
+                padding(8),
+                Background.color({:color_rgb, {34, 34, 50}}),
+                Border.rounded(10)
+              ],
+              column([center_x(), center_y(), spacing(8)], [
+                image([width(px(size)), height(px(size)), image_fit(:contain)], source),
+                el(
+                  [Font.size(10), Font.color({:color_rgb, {213, 219, 234}})],
+                  text("#{size}px")
+                )
+              ])
+            )
+          end)
         )
       ])
     )
