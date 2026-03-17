@@ -43,24 +43,21 @@ use std::collections::HashSet;
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
 use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{
-    ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_clip, point_hits_shape,
-    point_in_rounded_rect,
-};
+use crate::tree::geometry::{clamp_radii, point_hits_shape, CornerRadii, Rect, ShapeBounds};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
+use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest, TextInputEditRequest,
-    TextInputPreeditRequest, TextInputState,
-    scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
-    text_ops,
+    scrollbar::{scrollbar_node_from_metrics, ScrollbarHitArea, ScrollbarNode},
+    text_ops, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    TextInputEditRequest, TextInputPreeditRequest, TextInputState,
 };
 
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
@@ -239,57 +236,59 @@ pub struct ClickPressTracker {
 }
 
 /// Pointer-sensitive region backed by element interaction geometry.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PointerRegion {
     visible: bool,
-    inherited_clip: Option<ClipShape>,
-    self_shape: ShapeBounds,
-    visible_bounds: Rect,
-    bounds: Rect,
-    radii: Option<CornerRadii>,
+    local_shape: ShapeBounds,
+    screen_to_local: Option<Affine2>,
+    screen_bounds: Rect,
+    clip_chain: Vec<InteractionClip>,
 }
 
 impl PointerRegion {
     fn for_state(state: &ResolvedNodeState) -> Self {
+        let local_shape = state.self_shape;
         Self {
-            visible: state.visible,
-            inherited_clip: state.inherited_clip,
-            self_shape: state.self_shape,
-            visible_bounds: state.visible_bounds,
-            bounds: state.visible_bounds,
-            radii: None,
+            visible: state.visible && state.interaction_inverse.is_some(),
+            local_shape,
+            screen_to_local: state.interaction_inverse,
+            screen_bounds: state.interaction_transform.map_rect_aabb(local_shape.rect),
+            clip_chain: state.interaction_clips.clone(),
         }
     }
 
     fn for_subregion(state: &ResolvedNodeState, bounds: Rect, radii: Option<CornerRadii>) -> Self {
+        let local_shape = ShapeBounds {
+            rect: bounds,
+            radii: radii.map(|value| clamp_radii(bounds, value)),
+        };
         Self {
-            visible: state.visible,
-            inherited_clip: state.inherited_clip,
-            self_shape: state.self_shape,
-            visible_bounds: state.visible_bounds,
-            bounds,
-            radii,
+            visible: state.visible && state.interaction_inverse.is_some(),
+            local_shape,
+            screen_to_local: state.interaction_inverse,
+            screen_bounds: state.interaction_transform.map_rect_aabb(local_shape.rect),
+            clip_chain: state.interaction_clips.clone(),
         }
     }
 
-    fn contains(self, x: f32, y: f32) -> bool {
-        if !self.visible || !self.bounds.contains(x, y) {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        if !self.visible || !self.screen_bounds.contains(x, y) {
             return false;
         }
 
-        if let Some(clip) = self.inherited_clip.filter(|clip| clip.radii.is_some())
-            && !point_hits_clip(clip, x, y)
+        if self
+            .clip_chain
+            .iter()
+            .any(|clip| !clip.contains_screen(x, y))
         {
             return false;
         }
 
-        match self.radii {
-            None if self.bounds == self.visible_bounds => point_hits_shape(self.self_shape, x, y),
-            None => true,
-            Some(radii) => {
-                point_in_rounded_rect(self.bounds, clamp_radii(self.bounds, radii), x, y)
-            }
-        }
+        let Some(screen_to_local) = self.screen_to_local else {
+            return false;
+        };
+        let local = screen_to_local.map_point(Point { x, y });
+        point_hits_shape(self.local_shape, local.x, local.y)
     }
 }
 
@@ -377,6 +376,7 @@ pub struct ScrollbarDragTracker {
     pub pointer_offset: f32,
     pub scroll_range: f32,
     pub current_scroll: f32,
+    pub screen_to_local: Option<Affine2>,
 }
 
 /// Text-selection drag tracker state used to rematerialize cursor followups.
@@ -891,8 +891,8 @@ fn runtime_source_listener<'a>(
 }
 
 fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> {
-    match source.matcher {
-        ListenerMatcher::CursorButtonLeftPressInside { region } => Some(region),
+    match &source.matcher {
+        ListenerMatcher::CursorButtonLeftPressInside { region } => Some(region.clone()),
         _ => None,
     }
 }
@@ -1493,6 +1493,7 @@ pub enum SemanticAction {
     TextInputCursor {
         element_id: ElementId,
         x: f32,
+        y: f32,
         extend_selection: bool,
     },
     /// Request a text-input preedit operation.
@@ -1643,6 +1644,7 @@ pub enum ListenerCompute {
         thumb_len: f32,
         scroll_offset: f32,
         scroll_range: f32,
+        screen_to_local: Option<Affine2>,
     },
     /// Emit scrollbar drag tree updates and update current scroll position.
     ScrollbarDragMove { tracker: ScrollbarDragTracker },
@@ -1718,6 +1720,7 @@ impl ListenerCompute {
                         ListenerAction::Semantic(SemanticAction::TextInputCursor {
                             element_id: element_id.clone(),
                             x: *x,
+                            y: *y,
                             extend_selection: *mods & MOD_SHIFT != 0,
                         })
                     }))
@@ -1836,6 +1839,7 @@ impl ListenerCompute {
                 thumb_len,
                 scroll_offset,
                 scroll_range,
+                screen_to_local,
             } => match input.raw() {
                 Some(input) => scrollbar_press_actions_from_input(
                     input,
@@ -1848,6 +1852,7 @@ impl ListenerCompute {
                     *thumb_len,
                     *scroll_offset,
                     *scroll_range,
+                    *screen_to_local,
                 ),
                 None => Vec::new(),
             },
@@ -1953,16 +1958,18 @@ fn text_cursor_action_from_input(
 ) -> Option<ListenerAction> {
     let action = match input? {
         InputEvent::CursorButton {
-            action, x, mods, ..
+            action, x, y, mods, ..
         } if *action == ACTION_PRESS => ListenerAction::Semantic(SemanticAction::TextInputCursor {
             element_id: element_id.clone(),
             x: *x,
+            y: *y,
             extend_selection: extend_selection || (*mods & MOD_SHIFT != 0),
         }),
-        InputEvent::CursorPos { x, .. } => {
+        InputEvent::CursorPos { x, y } => {
             ListenerAction::Semantic(SemanticAction::TextInputCursor {
                 element_id: element_id.clone(),
                 x: *x,
+                y: *y,
                 extend_selection,
             })
         }
@@ -2247,9 +2254,17 @@ fn scrollbar_hover_axis_at_position(
     x: f32,
     y: f32,
 ) -> Option<ScrollbarAxis> {
-    if compute.x_region.is_some_and(|region| region.contains(x, y)) {
+    if compute
+        .x_region
+        .as_ref()
+        .is_some_and(|region| region.contains(x, y))
+    {
         Some(ScrollbarAxis::X)
-    } else if compute.y_region.is_some_and(|region| region.contains(x, y)) {
+    } else if compute
+        .y_region
+        .as_ref()
+        .is_some_and(|region| region.contains(x, y))
+    {
         Some(ScrollbarAxis::Y)
     } else {
         None
@@ -2537,8 +2552,9 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
             SemanticAction::TextInputCursor {
                 element_id,
                 x,
+                y,
                 extend_selection,
-            } => self.resolve_text_cursor(element_id, x, extend_selection),
+            } => self.resolve_text_cursor(element_id, x, y, extend_selection),
             SemanticAction::TextInputPreedit {
                 element_id,
                 request,
@@ -2582,6 +2598,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         &mut self,
         element_id: ElementId,
         x: f32,
+        y: f32,
         extend_selection: bool,
     ) -> Vec<ListenerAction> {
         let Some((runtime_actions, primary)) = ({
@@ -2589,7 +2606,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                 Some(snapshot) => snapshot,
                 None => return Vec::new(),
             };
-            let next_cursor = cursor_from_click_x(snapshot, x);
+            let next_cursor = cursor_from_click_point(snapshot, x, y);
             if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
                 None
             } else {
@@ -3088,8 +3105,8 @@ fn sanitize_single_line_text(text: &str) -> String {
         .collect()
 }
 
-fn cursor_from_click_x(snapshot: &TextInputState, x: f32) -> u32 {
-    snapshot.cursor_from_click_x(x)
+fn cursor_from_click_point(snapshot: &TextInputState, x: f32, y: f32) -> u32 {
+    snapshot.cursor_from_click_point(x, y)
 }
 
 fn scrollbar_press_actions_from_input(
@@ -3103,6 +3120,7 @@ fn scrollbar_press_actions_from_input(
     thumb_len: f32,
     scroll_offset: f32,
     scroll_range: f32,
+    screen_to_local: Option<Affine2>,
 ) -> Vec<ListenerAction> {
     let InputEvent::CursorButton {
         button,
@@ -3118,9 +3136,8 @@ fn scrollbar_press_actions_from_input(
         return Vec::new();
     }
 
-    let pointer_axis = match axis {
-        ScrollbarAxis::X => *x,
-        ScrollbarAxis::Y => *y,
+    let Some(pointer_axis) = scrollbar_pointer_axis(axis, screen_to_local, *x, *y) else {
+        return Vec::new();
     };
     let (pointer_offset, target_scroll) = match area {
         ScrollbarHitArea::Thumb => (
@@ -3149,6 +3166,7 @@ fn scrollbar_press_actions_from_input(
         pointer_offset,
         scroll_range,
         current_scroll: target_scroll,
+        screen_to_local,
     };
 
     let delta = scroll_offset - target_scroll;
@@ -3172,9 +3190,9 @@ fn scrollbar_drag_move_actions_from_input(
         return Vec::new();
     };
 
-    let pointer_axis = match tracker.axis {
-        ScrollbarAxis::X => *x,
-        ScrollbarAxis::Y => *y,
+    let Some(pointer_axis) = scrollbar_pointer_axis(tracker.axis, tracker.screen_to_local, *x, *y)
+    else {
+        return Vec::new();
     };
     let target_scroll = tree_scrollbar_target_from_pointer(
         pointer_axis,
@@ -3194,6 +3212,19 @@ fn scrollbar_drag_move_actions_from_input(
             current_scroll: target_scroll,
         }),
     ]
+}
+
+fn scrollbar_pointer_axis(
+    axis: ScrollbarAxis,
+    screen_to_local: Option<Affine2>,
+    x: f32,
+    y: f32,
+) -> Option<f32> {
+    let local = screen_to_local?.map_point(Point { x, y });
+    Some(match axis {
+        ScrollbarAxis::X => local.x,
+        ScrollbarAxis::Y => local.y,
+    })
 }
 
 fn scrollbar_drag_tree_action(
@@ -3286,10 +3317,10 @@ fn scrollbar_nodes_for_state(
 ) -> (Option<ScrollbarNode>, Option<ScrollbarNode>) {
     let scrollbar_x = state
         .scrollbar_x
-        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0));
+        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0, state.interaction_inverse));
     let scrollbar_y = state
         .scrollbar_y
-        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0));
+        .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0, state.interaction_inverse));
     (scrollbar_x, scrollbar_y)
 }
 
@@ -3663,10 +3694,9 @@ pub(crate) fn accumulate_element_rebuild(
     if let Some(state) = state {
         let adjusted_rect = Rect::from_frame(state.adjusted_frame);
 
-        if let Some(scrollbar) = state
-            .scrollbar_x
-            .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0))
-        {
+        if let Some(scrollbar) = state.scrollbar_x.map(|metrics| {
+            scrollbar_node_from_metrics(metrics, 0.0, 0.0, state.interaction_inverse)
+        }) {
             let previous = acc
                 .scrollbars
                 .insert((element.id.clone(), ScrollbarAxis::X), scrollbar);
@@ -3676,10 +3706,9 @@ pub(crate) fn accumulate_element_rebuild(
             );
         }
 
-        if let Some(scrollbar) = state
-            .scrollbar_y
-            .map(|metrics| scrollbar_node_from_metrics(metrics, 0.0, 0.0))
-        {
+        if let Some(scrollbar) = state.scrollbar_y.map(|metrics| {
+            scrollbar_node_from_metrics(metrics, 0.0, 0.0, state.interaction_inverse)
+        }) {
             let previous = acc
                 .scrollbars
                 .insert((element.id.clone(), ScrollbarAxis::Y), scrollbar);
@@ -3692,7 +3721,7 @@ pub(crate) fn accumulate_element_rebuild(
         if element.kind == ElementKind::TextInput {
             let previous = acc.text_inputs.insert(
                 element.id.clone(),
-                super::text_input_state(element, adjusted_rect),
+                super::text_input_state(element, adjusted_rect, state.interaction_inverse),
             );
             debug_assert!(previous.is_none(), "duplicate text input rebuild state");
         }
@@ -3735,6 +3764,7 @@ pub(crate) fn accumulate_subtree_rebuild(
             acc,
             scroll_contexts,
             state
+                .clone()
                 .map(|resolved| {
                     crate::tree::scene::child_context(resolved, RetainedPaintPhase::BehindContent)
                 })
@@ -3743,11 +3773,18 @@ pub(crate) fn accumulate_subtree_rebuild(
     }
 
     let child_scene_ctx = state
+        .clone()
         .map(|resolved| crate::tree::scene::child_context(resolved, RetainedPaintPhase::Children))
         .unwrap_or_default();
     element.for_each_retained_child(tree, |child| match child.mode {
         RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
-            accumulate_subtree_rebuild(tree, child.id, acc, &next_scroll_contexts, child_scene_ctx);
+            accumulate_subtree_rebuild(
+                tree,
+                child.id,
+                acc,
+                &next_scroll_contexts,
+                child_scene_ctx.clone(),
+            );
         }
     });
 
@@ -3759,6 +3796,7 @@ pub(crate) fn accumulate_subtree_rebuild(
                 acc,
                 scroll_contexts,
                 state
+                    .clone()
                     .map(|resolved| {
                         crate::tree::scene::child_context(
                             resolved,
@@ -4005,7 +4043,7 @@ fn scrollbar_press_listener(
         matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
         compute: ListenerCompute::ScrollbarPressToRuntime {
             element_id: element.id.clone(),
-            axis: scrollbar_axis_for_node(scrollbar),
+            axis: scrollbar.axis,
             area,
             track_start: scrollbar.track_start,
             track_len: scrollbar.track_len,
@@ -4013,15 +4051,8 @@ fn scrollbar_press_listener(
             thumb_len: scrollbar.thumb_len,
             scroll_offset: scrollbar.scroll_offset,
             scroll_range: scrollbar.scroll_range,
+            screen_to_local: scrollbar.screen_to_local,
         },
-    }
-}
-
-fn scrollbar_axis_for_node(node: ScrollbarNode) -> ScrollbarAxis {
-    if node.track_rect.width >= node.track_rect.height {
-        ScrollbarAxis::X
-    } else {
-        ScrollbarAxis::Y
     }
 }
 
@@ -4408,7 +4439,10 @@ fn emit_scroll_listeners_for_element(
             .into_iter()
             .map(|direction| Listener {
                 element_id: Some(element.id.clone()),
-                matcher: ListenerMatcher::CursorScrollInsideDirection { region, direction },
+                matcher: ListenerMatcher::CursorScrollInsideDirection {
+                    region: region.clone(),
+                    direction,
+                },
                 compute: ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
                     element_id: element.id.clone(),
                     direction,
@@ -4433,27 +4467,37 @@ fn emit_front_nearby_blockers_for_element(
     out.emit_all([
         Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
+            matcher: ListenerMatcher::CursorButtonLeftPressInside {
+                region: region.clone(),
+            },
             compute: blocker(),
         },
         Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorButtonLeftReleaseInside { region },
+            matcher: ListenerMatcher::CursorButtonLeftReleaseInside {
+                region: region.clone(),
+            },
             compute: blocker(),
         },
         Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorButtonMiddlePressInside { region },
+            matcher: ListenerMatcher::CursorButtonMiddlePressInside {
+                region: region.clone(),
+            },
             compute: blocker(),
         },
         Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorLocationInside { region },
+            matcher: ListenerMatcher::CursorLocationInside {
+                region: region.clone(),
+            },
             compute: blocker(),
         },
         Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorPosInside { region },
+            matcher: ListenerMatcher::CursorPosInside {
+                region: region.clone(),
+            },
             compute: blocker(),
         },
     ]);
@@ -4468,7 +4512,10 @@ fn emit_front_nearby_blockers_for_element(
         .into_iter()
         .map(|direction| Listener {
             element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorScrollInsideDirection { region, direction },
+            matcher: ListenerMatcher::CursorScrollInsideDirection {
+                region: region.clone(),
+                direction,
+            },
             compute: blocker(),
         }),
     );
@@ -4803,22 +4850,23 @@ mod tests {
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
     use crate::input::{
-        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{Attrs, MouseOverAttrs, ScrollbarHoverAxis};
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
-    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds};
+    use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
     use crate::tree::scrollbar::ScrollbarAxis;
+    use crate::tree::transform::{Affine2, InteractionClip};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, Listener, ListenerAction,
-        ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
-        NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
-        ScrollbarDragTracker, ScrollbarHitArea, TextDragTracker, compose_combined_registry,
-        listeners_for_element, registry_for_elements, runtime_listeners_for_overlay,
-        window_listeners,
+        compose_combined_registry, listeners_for_element, registry_for_elements,
+        runtime_listeners_for_overlay, window_listeners, ClickPressTracker, DragTrackerState,
+        ElixirEvent, Listener, ListenerAction, ListenerCompute, ListenerComputeCtx, ListenerInput,
+        ListenerMatcher, ListenerMatcherKind, NoopListenerComputeCtx, PointerRegion, RuntimeChange,
+        RuntimeOverlayState, ScrollDirection, ScrollbarDragTracker, ScrollbarHitArea,
+        TextDragTracker,
     };
     use crate::events::{ElementEventKind, TextInputState};
 
@@ -4859,11 +4907,10 @@ mod tests {
 
         PointerRegion {
             visible,
-            inherited_clip: None,
-            self_shape: ShapeBounds { rect, radii: None },
-            visible_bounds: rect,
-            bounds: rect,
-            radii: None,
+            local_shape: ShapeBounds { rect, radii: None },
+            screen_to_local: Some(Affine2::identity()),
+            screen_bounds: rect,
+            clip_chain: Vec::new(),
         }
     }
 
@@ -4877,19 +4924,21 @@ mod tests {
 
         PointerRegion {
             visible: true,
-            inherited_clip: Some(ClipShape {
-                rect,
-                radii: Some(CornerRadii {
-                    tl: 10.0,
-                    tr: 10.0,
-                    br: 10.0,
-                    bl: 10.0,
-                }),
-            }),
-            self_shape: ShapeBounds { rect, radii: None },
-            visible_bounds: rect,
-            bounds: rect,
-            radii: None,
+            local_shape: ShapeBounds { rect, radii: None },
+            screen_to_local: Some(Affine2::identity()),
+            screen_bounds: rect,
+            clip_chain: vec![InteractionClip::new(
+                ClipShape {
+                    rect,
+                    radii: Some(CornerRadii {
+                        tl: 10.0,
+                        tr: 10.0,
+                        br: 10.0,
+                        bl: 10.0,
+                    }),
+                },
+                Affine2::identity(),
+            )],
         }
     }
 
@@ -4899,8 +4948,11 @@ mod tests {
         radii: Option<CornerRadii>,
     ) -> PointerRegion {
         PointerRegion {
-            bounds,
-            radii,
+            local_shape: ShapeBounds {
+                rect: bounds,
+                radii: radii.map(|value| clamp_radii(bounds, value)),
+            },
+            screen_bounds: bounds,
             ..region
         }
     }
@@ -5021,6 +5073,7 @@ mod tests {
             frame_width: 100.0,
             inset_left: 0.0,
             inset_right: 0.0,
+            screen_to_local: Some(Affine2::identity()),
             text_align: TextAlign::Left,
             font_family: "Arial".to_string(),
             font_size: 16.0,
@@ -5373,7 +5426,9 @@ mod tests {
     #[test]
     fn matcher_kind_uses_variant_identity_only() {
         let region = build_pointer_region(true);
-        let a = ListenerMatcher::CursorButtonLeftPressInside { region };
+        let a = ListenerMatcher::CursorButtonLeftPressInside {
+            region: region.clone(),
+        };
         let b = ListenerMatcher::CursorButtonLeftPressInside {
             region: build_pointer_subregion(
                 build_pointer_region(true),
@@ -5903,11 +5958,9 @@ mod tests {
                 ListenerMatcher::CursorButtonLeftReleaseAnywhere
             )
         }));
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) })
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) }));
     }
 
     #[test]
@@ -6098,11 +6151,9 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker)
         ));
-        assert!(
-            actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -6602,31 +6653,21 @@ mod tests {
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta
@@ -6639,32 +6680,21 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyHomePressNoCtrlAltMeta
         )));
-        assert!(
-            listeners.iter().any(|listener| matches!(
-                listener.matcher,
-                ListenerMatcher::KeyEndPressNoCtrlAltMeta
-            ))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyEndPressNoCtrlAltMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear)));
 
         let commit_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
@@ -6957,11 +6987,9 @@ mod tests {
         );
 
         assert_eq!(commit_actions.len(), 3);
-        assert!(
-            commit_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(commit_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
@@ -6987,11 +7015,9 @@ mod tests {
             },
             &mut ctx,
         );
-        assert!(
-            cut_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(cut_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -7450,6 +7476,77 @@ mod tests {
     }
 
     #[test]
+    fn registry_for_elements_translated_hover_uses_visual_position() {
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_move = Some(true);
+        attrs.move_x = Some(40.0);
+        attrs.move_y = Some(15.0);
+        let element = with_frame(
+            make_element(96, attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 20.0,
+                content_width: 100.0,
+                content_height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[element]);
+        let hit_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 20.0 });
+        let miss_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        assert!(matches!(
+            hit_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ElementId::from_term_bytes(vec![96])
+                    && *kind == ElementEventKind::MouseMove
+        ));
+        assert!(
+            miss_actions.is_empty(),
+            "pointer matching should miss the pre-transform position"
+        );
+    }
+
+    #[test]
+    fn registry_for_elements_rotated_hover_uses_visual_rotation() {
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_move = Some(true);
+        attrs.rotate = Some(90.0);
+        let element = with_frame(
+            make_element(97, attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 20.0,
+                content_width: 100.0,
+                content_height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[element]);
+        let hit_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 50.0 });
+        let miss_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 90.0, y: 10.0 });
+
+        assert!(matches!(
+            hit_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ElementId::from_term_bytes(vec![97])
+                    && *kind == ElementEventKind::MouseMove
+        ));
+        assert!(
+            miss_actions.is_empty(),
+            "pointer matching should respect the rotated visual footprint"
+        );
+    }
+
+    #[test]
     fn registry_for_elements_scrolled_child_scrollbar_hover_uses_screen_space_thumb_rect() {
         let child_id = ElementId::from_term_bytes(vec![95]);
 
@@ -7517,6 +7614,53 @@ mod tests {
             actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
                 if *element_id == child_id && *hovered
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_transformed_scrollbar_hover_uses_visual_thumb_rect() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(10.0);
+        attrs.scroll_y_max = Some(100.0);
+        attrs.move_x = Some(30.0);
+        attrs.rotate = Some(90.0);
+        let element = with_frame(
+            make_element(98, attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+                content_width: 100.0,
+                content_height: 200.0,
+            },
+        );
+
+        let state = crate::tree::scene::resolve_node_state(
+            &element,
+            crate::tree::scene::SceneContext::default(),
+        )
+        .expect("state should resolve");
+        let thumb = super::scrollbar_nodes_for_state(&state)
+            .1
+            .expect("scrollbar should exist")
+            .thumb_rect;
+        let screen_thumb = state.interaction_transform.map_rect_aabb(thumb);
+
+        let registry = registry_for_elements(&[element]);
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorPos {
+                x: screen_thumb.x + screen_thumb.width / 2.0,
+                y: screen_thumb.y + screen_thumb.height / 2.0,
+            },
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
+                if *element_id == ElementId::from_term_bytes(vec![98]) && *hovered
         ));
     }
 
@@ -7694,15 +7838,14 @@ mod tests {
                 pointer_offset: 5.0,
                 scroll_range: 90.0,
                 current_scroll: 30.0,
+                screen_to_local: Some(Affine2::identity()),
             }),
             text_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::CursorButtonLeftReleaseAnywhere
@@ -7787,12 +7930,10 @@ mod tests {
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
-        assert!(
-            registry
-                .view()
-                .iter_precedence()
-                .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred))
-        );
+        assert!(registry
+            .view()
+            .iter_precedence()
+            .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred)));
     }
 
     #[test]

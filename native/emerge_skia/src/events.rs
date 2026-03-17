@@ -42,6 +42,7 @@ use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
 use crate::tree::scrollbar::ScrollbarAxis;
+use crate::tree::transform::{Affine2, Point};
 
 pub mod registry_builder;
 mod runtime;
@@ -95,6 +96,7 @@ pub struct TextInputState {
     pub frame_width: f32,
     pub inset_left: f32,
     pub inset_right: f32,
+    pub screen_to_local: Option<Affine2>,
     pub text_align: TextAlign,
     pub font_family: String,
     pub font_size: f32,
@@ -111,6 +113,7 @@ impl TextInputState {
         self.frame_width = other.frame_width;
         self.inset_left = other.inset_left;
         self.inset_right = other.inset_right;
+        self.screen_to_local = other.screen_to_local;
         self.text_align = other.text_align;
         self.font_family = other.font_family.clone();
         self.font_size = other.font_size;
@@ -309,7 +312,15 @@ impl TextInputState {
         changed
     }
 
-    pub fn cursor_from_click_x(&self, x: f32) -> u32 {
+    pub fn cursor_from_click_point(&self, x: f32, y: f32) -> u32 {
+        let local_x = self
+            .screen_to_local
+            .map(|transform| transform.map_point(Point { x, y }).x)
+            .unwrap_or(x);
+        self.cursor_from_local_x(local_x)
+    }
+
+    fn cursor_from_local_x(&self, x: f32) -> u32 {
         let text_width = self.measure_text_width(&self.content);
         let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
 
@@ -321,8 +332,8 @@ impl TextInputState {
             TextAlign::Right => self.frame_x + self.frame_width - self.inset_right - text_width,
         };
 
-        let local_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
-        self.nearest_char_index_for_offset(&self.content, local_x)
+        let click_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
+        self.nearest_char_index_for_offset(&self.content, click_x)
     }
 
     fn measure_text_width(&self, text: &str) -> f32 {
@@ -468,7 +479,7 @@ impl Default for RegistryRebuildPayload {
     }
 }
 
-fn text_input_state(element: &Element, adjusted_rect: Rect) -> TextInputState {
+fn text_input_state(element: &Element, adjusted_rect: Rect, screen_to_local: Option<Affine2>) -> TextInputState {
     let content = element.base_attrs.content.clone().unwrap_or_default();
     let content_len = content.chars().count() as u32;
     let cursor = element
@@ -497,6 +508,7 @@ fn text_input_state(element: &Element, adjusted_rect: Rect) -> TextInputState {
         frame_width: adjusted_rect.width,
         inset_left,
         inset_right,
+        screen_to_local,
         text_align: element.attrs.text_align.unwrap_or_default(),
         font_family,
         font_size: element.attrs.font_size.unwrap_or(16.0) as f32,
@@ -652,6 +664,7 @@ mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
     use crate::tree::element::{Element, Frame};
+    use crate::tree::transform::Affine2;
 
     fn make_element(id: u8, kind: ElementKind, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -717,5 +730,34 @@ mod tests {
                 .scrollbars
                 .contains_key(&(ElementId::from_term_bytes(vec![2]), ScrollbarAxis::Y))
         );
+    }
+
+    #[test]
+    fn text_input_cursor_from_click_point_uses_screen_to_local_transform() {
+        let state = TextInputState {
+            content: "ab".to_string(),
+            content_len: 2,
+            cursor: 0,
+            selection_anchor: None,
+            preedit: None,
+            preedit_cursor: None,
+            focused: true,
+            emit_change: false,
+            frame_x: 0.0,
+            frame_width: 100.0,
+            inset_left: 0.0,
+            inset_right: 0.0,
+            screen_to_local: Some(Affine2::translation(-40.0, -10.0)),
+            text_align: TextAlign::Left,
+            font_family: "default".to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_italic: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+        };
+
+        assert_eq!(state.cursor_from_click_point(40.0, 10.0), 0);
+        assert_eq!(state.cursor_from_click_point(140.0, 10.0), 2);
     }
 }

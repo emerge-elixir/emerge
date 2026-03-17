@@ -1,7 +1,8 @@
 use super::element::{Element, Frame, RetainedPaintPhase};
-use super::geometry::{ClipShape, ShapeBounds, visible_bounds};
+use super::geometry::{visible_bounds, ClipShape, ShapeBounds};
 use super::scrollbar as tree_scrollbar;
 use super::scrollbar::ScrollbarMetrics;
+use super::transform::{interaction_transform, Affine2, InteractionClip};
 
 #[derive(Clone, Copy, Debug)]
 struct LocalSceneGeometry {
@@ -11,22 +12,22 @@ struct LocalSceneGeometry {
     scrollbar_y: Option<ScrollbarMetrics>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SceneContext {
     pub scroll_dx: f32,
     pub scroll_dy: f32,
     pub visible_clip: Option<ClipShape>,
     pub front_nearby_subtree: bool,
+    pub interaction_transform: Affine2,
+    pub interaction_clips: Vec<InteractionClip>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ResolvedNodeState {
     pub frame: Frame,
     pub adjusted_frame: Frame,
     pub self_shape: ShapeBounds,
     pub host_clip: ClipShape,
-    pub inherited_clip: Option<ClipShape>,
-    pub visible_bounds: super::geometry::Rect,
     pub visible: bool,
     pub child_visible_clip: ClipShape,
     pub scrollbar_x: Option<ScrollbarMetrics>,
@@ -34,10 +35,13 @@ pub struct ResolvedNodeState {
     pub local_scroll_x: f32,
     pub local_scroll_y: f32,
     pub front_nearby_subtree: bool,
+    pub interaction_transform: Affine2,
+    pub interaction_inverse: Option<Affine2>,
+    pub interaction_clips: Vec<InteractionClip>,
 }
 
 impl ResolvedNodeState {
-    fn accumulated_scroll(self) -> (f32, f32) {
+    fn accumulated_scroll(&self) -> (f32, f32) {
         (
             self.frame.x - self.adjusted_frame.x,
             self.frame.y - self.adjusted_frame.y,
@@ -69,18 +73,19 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
 
     let scrollbar_x = scene
         .scrollbar_x
-        .map(|metrics| offset_scrollbar_metrics(metrics, ctx));
+        .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
     let scrollbar_y = scene
         .scrollbar_y
-        .map(|metrics| offset_scrollbar_metrics(metrics, ctx));
+        .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
+    let local_transform = interaction_transform(adjusted_frame, &element.attrs);
+    let interaction_transform = ctx.interaction_transform.mul(local_transform);
+    let interaction_inverse = interaction_transform.inverse();
 
     Some(ResolvedNodeState {
         frame,
         adjusted_frame,
         self_shape,
         host_clip,
-        inherited_clip,
-        visible_bounds,
         visible,
         child_visible_clip,
         scrollbar_x,
@@ -88,6 +93,9 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         local_scroll_x: element.attrs.scroll_x.unwrap_or(0.0) as f32,
         local_scroll_y: element.attrs.scroll_y.unwrap_or(0.0) as f32,
         front_nearby_subtree: ctx.front_nearby_subtree,
+        interaction_transform,
+        interaction_inverse,
+        interaction_clips: ctx.interaction_clips,
     })
 }
 
@@ -102,6 +110,14 @@ fn local_scene_geometry(frame: Frame, attrs: &super::attrs::Attrs) -> LocalScene
 
 pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> SceneContext {
     let (scroll_dx, scroll_dy) = state.accumulated_scroll();
+    let mut interaction_clips = state.interaction_clips.clone();
+
+    if !matches!(phase, RetainedPaintPhase::Overlay(_)) {
+        interaction_clips.push(InteractionClip::new(
+            state.host_clip,
+            state.interaction_transform,
+        ));
+    }
 
     match phase {
         RetainedPaintPhase::Children => SceneContext {
@@ -109,23 +125,29 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dy: scroll_dy + state.local_scroll_y,
             visible_clip: Some(state.child_visible_clip),
             front_nearby_subtree: state.front_nearby_subtree,
+            interaction_transform: state.interaction_transform,
+            interaction_clips,
         },
         RetainedPaintPhase::BehindContent => SceneContext {
             scroll_dx,
             scroll_dy,
             visible_clip: Some(state.child_visible_clip),
             front_nearby_subtree: state.front_nearby_subtree,
+            interaction_transform: state.interaction_transform,
+            interaction_clips,
         },
         RetainedPaintPhase::Overlay(_) => SceneContext {
             scroll_dx,
             scroll_dy,
             visible_clip: None,
             front_nearby_subtree: true,
+            interaction_transform: state.interaction_transform,
+            interaction_clips: Vec::new(),
         },
     }
 }
 
-fn offset_scrollbar_metrics(metrics: ScrollbarMetrics, ctx: SceneContext) -> ScrollbarMetrics {
+fn offset_scrollbar_metrics(metrics: ScrollbarMetrics, ctx: &SceneContext) -> ScrollbarMetrics {
     ScrollbarMetrics {
         track_x: metrics.track_x - ctx.scroll_dx,
         track_y: metrics.track_y - ctx.scroll_dy,
@@ -195,10 +217,11 @@ mod tests {
         )
         .expect("state should resolve");
 
+        let child_visible_clip = state.child_visible_clip;
         let child_ctx = child_context(state, RetainedPaintPhase::Children);
         assert_eq!(
             child_ctx.visible_clip,
-            Some(state.child_visible_clip),
+            Some(child_visible_clip),
             "all hosts should tighten child visibility to the host clip"
         );
     }
@@ -237,10 +260,11 @@ mod tests {
         )
         .expect("state should resolve");
 
+        let child_visible_clip = state.child_visible_clip;
         let child_ctx = child_context(state, RetainedPaintPhase::BehindContent);
         assert_eq!(
             child_ctx.visible_clip,
-            Some(state.child_visible_clip),
+            Some(child_visible_clip),
             "behind content should render inside the host clip"
         );
     }
@@ -277,15 +301,13 @@ mod tests {
 
         let parent_state = resolve_node_state(&parent, SceneContext::default())
             .expect("parent state should resolve");
-        let child_state = resolve_node_state(
-            &child,
-            child_context(parent_state, RetainedPaintPhase::Children),
-        )
-        .expect("child state should resolve");
+        let child_ctx = child_context(parent_state.clone(), RetainedPaintPhase::Children);
+        let child_state =
+            resolve_node_state(&child, child_ctx.clone()).expect("child state should resolve");
 
         assert_eq!(child_state.adjusted_frame.y, 110.0);
         assert_eq!(
-            child_state.inherited_clip,
+            child_ctx.visible_clip,
             Some(parent_state.child_visible_clip),
             "child inherited clip should stay in screen space after parent scroll"
         );
@@ -371,8 +393,8 @@ mod tests {
         )
         .expect("child state should resolve");
         let grandchild_ctx = child_context(child_state, RetainedPaintPhase::Children);
-        let grandchild_state =
-            resolve_node_state(&grandchild, grandchild_ctx).expect("grandchild should resolve");
+        let grandchild_state = resolve_node_state(&grandchild, grandchild_ctx.clone())
+            .expect("grandchild should resolve");
 
         assert_eq!(grandchild_ctx.scroll_dy, 25.0);
         assert_eq!(grandchild_state.adjusted_frame.y, 25.0);
