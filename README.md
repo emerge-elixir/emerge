@@ -15,29 +15,30 @@ and rendering are implemented in rust for performance reasons.
 
 ```elixir
 import Emerge.UI
+alias Emerge.Color
 
 # Column element that fills viewport, padding to content of 20px
 # elements inside are spaced evenly 
-column([width(fill()), height(fill()), space_evenly()), padding(20)], [
+column([width(fill()), height(fill()), space_evenly(), padding(20)], [
   # Header element 
-  el([width(fill()), Font.center(), Font.size(24), Font.color(0xFFFFFFFF)],
+  el([width(fill()), Font.center(), Font.size(24), Font.color(Color.color(:white))],
     text("Hello from Emerge, this a header")),
 
   # Two content cards where left is bigger to right by 2:1 ratio
   row([spacing(12), padding(20)], [
-    el([width({:fill, 2}), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
+    el([width({:fill, 2}), padding(16), Background.color(Color.color(:sky, 500)), Border.rounded(8)],
       text("Left Card")),
-    el([width({:fill, 1}), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+    el([width({:fill, 1}), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
       text("Right Card"))
-  ])
+  ]),
 
   # Three element footer each filling equal portion
   row([spacing(12), padding(20)], [
-    el([width(fill()), padding(16), Background.color(0x3B82F6FF), Border.rounded(8)],
+    el([width(fill()), padding(16), Background.color(Color.color(:sky, 500)), Border.rounded(8)],
       text("Left footer side")),
-    el([width(fill()), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
-      text("Center footer side"))
-    el([width(fill()), padding(16), Background.color(0x10B981FF), Border.rounded(8)],
+    el([width(fill()), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
+      text("Center footer side")),
+    el([width(fill()), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
       text("Right footer side"))
   ])
 ])

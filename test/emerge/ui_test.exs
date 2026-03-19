@@ -4,6 +4,7 @@ defmodule Emerge.UITest do
   import ExUnit.CaptureIO
   import Emerge.UI
 
+  alias Emerge.Color
   alias Emerge.UI.{Background, Border, Font, Svg}
   alias EmergeSkia.VideoTarget
 
@@ -55,6 +56,26 @@ defmodule Emerge.UITest do
     assert element.attrs.image_src == "icons/cloud.svg"
     assert element.attrs.svg_color == :white
     assert element.attrs.svg_expected == true
+  end
+
+  test "UI attrs accept Emerge.Color helper tuples" do
+    element =
+      el(
+        [
+          Background.color(Color.color(:sky, 200, 0.3)),
+          Border.color(Color.color_rgb(1, 2, 3)),
+          Font.color(Color.color_rgba(4, 5, 6, 0.5))
+        ],
+        text("hi")
+      )
+
+    svg_element =
+      svg([width(px(24)), height(px(24)), Svg.color(Color.color(:white))], "icons/cloud.svg")
+
+    assert element.attrs.background == {:color_rgba, {184, 230, 254, 77}}
+    assert element.attrs.border_color == {:color_rgb, {1, 2, 3}}
+    assert element.attrs.font_color == {:color_rgba, {4, 5, 6, 128}}
+    assert svg_element.attrs.svg_color == {:color_rgb, {255, 255, 255}}
   end
 
   test "image/2 rejects Svg.color attrs" do
