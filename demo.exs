@@ -181,15 +181,16 @@ spawn(fn -> clock_loop.(clock_loop) end)
 defmodule Demo do
   import Emerge.UI
 
+  alias Emerge.Color
   alias Emerge.UI.{Font, Background, Border, Svg}
 
-  @dark_bg {:color_rgba, {26, 26, 46, 255}}
-  @blue {:color_rgba, {67, 97, 238, 255}}
-  @purple {:color_rgba, {114, 9, 183, 255}}
-  @pink {:color_rgba, {247, 37, 133, 255}}
-  @light_text {:color_rgba, {255, 255, 255, 255}}
-  @dim_text {:color_rgba, {170, 170, 170, 255}}
-  @event_bg {:color_rgba, {45, 45, 68, 255}}
+  @dark_bg Color.color_rgba(26, 26, 46, 1.0)
+  @blue Color.color_rgba(67, 97, 238, 1.0)
+  @purple Color.color_rgba(114, 9, 183, 1.0)
+  @pink Color.color_rgba(247, 37, 133, 1.0)
+  @light_text Color.color_rgba(255, 255, 255, 1.0)
+  @dim_text Color.color_rgba(170, 170, 170, 1.0)
+  @event_bg Color.color_rgba(45, 45, 68, 1.0)
 
   def format_event({:cursor_pos, {x, y}}) do
     "Mouse: #{Float.round(x, 1)}, #{Float.round(y, 1)}"
@@ -385,7 +386,7 @@ defmodule Demo do
         height(fill()),
         padding(16),
         scrollbar_y(),
-        Background.color({:color_rgb, {35, 35, 55}}),
+        Background.color(Color.color_rgb(35, 35, 55)),
         Border.rounded(12)
       ],
       render_page(current_page, last_move_label, unstable_items)
@@ -410,7 +411,7 @@ defmodule Demo do
           height(px(180)),
           padding(8),
           scrollbar_y(),
-          Background.color({:color_rgb, {35, 35, 55}}),
+          Background.color(Color.color_rgb(35, 35, 55)),
           Border.rounded(8)
         ],
         column(
@@ -461,21 +462,21 @@ defmodule Demo do
         text("Explore layout, scrolling, alignment, and transform demos from the menu.")
       ),
       row([width(fill()), spacing(12)], [
-        feature_card("Rows", "Horizontal layouts", {:color_rgb, {60, 60, 120}}),
-        feature_card("Columns", "Vertical layouts", {:color_rgb, {60, 90, 60}}),
-        feature_card("Nesting", "Compose layouts", {:color_rgb, {90, 60, 90}})
+        feature_card("Rows", "Horizontal layouts", Color.color_rgb(60, 60, 120)),
+        feature_card("Columns", "Vertical layouts", Color.color_rgb(60, 90, 60)),
+        feature_card("Nesting", "Compose layouts", Color.color_rgb(90, 60, 90))
       ]),
       el(
         [
           width(fill()),
           padding(14),
-          Background.color({:color_rgb, {60, 50, 80}}),
+          Background.color(Color.color_rgb(60, 50, 80)),
           Border.rounded_each(18, 6, 22, 10)
         ],
         column([spacing(6)], [
           el([Font.size(16), Font.color(:white)], text("Per-corner radius")),
           el(
-            [Font.size(12), Font.color({:color_rgb, {200, 200, 220}})],
+            [Font.size(12), Font.color(Color.color_rgb(200, 200, 220))],
             text("Each corner can be different")
           )
         ])
@@ -485,28 +486,28 @@ defmodule Demo do
           [
             width(fill()),
             padding(12),
-            Background.color({:color_rgb, {50, 70, 90}}),
+            Background.color(Color.color_rgb(50, 70, 90)),
             Border.rounded(10),
             rotate(-6),
             alpha(0.85)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Rotate + alpha")),
-            el([Font.size(11), Font.color({:color_rgb, {200, 220, 230}})], text("-6deg, 85%"))
+            el([Font.size(11), Font.color(Color.color_rgb(200, 220, 230))], text("-6deg, 85%"))
           ])
         ),
         el(
           [
             width(fill()),
             padding(12),
-            Background.color({:color_rgb, {70, 60, 90}}),
+            Background.color(Color.color_rgb(70, 60, 90)),
             Border.rounded(10),
             scale(1.06),
             move_y(-14)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Scale + move")),
-            el([Font.size(11), Font.color({:color_rgb, {220, 210, 235}})], text("1.06x, -4px"))
+            el([Font.size(11), Font.color(Color.color_rgb(220, 210, 235))], text("1.06x, -4px"))
           ])
         )
       ]),
@@ -699,7 +700,7 @@ defmodule Demo do
       ]),
       svg_tint_showcase(template_cloud_source, "demo_images/tile_quad.svg"),
       el(
-        [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
+        [Font.size(12), Font.color(Color.color_rgb(205, 214, 229))],
         text("svg/2 fit behavior")
       ),
       el(
@@ -743,7 +744,7 @@ defmodule Demo do
         )
       ),
       el(
-        [Font.size(12), Font.color({:color_rgb, {205, 214, 229}})],
+        [Font.size(12), Font.color(Color.color_rgb(205, 214, 229))],
         text("Background.image/2 fit behavior")
       ),
       centered_wrapped_cards(background_fit_cards, 960),
@@ -752,7 +753,7 @@ defmodule Demo do
           width(fill()),
           padding(10),
           spacing(6),
-          Background.color({:color_rgb, {48, 48, 72}}),
+          Background.color(Color.color_rgb(48, 48, 72)),
           Border.rounded(8)
         ],
         column([spacing(4)], [
@@ -787,17 +788,17 @@ defmodule Demo do
       if focused do
         {
           "Focused",
-          {:color_rgb, {72, 96, 70}},
-          {:color_rgb, {227, 244, 223}},
-          {:color_rgb, {228, 183, 104}},
+          Color.color_rgb(72, 96, 70),
+          Color.color_rgb(227, 244, 223),
+          Color.color_rgb(228, 183, 104),
           1
         }
       else
         {
           "Blurred",
-          {:color_rgb, {72, 74, 102}},
-          {:color_rgb, {220, 224, 240}},
-          {:color_rgb, {120, 130, 175}},
+          Color.color_rgb(72, 74, 102),
+          Color.color_rgb(220, 224, 240),
+          Color.color_rgb(120, 130, 175),
           1
         }
       end
@@ -819,14 +820,14 @@ defmodule Demo do
       if button_focused do
         {
           "Focused",
-          {:color_rgb, {70, 96, 82}},
-          {:color_rgb, {224, 244, 236}}
+          Color.color_rgb(70, 96, 82),
+          Color.color_rgb(224, 244, 236)
         }
       else
         {
           "Blurred",
-          {:color_rgb, {72, 74, 102}},
-          {:color_rgb, {220, 224, 240}}
+          Color.color_rgb(72, 74, 102),
+          Color.color_rgb(220, 224, 240)
         }
       end
 
@@ -843,7 +844,7 @@ defmodule Demo do
           width(fill()),
           padding(14),
           spacing(10),
-          Background.color({:color_rgb, {48, 48, 72}}),
+          Background.color(Color.color_rgb(48, 48, 72)),
           Border.rounded(10)
         ],
         column([spacing(10)], [
@@ -853,7 +854,7 @@ defmodule Demo do
               padding_xy(10, 8),
               Font.size(16),
               Font.color(:white),
-              Background.color({:color_rgb, {62, 62, 94}}),
+              Background.color(Color.color_rgb(62, 62, 94)),
               Border.rounded(8),
               Border.width(input_border_width),
               Border.color(input_border_color),
@@ -881,28 +882,28 @@ defmodule Demo do
             el(
               [
                 padding_xy(10, 5),
-                Background.color({:color_rgb, {64, 74, 106}}),
+                Background.color(Color.color_rgb(64, 74, 106)),
                 Border.rounded(999)
               ],
               el(
-                [Font.size(11), Font.color({:color_rgb, {205, 216, 246}})],
+                [Font.size(11), Font.color(Color.color_rgb(205, 216, 246))],
                 text("focus: #{focus_count}")
               )
             ),
             el(
               [
                 padding_xy(10, 5),
-                Background.color({:color_rgb, {78, 68, 100}}),
+                Background.color(Color.color_rgb(78, 68, 100)),
                 Border.rounded(999)
               ],
               el(
-                [Font.size(11), Font.color({:color_rgb, {228, 212, 246}})],
+                [Font.size(11), Font.color(Color.color_rgb(228, 212, 246))],
                 text("blur: #{blur_count}")
               )
             )
           ]),
           el(
-            [Font.size(12), Font.color({:color_rgb, {225, 228, 244}})],
+            [Font.size(12), Font.color(Color.color_rgb(225, 228, 244))],
             text("Value: #{value_label}")
           ),
           el([Font.size(11), Font.color(@dim_text)], text("Length: #{String.length(value)}")),
@@ -918,12 +919,12 @@ defmodule Demo do
           width(fill()),
           padding(14),
           spacing(10),
-          Background.color({:color_rgb, {46, 50, 72}}),
+          Background.color(Color.color_rgb(46, 50, 72)),
           Border.rounded(10)
         ],
         column([spacing(10)], [
           el(
-            [Font.size(12), Font.color({:color_rgb, {225, 230, 244}})],
+            [Font.size(12), Font.color(Color.color_rgb(225, 230, 244))],
             text("Declarative interaction styles")
           ),
           el(
@@ -937,22 +938,22 @@ defmodule Demo do
               width(fill()),
               padding_xy(10, 8),
               Font.size(16),
-              Font.color({:color_rgb, {228, 232, 246}}),
-              Background.color({:color_rgb, {58, 62, 90}}),
+              Font.color(Color.color_rgb(228, 232, 246)),
+              Background.color(Color.color_rgb(58, 62, 90)),
               Border.rounded(8),
               Border.width(1),
-              Border.color({:color_rgb, {110, 120, 162}}),
+              Border.color(Color.color_rgb(110, 120, 162)),
               mouse_over([
-                Background.color({:color_rgb, {64, 70, 100}}),
-                Border.color({:color_rgb, {132, 143, 189}})
+                Background.color(Color.color_rgb(64, 70, 100)),
+                Border.color(Color.color_rgb(132, 143, 189))
               ]),
               focused([
-                Background.color({:color_rgb, {70, 78, 112}}),
-                Border.color({:color_rgb, {164, 188, 236}})
+                Background.color(Color.color_rgb(70, 78, 112)),
+                Border.color(Color.color_rgb(164, 188, 236))
               ]),
               mouse_down([
-                Background.color({:color_rgb, {63, 70, 100}}),
-                Border.color({:color_rgb, {224, 186, 124}}),
+                Background.color(Color.color_rgb(63, 70, 100)),
+                Border.color(Color.color_rgb(224, 186, 124)),
                 move_y(1)
               ])
             ],
@@ -969,12 +970,12 @@ defmodule Demo do
           width(fill()),
           padding(14),
           spacing(10),
-          Background.color({:color_rgb, {46, 50, 72}}),
+          Background.color(Color.color_rgb(46, 50, 72)),
           Border.rounded(10)
         ],
         column([spacing(10)], [
           el(
-            [Font.size(12), Font.color({:color_rgb, {225, 230, 244}})],
+            [Font.size(12), Font.color(Color.color_rgb(225, 230, 244))],
             text("Input.button + on_press")
           ),
           el(
@@ -986,30 +987,30 @@ defmodule Demo do
               width(fill()),
               padding_xy(10, 8),
               Font.size(14),
-              Font.color({:color_rgb, {230, 234, 246}}),
-              Background.color({:color_rgb, {58, 62, 90}}),
+              Font.color(Color.color_rgb(230, 234, 246)),
+              Background.color(Color.color_rgb(58, 62, 90)),
               Border.rounded(8),
               Border.width(1),
-              Border.color({:color_rgb, {110, 120, 162}}),
+              Border.color(Color.color_rgb(110, 120, 162)),
               on_press({self(), {:demo_event, :button_press}}),
               on_focus({self(), {:demo_event, :button_focus}}),
               on_blur({self(), {:demo_event, :button_blur}}),
               mouse_over([
-                Background.color({:color_rgb, {64, 70, 100}}),
-                Border.color({:color_rgb, {132, 143, 189}})
+                Background.color(Color.color_rgb(64, 70, 100)),
+                Border.color(Color.color_rgb(132, 143, 189))
               ]),
               focused([
-                Border.color({:color_rgb, {166, 186, 236}}),
-                Border.glow({:color_rgba, {132, 158, 232, 100}}, 2)
+                Border.color(Color.color_rgb(166, 186, 236)),
+                Border.glow(Color.color_rgba(132, 158, 232, 100 / 255), 2)
               ]),
               mouse_down([
-                Background.color({:color_rgb, {56, 60, 88}}),
-                Border.color({:color_rgb, {176, 190, 228}}),
+                Background.color(Color.color_rgb(56, 60, 88)),
+                Border.color(Color.color_rgb(176, 190, 228)),
                 Border.inner_shadow(
                   offset: {0, 1},
                   blur: 6,
                   size: 1,
-                  color: {:color_rgba, {0, 0, 0, 120}}
+                  color: Color.color_rgba(0, 0, 0, 120 / 255)
                 ),
                 move_y(1)
               ])
@@ -1031,33 +1032,33 @@ defmodule Demo do
             el(
               [
                 padding_xy(10, 5),
-                Background.color({:color_rgb, {66, 74, 108}}),
+                Background.color(Color.color_rgb(66, 74, 108)),
                 Border.rounded(999)
               ],
               el(
-                [Font.size(11), Font.color({:color_rgb, {208, 218, 246}})],
+                [Font.size(11), Font.color(Color.color_rgb(208, 218, 246))],
                 text("press: #{button_press_count}")
               )
             ),
             el(
               [
                 padding_xy(10, 5),
-                Background.color({:color_rgb, {64, 82, 96}}),
+                Background.color(Color.color_rgb(64, 82, 96)),
                 Border.rounded(999)
               ],
               el(
-                [Font.size(11), Font.color({:color_rgb, {210, 238, 236}})],
+                [Font.size(11), Font.color(Color.color_rgb(210, 238, 236))],
                 text("focus: #{button_focus_count}")
               )
             ),
             el(
               [
                 padding_xy(10, 5),
-                Background.color({:color_rgb, {78, 68, 100}}),
+                Background.color(Color.color_rgb(78, 68, 100)),
                 Border.rounded(999)
               ],
               el(
-                [Font.size(11), Font.color({:color_rgb, {228, 212, 246}})],
+                [Font.size(11), Font.color(Color.color_rgb(228, 212, 246))],
                 text("blur: #{button_blur_count}")
               )
             )
@@ -1080,24 +1081,24 @@ defmodule Demo do
           [
             width(shrink()),
             padding(10),
-            Background.color({:color_rgb, {55, 70, 90}}),
+            Background.color(Color.color_rgb(55, 70, 90)),
             Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Shrink")),
-            el([Font.size(11), Font.color({:color_rgb, {210, 220, 230}})], text("Content sized"))
+            el([Font.size(11), Font.color(Color.color_rgb(210, 220, 230))], text("Content sized"))
           ])
         ),
         el(
           [
             width(fill()),
             padding(10),
-            Background.color({:color_rgb, {70, 80, 95}}),
+            Background.color(Color.color_rgb(70, 80, 95)),
             Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Fill")),
-            el([Font.size(11), Font.color({:color_rgb, {220, 225, 235}})], text("Expands"))
+            el([Font.size(11), Font.color(Color.color_rgb(220, 225, 235))], text("Expands"))
           ])
         )
       ]),
@@ -1106,7 +1107,7 @@ defmodule Demo do
           [
             width({:fill, 1}),
             padding(8),
-            Background.color({:color_rgb, {65, 70, 100}}),
+            Background.color(Color.color_rgb(65, 70, 100)),
             Border.rounded(8)
           ],
           el([Font.size(12), Font.color(:white)], text("Fill 1"))
@@ -1115,7 +1116,7 @@ defmodule Demo do
           [
             width({:fill, 2}),
             padding(8),
-            Background.color({:color_rgb, {65, 80, 110}}),
+            Background.color(Color.color_rgb(65, 80, 110)),
             Border.rounded(8)
           ],
           el([Font.size(12), Font.color(:white)], text("Fill 2"))
@@ -1124,7 +1125,7 @@ defmodule Demo do
           [
             width({:fill, 3}),
             padding(8),
-            Background.color({:color_rgb, {65, 90, 120}}),
+            Background.color(Color.color_rgb(65, 90, 120)),
             Border.rounded(8)
           ],
           el([Font.size(12), Font.color(:white)], text("Fill 3"))
@@ -1135,24 +1136,24 @@ defmodule Demo do
           [
             width(minimum(140, shrink())),
             padding(10),
-            Background.color({:color_rgb, {70, 65, 95}}),
+            Background.color(Color.color_rgb(70, 65, 95)),
             Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Min + shrink")),
-            el([Font.size(11), Font.color({:color_rgb, {220, 220, 235}})], text(">= 140px"))
+            el([Font.size(11), Font.color(Color.color_rgb(220, 220, 235))], text(">= 140px"))
           ])
         ),
         el(
           [
             width(maximum(180, fill())),
             padding(10),
-            Background.color({:color_rgb, {85, 65, 95}}),
+            Background.color(Color.color_rgb(85, 65, 95)),
             Border.rounded(8)
           ],
           column([spacing(4)], [
             el([Font.size(13), Font.color(:white)], text("Max + fill")),
-            el([Font.size(11), Font.color({:color_rgb, {225, 215, 235}})], text("<= 180px"))
+            el([Font.size(11), Font.color(Color.color_rgb(225, 215, 235))], text("<= 180px"))
           ])
         )
       ]),
@@ -1182,7 +1183,7 @@ defmodule Demo do
           height(px(140)),
           padding(10),
           scrollbar_y(),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(6)
         ],
         column([spacing(6)], [
@@ -1203,7 +1204,7 @@ defmodule Demo do
           height(px(90)),
           padding(10),
           scrollbar_x(),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(6)
         ],
         row([spacing(12)], [
@@ -1226,7 +1227,7 @@ defmodule Demo do
           height(px(120)),
           padding(10),
           scrollbar_y(),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(6)
         ],
         column([spacing(6)], [
@@ -1253,14 +1254,14 @@ defmodule Demo do
         text("Hover, press, and move inside the cards.")
       ),
       row([width(fill()), spacing(12)], [
-        event_card("Mouse Down", :mouse_down, {:color_rgb, {70, 70, 110}}),
-        event_card("Mouse Up", :mouse_up, {:color_rgb, {70, 90, 90}})
+        event_card("Mouse Down", :mouse_down, Color.color_rgb(70, 70, 110)),
+        event_card("Mouse Up", :mouse_up, Color.color_rgb(70, 90, 90))
       ]),
       row([width(fill()), spacing(12)], [
-        event_card("Mouse Enter", :mouse_enter, {:color_rgb, {85, 65, 100}}),
-        event_card("Mouse Leave", :mouse_leave, {:color_rgb, {90, 70, 60}})
+        event_card("Mouse Enter", :mouse_enter, Color.color_rgb(85, 65, 100)),
+        event_card("Mouse Leave", :mouse_leave, Color.color_rgb(90, 70, 60))
       ]),
-      event_card("Mouse Move", :mouse_move, {:color_rgb, {60, 80, 110}}),
+      event_card("Mouse Move", :mouse_move, Color.color_rgb(60, 80, 110)),
       el(
         [Font.size(12), Font.color(@dim_text)],
         text("Last move target: #{move_label}")
@@ -1280,14 +1281,14 @@ defmodule Demo do
           [move_x(40), move_y(14)],
           [
             mouse_over([
-              Background.color({:color_rgb, {92, 120, 176}}),
-              Border.color({:color_rgb, {190, 216, 255}}),
-              Border.glow({:color_rgba, {110, 160, 255, 90}}, 2),
+              Background.color(Color.color_rgb(92, 120, 176)),
+              Border.color(Color.color_rgb(190, 216, 255)),
+              Border.glow(Color.color_rgba(110, 160, 255, 90 / 255), 2),
               Font.color(:white)
             ])
           ],
           [:mouse_move],
-          {:color_rgb, {68, 92, 138}}
+          Color.color_rgb(68, 92, 138)
         ),
         transformed_event_showcase(
           "Rotated Hover",
@@ -1296,14 +1297,14 @@ defmodule Demo do
           [rotate(16)],
           [
             mouse_over([
-              Background.color({:color_rgb, {128, 94, 162}}),
-              Border.color({:color_rgb, {228, 198, 255}}),
-              Border.glow({:color_rgba, {196, 132, 255, 92}}, 2),
+              Background.color(Color.color_rgb(128, 94, 162)),
+              Border.color(Color.color_rgb(228, 198, 255)),
+              Border.glow(Color.color_rgba(196, 132, 255, 92 / 255), 2),
               Font.color(:white)
             ])
           ],
           [:mouse_enter, :mouse_leave],
-          {:color_rgb, {100, 74, 126}}
+          Color.color_rgb(100, 74, 126)
         ),
         transformed_event_showcase(
           "Scaled Press",
@@ -1312,25 +1313,25 @@ defmodule Demo do
           [scale(1.18)],
           [
             mouse_over([
-              Background.color({:color_rgb, {104, 124, 96}}),
-              Border.color({:color_rgb, {220, 236, 204}}),
-              Border.glow({:color_rgba, {160, 212, 136, 82}}, 2),
+              Background.color(Color.color_rgb(104, 124, 96)),
+              Border.color(Color.color_rgb(220, 236, 204)),
+              Border.glow(Color.color_rgba(160, 212, 136, 82 / 255), 2),
               Font.color(:white)
             ]),
             mouse_down([
-              Background.color({:color_rgb, {72, 88, 64}}),
-              Border.color({:color_rgb, {214, 228, 194}}),
+              Background.color(Color.color_rgb(72, 88, 64)),
+              Border.color(Color.color_rgb(214, 228, 194)),
               Border.inner_shadow(
                 offset: {0, 1},
                 blur: 6,
                 size: 1,
-                color: {:color_rgba, {0, 0, 0, 120}}
+                color: Color.color_rgba(0, 0, 0, 120 / 255)
               ),
               Font.color(:white)
             ])
           ],
           [:mouse_down, :mouse_up],
-          {:color_rgb, {86, 104, 78}}
+          Color.color_rgb(86, 104, 78)
         )
       ])
     ])
@@ -1353,9 +1354,9 @@ defmodule Demo do
   end
 
   defp hover_showcase_event_panel(active) do
-    bg = if active, do: {:color_rgb, {88, 72, 122}}, else: {:color_rgb, {58, 52, 82}}
-    border = if active, do: {:color_rgb, {188, 154, 250}}, else: {:color_rgb, {120, 112, 150}}
-    title_color = if active, do: @light_text, else: {:color_rgb, {220, 210, 240}}
+    bg = if active, do: Color.color_rgb(88, 72, 122), else: Color.color_rgb(58, 52, 82)
+    border = if active, do: Color.color_rgb(188, 154, 250), else: Color.color_rgb(120, 112, 150)
+    title_color = if active, do: @light_text, else: Color.color_rgb(220, 210, 240)
     state_text = if active, do: "state: hovered", else: "state: idle"
 
     column([width(fill()), spacing(10)], [
@@ -1380,7 +1381,7 @@ defmodule Demo do
           el([Font.size(13), Font.color(title_color)], text("Event-managed hover")),
           el([Font.size(11), Font.color(title_color)], text(state_text)),
           el(
-            [Font.size(10), Font.color({:color_rgb, {225, 215, 245}})],
+            [Font.size(10), Font.color(Color.color_rgb(225, 215, 245))],
             text("Behavior is explicit and can trigger arbitrary app logic.")
           )
         ])
@@ -1399,13 +1400,13 @@ defmodule Demo do
         [
           width(fill()),
           padding(14),
-          Background.color({:color_rgb, {52, 70, 84}}),
+          Background.color(Color.color_rgb(52, 70, 84)),
           Border.rounded(10),
           Border.width(1),
-          Border.color({:color_rgb, {102, 124, 150}}),
+          Border.color(Color.color_rgb(102, 124, 150)),
           mouse_over([
-            Background.color({:color_rgb, {86, 112, 140}}),
-            Border.color({:color_rgb, {168, 210, 250}}),
+            Background.color(Color.color_rgb(86, 112, 140)),
+            Border.color(Color.color_rgb(168, 210, 250)),
             Font.color(@light_text),
             Font.underline(),
             Font.strike(),
@@ -1417,15 +1418,15 @@ defmodule Demo do
         ],
         column([spacing(6)], [
           el(
-            [Font.size(13), Font.color({:color_rgb, {210, 222, 240}})],
+            [Font.size(13), Font.color(Color.color_rgb(210, 222, 240))],
             text("Declarative hover style")
           ),
           el(
-            [Font.size(11), Font.color({:color_rgb, {190, 206, 228}})],
+            [Font.size(11), Font.color(Color.color_rgb(190, 206, 228))],
             text("No enter/leave handlers or hover state in Elixir.")
           ),
           el(
-            [Font.size(10), Font.color({:color_rgb, {214, 228, 246}})],
+            [Font.size(10), Font.color(Color.color_rgb(214, 228, 246))],
             text("This hover also toggles underline/strike and letter/word spacing.")
           )
         ])
@@ -1471,7 +1472,7 @@ defmodule Demo do
         column(
           [
             padding(12),
-            Background.color({:color_rgb, {50, 50, 75}}),
+            Background.color(Color.color_rgb(50, 50, 75)),
             Border.rounded(8),
             spacing(8),
             on_click({self(), {:unstable_row_click, item.label}})
@@ -1488,7 +1489,7 @@ defmodule Demo do
                 height(px(90)),
                 padding(6),
                 scrollbar_y(),
-                Background.color({:color_rgb, {40, 40, 60}}),
+                Background.color(Color.color_rgb(40, 40, 60)),
                 Border.rounded(8)
               ] ++ if(keyed?, do: [key: {:stable, :scroll, item.label}], else: []),
               column(
@@ -1500,7 +1501,7 @@ defmodule Demo do
                   el(
                     [
                       padding(6),
-                      Background.color({:color_rgb, {70, 70, 95}}),
+                      Background.color(Color.color_rgb(70, 70, 95)),
                       Border.rounded(10),
                       on_click({self(), {:unstable_child_click, item.label, child.label}})
                     ] ++ child_key,
@@ -1525,7 +1526,7 @@ defmodule Demo do
         el(
           [
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             Font.size(12),
             Font.color(:white)
@@ -1535,7 +1536,7 @@ defmodule Demo do
         el(
           [
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             align_left(),
             Font.size(12),
@@ -1546,7 +1547,7 @@ defmodule Demo do
         el(
           [
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             center_x(),
             Font.size(12),
@@ -1557,7 +1558,7 @@ defmodule Demo do
         el(
           [
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             align_right(),
             Font.size(12),
@@ -1571,7 +1572,7 @@ defmodule Demo do
           [
             width(px(180)),
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             center_x(),
             Font.size(12),
@@ -1583,7 +1584,7 @@ defmodule Demo do
           [
             width(px(180)),
             padding(10),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4),
             align_right(),
             Font.size(12),
@@ -1598,7 +1599,7 @@ defmodule Demo do
             width(px(200)),
             padding(10),
             center_x(),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4)
           ],
           el(
@@ -1612,7 +1613,7 @@ defmodule Demo do
           width(fill()),
           height(px(80)),
           padding(10),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(6)
         ],
         el(
@@ -1632,7 +1633,7 @@ defmodule Demo do
           width(fill()),
           Border.rounded(12),
           width(px(365)),
-          Background.color({:color_rgb, {255, 255, 255}})
+          Background.color(Color.color_rgb(255, 255, 255))
         ],
         [forecast_now(), forecast_week()]
       )
@@ -1643,14 +1644,14 @@ defmodule Demo do
     row(
       [
         width(fill()),
-        Background.color({:color_rgb, {240, 237, 248}}),
+        Background.color(Color.color_rgb(240, 237, 248)),
         padding(16)
       ],
       [
         el(
-          [width(fill()), Border.width(1), Border.color({:color_rgb, {0, 0, 0}})],
+          [width(fill()), Border.width(1), Border.color(Color.color_rgb(0, 0, 0))],
           column(
-            [center_x(), Font.color({:color_rgb, {26, 31, 39}}), Font.bold(), spacing(10)],
+            [center_x(), Font.color(Color.color_rgb(26, 31, 39)), Font.bold(), spacing(10)],
             [
               row([spacing(16)], [text("CL"), text("68°")]),
               row([], [text("Partly Cloudy")])
@@ -1658,11 +1659,11 @@ defmodule Demo do
           )
         ),
         el(
-          [width(fill()), Border.width(1), Border.color({:color_rgb, {0, 0, 0}})],
+          [width(fill()), Border.width(1), Border.color(Color.color_rgb(0, 0, 0))],
           column(
             [
               center_x(),
-              Font.color({:color_rgb, {26, 31, 39}}),
+              Font.color(Color.color_rgb(26, 31, 39)),
               Font.bold(),
               spacing(10)
             ],
@@ -1688,27 +1689,27 @@ defmodule Demo do
           [
             width(fill()),
             padding(14),
-            Background.color({:color_rgb, {50, 70, 90}}),
+            Background.color(Color.color_rgb(50, 70, 90)),
             Border.rounded(10),
             rotate(-8),
             alpha(0.8)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Rotate")),
-            el([Font.size(11), Font.color({:color_rgb, {200, 220, 230}})], text("-8deg"))
+            el([Font.size(11), Font.color(Color.color_rgb(200, 220, 230))], text("-8deg"))
           ])
         ),
         el(
           [
             width(fill()),
             padding(14),
-            Background.color({:color_rgb, {70, 60, 90}}),
+            Background.color(Color.color_rgb(70, 60, 90)),
             Border.rounded(10),
             scale(1.08)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Scale")),
-            el([Font.size(11), Font.color({:color_rgb, {220, 210, 235}})], text("1.08x"))
+            el([Font.size(11), Font.color(Color.color_rgb(220, 210, 235))], text("1.08x"))
           ])
         )
       ]),
@@ -1717,26 +1718,26 @@ defmodule Demo do
           [
             width(fill()),
             padding(14),
-            Background.color({:color_rgb, {60, 80, 70}}),
+            Background.color(Color.color_rgb(60, 80, 70)),
             Border.rounded(10),
             move_x(16)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Move")),
-            el([Font.size(11), Font.color({:color_rgb, {210, 230, 220}})], text("+16px x"))
+            el([Font.size(11), Font.color(Color.color_rgb(210, 230, 220))], text("+16px x"))
           ])
         ),
         el(
           [
             width(fill()),
             padding(14),
-            Background.color({:color_rgb, {80, 70, 60}}),
+            Background.color(Color.color_rgb(80, 70, 60)),
             Border.rounded(10),
             alpha(0.6)
           ],
           column([spacing(4)], [
             el([Font.size(14), Font.color(:white)], text("Alpha")),
-            el([Font.size(11), Font.color({:color_rgb, {230, 220, 210}})], text("60%"))
+            el([Font.size(11), Font.color(Color.color_rgb(230, 220, 210))], text("60%"))
           ])
         )
       ])
@@ -1771,14 +1772,14 @@ defmodule Demo do
           ],
           [
             mouse_over([
-              Background.color({:color_rgb, {96, 132, 188}}),
-              Border.color({:color_rgb, {200, 224, 255}}),
-              Border.glow({:color_rgba, {110, 160, 255, 92}}, 2),
+              Background.color(Color.color_rgb(96, 132, 188)),
+              Border.color(Color.color_rgb(200, 224, 255)),
+              Border.glow(Color.color_rgba(110, 160, 255, 92 / 255), 2),
               Font.color(:white)
             ])
           ],
           [:mouse_move],
-          {:color_rgb, {70, 96, 148}}
+          Color.color_rgb(70, 96, 148)
         ),
         transformed_event_showcase(
           "Animated Padding + Rotate",
@@ -1797,14 +1798,14 @@ defmodule Demo do
           ],
           [
             mouse_over([
-              Background.color({:color_rgb, {130, 96, 166}}),
-              Border.color({:color_rgb, {232, 204, 255}}),
-              Border.glow({:color_rgba, {196, 132, 255, 92}}, 2),
+              Background.color(Color.color_rgb(130, 96, 166)),
+              Border.color(Color.color_rgb(232, 204, 255)),
+              Border.glow(Color.color_rgba(196, 132, 255, 92 / 255), 2),
               Font.color(:white)
             ])
           ],
           [:mouse_enter, :mouse_leave],
-          {:color_rgb, {102, 76, 130}}
+          Color.color_rgb(102, 76, 130)
         ),
         transformed_event_showcase(
           "Animated Height + Scale Press",
@@ -1823,25 +1824,25 @@ defmodule Demo do
           ],
           [
             mouse_over([
-              Background.color({:color_rgb, {106, 126, 98}}),
-              Border.color({:color_rgb, {220, 236, 204}}),
-              Border.glow({:color_rgba, {160, 212, 136, 84}}, 2),
+              Background.color(Color.color_rgb(106, 126, 98)),
+              Border.color(Color.color_rgb(220, 236, 204)),
+              Border.glow(Color.color_rgba(160, 212, 136, 84 / 255), 2),
               Font.color(:white)
             ]),
             mouse_down([
-              Background.color({:color_rgb, {74, 90, 66}}),
-              Border.color({:color_rgb, {214, 228, 194}}),
+              Background.color(Color.color_rgb(74, 90, 66)),
+              Border.color(Color.color_rgb(214, 228, 194)),
               Border.inner_shadow(
                 offset: {0, 1},
                 blur: 6,
                 size: 1,
-                color: {:color_rgba, {0, 0, 0, 120}}
+                color: Color.color_rgba(0, 0, 0, 120 / 255)
               ),
               Font.color(:white)
             ])
           ],
           [:mouse_down, :mouse_up],
-          {:color_rgb, {86, 104, 78}}
+          Color.color_rgb(86, 104, 78)
         )
       ])
     ])
@@ -1861,7 +1862,7 @@ defmodule Demo do
           width(fill()),
           height(px(160)),
           padding(15),
-          Background.color({:color_rgba, {45, 45, 65, 40}}),
+          Background.color(Color.color_rgba(45, 45, 65, 40 / 255)),
           Border.rounded(6)
         ],
         el(
@@ -1870,13 +1871,13 @@ defmodule Demo do
             height(px(60)),
             center_x(),
             center_y(),
-            Background.color({:color_rgb, {70, 70, 120}}),
+            Background.color(Color.color_rgb(70, 70, 120)),
             Border.rounded(6),
             above(
               el(
                 [
                   padding(6),
-                  Background.color({:color_rgb, {90, 70, 70}}),
+                  Background.color(Color.color_rgb(90, 70, 70)),
                   Border.rounded(4),
                   Font.size(12),
                   Font.color(:white)
@@ -1888,7 +1889,7 @@ defmodule Demo do
               el(
                 [
                   padding(6),
-                  Background.color({:color_rgb, {70, 90, 70}}),
+                  Background.color(Color.color_rgb(70, 90, 70)),
                   Border.rounded(4),
                   Font.size(12),
                   Font.color(:white)
@@ -1900,7 +1901,7 @@ defmodule Demo do
               el(
                 [
                   padding(6),
-                  Background.color({:color_rgb, {70, 70, 90}}),
+                  Background.color(Color.color_rgb(70, 70, 90)),
                   Border.rounded(4),
                   Font.size(12),
                   Font.color(:white)
@@ -1912,7 +1913,7 @@ defmodule Demo do
               el(
                 [
                   padding(6),
-                  Background.color({:color_rgb, {90, 90, 70}}),
+                  Background.color(Color.color_rgb(90, 90, 70)),
                   Border.rounded(4),
                   Font.size(12),
                   Font.color(:white)
@@ -1925,7 +1926,7 @@ defmodule Demo do
                 [
                   width(px(160)),
                   height(px(70)),
-                  Background.color({:color_rgba, {200, 200, 255, 40}}),
+                  Background.color(Color.color_rgba(200, 200, 255, 40 / 255)),
                   Border.rounded(8)
                 ],
                 text("Behind")
@@ -1935,7 +1936,7 @@ defmodule Demo do
               el(
                 [
                   padding(4),
-                  Background.color({:color_rgba, {0, 0, 0, 120}}),
+                  Background.color(Color.color_rgba(0, 0, 0, 120 / 255)),
                   Border.rounded(4),
                   Font.size(10),
                   Font.color(:white)
@@ -1967,9 +1968,9 @@ defmodule Demo do
       height(px(78)),
       center_x(),
       center_y(),
-      Background.color({:color_rgb, {76, 76, 132}}),
+      Background.color(Color.color_rgb(76, 76, 132)),
       Border.width(2),
-      Border.color({:color_rgb, {182, 194, 255}}),
+      Border.color(Color.color_rgb(182, 194, 255)),
       Border.rounded(10),
       in_front(nearby_oversized_front_overlay())
     ]
@@ -1979,7 +1980,7 @@ defmodule Demo do
         width(fill()),
         spacing(10),
         padding(12),
-        Background.color({:color_rgb, {45, 45, 65}}),
+        Background.color(Color.color_rgb(45, 45, 65)),
         Border.rounded(8)
       ],
       [
@@ -1989,7 +1990,7 @@ defmodule Demo do
           [
             width(fill()),
             height(px(180)),
-            Background.color({:color_rgba, {255, 255, 255, 12}}),
+            Background.color(Color.color_rgba(255, 255, 255, 12 / 255)),
             Border.rounded(8)
           ],
           el(
@@ -2008,7 +2009,7 @@ defmodule Demo do
         height(px(90)),
         center_x(),
         align_bottom(),
-        Background.color({:color_rgba, {235, 96, 140, 210}}),
+        Background.color(Color.color_rgba(235, 96, 140, 210 / 255)),
         Border.rounded(10),
         Font.size(11),
         Font.color(:white)
@@ -2016,7 +2017,7 @@ defmodule Demo do
       column([center_x(), center_y(), spacing(4)], [
         text("in_front 220x90"),
         el(
-          [Font.size(10), Font.color({:color_rgba, {255, 255, 255, 220}})],
+          [Font.size(10), Font.color(Color.color_rgba(255, 255, 255, 220 / 255))],
           text("center_x + align_bottom")
         )
       ])
@@ -2036,8 +2037,8 @@ defmodule Demo do
           padding(12),
           spacing(8),
           Font.size(14),
-          Font.color({:color_rgb, {200, 220, 255}}),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Font.color(Color.color_rgb(200, 220, 255)),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(8)
         ],
         [
@@ -2076,7 +2077,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {54, 70, 90}}),
+            Background.color(Color.color_rgb(54, 70, 90)),
             Border.rounded(6),
             Font.size(13),
             Font.color(:white),
@@ -2088,7 +2089,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {72, 62, 88}}),
+            Background.color(Color.color_rgb(72, 62, 88)),
             Border.rounded(6),
             Font.size(13),
             Font.color(:white),
@@ -2100,7 +2101,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {70, 80, 62}}),
+            Background.color(Color.color_rgb(70, 80, 62)),
             Border.rounded(6),
             Font.size(13),
             Font.color(:white),
@@ -2115,7 +2116,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {45, 60, 82}}),
+            Background.color(Color.color_rgb(45, 60, 82)),
             Border.rounded(6),
             Font.size(12),
             Font.color(:white),
@@ -2127,7 +2128,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {56, 74, 66}}),
+            Background.color(Color.color_rgb(56, 74, 66)),
             Border.rounded(6),
             Font.size(12),
             Font.color(:white),
@@ -2139,7 +2140,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {75, 62, 62}}),
+            Background.color(Color.color_rgb(75, 62, 62)),
             Border.rounded(6),
             Font.size(12),
             Font.color(:white),
@@ -2156,7 +2157,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4)
           ],
           el([width(fill()), Font.size(12), Font.color(:white), Font.align_left()], text("Left"))
@@ -2165,7 +2166,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4)
           ],
           el([width(fill()), Font.size(12), Font.color(:white), Font.center()], text("Center"))
@@ -2174,7 +2175,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(8),
-            Background.color({:color_rgb, {55, 55, 80}}),
+            Background.color(Color.color_rgb(55, 55, 80)),
             Border.rounded(4)
           ],
           el(
@@ -2194,8 +2195,8 @@ defmodule Demo do
           padding(12),
           spacing(8),
           Font.size(14),
-          Font.color({:color_rgb, {180, 180, 200}}),
-          Background.color({:color_rgb, {50, 50, 70}}),
+          Font.color(Color.color_rgb(180, 180, 200)),
+          Background.color(Color.color_rgb(50, 50, 70)),
           Border.rounded(8)
         ],
         [
@@ -2214,7 +2215,7 @@ defmodule Demo do
         [
           width(px(400)),
           padding(12),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(8)
         ],
         paragraph([Font.size(14), Font.color(:white)], [
@@ -2234,7 +2235,7 @@ defmodule Demo do
         [
           width(px(450)),
           padding(12),
-          Background.color({:color_rgb, {45, 45, 65}}),
+          Background.color(Color.color_rgb(45, 45, 65)),
           Border.rounded(8)
         ],
         paragraph([Font.size(14), Font.color(:white)], [
@@ -2259,7 +2260,7 @@ defmodule Demo do
             [
               width(fill()),
               padding(10),
-              Background.color({:color_rgb, {45, 45, 65}}),
+              Background.color(Color.color_rgb(45, 45, 65)),
               Border.rounded(6)
             ],
             paragraph([spacing(0), Font.size(13), Font.color(:white)], [
@@ -2276,7 +2277,7 @@ defmodule Demo do
             [
               width(fill()),
               padding(10),
-              Background.color({:color_rgb, {45, 45, 65}}),
+              Background.color(Color.color_rgb(45, 45, 65)),
               Border.rounded(6)
             ],
             paragraph([spacing(8), Font.size(13), Font.color(:white)], [
@@ -2297,19 +2298,19 @@ defmodule Demo do
         [
           width(fill()),
           padding(16),
-          Background.color({:color_rgb, {40, 40, 60}}),
+          Background.color(Color.color_rgb(40, 40, 60)),
           Border.rounded(10)
         ],
         column([width(fill()), spacing(12)], [
           el([Font.size(20), Font.bold(), Font.color(:white)], text("Getting Started")),
-          paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {210, 210, 230}})], [
+          paragraph([spacing(4), Font.size(14), Font.color(Color.color_rgb(210, 210, 230))], [
             text(
               "Emerge is a native GUI toolkit for Elixir that renders with Skia. " <>
                 "It uses a declarative layout model inspired by elm-ui, where you describe " <>
                 "what your interface should look like and the engine handles the rest."
             )
           ]),
-          paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {210, 210, 230}})], [
+          paragraph([spacing(4), Font.size(14), Font.color(Color.color_rgb(210, 210, 230))], [
             text("To get started, add "),
             el([Font.bold(), Font.color(@blue)], text("emerge_skia")),
             text(" to your dependencies and call "),
@@ -2330,7 +2331,7 @@ defmodule Demo do
         [
           width(fill()),
           padding(16),
-          Background.color({:color_rgb, {37, 44, 58}}),
+          Background.color(Color.color_rgb(37, 44, 58)),
           Border.rounded(10)
         ],
         text_column(
@@ -2338,7 +2339,7 @@ defmodule Demo do
             center_x(),
             spacing(14),
             Font.size(14),
-            Font.color({:color_rgb, {220, 226, 236}})
+            Font.color(Color.color_rgb(220, 226, 236))
           ],
           [
             paragraph([spacing(4)], [
@@ -2370,16 +2371,16 @@ defmodule Demo do
         [
           width(fill()),
           padding(16),
-          Background.color({:color_rgb, {44, 50, 66}}),
+          Background.color(Color.color_rgb(44, 50, 66)),
           Border.rounded(10)
         ],
-        paragraph([spacing(4), Font.size(14), Font.color({:color_rgb, {226, 232, 243}})], [
+        paragraph([spacing(4), Font.size(14), Font.color(Color.color_rgb(226, 232, 243))], [
           el(
             [
               align_left(),
               width(px(40)),
               height(px(40)),
-              Background.color({:color_rgb, {74, 113, 214}}),
+              Background.color(Color.color_rgb(74, 113, 214)),
               Border.rounded(8)
             ],
             el(
@@ -2402,7 +2403,7 @@ defmodule Demo do
               align_right(),
               width(px(96)),
               padding(8),
-              Background.color({:color_rgb, {78, 58, 90}}),
+              Background.color(Color.color_rgb(78, 58, 90)),
               Border.rounded(6),
               Font.size(11),
               Font.bold(),
@@ -2420,11 +2421,11 @@ defmodule Demo do
         [
           width(fill()),
           padding(16),
-          Background.color({:color_rgb, {36, 46, 60}}),
+          Background.color(Color.color_rgb(36, 46, 60)),
           Border.rounded(10)
         ],
         text_column(
-          [spacing(10), Font.size(13), Font.color({:color_rgb, {220, 228, 238}})],
+          [spacing(10), Font.size(13), Font.color(Color.color_rgb(220, 228, 238))],
           [
             el(
               [
@@ -2432,16 +2433,16 @@ defmodule Demo do
                 width(px(128)),
                 height(px(92)),
                 padding(10),
-                Background.color({:color_rgb, {67, 97, 150}}),
+                Background.color(Color.color_rgb(67, 97, 150)),
                 Border.rounded(8)
               ],
               column([spacing(6)], [
                 el([Font.bold(), Font.color(:white)], text("Floated Card")),
                 el(
-                  [Font.size(11), Font.color({:color_rgb, {232, 238, 246}})],
+                  [Font.size(11), Font.color(Color.color_rgb(232, 238, 246))],
                   text("align_left()")
                 ),
-                el([Font.size(11), Font.color({:color_rgb, {232, 238, 246}})], text("92px tall"))
+                el([Font.size(11), Font.color(Color.color_rgb(232, 238, 246))], text("92px tall"))
               ])
             ),
             paragraph([spacing(3)], [
@@ -2460,7 +2461,7 @@ defmodule Demo do
               [
                 width(fill()),
                 padding(8),
-                Background.color({:color_rgb, {84, 62, 62}}),
+                Background.color(Color.color_rgb(84, 62, 62)),
                 Border.rounded(6),
                 Font.size(12),
                 Font.color(:white)
@@ -2864,7 +2865,7 @@ defmodule Demo do
       column([spacing(4)], [
         el([Font.size(13), Font.color(:white)], text(card.title)),
         el([Font.size(11), Font.color(@dim_text)], text(card.subtitle)),
-        el([Font.size(10), Font.color({:color_rgb, {200, 200, 220}})], text("Border attrs:")),
+        el([Font.size(10), Font.color(Color.color_rgb(200, 200, 220))], text("Border attrs:")),
         column(
           [spacing(2)],
           Enum.map(border_attr_labels, fn label ->
@@ -2893,7 +2894,7 @@ defmodule Demo do
         width(px(300)),
         padding(10),
         spacing(8),
-        Background.color({:color_rgb, {50, 50, 74}}),
+        Background.color(Color.color_rgb(50, 50, 74)),
         Border.rounded(10)
       ],
       column([spacing(8)], [
@@ -2907,7 +2908,7 @@ defmodule Demo do
             width(fill()),
             height(px(170)),
             padding(8),
-            Background.color({:color_rgb, {34, 34, 50}}),
+            Background.color(Color.color_rgb(34, 34, 50)),
             Border.rounded(8)
           ],
           asset_behavior_preview(preview_spec)
@@ -2930,7 +2931,7 @@ defmodule Demo do
         width(px(300)),
         padding(10),
         spacing(8),
-        Background.color({:color_rgb, {50, 50, 74}}),
+        Background.color(Color.color_rgb(50, 50, 74)),
         Border.rounded(10)
       ],
       column([spacing(8)], [
@@ -2939,18 +2940,18 @@ defmodule Demo do
           source_status_chip(status_label, status_tone)
         ]),
         el([Font.size(10), Font.color(@dim_text)], text(source_label)),
-        el([Font.size(10), Font.color({:color_rgb, {196, 202, 222}})], text(note)),
+        el([Font.size(10), Font.color(Color.color_rgb(196, 202, 222))], text(note)),
         el(
           [
             width(fill()),
             padding(10),
-            Background.color({:color_rgb, {34, 34, 50}}),
+            Background.color(Color.color_rgb(34, 34, 50)),
             Border.rounded(8)
           ],
           column([spacing(6)], [
             el([Font.size(22), Font.color(:white)] ++ font_attrs, text("Asset Fonts 123")),
             el(
-              [Font.size(12), Font.color({:color_rgb, {214, 220, 236}})] ++ font_attrs,
+              [Font.size(12), Font.color(Color.color_rgb(214, 220, 236))] ++ font_attrs,
               text(sample)
             )
           ])
@@ -2982,31 +2983,31 @@ defmodule Demo do
         width(fill()),
         padding(16),
         spacing(14),
-        Background.gradient({:color_rgb, {16, 52, 102}}, {:color_rgb, {44, 132, 182}}, 90),
+        Background.gradient(Color.color_rgb(16, 52, 102), Color.color_rgb(44, 132, 182), 90),
         Border.rounded(18),
         Border.width(1),
-        Border.color({:color_rgba, {204, 233, 255, 120}}),
-        Border.glow({:color_rgba, {66, 156, 230, 90}}, 4)
+        Border.color(Color.color_rgba(204, 233, 255, 120 / 255)),
+        Border.glow(Color.color_rgba(66, 156, 230, 90 / 255), 4)
       ],
       column([spacing(14)], [
         row([width(fill()), spacing(12)], [
           column([width(fill()), spacing(6)], [
             el([Font.size(22), Font.color(:white)], text("Weekly forecast")),
             el(
-              [Font.size(12), Font.color({:color_rgb, {226, 238, 249}})],
+              [Font.size(12), Font.color(Color.color_rgb(226, 238, 249))],
               text("North Shore boardwalk · local SVG weather icons rendered with svg/2")
             ),
             row([width(fill()), spacing(8)], [
-              weather_badge("SVG via svg/2", {:color_rgba, {5, 20, 34, 105}}),
-              weather_badge("C primary", {:color_rgba, {28, 83, 49, 140}}),
-              weather_badge("F secondary", {:color_rgba, {64, 52, 20, 130}})
+              weather_badge("SVG via svg/2", Color.color_rgba(5, 20, 34, 105 / 255)),
+              weather_badge("C primary", Color.color_rgba(28, 83, 49, 140 / 255)),
+              weather_badge("F secondary", Color.color_rgba(64, 52, 20, 130 / 255))
             ])
           ]),
           column([spacing(8)], [
             el(
               [
                 padding_each(5, 10, 5, 10),
-                Background.color({:color_rgba, {6, 24, 40, 110}}),
+                Background.color(Color.color_rgba(6, 24, 40, 110 / 255)),
                 Border.rounded(999),
                 Font.size(11),
                 Font.color(:white)
@@ -3014,7 +3015,7 @@ defmodule Demo do
               text("Hardcoded sample")
             ),
             el(
-              [Font.size(11), Font.color({:color_rgb, {220, 236, 248}})],
+              [Font.size(11), Font.color(Color.color_rgb(220, 236, 248))],
               text(summary)
             )
           ])
@@ -3023,7 +3024,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(10),
-            Background.color({:color_rgba, {5, 20, 34, 95}}),
+            Background.color(Color.color_rgba(5, 20, 34, 95 / 255)),
             Border.rounded(14)
           ],
           wrapped_row([width(fill()), spacing_xy(10, 10)], Enum.map(days, &weather_day_card/1))
@@ -3040,10 +3041,10 @@ defmodule Demo do
         width(px(118)),
         padding(10),
         spacing(8),
-        Background.color({:color_rgba, {8, 18, 30, 145}}),
+        Background.color(Color.color_rgba(8, 18, 30, 145 / 255)),
         Border.rounded(14),
         Border.width(1),
-        Border.color({:color_rgba, {226, 238, 248, 60}})
+        Border.color(Color.color_rgba(226, 238, 248, 60 / 255))
       ],
       column([center_x(), spacing(8)], [
         el([Font.size(12), Font.color(:white)], text(day)),
@@ -3061,11 +3062,11 @@ defmodule Demo do
           )
         ),
         el(
-          [Font.size(11), Font.color({:color_rgb, {232, 238, 248}})],
+          [Font.size(11), Font.color(Color.color_rgb(232, 238, 248))],
           text(weather_condition_label(kind))
         ),
         weather_temp_line("HI", high_c, accent),
-        weather_temp_line("LO", low_c, {:color_rgb, {214, 223, 236}}),
+        weather_temp_line("LO", low_c, Color.color_rgb(214, 223, 236)),
         el(
           [
             padding_each(3, 8, 3, 8),
@@ -3085,7 +3086,7 @@ defmodule Demo do
       el([Font.size(9), Font.color(@dim_text)], text(label)),
       el([Font.size(15), Font.color(primary_color)], text("#{temp_c}C")),
       el(
-        [Font.size(11), Font.color({:color_rgb, {218, 226, 239}})],
+        [Font.size(11), Font.color(Color.color_rgb(218, 226, 239))],
         text("#{celsius_to_fahrenheit(temp_c)}F")
       )
     ])
@@ -3114,25 +3115,25 @@ defmodule Demo do
 
   defp weather_icon_tone(:sun) do
     {
-      {:color_rgba, {255, 209, 102, 34}},
-      {:color_rgb, {255, 215, 110}},
-      {:color_rgba, {102, 74, 18, 170}}
+      Color.color_rgba(255, 209, 102, 34 / 255),
+      Color.color_rgb(255, 215, 110),
+      Color.color_rgba(102, 74, 18, 170 / 255)
     }
   end
 
   defp weather_icon_tone(:cloud) do
     {
-      {:color_rgba, {198, 212, 233, 34}},
-      {:color_rgb, {224, 232, 243}},
-      {:color_rgba, {65, 84, 108, 170}}
+      Color.color_rgba(198, 212, 233, 34 / 255),
+      Color.color_rgb(224, 232, 243),
+      Color.color_rgba(65, 84, 108, 170 / 255)
     }
   end
 
   defp weather_icon_tone(:rain) do
     {
-      {:color_rgba, {110, 198, 255, 34}},
-      {:color_rgb, {136, 224, 255}},
-      {:color_rgba, {32, 88, 114, 175}}
+      Color.color_rgba(110, 198, 255, 34 / 255),
+      Color.color_rgb(136, 224, 255),
+      Color.color_rgba(32, 88, 114, 175 / 255)
     }
   end
 
@@ -3145,7 +3146,7 @@ defmodule Demo do
       Enum.map(specs, fn {label, note, source} -> svg_weather_scale_card(label, note, source) end)
 
     column([spacing(12)], [
-      el([Font.size(12), Font.color({:color_rgb, {205, 214, 229}})], text("SVG scaling")),
+      el([Font.size(12), Font.color(Color.color_rgb(205, 214, 229))], text("SVG scaling")),
       el(
         [Font.size(11), Font.color(@dim_text)],
         text(
@@ -3164,13 +3165,13 @@ defmodule Demo do
         width(px(300)),
         padding(12),
         spacing(10),
-        Background.color({:color_rgb, {50, 50, 74}}),
+        Background.color(Color.color_rgb(50, 50, 74)),
         Border.rounded(12)
       ],
       column([spacing(10)], [
         row([width(fill()), spacing(8)], [
           el([width(fill()), Font.size(12), Font.color(:white)], text(label)),
-          weather_badge("SVG", {:color_rgba, {66, 89, 122, 170}})
+          weather_badge("SVG", Color.color_rgba(66, 89, 122, 170 / 255))
         ]),
         el([Font.size(10), Font.color(@dim_text)], text(note)),
         row(
@@ -3181,13 +3182,13 @@ defmodule Demo do
                 width(px(86)),
                 height(px(118)),
                 padding(8),
-                Background.color({:color_rgb, {34, 34, 50}}),
+                Background.color(Color.color_rgb(34, 34, 50)),
                 Border.rounded(10)
               ],
               column([center_x(), center_y(), spacing(8)], [
                 svg([width(px(size)), height(px(size)), image_fit(:contain)], source),
                 el(
-                  [Font.size(10), Font.color({:color_rgb, {213, 219, 234}})],
+                  [Font.size(10), Font.color(Color.color_rgb(213, 219, 234))],
                   text("#{size}px")
                 )
               ])
@@ -3204,9 +3205,9 @@ defmodule Demo do
       {"White tint", "Template tint turns every visible pixel white.", :white,
        "Svg.color(:white)"},
       {"Cyan tint", "Same icon, now themed for cool accents and status states.",
-       {:color_rgb, {110, 198, 255}}, "Svg.color(cyan)"},
+       Color.color_rgb(110, 198, 255), "Svg.color(cyan)"},
       {"Amber tint", "Warm tint for highlights, alerts, and seasonal accents.",
-       {:color_rgb, {255, 209, 102}}, "Svg.color(amber)"}
+       Color.color_rgb(255, 209, 102), "Svg.color(amber)"}
     ]
 
     column([spacing(12)], [
@@ -3242,7 +3243,7 @@ defmodule Demo do
             multicolor_source,
             "Multicolor tinted",
             "A single tint overrides all visible colors while preserving the alpha edges.",
-            {:color_rgb, {110, 198, 255}},
+            Color.color_rgb(110, 198, 255),
             "Svg.color(cyan)"
           )
         ],
@@ -3252,16 +3253,19 @@ defmodule Demo do
   end
 
   defp svg_tint_card(source, label, note, tint, tint_label) do
+    cyan_tint = Color.color_rgb(110, 198, 255)
+    amber_tint = Color.color_rgb(255, 209, 102)
+
     svg_attrs =
       [width(px(72)), height(px(72)), image_fit(:contain)] ++
         if(tint, do: [Svg.color(tint)], else: [])
 
     badge_tone =
       case tint do
-        nil -> {:color_rgba, {80, 98, 122, 150}}
-        :white -> {:color_rgba, {110, 116, 132, 180}}
-        {:color_rgb, {110, 198, 255}} -> {:color_rgba, {52, 124, 170, 185}}
-        {:color_rgb, {255, 209, 102}} -> {:color_rgba, {138, 96, 28, 190}}
+        nil -> Color.color_rgba(80, 98, 122, 150 / 255)
+        :white -> Color.color_rgba(110, 116, 132, 180 / 255)
+        ^cyan_tint -> Color.color_rgba(52, 124, 170, 185 / 255)
+        ^amber_tint -> Color.color_rgba(138, 96, 28, 190 / 255)
       end
 
     el(
@@ -3269,7 +3273,7 @@ defmodule Demo do
         width(px(228)),
         padding(12),
         spacing(10),
-        Background.color({:color_rgb, {46, 48, 72}}),
+        Background.color(Color.color_rgb(46, 48, 72)),
         Border.rounded(12)
       ],
       column([spacing(10)], [
@@ -3283,15 +3287,15 @@ defmodule Demo do
             center_x(),
             width(px(132)),
             height(px(120)),
-            Background.color({:color_rgb, {28, 31, 46}}),
+            Background.color(Color.color_rgb(28, 31, 46)),
             Border.width(1),
-            Border.color({:color_rgba, {214, 220, 236, 90}}),
+            Border.color(Color.color_rgba(214, 220, 236, 90 / 255)),
             Border.rounded(12)
           ],
           el([center_x(), center_y()], svg(svg_attrs, source))
         ),
         el(
-          [Font.size(10), Font.color({:color_rgb, {213, 219, 234}})],
+          [Font.size(10), Font.color(Color.color_rgb(213, 219, 234))],
           text(tint_label)
         )
       ])
@@ -3304,7 +3308,7 @@ defmodule Demo do
         width(fill()),
         height(fill()),
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8),
         in_front(asset_preview_mode_badge(mode_label))
       ],
@@ -3318,7 +3322,7 @@ defmodule Demo do
         width(fill()),
         height(fill()),
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8),
         in_front(asset_preview_mode_badge(mode_label))
       ],
@@ -3333,7 +3337,7 @@ defmodule Demo do
         height(fill()),
         bg_attr,
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8),
         in_front(asset_preview_mode_badge(mode_label))
       ],
@@ -3349,7 +3353,7 @@ defmodule Demo do
         move_x(-6),
         move_y(-6),
         padding_each(2, 6, 2, 6),
-        Background.color({:color_rgba, {0, 0, 0, 165}}),
+        Background.color(Color.color_rgba(0, 0, 0, 165 / 255)),
         Border.rounded(4),
         Font.size(9),
         Font.color(:white)
@@ -3361,14 +3365,14 @@ defmodule Demo do
   defp source_status_chip(label, tone) do
     bg_color =
       case tone do
-        :source -> {:color_rgb, {58, 98, 158}}
-        :runtime -> {:color_rgb, {48, 120, 102}}
-        :blocked -> {:color_rgb, {150, 77, 83}}
-        :background -> {:color_rgb, {92, 80, 164}}
-        :helper -> {:color_rgb, {88, 92, 124}}
-        :font_builtin -> {:color_rgb, {84, 106, 94}}
-        :font -> {:color_rgb, {132, 86, 54}}
-        :synthetic -> {:color_rgb, {118, 74, 120}}
+        :source -> Color.color_rgb(58, 98, 158)
+        :runtime -> Color.color_rgb(48, 120, 102)
+        :blocked -> Color.color_rgb(150, 77, 83)
+        :background -> Color.color_rgb(92, 80, 164)
+        :helper -> Color.color_rgb(88, 92, 124)
+        :font_builtin -> Color.color_rgb(84, 106, 94)
+        :font -> Color.color_rgb(132, 86, 54)
+        :synthetic -> Color.color_rgb(118, 74, 120)
       end
 
     el(
@@ -3394,7 +3398,7 @@ defmodule Demo do
         width(px(card_w)),
         padding(10),
         spacing(8),
-        Background.color({:color_rgb, {45, 45, 68}}),
+        Background.color(Color.color_rgb(45, 45, 68)),
         Border.rounded(10)
       ],
       column([spacing(8)], [
@@ -3404,7 +3408,7 @@ defmodule Demo do
         ]),
         el([Font.size(10), Font.color(@dim_text)], text(frame_label)),
         el(
-          [Font.size(10), Font.color({:color_rgb, {184, 188, 210}})],
+          [Font.size(10), Font.color(Color.color_rgb(184, 188, 210))],
           text("#{frame_w}x#{frame_h}")
         ),
         el(
@@ -3412,7 +3416,7 @@ defmodule Demo do
             center_x(),
             width(px(stage_w)),
             height(px(stage_h)),
-            Background.color({:color_rgb, {31, 31, 45}}),
+            Background.color(Color.color_rgb(31, 31, 45)),
             Border.rounded(8)
           ],
           fit_demo_preview(variant, source, fit, {frame_w, frame_h})
@@ -3428,9 +3432,9 @@ defmodule Demo do
         center_y(),
         width(px(frame_w)),
         height(px(frame_h)),
-        Background.color({:color_rgb, {24, 24, 36}}),
+        Background.color(Color.color_rgb(24, 24, 36)),
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8)
       ],
       image([width(fill()), height(fill()), image_fit(fit)], source)
@@ -3444,9 +3448,9 @@ defmodule Demo do
         center_y(),
         width(px(frame_w)),
         height(px(frame_h)),
-        Background.color({:color_rgb, {24, 24, 36}}),
+        Background.color(Color.color_rgb(24, 24, 36)),
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8)
       ],
       svg([width(fill()), height(fill()), image_fit(fit)], source)
@@ -3462,7 +3466,7 @@ defmodule Demo do
         height(px(frame_h)),
         Background.image(source, fit: fit),
         Border.width(1),
-        Border.color({:color_rgba, {214, 220, 236, 220}}),
+        Border.color(Color.color_rgba(214, 220, 236, 220 / 255)),
         Border.rounded(8)
       ],
       el(
@@ -3470,7 +3474,7 @@ defmodule Demo do
           center_x(),
           center_y(),
           padding(5),
-          Background.color({:color_rgba, {0, 0, 0, 160}}),
+          Background.color(Color.color_rgba(0, 0, 0, 160 / 255)),
           Border.rounded(5),
           Font.size(10),
           Font.color(:white)
@@ -3484,7 +3488,7 @@ defmodule Demo do
     el(
       [
         padding(4),
-        Background.color({:color_rgb, {52, 110, 124}}),
+        Background.color(Color.color_rgb(52, 110, 124)),
         Border.rounded(6),
         Font.size(10),
         Font.color(:white)
@@ -3497,7 +3501,7 @@ defmodule Demo do
     el(
       [
         padding(4),
-        Background.color({:color_rgb, {142, 84, 52}}),
+        Background.color(Color.color_rgb(142, 84, 52)),
         Border.rounded(6),
         Font.size(10),
         Font.color(:white)
@@ -3508,7 +3512,7 @@ defmodule Demo do
 
   defp fit_legend() do
     column([spacing(4)], [
-      el([Font.size(11), Font.color({:color_rgb, {200, 210, 222}})], text("Fit legend")),
+      el([Font.size(11), Font.color(Color.color_rgb(200, 210, 222))], text("Fit legend")),
       el(
         [Font.size(10), Font.color(@dim_text)],
         text("contain: full image visible, may letterbox")
@@ -3524,26 +3528,28 @@ defmodule Demo do
   defp menu_item(label, page, current_page) do
     active = page == current_page
 
-    bg = if active, do: @blue, else: {:color_rgb, {45, 45, 65}}
-    pressed_bg = if active, do: {:color_rgb, {55, 82, 206}}, else: {:color_rgb, {40, 42, 60}}
+    bg = if active, do: @blue, else: Color.color_rgb(45, 45, 65)
+    pressed_bg = if active, do: Color.color_rgb(55, 82, 206), else: Color.color_rgb(40, 42, 60)
     text_color = if active, do: @light_text, else: @dim_text
-    border_color = if active, do: {:color_rgb, {126, 148, 230}}, else: {:color_rgb, {86, 92, 122}}
+
+    border_color =
+      if active, do: Color.color_rgb(126, 148, 230), else: Color.color_rgb(86, 92, 122)
 
     hover_attrs =
       if active do
         [
           mouse_over([
-            Background.color({:color_rgb, {74, 108, 240}}),
+            Background.color(Color.color_rgb(74, 108, 240)),
             Font.color(@light_text),
-            Border.color({:color_rgb, {152, 174, 246}})
+            Border.color(Color.color_rgb(152, 174, 246))
           ])
         ]
       else
         [
           mouse_over([
-            Background.color({:color_rgb, {70, 70, 100}}),
+            Background.color(Color.color_rgb(70, 70, 100)),
             Font.color(@light_text),
-            Border.color({:color_rgb, {132, 142, 186}})
+            Border.color(Color.color_rgb(132, 142, 186))
           ])
         ]
       end
@@ -3561,17 +3567,17 @@ defmodule Demo do
         Font.color(text_color),
         on_press({self(), {:demo_nav, page}}),
         focused([
-          Border.color({:color_rgb, {166, 186, 236}}),
-          Border.glow({:color_rgba, {132, 158, 232, 110}}, 2)
+          Border.color(Color.color_rgb(166, 186, 236)),
+          Border.glow(Color.color_rgba(132, 158, 232, 110 / 255), 2)
         ]),
         mouse_down([
           Background.color(pressed_bg),
-          Border.color({:color_rgb, {176, 190, 228}}),
+          Border.color(Color.color_rgb(176, 190, 228)),
           Border.inner_shadow(
             offset: {0, 1},
             blur: 6,
             size: 1,
-            color: {:color_rgba, {0, 0, 0, 120}}
+            color: Color.color_rgba(0, 0, 0, 120 / 255)
           ),
           move_y(1)
         ])
@@ -4276,7 +4282,7 @@ defmodule Demo do
       ],
       [
         el([Font.size(16), Font.color(:white)], text(title)),
-        el([Font.size(12), Font.color({:color_rgb, {200, 200, 220}})], text(description))
+        el([Font.size(12), Font.color(Color.color_rgb(200, 200, 220))], text(description))
       ]
     )
   end
@@ -4293,7 +4299,7 @@ defmodule Demo do
       column([spacing(6)], [
         el([Font.size(14), Font.color(:white)], text(label)),
         el(
-          [Font.size(11), Font.color({:color_rgb, {210, 210, 230}})],
+          [Font.size(11), Font.color(Color.color_rgb(210, 210, 230))],
           text("Triggers #{format_event_label(event)}")
         )
       ])
@@ -4318,7 +4324,7 @@ defmodule Demo do
           [
             width(fill()),
             padding(12),
-            Background.color({:color_rgb, {44, 44, 66}}),
+            Background.color(Color.color_rgb(44, 44, 66)),
             Border.rounded(10)
           ],
           column([spacing(8)], [
@@ -4326,7 +4332,7 @@ defmodule Demo do
               [
                 width(fill()),
                 height(px(150)),
-                Background.color({:color_rgba, {255, 255, 255, 12}}),
+                Background.color(Color.color_rgba(255, 255, 255, 12 / 255)),
                 Border.rounded(12)
               ],
               el(
@@ -4335,9 +4341,9 @@ defmodule Demo do
                   height(px(82)),
                   center_x(),
                   center_y(),
-                  Background.color({:color_rgba, {255, 255, 255, 8}}),
+                  Background.color(Color.color_rgba(255, 255, 255, 8 / 255)),
                   Border.width(1),
-                  Border.color({:color_rgba, {208, 216, 240, 110}}),
+                  Border.color(Color.color_rgba(208, 216, 240, 110 / 255)),
                   Border.rounded(12),
                   in_front(
                     transformed_event_target(
@@ -4356,14 +4362,14 @@ defmodule Demo do
                     align_bottom(),
                     move_y(-8),
                     Font.size(9),
-                    Font.color({:color_rgba, {215, 222, 242, 170}})
+                    Font.color(Color.color_rgba(215, 222, 242, 170 / 255))
                   ],
                   text("Original slot")
                 )
               )
             ),
             el(
-              [Font.size(10), Font.color({:color_rgb, {204, 214, 236}})],
+              [Font.size(10), Font.color(Color.color_rgb(204, 214, 236))],
               text(transform_note)
             )
           ])
@@ -4389,13 +4395,13 @@ defmodule Demo do
         padding(12),
         Background.color(bg_color),
         Border.width(1),
-        Border.color({:color_rgba, {245, 248, 255, 120}}),
+        Border.color(Color.color_rgba(245, 248, 255, 120 / 255)),
         Border.rounded(12)
       ] ++ transform_attrs ++ state_attrs ++ event_attrs(events, label),
       column([center_x(), center_y(), spacing(5)], [
         el([Font.size(13), Font.color(:white)], text(label)),
         el(
-          [Font.size(10), Font.color({:color_rgba, {245, 248, 255, 215}})],
+          [Font.size(10), Font.color(Color.color_rgba(245, 248, 255, 215 / 255))],
           text(transform_note)
         )
       ])
@@ -4430,7 +4436,7 @@ defmodule Demo do
     el(
       [
         padding(6),
-        Background.color({:color_rgb, {55, 60, 90}}),
+        Background.color(Color.color_rgb(55, 60, 90)),
         Border.rounded(12),
         Font.size(11),
         Font.color(:white)
