@@ -24,9 +24,9 @@ use glutin_egl_sys::egl::types::{EGLConfig, EGLContext, EGLDisplay, EGLSurface, 
 use libloading::Library;
 use skia_safe::{Color, Paint, PaintStyle, gpu::gl::FramebufferInfo};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use crate::actors::{EventMsg, RenderMsg};
+use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::cursor::CursorState;
 use crate::input::InputEvent;
 use crate::renderer::{RenderState, Renderer};
@@ -711,6 +711,7 @@ pub struct DrmRunConfig {
 pub struct DrmRunContext {
     pub stop: Arc<AtomicBool>,
     pub running_flag: Arc<AtomicBool>,
+    pub tree_tx: Sender<TreeMsg>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_rx: Receiver<RenderMsg>,
     pub event_tx: Sender<EventMsg>,
@@ -723,6 +724,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
         stop,
         running_flag,
+        tree_tx,
         render_rx,
         cursor_rx,
         event_tx,
@@ -836,6 +838,8 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let (width, height) = mode.size();
         let dimensions = (width as u32, height as u32);
+        let refresh_hz = mode.vrefresh().max(1) as f64;
+        let frame_interval = Duration::from_secs_f64(1.0 / refresh_hz);
         let _ = screen_tx.send(dimensions);
         if !logged_mode_info {
             println!(
@@ -1020,7 +1024,6 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut last_cursor_visible = cursor_visible;
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
-        let mut last_animation_frame = Instant::now();
         let mut last_video_generation = video_registry.generation();
 
         loop {
@@ -1115,11 +1118,6 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 }
             }
 
-            if render_state.animate && last_animation_frame.elapsed() >= Duration::from_millis(33) {
-                pending_render = true;
-                last_animation_frame = Instant::now();
-            }
-
             let video_generation = video_registry.generation();
             if video_generation != last_video_generation {
                 pending_render = true;
@@ -1191,8 +1189,21 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 if log_render {
                     eprintln!("drm present version={frame_version}");
                 }
+                let presented_at = Instant::now();
+                if render_state.animate {
+                    let msg = TreeMsg::AnimationPulse {
+                        presented_at,
+                        predicted_next_present_at: presented_at + frame_interval,
+                    };
 
-                last_animation_frame = Instant::now();
+                    match tree_tx.try_send(msg) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(msg)) => {
+                            let _ = tree_tx.send(msg);
+                        }
+                        Err(TrySendError::Disconnected(_)) => {}
+                    }
+                }
 
                 drop(current_bo.take());
                 current_bo = Some(next_bo);

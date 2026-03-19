@@ -304,18 +304,6 @@ pub fn source_dimensions(source: &ImageSource) -> Option<(u32, u32)> {
     }
 }
 
-pub fn has_pending_assets() -> bool {
-    let guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return false,
-    };
-
-    match guard.state.lock() {
-        Ok(state) => state.pending_count > 0,
-        Err(_) => false,
-    }
-}
-
 impl Worker {
     fn handle_ensure(&mut self, source: ImageSource) {
         let config = match self.state.lock() {

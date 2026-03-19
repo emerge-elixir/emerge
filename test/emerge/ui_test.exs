@@ -110,6 +110,49 @@ defmodule Emerge.UITest do
            ]
   end
 
+  test "animate stores normalized animation specs" do
+    element =
+      el(
+        [
+          animate(
+            [
+              [width(px(100)), padding_xy(12, 6), move_x(-20), Background.color(:red)],
+              [width(px(160)), padding_each(8, 14, 10, 16), move_x(20), Background.color(:blue)]
+            ],
+            420,
+            :ease_in_out,
+            {:times, 3}
+          )
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.animate == %{
+             keyframes: [
+               %{width: {:px, 100}, padding: {6, 12, 6, 12}, move_x: -20, background: :red},
+               %{width: {:px, 160}, padding: {8, 14, 10, 16}, move_x: 20, background: :blue}
+             ],
+             duration: 420,
+             curve: :ease_in_out,
+             repeat: {:times, 3}
+           }
+  end
+
+  test "animate rejects mismatched keyframe attrs" do
+    assert_raise ArgumentError, ~r/same attribute set/, fn ->
+      el(
+        [animate([[width(px(100))], [width(px(120)), move_x(10)]], 200, :linear)],
+        text("bad")
+      )
+    end
+  end
+
+  test "animate rejects incompatible width variants" do
+    assert_raise ArgumentError, ~r/same length variant/, fn ->
+      el([animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
+    end
+  end
+
   test "state styles append multiple box shadows" do
     element =
       el(

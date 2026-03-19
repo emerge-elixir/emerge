@@ -4,6 +4,7 @@
 //! - attr_count (u16)
 //! - attr_records... (tag u8 + value)
 
+use super::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 use super::deserialize::DecodeError;
 
 // =============================================================================
@@ -267,6 +268,7 @@ pub struct Attrs {
     pub rotate: Option<f64>,
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
+    pub animate: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
     /// Runtime-only: computed paragraph text fragments (not decoded from binary).
     pub paragraph_fragments: Option<Vec<TextFragment>>,
@@ -452,6 +454,7 @@ const TAG_ON_PRESS: u8 = 61;
 const TAG_VIDEO_TARGET: u8 = 62;
 const TAG_SVG_COLOR: u8 = 63;
 const TAG_SVG_EXPECTED: u8 = 64;
+const TAG_ANIMATE: u8 = 65;
 
 // =============================================================================
 // Decoder
@@ -609,6 +612,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             attrs.image_size = Some((width, height));
         }
         TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
+        TAG_ANIMATE => attrs.animate = Some(decode_animation_spec(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -669,6 +673,78 @@ fn decode_decorative_style_attrs(
     }
 
     Ok(out)
+}
+
+fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+    let keyframe_count = nested.read_u16_be()? as usize;
+
+    if keyframe_count < 2 {
+        return Err(DecodeError::InvalidStructure(
+            "animate requires at least 2 keyframes".to_string(),
+        ));
+    }
+
+    let mut keyframes = Vec::with_capacity(keyframe_count);
+    for _ in 0..keyframe_count {
+        let keyframe_data = nested.read_bytes_u32()?;
+        keyframes.push(decode_attrs(&keyframe_data)?);
+    }
+
+    let duration_ms = nested.read_f64()?;
+    if duration_ms <= 0.0 {
+        return Err(DecodeError::InvalidStructure(
+            "animate duration must be positive".to_string(),
+        ));
+    }
+
+    let curve = match nested.read_string_u16()?.as_str() {
+        "linear" => AnimationCurve::Linear,
+        "ease_in" => AnimationCurve::EaseIn,
+        "ease_out" => AnimationCurve::EaseOut,
+        "ease_in_out" => AnimationCurve::EaseInOut,
+        other => {
+            return Err(DecodeError::InvalidStructure(format!(
+                "unknown animation curve: {}",
+                other
+            )));
+        }
+    };
+
+    let repeat = match nested.read_u8()? {
+        0 => AnimationRepeat::Once,
+        1 => AnimationRepeat::Loop,
+        2 => {
+            let count = nested.read_u32_be()?;
+            if count == 0 {
+                return Err(DecodeError::InvalidStructure(
+                    "animation repeat count must be positive".to_string(),
+                ));
+            }
+            AnimationRepeat::Times(count)
+        }
+        other => {
+            return Err(DecodeError::InvalidStructure(format!(
+                "unknown animation repeat tag: {}",
+                other
+            )));
+        }
+    };
+
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(format!(
+            "animate has {} trailing bytes",
+            nested.remaining(),
+        )));
+    }
+
+    Ok(AnimationSpec {
+        keyframes,
+        duration_ms,
+        curve,
+        repeat,
+    })
 }
 
 fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
@@ -1157,6 +1233,37 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_animate() {
+        let mut keyframe_one = vec![0, 1, 31];
+        keyframe_one.extend_from_slice(&0.0_f64.to_be_bytes());
+
+        let mut keyframe_two = vec![0, 1, 31];
+        keyframe_two.extend_from_slice(&10.0_f64.to_be_bytes());
+
+        let mut payload = vec![0, 2];
+        payload.extend_from_slice(&(keyframe_one.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_one);
+        payload.extend_from_slice(&(keyframe_two.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_two);
+        payload.extend_from_slice(&240.0_f64.to_be_bytes());
+        payload.extend_from_slice(&[0, 6, b'l', b'i', b'n', b'e', b'a', b'r']);
+        payload.push(1);
+
+        let mut data = vec![0, 1, 65];
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let animate = attrs.animate.expect("animation spec should decode");
+        assert_eq!(animate.keyframes.len(), 2);
+        assert_eq!(animate.keyframes[0].move_x, Some(0.0));
+        assert_eq!(animate.keyframes[1].move_x, Some(10.0));
+        assert_eq!(animate.duration_ms, 240.0);
+        assert!(matches!(animate.curve, AnimationCurve::Linear));
+        assert!(matches!(animate.repeat, AnimationRepeat::Loop));
+    }
+
+    #[test]
     fn test_decode_mouse_over_attrs() {
         // nested: attr_count=2, font_color=rgb(1,2,3), alpha=0.5
         let nested = vec![0, 2, 17, 0, 1, 2, 3, 35, 0x3F, 0xE0, 0, 0, 0, 0, 0, 0];
@@ -1230,10 +1337,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("mouse_over supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("mouse_over supports decorative attrs only"));
     }
 
     #[test]
@@ -1286,10 +1392,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("focused supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("focused supports decorative attrs only"));
     }
 
     #[test]
@@ -1369,7 +1474,7 @@ mod tests {
         data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
         data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
         data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
-        // color: named "red" -> variant=2, len=3, "red"
+                                                        // color: named "red" -> variant=2, len=3, "red"
         data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
         data.push(0); // inset=false
 

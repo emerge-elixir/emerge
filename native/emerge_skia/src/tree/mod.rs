@@ -8,6 +8,7 @@
 //! - Layout engine for computing element frames
 
 pub mod attrs;
+pub mod animation;
 pub mod deserialize;
 pub mod element;
 pub mod geometry;

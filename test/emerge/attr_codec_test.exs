@@ -189,6 +189,47 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode animate attr" do
+    attrs = %{
+      animate: %{
+        keyframes: [
+          %{
+            width: {:px, 100},
+            padding: {6, 12, 6, 12},
+            move_x: -20,
+            border_color: :white
+          },
+          %{
+            width: {:px, 160},
+            padding: {10, 18, 10, 18},
+            move_x: 24,
+            border_color: {:color_rgb, {10, 20, 30}}
+          }
+        ],
+        duration: 420,
+        curve: :ease_in_out,
+        repeat: :loop
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "animate encoding rejects incompatible keyframes" do
+    assert_raise ArgumentError, ~r/same length variant/, fn ->
+      AttrCodec.encode_attrs(%{
+        animate: %{
+          keyframes: [%{width: :fill}, %{width: {:px, 120}}],
+          duration: 200,
+          curve: :linear,
+          repeat: :once
+        }
+      })
+    end
+  end
+
   test "encode/decode direct state style maps normalize single box shadows" do
     shadow = %{offset_x: 0, offset_y: 1, blur: 6, size: 2, color: :black, inset: true}
 
