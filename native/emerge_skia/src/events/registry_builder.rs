@@ -949,10 +949,6 @@ pub(crate) struct ScrollbarHoverCompute {
 #[derive(Clone, Debug)]
 pub enum ListenerInput {
     Raw(InputEvent),
-    PointerEnter {
-        x: f32,
-        y: f32,
-    },
     PointerLeave {
         x: f32,
         y: f32,
@@ -1037,8 +1033,6 @@ pub enum ListenerMatcher {
     CursorButtonLeftReleaseInside { region: PointerRegion },
     /// Match any left-button release regardless of pointer position.
     CursorButtonLeftReleaseAnywhere,
-    /// Match cursor movement or left-button location changes inside `region`.
-    CursorLocationInside { region: PointerRegion },
     /// Match cursor position updates inside `region`.
     CursorPosInside { region: PointerRegion },
     /// Match any cursor position update regardless of pointer position.
@@ -1114,7 +1108,6 @@ pub enum ListenerMatcherKind {
     CursorButtonLeftPressInside,
     CursorButtonLeftReleaseInside,
     CursorButtonLeftReleaseAnywhere,
-    CursorLocationInside,
     CursorButtonMiddlePressInside,
     CursorPosInside,
     CursorPosAnywhere,
@@ -1158,9 +1151,6 @@ impl ListenerMatcher {
             }
             ListenerMatcher::CursorButtonLeftReleaseAnywhere => {
                 ListenerMatcherKind::CursorButtonLeftReleaseAnywhere
-            }
-            ListenerMatcher::CursorLocationInside { .. } => {
-                ListenerMatcherKind::CursorLocationInside
             }
             ListenerMatcher::CursorButtonMiddlePressInside { .. } => {
                 ListenerMatcherKind::CursorButtonMiddlePressInside
@@ -1260,10 +1250,6 @@ impl ListenerMatcher {
                     ..
                 }) if button == "left" && *action == ACTION_RELEASE
             ),
-            ListenerMatcher::CursorLocationInside { region } => match input {
-                ListenerInput::PointerEnter { x, y } => region.contains(*x, *y),
-                _ => false,
-            },
             ListenerMatcher::CursorButtonMiddlePressInside { region } => {
                 matches!(
                     input.raw(),
@@ -1616,7 +1602,7 @@ pub enum ListenerCompute {
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
-    /// Split one raw pointer lifecycle input into synthetic leave/raw/enter passes.
+    /// Split one raw pointer lifecycle input into synthetic leave/raw passes.
     RedispatchPointerLifecycle,
     /// Build one `TreeMsg::ScrollRequest` from a directional scroll input.
     ScrollTreeMsgFromCursorScrollDirection {
@@ -2155,7 +2141,6 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
                     window_left: false,
                 },
                 ListenerInput::Raw(input.clone()),
-                ListenerInput::PointerEnter { x: *x, y: *y },
             ],
         ),
         InputEvent::CursorButton {
@@ -2174,7 +2159,6 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
                     window_left: false,
                 },
                 ListenerInput::Raw(input.clone()),
-                ListenerInput::PointerEnter { x: *x, y: *y },
             ],
         ),
         InputEvent::CursorEntered { entered } if !*entered => dispatch_sequence(
@@ -3293,9 +3277,6 @@ const ELEMENT_LISTENER_SLOTS: &[ElementSlotBuilder] = &[
     slot_key_cut_press,
     slot_key_paste_press,
     slot_key_enter_press,
-    slot_primary_cursor_pos,
-    slot_cursor_enter,
-    slot_cursor_leave,
     slot_mouse_down_window_blur_clear,
 ];
 
@@ -3478,13 +3459,23 @@ fn emit_element_listeners_with_focus_meta(
             .iter()
             .filter_map(|build| build(element, state)),
     );
+    emit_cursor_state_listeners(element, state, out);
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
     out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
-    if state.is_some_and(|state| state.front_nearby_subtree) {
+    if state.is_some_and(|state| state.front_nearby_root) {
         emit_front_nearby_blockers_for_element(element, state, out);
     }
+}
+
+fn emit_cursor_state_listeners(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+    out: &mut PrecedenceEmitter<'_>,
+) {
+    out.emit_opt(slot_cursor_pos_inside(element, state));
+    out.emit_opt(slot_cursor_pos_outside(element, state));
 }
 
 fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut PrecedenceEmitter<'_>) {
@@ -4201,16 +4192,23 @@ fn slot_mouse_down_release_anywhere(
     })
 }
 
-/// Build primary cursor-position listener.
+/// Build the inside-cursor listener.
 ///
-/// Emits move actions for `on_mouse_move` and updates element-local scrollbar hover.
-fn slot_primary_cursor_pos(
+/// Emits all element behavior that depends on the cursor currently being inside
+/// the element, including move, enter, hover activation, and scrollbar hover.
+fn slot_cursor_pos_inside(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
     let state = state?;
     let region = pointer_region_for_element(state)?;
-    let actions = mouse_events::cursor_pos_actions(element);
+    let actions: Vec<ListenerAction> = [
+        mouse_events::cursor_pos_actions(element),
+        hover::inside_actions(element),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let scrollbar_hover = scrollbar_hover_compute_for_element(element, Some(state));
 
     (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
@@ -4385,24 +4383,14 @@ fn slot_text_preedit_clear(
     })
 }
 
-/// Build cursor-enter listener.
+/// Build the outside-cursor listener.
 ///
-/// Emits enter actions only when hover is currently inactive.
-fn slot_cursor_enter(element: &Element, state: Option<&ResolvedNodeState>) -> Option<Listener> {
-    let region = pointer_region_for_element(state?)?;
-    let actions = hover::enter_actions(element);
-
-    (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
-        matcher: ListenerMatcher::CursorLocationInside { region },
-        compute: ListenerCompute::Static { actions },
-    })
-}
-
-/// Build cursor-leave listener.
-///
-/// Aggregates hover leave actions and mouse-down style clear into one listener.
-fn slot_cursor_leave(element: &Element, state: Option<&ResolvedNodeState>) -> Option<Listener> {
+/// Aggregates behavior that depends on the cursor being outside the element,
+/// including hover leave, mouse-down clear, and scrollbar hover clear.
+fn slot_cursor_pos_outside(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
     let state = state?;
     let region = pointer_region_for_element(state)?;
     let actions: Vec<ListenerAction> = [
@@ -4482,13 +4470,6 @@ fn emit_front_nearby_blockers_for_element(
         Listener {
             element_id: Some(element.id.clone()),
             matcher: ListenerMatcher::CursorButtonMiddlePressInside {
-                region: region.clone(),
-            },
-            compute: blocker(),
-        },
-        Listener {
-            element_id: Some(element.id.clone()),
-            matcher: ListenerMatcher::CursorLocationInside {
                 region: region.clone(),
             },
             compute: blocker(),
@@ -4594,7 +4575,7 @@ mod mouse_events {
 mod hover {
     use super::*;
 
-    pub(super) fn enter_actions(element: &Element) -> Vec<ListenerAction> {
+    pub(super) fn inside_actions(element: &Element) -> Vec<ListenerAction> {
         let attrs = &element.attrs;
         let element_id = element.id.clone();
         let has_hover_style = attrs.mouse_over.is_some();
@@ -4849,16 +4830,26 @@ mod tests {
 
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
+    use crate::events::test_support::{
+        assert_registry_probe_matrix, AnimatedNearbyHitCase, SampledRegistrySource,
+    };
     use crate::input::{
         InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
+    use crate::tree::animation::{
+        AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
+    };
     use crate::tree::attrs::TextAlign;
-    use crate::tree::attrs::{Attrs, MouseOverAttrs, ScrollbarHoverAxis};
+    use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs, ScrollbarHoverAxis};
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
     use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
+    use crate::tree::layout::{
+        layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
+    };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
+    use std::time::{Duration, Instant};
 
     use super::{
         compose_combined_registry, listeners_for_element, registry_for_elements,
@@ -5010,6 +5001,118 @@ mod tests {
     fn with_frame(mut element: Element, frame: Frame) -> Element {
         element.frame = Some(frame);
         element
+    }
+
+    fn animated_width_move_registry_at(sample_ms: u64) -> super::Registry {
+        let host_id = ElementId::from_term_bytes(vec![120]);
+        let overlay_id = ElementId::from_term_bytes(vec![121]);
+
+        let mut tree = crate::tree::element::ElementTree::new();
+
+        let mut host_attrs = Attrs::default();
+        host_attrs.width = Some(Length::Px(128.0));
+        host_attrs.height = Some(Length::Px(82.0));
+        let mut host = make_element(120, host_attrs);
+        host.frame = None;
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut from = Attrs::default();
+        from.width = Some(Length::Px(96.0));
+        from.move_x = Some(-16.0);
+
+        let mut to = Attrs::default();
+        to.width = Some(Length::Px(156.0));
+        to.move_x = Some(26.0);
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.width = Some(Length::Px(128.0));
+        overlay_attrs.height = Some(Length::Px(82.0));
+        overlay_attrs.align_x = Some(AlignX::Center);
+        overlay_attrs.align_y = Some(AlignY::Center);
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        overlay_attrs.animate = Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 1000.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        });
+
+        let overlay = make_element(121, overlay_attrs);
+
+        tree.root = Some(host_id.clone());
+        tree.insert(host);
+        tree.insert(overlay);
+
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        let _ = layout_tree_default_with_animation(
+            &mut tree,
+            Constraint::new(128.0, 82.0),
+            1.0,
+            &runtime,
+            start + Duration::from_millis(sample_ms),
+        );
+
+        let elements: Vec<_> = tree.nodes.values().cloned().collect();
+        registry_for_elements(&elements)
+    }
+
+    fn animated_width_move_render_registry_at(sample_ms: u64) -> super::Registry {
+        let host_id = ElementId::from_term_bytes(vec![122]);
+        let overlay_id = ElementId::from_term_bytes(vec![123]);
+
+        let mut tree = crate::tree::element::ElementTree::new();
+
+        let mut host_attrs = Attrs::default();
+        host_attrs.width = Some(Length::Px(128.0));
+        host_attrs.height = Some(Length::Px(82.0));
+        let mut host = make_element(122, host_attrs);
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut from = Attrs::default();
+        from.width = Some(Length::Px(96.0));
+        from.move_x = Some(-16.0);
+
+        let mut to = Attrs::default();
+        to.width = Some(Length::Px(156.0));
+        to.move_x = Some(26.0);
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.width = Some(Length::Px(128.0));
+        overlay_attrs.height = Some(Length::Px(82.0));
+        overlay_attrs.align_x = Some(AlignX::Center);
+        overlay_attrs.align_y = Some(AlignY::Center);
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        overlay_attrs.animate = Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 1000.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        });
+
+        let overlay = make_element(123, overlay_attrs);
+
+        tree.root = Some(host_id);
+        tree.insert(host);
+        tree.insert(overlay);
+
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        layout_and_refresh_default_with_animation(
+            &mut tree,
+            Constraint::new(128.0, 82.0),
+            1.0,
+            &runtime,
+            start + Duration::from_millis(sample_ms),
+        )
+        .event_rebuild
+        .base_registry
     }
 
     #[derive(Default)]
@@ -5244,7 +5347,7 @@ mod tests {
     }
 
     #[test]
-    fn listeners_for_element_builds_enter_listener_when_hover_inactive() {
+    fn listeners_for_element_builds_inside_listener_when_hover_inactive() {
         let mut attrs = Attrs::default();
         attrs.on_mouse_enter = Some(true);
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5255,11 +5358,10 @@ mod tests {
         assert_eq!(listeners.len(), 1);
         assert!(matches!(
             listeners[0].matcher,
-            ListenerMatcher::CursorLocationInside { .. }
+            ListenerMatcher::CursorPosInside { .. }
         ));
 
-        let actions = listeners[0]
-            .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
+        let actions = listeners[0].compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
         assert_eq!(actions.len(), 2);
         assert!(matches!(
             actions[0],
@@ -5318,13 +5420,9 @@ mod tests {
 
         let listeners = listeners_for_element(&element);
         let enter_listener = listener_matching(&listeners, |listener| {
-            matches!(
-                listener.matcher,
-                ListenerMatcher::CursorLocationInside { .. }
-            )
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
         });
-        let actions = enter_listener
-            .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
+        let actions = enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
 
         assert_eq!(actions.len(), 2);
         assert!(matches!(
@@ -5342,9 +5440,47 @@ mod tests {
             }) if *element_id == ElementId::from_term_bytes(vec![22]) && active
         ));
 
-        let release_actions = enter_listener
-            .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
+        let release_actions =
+            enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
         assert_eq!(release_actions.len(), 2);
+    }
+
+    #[test]
+    fn listeners_for_element_hover_style_without_mouse_move_still_activates_inside() {
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(false);
+        let element = with_interaction(make_element(24, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        let inside_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        });
+
+        let actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            actions[0],
+            ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
+                ref element_id,
+                active,
+            }) if *element_id == ElementId::from_term_bytes(vec![24]) && active
+        ));
+    }
+
+    #[test]
+    fn listeners_for_element_active_hover_omits_inside_listener_without_move_behavior() {
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_enter = Some(true);
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(true);
+        let element = with_interaction(make_element(25, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        assert!(listeners.iter().all(|listener| {
+            !matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        }));
     }
 
     #[test]
@@ -5411,16 +5547,6 @@ mod tests {
             x: 10.0,
             y: 2.0,
         }));
-    }
-
-    #[test]
-    fn cursor_location_matcher_matches_pointer_enter_inside_region() {
-        let matcher = ListenerMatcher::CursorLocationInside {
-            region: build_pointer_region(true),
-        };
-
-        assert!(matcher.matches_input(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 }));
-        assert!(!matcher.matches_input(&ListenerInput::PointerEnter { x: 120.0, y: 10.0 }));
     }
 
     #[test]
@@ -5823,6 +5949,408 @@ mod tests {
                 if *element_id == ElementId::from_term_bytes(vec![85])
                     && *kind == ElementEventKind::MouseDown
         ));
+    }
+
+    #[test]
+    fn registry_for_elements_front_nearby_blocker_suppresses_underlying_mouse_move() {
+        let mut host = with_interaction_rect(
+            make_element(86, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+        host.children = vec![ElementId::from_term_bytes(vec![87])];
+        host.nearby.set(
+            NearbySlot::InFront,
+            Some(ElementId::from_term_bytes(vec![88])),
+        );
+
+        let mut underlying_attrs = Attrs::default();
+        underlying_attrs.on_mouse_move = Some(true);
+        let underlying = with_interaction_rect(
+            make_element(87, underlying_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+
+        let overlay = with_interaction_rect(
+            make_element(88, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, underlying, overlay]);
+
+        let covered_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 10.0 });
+        assert!(covered_actions.is_empty());
+
+        let uncovered_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 120.0, y: 10.0 });
+        assert!(matches!(
+            uncovered_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ElementId::from_term_bytes(vec![87])
+                    && *kind == ElementEventKind::MouseMove
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_front_nearby_real_move_listener_precedes_root_blocker() {
+        let mut host = with_interaction_rect(
+            make_element(89, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+        host.children = vec![ElementId::from_term_bytes(vec![90])];
+        host.nearby.set(
+            NearbySlot::InFront,
+            Some(ElementId::from_term_bytes(vec![91])),
+        );
+
+        let mut underlying_attrs = Attrs::default();
+        underlying_attrs.on_mouse_move = Some(true);
+        let underlying = with_interaction_rect(
+            make_element(90, underlying_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 150.0,
+                height: 40.0,
+            },
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let overlay = with_interaction_rect(
+            make_element(91, overlay_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, underlying, overlay]);
+        let actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 10.0 });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                if *element_id == ElementId::from_term_bytes(vec![91])
+                    && *kind == ElementEventKind::MouseMove
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_in_front_overlay_matches_right_of_initial_position() {
+        let host_id = ElementId::from_term_bytes(vec![110]);
+        let under_id = ElementId::from_term_bytes(vec![111]);
+        let overlay_id = ElementId::from_term_bytes(vec![112]);
+
+        let mut host = with_frame(
+            make_element(110, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 128.0,
+                height: 82.0,
+                content_width: 128.0,
+                content_height: 82.0,
+            },
+        );
+        host.children = vec![under_id.clone()];
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut under_attrs = Attrs::default();
+        under_attrs.on_mouse_move = Some(true);
+        let underlying = with_frame(
+            make_element(111, under_attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 128.0,
+                height: 82.0,
+                content_width: 128.0,
+                content_height: 82.0,
+            },
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let overlay = with_frame(
+            make_element(112, overlay_attrs),
+            Frame {
+                x: 6.0,
+                y: 0.0,
+                width: 126.0,
+                height: 82.0,
+                content_width: 126.0,
+                content_height: 82.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, underlying, overlay]);
+
+        let inside_host_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 110.0, y: 41.0 });
+        let overflow_strip_actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
+
+        assert!(matches!(
+            inside_host_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                if *element_id == overlay_id && *kind == ElementEventKind::MouseMove
+        ));
+        assert!(matches!(
+            overflow_strip_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                if *element_id == overlay_id && *kind == ElementEventKind::MouseMove
+        ));
+        assert!(inside_host_actions.iter().all(|action| !matches!(
+            action,
+            ListenerAction::ElixirEvent(ElixirEvent { element_id, .. }) if *element_id == host_id
+        )));
+    }
+
+    #[test]
+    fn registry_for_elements_in_front_descendant_blocker_does_not_beat_overlay_hover_listener() {
+        let overlay_id = ElementId::from_term_bytes(vec![141]);
+        let child_id = ElementId::from_term_bytes(vec![142]);
+
+        let mut host = with_frame(
+            make_element(140, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 80.0,
+                content_width: 160.0,
+                content_height: 80.0,
+            },
+        );
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let mut overlay = with_frame(
+            make_element(141, overlay_attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 60.0,
+            },
+        );
+        overlay.children = vec![child_id.clone()];
+
+        let child = with_frame(
+            make_element(142, Attrs::default()),
+            Frame {
+                x: 20.0,
+                y: 10.0,
+                width: 60.0,
+                height: 20.0,
+                content_width: 60.0,
+                content_height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, overlay, child]);
+        let actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 30.0, y: 15.0 });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                if *element_id == overlay_id && *kind == ElementEventKind::MouseMove
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_nested_overlay_wrapper_does_not_beat_target_hover_listener() {
+        let overlay_id = ElementId::from_term_bytes(vec![150]);
+        let wrapper_id = ElementId::from_term_bytes(vec![151]);
+        let target_id = ElementId::from_term_bytes(vec![152]);
+
+        let mut host = with_frame(
+            make_element(149, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 100.0,
+                content_width: 180.0,
+                content_height: 100.0,
+            },
+        );
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut overlay = with_frame(
+            make_element(150, Attrs::default()),
+            Frame {
+                x: 20.0,
+                y: 10.0,
+                width: 140.0,
+                height: 70.0,
+                content_width: 140.0,
+                content_height: 70.0,
+            },
+        );
+        overlay.children = vec![wrapper_id.clone()];
+
+        let mut wrapper = with_frame(
+            make_element(151, Attrs::default()),
+            Frame {
+                x: 30.0,
+                y: 20.0,
+                width: 100.0,
+                height: 40.0,
+                content_width: 100.0,
+                content_height: 40.0,
+            },
+        );
+        wrapper.children = vec![target_id.clone()];
+
+        let mut target_attrs = Attrs::default();
+        target_attrs.on_mouse_move = Some(true);
+        target_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let target = with_frame(
+            make_element(152, target_attrs),
+            Frame {
+                x: 40.0,
+                y: 25.0,
+                width: 80.0,
+                height: 20.0,
+                content_width: 80.0,
+                content_height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, overlay, wrapper, target]);
+        let actions =
+            first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 30.0 });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                if *element_id == target_id && *kind == ElementEventKind::MouseMove
+        ));
+    }
+
+    #[test]
+    fn sampled_hit_case_layout_registry_matches_expected_winners() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        assert_registry_probe_matrix(&case, SampledRegistrySource::LayoutOnly);
+    }
+
+    #[test]
+    fn animated_in_front_overlay_matches_points_right_of_initial_position_after_growth() {
+        let initial_registry = animated_width_move_registry_at(0);
+        let mid_registry = animated_width_move_registry_at(500);
+        let late_registry = animated_width_move_registry_at(1000);
+
+        let initial_inside = first_matching_actions(
+            &initial_registry,
+            &InputEvent::CursorPos { x: 110.0, y: 41.0 },
+        );
+        let initial_overflow = first_matching_actions(
+            &initial_registry,
+            &InputEvent::CursorPos { x: 130.0, y: 41.0 },
+        );
+        let mid_inside =
+            first_matching_actions(&mid_registry, &InputEvent::CursorPos { x: 110.0, y: 41.0 });
+        let mid_overflow =
+            first_matching_actions(&mid_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
+        let late_inside =
+            first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 110.0, y: 41.0 });
+        let late_overflow =
+            first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
+
+        assert!(initial_inside.is_empty());
+        assert!(initial_overflow.is_empty());
+
+        for actions in [mid_inside, mid_overflow, late_inside, late_overflow] {
+            assert!(matches!(
+                actions.as_slice(),
+                [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                    if *element_id == ElementId::from_term_bytes(vec![121])
+                        && *kind == ElementEventKind::MouseMove
+            ));
+        }
+    }
+
+    #[test]
+    fn sampled_hit_case_render_rebuild_registry_matches_expected_winners() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        assert_registry_probe_matrix(&case, SampledRegistrySource::RenderRebuild);
+    }
+
+    #[test]
+    fn render_event_rebuild_matches_points_right_of_initial_position_after_growth() {
+        let initial_registry = animated_width_move_render_registry_at(0);
+        let mid_registry = animated_width_move_render_registry_at(500);
+        let late_registry = animated_width_move_render_registry_at(1000);
+
+        let initial_inside = first_matching_actions(
+            &initial_registry,
+            &InputEvent::CursorPos { x: 110.0, y: 41.0 },
+        );
+        let initial_overflow = first_matching_actions(
+            &initial_registry,
+            &InputEvent::CursorPos { x: 130.0, y: 41.0 },
+        );
+        let mid_inside =
+            first_matching_actions(&mid_registry, &InputEvent::CursorPos { x: 110.0, y: 41.0 });
+        let mid_overflow =
+            first_matching_actions(&mid_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
+        let late_inside =
+            first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 110.0, y: 41.0 });
+        let late_overflow =
+            first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
+
+        assert!(initial_inside.is_empty());
+        assert!(initial_overflow.is_empty());
+
+        for actions in [mid_inside, mid_overflow, late_inside, late_overflow] {
+            assert!(matches!(
+                actions.as_slice(),
+                [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
+                    if *element_id == ElementId::from_term_bytes(vec![123])
+                        && *kind == ElementEventKind::MouseMove
+            ));
+        }
     }
 
     #[test]
@@ -7348,12 +7876,6 @@ mod tests {
         assert!(!listeners.iter().any(|listener| {
             matches!(
                 listener.matcher,
-                ListenerMatcher::CursorLocationInside { .. }
-            )
-        }));
-        assert!(!listeners.iter().any(|listener| {
-            matches!(
-                listener.matcher,
                 ListenerMatcher::CursorLocationLeaveBoundary { .. }
             )
         }));
@@ -7385,12 +7907,6 @@ mod tests {
             },
         );
         let hovered_listeners = listeners_for_element(&hovered_element);
-        assert!(!hovered_listeners.iter().any(|listener| {
-            matches!(
-                listener.matcher,
-                ListenerMatcher::CursorLocationInside { .. }
-            )
-        }));
         let leave = listener_matching(&hovered_listeners, |listener| {
             matches!(
                 listener.matcher,
