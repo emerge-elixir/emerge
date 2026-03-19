@@ -58,6 +58,7 @@ defmodule Emerge.UI do
                       :rotate,
                       :scale,
                       :alpha,
+                      :animate,
                       :space_evenly,
                       :on_click,
                       :on_press,
@@ -468,6 +469,11 @@ defmodule Emerge.UI do
   @doc "Set element opacity (0.0 - 1.0)"
   def alpha(value) when is_number(value), do: {:alpha, value}
 
+  @doc "Animate compatible attrs across keyframes"
+  def animate(keyframes, duration, curve, repeat \\ :once) do
+    {:animate, %{keyframes: keyframes, duration: duration, curve: curve, repeat: repeat}}
+  end
+
   @doc "Set image fit mode (`:contain` or `:cover`)"
   def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
 
@@ -568,6 +574,9 @@ defmodule Emerge.UI do
       MapSet.member?(@state_style_key_set, key) ->
         {key, AttrValidation.normalize_state_style!(key, value)}
 
+      key == :animate ->
+        {key, AttrValidation.normalize_animation!(value)}
+
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
         validate_public_attr_value!(attrs_owner, key, value)
         {key, value}
@@ -584,6 +593,8 @@ defmodule Emerge.UI do
   end
 
   defp validate_public_attr_value!(_attrs_owner, :key, _value), do: :ok
+
+  defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
 
   defp validate_public_attr_value!(attrs_owner, :width, value),
     do: validate_length!(attrs_owner, :width, value)

@@ -1,5 +1,7 @@
 use super::super::*;
 use super::common::*;
+use crate::events::test_support::AnimatedNearbyHitCase;
+use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 
 #[test]
 fn test_layout_with_scale() {
@@ -455,4 +457,117 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
     assert_eq!(mouse_down_shadow.blur, 4.0);
     assert_eq!(mouse_down_shadow.size, 1.0);
     assert!(mouse_down_shadow.inset);
+}
+
+#[test]
+fn test_scale_attrs_scales_animation_keyframe_numeric_fields() {
+    let mut from = Attrs::default();
+    from.width = Some(Length::Px(20.0));
+    from.padding = Some(Padding::Uniform(4.0));
+    from.move_x = Some(3.0);
+
+    let mut to = Attrs::default();
+    to.width = Some(Length::Px(40.0));
+    to.padding = Some(Padding::Uniform(8.0));
+    to.move_x = Some(9.0);
+
+    let mut attrs = Attrs::default();
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 240.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+
+    let scaled = scale_attrs(&attrs, 2.0);
+    let animate = scaled.animate.expect("scaled animation spec should exist");
+
+    assert_eq!(animate.keyframes[0].width, Some(Length::Px(40.0)));
+    assert_eq!(animate.keyframes[0].padding, Some(Padding::Uniform(8.0)));
+    assert_eq!(animate.keyframes[0].move_x, Some(6.0));
+    assert_eq!(animate.keyframes[1].width, Some(Length::Px(80.0)));
+    assert_eq!(animate.keyframes[1].padding, Some(Padding::Uniform(16.0)));
+    assert_eq!(animate.keyframes[1].move_x, Some(18.0));
+}
+
+#[test]
+fn test_layout_uses_first_animation_keyframe_for_static_frames() {
+    let mut tree = ElementTree::new();
+
+    let mut from = Attrs::default();
+    from.width = Some(Length::Px(100.0));
+    from.height = Some(Length::Px(30.0));
+    from.move_x = Some(12.0);
+
+    let mut to = Attrs::default();
+    to.width = Some(Length::Px(160.0));
+    to.height = Some(Length::Px(30.0));
+    to.move_x = Some(36.0);
+
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(40.0));
+    attrs.height = Some(Length::Px(30.0));
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 180.0,
+        curve: AnimationCurve::EaseInOut,
+        repeat: AnimationRepeat::Once,
+    });
+
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id.clone();
+    tree.root = Some(root_id.clone());
+    tree.insert(root);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(300.0, 200.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let updated = tree.get(&root_id).unwrap();
+    let frame = updated.frame.unwrap();
+
+    assert_eq!(updated.attrs.width, Some(Length::Px(100.0)));
+    assert_eq!(updated.attrs.move_x, Some(12.0));
+    assert_eq!(frame.width, 100.0);
+}
+
+#[test]
+fn test_animated_nearby_hit_case_layout_geometry_matches_probe_story() {
+    let case = AnimatedNearbyHitCase::width_move_in_front();
+
+    let initial_tree = case.tree_at(0, false);
+    let mid_tree = case.tree_at(500, false);
+    let late_tree = case.tree_at(1000, false);
+
+    let initial = initial_tree.get(&case.target_id).unwrap().frame.unwrap();
+    let mid = mid_tree.get(&case.target_id).unwrap().frame.unwrap();
+    let late = late_tree.get(&case.target_id).unwrap().frame.unwrap();
+    let initial_move_x = initial_tree
+        .get(&case.target_id)
+        .unwrap()
+        .attrs
+        .move_x
+        .unwrap();
+    let mid_move_x = mid_tree.get(&case.target_id).unwrap().attrs.move_x.unwrap();
+    let late_move_x = late_tree
+        .get(&case.target_id)
+        .unwrap()
+        .attrs
+        .move_x
+        .unwrap();
+
+    assert_eq!(initial.x, 16.0);
+    assert_eq!(initial.width, 96.0);
+    assert_eq!(initial.x + initial_move_x as f32, 0.0);
+
+    assert_eq!(mid.x, 1.0);
+    assert_eq!(mid.width, 126.0);
+    assert_eq!(mid.x + mid_move_x as f32, 6.0);
+
+    assert_eq!(late.x, -14.0);
+    assert_eq!(late.width, 156.0);
+    assert_eq!(late.x + late_move_x as f32, 12.0);
 }

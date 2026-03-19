@@ -47,6 +47,8 @@ use crate::tree::transform::{Affine2, Point};
 pub mod registry_builder;
 mod runtime;
 pub mod scrollbar;
+#[cfg(test)]
+pub mod test_support;
 pub mod text_ops;
 
 pub(crate) use runtime::spawn_event_actor;

@@ -1,4 +1,5 @@
 use rustler::LocalPid;
+use std::time::Instant;
 
 use crate::events::RegistryRebuildPayload;
 use crate::input::InputEvent;
@@ -62,6 +63,10 @@ pub enum TreeMsg {
         selection_anchor: Option<u32>,
         preedit: Option<String>,
         preedit_cursor: Option<(u32, u32)>,
+    },
+    AnimationPulse {
+        presented_at: Instant,
+        predicted_next_present_at: Instant,
     },
     Batch(Vec<TreeMsg>),
     RebuildRegistry,

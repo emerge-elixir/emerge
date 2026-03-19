@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
 
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
@@ -35,7 +35,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use crate::actors::{EventMsg, RenderMsg};
+use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
@@ -102,13 +102,15 @@ struct App {
     running_flag: Arc<AtomicBool>,
     render_state: RenderState,
     render_rx: Receiver<RenderMsg>,
+    tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     window_size: (u32, u32),
     current_mods: u8,
     cursor_pos: (f32, f32),
     is_occluded: bool,
     pending_redraw: bool,
-    last_animation_frame: Instant,
+    last_present_at: Option<Instant>,
+    estimated_frame_interval: Duration,
     ime_enabled: bool,
     ime_cursor_area: Option<(f32, f32, f32, f32)>,
     ime_preedit_active: bool,
@@ -183,9 +185,49 @@ impl App {
             env.gl_surface
                 .swap_buffers(&env.gl_context)
                 .expect("swap_buffers failed");
+            let presented_at = Instant::now();
+            let predicted_next_present_at = self.observe_present(presented_at);
+            if self.render_state.animate {
+                self.send_animation_pulse(presented_at, predicted_next_present_at);
+            }
             if video_needs_cleanup {
                 self.queue_redraw();
             }
+        }
+    }
+
+    fn observe_present(&mut self, presented_at: Instant) -> Instant {
+        if let Some(last_present_at) = self.last_present_at {
+            let observed = presented_at.saturating_duration_since(last_present_at);
+            if observed >= Duration::from_millis(4) && observed <= Duration::from_millis(100) {
+                self.estimated_frame_interval = observed;
+            }
+        }
+
+        self.last_present_at = Some(presented_at);
+        presented_at + self.estimated_frame_interval
+    }
+
+    fn send_animation_pulse(&self, presented_at: Instant, predicted_next_present_at: Instant) {
+        crate::debug_trace::hover_trace!(
+            "backend_pulse",
+            "presented_at={:?} predicted_next={:?} cursor=({:.2},{:.2})",
+            presented_at,
+            predicted_next_present_at,
+            self.cursor_pos.0,
+            self.cursor_pos.1
+        );
+        let msg = TreeMsg::AnimationPulse {
+            presented_at,
+            predicted_next_present_at,
+        };
+
+        match self.tree_tx.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(msg)) => {
+                let _ = self.tree_tx.send(msg);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 
@@ -392,14 +434,6 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         self.flush_render_updates();
-
-        if self.render_state.animate
-            && self.can_present()
-            && self.last_animation_frame.elapsed() >= Duration::from_millis(33)
-        {
-            self.last_animation_frame = Instant::now();
-            self.queue_redraw();
-        }
     }
 
     fn window_event(
@@ -430,6 +464,14 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 self.cursor_pos = (x, y);
+                crate::debug_trace::hover_trace!(
+                    "backend_cursor",
+                    "cursor_moved x={x:.2} y={y:.2} scale={:.2}",
+                    self.env
+                        .as_ref()
+                        .map(|env| env.window.scale_factor())
+                        .unwrap_or(1.0)
+                );
                 self.send_input_event(InputEvent::CursorPos { x, y });
             }
 
@@ -710,6 +752,7 @@ fn create_window_and_renderer(
 pub fn run(
     config: WaylandConfig,
     running_flag: Arc<AtomicBool>,
+    tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
     video_registry: Arc<VideoRegistry>,
@@ -779,13 +822,15 @@ pub fn run(
         running_flag,
         render_state: RenderState::default(),
         render_rx,
+        tree_tx,
         event_tx,
         window_size: (size.width, size.height),
         current_mods: 0,
         cursor_pos: (0.0, 0.0),
         is_occluded: false,
         pending_redraw: false,
-        last_animation_frame: Instant::now(),
+        last_present_at: None,
+        estimated_frame_interval: Duration::from_nanos(16_666_667),
         ime_enabled: false,
         ime_cursor_area: None,
         ime_preedit_active: false,
