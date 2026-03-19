@@ -54,6 +54,12 @@ use super::{
 ///
 /// If a listener emits Elixir events but no tree messages, flushing injects
 /// `TreeMsg::RebuildRegistry` so the tree actor will send fresh listener data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchMode {
+    Normal,
+    CursorRevalidate,
+}
+
 #[derive(Default)]
 struct PendingDispatchEffects {
     tree_msgs: Vec<TreeMsg>,
@@ -62,11 +68,22 @@ struct PendingDispatchEffects {
 }
 
 impl PendingDispatchEffects {
-    fn collect(mut self, runtime: &mut DirectEventRuntime, action: ListenerAction) -> Self {
+    fn collect(
+        mut self,
+        runtime: &mut DirectEventRuntime,
+        action: ListenerAction,
+        dispatch_mode: DispatchMode,
+    ) -> Self {
         match action {
             ListenerAction::TreeMsg(msg) => self.tree_msgs.push(msg),
             ListenerAction::RuntimeChange(change) => self.runtime_changes.push(change),
             ListenerAction::ElixirEvent(event) => {
+                if dispatch_mode == DispatchMode::CursorRevalidate
+                    && event.kind == ElementEventKind::MouseMove
+                {
+                    return self;
+                }
+
                 self.elixir_event_requires_rebuild = true;
                 runtime.send_elixir_event(event);
             }
@@ -86,12 +103,27 @@ impl PendingDispatchEffects {
         runtime: &mut DirectEventRuntime,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
+        _dispatch_mode: DispatchMode,
     ) {
         runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
 
         if self.elixir_event_requires_rebuild && self.tree_msgs.is_empty() {
             self.tree_msgs.push(TreeMsg::RebuildRegistry);
         }
+
+        crate::debug_trace::hover_trace!(
+            "event_dispatch",
+            "mode={} hover_msgs={:?} requested_rebuild={} stale_before_flush={}",
+            dispatch_mode_label(dispatch_mode),
+            hover_msgs_from_tree_msgs(&self.tree_msgs)
+                .iter()
+                .map(|(id, active)| (id.0.clone(), *active))
+                .collect::<Vec<_>>(),
+            self.tree_msgs
+                .iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry)),
+            runtime.listener_lane.is_stale()
+        );
 
         if self.elixir_event_requires_rebuild || !self.tree_msgs.is_empty() {
             send_tree_messages(tree_tx, self.tree_msgs, log_render);
@@ -201,6 +233,8 @@ struct DirectEventRuntime {
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
     clipboard: ClipboardManager,
+    last_cursor_pos: Option<(f32, f32)>,
+    cursor_in_window: bool,
 }
 
 impl DirectEventRuntime {
@@ -221,6 +255,8 @@ impl DirectEventRuntime {
             input_handler: InputHandler::new(),
             input_target: None,
             clipboard: ClipboardManager::new(system_clipboard),
+            last_cursor_pos: None,
+            cursor_in_window: false,
         }
     }
 
@@ -239,6 +275,14 @@ impl DirectEventRuntime {
         log_render: bool,
     ) {
         let event = event.normalize_scroll();
+        self.record_pointer_snapshot(&event);
+        crate::debug_trace::hover_trace!(
+            "event_input",
+            "event={:?} stale={} buffered={}",
+            event,
+            self.listener_lane.is_stale(),
+            self.listener_lane.buffered_inputs.len()
+        );
         forward_observer_input(&event, &self.input_handler, &self.input_target);
 
         if self.listener_lane.is_stale() {
@@ -246,7 +290,7 @@ impl DirectEventRuntime {
             return;
         }
 
-        self.dispatch_event(event, tree_tx, log_render);
+        self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
     }
 
     fn handle_registry_update(
@@ -255,14 +299,22 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
+        let _stale_before_install = self.listener_lane.is_stale();
         self.listener_lane.stale = false;
         self.install_rebuild(rebuild, tree_tx, log_render);
+        let _stale_after_install = self.listener_lane.is_stale();
         if self.listener_lane.is_stale() {
             return;
         }
 
         let buffered = self.listener_lane.mark_fresh_and_take_buffered();
+        let _buffered_count = buffered.len();
         self.replay_buffered(buffered, tree_tx, log_render);
+        let _stale_after_replay = self.listener_lane.is_stale();
+
+        if !self.listener_lane.is_stale() && !self.has_active_pointer_overlay() {
+            self.redispatch_last_cursor_pos(tree_tx, log_render);
+        }
     }
 
     fn install_rebuild(
@@ -300,7 +352,11 @@ impl DirectEventRuntime {
                 self.listener_lane.buffer_input(event);
                 continue;
             }
-            self.dispatch_event(event, tree_tx, log_render);
+            let dispatch_mode = match event {
+                InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
+                _ => DispatchMode::Normal,
+            };
+            self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
         }
     }
 
@@ -311,7 +367,60 @@ impl DirectEventRuntime {
         );
     }
 
-    fn dispatch_event(&mut self, event: InputEvent, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn record_pointer_snapshot(&mut self, event: &InputEvent) {
+        match event {
+            InputEvent::CursorPos { x, y }
+            | InputEvent::CursorScroll { x, y, .. }
+            | InputEvent::CursorScrollLines { x, y, .. }
+            | InputEvent::CursorButton { x, y, .. } => {
+                self.last_cursor_pos = Some((*x, *y));
+                self.cursor_in_window = true;
+            }
+            InputEvent::CursorEntered { entered } => {
+                self.cursor_in_window = *entered;
+            }
+            _ => {}
+        }
+    }
+
+    fn redispatch_last_cursor_pos(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+        if !self.cursor_in_window {
+            return;
+        }
+
+        let Some((x, y)) = self.last_cursor_pos else {
+            return;
+        };
+
+        self.dispatch_event(
+            InputEvent::CursorPos { x, y },
+            tree_tx,
+            log_render,
+            DispatchMode::CursorRevalidate,
+        );
+    }
+
+    fn has_active_pointer_overlay(&self) -> bool {
+        self.runtime_overlay.click_press.is_some()
+            || !matches!(
+                self.runtime_overlay.drag,
+                registry_builder::DragTrackerState::Inactive
+            )
+            || self.runtime_overlay.scrollbar.is_some()
+            || self.runtime_overlay.text_drag.is_some()
+    }
+
+    fn should_preserve_registry_transitions(&self) -> bool {
+        self.cursor_in_window && self.last_cursor_pos.is_some() && !self.has_active_pointer_overlay()
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: InputEvent,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+        dispatch_mode: DispatchMode,
+    ) {
         let input = ListenerInput::Raw(event);
         let actions = {
             let mut ctx = RuntimeListenerComputeCtx {
@@ -326,7 +435,7 @@ impl DirectEventRuntime {
         };
 
         if !actions.is_empty() {
-            self.apply_listener_actions(actions, tree_tx, log_render);
+            self.apply_listener_actions(actions, tree_tx, log_render, dispatch_mode);
         }
     }
 
@@ -335,6 +444,7 @@ impl DirectEventRuntime {
         actions: Vec<ListenerAction>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
+        dispatch_mode: DispatchMode,
     ) {
         // Apply the ordered action list produced by one matched listener.
         // Tree messages and runtime changes are collected first so they can be
@@ -342,9 +452,9 @@ impl DirectEventRuntime {
         actions
             .into_iter()
             .fold(PendingDispatchEffects::default(), |effects, action| {
-                effects.collect(self, action)
+                effects.collect(self, action, dispatch_mode)
             })
-            .flush(self, tree_tx, log_render);
+            .flush(self, tree_tx, log_render, dispatch_mode);
     }
 
     fn apply_runtime_changes_and_recompose_if_needed(
@@ -556,6 +666,29 @@ fn send_tree_messages(tree_tx: &Sender<TreeMsg>, msgs: Vec<TreeMsg>, log_render:
         1 => send_tree(tree_tx, msgs.into_iter().next().unwrap(), log_render),
         _ => send_tree(tree_tx, TreeMsg::Batch(msgs), log_render),
     }
+}
+
+#[cfg(feature = "hover-trace")]
+fn dispatch_mode_label(mode: DispatchMode) -> &'static str {
+    match mode {
+        DispatchMode::Normal => "normal",
+        DispatchMode::CursorRevalidate => "cursor_revalidate",
+    }
+}
+
+#[cfg(feature = "hover-trace")]
+fn hover_msgs_from_tree_msgs(msgs: &[TreeMsg]) -> Vec<(ElementId, bool)> {
+    let mut out = Vec::new();
+    for msg in msgs {
+        match msg {
+            TreeMsg::SetMouseOverActive { element_id, active } => {
+                out.push((element_id.clone(), *active));
+            }
+            TreeMsg::Batch(nested) => out.extend(hover_msgs_from_tree_msgs(nested)),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
@@ -862,13 +995,26 @@ pub(crate) fn spawn_event_actor(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut runtime = DirectEventRuntime::new(system_clipboard);
+        let mut pending_message: Option<EventMsg> = None;
 
-        while let Ok(message) = event_rx.recv() {
+        loop {
+            let message = match pending_message.take() {
+                Some(message) => message,
+                None => match event_rx.recv() {
+                    Ok(message) => message,
+                    Err(_) => return,
+                },
+            };
+
             match message {
-                EventMsg::InputEvent(event) => {
-                    runtime.handle_input_event(event, &tree_tx, log_render)
-                }
+                EventMsg::InputEvent(event) => runtime.handle_input_event(event, &tree_tx, log_render),
                 EventMsg::RegistryUpdate { rebuild } => {
+                    let rebuild = if runtime.should_preserve_registry_transitions()
+                    {
+                        rebuild
+                    } else {
+                        coalesce_registry_updates(rebuild, &event_rx, &mut pending_message).0
+                    };
                     runtime.handle_registry_update(rebuild, &tree_tx, log_render)
                 }
                 EventMsg::SetInputMask(mask) => runtime.set_input_mask(mask),
@@ -879,6 +1025,30 @@ pub(crate) fn spawn_event_actor(
     })
 }
 
+fn coalesce_registry_updates(
+    mut rebuild: RegistryRebuildPayload,
+    event_rx: &Receiver<EventMsg>,
+    pending_message: &mut Option<EventMsg>,
+) -> (RegistryRebuildPayload, usize) {
+    let mut coalesced_count = 0;
+    while let Ok(message) = event_rx.try_recv() {
+        match message {
+            EventMsg::RegistryUpdate {
+                rebuild: newer_rebuild,
+            } => {
+                rebuild = newer_rebuild;
+                coalesced_count += 1;
+            }
+            other => {
+                *pending_message = Some(other);
+                break;
+            }
+        }
+    }
+
+    (rebuild, coalesced_count)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -886,12 +1056,16 @@ mod tests {
     use super::*;
     use crate::events::RegistryRebuildPayload;
     use crate::events::registry_builder::{self, FocusRevealScroll};
+    use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::tree::attrs::TextAlign;
-    use crate::tree::attrs::{Attrs, MouseOverAttrs};
+    use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
+    use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
     use crate::tree::element::ElementId;
-    use crate::tree::element::{Element, ElementKind, ElementTree, Frame};
+    use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot};
+    use crate::tree::layout::{Constraint, layout_and_refresh_default_with_animation};
     use crate::tree::render::render_tree;
     use crossbeam_channel::bounded;
+    use std::time::{Duration, Instant};
 
     fn make_text_input_state(
         content: &str,
@@ -931,12 +1105,84 @@ mod tests {
         out
     }
 
+    fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
+        RegistryRebuildPayload {
+            focused_id: Some(ElementId::from_term_bytes(vec![id])),
+            ..RegistryRebuildPayload::default()
+        }
+    }
+
+    #[test]
+    fn coalesce_registry_updates_keeps_latest_consecutive_rebuild() {
+        let (event_tx, event_rx) = bounded(8);
+        event_tx
+            .send(EventMsg::RegistryUpdate {
+                rebuild: rebuild_with_focus(2),
+            })
+            .unwrap();
+        event_tx
+            .send(EventMsg::RegistryUpdate {
+                rebuild: rebuild_with_focus(3),
+            })
+            .unwrap();
+
+        let mut pending = None;
+        let (rebuild, coalesced) =
+            coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
+
+        assert_eq!(rebuild.focused_id, Some(ElementId::from_term_bytes(vec![3])));
+        assert_eq!(coalesced, 2);
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn coalesce_registry_updates_stops_at_non_registry_message() {
+        let (event_tx, event_rx) = bounded(8);
+        event_tx
+            .send(EventMsg::RegistryUpdate {
+                rebuild: rebuild_with_focus(2),
+            })
+            .unwrap();
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorEntered { entered: false }))
+            .unwrap();
+        event_tx
+            .send(EventMsg::RegistryUpdate {
+                rebuild: rebuild_with_focus(3),
+            })
+            .unwrap();
+
+        let mut pending = None;
+        let (rebuild, coalesced) =
+            coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
+
+        assert_eq!(rebuild.focused_id, Some(ElementId::from_term_bytes(vec![2])));
+        assert_eq!(coalesced, 1);
+        assert!(matches!(
+            pending,
+            Some(EventMsg::InputEvent(InputEvent::CursorEntered { entered: false }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::RegistryUpdate { rebuild })
+                if rebuild.focused_id == Some(ElementId::from_term_bytes(vec![3]))
+        ));
+    }
+
     fn drain_raw_msgs(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
         let mut out = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             out.push(msg);
         }
         out
+    }
+
+    fn probe_point(case: &AnimatedNearbyHitCase, label: &str) -> (f32, f32) {
+        case.probes
+            .iter()
+            .find(|probe| probe.label == label)
+            .map(|probe| probe.point)
+            .expect("probe should exist")
     }
 
     fn push_tree_msg_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
@@ -984,6 +1230,60 @@ mod tests {
     fn with_frame(mut element: Element, frame: Frame) -> Element {
         element.frame = Some(frame);
         element
+    }
+
+    fn animated_width_move_rebuild_at(sample_ms: u64, hover_active: bool) -> RegistryRebuildPayload {
+        let host_id = ElementId::from_term_bytes(vec![130]);
+        let overlay_id = ElementId::from_term_bytes(vec![131]);
+
+        let mut tree = ElementTree::new();
+
+        let mut host_attrs = Attrs::default();
+        host_attrs.width = Some(Length::Px(128.0));
+        host_attrs.height = Some(Length::Px(82.0));
+        let mut host = make_element(130, ElementKind::El, host_attrs);
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id.clone()));
+
+        let mut from = Attrs::default();
+        from.width = Some(Length::Px(96.0));
+        from.move_x = Some(-16.0);
+
+        let mut to = Attrs::default();
+        to.width = Some(Length::Px(156.0));
+        to.move_x = Some(26.0);
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.width = Some(Length::Px(128.0));
+        overlay_attrs.height = Some(Length::Px(82.0));
+        overlay_attrs.align_x = Some(AlignX::Center);
+        overlay_attrs.align_y = Some(AlignY::Center);
+        overlay_attrs.on_mouse_move = Some(true);
+        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        overlay_attrs.mouse_over_active = Some(hover_active);
+        overlay_attrs.animate = Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 1000.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        });
+
+        let overlay = make_element(131, ElementKind::El, overlay_attrs);
+
+        tree.root = Some(host_id);
+        tree.insert(host);
+        tree.insert(overlay);
+
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        layout_and_refresh_default_with_animation(
+            &mut tree,
+            Constraint::new(128.0, 82.0),
+            1.0,
+            &runtime,
+            start + Duration::from_millis(sample_ms),
+        )
+        .event_rebuild
     }
 
     #[test]
@@ -1928,6 +2228,493 @@ mod tests {
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == ElementId::from_term_bytes(vec![52]) && !*active
         )));
+    }
+
+    #[test]
+    fn direct_runtime_registry_rebuild_replays_static_cursor_into_new_hover_target() {
+        let element_id = ElementId::from_term_bytes(vec![57]);
+
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(false);
+
+        let initial = with_interaction_rect(
+            make_element(57, ElementKind::El, attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[initial]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let moved = with_interaction_rect(
+            make_element(57, ElementKind::El, attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let moved_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[moved]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 70.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_registry_update(moved_rebuild, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && *active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_registry_rebuild_replays_static_cursor_out_of_old_hover_target() {
+        let element_id = ElementId::from_term_bytes(vec![58]);
+
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(false);
+        let element = with_interaction_rect(
+            make_element(58, ElementKind::El, attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && *active
+        )));
+
+        let mut active_attrs = attrs.clone();
+        active_attrs.mouse_over_active = Some(true);
+        let active_element = with_interaction_rect(
+            make_element(58, ElementKind::El, active_attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let active_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[active_element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        let moved_away = with_interaction_rect(
+            make_element(58, ElementKind::El, active_attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let moved_away_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[moved_away]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        runtime.handle_registry_update(moved_away_rebuild, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && !*active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_animated_in_front_overlay_activates_hover_right_of_initial_position() {
+        let overlay_id = ElementId::from_term_bytes(vec![131]);
+        let initial_rebuild = animated_width_move_rebuild_at(0, false);
+        let mid_rebuild = animated_width_move_rebuild_at(500, false);
+        let late_rebuild = animated_width_move_rebuild_at(1000, true);
+
+        let (tree_tx, tree_rx) = bounded(128);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 130.0, y: 41.0 }, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_registry_update(mid_rebuild, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == overlay_id && *active
+        )));
+
+        runtime.listener_lane.stale = false;
+        runtime.handle_registry_update(late_rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+    }
+
+    #[test]
+    fn sampled_hit_case_static_cursor_activates_when_target_enters_newly_occupied_probes() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+
+        for label in ["newly_occupied_inside_host", "newly_occupied_outside_host"] {
+            let point = probe_point(&case, label);
+            let (tree_tx, tree_rx) = bounded(128);
+            let mut runtime = DirectEventRuntime::new(false);
+
+            runtime.handle_registry_update(case.rebuild_at(0, false), &tree_tx, false);
+            runtime.handle_input_event(
+                InputEvent::CursorPos {
+                    x: point.0,
+                    y: point.1,
+                },
+                &tree_tx,
+                false,
+            );
+
+            match label {
+                "newly_occupied_inside_host" => {
+                    assert!(runtime.listener_lane.is_stale());
+                    let _ = drain_msgs(&tree_rx);
+                    runtime.handle_registry_update(case.rebuild_at(0, false), &tree_tx, false);
+                    assert!(!runtime.listener_lane.is_stale());
+                    let _ = drain_msgs(&tree_rx);
+                }
+                "newly_occupied_outside_host" => {
+                    assert!(!runtime.listener_lane.is_stale(), "probe {label} should start outside");
+                    assert!(drain_msgs(&tree_rx).is_empty(), "probe {label} should not trigger at 0ms");
+                }
+                _ => unreachable!("unexpected probe label"),
+            }
+
+            runtime.handle_registry_update(case.rebuild_at(500, false), &tree_tx, false);
+
+            let msgs = drain_msgs(&tree_rx);
+            let activations = msgs
+                .iter()
+                .filter(|msg| matches!(
+                    msg,
+                    TreeMsg::SetMouseOverActive { element_id, active }
+                        if *element_id == case.target_id && *active
+                ))
+                .count();
+
+            assert_eq!(activations, 1, "probe {label} should activate hover exactly once");
+            assert!(runtime.listener_lane.is_stale(), "probe {label} should mark lane stale after activation");
+        }
+    }
+
+    #[test]
+    fn sampled_hit_case_static_cursor_does_not_duplicate_hover_when_target_stays_inside() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        let point = probe_point(&case, "newly_occupied_outside_host");
+        let (tree_tx, tree_rx) = bounded(128);
+        let mut runtime = DirectEventRuntime::new(false);
+
+        runtime.handle_registry_update(case.rebuild_at(0, false), &tree_tx, false);
+        runtime.handle_input_event(
+            InputEvent::CursorPos {
+                x: point.0,
+                y: point.1,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_registry_update(case.rebuild_at(500, false), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.listener_lane.stale = false;
+
+        runtime.handle_registry_update(case.rebuild_at(1000, true), &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        let activations = msgs
+            .iter()
+            .filter(|msg| matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id, active }
+                    if *element_id == case.target_id && *active
+            ))
+            .count();
+
+        assert_eq!(activations, 0);
+        assert!(!runtime.listener_lane.is_stale());
+    }
+
+    #[test]
+    fn sampled_hit_case_static_cursor_clears_when_target_leaves_probe() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        let point = probe_point(&case, "newly_occupied_outside_host");
+        let (tree_tx, tree_rx) = bounded(128);
+        let mut runtime = DirectEventRuntime::new(false);
+
+        runtime.handle_registry_update(case.rebuild_at(1000, true), &tree_tx, false);
+        runtime.handle_input_event(
+            InputEvent::CursorPos {
+                x: point.0,
+                y: point.1,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+        runtime.listener_lane.stale = false;
+
+        runtime.handle_registry_update(case.rebuild_at(0, true), &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        let clears = msgs
+            .iter()
+            .filter(|msg| matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id, active }
+                    if *element_id == case.target_id && !*active
+            ))
+            .count();
+
+        assert_eq!(clears, 1);
+        assert!(runtime.listener_lane.is_stale());
+    }
+
+    #[test]
+    fn direct_runtime_registry_rebuild_skips_cursor_replay_when_pointer_left_window() {
+        let element_id = ElementId::from_term_bytes(vec![59]);
+
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.mouse_over_active = Some(false);
+        let element = with_interaction_rect(
+            make_element(59, ElementKind::El, attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert!(runtime.listener_lane.is_stale());
+        let _ = drain_msgs(&tree_rx);
+
+        let mut active_attrs = attrs;
+        active_attrs.mouse_over_active = Some(true);
+        let active_element = with_interaction_rect(
+            make_element(59, ElementKind::El, active_attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let active_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[active_element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorEntered { entered: false },
+            &tree_tx,
+            false,
+        );
+        assert!(runtime.listener_lane.is_stale());
+        let _ = drain_msgs(&tree_rx);
+
+        let inactive_element = with_interaction_rect(
+            make_element(59, ElementKind::El, {
+              let mut attrs = active_attrs;
+              attrs.mouse_over_active = Some(false);
+              attrs
+            }),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let inactive_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[inactive_element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+        runtime.handle_registry_update(inactive_rebuild, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().all(|msg| {
+            !matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id: id, active }
+                    if *id == element_id && *active
+            )
+        }));
+    }
+
+    #[test]
+    fn direct_runtime_registry_rebuild_suppresses_synthetic_mouse_move() {
+        let mut attrs = Attrs::default();
+        attrs.on_mouse_move = Some(true);
+
+        let initial = with_interaction_rect(
+            make_element(60, ElementKind::El, attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[initial]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let moved = with_interaction_rect(
+            make_element(60, ElementKind::El, attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let moved_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[moved]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 70.0, y: 10.0 }, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_registry_update(moved_rebuild, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn direct_runtime_registry_rebuild_keeps_hovered_cursor_fresh_when_move_is_synthetic() {
+        let element_id = ElementId::from_term_bytes(vec![61]);
+
+        let mut attrs = Attrs::default();
+        attrs.mouse_over = Some(MouseOverAttrs::default());
+        attrs.on_mouse_move = Some(true);
+        attrs.mouse_over_active = Some(false);
+
+        let initial = with_interaction_rect(
+            make_element(61, ElementKind::El, attrs.clone()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[initial]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let moved = with_interaction_rect(
+            make_element(61, ElementKind::El, attrs.clone()),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let moved_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[moved]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 70.0, y: 10.0 }, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_registry_update(moved_rebuild.clone(), &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && *active
+        )));
+
+        let mut hovered_attrs = attrs;
+        hovered_attrs.mouse_over_active = Some(true);
+        let hovered = with_interaction_rect(
+            make_element(61, ElementKind::El, hovered_attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let hovered_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[hovered]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        runtime.listener_lane.stale = false;
+        runtime.handle_registry_update(hovered_rebuild, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
     }
 
     #[test]

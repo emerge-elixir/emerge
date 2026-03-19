@@ -18,6 +18,7 @@ pub struct SceneContext {
     pub scroll_dy: f32,
     pub visible_clip: Option<ClipShape>,
     pub front_nearby_subtree: bool,
+    pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
     pub interaction_clips: Vec<InteractionClip>,
 }
@@ -35,6 +36,7 @@ pub struct ResolvedNodeState {
     pub local_scroll_x: f32,
     pub local_scroll_y: f32,
     pub front_nearby_subtree: bool,
+    pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
     pub interaction_inverse: Option<Affine2>,
     pub interaction_clips: Vec<InteractionClip>,
@@ -93,6 +95,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         local_scroll_x: element.attrs.scroll_x.unwrap_or(0.0) as f32,
         local_scroll_y: element.attrs.scroll_y.unwrap_or(0.0) as f32,
         front_nearby_subtree: ctx.front_nearby_subtree,
+        front_nearby_root: ctx.front_nearby_root,
         interaction_transform,
         interaction_inverse,
         interaction_clips: ctx.interaction_clips,
@@ -125,6 +128,7 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dy: scroll_dy + state.local_scroll_y,
             visible_clip: Some(state.child_visible_clip),
             front_nearby_subtree: state.front_nearby_subtree,
+            front_nearby_root: false,
             interaction_transform: state.interaction_transform,
             interaction_clips,
         },
@@ -133,6 +137,7 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dy,
             visible_clip: Some(state.child_visible_clip),
             front_nearby_subtree: state.front_nearby_subtree,
+            front_nearby_root: false,
             interaction_transform: state.interaction_transform,
             interaction_clips,
         },
@@ -141,6 +146,7 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dy,
             visible_clip: None,
             front_nearby_subtree: true,
+            front_nearby_root: true,
             interaction_transform: state.interaction_transform,
             interaction_clips: Vec::new(),
         },
@@ -171,7 +177,7 @@ fn offset_scrollbar_metrics(metrics: ScrollbarMetrics, ctx: &SceneContext) -> Sc
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
-    use crate::tree::element::{Element, ElementId, ElementKind};
+    use crate::tree::element::{Element, ElementId, ElementKind, NearbySlot};
     use crate::tree::geometry::Rect;
 
     fn make_element(id: u8, attrs: Attrs, frame: Frame) -> Element {
@@ -398,5 +404,66 @@ mod tests {
 
         assert_eq!(grandchild_ctx.scroll_dy, 25.0);
         assert_eq!(grandchild_state.adjusted_frame.y, 25.0);
+    }
+
+    #[test]
+    fn overlay_child_context_marks_only_overlay_root_as_front_nearby_root() {
+        let host = make_element(
+            9,
+            Attrs::default(),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 80.0,
+                content_width: 160.0,
+                content_height: 80.0,
+            },
+        );
+        let overlay = make_element(
+            10,
+            Attrs::default(),
+            Frame {
+                x: 20.0,
+                y: 10.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 60.0,
+            },
+        );
+        let descendant = make_element(
+            11,
+            Attrs::default(),
+            Frame {
+                x: 30.0,
+                y: 20.0,
+                width: 80.0,
+                height: 20.0,
+                content_width: 80.0,
+                content_height: 20.0,
+            },
+        );
+
+        let host_state =
+            resolve_node_state(&host, SceneContext::default()).expect("host state should resolve");
+        let overlay_ctx =
+            child_context(host_state, RetainedPaintPhase::Overlay(NearbySlot::InFront));
+        assert!(overlay_ctx.front_nearby_subtree);
+        assert!(overlay_ctx.front_nearby_root);
+
+        let overlay_state =
+            resolve_node_state(&overlay, overlay_ctx).expect("overlay should resolve");
+        assert!(overlay_state.front_nearby_subtree);
+        assert!(overlay_state.front_nearby_root);
+
+        let descendant_ctx = child_context(overlay_state, RetainedPaintPhase::Children);
+        assert!(descendant_ctx.front_nearby_subtree);
+        assert!(!descendant_ctx.front_nearby_root);
+
+        let descendant_state =
+            resolve_node_state(&descendant, descendant_ctx).expect("descendant should resolve");
+        assert!(descendant_state.front_nearby_subtree);
+        assert!(!descendant_state.front_nearby_root);
     }
 }
