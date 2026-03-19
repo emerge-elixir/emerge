@@ -4,6 +4,7 @@ defmodule Emerge.AttrCodecTest do
   import Emerge.UI
 
   alias Emerge.AttrCodec
+  alias Emerge.Color
 
   test "encode/decode round trip for supported attrs" do
     attrs = %{
@@ -210,6 +211,19 @@ defmodule Emerge.AttrCodecTest do
         curve: :ease_in_out,
         repeat: :loop
       }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode Emerge.Color helper tuples" do
+    attrs = %{
+      background: Color.color(:sky, 200, 0.3),
+      border_color: Color.color_rgb(1, 2, 3),
+      font_color: Color.color_rgba(4, 5, 6, 0.5),
+      svg_color: Color.color(:white)
     }
 
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()

@@ -17,16 +17,17 @@ defmodule EmergeSkia do
         )
 
       import Emerge.UI
+      alias Emerge.Color
 
       tree =
         el(
           [
             width(px(220)),
             height(px(80)),
-            Emerge.UI.Background.color(0x3366FFFF),
+            Emerge.UI.Background.color(Color.color(:sky, 500)),
             Emerge.UI.Border.rounded(10),
             padding(16),
-            Emerge.UI.Font.color(0xFFFFFFFF),
+            Emerge.UI.Font.color(Color.color(:white)),
             Emerge.UI.Font.size(24)
           ],
           text("Hello!")
@@ -39,7 +40,11 @@ defmodule EmergeSkia do
 
   ## Color Format
 
-  Colors are 32-bit unsigned integers in RGBA format: `0xRRGGBBAA`
+  For `Emerge.UI` styling, prefer `Emerge.Color.color/1..3`,
+  `Emerge.Color.color_rgb/3`, and `Emerge.Color.color_rgba/4`.
+
+  `EmergeSkia.rgb/3` and `EmergeSkia.rgba/4` are still available when you need
+  packed 32-bit unsigned integers in RGBA format: `0xRRGGBBAA`
 
   - `0xFF0000FF` = Red (fully opaque)
   - `0x00FF00FF` = Green (fully opaque)
@@ -298,11 +303,12 @@ defmodule EmergeSkia do
   ## Example
 
       import Emerge.UI
+      alias Emerge.Color
 
       pixels =
         EmergeSkia.render_to_pixels(
           el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(0xFF0000FF)],
+            [width(px(100)), height(px(100)), Emerge.UI.Background.color(Color.color(:red, 500))],
             none()
           ),
           otp_app: :my_app,
