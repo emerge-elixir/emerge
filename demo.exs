@@ -343,6 +343,7 @@ defmodule Demo do
       {"Scroll", :scroll},
       {"Alignment", :alignment},
       {"Transforms", :transforms},
+      {"Animation", :animation},
       {"Events", :events},
       {"Hover", :hover},
       {"Unstable List", :unstable_list},
@@ -433,6 +434,7 @@ defmodule Demo do
         :scroll -> page_scroll()
         :alignment -> page_alignment()
         :transforms -> page_transforms()
+        :animation -> page_animation()
         :events -> page_events(last_move_label)
         :hover -> page_hover()
         :unstable_list -> page_unstable_list(unstable_items)
@@ -1736,6 +1738,110 @@ defmodule Demo do
             el([Font.size(14), Font.color(:white)], text("Alpha")),
             el([Font.size(11), Font.color({:color_rgb, {230, 220, 210}})], text("60%"))
           ])
+        )
+      ])
+    ])
+  end
+
+  defp page_animation() do
+    column([width(fill()), spacing(16)], [
+      section_title("Animation"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "These cards animate layout and transform attrs continuously. Pointer events and state styles should stay attached to the painted shape, not the original slot."
+        )
+      ),
+      section_title("Animated Layout + Hit Testing"),
+      wrapped_row([width(fill()), spacing_xy(14, 14)], [
+        transformed_event_showcase(
+          "Animated Width + Move",
+          "width(px(96 -> 156)) + move_x(-16 -> 26)",
+          "Move across the card while it shifts and resizes; hit testing follows the painted shape.",
+          [
+            animate(
+              [
+                [width(px(96)), move_x(-16), move_y(0), rotate(0)],
+                [width(px(156)), move_x(26), move_y(-10), rotate(-45)]
+              ],
+              1400,
+              :ease_in_out,
+              :loop
+            )
+          ],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {96, 132, 188}}),
+              Border.color({:color_rgb, {200, 224, 255}}),
+              Border.glow({:color_rgba, {110, 160, 255, 92}}, 2),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_move],
+          {:color_rgb, {70, 96, 148}}
+        ),
+        transformed_event_showcase(
+          "Animated Padding + Rotate",
+          "padding_each(...) + rotate(-10 -> 10)",
+          "Enter and leave the card while its padding and angle animate; hover stays visually aligned.",
+          [
+            animate(
+              [
+                [padding_each(10, 12, 10, 12), rotate(-10)],
+                [padding_each(18, 24, 18, 24), rotate(10)]
+              ],
+              1600,
+              :ease_in_out,
+              :loop
+            )
+          ],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {130, 96, 166}}),
+              Border.color({:color_rgb, {232, 204, 255}}),
+              Border.glow({:color_rgba, {196, 132, 255, 92}}, 2),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_enter, :mouse_leave],
+          {:color_rgb, {102, 76, 130}}
+        ),
+        transformed_event_showcase(
+          "Animated Height + Scale Press",
+          "height(px(70 -> 108)) + scale(0.94 -> 1.08)",
+          "Press the card while its height and scale animate; mouse_down styling still tracks the visible shape.",
+          [
+            animate(
+              [
+                [height(px(70)), scale(0.94)],
+                [height(px(108)), scale(1.08)]
+              ],
+              1200,
+              :ease_in_out,
+              :loop
+            )
+          ],
+          [
+            mouse_over([
+              Background.color({:color_rgb, {106, 126, 98}}),
+              Border.color({:color_rgb, {220, 236, 204}}),
+              Border.glow({:color_rgba, {160, 212, 136, 84}}, 2),
+              Font.color(:white)
+            ]),
+            mouse_down([
+              Background.color({:color_rgb, {74, 90, 66}}),
+              Border.color({:color_rgb, {214, 228, 194}}),
+              Border.inner_shadow(
+                offset: {0, 1},
+                blur: 6,
+                size: 1,
+                color: {:color_rgba, {0, 0, 0, 120}}
+              ),
+              Font.color(:white)
+            ])
+          ],
+          [:mouse_down, :mouse_up],
+          {:color_rgb, {86, 104, 78}}
         )
       ])
     ])
