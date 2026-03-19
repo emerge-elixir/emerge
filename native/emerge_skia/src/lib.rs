@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::Font;
@@ -23,6 +23,7 @@ mod assets;
 mod backend;
 mod clipboard;
 mod cursor;
+mod debug_trace;
 mod drm_input;
 mod events;
 mod input;
@@ -38,8 +39,10 @@ use backend::wayland::{self, UserEvent, WaylandConfig};
 use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
-use tree::element::ElementTree;
-use tree::layout::layout_and_refresh_default;
+use std::time::Instant;
+use tree::element::{ElementId, ElementTree};
+use tree::animation::AnimationRuntime;
+use tree::layout::{layout_and_refresh_default, layout_and_refresh_default_with_animation};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
@@ -128,9 +131,53 @@ struct TreeResource {
     tree: Mutex<ElementTree>,
 }
 
+struct TestHarnessHandles {
+    proxy_handle: thread::JoinHandle<()>,
+    tree_handle: thread::JoinHandle<()>,
+    event_handle: thread::JoinHandle<()>,
+}
+
+struct TestHarnessResource {
+    tree_tx: Sender<TreeMsg>,
+    event_tx: Sender<EventMsg>,
+    render_rx: Receiver<RenderMsg>,
+    tree_tap_rx: Receiver<TreeMsg>,
+    base_instant: Mutex<Instant>,
+    handles: Mutex<Option<TestHarnessHandles>>,
+}
+
 impl rustler::Resource for RendererResource {}
 
 impl rustler::Resource for TreeResource {}
+
+impl rustler::Resource for TestHarnessResource {}
+
+impl Drop for TestHarnessResource {
+    fn drop(&mut self) {
+        self.stop_inner();
+    }
+}
+
+impl TestHarnessResource {
+    fn stop_inner(&self) {
+        let mut handles_guard = match self.handles.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let Some(handles) = handles_guard.take() else {
+            return;
+        };
+
+        send_event(&self.event_tx, EventMsg::Stop, false);
+        send_tree(&self.tree_tx, TreeMsg::Stop, false);
+
+        let _ = handles.proxy_handle.join();
+        let _ = handles.event_handle.join();
+        let _ = handles.tree_handle.join();
+        assets::stop();
+    }
+}
 
 impl RendererResource {
     fn stop(&self) {
@@ -164,6 +211,7 @@ fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
             if log_render {
                 eprintln!("tree channel full, blocking send");
             }
+            crate::debug_trace::hover_trace!("tree_channel", "tree channel full, blocking send");
             let _ = tree_tx.send(msg);
         }
         Err(TrySendError::Disconnected(_)) => {}
@@ -177,6 +225,7 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
             if log_input {
                 eprintln!("event channel full, blocking send");
             }
+            crate::debug_trace::hover_trace!("event_channel", "event channel full, blocking send");
             let _ = event_tx.send(msg);
         }
         Err(TrySendError::Disconnected(_)) => {}
@@ -192,6 +241,40 @@ fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
         }
         other => out.push(other),
     }
+}
+
+fn is_animation_pulse(msg: &TreeMsg) -> bool {
+    matches!(msg, TreeMsg::AnimationPulse { .. })
+}
+
+fn batch_is_animation_only(messages: &[TreeMsg]) -> bool {
+    !messages.is_empty() && messages.iter().all(is_animation_pulse)
+}
+
+#[cfg(feature = "hover-trace")]
+fn trace_element_snapshots(
+    tree: &ElementTree,
+) -> Vec<(ElementId, f32, f32, f32, f32, Option<f64>)> {
+    tree.nodes
+        .values()
+        .filter(|element| {
+            element.attrs.on_mouse_move.unwrap_or(false)
+                || element.attrs.mouse_over.is_some()
+                || element.attrs.mouse_over_active.unwrap_or(false)
+        })
+        .filter_map(|element| {
+            element.frame.map(|frame| {
+                (
+                    element.id.clone(),
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    element.attrs.move_x,
+                )
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +339,14 @@ struct TreeActorConfig {
 }
 
 fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thread::JoinHandle<()> {
+    spawn_tree_actor_with_initial_tree(tree_rx, config, ElementTree::new())
+}
+
+fn spawn_tree_actor_with_initial_tree(
+    tree_rx: Receiver<TreeMsg>,
+    config: TreeActorConfig,
+    initial_tree: ElementTree,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let TreeActorConfig {
             render_sender,
@@ -267,17 +358,36 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             initial_height,
         } = config;
 
-        let mut tree = ElementTree::new();
+        let mut tree = initial_tree;
         let mut width = (initial_width as f32).max(1.0);
         let mut height = (initial_height as f32).max(1.0);
         let mut scale = 1.0f32;
         let mut cached_rebuild: Option<events::RegistryRebuildPayload> = None;
+        let mut animation_runtime = AnimationRuntime::default();
+        let mut latest_animation_sample_time: Option<Instant> = None;
+        let mut pending_msg: Option<TreeMsg> = None;
 
-        while let Ok(msg) = tree_rx.recv() {
+        loop {
+            let msg = match pending_msg.take() {
+                Some(msg) => msg,
+                None => match tree_rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => return,
+                },
+            };
             let mut messages = Vec::new();
             push_tree_message_flat(msg, &mut messages);
+            let animation_only_batch = batch_is_animation_only(&messages);
             while let Ok(next) = tree_rx.try_recv() {
-                push_tree_message_flat(next, &mut messages);
+                let mut next_messages = Vec::new();
+                push_tree_message_flat(next, &mut next_messages);
+
+                if batch_is_animation_only(&next_messages) != animation_only_batch {
+                    pending_msg = Some(TreeMsg::Batch(next_messages));
+                    break;
+                }
+
+                messages.extend(next_messages);
             }
 
             let mut scroll_acc = std::collections::HashMap::new();
@@ -290,8 +400,9 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             let mut focused_active_state = std::collections::HashMap::new();
             let mut tree_changed = false;
             let mut registry_requested = false;
+            let mut animation_sample_time = latest_animation_sample_time;
 
-            for message in messages {
+            for message in messages.iter().cloned() {
                 match message {
                     TreeMsg::Stop => return,
                     TreeMsg::Batch(_) => {
@@ -356,6 +467,12 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         hover_y_state.insert(element_id, hovered);
                     }
                     TreeMsg::SetMouseOverActive { element_id, active } => {
+                        crate::debug_trace::hover_trace!(
+                            "tree_msg",
+                            "set_mouse_over_active id={:?} active={}",
+                            element_id.0,
+                            active
+                        );
                         mouse_over_active_state.insert(element_id, active);
                     }
                     TreeMsg::SetMouseDownActive { element_id, active } => {
@@ -368,7 +485,8 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         element_id,
                         content,
                     } => {
-                        tree_changed |= tree.set_text_input_content(&element_id, content);
+                        let changed = tree.set_text_input_content(&element_id, content);
+                        tree_changed |= changed;
                     }
                     TreeMsg::SetTextInputRuntime {
                         element_id,
@@ -378,7 +496,7 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                         preedit,
                         preedit_cursor,
                     } => {
-                        tree_changed |= tree.set_text_input_runtime(
+                        let changed = tree.set_text_input_runtime(
                             &element_id,
                             focused,
                             cursor,
@@ -386,6 +504,20 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                             preedit,
                             preedit_cursor,
                         );
+                        tree_changed |= changed;
+                    }
+                    TreeMsg::AnimationPulse {
+                        presented_at,
+                        predicted_next_present_at,
+                    } => {
+                        crate::debug_trace::hover_trace!(
+                            "tree_pulse",
+                            "presented_at={:?} predicted_next={:?}",
+                            presented_at,
+                            predicted_next_present_at
+                        );
+                        animation_sample_time = Some(predicted_next_present_at.max(presented_at));
+                        tree_changed = true;
                     }
                     TreeMsg::RebuildRegistry => {
                         registry_requested = true;
@@ -397,15 +529,18 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
             }
 
             for (id, (dx, dy)) in scroll_acc {
-                tree_changed |= tree.apply_scroll(&id, dx, dy);
+                let changed = tree.apply_scroll(&id, dx, dy);
+                tree_changed |= changed;
             }
 
             for (id, dx) in thumb_drag_x_acc {
-                tree_changed |= tree.apply_scroll_x(&id, dx);
+                let changed = tree.apply_scroll_x(&id, dx);
+                tree_changed |= changed;
             }
 
             for (id, dy) in thumb_drag_y_acc {
-                tree_changed |= tree.apply_scroll_y(&id, dy);
+                let changed = tree.apply_scroll_y(&id, dy);
+                tree_changed |= changed;
             }
 
             for (id, hovered) in hover_x_state {
@@ -416,8 +551,8 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                 tree_changed |= tree.set_scrollbar_y_hover(&id, hovered);
             }
 
-            for (id, active) in mouse_over_active_state {
-                tree_changed |= tree.set_mouse_over_active(&id, active);
+            for (id, active) in &mouse_over_active_state {
+                tree_changed |= tree.set_mouse_over_active(id, *active);
             }
 
             for (id, active) in mouse_down_active_state {
@@ -428,8 +563,10 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                 tree_changed |= tree.set_focused_active(&id, active);
             }
 
-            match decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some())
-            {
+            let refresh_decision =
+                decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some());
+
+            match refresh_decision {
                 RefreshDecision::Skip => continue,
                 RefreshDecision::UseCachedRebuild => {
                     if let Some(rebuild) = cached_rebuild.clone() {
@@ -441,7 +578,28 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     assets::ensure_tree_sources(&tree);
 
                     let constraint = tree::layout::Constraint::new(width, height);
-                    let output = layout_and_refresh_default(&mut tree, constraint, scale);
+                    let sample_time = animation_sample_time.unwrap_or_else(Instant::now);
+                    latest_animation_sample_time = Some(sample_time);
+                    crate::debug_trace::hover_trace!(
+                        "tree_recompute",
+                        "sample_time={:?} cached_rebuild={} tree_changed={} registry_requested={}",
+                        sample_time,
+                        cached_rebuild.is_some(),
+                        tree_changed,
+                        registry_requested
+                    );
+                    animation_runtime.sync_with_tree(&tree, sample_time);
+                    let output = if animation_runtime.is_empty() {
+                        layout_and_refresh_default(&mut tree, constraint, scale)
+                    } else {
+                        layout_and_refresh_default_with_animation(
+                            &mut tree,
+                            constraint,
+                            scale,
+                            &animation_runtime,
+                            sample_time,
+                        )
+                    };
                     cached_rebuild = Some(output.event_rebuild.clone());
                     send_event(
                         &event_tx,
@@ -452,17 +610,33 @@ fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thre
                     );
 
                     let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    let animate = assets::has_pending_assets();
                     render_sender.send_latest(RenderMsg::Commands {
                         commands: output.commands,
                         version,
-                        animate,
+                        animate: output.animations_active,
                         ime_enabled: output.ime_enabled,
                         ime_cursor_area: output.ime_cursor_area,
                     });
 
                     if let Some(proxy) = wayland_proxy.as_ref() {
                         let _ = proxy.send_event(UserEvent::Redraw);
+                    }
+
+                    #[cfg(feature = "hover-trace")]
+                    {
+                        for (id, x, y, w, h, move_x) in trace_element_snapshots(&tree) {
+                            crate::debug_trace::hover_trace!(
+                                "tree_snapshot",
+                                "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
+                                id.0,
+                                move_x.unwrap_or(0.0),
+                                x + move_x.unwrap_or(0.0) as f32
+                            );
+                        }
+                    }
+
+                    if animation_runtime.is_empty() || !output.animations_active {
+                        latest_animation_sample_time = None;
                     }
                 }
             }
@@ -504,6 +678,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
+            let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
@@ -516,6 +691,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 wayland::run(
                     wayland_config,
                     running_flag_clone,
+                    tree_tx_clone,
                     event_tx_clone,
                     render_rx,
                     video_registry_clone,
@@ -573,6 +749,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let running_flag_clone = Arc::clone(&running_flag);
             let stop_for_thread = Arc::clone(&stop_flag);
             let render_counter_clone = Arc::clone(&render_counter);
+            let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
@@ -586,6 +763,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     drm::DrmRunContext {
                         stop: stop_for_thread,
                         running_flag: running_flag_clone,
+                        tree_tx: tree_tx_clone,
                         render_rx,
                         cursor_rx,
                         event_tx: event_tx_clone,
@@ -1049,6 +1227,203 @@ fn tree_roundtrip<'a>(env: Env<'a>, data: Binary) -> Result<Binary<'a>, String> 
     Ok(encode_tree_binary(env, &tree))
 }
 
+type HoverMsg<'a> = (Binary<'a>, bool);
+type HoverMsgList<'a> = Vec<HoverMsg<'a>>;
+
+#[rustler::nif]
+fn test_harness_new(
+    width: u32,
+    height: u32,
+) -> Result<ResourceArc<TestHarnessResource>, String> {
+    let (tree_tx, tree_rx_proxy) = bounded(512);
+    let (tree_actor_tx, tree_actor_rx) = bounded(512);
+    let (tree_tap_tx, tree_tap_rx) = bounded(4096);
+    let (event_tx, event_rx) = bounded(4096);
+    let (render_tx, render_rx) = bounded(8);
+    let render_sender = RenderSender {
+        tx: render_tx,
+        drop_rx: render_rx.clone(),
+        log_render: false,
+    };
+    let render_counter = Arc::new(AtomicU64::new(0));
+
+    assets::start(tree_tx.clone(), false);
+
+    let proxy_handle = thread::spawn(move || {
+        while let Ok(msg) = tree_rx_proxy.recv() {
+            let is_stop = matches!(msg, TreeMsg::Stop);
+            let _ = tree_tap_tx.send(msg.clone());
+            if tree_actor_tx.send(msg).is_err() || is_stop {
+                break;
+            }
+        }
+    });
+
+    let event_handle = spawn_event_actor(event_rx, tree_tx.clone(), false, false);
+    let tree_handle = spawn_tree_actor_with_initial_tree(
+        tree_actor_rx,
+        TreeActorConfig {
+            render_sender,
+            event_tx: event_tx.clone(),
+            render_counter,
+            log_input: false,
+            wayland_proxy: None,
+            initial_width: width,
+            initial_height: height,
+        },
+        ElementTree::new(),
+    );
+
+    Ok(ResourceArc::new(TestHarnessResource {
+        tree_tx,
+        event_tx,
+        render_rx,
+        tree_tap_rx,
+        base_instant: Mutex::new(Instant::now()),
+        handles: Mutex::new(Some(TestHarnessHandles {
+            proxy_handle,
+            tree_handle,
+            event_handle,
+        })),
+    }))
+}
+
+#[rustler::nif]
+fn test_harness_upload(
+    harness: ResourceArc<TestHarnessResource>,
+    data: Binary,
+) -> Result<Atom, String> {
+    send_tree(
+        &harness.tree_tx,
+        TreeMsg::UploadTree {
+            bytes: data.as_slice().to_vec(),
+        },
+        false,
+    );
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
+fn test_harness_patch(
+    harness: ResourceArc<TestHarnessResource>,
+    data: Binary,
+) -> Result<Atom, String> {
+    send_tree(
+        &harness.tree_tx,
+        TreeMsg::PatchTree {
+            bytes: data.as_slice().to_vec(),
+        },
+        false,
+    );
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
+fn test_harness_cursor_pos(
+    harness: ResourceArc<TestHarnessResource>,
+    x: f64,
+    y: f64,
+) -> Result<Atom, String> {
+    send_event(
+        &harness.event_tx,
+        EventMsg::InputEvent(input::InputEvent::CursorPos {
+            x: x as f32,
+            y: y as f32,
+        }),
+        false,
+    );
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
+fn test_harness_animation_pulse(
+    harness: ResourceArc<TestHarnessResource>,
+    presented_ms: u64,
+    predicted_ms: u64,
+) -> Result<Atom, String> {
+    let base_instant = *harness
+        .base_instant
+        .lock()
+        .map_err(|_| "failed to lock test harness clock".to_string())?;
+    send_tree(
+        &harness.tree_tx,
+        TreeMsg::AnimationPulse {
+            presented_at: base_instant + Duration::from_millis(presented_ms),
+            predicted_next_present_at: base_instant + Duration::from_millis(predicted_ms),
+        },
+        false,
+    );
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
+fn test_harness_reset_clock(harness: ResourceArc<TestHarnessResource>) -> Atom {
+    if let Ok(mut base_instant) = harness.base_instant.lock() {
+        *base_instant = Instant::now();
+    }
+    atoms::ok()
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn test_harness_await_render(
+    harness: ResourceArc<TestHarnessResource>,
+    timeout_ms: u64,
+) -> Result<Atom, String> {
+    let timeout = Duration::from_millis(timeout_ms);
+
+    match harness.render_rx.recv_timeout(timeout) {
+        Ok(_) => {}
+        Err(RecvTimeoutError::Timeout) => return Err("render timeout".to_string()),
+        Err(RecvTimeoutError::Disconnected) => return Err("render channel disconnected".to_string()),
+    }
+
+    while harness
+        .render_rx
+        .recv_timeout(Duration::from_millis(10))
+        .is_ok()
+    {}
+
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn test_harness_drain_mouse_over_msgs<'a>(
+    env: Env<'a>,
+    harness: ResourceArc<TestHarnessResource>,
+    timeout_ms: u64,
+) -> HoverMsgList<'a> {
+    let timeout = Duration::from_millis(timeout_ms);
+    let mut flat = Vec::new();
+
+    if let Ok(msg) = harness.tree_tap_rx.recv_timeout(timeout) {
+        push_tree_message_flat(msg, &mut flat);
+        while let Ok(msg) = harness.tree_tap_rx.recv_timeout(Duration::from_millis(10)) {
+            push_tree_message_flat(msg, &mut flat);
+        }
+    }
+
+    flat.into_iter()
+        .filter_map(|msg| match msg {
+            TreeMsg::SetMouseOverActive { element_id, active } => {
+                Some(encode_hover_msg(env, &element_id, active))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn test_harness_stop(harness: ResourceArc<TestHarnessResource>) -> Atom {
+    harness.stop_inner();
+    atoms::ok()
+}
+
+fn encode_hover_msg<'a>(env: Env<'a>, element_id: &ElementId, active: bool) -> HoverMsg<'a> {
+    let mut id_binary = NewBinary::new(env, element_id.0.len());
+    id_binary.as_mut_slice().copy_from_slice(&element_id.0);
+    (id_binary.into(), active)
+}
+
 fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
     let encoded = tree::serialize::encode_tree(tree);
     let mut binary = NewBinary::new(env, encoded.len());
@@ -1056,73 +1431,311 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
     binary.into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn push_tree_message_flat_expands_nested_batches_in_order() {
-        let mut out = Vec::new();
-        push_tree_message_flat(
-            TreeMsg::Batch(vec![
-                TreeMsg::RebuildRegistry,
-                TreeMsg::Batch(vec![
-                    TreeMsg::AssetStateChanged,
-                    TreeMsg::Resize {
-                        width: 10.0,
-                        height: 20.0,
-                        scale: 1.0,
-                    },
-                ]),
-            ]),
-            &mut out,
-        );
-
-        assert!(matches!(out[0], TreeMsg::RebuildRegistry));
-        assert!(matches!(out[1], TreeMsg::AssetStateChanged));
-        assert!(matches!(
-            out[2],
-            TreeMsg::Resize {
-                width: 10.0,
-                height: 20.0,
-                scale: 1.0,
-            }
-        ));
-    }
-
-    #[test]
-    fn decide_refresh_action_prefers_cache_for_registry_only_requests() {
-        assert_eq!(
-            decide_refresh_action(false, false, false),
-            RefreshDecision::Skip
-        );
-        assert_eq!(
-            decide_refresh_action(false, true, true),
-            RefreshDecision::UseCachedRebuild
-        );
-        assert_eq!(
-            decide_refresh_action(false, true, false),
-            RefreshDecision::Recompute
-        );
-        assert_eq!(
-            decide_refresh_action(true, false, true),
-            RefreshDecision::Recompute
-        );
-        assert_eq!(
-            decide_refresh_action(true, true, true),
-            RefreshDecision::Recompute
-        );
-    }
-}
-
-// ============================================================================
-// NIF Registration
-// ============================================================================
-
 fn load(env: Env, _info: Term) -> bool {
     env.register::<RendererResource>().is_ok()
         && env.register::<TreeResource>().is_ok()
+        && env.register::<TestHarnessResource>().is_ok()
         && env.register::<VideoTargetResource>().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::RegistryRebuildPayload;
+    use crate::events::test_support::AnimatedNearbyHitCase;
+    use crate::input::InputEvent;
+    use crate::tree::element::ElementId;
+    use crossbeam_channel::RecvTimeoutError;
+
+    struct LiveActorHarness {
+        tree_tx: Sender<TreeMsg>,
+        event_tx: Sender<EventMsg>,
+        render_rx: Receiver<RenderMsg>,
+        tree_tap_rx: Receiver<TreeMsg>,
+        proxy_handle: thread::JoinHandle<()>,
+        tree_handle: thread::JoinHandle<()>,
+        event_handle: thread::JoinHandle<()>,
+    }
+
+    impl LiveActorHarness {
+        fn new(width: u32, height: u32, initial_tree: ElementTree) -> Self {
+            let (tree_tx, tree_rx_proxy) = bounded(512);
+            let (tree_actor_tx, tree_actor_rx) = bounded(512);
+            let (tree_tap_tx, tree_tap_rx) = bounded(4096);
+            let (event_tx, event_rx) = bounded(4096);
+            let (render_tx, render_rx) = bounded(8);
+            let render_sender = RenderSender {
+                tx: render_tx,
+                drop_rx: render_rx.clone(),
+                log_render: false,
+            };
+            let render_counter = Arc::new(AtomicU64::new(0));
+
+            assets::start(tree_tx.clone(), false);
+
+            let proxy_handle = thread::spawn(move || {
+                while let Ok(msg) = tree_rx_proxy.recv() {
+                    let is_stop = matches!(msg, TreeMsg::Stop);
+                    let _ = tree_tap_tx.send(msg.clone());
+                    if tree_actor_tx.send(msg).is_err() || is_stop {
+                        break;
+                    }
+                }
+            });
+
+            let event_handle = spawn_event_actor(event_rx, tree_tx.clone(), false, false);
+            let tree_handle = spawn_tree_actor_with_initial_tree(
+                tree_actor_rx,
+                TreeActorConfig {
+                    render_sender,
+                    event_tx: event_tx.clone(),
+                    render_counter,
+            log_input: false,
+                    wayland_proxy: None,
+                    initial_width: width,
+                    initial_height: height,
+                },
+                initial_tree,
+            );
+
+            Self {
+                tree_tx,
+                event_tx,
+                render_rx,
+                tree_tap_rx,
+                proxy_handle,
+                tree_handle,
+                event_handle,
+            }
+        }
+
+        fn send_tree(&self, msg: TreeMsg) {
+            super::send_tree(&self.tree_tx, msg, false);
+        }
+
+        fn send_input(&self, event: crate::input::InputEvent) {
+            super::send_event(&self.event_tx, EventMsg::InputEvent(event), false);
+        }
+
+        fn wait_for_render_settle(&self) {
+            match self.render_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => panic!("expected render message"),
+                Err(RecvTimeoutError::Disconnected) => panic!("render channel disconnected"),
+            }
+
+            while self.render_rx.recv_timeout(Duration::from_millis(15)).is_ok() {}
+        }
+
+        fn drain_set_mouse_over_active(&self, element_id: &ElementId) -> Vec<bool> {
+            let mut msgs = Vec::new();
+            while let Ok(msg) = self.tree_tap_rx.try_recv() {
+                push_tree_message_flat(msg, &mut msgs);
+            }
+
+            msgs.into_iter()
+                .filter_map(|msg| match msg {
+                    TreeMsg::SetMouseOverActive {
+                        element_id: id,
+                        active,
+                    } if &id == element_id => Some(active),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn stop(self) {
+            super::send_event(&self.event_tx, EventMsg::Stop, false);
+            super::send_tree(&self.tree_tx, TreeMsg::Stop, false);
+            let _ = self.proxy_handle.join();
+            let _ = self.event_handle.join();
+            let _ = self.tree_handle.join();
+            assets::stop();
+        }
+    }
+
+    struct SpawnedEventActorHarness {
+        event_tx: Sender<EventMsg>,
+        tree_rx: Receiver<TreeMsg>,
+        handle: thread::JoinHandle<()>,
+    }
+
+    impl SpawnedEventActorHarness {
+        fn new() -> Self {
+            let (event_tx, event_rx) = bounded(4096);
+            let (tree_tx, tree_rx) = bounded(4096);
+            let handle = spawn_event_actor(event_rx, tree_tx, false, false);
+
+            Self {
+                event_tx,
+                tree_rx,
+                handle,
+            }
+        }
+
+        fn send_input(&self, event: InputEvent) {
+            super::send_event(&self.event_tx, EventMsg::InputEvent(event), false);
+        }
+
+        fn send_rebuild(&self, rebuild: RegistryRebuildPayload) {
+            super::send_event(&self.event_tx, EventMsg::RegistryUpdate { rebuild }, false);
+        }
+
+        fn wait_for_tree_msgs_quiet(&self) -> Vec<TreeMsg> {
+            collect_tree_messages_until_quiet(&self.tree_rx)
+        }
+
+        fn stop(self) {
+            super::send_event(&self.event_tx, EventMsg::Stop, false);
+            let _ = self.handle.join();
+        }
+    }
+
+    fn collect_tree_messages_until_quiet(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
+        let mut out = Vec::new();
+
+        if let Ok(msg) = rx.recv_timeout(Duration::from_millis(50)) {
+            push_tree_message_flat(msg, &mut out);
+            while let Ok(msg) = rx.recv_timeout(Duration::from_millis(10)) {
+                push_tree_message_flat(msg, &mut out);
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn spawned_event_actor_harness_activates_hover_on_first_target_sample() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        let probe = case.probe("newly_occupied_outside_host");
+        let harness = SpawnedEventActorHarness::new();
+
+        harness.send_rebuild(case.rebuild_at(0, false));
+        let _ = harness.wait_for_tree_msgs_quiet();
+
+        harness.send_input(InputEvent::CursorPos {
+            x: probe.point.0,
+            y: probe.point.1,
+        });
+        assert!(harness.wait_for_tree_msgs_quiet().is_empty());
+
+        harness.send_rebuild(case.rebuild_at(500, false));
+        let msgs = harness.wait_for_tree_msgs_quiet();
+
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == case.target_id && *active
+        )));
+
+        harness.stop();
+    }
+
+    #[test]
+    fn live_actor_harness_static_cursor_activates_on_first_target_sample() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        let probe = case.probe("newly_occupied_outside_host");
+        let first_target_sample = case
+            .first_target_sample_ms(probe.label)
+            .expect("probe should eventually hit target");
+        let base = Instant::now();
+        let harness = LiveActorHarness::new(
+            case.constraint.max_width(0.0) as u32,
+            case.constraint.max_height(0.0) as u32,
+            case.source_tree(false),
+        );
+
+        harness.send_tree(TreeMsg::AnimationPulse {
+            presented_at: base,
+            predicted_next_present_at: base,
+        });
+        harness.wait_for_render_settle();
+        let _ = harness.drain_set_mouse_over_active(&case.target_id);
+
+        harness.send_input(input::InputEvent::CursorPos {
+            x: probe.point.0,
+            y: probe.point.1,
+        });
+
+        let mut activation_sample = None;
+
+        for sample_ms in (50..=1000).step_by(50) {
+            harness.send_tree(TreeMsg::AnimationPulse {
+                presented_at: base + Duration::from_millis(sample_ms),
+                predicted_next_present_at: base + Duration::from_millis(sample_ms),
+            });
+            harness.wait_for_render_settle();
+
+            let activations = harness.drain_set_mouse_over_active(&case.target_id);
+            if activation_sample.is_none() && activations.into_iter().any(|active| active) {
+                activation_sample = Some(sample_ms);
+            }
+        }
+
+        harness.stop();
+
+        assert_eq!(activation_sample, Some(first_target_sample));
+    }
+
+    #[test]
+    fn live_actor_harness_render_driven_pulses_activate_hover_without_tree_quiet_waits() {
+        let case = AnimatedNearbyHitCase::width_move_in_front();
+        let probe = case.probe("newly_occupied_outside_host");
+        let base = Instant::now();
+        let harness = LiveActorHarness::new(
+            case.constraint.max_width(0.0) as u32,
+            case.constraint.max_height(0.0) as u32,
+            case.source_tree(false),
+        );
+
+        harness.send_tree(TreeMsg::AnimationPulse {
+            presented_at: base,
+            predicted_next_present_at: base,
+        });
+        match harness.render_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => panic!("expected initial render"),
+            Err(RecvTimeoutError::Disconnected) => panic!("render channel disconnected"),
+        }
+
+        harness.send_input(input::InputEvent::CursorPos {
+            x: probe.point.0,
+            y: probe.point.1,
+        });
+
+        let mut saw_activation = false;
+
+        for sample_ms in (50..=1400).step_by(50) {
+            harness.send_tree(TreeMsg::AnimationPulse {
+                presented_at: base + Duration::from_millis(sample_ms),
+                predicted_next_present_at: base + Duration::from_millis(sample_ms),
+            });
+
+            match harness.render_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => panic!("expected render for sample {sample_ms}"),
+                Err(RecvTimeoutError::Disconnected) => panic!("render channel disconnected"),
+            }
+
+            saw_activation |= harness
+                .drain_set_mouse_over_active(&case.target_id)
+                .into_iter()
+                .any(|active| active);
+        }
+
+        saw_activation |= collect_tree_messages_until_quiet(&harness.tree_tap_rx)
+            .into_iter()
+            .any(|msg| matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id, active }
+                    if element_id == case.target_id && active
+            ));
+
+        harness.stop();
+
+        assert!(saw_activation);
+    }
+
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);

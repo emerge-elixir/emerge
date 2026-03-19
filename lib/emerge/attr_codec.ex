@@ -62,7 +62,8 @@ defmodule Emerge.AttrCodec do
     on_press: 61,
     video_target: 62,
     svg_color: 63,
-    svg_expected: 64
+    svg_expected: 64,
+    animate: 65
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -153,6 +154,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:svg_color, value), do: encode_color(value)
   defp encode_value(:svg_expected, value), do: encode_bool(value)
   defp encode_value(:video_target, value), do: encode_string(value)
+  defp encode_value(:animate, value), do: encode_animation(value)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -209,6 +211,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:svg_color, rest), do: decode_color(rest)
   defp decode_value(:svg_expected, rest), do: decode_bool(rest)
   defp decode_value(:video_target, rest), do: decode_string(rest)
+  defp decode_value(:animate, rest), do: decode_animation(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)
@@ -234,6 +237,68 @@ defmodule Emerge.AttrCodec do
     <<attrs_bin::binary-size(len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
   end
+
+  defp encode_animation(value) do
+    spec = AttrValidation.normalize_animation!(value)
+
+    keyframes =
+      spec.keyframes
+      |> Enum.map(fn keyframe ->
+        encoded = encode_attrs(keyframe)
+        <<byte_size(encoded)::unsigned-32, encoded::binary>>
+      end)
+
+    payload = [
+      <<length(spec.keyframes)::unsigned-16>>,
+      keyframes,
+      encode_f64(spec.duration),
+      encode_atom(spec.curve),
+      encode_animation_repeat(spec.repeat)
+    ]
+
+    payload = IO.iodata_to_binary(payload)
+    <<byte_size(payload)::unsigned-32, payload::binary>>
+  end
+
+  defp decode_animation(<<len::unsigned-32, rest::binary>>) do
+    <<payload::binary-size(len), rest::binary>> = rest
+    {value, <<>>} = decode_animation_payload(payload)
+    {value, rest}
+  end
+
+  defp decode_animation_payload(<<count::unsigned-16, rest::binary>>) do
+    {keyframes, rest} = decode_animation_keyframes(rest, count, [])
+    {duration, rest} = decode_f64(rest)
+    {curve, rest} = decode_atom(rest)
+    {repeat, rest} = decode_animation_repeat(rest)
+
+    value =
+      AttrValidation.normalize_animation!(%{
+        keyframes: keyframes,
+        duration: duration,
+        curve: curve,
+        repeat: repeat
+      })
+
+    {value, rest}
+  end
+
+  defp decode_animation_keyframes(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_animation_keyframes(<<len::unsigned-32, rest::binary>>, count, acc) do
+    <<attrs_bin::binary-size(len), rest::binary>> = rest
+    decode_animation_keyframes(rest, count - 1, [decode_attrs(attrs_bin) | acc])
+  end
+
+  defp encode_animation_repeat(:once), do: <<0>>
+  defp encode_animation_repeat(:loop), do: <<1>>
+  defp encode_animation_repeat({:times, count}), do: <<2, count::unsigned-32>>
+
+  defp decode_animation_repeat(<<0, rest::binary>>), do: {:once, rest}
+  defp decode_animation_repeat(<<1, rest::binary>>), do: {:loop, rest}
+
+  defp decode_animation_repeat(<<2, count::unsigned-32, rest::binary>>),
+    do: {{:times, count}, rest}
 
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>

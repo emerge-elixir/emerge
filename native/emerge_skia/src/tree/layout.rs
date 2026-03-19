@@ -9,11 +9,13 @@ use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
     TextFragment, preserve_runtime_scroll_attrs,
 };
+use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
 };
 use crate::assets;
 use std::collections::HashMap;
+use std::time::Instant;
 
 // =============================================================================
 // Layout Types
@@ -344,12 +346,50 @@ pub fn layout_tree_with_context<M: TextMeasurer>(
     measurer: &M,
     inherited: &FontContext,
 ) {
+    let _ = layout_tree_with_context_and_animation(
+        tree,
+        constraint,
+        scale,
+        measurer,
+        inherited,
+        None,
+        None,
+    );
+}
+
+pub fn layout_tree_default_with_animation(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> bool {
+    layout_tree_with_context_and_animation(
+        tree,
+        constraint,
+        scale,
+        &SkiaTextMeasurer,
+        &FontContext::default(),
+        Some(runtime),
+        Some(sample_time),
+    )
+}
+
+fn layout_tree_with_context_and_animation<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    measurer: &M,
+    inherited: &FontContext,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> bool {
     let Some(root_id) = tree.root.clone() else {
-        return;
+        return false;
     };
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
-    apply_scale_to_tree(tree, scale);
+    let animations_active = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
     apply_interaction_styles(tree);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
@@ -357,6 +397,8 @@ pub fn layout_tree_with_context<M: TextMeasurer>(
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(tree, &root_id, constraint, 0.0, 0.0, inherited, measurer);
+
+    animations_active
 }
 
 /// Layout with default Skia text measurer.
@@ -368,13 +410,20 @@ pub fn layout_tree_default(tree: &mut ElementTree, constraint: Constraint, scale
 // Pass 0: Scale Attributes
 // =============================================================================
 
-/// Apply scale factor to all elements, copying base_attrs to attrs with scaling.
-fn apply_scale_to_tree(tree: &mut ElementTree, scale: f32) {
+/// Apply scale factor to all elements, preserve runtime attrs, and overlay animations.
+fn prepare_attrs_for_frame(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> bool {
     for element in tree.nodes.values_mut() {
         let previous = element.attrs.clone();
         element.attrs = scale_attrs(&element.base_attrs, scale);
         preserve_runtime_scroll_attrs(&previous, &mut element.attrs);
     }
+
+    apply_animation_overlays(tree, animation_runtime, sample_time)
 }
 
 /// Scale all pixel-based attributes in an Attrs struct.
@@ -477,6 +526,10 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         rotate: attrs.rotate,
         scale: attrs.scale,
         alpha: attrs.alpha,
+        animate: attrs
+            .animate
+            .as_ref()
+            .map(|spec| scale_animation_spec(spec, scale_f64)),
         space_evenly: attrs.space_evenly,
     }
 }
@@ -3528,6 +3581,7 @@ pub struct LayoutOutput {
     pub event_rebuild: RegistryRebuildPayload,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
+    pub animations_active: bool,
 }
 
 /// After DOM/scroll changes, produce new outputs without re-running layout.
@@ -3540,6 +3594,7 @@ pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
         event_rebuild: render_output.event_rebuild,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
+        animations_active: false,
     }
 }
 
@@ -3549,8 +3604,29 @@ pub fn layout_and_refresh_default(
     constraint: Constraint,
     scale: f32,
 ) -> LayoutOutput {
-    layout_tree_default(tree, constraint, scale);
-    refresh(tree)
+    let animations_active = layout_tree_default_with_animation(
+        tree,
+        constraint,
+        scale,
+        &AnimationRuntime::default(),
+        Instant::now(),
+    );
+    let mut output = refresh(tree);
+    output.animations_active = animations_active;
+    output
+}
+
+pub fn layout_and_refresh_default_with_animation(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> LayoutOutput {
+    let animations_active = layout_tree_default_with_animation(tree, constraint, scale, runtime, sample_time);
+    let mut output = refresh(tree);
+    output.animations_active = animations_active;
+    output
 }
 
 #[cfg(test)]
