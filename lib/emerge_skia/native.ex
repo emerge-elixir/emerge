@@ -263,4 +263,44 @@ defmodule EmergeSkia.Native do
   """
   @spec tree_roundtrip(binary()) :: binary() | {:error, String.t()}
   def tree_roundtrip(_data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_new(pos_integer(), pos_integer()) :: reference()
+  def test_harness_new(_width, _height), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_upload(reference(), binary()) :: :ok | {:error, String.t()}
+  def test_harness_upload(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_patch(reference(), binary()) :: :ok | {:error, String.t()}
+  def test_harness_patch(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_cursor_pos(reference(), number(), number()) :: :ok | {:error, String.t()}
+  def test_harness_cursor_pos(_harness, _x, _y), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_animation_pulse(reference(), non_neg_integer(), non_neg_integer()) ::
+          :ok | {:error, String.t()}
+  def test_harness_animation_pulse(_harness, _presented_ms, _predicted_ms),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_reset_clock(reference()) :: :ok
+  def test_harness_reset_clock(_harness), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_await_render(reference(), non_neg_integer()) :: :ok | {:error, String.t()}
+  def test_harness_await_render(_harness, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_drain_mouse_over_msgs(reference(), non_neg_integer()) ::
+          [{binary(), boolean()}]
+  def test_harness_drain_mouse_over_msgs(_harness, _timeout_ms),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_stop(reference()) :: :ok
+  def test_harness_stop(_harness), do: :erlang.nif_error(:nif_not_loaded)
 end
