@@ -218,6 +218,71 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode animate_enter attr" do
+    attrs = %{
+      animate_enter: %{
+        keyframes: [
+          %{
+            width: {:px, 72},
+            alpha: 0.2,
+            move_y: 10
+          },
+          %{
+            width: {:px, 120},
+            alpha: 1.0,
+            move_y: 0
+          }
+        ],
+        duration: 320,
+        curve: :ease_out,
+        repeat: :once
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode animate and animate_enter attrs together" do
+    attrs = %{
+      animate_enter: %{
+        keyframes: [
+          %{
+            width: {:px, 72},
+            alpha: 0.2
+          },
+          %{
+            width: {:px, 120},
+            alpha: 1.0
+          }
+        ],
+        duration: 320,
+        curve: :ease_out,
+        repeat: :once
+      },
+      animate: %{
+        keyframes: [
+          %{
+            move_x: -10,
+            border_color: :white
+          },
+          %{
+            move_x: 18,
+            border_color: {:color_rgb, {10, 20, 30}}
+          }
+        ],
+        duration: 420,
+        curve: :ease_in_out,
+        repeat: :loop
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
   test "encode/decode Emerge.Color helper tuples" do
     attrs = %{
       background: Color.color(:sky, 200, 0.3),

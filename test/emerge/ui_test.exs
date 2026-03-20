@@ -159,6 +159,33 @@ defmodule Emerge.UITest do
            }
   end
 
+  test "animate_enter stores normalized animation specs" do
+    element =
+      el(
+        [
+          animate_enter(
+            [
+              [width(px(90)), alpha(0.2), move_y(8)],
+              [width(px(140)), alpha(1.0), move_y(0)]
+            ],
+            260,
+            :ease_out
+          )
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.animate_enter == %{
+             keyframes: [
+               %{width: {:px, 90}, alpha: 0.2, move_y: 8},
+               %{width: {:px, 140}, alpha: 1.0, move_y: 0}
+             ],
+             duration: 260,
+             curve: :ease_out,
+             repeat: :once
+           }
+  end
+
   test "animate rejects mismatched keyframe attrs" do
     assert_raise ArgumentError, ~r/same attribute set/, fn ->
       el(
@@ -171,6 +198,12 @@ defmodule Emerge.UITest do
   test "animate rejects incompatible width variants" do
     assert_raise ArgumentError, ~r/same length variant/, fn ->
       el([animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
+    end
+  end
+
+  test "animate_enter error messages name animate_enter" do
+    assert_raise ArgumentError, ~r/animate_enter expects at least 2 keyframes/, fn ->
+      el([animate_enter([[width(px(100))]], 200, :linear)], text("bad"))
     end
   end
 

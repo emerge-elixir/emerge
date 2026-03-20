@@ -59,6 +59,7 @@ defmodule Emerge.UI do
                       :scale,
                       :alpha,
                       :animate,
+                      :animate_enter,
                       :space_evenly,
                       :on_click,
                       :on_press,
@@ -474,6 +475,39 @@ defmodule Emerge.UI do
     {:animate, %{keyframes: keyframes, duration: duration, curve: curve, repeat: repeat}}
   end
 
+  @doc """
+  Animate compatible attrs once when the element is first mounted.
+
+  Unlike `animate/4`, this does not start if it is added later to an existing retained node.
+  If both `animate_enter/4` and `animate/4` are present, `animate/4` starts after the
+  enter animation completes.
+
+  ## Example
+
+      if open? do
+        el(
+          [
+            key(:shelf),
+            width(px(164)),
+            alpha(1.0),
+            move_x(0),
+            animate_enter(
+              [
+                [width(px(24)), alpha(0.0), move_x(14)],
+                [width(px(164)), alpha(1.0), move_x(0)]
+              ],
+              220,
+              :ease_out
+            )
+          ],
+          text("Details")
+        )
+      end
+  """
+  def animate_enter(keyframes, duration, curve, repeat \\ :once) do
+    {:animate_enter, %{keyframes: keyframes, duration: duration, curve: curve, repeat: repeat}}
+  end
+
   @doc "Set image fit mode (`:contain` or `:cover`)"
   def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
 
@@ -574,8 +608,8 @@ defmodule Emerge.UI do
       MapSet.member?(@state_style_key_set, key) ->
         {key, AttrValidation.normalize_state_style!(key, value)}
 
-      key == :animate ->
-        {key, AttrValidation.normalize_animation!(value)}
+      key in [:animate, :animate_enter] ->
+        {key, AttrValidation.normalize_animation!(key, value)}
 
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
         validate_public_attr_value!(attrs_owner, key, value)
@@ -595,6 +629,8 @@ defmodule Emerge.UI do
   defp validate_public_attr_value!(_attrs_owner, :key, _value), do: :ok
 
   defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
+
+  defp validate_public_attr_value!(_attrs_owner, :animate_enter, _value), do: :ok
 
   defp validate_public_attr_value!(attrs_owner, :width, value),
     do: validate_length!(attrs_owner, :width, value)

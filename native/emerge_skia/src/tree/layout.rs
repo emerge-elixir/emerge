@@ -5,11 +5,11 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
+use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
     TextFragment, preserve_runtime_scroll_attrs,
 };
-use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
 };
@@ -347,13 +347,7 @@ pub fn layout_tree_with_context<M: TextMeasurer>(
     inherited: &FontContext,
 ) {
     let _ = layout_tree_with_context_and_animation(
-        tree,
-        constraint,
-        scale,
-        measurer,
-        inherited,
-        None,
-        None,
+        tree, constraint, scale, measurer, inherited, None, None,
     );
 }
 
@@ -423,7 +417,7 @@ fn prepare_attrs_for_frame(
         preserve_runtime_scroll_attrs(&previous, &mut element.attrs);
     }
 
-    apply_animation_overlays(tree, animation_runtime, sample_time)
+    apply_animation_overlays(tree, animation_runtime, sample_time, scale)
 }
 
 /// Scale all pixel-based attributes in an Attrs struct.
@@ -528,6 +522,10 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         alpha: attrs.alpha,
         animate: attrs
             .animate
+            .as_ref()
+            .map(|spec| scale_animation_spec(spec, scale_f64)),
+        animate_enter: attrs
+            .animate_enter
             .as_ref()
             .map(|spec| scale_animation_spec(spec, scale_f64)),
         space_evenly: attrs.space_evenly,
@@ -3623,7 +3621,8 @@ pub fn layout_and_refresh_default_with_animation(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutOutput {
-    let animations_active = layout_tree_default_with_animation(tree, constraint, scale, runtime, sample_time);
+    let animations_active =
+        layout_tree_default_with_animation(tree, constraint, scale, runtime, sample_time);
     let mut output = refresh(tree);
     output.animations_active = animations_active;
     output

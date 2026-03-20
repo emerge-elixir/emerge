@@ -261,6 +261,9 @@ pub struct Element {
 
     /// Intrinsic frame captured during measurement pass before resolution mutates `frame`.
     pub measured_frame: Option<Frame>,
+
+    /// Tree revision when this element was last mounted into the tree.
+    pub mounted_at_revision: u64,
 }
 
 impl Element {
@@ -277,6 +280,7 @@ impl Element {
             nearby: NearbyMounts::default(),
             frame: None,
             measured_frame: None,
+            mounted_at_revision: 0,
         }
     }
 
@@ -347,6 +351,9 @@ fn paragraph_child_mode(tree: &ElementTree, child_id: &ElementId) -> RetainedChi
 /// The complete element tree with indexed access.
 #[derive(Clone, Debug, Default)]
 pub struct ElementTree {
+    /// Monotonic revision for tree mutations.
+    pub revision: u64,
+
     /// Root element ID (if tree is non-empty).
     pub root: Option<ElementId>,
 
@@ -380,6 +387,43 @@ impl ElementTree {
         self.nodes.insert(element.id.clone(), element);
     }
 
+    /// Current tree revision.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Advance the tree revision and return the new value.
+    pub fn bump_revision(&mut self) -> u64 {
+        self.revision = self.revision.saturating_add(1);
+        self.revision
+    }
+
+    /// Override the tree revision.
+    pub fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
+    /// Stamp every live node as mounted at the provided revision.
+    pub fn stamp_all_mounted_at_revision(&mut self, revision: u64) {
+        self.nodes
+            .values_mut()
+            .for_each(|element| element.mounted_at_revision = revision);
+    }
+
+    /// Replace this tree with a fully uploaded tree, advancing revision once.
+    pub fn replace_with_uploaded(&mut self, mut uploaded: ElementTree) {
+        let revision = self.revision.saturating_add(1);
+        uploaded.set_revision(revision);
+        uploaded.stamp_all_mounted_at_revision(revision);
+        *self = uploaded;
+    }
+
+    /// Returns true when the element was mounted after the provided revision.
+    pub fn was_mounted_after(&self, id: &ElementId, revision: u64) -> bool {
+        self.get(id)
+            .is_some_and(|element| element.mounted_at_revision > revision)
+    }
+
     /// Check if tree is empty.
     pub fn is_empty(&self) -> bool {
         self.root.is_none()
@@ -392,6 +436,7 @@ impl ElementTree {
 
     /// Clear the tree.
     pub fn clear(&mut self) {
+        self.bump_revision();
         self.root = None;
         self.nodes.clear();
     }
@@ -1203,5 +1248,69 @@ mod tests {
                 (second_id, RetainedChildMode::Scope),
             ]
         );
+    }
+
+    #[test]
+    fn test_replace_with_uploaded_advances_revision_and_restamps_nodes() {
+        let existing_id = ElementId::from_term_bytes(vec![1]);
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            existing_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        let first_revision = tree.bump_revision();
+        tree.stamp_all_mounted_at_revision(first_revision);
+
+        let uploaded_id = ElementId::from_term_bytes(vec![2]);
+        let mut uploaded = ElementTree::new();
+        uploaded.root = Some(uploaded_id.clone());
+        uploaded.insert(Element::with_attrs(
+            uploaded_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+
+        tree.replace_with_uploaded(uploaded);
+
+        assert_eq!(tree.revision(), first_revision + 1);
+        assert_eq!(
+            tree.get(&uploaded_id)
+                .expect("uploaded node should exist")
+                .mounted_at_revision,
+            tree.revision()
+        );
+    }
+
+    #[test]
+    fn test_clear_advances_revision_without_resetting_to_zero() {
+        let mut tree = ElementTree::new();
+        let first_revision = tree.bump_revision();
+
+        tree.clear();
+
+        assert!(tree.is_empty());
+        assert!(tree.revision() > first_revision);
+    }
+
+    #[test]
+    fn test_was_mounted_after_uses_node_mount_revision() {
+        let id = ElementId::from_term_bytes(vec![3]);
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(Element::with_attrs(
+            id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+
+        let revision = tree.bump_revision();
+        tree.stamp_all_mounted_at_revision(revision);
+
+        assert!(tree.was_mounted_after(&id, revision - 1));
+        assert!(!tree.was_mounted_after(&id, revision));
     }
 }

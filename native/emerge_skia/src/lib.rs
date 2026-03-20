@@ -40,8 +40,8 @@ use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
 use std::time::Instant;
-use tree::element::{ElementId, ElementTree};
 use tree::animation::AnimationRuntime;
+use tree::element::{ElementId, ElementTree};
 use tree::layout::{layout_and_refresh_default, layout_and_refresh_default_with_animation};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
@@ -410,7 +410,7 @@ fn spawn_tree_actor_with_initial_tree(
                     }
                     TreeMsg::UploadTree { bytes } => match tree::deserialize::decode_tree(&bytes) {
                         Ok(decoded) => {
-                            tree = decoded;
+                            tree.replace_with_uploaded(decoded);
                             tree_changed = true;
                         }
                         Err(err) => {
@@ -1103,7 +1103,7 @@ fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
-        *tree = decoded;
+        tree.replace_with_uploaded(decoded);
         Ok(atoms::ok())
     } else {
         Err("failed to lock tree".to_string())
@@ -1119,7 +1119,7 @@ fn tree_upload_roundtrip<'a>(
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     if let Ok(mut tree) = tree_res.tree.lock() {
-        *tree = decoded;
+        tree.replace_with_uploaded(decoded);
         Ok(encode_tree_binary(env, &tree))
     } else {
         Err("failed to lock tree".to_string())
@@ -1231,10 +1231,7 @@ type HoverMsg<'a> = (Binary<'a>, bool);
 type HoverMsgList<'a> = Vec<HoverMsg<'a>>;
 
 #[rustler::nif]
-fn test_harness_new(
-    width: u32,
-    height: u32,
-) -> Result<ResourceArc<TestHarnessResource>, String> {
+fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessResource>, String> {
     let (tree_tx, tree_rx_proxy) = bounded(512);
     let (tree_actor_tx, tree_actor_rx) = bounded(512);
     let (tree_tap_tx, tree_tap_rx) = bounded(4096);
@@ -1374,7 +1371,9 @@ fn test_harness_await_render(
     match harness.render_rx.recv_timeout(timeout) {
         Ok(_) => {}
         Err(RecvTimeoutError::Timeout) => return Err("render timeout".to_string()),
-        Err(RecvTimeoutError::Disconnected) => return Err("render channel disconnected".to_string()),
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err("render channel disconnected".to_string());
+        }
     }
 
     while harness
@@ -1490,7 +1489,7 @@ mod tests {
                     render_sender,
                     event_tx: event_tx.clone(),
                     render_counter,
-            log_input: false,
+                    log_input: false,
                     wayland_proxy: None,
                     initial_width: width,
                     initial_height: height,
@@ -1524,7 +1523,11 @@ mod tests {
                 Err(RecvTimeoutError::Disconnected) => panic!("render channel disconnected"),
             }
 
-            while self.render_rx.recv_timeout(Duration::from_millis(15)).is_ok() {}
+            while self
+                .render_rx
+                .recv_timeout(Duration::from_millis(15))
+                .is_ok()
+            {}
         }
 
         fn drain_set_mouse_over_active(&self, element_id: &ElementId) -> Vec<bool> {
@@ -1725,17 +1728,18 @@ mod tests {
 
         saw_activation |= collect_tree_messages_until_quiet(&harness.tree_tap_rx)
             .into_iter()
-            .any(|msg| matches!(
-                msg,
-                TreeMsg::SetMouseOverActive { element_id, active }
-                    if element_id == case.target_id && active
-            ));
+            .any(|msg| {
+                matches!(
+                    msg,
+                    TreeMsg::SetMouseOverActive { element_id, active }
+                        if element_id == case.target_id && active
+                )
+            });
 
         harness.stop();
 
         assert!(saw_activation);
     }
-
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);
