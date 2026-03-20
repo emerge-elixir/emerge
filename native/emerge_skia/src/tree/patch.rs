@@ -209,14 +209,20 @@ fn is_nil_term(bytes: &[u8]) -> bool {
 
 /// Apply a list of patches to an element tree.
 pub fn apply_patches(tree: &mut ElementTree, patches: Vec<Patch>) -> Result<(), String> {
+    if patches.is_empty() {
+        return Ok(());
+    }
+
+    let batch_revision = tree.bump_revision();
+
     for patch in patches {
-        apply_patch(tree, patch)?;
+        apply_patch(tree, patch, batch_revision)?;
     }
     Ok(())
 }
 
 /// Apply a single patch to the tree.
-fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
+fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Result<(), String> {
     match patch {
         Patch::SetAttrs { id, attrs_raw } => {
             let element = tree
@@ -240,13 +246,15 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
         Patch::InsertSubtree {
             parent_id,
             index,
-            subtree,
+            mut subtree,
         } => {
             // Get the root of the subtree
             let subtree_root_id = subtree
                 .root
                 .clone()
                 .ok_or_else(|| "InsertSubtree: subtree has no root".to_string())?;
+
+            subtree.stamp_all_mounted_at_revision(batch_revision);
 
             // Insert all nodes from subtree into main tree
             for (id, element) in subtree.nodes {
@@ -276,12 +284,14 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch) -> Result<(), String> {
         Patch::InsertNearbySubtree {
             host_id,
             slot,
-            subtree,
+            mut subtree,
         } => {
             let subtree_root_id = subtree
                 .root
                 .clone()
                 .ok_or_else(|| "InsertNearbySubtree: subtree has no root".to_string())?;
+
+            subtree.stamp_all_mounted_at_revision(batch_revision);
 
             for (id, element) in subtree.nodes {
                 tree.nodes.insert(id, element);
@@ -389,7 +399,7 @@ mod tests {
             attrs_raw: Vec::new(),
         };
 
-        apply_patch(&mut tree, patch).unwrap();
+        apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
         assert_eq!(updated.attrs.scroll_x, Some(12.0));
@@ -420,7 +430,7 @@ mod tests {
             attrs_raw: vec![0, 1, 7, 1],
         };
 
-        apply_patch(&mut tree, patch).unwrap();
+        apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
         assert_eq!(updated.attrs.scrollbar_y, Some(true));
@@ -447,10 +457,203 @@ mod tests {
             attrs_raw: Vec::new(),
         };
 
-        apply_patch(&mut tree, patch).unwrap();
+        apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
         assert_eq!(updated.attrs.mouse_over, None);
         assert_eq!(updated.attrs.mouse_over_active, None);
+    }
+
+    #[test]
+    fn test_apply_patches_advances_revision_once_per_batch() {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.nodes.insert(id.clone(), element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: Vec::new(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.revision(), 1);
+    }
+
+    #[test]
+    fn test_insert_subtree_stamps_inserted_nodes_with_batch_revision() {
+        let parent_id = ElementId::from_term_bytes(vec![1]);
+        let child_id = ElementId::from_term_bytes(vec![2]);
+
+        let parent = Element::with_attrs(
+            parent_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+
+        let child = Element::with_attrs(
+            child_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+
+        let mut subtree = ElementTree::new();
+        subtree.root = Some(child_id.clone());
+        subtree.insert(child);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(parent_id.clone());
+        tree.insert(parent);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::InsertSubtree {
+                parent_id: Some(parent_id),
+                index: 0,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        let inserted = tree.get(&child_id).expect("inserted child should exist");
+        assert_eq!(inserted.mounted_at_revision, tree.revision());
+    }
+
+    #[test]
+    fn test_set_attrs_preserves_existing_mount_revision() {
+        let id = ElementId::from_term_bytes(vec![7]);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        element.mounted_at_revision = 4;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: Vec::new(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.get(&id).unwrap().mounted_at_revision, 4);
+    }
+
+    #[test]
+    fn test_set_children_preserves_existing_mount_revisions() {
+        let parent_id = ElementId::from_term_bytes(vec![8]);
+        let first_id = ElementId::from_term_bytes(vec![9]);
+        let second_id = ElementId::from_term_bytes(vec![10]);
+
+        let mut parent = Element::with_attrs(
+            parent_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        parent.children = vec![first_id.clone(), second_id.clone()];
+        parent.mounted_at_revision = 2;
+
+        let mut first = Element::with_attrs(
+            first_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        first.mounted_at_revision = 2;
+
+        let mut second = Element::with_attrs(
+            second_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        second.mounted_at_revision = 3;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(parent_id.clone());
+        tree.insert(parent);
+        tree.insert(first);
+        tree.insert(second);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetChildren {
+                id: parent_id,
+                children: vec![second_id.clone(), first_id.clone()],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.get(&first_id).unwrap().mounted_at_revision, 2);
+        assert_eq!(tree.get(&second_id).unwrap().mounted_at_revision, 3);
+    }
+
+    #[test]
+    fn test_remove_then_reinsert_stamps_new_mount_revision() {
+        let parent_id = ElementId::from_term_bytes(vec![11]);
+        let child_id = ElementId::from_term_bytes(vec![12]);
+
+        let mut parent = Element::with_attrs(
+            parent_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        parent.children = vec![child_id.clone()];
+
+        let mut child = Element::with_attrs(
+            child_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        child.mounted_at_revision = 1;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(parent_id.clone());
+        tree.insert(parent);
+        tree.insert(child);
+        tree.set_revision(1);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::Remove {
+                id: child_id.clone(),
+            }],
+        )
+        .unwrap();
+        let removed_revision = tree.revision();
+
+        let mut subtree = ElementTree::new();
+        subtree.root = Some(child_id.clone());
+        subtree.insert(Element::with_attrs(
+            child_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::InsertSubtree {
+                parent_id: Some(parent_id),
+                index: 0,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        assert!(tree.get(&child_id).unwrap().mounted_at_revision > removed_revision);
     }
 }

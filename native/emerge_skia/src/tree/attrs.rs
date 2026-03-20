@@ -269,6 +269,7 @@ pub struct Attrs {
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
     pub animate: Option<AnimationSpec>,
+    pub animate_enter: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
     /// Runtime-only: computed paragraph text fragments (not decoded from binary).
     pub paragraph_fragments: Option<Vec<TextFragment>>,
@@ -455,6 +456,7 @@ const TAG_VIDEO_TARGET: u8 = 62;
 const TAG_SVG_COLOR: u8 = 63;
 const TAG_SVG_EXPECTED: u8 = 64;
 const TAG_ANIMATE: u8 = 65;
+const TAG_ANIMATE_ENTER: u8 = 66;
 
 // =============================================================================
 // Decoder
@@ -613,6 +615,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         }
         TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
         TAG_ANIMATE => attrs.animate = Some(decode_animation_spec(cursor)?),
+        TAG_ANIMATE_ENTER => attrs.animate_enter = Some(decode_animation_spec(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -1264,6 +1267,39 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_animate_enter() {
+        let mut keyframe_one = vec![0, 1, 35];
+        keyframe_one.extend_from_slice(&0.0_f64.to_be_bytes());
+
+        let mut keyframe_two = vec![0, 1, 35];
+        keyframe_two.extend_from_slice(&1.0_f64.to_be_bytes());
+
+        let mut payload = vec![0, 2];
+        payload.extend_from_slice(&(keyframe_one.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_one);
+        payload.extend_from_slice(&(keyframe_two.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_two);
+        payload.extend_from_slice(&180.0_f64.to_be_bytes());
+        payload.extend_from_slice(&[0, 8, b'e', b'a', b's', b'e', b'_', b'o', b'u', b't']);
+        payload.push(0);
+
+        let mut data = vec![0, 1, 66];
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let animate_enter = attrs
+            .animate_enter
+            .expect("enter animation spec should decode");
+        assert_eq!(animate_enter.keyframes.len(), 2);
+        assert_eq!(animate_enter.keyframes[0].alpha, Some(0.0));
+        assert_eq!(animate_enter.keyframes[1].alpha, Some(1.0));
+        assert_eq!(animate_enter.duration_ms, 180.0);
+        assert!(matches!(animate_enter.curve, AnimationCurve::EaseOut));
+        assert!(matches!(animate_enter.repeat, AnimationRepeat::Once));
+    }
+
+    #[test]
     fn test_decode_mouse_over_attrs() {
         // nested: attr_count=2, font_color=rgb(1,2,3), alpha=0.5
         let nested = vec![0, 2, 17, 0, 1, 2, 3, 35, 0x3F, 0xE0, 0, 0, 0, 0, 0, 0];
@@ -1337,9 +1373,10 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("mouse_over supports decorative attrs only"));
+        assert!(
+            err.to_string()
+                .contains("mouse_over supports decorative attrs only")
+        );
     }
 
     #[test]
@@ -1392,9 +1429,10 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("focused supports decorative attrs only"));
+        assert!(
+            err.to_string()
+                .contains("focused supports decorative attrs only")
+        );
     }
 
     #[test]
@@ -1474,7 +1512,7 @@ mod tests {
         data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
         data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
         data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
-                                                        // color: named "red" -> variant=2, len=3, "red"
+        // color: named "red" -> variant=2, len=3, "red"
         data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
         data.push(0); // inset=false
 
