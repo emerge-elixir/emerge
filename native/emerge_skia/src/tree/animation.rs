@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -36,9 +36,17 @@ pub struct AnimationRuntimeEntry {
     pub started_at: Instant,
 }
 
+#[derive(Clone, Debug)]
+pub struct EnterAnimationRuntimeEntry {
+    pub spec: AnimationSpec,
+    pub started_at: Instant,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AnimationRuntime {
-    entries: HashMap<ElementId, AnimationRuntimeEntry>,
+    animate_entries: HashMap<ElementId, AnimationRuntimeEntry>,
+    enter_entries: HashMap<ElementId, EnterAnimationRuntimeEntry>,
+    last_seen_revision: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,28 +57,54 @@ pub struct AnimationSample {
 
 impl AnimationRuntime {
     pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
-        let live_ids: HashSet<ElementId> = tree
-            .nodes
-            .iter()
-            .filter_map(|(id, element)| {
-                let spec = element.base_attrs.animate.as_ref()?;
-                Some((id.clone(), spec_fingerprint(spec)))
-            })
-            .map(|(id, _)| id)
-            .collect();
-
-        self.entries.retain(|id, _| live_ids.contains(id));
+        self.animate_entries.retain(|id, _| {
+            tree.get(id)
+                .is_some_and(|element| element.base_attrs.animate.is_some())
+        });
+        self.enter_entries.retain(|id, _| tree.get(id).is_some());
 
         for (id, element) in &tree.nodes {
+            if tree.was_mounted_after(id, self.last_seen_revision) {
+                self.animate_entries.remove(id);
+
+                if let Some(spec) = element.base_attrs.animate_enter.as_ref() {
+                    self.enter_entries.insert(
+                        id.clone(),
+                        EnterAnimationRuntimeEntry {
+                            spec: spec.clone(),
+                            started_at,
+                        },
+                    );
+                } else {
+                    self.enter_entries.remove(id);
+                }
+            }
+
+            let enter_active = self.enter_entries.get(id).cloned().is_some_and(|entry| {
+                let sample = sample_enter_animation_spec(&entry, Some(started_at), 1.0);
+                if sample.active {
+                    self.animate_entries.remove(id);
+                    true
+                } else {
+                    self.enter_entries.remove(id);
+                    false
+                }
+            });
+
+            if enter_active {
+                continue;
+            }
+
             let Some(spec) = element.base_attrs.animate.as_ref() else {
+                self.animate_entries.remove(id);
                 continue;
             };
             let spec_hash = spec_fingerprint(spec);
 
-            match self.entries.get(id) {
+            match self.animate_entries.get(id) {
                 Some(entry) if entry.spec_hash == spec_hash => {}
                 _ => {
-                    self.entries.insert(
+                    self.animate_entries.insert(
                         id.clone(),
                         AnimationRuntimeEntry {
                             spec_hash,
@@ -80,14 +114,20 @@ impl AnimationRuntime {
                 }
             }
         }
+
+        self.last_seen_revision = tree.revision();
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.animate_entries.is_empty() && self.enter_entries.is_empty()
     }
 
-    pub fn entry(&self, id: &ElementId) -> Option<&AnimationRuntimeEntry> {
-        self.entries.get(id)
+    pub fn animate_entry(&self, id: &ElementId) -> Option<&AnimationRuntimeEntry> {
+        self.animate_entries.get(id)
+    }
+
+    pub fn enter_entry(&self, id: &ElementId) -> Option<&EnterAnimationRuntimeEntry> {
+        self.enter_entries.get(id)
     }
 }
 
@@ -114,20 +154,44 @@ pub fn apply_animation_overlays(
     tree: &mut ElementTree,
     runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
+    scale: f32,
 ) -> bool {
     tree.nodes.values_mut().fold(false, |active_any, element| {
+        if let Some(sample) = runtime
+            .and_then(|state| state.enter_entry(&element.id))
+            .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
+            .filter(|sample| sample.active)
+        {
+            apply_sample_attrs(&mut element.attrs, &sample.attrs);
+            return active_any || sample.active;
+        }
+
         let Some(spec) = element.attrs.animate.as_ref() else {
             return active_any;
         };
 
         let sample = sample_animation_spec(
             spec,
-            runtime.and_then(|state| state.entry(&element.id)),
+            runtime.and_then(|state| state.animate_entry(&element.id)),
             sample_time,
         );
         apply_sample_attrs(&mut element.attrs, &sample.attrs);
         active_any || sample.active
     })
+}
+
+fn sample_enter_animation_spec(
+    entry: &EnterAnimationRuntimeEntry,
+    sample_time: Option<Instant>,
+    scale: f64,
+) -> AnimationSample {
+    let scaled_spec = scale_animation_spec(&entry.spec, scale);
+    let runtime_entry = AnimationRuntimeEntry {
+        spec_hash: 0,
+        started_at: entry.started_at,
+    };
+
+    sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
 }
 
 pub fn sample_animation_spec(
@@ -724,6 +788,58 @@ fn scale_border_width(value: &BorderWidth, scale: f64) -> BorderWidth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::element::{Element, ElementKind};
+
+    fn move_x_spec(
+        from_x: f64,
+        to_x: f64,
+        duration_ms: f64,
+        repeat: AnimationRepeat,
+    ) -> AnimationSpec {
+        let mut from = Attrs::default();
+        from.move_x = Some(from_x);
+
+        let mut to = Attrs::default();
+        to.move_x = Some(to_x);
+
+        AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms,
+            curve: AnimationCurve::Linear,
+            repeat,
+        }
+    }
+
+    fn alpha_spec(from_alpha: f64, to_alpha: f64, duration_ms: f64) -> AnimationSpec {
+        let mut from = Attrs::default();
+        from.alpha = Some(from_alpha);
+
+        let mut to = Attrs::default();
+        to.alpha = Some(to_alpha);
+
+        AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        }
+    }
+
+    fn tree_with_element(
+        attrs: Attrs,
+        tree_revision: u64,
+        mounted_at_revision: u64,
+    ) -> (ElementTree, ElementId) {
+        let id = ElementId::from_term_bytes(vec![1]);
+        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        element.mounted_at_revision = mounted_at_revision;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+        tree.set_revision(tree_revision);
+        (tree, id)
+    }
 
     #[test]
     fn sample_animation_spec_loops_with_time() {
@@ -783,5 +899,113 @@ mod tests {
 
         assert_eq!(sample.attrs.alpha, Some(1.0));
         assert!(!sample.active);
+    }
+
+    #[test]
+    fn sync_with_tree_starts_enter_animation_for_newly_mounted_nodes() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        let (tree, id) = tree_with_element(attrs, 1, 1);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+
+        assert!(runtime.enter_entry(&id).is_some());
+        assert!(runtime.animate_entry(&id).is_none());
+        assert_eq!(runtime.last_seen_revision, 1);
+    }
+
+    #[test]
+    fn sync_with_tree_does_not_start_enter_when_attr_is_added_later() {
+        let (mut tree, id) = tree_with_element(Attrs::default(), 1, 1);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+
+        tree.set_revision(2);
+        let element = tree.get_mut(&id).expect("element should exist");
+        element.base_attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+
+        runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(16));
+
+        assert!(runtime.enter_entry(&id).is_none());
+    }
+
+    #[test]
+    fn enter_animation_captures_spec_at_mount_time() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once));
+        let (mut tree, id) = tree_with_element(attrs, 1, 1);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+
+        let element = tree.get_mut(&id).expect("element should exist");
+        element.base_attrs.animate_enter =
+            Some(move_x_spec(0.0, 200.0, 100.0, AnimationRepeat::Once));
+        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+
+        let sample = sample_enter_animation_spec(
+            runtime.enter_entry(&id).expect("enter entry should exist"),
+            Some(start + std::time::Duration::from_millis(50)),
+            1.0,
+        );
+
+        assert_eq!(sample.attrs.move_x, Some(50.0));
+    }
+
+    #[test]
+    fn completed_enter_hands_off_to_base_attrs_when_no_animate_is_present() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once));
+        let (mut tree, id) = tree_with_element(attrs, 1, 1);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+        runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(150));
+
+        assert!(runtime.enter_entry(&id).is_none());
+        assert!(runtime.animate_entry(&id).is_none());
+
+        let active = apply_animation_overlays(
+            &mut tree,
+            Some(&runtime),
+            Some(start + std::time::Duration::from_millis(150)),
+            1.0,
+        );
+
+        assert!(!active);
+        assert_eq!(tree.get(&id).unwrap().attrs.move_x, None);
+    }
+
+    #[test]
+    fn completed_enter_starts_regular_animation_from_zero_progress() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        attrs.animate = Some(move_x_spec(10.0, 30.0, 100.0, AnimationRepeat::Loop));
+        let (mut tree, id) = tree_with_element(attrs, 1, 1);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+        runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(150));
+
+        assert!(runtime.enter_entry(&id).is_none());
+        assert!(runtime.animate_entry(&id).is_some());
+
+        let active = apply_animation_overlays(
+            &mut tree,
+            Some(&runtime),
+            Some(start + std::time::Duration::from_millis(150)),
+            1.0,
+        );
+
+        assert!(active);
+        assert_eq!(tree.get(&id).unwrap().attrs.move_x, Some(10.0));
     }
 }

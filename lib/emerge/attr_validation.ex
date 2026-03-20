@@ -26,17 +26,20 @@ defmodule Emerge.AttrValidation do
           "#{style_key} must be a list/map of decorative attributes, got: #{inspect(other)}"
   end
 
-  def normalize_animation!(%{} = spec) do
+  def normalize_animation!(spec), do: normalize_animation!(:animate, spec)
+
+  def normalize_animation!(owner, %{} = spec) when owner in [:animate, :animate_enter] do
+    owner_name = Atom.to_string(owner)
     keyframes = Map.get(spec, :keyframes)
     duration = Map.get(spec, :duration)
     curve = Map.get(spec, :curve)
     repeat = Map.get(spec, :repeat, :once)
 
-    validate_animation_duration!(duration)
-    validate_animation_curve!(curve)
-    validate_animation_repeat!(repeat)
+    validate_animation_duration!(owner_name, duration)
+    validate_animation_curve!(owner_name, curve)
+    validate_animation_repeat!(owner_name, repeat)
 
-    normalized_keyframes = normalize_animation_keyframes!(keyframes)
+    normalized_keyframes = normalize_animation_keyframes!(owner_name, keyframes)
 
     %{
       keyframes: normalized_keyframes,
@@ -46,9 +49,11 @@ defmodule Emerge.AttrValidation do
     }
   end
 
-  def normalize_animation!(other) do
+  def normalize_animation!(owner, other) when owner in [:animate, :animate_enter] do
+    owner_name = Atom.to_string(owner)
+
     raise ArgumentError,
-          "animate expects a map with :keyframes, :duration, :curve, and optional :repeat, got: #{inspect(other)}"
+          "#{owner_name} expects a map with :keyframes, :duration, :curve, and optional :repeat, got: #{inspect(other)}"
   end
 
   def normalize_decorative_value!(attrs_owner, :background, value) do
@@ -106,21 +111,23 @@ defmodule Emerge.AttrValidation do
           "#{style_key}/1 expects decorative attributes as {key, value} tuples, got: #{inspect(other)}"
   end
 
-  defp normalize_animation_keyframes!(keyframes) when is_list(keyframes) do
+  defp normalize_animation_keyframes!(owner_name, keyframes) when is_list(keyframes) do
     normalized =
       keyframes
       |> Enum.with_index(1)
-      |> Enum.map(fn {keyframe, index} -> normalize_animation_keyframe!(keyframe, index) end)
+      |> Enum.map(fn {keyframe, index} ->
+        normalize_animation_keyframe!(owner_name, keyframe, index)
+      end)
 
     if length(normalized) < 2 do
-      raise ArgumentError, "animate expects at least 2 keyframes"
+      raise ArgumentError, "#{owner_name} expects at least 2 keyframes"
     end
 
     [first | rest] = normalized
     first_keys = first |> Map.keys() |> MapSet.new()
 
     if MapSet.size(first_keys) == 0 do
-      raise ArgumentError, "animate keyframes must not be empty"
+      raise ArgumentError, "#{owner_name} keyframes must not be empty"
     end
 
     Enum.with_index(rest, 2)
@@ -129,39 +136,45 @@ defmodule Emerge.AttrValidation do
 
       if key_set != first_keys do
         raise ArgumentError,
-              "animate keyframe #{index} must use the same attribute set as keyframe 1"
+              "#{owner_name} keyframe #{index} must use the same attribute set as keyframe 1"
       end
 
       Enum.each(first, fn {key, first_value} ->
-        validate_animation_compatibility!(key, first_value, Map.fetch!(keyframe, key), index)
+        validate_animation_compatibility!(
+          owner_name,
+          key,
+          first_value,
+          Map.fetch!(keyframe, key),
+          index
+        )
       end)
     end)
 
     normalized
   end
 
-  defp normalize_animation_keyframes!(other) do
+  defp normalize_animation_keyframes!(owner_name, other) do
     raise ArgumentError,
-          "animate expects :keyframes to be a list of keyframe attr lists/maps, got: #{inspect(other)}"
+          "#{owner_name} expects :keyframes to be a list of keyframe attr lists/maps, got: #{inspect(other)}"
   end
 
-  defp normalize_animation_keyframe!(attrs, index) when is_list(attrs) do
+  defp normalize_animation_keyframe!(owner_name, attrs, index) when is_list(attrs) do
     Enum.reduce(attrs, %{}, fn attr, acc ->
-      {key, value} = normalize_animation_attr!("animate keyframe #{index}", attr)
+      {key, value} = normalize_animation_attr!("#{owner_name} keyframe #{index}", attr)
       put_animation_attr(acc, key, value)
     end)
   end
 
-  defp normalize_animation_keyframe!(attrs, index) when is_map(attrs) do
+  defp normalize_animation_keyframe!(owner_name, attrs, index) when is_map(attrs) do
     Enum.reduce(attrs, %{}, fn {key, value}, acc ->
-      {key, value} = normalize_animation_attr!("animate keyframe #{index}", {key, value})
+      {key, value} = normalize_animation_attr!("#{owner_name} keyframe #{index}", {key, value})
       put_animation_attr(acc, key, value)
     end)
   end
 
-  defp normalize_animation_keyframe!(other, index) do
+  defp normalize_animation_keyframe!(owner_name, other, index) do
     raise ArgumentError,
-          "animate keyframe #{index} must be a list/map of animatable attrs, got: #{inspect(other)}"
+          "#{owner_name} keyframe #{index} must be a list/map of animatable attrs, got: #{inspect(other)}"
   end
 
   defp normalize_animation_attr!(attrs_owner, {key, value}) when is_atom(key) do
@@ -219,85 +232,99 @@ defmodule Emerge.AttrValidation do
 
   defp put_animation_attr(acc, key, value), do: Map.put(acc, key, value)
 
-  defp validate_animation_compatibility!(:width, first, other, index),
-    do: validate_length_compatibility!(:width, first, other, index)
+  defp validate_animation_compatibility!(owner_name, :width, first, other, index),
+    do: validate_length_compatibility!(owner_name, :width, first, other, index)
 
-  defp validate_animation_compatibility!(:height, first, other, index),
-    do: validate_length_compatibility!(:height, first, other, index)
+  defp validate_animation_compatibility!(owner_name, :height, first, other, index),
+    do: validate_length_compatibility!(owner_name, :height, first, other, index)
 
-  defp validate_animation_compatibility!(:padding, first, other, index) do
+  defp validate_animation_compatibility!(owner_name, :padding, first, other, index) do
     if padding_shape(first) != padding_shape(other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep :padding in the same variant as keyframe 1"
+            "#{owner_name} keyframe #{index} must keep :padding in the same variant as keyframe 1"
     end
   end
 
-  defp validate_animation_compatibility!(:spacing_xy, {_x1, _y1}, {_x2, _y2}, _index), do: :ok
+  defp validate_animation_compatibility!(
+         _owner_name,
+         :spacing_xy,
+         {_x1, _y1},
+         {_x2, _y2},
+         _index
+       ),
+       do: :ok
 
-  defp validate_animation_compatibility!(:spacing_xy, _first, _other, index),
-    do: raise(ArgumentError, "animate keyframe #{index} must keep :spacing_xy as a {x, y} tuple")
+  defp validate_animation_compatibility!(owner_name, :spacing_xy, _first, _other, index),
+    do:
+      raise(
+        ArgumentError,
+        "#{owner_name} keyframe #{index} must keep :spacing_xy as a {x, y} tuple"
+      )
 
-  defp validate_animation_compatibility!(:border_radius, first, other, index) do
+  defp validate_animation_compatibility!(owner_name, :border_radius, first, other, index) do
     if radius_shape(first) != radius_shape(other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep :border_radius in the same variant as keyframe 1"
+            "#{owner_name} keyframe #{index} must keep :border_radius in the same variant as keyframe 1"
     end
   end
 
-  defp validate_animation_compatibility!(:border_width, first, other, index) do
+  defp validate_animation_compatibility!(owner_name, :border_width, first, other, index) do
     if border_width_shape(first) != border_width_shape(other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep :border_width in the same variant as keyframe 1"
+            "#{owner_name} keyframe #{index} must keep :border_width in the same variant as keyframe 1"
     end
   end
 
-  defp validate_animation_compatibility!(:background, first, other, index) do
+  defp validate_animation_compatibility!(owner_name, :background, first, other, index) do
     if !compatible_background?(first, other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep :background in a compatible variant with keyframe 1"
+            "#{owner_name} keyframe #{index} must keep :background in a compatible variant with keyframe 1"
     end
   end
 
-  defp validate_animation_compatibility!(:box_shadow, first, other, index) do
+  defp validate_animation_compatibility!(owner_name, :box_shadow, first, other, index) do
     if length(first) != length(other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep :box_shadow list length the same as keyframe 1"
+            "#{owner_name} keyframe #{index} must keep :box_shadow list length the same as keyframe 1"
     end
   end
 
-  defp validate_animation_compatibility!(_key, _first, _other, _index), do: :ok
+  defp validate_animation_compatibility!(_owner_name, _key, _first, _other, _index), do: :ok
 
-  defp validate_animation_duration!(duration) when is_number(duration) and duration > 0, do: :ok
+  defp validate_animation_duration!(_owner_name, duration)
+       when is_number(duration) and duration > 0,
+       do: :ok
 
-  defp validate_animation_duration!(duration) do
+  defp validate_animation_duration!(owner_name, duration) do
     raise ArgumentError,
-          "animate expects :duration to be a positive number of milliseconds, got: #{inspect(duration)}"
+          "#{owner_name} expects :duration to be a positive number of milliseconds, got: #{inspect(duration)}"
   end
 
-  defp validate_animation_curve!(curve)
+  defp validate_animation_curve!(_owner_name, curve)
        when curve in [:linear, :ease_in, :ease_out, :ease_in_out],
        do: :ok
 
-  defp validate_animation_curve!(curve) do
+  defp validate_animation_curve!(owner_name, curve) do
     raise ArgumentError,
-          "animate expects :curve to be :linear, :ease_in, :ease_out, or :ease_in_out, got: #{inspect(curve)}"
+          "#{owner_name} expects :curve to be :linear, :ease_in, :ease_out, or :ease_in_out, got: #{inspect(curve)}"
   end
 
-  defp validate_animation_repeat!(:once), do: :ok
-  defp validate_animation_repeat!(:loop), do: :ok
+  defp validate_animation_repeat!(_owner_name, :once), do: :ok
+  defp validate_animation_repeat!(_owner_name, :loop), do: :ok
 
-  defp validate_animation_repeat!({:times, count}) when is_integer(count) and count > 0,
-    do: :ok
+  defp validate_animation_repeat!(_owner_name, {:times, count})
+       when is_integer(count) and count > 0,
+       do: :ok
 
-  defp validate_animation_repeat!(repeat) do
+  defp validate_animation_repeat!(owner_name, repeat) do
     raise ArgumentError,
-          "animate expects :repeat to be :once, :loop, or {:times, positive_integer}, got: #{inspect(repeat)}"
+          "#{owner_name} expects :repeat to be :once, :loop, or {:times, positive_integer}, got: #{inspect(repeat)}"
   end
 
-  defp validate_length_compatibility!(key, first, other, index) do
+  defp validate_length_compatibility!(owner_name, key, first, other, index) do
     if !compatible_length?(first, other) do
       raise ArgumentError,
-            "animate keyframe #{index} must keep #{inspect(key)} in the same length variant as keyframe 1"
+            "#{owner_name} keyframe #{index} must keep #{inspect(key)} in the same length variant as keyframe 1"
     end
   end
 
