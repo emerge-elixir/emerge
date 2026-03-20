@@ -159,6 +159,7 @@ end
 
 Process.put(:clock_time, clock_now.())
 Process.put(:hover_manual_active, false)
+Process.put(:animation_shelf_open, false)
 Process.put(:demo_input_value, "quick brown fox")
 Process.put(:demo_input_preedit, nil)
 Process.put(:demo_input_preedit_cursor, nil)
@@ -1844,7 +1845,15 @@ defmodule Demo do
           [:mouse_down, :mouse_up],
           Color.color_rgb(86, 104, 78)
         )
-      ])
+      ]),
+      section_title("Enter Animation"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "This shelf is conditionally inserted on click. It runs animate_enter only when freshly mounted, then stays put until removed."
+        )
+      ),
+      enter_shelf_showcase()
     ])
   end
 
@@ -3951,6 +3960,22 @@ defmodule Demo do
   end
 
   defp process_event(
+         {:demo_event, :animation_shelf, :toggle},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:animation_shelf_open, false)
+    open? = !previous
+    Process.put(:animation_shelf_open, open?)
+
+    entry = if open?, do: "Shelf: opened", else: "Shelf: closed"
+    new_log = Enum.take([entry | event_log], 20)
+    changed = previous != open? or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
          {:demo_event, :hover_manual, hover_event},
          _state,
          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
@@ -4405,6 +4430,182 @@ defmodule Demo do
           text(transform_note)
         )
       ])
+    )
+  end
+
+  defp enter_shelf_showcase() do
+    shelf_open = Process.get(:animation_shelf_open, false)
+    toggle_label = if shelf_open, do: "Close shelf", else: "Open shelf"
+    status_label = if shelf_open, do: "Mounted", else: "Hidden"
+
+    column([width(fill()), spacing(8)], [
+      el([Font.size(13), Font.color(@light_text)], text("Click-inserted side shelf")),
+      el(
+        [
+          width(fill()),
+          padding(12),
+          Background.color(Color.color_rgb(44, 44, 66)),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          row([width(fill()), spacing(10), align_bottom()], [
+            el(
+              [width(fill()), Font.size(11), Font.color(@dim_text)],
+              text(
+                "Open the shelf to remount it. Closing removes the node; reopening runs animate_enter again."
+              )
+            ),
+            el(
+              [
+                padding_xy(8, 6),
+                Background.color(Color.color_rgb(56, 60, 86)),
+                Border.rounded(999),
+                Font.size(10),
+                Font.color(Color.color_rgb(216, 222, 242))
+              ],
+              text(status_label)
+            ),
+            Emerge.UI.Input.button(
+              [
+                padding_xy(12, 8),
+                Font.size(12),
+                Font.color(Color.color_rgb(238, 242, 252)),
+                Background.color(Color.color_rgb(66, 84, 146)),
+                Border.rounded(9),
+                Border.width(1),
+                Border.color(Color.color_rgb(150, 176, 244)),
+                on_press({self(), {:demo_event, :animation_shelf, :toggle}}),
+                mouse_over([
+                  Background.color(Color.color_rgb(78, 98, 168)),
+                  Border.color(Color.color_rgb(176, 198, 252))
+                ]),
+                mouse_down([
+                  Background.color(Color.color_rgb(58, 74, 128)),
+                  Border.color(Color.color_rgb(184, 198, 236)),
+                  move_y(1)
+                ])
+              ],
+              toggle_label
+            )
+          ]),
+          el(
+            [
+              width(fill()),
+              height(px(244)),
+              padding(14),
+              Background.color(Color.color_rgb(32, 35, 52)),
+              Border.rounded(14),
+              Border.width(1),
+              Border.color(Color.color_rgb(86, 96, 132))
+            ],
+            row(
+              [width(fill()), height(fill()), spacing(12), align_top()],
+              [animation_shelf_workspace()] ++ animation_shelf_panel(shelf_open)
+            )
+          ),
+          el(
+            [Font.size(10), Font.color(Color.color_rgb(204, 214, 236))],
+            text("animate_enter(width + alpha + move_x, 260ms, :ease_out)")
+          )
+        ])
+      )
+    ])
+  end
+
+  defp animation_shelf_workspace() do
+    el(
+      [
+        key(:animation_shelf_workspace),
+        width(fill()),
+        height(fill()),
+        padding(16),
+        spacing(12),
+        Background.color(Color.color_rgb(48, 53, 76)),
+        Border.rounded(12)
+      ],
+      column([spacing(10)], [
+        el([Font.size(15), Font.color(:white)], text("Workbench")),
+        el(
+          [Font.size(11), Font.color(Color.color_rgb(210, 216, 236))],
+          text("The main surface stays mounted. Only the shelf is inserted and removed.")
+        ),
+        row([width(fill()), spacing(8)], [
+          info_pill("Host stays stable", Color.color_rgb(82, 102, 156)),
+          info_pill("Shelf remounts", Color.color_rgb(96, 88, 142))
+        ]),
+        el(
+          [
+            width(fill()),
+            height(fill()),
+            padding(12),
+            Background.color(Color.color_rgba(255, 255, 255, 14 / 255)),
+            Border.rounded(10),
+            Border.width(1),
+            Border.color(Color.color_rgba(216, 224, 246, 70 / 255))
+          ],
+          column([spacing(8)], [
+            el([Font.size(12), Font.color(Color.color_rgb(232, 236, 248))], text("Canvas area")),
+            el(
+              [Font.size(10), Font.color(Color.color_rgb(194, 204, 228))],
+              text("This row layout widens when the side shelf is mounted.")
+            )
+          ])
+        )
+      ])
+    )
+  end
+
+  defp animation_shelf_panel(true) do
+    [
+      column(
+        [
+          key(:animation_shelf_panel),
+          width(px(176)),
+          height(fill()),
+          padding(14),
+          spacing(10),
+          alpha(1.0),
+          move_x(0),
+          Background.color(Color.color_rgb(86, 66, 124)),
+          Border.rounded(12),
+          Border.width(1),
+          Border.color(Color.color_rgb(196, 176, 236)),
+          animate_enter(
+            [
+              [width(px(28)), alpha(0.0), move_x(16)],
+              [width(px(176)), alpha(1.0), move_x(0)]
+            ],
+            260,
+            :ease_out
+          )
+        ],
+        [
+          el([Font.size(14), Font.color(:white)], text("Shelf")),
+          el(
+            [Font.size(10), Font.color(Color.color_rgb(234, 226, 248))],
+            text("Fresh mount only")
+          ),
+          info_pill("Activity", Color.color_rgb(112, 90, 154)),
+          info_pill("Filters", Color.color_rgb(98, 80, 144)),
+          info_pill("Notes", Color.color_rgb(86, 72, 136))
+        ]
+      )
+    ]
+  end
+
+  defp animation_shelf_panel(false), do: []
+
+  defp info_pill(label, bg_color) do
+    el(
+      [
+        width(fill()),
+        padding_xy(10, 8),
+        Background.color(bg_color),
+        Border.rounded(999),
+        Font.size(11),
+        Font.color(:white)
+      ],
+      text(label)
     )
   end
 
