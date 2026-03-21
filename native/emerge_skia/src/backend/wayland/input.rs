@@ -74,8 +74,8 @@ pub(super) fn pointer_scroll_event(
 
     if horizontal.discrete != 0 || vertical.discrete != 0 {
         return Some(InputEvent::CursorScrollLines {
-            dx: horizontal.discrete as f32,
-            dy: vertical.discrete as f32,
+            dx: -(horizontal.discrete as f32),
+            dy: -(vertical.discrete as f32),
             x,
             y,
         });
@@ -83,8 +83,8 @@ pub(super) fn pointer_scroll_event(
 
     if horizontal.absolute != 0.0 || vertical.absolute != 0.0 {
         return Some(InputEvent::CursorScroll {
-            dx: horizontal.absolute as f32,
-            dy: vertical.absolute as f32,
+            dx: -(horizontal.absolute as f32),
+            dy: -(vertical.absolute as f32),
             x,
             y,
         });
@@ -131,8 +131,8 @@ mod tests {
         assert!(matches!(
             event,
             InputEvent::CursorScrollLines { dx, dy, x, y }
-                if (dx - 2.0).abs() < f32::EPSILON
-                    && (dy + 3.0).abs() < f32::EPSILON
+                if (dx + 2.0).abs() < f32::EPSILON
+                    && (dy - 3.0).abs() < f32::EPSILON
                     && (x - 12.0).abs() < f32::EPSILON
                     && (y - 18.0).abs() < f32::EPSILON
         ));
@@ -158,8 +158,8 @@ mod tests {
         assert!(matches!(
             event,
             InputEvent::CursorScroll { dx, dy, x, y }
-                if (dx - 4.5).abs() < f32::EPSILON
-                    && (dy + 7.25).abs() < f32::EPSILON
+                if (dx + 4.5).abs() < f32::EPSILON
+                    && (dy - 7.25).abs() < f32::EPSILON
                     && (x - 3.0).abs() < f32::EPSILON
                     && (y - 5.0).abs() < f32::EPSILON
         ));
