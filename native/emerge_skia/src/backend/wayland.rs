@@ -1,11 +1,9 @@
-//! Wayland/X11 backend using winit and glutin.
-//!
-//! This backend creates a window using winit and renders to it via OpenGL/Skia.
+//! Wayland backend built on smithay-client-toolkit.
+
+#[path = "wayland/egl.rs"]
+mod egl;
 
 use std::{
-    env,
-    ffi::CString,
-    num::NonZeroU32,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,185 +13,259 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
-
-use glutin::{
-    config::{ConfigTemplateBuilder, GlConfig},
-    context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext},
-    display::{GetGlDisplay, GlDisplay},
-    prelude::GlSurface,
-    surface::{Surface as GlutinSurface, SurfaceAttributesBuilder, WindowSurface},
+use glutin::prelude::GlSurface;
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    delegate_compositor, delegate_output, delegate_registry, delegate_xdg_shell,
+    delegate_xdg_window,
+    output::{OutputHandler, OutputState},
+    reexports::{
+        calloop::{self, EventLoop},
+        calloop_wayland_source::WaylandSource,
+    },
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    shell::{
+        WaylandSurface,
+        xdg::{
+            XdgShell,
+            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
+        },
+    },
 };
-use glutin_winit::DisplayBuilder;
-use raw_window_handle::HasWindowHandle;
-use skia_safe::gpu::gl::FramebufferInfo;
-use winit::{
-    application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
-    event::{ElementState, Ime, MouseButton, WindowEvent},
-    event_loop::{EventLoop, EventLoopProxy},
-    keyboard::{Key, NamedKey},
-    window::{Window, WindowAttributes},
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle,
+    globals::registry_queue_init,
+    protocol::{wl_output, wl_surface},
+};
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{
+        wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        wp_fractional_scale_v1::{Event as FractionalScaleEvent, WpFractionalScaleV1},
+    },
+    viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
-use crate::actors::{EventMsg, RenderMsg, TreeMsg};
-use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+use crate::{
+    actors::{EventMsg, RenderMsg, TreeMsg},
+    backend::wake::{
+        BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
+    },
+    backend::wayland_config::WaylandConfig,
+    input::InputEvent,
+    renderer::RenderState,
+    video::VideoRegistry,
 };
-use crate::renderer::{RenderState, Renderer};
-use crate::video::{VideoImportContext, VideoRegistry};
 
-// ============================================================================
-// Configuration
-// ============================================================================
+use self::egl::{GlEnv, create_gl_env, resize_gl_env};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FrameCallbackState {
+    #[default]
+    None,
+    Requested,
+    Received,
+}
 
 #[derive(Clone, Debug)]
-pub struct WaylandConfig {
-    pub title: String,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Default for WaylandConfig {
-    fn default() -> Self {
-        Self {
-            title: "Emerge".to_string(),
-            width: 800,
-            height: 600,
-        }
-    }
-}
-
-// ============================================================================
-// Events
-// ============================================================================
-
-#[derive(Debug)]
-pub enum UserEvent {
+enum WakeAction {
     Stop,
     Redraw,
     VideoFrameAvailable,
 }
 
-pub struct WaylandStartupInfo {
-    pub proxy: EventLoopProxy<UserEvent>,
-    pub prime_video_supported: bool,
+#[derive(Clone)]
+struct WaylandWake {
+    tx: calloop::channel::Sender<WakeAction>,
 }
 
-pub type WaylandStartupResult = Result<WaylandStartupInfo, String>;
+impl BackendWake for WaylandWake {
+    fn request_stop(&self) {
+        let _ = self.tx.send(WakeAction::Stop);
+    }
 
-// ============================================================================
-// GL Environment
-// ============================================================================
+    fn request_redraw(&self) {
+        let _ = self.tx.send(WakeAction::Redraw);
+    }
 
-struct GlEnv {
-    gl_surface: GlutinSurface<WindowSurface>,
-    gl_context: PossiblyCurrentContext,
-    window: Window,
+    fn notify_video_frame(&self) {
+        let _ = self.tx.send(WakeAction::VideoFrameAvailable);
+    }
 }
 
-// ============================================================================
-// Application
-// ============================================================================
+struct ProtocolHandles {
+    _compositor_state: CompositorState,
+    _viewporter: Option<WpViewporter>,
+    viewport: Option<WpViewport>,
+    _fractional_scale: Option<WpFractionalScaleV1>,
+}
 
-struct App {
-    env: Option<GlEnv>,
-    renderer: Option<Renderer>,
-    running: bool,
-    running_flag: Arc<AtomicBool>,
-    render_state: RenderState,
-    render_rx: Receiver<RenderMsg>,
-    tree_tx: CrossbeamSender<TreeMsg>,
-    event_tx: crossbeam_channel::Sender<EventMsg>,
-    window_size: (u32, u32),
-    current_mods: u8,
-    cursor_pos: (f32, f32),
-    is_occluded: bool,
-    pending_redraw: bool,
+impl ProtocolHandles {
+    fn new(
+        globals: &wayland_client::globals::GlobalList,
+        qh: &QueueHandle<WaylandApp>,
+        compositor_state: CompositorState,
+        window: &Window,
+    ) -> Self {
+        let viewporter = globals.bind(qh, 1..=1, ()).ok();
+        let viewport = viewporter
+            .as_ref()
+            .map(|viewporter: &WpViewporter| viewporter.get_viewport(window.wl_surface(), qh, ()));
+        let fractional_scale_manager = globals.bind(qh, 1..=1, ()).ok();
+        let fractional_scale =
+            fractional_scale_manager
+                .as_ref()
+                .and_then(|manager: &WpFractionalScaleManagerV1| {
+                    viewport.as_ref().map(|_| {
+                        manager.get_fractional_scale(
+                            window.wl_surface(),
+                            qh,
+                            FractionalScaleData {
+                                surface: window.wl_surface().clone(),
+                            },
+                        )
+                    })
+                });
+
+        Self {
+            _compositor_state: compositor_state,
+            _viewporter: viewporter,
+            viewport,
+            _fractional_scale: fractional_scale,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SurfaceGeometry {
+    logical_size: (u32, u32),
+    buffer_size: (u32, u32),
+    integer_scale_factor: u32,
+    preferred_fractional_scale: Option<f32>,
+    scale_factor: f32,
+}
+
+impl SurfaceGeometry {
+    fn new(config: &WaylandConfig) -> Self {
+        let logical_size = (config.width.max(1), config.height.max(1));
+
+        Self {
+            logical_size,
+            buffer_size: logical_size,
+            integer_scale_factor: 1,
+            preferred_fractional_scale: None,
+            scale_factor: 1.0,
+        }
+    }
+
+    fn set_logical_size(&mut self, width: u32, height: u32) -> bool {
+        let next_size = (width.max(1), height.max(1));
+
+        if self.logical_size == next_size {
+            return false;
+        }
+
+        self.logical_size = next_size;
+        true
+    }
+
+    fn set_integer_scale_factor(&mut self, scale_factor: i32) {
+        self.integer_scale_factor = scale_factor.max(1) as u32;
+    }
+
+    fn set_preferred_fractional_scale(&mut self, scale_factor: Option<f32>) {
+        self.preferred_fractional_scale = scale_factor;
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    fn apply_to_surface(&mut self, window: &Window, viewport: Option<&WpViewport>) {
+        let scale_factor = self.current_scale_factor();
+        let fractional_active = self.preferred_fractional_scale.is_some() && viewport.is_some();
+
+        if fractional_active {
+            let _ = window.set_buffer_scale(1);
+
+            if let Some(viewport) = viewport {
+                viewport.set_destination(self.logical_size.0 as i32, self.logical_size.1 as i32);
+            }
+        } else {
+            let _ = window.set_buffer_scale(self.integer_scale_factor.max(1));
+
+            if let Some(viewport) = viewport {
+                viewport.set_destination(-1, -1);
+            }
+        }
+
+        self.scale_factor = scale_factor;
+        self.buffer_size = Self::buffer_dimensions(self.logical_size, scale_factor);
+    }
+
+    fn current_scale_factor(&self) -> f32 {
+        self.preferred_fractional_scale
+            .unwrap_or(self.integer_scale_factor.max(1) as f32)
+            .max(1.0)
+    }
+
+    fn buffer_dimensions(logical_size: (u32, u32), scale_factor: f32) -> (u32, u32) {
+        let width = ((logical_size.0.max(1) as f64) * scale_factor as f64).round() as u32;
+        let height = ((logical_size.1.max(1) as f64) * scale_factor as f64).round() as u32;
+
+        (width.max(1), height.max(1))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PresentState {
+    configured: bool,
+    redraw_requested: bool,
+    frame_callback_state: FrameCallbackState,
     last_present_at: Option<Instant>,
     estimated_frame_interval: Duration,
-    ime_enabled: bool,
-    ime_cursor_area: Option<(f32, f32, f32, f32)>,
-    ime_preedit_active: bool,
-    text_commit_diag: bool,
-    video_registry: Arc<VideoRegistry>,
-    video_import: Option<VideoImportContext>,
 }
 
-impl App {
-    fn can_present(&self) -> bool {
-        Self::present_allowed(self.running, self.is_occluded)
+impl Default for PresentState {
+    fn default() -> Self {
+        Self {
+            configured: false,
+            redraw_requested: false,
+            frame_callback_state: FrameCallbackState::None,
+            last_present_at: None,
+            estimated_frame_interval: Duration::from_millis(16),
+        }
     }
+}
 
-    fn present_allowed(running: bool, is_occluded: bool) -> bool {
-        running && !is_occluded
-    }
-
+impl PresentState {
     fn queue_redraw(&mut self) {
-        self.pending_redraw = true;
-        if self.can_present()
-            && let Some(env) = &self.env
-        {
-            env.window.request_redraw();
+        self.redraw_requested = true;
+    }
+
+    fn can_draw(&self, exit: bool) -> bool {
+        !exit
+            && self.configured
+            && self.redraw_requested
+            && self.frame_callback_state != FrameCallbackState::Requested
+    }
+
+    fn request_frame_callback(&mut self, window: &Window, qh: &QueueHandle<WaylandApp>) {
+        match self.frame_callback_state {
+            FrameCallbackState::None | FrameCallbackState::Received => {
+                window.wl_surface().frame(qh, window.wl_surface().clone());
+                self.frame_callback_state = FrameCallbackState::Requested;
+            }
+            FrameCallbackState::Requested => {}
         }
     }
 
-    fn flush_render_updates(&mut self) {
-        if self.running && self.drain_render_commands() {
-            self.queue_redraw();
-        }
+    fn frame_callback_received(&mut self) {
+        self.frame_callback_state = FrameCallbackState::Received;
     }
 
-    fn handle_resize(&mut self, physical_size: winit::dpi::PhysicalSize<u32>) {
-        if !self.running {
-            return;
-        }
-
-        let (w, h): (u32, u32) = physical_size.into();
-        self.window_size = (w, h);
-
-        if let (Some(env), Some(renderer)) = (self.env.as_mut(), self.renderer.as_mut()) {
-            env.gl_surface.resize(
-                &env.gl_context,
-                NonZeroU32::new(w.max(1)).unwrap(),
-                NonZeroU32::new(h.max(1)).unwrap(),
-            );
-            renderer.resize((w.max(1), h.max(1)));
-            self.queue_redraw();
-        }
-
-        if let Some(env) = &self.env {
-            let scale = env.window.scale_factor() as f32;
-            let _ = self
-                .event_tx
-                .send(EventMsg::InputEvent(InputEvent::Resized {
-                    width: w,
-                    height: h,
-                    scale_factor: scale,
-                }));
-        }
-    }
-
-    fn redraw(&mut self) {
-        if let (Some(env), Some(renderer)) = (self.env.as_mut(), self.renderer.as_mut()) {
-            let mut video_needs_cleanup = false;
-            match renderer.sync_video_frames(&self.video_registry, self.video_import.as_ref()) {
-                Ok(result) => video_needs_cleanup = result.needs_cleanup,
-                Err(err) => eprintln!("video sync failed: {err}"),
-            }
-            renderer.render(&self.render_state);
-            env.window.pre_present_notify();
-            env.gl_surface
-                .swap_buffers(&env.gl_context)
-                .expect("swap_buffers failed");
-            let presented_at = Instant::now();
-            let predicted_next_present_at = self.observe_present(presented_at);
-            if self.render_state.animate {
-                self.send_animation_pulse(presented_at, predicted_next_present_at);
-            }
-            if video_needs_cleanup {
-                self.queue_redraw();
-            }
-        }
+    fn finish_present(&mut self, video_needs_cleanup: bool) {
+        self.redraw_requested = video_needs_cleanup;
     }
 
     fn observe_present(&mut self, presented_at: Instant) -> Instant {
@@ -207,16 +279,239 @@ impl App {
         self.last_present_at = Some(presented_at);
         presented_at + self.estimated_frame_interval
     }
+}
+
+struct WaylandApp {
+    registry_state: RegistryState,
+    output_state: OutputState,
+    qh: QueueHandle<Self>,
+    window: Window,
+    env: Option<GlEnv>,
+    protocols: ProtocolHandles,
+    geometry: SurfaceGeometry,
+    present: PresentState,
+    exit: bool,
+    running_flag: Arc<AtomicBool>,
+    tree_tx: CrossbeamSender<TreeMsg>,
+    render_rx: Receiver<RenderMsg>,
+    event_tx: crossbeam_channel::Sender<EventMsg>,
+    video_registry: Arc<VideoRegistry>,
+    render_state: RenderState,
+}
+
+#[derive(Clone)]
+struct FractionalScaleData {
+    surface: wl_surface::WlSurface,
+}
+
+impl WaylandApp {
+    fn new(
+        conn: &Connection,
+        globals: &wayland_client::globals::GlobalList,
+        qh: QueueHandle<Self>,
+        running_flag: Arc<AtomicBool>,
+        tree_tx: CrossbeamSender<TreeMsg>,
+        event_tx: crossbeam_channel::Sender<EventMsg>,
+        render_rx: Receiver<RenderMsg>,
+        video_registry: Arc<VideoRegistry>,
+        config: &WaylandConfig,
+    ) -> Result<Self, String> {
+        let compositor_state = CompositorState::bind(globals, &qh)
+            .map_err(|err| format!("wl_compositor not available: {err}"))?;
+        let xdg_shell = XdgShell::bind(globals, &qh)
+            .map_err(|err| format!("xdg shell not available: {err}"))?;
+
+        let surface = compositor_state.create_surface(&qh);
+        let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
+        window.set_title(&config.title);
+        window.set_app_id("dev.emerge.emerge_skia");
+
+        let protocols = ProtocolHandles::new(globals, &qh, compositor_state, &window);
+
+        window.commit();
+
+        let mut app = Self {
+            registry_state: RegistryState::new(globals),
+            output_state: OutputState::new(globals, &qh),
+            qh,
+            window,
+            env: None,
+            protocols,
+            geometry: SurfaceGeometry::new(config),
+            present: PresentState::default(),
+            exit: false,
+            running_flag,
+            tree_tx,
+            render_rx,
+            event_tx,
+            video_registry,
+            render_state: RenderState::default(),
+        };
+
+        app.apply_surface_scale_state();
+
+        if app.geometry.buffer_size != app.geometry.logical_size {
+            app.reconfigure_surface_geometry(conn);
+        }
+
+        Ok(app)
+    }
+
+    fn handle_wake_action(&mut self, action: WakeAction) {
+        match action {
+            WakeAction::Stop => {
+                self.running_flag.store(false, Ordering::Relaxed);
+                self.exit = true;
+            }
+            WakeAction::Redraw => {
+                self.flush_render_updates();
+            }
+            WakeAction::VideoFrameAvailable => {
+                self.queue_redraw();
+            }
+        }
+    }
+
+    fn queue_redraw(&mut self) {
+        self.present.queue_redraw();
+    }
+
+    fn flush_render_updates(&mut self) {
+        if self.exit {
+            return;
+        }
+
+        if self.drain_render_messages() {
+            self.queue_redraw();
+        }
+    }
+
+    fn drain_render_messages(&mut self) -> bool {
+        let mut updated = false;
+
+        while let Ok(msg) = self.render_rx.try_recv() {
+            match msg {
+                RenderMsg::Commands {
+                    commands,
+                    version,
+                    animate,
+                    ..
+                } => {
+                    self.render_state.commands = commands;
+                    self.render_state.render_version = version;
+                    self.render_state.animate = animate;
+                    updated = true;
+                }
+                RenderMsg::CursorUpdate { .. } => {}
+                RenderMsg::Stop => {
+                    self.running_flag.store(false, Ordering::Relaxed);
+                    self.exit = true;
+                    return false;
+                }
+            }
+        }
+
+        updated
+    }
+
+    fn update_logical_size(&mut self, conn: &Connection, width: u32, height: u32) {
+        if !self.geometry.set_logical_size(width, height) {
+            return;
+        }
+
+        self.reconfigure_surface_geometry(conn);
+    }
+
+    fn maybe_draw(&mut self) {
+        if !self.present.can_draw(self.exit) {
+            return;
+        }
+
+        self.draw();
+    }
+
+    fn draw(&mut self) {
+        self.present.request_frame_callback(&self.window, &self.qh);
+
+        let Some(env) = self.env.as_mut() else {
+            return;
+        };
+
+        let mut video_needs_cleanup = false;
+
+        match env.renderer.sync_video_frames(&self.video_registry, None) {
+            Ok(result) => video_needs_cleanup = result.needs_cleanup,
+            Err(err) => eprintln!("video sync failed: {err}"),
+        }
+
+        env.renderer.render(&self.render_state);
+
+        if let Err(err) = env.gl_surface.swap_buffers(&env.gl_context) {
+            eprintln!("wayland egl swap_buffers failed: {err}");
+            self.running_flag.store(false, Ordering::Relaxed);
+            self.exit = true;
+            return;
+        }
+
+        let presented_at = Instant::now();
+        let predicted_next_present_at = self.present.observe_present(presented_at);
+
+        if self.render_state.animate {
+            self.send_animation_pulse(presented_at, predicted_next_present_at);
+        }
+
+        self.present.finish_present(video_needs_cleanup);
+    }
+
+    fn apply_surface_scale_state(&mut self) {
+        self.geometry
+            .apply_to_surface(&self.window, self.protocols.viewport.as_ref());
+    }
+
+    fn reconfigure_surface_geometry(&mut self, conn: &Connection) {
+        let previous = self.geometry;
+
+        self.apply_surface_scale_state();
+
+        if !self.present.configured && self.env.is_none() {
+            return;
+        }
+
+        if self.geometry.buffer_size.0 == 0 || self.geometry.buffer_size.1 == 0 {
+            return;
+        }
+
+        let geometry_changed = previous != self.geometry;
+        let buffer_changed = previous.buffer_size != self.geometry.buffer_size;
+
+        if self.env.is_none() {
+            match create_gl_env(conn, self.window.wl_surface(), self.geometry.buffer_size) {
+                Ok(env) => self.env = Some(env),
+                Err(err) => {
+                    eprintln!("wayland egl setup failed: {err}");
+                    self.running_flag.store(false, Ordering::Relaxed);
+                    self.exit = true;
+                    return;
+                }
+            }
+        } else if buffer_changed && let Some(env) = self.env.as_mut() {
+            resize_gl_env(env, self.geometry.buffer_size);
+        }
+
+        if geometry_changed {
+            self.queue_redraw();
+
+            let _ = self
+                .event_tx
+                .send(EventMsg::InputEvent(InputEvent::Resized {
+                    width: self.geometry.buffer_size.0,
+                    height: self.geometry.buffer_size.1,
+                    scale_factor: self.geometry.scale_factor(),
+                }));
+        }
+    }
 
     fn send_animation_pulse(&self, presented_at: Instant, predicted_next_present_at: Instant) {
-        crate::debug_trace::hover_trace!(
-            "backend_pulse",
-            "presented_at={:?} predicted_next={:?} cursor=({:.2},{:.2})",
-            presented_at,
-            predicted_next_present_at,
-            self.cursor_pos.0,
-            self.cursor_pos.1
-        );
         let msg = TreeMsg::AnimationPulse {
             presented_at,
             predicted_next_present_at,
@@ -230,525 +525,207 @@ impl App {
             Err(TrySendError::Disconnected(_)) => {}
         }
     }
-
-    fn send_input_event(&self, event: InputEvent) {
-        let _ = self.event_tx.send(EventMsg::InputEvent(event));
-    }
-
-    fn drain_render_commands(&mut self) -> bool {
-        let mut updated = false;
-        let mut ime_changed = false;
-        while let Ok(msg) = self.render_rx.try_recv() {
-            match msg {
-                RenderMsg::Commands {
-                    commands,
-                    version,
-                    animate,
-                    ime_enabled,
-                    ime_cursor_area,
-                } => {
-                    self.render_state.commands = commands;
-                    self.render_state.render_version = version;
-                    self.render_state.animate = animate;
-                    if self.ime_enabled != ime_enabled || self.ime_cursor_area != ime_cursor_area {
-                        self.ime_enabled = ime_enabled;
-                        self.ime_cursor_area = ime_cursor_area;
-                        ime_changed = true;
-                    }
-                    updated = true;
-                }
-                RenderMsg::Stop => {
-                    self.running = false;
-                }
-                RenderMsg::CursorUpdate { .. } => {}
-            }
-        }
-
-        if ime_changed {
-            self.apply_ime_state();
-        }
-
-        updated
-    }
-
-    fn apply_ime_state(&self) {
-        let Some(env) = &self.env else {
-            return;
-        };
-
-        env.window.set_ime_allowed(self.ime_enabled);
-
-        if self.ime_enabled
-            && let Some((x, y, width, height)) = self.ime_cursor_area
-        {
-            let px = PhysicalPosition::new(x.round() as i32, y.round() as i32);
-            let size =
-                PhysicalSize::new(width.max(1.0).ceil() as u32, height.max(1.0).ceil() as u32);
-            env.window.set_ime_cursor_area(px, size);
-        }
-    }
-
-    fn mouse_button_name(button: MouseButton) -> &'static str {
-        match button {
-            MouseButton::Left => "left",
-            MouseButton::Right => "right",
-            MouseButton::Middle => "middle",
-            MouseButton::Back => "back",
-            MouseButton::Forward => "forward",
-            MouseButton::Other(_) => "other",
-        }
-    }
-
-    fn key_name(key: &Key) -> String {
-        match key {
-            Key::Named(named) => match named {
-                NamedKey::Escape => "escape".to_string(),
-                NamedKey::Backspace => "backspace".to_string(),
-                NamedKey::Tab => "tab".to_string(),
-                NamedKey::Enter => "enter".to_string(),
-                NamedKey::Space => "space".to_string(),
-                NamedKey::Delete => "delete".to_string(),
-                NamedKey::Insert => "insert".to_string(),
-                NamedKey::Home => "home".to_string(),
-                NamedKey::End => "end".to_string(),
-                NamedKey::PageUp => "page_up".to_string(),
-                NamedKey::PageDown => "page_down".to_string(),
-                NamedKey::ArrowUp => "up".to_string(),
-                NamedKey::ArrowDown => "down".to_string(),
-                NamedKey::ArrowLeft => "left".to_string(),
-                NamedKey::ArrowRight => "right".to_string(),
-                NamedKey::F1 => "f1".to_string(),
-                NamedKey::F2 => "f2".to_string(),
-                NamedKey::F3 => "f3".to_string(),
-                NamedKey::F4 => "f4".to_string(),
-                NamedKey::F5 => "f5".to_string(),
-                NamedKey::F6 => "f6".to_string(),
-                NamedKey::F7 => "f7".to_string(),
-                NamedKey::F8 => "f8".to_string(),
-                NamedKey::F9 => "f9".to_string(),
-                NamedKey::F10 => "f10".to_string(),
-                NamedKey::F11 => "f11".to_string(),
-                NamedKey::F12 => "f12".to_string(),
-                NamedKey::Shift => "shift".to_string(),
-                NamedKey::Control => "control".to_string(),
-                NamedKey::Alt => "alt".to_string(),
-                NamedKey::Super => "super".to_string(),
-                NamedKey::CapsLock => "caps_lock".to_string(),
-                NamedKey::NumLock => "num_lock".to_string(),
-                NamedKey::ScrollLock => "scroll_lock".to_string(),
-                NamedKey::PrintScreen => "print_screen".to_string(),
-                NamedKey::Pause => "pause".to_string(),
-                _ => format!("{:?}", named).to_lowercase(),
-            },
-            Key::Character(c) => c.to_string(),
-            Key::Unidentified(_) => "unknown".to_string(),
-            Key::Dead(_) => "dead".to_string(),
-        }
-    }
-
-    fn normalize_commit_text(text: &str) -> Option<String> {
-        let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
-        if filtered.is_empty() {
-            None
-        } else {
-            Some(filtered)
-        }
-    }
-
-    fn env_flag_enabled(name: &str) -> bool {
-        let Ok(value) = env::var(name) else {
-            return false;
-        };
-
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    }
-
-    fn truncate_for_log(value: &str, max_chars: usize) -> String {
-        let mut chars = value.chars();
-        let truncated: String = chars.by_ref().take(max_chars).collect();
-        if chars.next().is_some() {
-            format!("{truncated}...")
-        } else {
-            truncated
-        }
-    }
-
-    fn maybe_log_text_commit_source(&self, source: &str, text: &str) {
-        if !self.text_commit_diag {
-            return;
-        }
-
-        let truncated = Self::truncate_for_log(text, 80);
-        eprintln!(
-            "text-commit source={} mods={} text={:?}",
-            source, self.current_mods, truncated
-        );
-    }
-
-    fn text_commit_diag_enabled() -> bool {
-        Self::env_flag_enabled("EMERGE_SKIA_TEXT_COMMIT_DIAG")
-    }
-
-    fn preedit_cursor_to_char_range(
-        text: &str,
-        cursor: Option<(usize, usize)>,
-    ) -> Option<(u32, u32)> {
-        let (start, end) = cursor?;
-        let mut start = Self::byte_index_to_char_index(text, start);
-        let mut end = Self::byte_index_to_char_index(text, end);
-        if start > end {
-            std::mem::swap(&mut start, &mut end);
-        }
-        Some((start, end))
-    }
-
-    fn byte_index_to_char_index(text: &str, byte_index: usize) -> u32 {
-        let clamped = byte_index.min(text.len());
-        text.char_indices()
-            .take_while(|(idx, _)| *idx < clamped)
-            .count() as u32
-    }
 }
 
-impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
-
-    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Stop => {
-                self.running = false;
-                self.running_flag.store(false, Ordering::Relaxed);
-                event_loop.exit();
-            }
-            UserEvent::Redraw => {
-                self.flush_render_updates();
-            }
-            UserEvent::VideoFrameAvailable => {
-                self.queue_redraw();
-            }
-        }
-    }
-
-    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.flush_render_updates();
-    }
-
-    fn window_event(
+impl CompositorHandler for WaylandApp {
+    fn scale_factor_changed(
         &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
+        conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                self.running = false;
-                self.running_flag.store(false, Ordering::Relaxed);
-                event_loop.exit();
-            }
-            WindowEvent::Resized(physical_size) => {
-                self.handle_resize(physical_size);
-            }
-            WindowEvent::RedrawRequested => {
-                if self.can_present() {
-                    self.pending_redraw = false;
-                    self.redraw();
-                } else if self.running {
-                    self.pending_redraw = true;
-                }
-            }
-
-            // Mouse cursor movement
-            WindowEvent::CursorMoved { position, .. } => {
-                let (x, y) = (position.x as f32, position.y as f32);
-                self.cursor_pos = (x, y);
-                crate::debug_trace::hover_trace!(
-                    "backend_cursor",
-                    "cursor_moved x={x:.2} y={y:.2} scale={:.2}",
-                    self.env
-                        .as_ref()
-                        .map(|env| env.window.scale_factor())
-                        .unwrap_or(1.0)
-                );
-                self.send_input_event(InputEvent::CursorPos { x, y });
-            }
-
-            // Mouse button press/release
-            WindowEvent::MouseInput { state, button, .. } => {
-                let action = match state {
-                    ElementState::Pressed => ACTION_PRESS,
-                    ElementState::Released => ACTION_RELEASE,
-                };
-                let (x, y) = self.cursor_pos;
-                self.send_input_event(InputEvent::CursorButton {
-                    button: Self::mouse_button_name(button).to_string(),
-                    action,
-                    mods: self.current_mods,
-                    x,
-                    y,
-                });
-            }
-
-            // Mouse scroll wheel
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (cursor_x, cursor_y) = self.cursor_pos;
-                let event = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
-                        InputEvent::CursorScrollLines {
-                            dx,
-                            dy,
-                            x: cursor_x,
-                            y: cursor_y,
-                        }
-                    }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => InputEvent::CursorScroll {
-                        dx: pos.x as f32,
-                        dy: pos.y as f32,
-                        x: cursor_x,
-                        y: cursor_y,
-                    },
-                };
-                self.send_input_event(event);
-            }
-
-            // Cursor entered/exited window
-            WindowEvent::CursorEntered { .. } => {
-                self.send_input_event(InputEvent::CursorEntered { entered: true });
-            }
-            WindowEvent::CursorLeft { .. } => {
-                self.send_input_event(InputEvent::CursorEntered { entered: false });
-            }
-
-            // Keyboard key press/release
-            WindowEvent::KeyboardInput { event, .. } => {
-                let action = match event.state {
-                    ElementState::Pressed => ACTION_PRESS,
-                    ElementState::Released => ACTION_RELEASE,
-                };
-                let key_name = Self::key_name(&event.logical_key);
-                self.send_input_event(InputEvent::Key {
-                    key: key_name,
-                    action,
-                    mods: self.current_mods,
-                });
-
-                if action == ACTION_PRESS
-                    && !self.ime_preedit_active
-                    && let Some(text) = event.text
-                    && let Some(commit) = Self::normalize_commit_text(text.as_ref())
-                {
-                    self.maybe_log_text_commit_source("keyboard", &commit);
-                    self.send_input_event(InputEvent::TextCommit {
-                        text: commit,
-                        mods: self.current_mods,
-                    });
-                }
-            }
-
-            WindowEvent::Ime(ime) => match ime {
-                Ime::Preedit(text, cursor) => {
-                    self.ime_preedit_active = !text.is_empty();
-                    if text.is_empty() {
-                        self.send_input_event(InputEvent::TextPreeditClear);
-                    } else {
-                        let cursor = Self::preedit_cursor_to_char_range(&text, cursor);
-                        self.send_input_event(InputEvent::TextPreedit { text, cursor });
-                    }
-                }
-                Ime::Commit(text) => {
-                    self.ime_preedit_active = false;
-                    if let Some(commit) = Self::normalize_commit_text(&text) {
-                        self.maybe_log_text_commit_source("ime", &commit);
-                        self.send_input_event(InputEvent::TextCommit {
-                            text: commit,
-                            mods: self.current_mods,
-                        });
-                    }
-                }
-                Ime::Disabled => {
-                    self.ime_preedit_active = false;
-                    self.send_input_event(InputEvent::TextPreeditClear);
-                }
-                Ime::Enabled => {
-                    self.ime_preedit_active = false;
-                }
-            },
-
-            // Modifier state changed
-            WindowEvent::ModifiersChanged(mods) => {
-                let state = mods.state();
-                self.current_mods = 0;
-                if state.shift_key() {
-                    self.current_mods |= MOD_SHIFT;
-                }
-                if state.control_key() {
-                    self.current_mods |= MOD_CTRL;
-                }
-                if state.alt_key() {
-                    self.current_mods |= MOD_ALT;
-                }
-                if state.super_key() {
-                    self.current_mods |= MOD_META;
-                }
-            }
-
-            // Window focus changed
-            WindowEvent::Focused(focused) => {
-                if !focused {
-                    self.ime_preedit_active = false;
-                }
-                self.send_input_event(InputEvent::Focused { focused });
-            }
-
-            WindowEvent::Occluded(occluded) => {
-                self.is_occluded = occluded;
-                if self.can_present() && self.pending_redraw {
-                    self.queue_redraw();
-                }
-            }
-
-            _ => {}
-        }
+        self.geometry.set_integer_scale_factor(new_factor);
+        self.reconfigure_surface_geometry(conn);
     }
 
-    // user_event handled earlier
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        self.present.frame_callback_received();
+    }
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
 }
 
-// ============================================================================
-// Window and Renderer Creation
-// ============================================================================
+impl WindowHandler for WaylandApp {
+    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &Window) {
+        self.running_flag.store(false, Ordering::Relaxed);
+        self.exit = true;
+    }
 
-fn create_window_and_renderer(
-    event_loop: &EventLoop<UserEvent>,
-    config: &WaylandConfig,
-) -> Result<(GlEnv, Renderer, bool), String> {
-    let window_attributes = WindowAttributes::default()
-        .with_title(&config.title)
-        .with_inner_size(LogicalSize::new(config.width, config.height));
+    fn configure(
+        &mut self,
+        conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &Window,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        let width = configure
+            .new_size
+            .0
+            .map(|value| value.get())
+            .unwrap_or(self.geometry.logical_size.0);
+        let height = configure
+            .new_size
+            .1
+            .map(|value| value.get())
+            .unwrap_or(self.geometry.logical_size.1);
 
-    let template = ConfigTemplateBuilder::new()
-        .with_alpha_size(8)
-        .with_transparency(true);
-
-    let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
-    let (window, gl_config) = display_builder
-        .build(event_loop, template, |configs| {
-            configs
-                .reduce(|accum, cfg| {
-                    if cfg.num_samples() < accum.num_samples() {
-                        cfg
-                    } else {
-                        accum
-                    }
-                })
-                .unwrap()
-        })
-        .map_err(|err| format!("failed to build display: {err}"))?;
-
-    let window = window.ok_or_else(|| "could not create window".to_string())?;
-    let window_handle = window
-        .window_handle()
-        .map_err(|err| format!("failed to get window handle: {err}"))?;
-    let raw_window_handle = window_handle.as_raw();
-
-    let context_attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::Gles(None))
-        .build(Some(raw_window_handle));
-    let fallback_context_attributes =
-        ContextAttributesBuilder::new().build(Some(raw_window_handle));
-
-    let not_current_gl_context = unsafe {
-        gl_config
-            .display()
-            .create_context(&gl_config, &context_attributes)
-            .unwrap_or_else(|_| {
-                gl_config
-                    .display()
-                    .create_context(&gl_config, &fallback_context_attributes)
-                    .expect("failed to create GL/GLES context")
-            })
-    };
-
-    let (width, height): (u32, u32) = window.inner_size().into();
-    let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-        raw_window_handle,
-        NonZeroU32::new(width.max(1)).unwrap(),
-        NonZeroU32::new(height.max(1)).unwrap(),
-    );
-
-    let gl_surface = unsafe {
-        gl_config
-            .display()
-            .create_window_surface(&gl_config, &attrs)
-            .map_err(|err| format!("could not create GL window surface: {err}"))?
-    };
-
-    let gl_context = not_current_gl_context
-        .make_current(&gl_surface)
-        .map_err(|err| format!("could not make GL context current: {err}"))?;
-
-    gl::load_with(|s| {
-        gl_config
-            .display()
-            .get_proc_address(CString::new(s).unwrap().as_c_str())
-    });
-
-    let interface = skia_safe::gpu::gl::Interface::new_load_with(|name| {
-        if name == "eglGetCurrentDisplay" {
-            return std::ptr::null();
-        }
-        gl_config
-            .display()
-            .get_proc_address(CString::new(name).unwrap().as_c_str())
-    })
-    .ok_or_else(|| "could not create Skia GL interface".to_string())?;
-
-    let gr_context = skia_safe::gpu::direct_contexts::make_gl(interface, None)
-        .ok_or_else(|| "make_gl failed: could not create Skia direct context".to_string())?;
-
-    let fb_info = {
-        let mut fboid: i32 = 0;
-        unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
-
-        FramebufferInfo {
-            fboid: fboid as u32,
-            format: skia_safe::gpu::gl::Format::RGBA8.into(),
-            ..Default::default()
-        }
-    };
-
-    let num_samples = gl_config.num_samples() as usize;
-    let stencil_size = gl_config.stencil_size() as usize;
-
-    let prime_video_supported = crate::video::wayland_prime_supported(&window);
-
-    let renderer = Renderer::new_gl(
-        (width, height),
-        fb_info,
-        gr_context,
-        num_samples,
-        stencil_size,
-    );
-
-    let env = GlEnv {
-        gl_surface,
-        gl_context,
-        window,
-    };
-
-    Ok((env, renderer, prime_video_supported))
+        self.present.configured = true;
+        self.update_logical_size(conn, width, height);
+    }
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
+impl OutputHandler for WaylandApp {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
 
-/// Run the Wayland/X11 backend event loop.
-///
-/// This function spawns in the current thread and blocks until the window is closed
-/// or `running_flag` is set to false.
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+}
+
+delegate_compositor!(WaylandApp);
+delegate_output!(WaylandApp);
+delegate_xdg_shell!(WaylandApp);
+delegate_xdg_window!(WaylandApp);
+delegate_registry!(WaylandApp);
+
+impl ProvidesRegistryState for WaylandApp {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+
+    registry_handlers![OutputState];
+}
+
+impl Dispatch<WpViewporter, ()> for WaylandApp {
+    fn event(
+        _: &mut Self,
+        _: &WpViewporter,
+        _: <WpViewporter as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wp_viewporter::Event is empty in version 1")
+    }
+}
+
+impl Dispatch<WpViewport, ()> for WaylandApp {
+    fn event(
+        _: &mut Self,
+        _: &WpViewport,
+        _: <WpViewport as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wp_viewport::Event is empty in version 1")
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for WaylandApp {
+    fn event(
+        _: &mut Self,
+        _: &WpFractionalScaleManagerV1,
+        _: <WpFractionalScaleManagerV1 as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wp_fractional_scale_manager_v1 has no events")
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, FractionalScaleData> for WaylandApp {
+    fn event(
+        state: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: <WpFractionalScaleV1 as Proxy>::Event,
+        data: &FractionalScaleData,
+        conn: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if data.surface != *state.window.wl_surface() {
+            return;
+        }
+
+        let FractionalScaleEvent::PreferredScale { scale } = event else {
+            return;
+        };
+
+        state
+            .geometry
+            .set_preferred_fractional_scale(Some(scale as f32 / 120.0));
+        state.reconfigure_surface_geometry(conn);
+    }
+}
+
+fn fail_startup(
+    proxy_tx: &Sender<WindowBackendStartupResult>,
+    running_flag: &Arc<AtomicBool>,
+    event_tx: &crossbeam_channel::Sender<EventMsg>,
+    message: String,
+) {
+    let _ = proxy_tx.send(Err(message.clone()));
+    eprintln!("{message}");
+    running_flag.store(false, Ordering::Relaxed);
+    let _ = event_tx.send(EventMsg::Stop);
+}
+
 pub fn run(
     config: WaylandConfig,
     running_flag: Arc<AtomicBool>,
@@ -756,128 +733,112 @@ pub fn run(
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
     video_registry: Arc<VideoRegistry>,
-    proxy_tx: Sender<WaylandStartupResult>,
+    proxy_tx: Sender<WindowBackendStartupResult>,
 ) {
-    // Allow running on non-main thread (required for NIF)
-    #[cfg(target_os = "linux")]
-    let el = {
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        EventLoop::<UserEvent>::with_user_event()
-            .with_any_thread(true)
-            .build()
-    };
-
-    #[cfg(target_os = "linux")]
-    let el = match el {
-        Ok(el) => el,
+    let conn = match Connection::connect_to_env() {
+        Ok(conn) => conn,
         Err(err) => {
-            let message = format!("failed to create event loop: {err}");
-            let _ = proxy_tx.send(Err(message.clone()));
-            eprintln!("{message}");
-            running_flag.store(false, Ordering::Relaxed);
-            let _ = event_tx.send(EventMsg::Stop);
+            fail_startup(
+                &proxy_tx,
+                &running_flag,
+                &event_tx,
+                format!("failed to connect to wayland compositor: {err}"),
+            );
             return;
         }
     };
 
-    #[cfg(not(target_os = "linux"))]
-    let el = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
-
-    let proxy = el.create_proxy();
-
-    let (env, renderer, prime_video_supported) = match create_window_and_renderer(&el, &config) {
+    let (globals, event_queue) = match registry_queue_init(&conn) {
         Ok(values) => values,
         Err(err) => {
-            eprintln!("Failed to initialize renderer: {err}");
-            running_flag.store(false, Ordering::Relaxed);
-            let _ = event_tx.send(EventMsg::Stop);
+            fail_startup(
+                &proxy_tx,
+                &running_flag,
+                &event_tx,
+                format!("failed to initialize wayland registry: {err}"),
+            );
             return;
         }
     };
 
-    let _ = proxy_tx.send(Ok(WaylandStartupInfo {
-        proxy,
-        prime_video_supported,
+    let qh = event_queue.handle();
+    let mut event_loop: EventLoop<WaylandApp> = match EventLoop::try_new() {
+        Ok(event_loop) => event_loop,
+        Err(err) => {
+            fail_startup(
+                &proxy_tx,
+                &running_flag,
+                &event_tx,
+                format!("failed to create wayland event loop: {err}"),
+            );
+            return;
+        }
+    };
+
+    let loop_handle = event_loop.handle();
+    if let Err(err) = WaylandSource::new(conn.clone(), event_queue).insert(loop_handle.clone()) {
+        fail_startup(
+            &proxy_tx,
+            &running_flag,
+            &event_tx,
+            format!("failed to insert wayland source: {err}"),
+        );
+        return;
+    }
+
+    let (wake_tx, wake_rx) = calloop::channel::channel();
+    if let Err(err) = loop_handle.insert_source(wake_rx, |event, _, state| match event {
+        calloop::channel::Event::Msg(action) => state.handle_wake_action(action),
+        calloop::channel::Event::Closed => {
+            state.running_flag.store(false, Ordering::Relaxed);
+            state.exit = true;
+        }
+    }) {
+        fail_startup(
+            &proxy_tx,
+            &running_flag,
+            &event_tx,
+            format!("failed to insert wayland wake source: {err}"),
+        );
+        return;
+    }
+
+    let wake = BackendWakeHandle::new(WaylandWake {
+        tx: wake_tx.clone(),
+    });
+
+    let mut app = match WaylandApp::new(
+        &conn,
+        &globals,
+        qh,
+        Arc::clone(&running_flag),
+        tree_tx,
+        event_tx.clone(),
+        render_rx,
+        video_registry,
+        &config,
+    ) {
+        Ok(app) => app,
+        Err(err) => {
+            fail_startup(&proxy_tx, &running_flag, &event_tx, err);
+            return;
+        }
+    };
+
+    let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
+        wake,
+        prime_video_supported: false,
     }));
 
-    let size = env.window.inner_size();
-    let video_import = if prime_video_supported {
-        match VideoImportContext::new_current() {
-            Ok(ctx) => Some(ctx),
-            Err(err) => {
-                eprintln!("prime video import unavailable: {err}");
-                None
-            }
+    while !app.exit {
+        if let Err(err) = event_loop.dispatch(None::<Duration>, &mut app) {
+            eprintln!("wayland event loop dispatch failed: {err}");
+            app.running_flag.store(false, Ordering::Relaxed);
+            app.exit = true;
+            break;
         }
-    } else {
-        None
-    };
 
-    let mut app = App {
-        env: Some(env),
-        renderer: Some(renderer),
-        running: true,
-        running_flag,
-        render_state: RenderState::default(),
-        render_rx,
-        tree_tx,
-        event_tx,
-        window_size: (size.width, size.height),
-        current_mods: 0,
-        cursor_pos: (0.0, 0.0),
-        is_occluded: false,
-        pending_redraw: false,
-        last_present_at: None,
-        estimated_frame_interval: Duration::from_nanos(16_666_667),
-        ime_enabled: false,
-        ime_cursor_area: None,
-        ime_preedit_active: false,
-        text_commit_diag: App::text_commit_diag_enabled(),
-        video_registry,
-        video_import,
-    };
-
-    app.apply_ime_state();
-    app.redraw();
-    el.run_app(&mut app).expect("run_app failed");
-    let _ = app.event_tx.send(EventMsg::Stop);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::App;
-
-    #[test]
-    fn normalize_commit_text_filters_control_chars() {
-        assert_eq!(App::normalize_commit_text("abc"), Some("abc".to_string()));
-        assert_eq!(
-            App::normalize_commit_text("a\u{0008}b"),
-            Some("ab".to_string())
-        );
-        assert_eq!(App::normalize_commit_text("\u{0000}\n\t"), None);
-    }
-
-    #[test]
-    fn preedit_cursor_to_char_range_converts_byte_indices() {
-        let text = "Aé日";
-        let cursor = App::preedit_cursor_to_char_range(text, Some((1, text.len())));
-        assert_eq!(cursor, Some((1, 3)));
-    }
-
-    #[test]
-    fn preedit_cursor_to_char_range_orders_indices() {
-        let text = "hello";
-        let cursor = App::preedit_cursor_to_char_range(text, Some((4, 1)));
-        assert_eq!(cursor, Some((1, 4)));
-    }
-
-    #[test]
-    fn present_allowed_depends_on_running_and_occlusion() {
-        assert!(App::present_allowed(true, false));
-        assert!(!App::present_allowed(false, false));
-        assert!(!App::present_allowed(true, true));
-        assert!(!App::present_allowed(false, true));
+        app.flush_render_updates();
+        app.maybe_draw();
     }
 }

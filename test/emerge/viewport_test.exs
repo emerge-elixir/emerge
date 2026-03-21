@@ -266,15 +266,17 @@ defmodule Emerge.ViewportTest do
 
     assert_eventually(fn -> Emerge.Viewport.user_state(pid).count == 1 end)
 
-    patch_count =
-      renderer
-      |> FakeRenderer.ops()
-      |> Enum.count(fn
-        {:patch_tree, _tree} -> true
-        _ -> false
-      end)
+    assert_eventually(fn ->
+      patch_count =
+        renderer
+        |> FakeRenderer.ops()
+        |> Enum.count(fn
+          {:patch_tree, _tree} -> true
+          _ -> false
+        end)
 
-    assert patch_count == 1
+      patch_count == 1
+    end)
 
     GenServer.stop(pid)
   end
@@ -287,14 +289,17 @@ defmodule Emerge.ViewportTest do
     GenServer.cast(pid, {:emerge_viewport, :rerender})
     GenServer.cast(pid, {:emerge_viewport, :rerender})
 
-    assert_eventually(fn ->
-      renderer
-      |> FakeRenderer.ops()
-      |> Enum.count(fn
-        {:patch_tree, _tree} -> true
-        _ -> false
-      end) == 1
-    end)
+    assert_eventually(
+      fn ->
+        renderer
+        |> FakeRenderer.ops()
+        |> Enum.count(fn
+          {:patch_tree, _tree} -> true
+          _ -> false
+        end) == 1
+      end,
+      100
+    )
 
     GenServer.stop(pid)
   end

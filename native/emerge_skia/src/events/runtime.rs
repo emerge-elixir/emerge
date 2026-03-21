@@ -950,6 +950,7 @@ fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
     let mut coalesced = Vec::new();
     let mut last_cursor: Option<InputEvent> = None;
     let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
+    let mut last_resize: Option<InputEvent> = None;
 
     for event in events.drain(..) {
         let event = event.normalize_scroll();
@@ -963,12 +964,18 @@ fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
                     None => (dx, dy, x, y),
                 });
             }
+            InputEvent::Resized { .. } => {
+                last_resize = Some(event);
+            }
             other => coalesced.push(other),
         }
     }
 
     if let Some((dx, dy, x, y)) = scroll_acc {
         coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
+    }
+    if let Some(resize) = last_resize {
+        coalesced.push(resize);
     }
     if let Some(cursor) = last_cursor {
         coalesced.push(cursor);
@@ -1336,6 +1343,38 @@ mod tests {
         assert!(
             matches!(buffered[1], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
         );
+    }
+
+    #[test]
+    fn listener_lane_state_coalesces_resize_events_to_latest() {
+        let mut lane = ListenerLaneState::initially_stale();
+        lane.buffer_input(InputEvent::Resized {
+            width: 320,
+            height: 180,
+            scale_factor: 1.0,
+        });
+        lane.buffer_input(InputEvent::Resized {
+            width: 640,
+            height: 360,
+            scale_factor: 1.5,
+        });
+        lane.buffer_input(InputEvent::CursorPos { x: 10.0, y: 20.0 });
+
+        let buffered = lane.mark_fresh_and_take_buffered();
+        assert_eq!(buffered.len(), 2);
+        assert!(matches!(
+            buffered[0],
+            InputEvent::Resized {
+                width: 640,
+                height: 360,
+                scale_factor
+            } if (scale_factor - 1.5).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            buffered[1],
+            InputEvent::CursorPos { x, y }
+                if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
+        ));
     }
 
     #[test]

@@ -70,7 +70,7 @@ defmodule EmergeSkia do
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`)
+  - `backend` - Backend selection (`:wayland`, `:wayland_legacy`, or `:drm`, default: `:wayland`)
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
