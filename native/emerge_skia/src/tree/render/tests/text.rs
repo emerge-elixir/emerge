@@ -52,6 +52,38 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
 }
 
 #[test]
+fn test_render_text_defaults_to_black() {
+    let mut attrs = Attrs::default();
+    attrs.content = Some("Default".to_string());
+    attrs.font_size = Some(16.0);
+
+    let tree = build_text_tree_with_frame(
+        attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 40.0,
+            content_width: 200.0,
+            content_height: 40.0,
+        },
+    );
+
+    let commands = render_tree(&tree);
+    let text_cmd = commands
+        .iter()
+        .find(|cmd| matches!(cmd, DrawCmd::TextWithFont(_, _, content, _, _, _, _, _) if content == "Default"))
+        .expect("text command should exist");
+
+    match text_cmd {
+        DrawCmd::TextWithFont(_, _, _, _, color, _, _, _) => {
+            assert_eq!(*color, 0x000000FF);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn test_render_text_with_spacing_emits_per_glyph_commands() {
     let mut attrs = Attrs::default();
     attrs.content = Some("A A".to_string());

@@ -1,5 +1,7 @@
 use crate::tree::attrs::Color;
 
+pub(crate) const DEFAULT_TEXT_COLOR: u32 = 0x000000FF;
+
 pub(super) fn color_to_u32(color: &Color) -> u32 {
     match color {
         Color::Rgb { r, g, b } => {

@@ -411,7 +411,9 @@ impl DirectEventRuntime {
     }
 
     fn should_preserve_registry_transitions(&self) -> bool {
-        self.cursor_in_window && self.last_cursor_pos.is_some() && !self.has_active_pointer_overlay()
+        self.cursor_in_window
+            && self.last_cursor_pos.is_some()
+            && !self.has_active_pointer_overlay()
     }
 
     fn dispatch_event(
@@ -616,20 +618,20 @@ impl DirectEventRuntime {
             self.runtime_overlay.text_drag = None;
         }
 
-            if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
-                let key = scrollbar_key(&tracker.element_id, tracker.axis);
-                if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
-                    tracker.track_start = node.track_start;
-                    tracker.track_len = node.track_len;
-                    tracker.thumb_len = node.thumb_len;
-                    tracker.scroll_range = node.scroll_range;
-                    tracker.current_scroll = node.scroll_offset;
-                    tracker.pointer_offset = tracker.pointer_offset.clamp(0.0, node.thumb_len);
-                    tracker.screen_to_local = node.screen_to_local;
-                } else {
-                    self.runtime_overlay.scrollbar = None;
-                }
+        if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
+            let key = scrollbar_key(&tracker.element_id, tracker.axis);
+            if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
+                tracker.track_start = node.track_start;
+                tracker.track_len = node.track_len;
+                tracker.thumb_len = node.thumb_len;
+                tracker.scroll_range = node.scroll_range;
+                tracker.current_scroll = node.scroll_offset;
+                tracker.pointer_offset = tracker.pointer_offset.clamp(0.0, node.thumb_len);
+                tracker.screen_to_local = node.screen_to_local;
+            } else {
+                self.runtime_overlay.scrollbar = None;
             }
+        }
     }
 }
 
@@ -1007,10 +1009,11 @@ pub(crate) fn spawn_event_actor(
             };
 
             match message {
-                EventMsg::InputEvent(event) => runtime.handle_input_event(event, &tree_tx, log_render),
+                EventMsg::InputEvent(event) => {
+                    runtime.handle_input_event(event, &tree_tx, log_render)
+                }
                 EventMsg::RegistryUpdate { rebuild } => {
-                    let rebuild = if runtime.should_preserve_registry_transitions()
-                    {
+                    let rebuild = if runtime.should_preserve_registry_transitions() {
                         rebuild
                     } else {
                         coalesce_registry_updates(rebuild, &event_rx, &mut pending_message).0
@@ -1057,8 +1060,10 @@ mod tests {
     use crate::events::RegistryRebuildPayload;
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
+    use crate::tree::animation::{
+        AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
+    };
     use crate::tree::attrs::TextAlign;
-    use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
     use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
     use crate::tree::element::ElementId;
     use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot};
@@ -1130,7 +1135,10 @@ mod tests {
         let (rebuild, coalesced) =
             coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
 
-        assert_eq!(rebuild.focused_id, Some(ElementId::from_term_bytes(vec![3])));
+        assert_eq!(
+            rebuild.focused_id,
+            Some(ElementId::from_term_bytes(vec![3]))
+        );
         assert_eq!(coalesced, 2);
         assert!(pending.is_none());
     }
@@ -1144,7 +1152,9 @@ mod tests {
             })
             .unwrap();
         event_tx
-            .send(EventMsg::InputEvent(InputEvent::CursorEntered { entered: false }))
+            .send(EventMsg::InputEvent(InputEvent::CursorEntered {
+                entered: false,
+            }))
             .unwrap();
         event_tx
             .send(EventMsg::RegistryUpdate {
@@ -1156,11 +1166,16 @@ mod tests {
         let (rebuild, coalesced) =
             coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
 
-        assert_eq!(rebuild.focused_id, Some(ElementId::from_term_bytes(vec![2])));
+        assert_eq!(
+            rebuild.focused_id,
+            Some(ElementId::from_term_bytes(vec![2]))
+        );
         assert_eq!(coalesced, 1);
         assert!(matches!(
             pending,
-            Some(EventMsg::InputEvent(InputEvent::CursorEntered { entered: false }))
+            Some(EventMsg::InputEvent(InputEvent::CursorEntered {
+                entered: false
+            }))
         ));
         assert!(matches!(
             event_rx.try_recv(),
@@ -1232,7 +1247,10 @@ mod tests {
         element
     }
 
-    fn animated_width_move_rebuild_at(sample_ms: u64, hover_active: bool) -> RegistryRebuildPayload {
+    fn animated_width_move_rebuild_at(
+        sample_ms: u64,
+        hover_active: bool,
+    ) -> RegistryRebuildPayload {
         let host_id = ElementId::from_term_bytes(vec![130]);
         let overlay_id = ElementId::from_term_bytes(vec![131]);
 
@@ -1242,7 +1260,8 @@ mod tests {
         host_attrs.width = Some(Length::Px(128.0));
         host_attrs.height = Some(Length::Px(82.0));
         let mut host = make_element(130, ElementKind::El, host_attrs);
-        host.nearby.set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.nearby
+            .set(NearbySlot::InFront, Some(overlay_id.clone()));
 
         let mut from = Attrs::default();
         from.width = Some(Length::Px(96.0));
@@ -2417,8 +2436,14 @@ mod tests {
                     let _ = drain_msgs(&tree_rx);
                 }
                 "newly_occupied_outside_host" => {
-                    assert!(!runtime.listener_lane.is_stale(), "probe {label} should start outside");
-                    assert!(drain_msgs(&tree_rx).is_empty(), "probe {label} should not trigger at 0ms");
+                    assert!(
+                        !runtime.listener_lane.is_stale(),
+                        "probe {label} should start outside"
+                    );
+                    assert!(
+                        drain_msgs(&tree_rx).is_empty(),
+                        "probe {label} should not trigger at 0ms"
+                    );
                 }
                 _ => unreachable!("unexpected probe label"),
             }
@@ -2428,15 +2453,23 @@ mod tests {
             let msgs = drain_msgs(&tree_rx);
             let activations = msgs
                 .iter()
-                .filter(|msg| matches!(
-                    msg,
-                    TreeMsg::SetMouseOverActive { element_id, active }
-                        if *element_id == case.target_id && *active
-                ))
+                .filter(|msg| {
+                    matches!(
+                        msg,
+                        TreeMsg::SetMouseOverActive { element_id, active }
+                            if *element_id == case.target_id && *active
+                    )
+                })
                 .count();
 
-            assert_eq!(activations, 1, "probe {label} should activate hover exactly once");
-            assert!(runtime.listener_lane.is_stale(), "probe {label} should mark lane stale after activation");
+            assert_eq!(
+                activations, 1,
+                "probe {label} should activate hover exactly once"
+            );
+            assert!(
+                runtime.listener_lane.is_stale(),
+                "probe {label} should mark lane stale after activation"
+            );
         }
     }
 
@@ -2467,11 +2500,13 @@ mod tests {
         let msgs = drain_msgs(&tree_rx);
         let activations = msgs
             .iter()
-            .filter(|msg| matches!(
-                msg,
-                TreeMsg::SetMouseOverActive { element_id, active }
-                    if *element_id == case.target_id && *active
-            ))
+            .filter(|msg| {
+                matches!(
+                    msg,
+                    TreeMsg::SetMouseOverActive { element_id, active }
+                        if *element_id == case.target_id && *active
+                )
+            })
             .count();
 
         assert_eq!(activations, 0);
@@ -2502,11 +2537,13 @@ mod tests {
         let msgs = drain_msgs(&tree_rx);
         let clears = msgs
             .iter()
-            .filter(|msg| matches!(
-                msg,
-                TreeMsg::SetMouseOverActive { element_id, active }
-                    if *element_id == case.target_id && !*active
-            ))
+            .filter(|msg| {
+                matches!(
+                    msg,
+                    TreeMsg::SetMouseOverActive { element_id, active }
+                        if *element_id == case.target_id && !*active
+                )
+            })
             .count();
 
         assert_eq!(clears, 1);
@@ -2568,9 +2605,9 @@ mod tests {
 
         let inactive_element = with_interaction_rect(
             make_element(59, ElementKind::El, {
-              let mut attrs = active_attrs;
-              attrs.mouse_over_active = Some(false);
-              attrs
+                let mut attrs = active_attrs;
+                attrs.mouse_over_active = Some(false);
+                attrs
             }),
             0.0,
             0.0,
