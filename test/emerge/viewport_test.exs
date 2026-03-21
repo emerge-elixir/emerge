@@ -1,6 +1,7 @@
 defmodule Emerge.ViewportTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Emerge.UI
 
   defmodule FakeRenderer do
@@ -195,6 +196,34 @@ defmodule Emerge.ViewportTest do
     def render(_state), do: el([], text("alive"))
   end
 
+  defmodule RecoveringViewport do
+    use Emerge.Viewport
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok, %{mode: Keyword.get(opts, :mode, {:label, "ready"})},
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render(%{mode: :raise}), do: raise("render boom")
+    def render(%{mode: {:label, label}}), do: el([], text(label))
+
+    @impl true
+    def handle_info({:set_mode, mode}, state) do
+      state =
+        state
+        |> Viewport.update_user_state(&Map.put(&1, :mode, mode))
+        |> Viewport.schedule_rerender()
+
+      {:noreply, state}
+    end
+  end
+
   test "mount starts renderer and uploads initial tree" do
     {:ok, pid} = CounterViewport.start_link(count: 3)
 
@@ -205,6 +234,7 @@ defmodule Emerge.ViewportTest do
     assert {:upload_tree, %Emerge.Element{type: :row}} = Enum.at(operations, 1)
 
     assert Emerge.Viewport.user_state(pid) == %{count: 3}
+    assert pid in Emerge.Viewport.ReloadGroup.local_members()
 
     GenServer.stop(pid)
   end
@@ -264,6 +294,130 @@ defmodule Emerge.ViewportTest do
         {:patch_tree, _tree} -> true
         _ -> false
       end) == 1
+    end)
+
+    GenServer.stop(pid)
+  end
+
+  test "source reload notifications rerender mounted viewports" do
+    {:ok, pid} = CounterViewport.start_link(count: 0)
+    renderer = Emerge.Viewport.renderer(pid)
+
+    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+
+    assert_eventually(fn ->
+      renderer
+      |> FakeRenderer.ops()
+      |> Enum.count(fn
+        {:patch_tree, _tree} -> true
+        _ -> false
+      end) == 1
+    end)
+
+    GenServer.stop(pid)
+  end
+
+  test "source reload notifications are coalesced" do
+    {:ok, pid} = CounterViewport.start_link(count: 0)
+    renderer = Emerge.Viewport.renderer(pid)
+
+    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+
+    assert_eventually(fn ->
+      renderer
+      |> FakeRenderer.ops()
+      |> Enum.count(fn
+        {:patch_tree, _tree} -> true
+        _ -> false
+      end) == 1
+    end)
+
+    GenServer.stop(pid)
+  end
+
+  test "initial render failures keep viewport alive without starting the renderer" do
+    log =
+      capture_log(fn ->
+        {:ok, pid} = RecoveringViewport.start_link(mode: :raise)
+
+        assert_eventually(fn ->
+          state = :sys.get_state(pid)
+
+          Process.alive?(pid) and is_nil(state.renderer) and is_nil(state.diff_state) and
+            pid in Emerge.Viewport.ReloadGroup.local_members()
+        end)
+
+        GenServer.stop(pid)
+      end)
+
+    assert log =~ "initial render failed"
+  end
+
+  test "viewport can recover from an initial render failure on a later rerender" do
+    log =
+      capture_log(fn ->
+        {:ok, pid} = RecoveringViewport.start_link(mode: :raise)
+
+        send(pid, {:set_mode, {:label, "recovered"}})
+
+        assert_eventually(fn ->
+          state = :sys.get_state(pid)
+
+          Process.alive?(pid) and state.renderer != nil and state.diff_state != nil and
+            rendered_text(pid) == "recovered" and
+            pid in Emerge.Viewport.ReloadGroup.local_members()
+        end)
+
+        renderer = Emerge.Viewport.renderer(pid)
+        assert count_renderer_ops(renderer, :upload_tree) == 1
+
+        GenServer.stop(pid)
+      end)
+
+    assert log =~ "initial render failed"
+  end
+
+  test "rerender failures keep the previous frame and the viewport alive" do
+    {:ok, pid} = RecoveringViewport.start_link(mode: {:label, "before"})
+    renderer = Emerge.Viewport.renderer(pid)
+
+    log =
+      capture_log(fn ->
+        send(pid, {:set_mode, :raise})
+
+        assert_eventually(fn ->
+          state = :sys.get_state(pid)
+
+          Process.alive?(pid) and rendered_text(pid) == "before" and
+            count_renderer_ops(renderer, :patch_tree) == 0 and not state.dirty? and
+            not state.flush_scheduled?
+        end)
+      end)
+
+    assert log =~ "rerender failed"
+
+    GenServer.stop(pid)
+  end
+
+  test "viewport can recover after a failed rerender" do
+    {:ok, pid} = RecoveringViewport.start_link(mode: {:label, "before"})
+    renderer = Emerge.Viewport.renderer(pid)
+
+    _log =
+      capture_log(fn ->
+        send(pid, {:set_mode, :raise})
+
+        assert_eventually(fn ->
+          rendered_text(pid) == "before" and count_renderer_ops(renderer, :patch_tree) == 0
+        end)
+      end)
+
+    send(pid, {:set_mode, {:label, "after"}})
+
+    assert_eventually(fn ->
+      rendered_text(pid) == "after" and count_renderer_ops(renderer, :patch_tree) == 1
     end)
 
     GenServer.stop(pid)
@@ -330,4 +484,27 @@ defmodule Emerge.ViewportTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition was not met")
+
+  defp count_renderer_ops(renderer, op_name) do
+    renderer
+    |> FakeRenderer.ops()
+    |> Enum.count(fn
+      {^op_name, _tree} -> true
+      _ -> false
+    end)
+  end
+
+  defp rendered_text(pid) do
+    case :sys.get_state(pid) do
+      %Emerge.Viewport.State{
+        diff_state: %Emerge.DiffState{
+          tree: %Emerge.Element{children: [%Emerge.Element{attrs: %{content: content}}]}
+        }
+      } ->
+        content
+
+      _ ->
+        nil
+    end
+  end
 end

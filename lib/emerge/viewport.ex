@@ -8,7 +8,10 @@ defmodule Emerge.Viewport do
   The module is intentionally state-management agnostic.
   """
 
+  require Logger
+
   alias Emerge.Viewport.Renderer.Skia
+  alias Emerge.Viewport.ReloadGroup
 
   @genserver_start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
   @default_renderer_check_interval_ms 500
@@ -96,6 +99,11 @@ defmodule Emerge.Viewport do
       end
 
       @impl true
+      def handle_info({:emerge_viewport, :source_reloaded, meta}, state) do
+        Emerge.Viewport.__handle_source_reloaded__(meta, state)
+      end
+
+      @impl true
       def handle_cast({:emerge_viewport, :flush}, state) do
         Emerge.Viewport.__handle_flush__(state)
       end
@@ -180,43 +188,13 @@ defmodule Emerge.Viewport do
       {:ok, user_state, mount_opts} when is_list(mount_opts) ->
         mount_config = parse_mount_config!(state.module, mount_opts)
 
-        case mount_config.renderer_module.start(
-               mount_config.skia_opts,
-               mount_config.renderer_opts
-             ) do
-          {:ok, renderer} ->
-            :ok = mount_config.renderer_module.set_input_target(renderer, self())
+        state =
+          state
+          |> put_mount_config(user_state, mount_config)
+          |> register_reload_viewport()
+          |> render_and_apply_tree(:initial_render)
 
-            if is_integer(mount_config.input_mask) do
-              :ok = mount_config.renderer_module.set_input_mask(renderer, mount_config.input_mask)
-            end
-
-            tree = apply(state.module, :render, [user_state])
-
-            {diff_state, _assigned} = mount_config.renderer_module.upload_tree(renderer, tree)
-
-            state =
-              %{
-                state
-                | user_state: user_state,
-                  renderer: renderer,
-                  diff_state: diff_state,
-                  renderer_module: mount_config.renderer_module,
-                  renderer_opts: mount_config.renderer_opts,
-                  skia_opts: mount_config.skia_opts,
-                  input_mask: mount_config.input_mask,
-                  renderer_check_interval_ms: mount_config.renderer_check_interval_ms
-              }
-              |> maybe_schedule_renderer_check()
-
-            {:noreply, state}
-
-          {:error, reason} ->
-            {:stop, {:renderer_start_failed, reason}, state}
-
-          other ->
-            {:stop, {:unexpected_renderer_start_result, other}, state}
-        end
+        {:noreply, state}
 
       {:stop, reason} ->
         {:stop, reason, state}
@@ -259,17 +237,18 @@ defmodule Emerge.Viewport do
   end
 
   @doc false
+  @spec __handle_source_reloaded__(term(), t()) :: {:noreply, t()}
+  def __handle_source_reloaded__(_meta, %State{} = state) do
+    {:noreply, schedule_rerender(state)}
+  end
+
+  @doc false
   @spec __handle_flush__(t()) :: {:noreply, t()}
   def __handle_flush__(%State{} = state) do
     state = %{state | flush_scheduled?: false}
 
-    if (state.dirty? and state.renderer) && state.diff_state do
-      tree = apply(state.module, :render, [state.user_state])
-
-      {diff_state, _assigned} =
-        state.renderer_module.patch_tree(state.renderer, state.diff_state, tree)
-
-      {:noreply, %{state | dirty?: false, diff_state: diff_state}}
+    if state.dirty? do
+      {:noreply, render_and_apply_tree(state, :rerender)}
     else
       {:noreply, state}
     end
@@ -280,8 +259,14 @@ defmodule Emerge.Viewport do
   def __terminate__(_reason, %State{renderer: nil}), do: :ok
 
   def __terminate__(_reason, %State{} = state) do
+    _ = ReloadGroup.leave(self())
     _ = safe_stop_renderer(state.renderer_module, state.renderer)
     :ok
+  end
+
+  @spec notify_source_reloaded(term()) :: :ok
+  def notify_source_reloaded(meta \\ %{}) do
+    ReloadGroup.broadcast({:emerge_viewport, :source_reloaded, meta})
   end
 
   @spec renderer(pid()) :: term()
@@ -380,6 +365,139 @@ defmodule Emerge.Viewport do
   end
 
   defp maybe_schedule_renderer_check(%State{} = state), do: state
+
+  defp put_mount_config(%State{} = state, user_state, mount_config) do
+    %{
+      state
+      | user_state: user_state,
+        renderer_module: mount_config.renderer_module,
+        renderer_opts: mount_config.renderer_opts,
+        skia_opts: mount_config.skia_opts,
+        input_mask: mount_config.input_mask,
+        renderer_check_interval_ms: mount_config.renderer_check_interval_ms
+    }
+  end
+
+  defp render_and_apply_tree(%State{} = state, phase) do
+    case safe_render_tree(state) do
+      {:ok, tree} ->
+        case apply_render_tree(state, tree) do
+          {:ok, next_state} ->
+            clear_pending_rerender(next_state)
+
+          {:error, failure} ->
+            log_render_failure(state.module, phase, failure)
+            clear_pending_rerender(state)
+        end
+
+      {:error, failure} ->
+        log_render_failure(state.module, phase, failure)
+        clear_pending_rerender(state)
+    end
+  end
+
+  defp apply_render_tree(%State{renderer: renderer, diff_state: diff_state} = state, tree)
+       when not is_nil(renderer) and not is_nil(diff_state) do
+    case safe_invoke(fn ->
+           state.renderer_module.patch_tree(state.renderer, state.diff_state, tree)
+         end) do
+      {:ok, {diff_state, _assigned}} ->
+        {:ok, %{state | diff_state: diff_state}}
+
+      {:ok, other} ->
+        {:error, "renderer patch failed with unexpected result: #{inspect(other)}"}
+
+      {:error, failure} ->
+        {:error, failure}
+    end
+  end
+
+  defp apply_render_tree(%State{} = state, tree) do
+    case safe_invoke(fn -> state.renderer_module.start(state.skia_opts, state.renderer_opts) end) do
+      {:ok, {:ok, renderer}} ->
+        case upload_initial_tree(state, renderer, tree) do
+          {:ok, next_state} ->
+            {:ok, next_state}
+
+          {:error, failure} ->
+            _ = safe_stop_renderer(state.renderer_module, renderer)
+            {:error, failure}
+        end
+
+      {:ok, {:error, reason}} ->
+        {:error, "renderer start failed: #{inspect(reason)}"}
+
+      {:ok, other} ->
+        {:error, "renderer start failed with unexpected result: #{inspect(other)}"}
+
+      {:error, failure} ->
+        {:error, failure}
+    end
+  end
+
+  defp upload_initial_tree(%State{} = state, renderer, tree) do
+    case safe_invoke(fn ->
+           :ok = state.renderer_module.set_input_target(renderer, self())
+
+           if is_integer(state.input_mask) do
+             :ok = state.renderer_module.set_input_mask(renderer, state.input_mask)
+           end
+
+           state.renderer_module.upload_tree(renderer, tree)
+         end) do
+      {:ok, {diff_state, _assigned}} ->
+        state =
+          %{state | renderer: renderer, diff_state: diff_state}
+          |> maybe_schedule_renderer_check()
+
+        {:ok, state}
+
+      {:ok, other} ->
+        {:error, "renderer upload failed with unexpected result: #{inspect(other)}"}
+
+      {:error, failure} ->
+        {:error, failure}
+    end
+  end
+
+  defp register_reload_viewport(%State{} = state) do
+    :ok = ReloadGroup.join(self())
+    state
+  end
+
+  defp clear_pending_rerender(%State{} = state) do
+    %{state | dirty?: false, flush_scheduled?: false}
+  end
+
+  defp safe_invoke(fun) when is_function(fun, 0) do
+    try do
+      {:ok, fun.()}
+    rescue
+      exception ->
+        {:error, Exception.format(:error, exception, __STACKTRACE__)}
+    catch
+      kind, reason ->
+        {:error, Exception.format(kind, reason, __STACKTRACE__)}
+    end
+  end
+
+  defp safe_render_tree(%State{} = state) do
+    safe_invoke(fn -> apply(state.module, :render, [state.user_state]) end)
+  end
+
+  defp log_render_failure(module, phase, failure) when is_atom(module) do
+    Logger.error([
+      "Emerge.Viewport ",
+      phase_label(phase),
+      " failed for ",
+      inspect(module),
+      ":\n",
+      failure
+    ])
+  end
+
+  defp phase_label(:initial_render), do: "initial render"
+  defp phase_label(:rerender), do: "rerender"
 
   defp safe_stop_renderer(renderer_module, renderer) do
     renderer_module.stop(renderer)
