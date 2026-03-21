@@ -1850,7 +1850,7 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "This shelf is conditionally inserted on click. It runs animate_enter only when freshly mounted, then stays put until removed."
+          "This shelf is conditionally inserted on click. Opening mounts it with animate_enter; closing removes the live node immediately and lets animate_exit finish as a passive ghost."
         )
       ),
       enter_shelf_showcase()
@@ -4436,7 +4436,7 @@ defmodule Demo do
   defp enter_shelf_showcase() do
     shelf_open = Process.get(:animation_shelf_open, false)
     toggle_label = if shelf_open, do: "Close shelf", else: "Open shelf"
-    status_label = if shelf_open, do: "Mounted", else: "Hidden"
+    status_label = if shelf_open, do: "Close -> exit", else: "Open -> enter"
 
     column([width(fill()), spacing(8)], [
       el([Font.size(13), Font.color(@light_text)], text("Click-inserted side shelf")),
@@ -4452,7 +4452,7 @@ defmodule Demo do
             el(
               [width(fill()), Font.size(11), Font.color(@dim_text)],
               text(
-                "Open the shelf to remount it. Closing removes the node; reopening runs animate_enter again."
+                "Open mounts the live shelf with animate_enter. Close removes it from events immediately, then animate_exit finishes the passive ghost."
               )
             ),
             el(
@@ -4505,7 +4505,9 @@ defmodule Demo do
           ),
           el(
             [Font.size(10), Font.color(Color.color_rgb(204, 214, 236))],
-            text("animate_enter(width + alpha + move_x, 260ms, :ease_out)")
+            text(
+              "animate_enter(width + alpha + move_x, 260ms, :ease_out) + animate_exit(width + alpha + move_x, 220ms, :ease_in)"
+            )
           )
         ])
       )
@@ -4577,13 +4579,21 @@ defmodule Demo do
             ],
             260,
             :ease_out
+          ),
+          animate_exit(
+            [
+              [width(px(176)), alpha(1.0), move_x(0)],
+              [width(px(32)), alpha(0.0), move_x(18)]
+            ],
+            220,
+            :ease_in
           )
         ],
         [
           el([Font.size(14), Font.color(:white)], text("Shelf")),
           el(
             [Font.size(10), Font.color(Color.color_rgb(234, 226, 248))],
-            text("Fresh mount only")
+            text("Enter on mount, exit on close")
           ),
           info_pill("Activity", Color.color_rgb(112, 90, 154)),
           info_pill("Filters", Color.color_rgb(98, 80, 144)),
