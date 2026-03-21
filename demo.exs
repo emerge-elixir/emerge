@@ -1016,7 +1016,7 @@ defmodule Demo do
                 move_y(1)
               ])
             ],
-            "Run action"
+            [text("Run action")]
           ),
           wrapped_row([width(fill()), spacing_xy(8, 8)], [
             el(
@@ -3591,7 +3591,7 @@ defmodule Demo do
           move_y(1)
         ])
       ] ++ hover_attrs,
-      label
+      [text(label)]
     )
   end
 
