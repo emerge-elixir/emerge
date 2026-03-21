@@ -22,14 +22,8 @@ defmodule EmergeDemo.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:emerge, path: "../emerge_skia"},
-      {:rustler, "~> 0.37.0", override: true},
-      {:membrane_core, "~> 1.2"},
-      {:membrane_h26x_plugin, "~> 0.10.1"},
-      {:membrane_rtp_plugin, "~> 0.30.0"},
-      {:membrane_rtp_h265_plugin, "~> 0.5.2"},
-      {:membrane_video_linux, path: "../membrane_video_linux"},
-      {:wifibroadcast, path: "../wifibroadcast"}
+      {:emerge, path: "../."},
+      {:solve, path: "../../solve"}
     ]
   end
 end
