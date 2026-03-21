@@ -283,6 +283,32 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode animate_exit attr" do
+    attrs = %{
+      animate_exit: %{
+        keyframes: [
+          %{
+            width: {:px, 120},
+            alpha: 1.0,
+            move_x: 0
+          },
+          %{
+            width: {:px, 48},
+            alpha: 0.0,
+            move_x: -18
+          }
+        ],
+        duration: 260,
+        curve: :ease_in,
+        repeat: :once
+      }
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
   test "encode/decode Emerge.Color helper tuples" do
     attrs = %{
       background: Color.color(:sky, 200, 0.3),
@@ -304,6 +330,19 @@ defmodule Emerge.AttrCodecTest do
           duration: 200,
           curve: :linear,
           repeat: :once
+        }
+      })
+    end
+  end
+
+  test "animate_exit encoding rejects non-once repeats" do
+    assert_raise ArgumentError, ~r/animate_exit expects :repeat to be :once/, fn ->
+      AttrCodec.encode_attrs(%{
+        animate_exit: %{
+          keyframes: [%{alpha: 1.0}, %{alpha: 0.0}],
+          duration: 180,
+          curve: :linear,
+          repeat: :loop
         }
       })
     end

@@ -28,7 +28,8 @@ defmodule Emerge.AttrValidation do
 
   def normalize_animation!(spec), do: normalize_animation!(:animate, spec)
 
-  def normalize_animation!(owner, %{} = spec) when owner in [:animate, :animate_enter] do
+  def normalize_animation!(owner, %{} = spec)
+      when owner in [:animate, :animate_enter, :animate_exit] do
     owner_name = Atom.to_string(owner)
     keyframes = Map.get(spec, :keyframes)
     duration = Map.get(spec, :duration)
@@ -49,7 +50,8 @@ defmodule Emerge.AttrValidation do
     }
   end
 
-  def normalize_animation!(owner, other) when owner in [:animate, :animate_enter] do
+  def normalize_animation!(owner, other)
+      when owner in [:animate, :animate_enter, :animate_exit] do
     owner_name = Atom.to_string(owner)
 
     raise ArgumentError,
@@ -307,6 +309,13 @@ defmodule Emerge.AttrValidation do
   defp validate_animation_curve!(owner_name, curve) do
     raise ArgumentError,
           "#{owner_name} expects :curve to be :linear, :ease_in, :ease_out, or :ease_in_out, got: #{inspect(curve)}"
+  end
+
+  defp validate_animation_repeat!("animate_exit", :once), do: :ok
+
+  defp validate_animation_repeat!("animate_exit", repeat) do
+    raise ArgumentError,
+          "animate_exit expects :repeat to be :once, got: #{inspect(repeat)}"
   end
 
   defp validate_animation_repeat!(_owner_name, :once), do: :ok

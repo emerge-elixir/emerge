@@ -64,7 +64,8 @@ defmodule Emerge.AttrCodec do
     svg_color: 63,
     svg_expected: 64,
     animate: 65,
-    animate_enter: 66
+    animate_enter: 66,
+    animate_exit: 67
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -157,6 +158,7 @@ defmodule Emerge.AttrCodec do
   defp encode_value(:video_target, value), do: encode_string(value)
   defp encode_value(:animate, value), do: encode_animation(value, :animate)
   defp encode_value(:animate_enter, value), do: encode_animation(value, :animate_enter)
+  defp encode_value(:animate_exit, value), do: encode_animation(value, :animate_exit)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -215,6 +217,7 @@ defmodule Emerge.AttrCodec do
   defp decode_value(:video_target, rest), do: decode_string(rest)
   defp decode_value(:animate, rest), do: decode_animation(rest, :animate)
   defp decode_value(:animate_enter, rest), do: decode_animation(rest, :animate_enter)
+  defp decode_value(:animate_exit, rest), do: decode_animation(rest, :animate_exit)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)

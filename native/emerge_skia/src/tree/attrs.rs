@@ -212,6 +212,8 @@ pub struct Attrs {
     pub align_y: Option<AlignY>,
     pub scrollbar_y: Option<bool>,
     pub scrollbar_x: Option<bool>,
+    pub ghost_scrollbar_y: Option<bool>,
+    pub ghost_scrollbar_x: Option<bool>,
     pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
     pub scroll_x: Option<f64>,
     pub scroll_y: Option<f64>,
@@ -270,9 +272,18 @@ pub struct Attrs {
     pub alpha: Option<f64>,
     pub animate: Option<AnimationSpec>,
     pub animate_enter: Option<AnimationSpec>,
+    pub animate_exit: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
     /// Runtime-only: computed paragraph text fragments (not decoded from binary).
     pub paragraph_fragments: Option<Vec<TextFragment>>,
+}
+
+pub fn effective_scrollbar_x(attrs: &Attrs) -> bool {
+    attrs.scrollbar_x.unwrap_or(false) || attrs.ghost_scrollbar_x.unwrap_or(false)
+}
+
+pub fn effective_scrollbar_y(attrs: &Attrs) -> bool {
+    attrs.scrollbar_y.unwrap_or(false) || attrs.ghost_scrollbar_y.unwrap_or(false)
 }
 
 /// Preserve runtime-only fields across attr replacement.
@@ -457,6 +468,7 @@ const TAG_SVG_COLOR: u8 = 63;
 const TAG_SVG_EXPECTED: u8 = 64;
 const TAG_ANIMATE: u8 = 65;
 const TAG_ANIMATE_ENTER: u8 = 66;
+const TAG_ANIMATE_EXIT: u8 = 67;
 
 // =============================================================================
 // Decoder
@@ -616,6 +628,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
         TAG_ANIMATE => attrs.animate = Some(decode_animation_spec(cursor)?),
         TAG_ANIMATE_ENTER => attrs.animate_enter = Some(decode_animation_spec(cursor)?),
+        TAG_ANIMATE_EXIT => attrs.animate_exit = Some(decode_exit_animation_spec(cursor)?),
         _ => {
             return Err(DecodeError::InvalidStructure(format!(
                 "unknown attribute tag: {}",
@@ -748,6 +761,18 @@ fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, Decod
         curve,
         repeat,
     })
+}
+
+fn decode_exit_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
+    let spec = decode_animation_spec(cursor)?;
+
+    if !matches!(spec.repeat, AnimationRepeat::Once) {
+        return Err(DecodeError::InvalidStructure(
+            "animate_exit repeat must be :once".to_string(),
+        ));
+    }
+
+    Ok(spec)
 }
 
 fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
@@ -1297,6 +1322,39 @@ mod tests {
         assert_eq!(animate_enter.duration_ms, 180.0);
         assert!(matches!(animate_enter.curve, AnimationCurve::EaseOut));
         assert!(matches!(animate_enter.repeat, AnimationRepeat::Once));
+    }
+
+    #[test]
+    fn test_decode_animate_exit() {
+        let mut keyframe_one = vec![0, 1, 35];
+        keyframe_one.extend_from_slice(&1.0_f64.to_be_bytes());
+
+        let mut keyframe_two = vec![0, 1, 35];
+        keyframe_two.extend_from_slice(&0.0_f64.to_be_bytes());
+
+        let mut payload = vec![0, 2];
+        payload.extend_from_slice(&(keyframe_one.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_one);
+        payload.extend_from_slice(&(keyframe_two.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&keyframe_two);
+        payload.extend_from_slice(&180.0_f64.to_be_bytes());
+        payload.extend_from_slice(&[0, 6, b'l', b'i', b'n', b'e', b'a', b'r']);
+        payload.push(0);
+
+        let mut data = vec![0, 1, 67];
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let animate_exit = attrs
+            .animate_exit
+            .expect("exit animation spec should decode");
+        assert_eq!(animate_exit.keyframes.len(), 2);
+        assert_eq!(animate_exit.keyframes[0].alpha, Some(1.0));
+        assert_eq!(animate_exit.keyframes[1].alpha, Some(0.0));
+        assert_eq!(animate_exit.duration_ms, 180.0);
+        assert!(matches!(animate_exit.curve, AnimationCurve::Linear));
+        assert!(matches!(animate_exit.repeat, AnimationRepeat::Once));
     }
 
     #[test]

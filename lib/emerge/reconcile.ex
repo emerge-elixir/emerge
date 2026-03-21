@@ -16,6 +16,7 @@ defmodule Emerge.Reconcile do
   """
   @spec assign_ids(Element.t()) :: {VNode.t(), Element.t()}
   def assign_ids(%Element{} = element) do
+    validate_viewport_root!(element)
     {vnode, assigned, _seen} = build_vnode(element, :root, 0, MapSet.new())
     {vnode, assigned}
   end
@@ -25,11 +26,14 @@ defmodule Emerge.Reconcile do
   """
   @spec reconcile(VNode.t() | nil, Element.t()) :: result()
   def reconcile(nil, %Element{} = element) do
+    validate_viewport_root!(element)
     {vnode, assigned, _seen} = build_vnode(element, :root, 0, MapSet.new())
     {vnode, [], assigned}
   end
 
   def reconcile(%VNode{} = old_vnode, %Element{} = element) do
+    validate_viewport_root!(element)
+
     {vnode, patches, assigned, _seen} =
       reconcile_node(old_vnode, element, :root, 0, MapSet.new())
 
@@ -390,5 +394,11 @@ defmodule Emerge.Reconcile do
 
   defp make_id(parent_id, kind, local_identity) do
     :erlang.phash2({parent_id, kind, local_identity})
+  end
+
+  defp validate_viewport_root!(%Element{attrs: attrs}) do
+    if Map.has_key?(attrs, :animate_exit) do
+      raise ArgumentError, "animate_exit is not allowed on the viewport root"
+    end
   end
 end

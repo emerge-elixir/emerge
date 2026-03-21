@@ -16,7 +16,7 @@ pub fn encode_tree(tree: &ElementTree) -> Vec<u8> {
     let mut out = encode_header(nodes.len() as u32);
 
     for element in nodes {
-        encode_node(&mut out, element);
+        encode_node(&mut out, tree, element);
     }
 
     out
@@ -30,15 +30,21 @@ fn encode_header(node_count: u32) -> Vec<u8> {
     out
 }
 
-fn encode_node(out: &mut Vec<u8>, element: &Element) {
+fn encode_node(out: &mut Vec<u8>, tree: &ElementTree, element: &Element) {
     encode_id(out, &element.id);
 
     let tag = kind_tag(element.kind);
     out.push(tag);
 
     encode_attrs(out, &element.attrs_raw);
-    encode_children(out, &element.children);
-    encode_nearby(out, element);
+    let live_children: Vec<ElementId> = element
+        .children
+        .iter()
+        .filter(|child_id| tree.get(child_id).is_some_and(Element::is_live))
+        .cloned()
+        .collect();
+    encode_children(out, &live_children);
+    encode_nearby(out, tree, element);
 }
 
 fn encode_id(out: &mut Vec<u8>, id: &ElementId) {
@@ -58,12 +64,18 @@ fn encode_children(out: &mut Vec<u8>, children: &[ElementId]) {
     }
 }
 
-fn encode_nearby(out: &mut Vec<u8>, element: &Element) {
+fn encode_nearby(out: &mut Vec<u8>, tree: &ElementTree, element: &Element) {
     let mut mask = 0u8;
     let mut ids = Vec::new();
 
     for (index, slot) in NearbySlot::PAINT_ORDER.into_iter().enumerate() {
-        if let Some(id) = element.nearby.get(slot) {
+        if let Some(id) = element
+            .nearby
+            .ids(slot)
+            .iter()
+            .rev()
+            .find(|nearby_id| tree.get(nearby_id).is_some_and(Element::is_live))
+        {
             mask |= 1 << index;
             ids.push(id);
         }
@@ -102,9 +114,27 @@ fn collect_nodes_inner<'a>(tree: &'a ElementTree, id: &ElementId, out: &mut Vec<
         return;
     };
 
+    if element.is_ghost() {
+        return;
+    }
+
     out.push(element);
 
-    element.for_each_paint_child(|child| {
-        collect_nodes_inner(tree, child.id, out);
-    });
+    for child_id in &element.children {
+        if tree.get(child_id).is_some_and(Element::is_live) {
+            collect_nodes_inner(tree, child_id, out);
+        }
+    }
+
+    for slot in NearbySlot::PAINT_ORDER {
+        if let Some(nearby_id) = element
+            .nearby
+            .ids(slot)
+            .iter()
+            .rev()
+            .find(|nearby_id| tree.get(nearby_id).is_some_and(Element::is_live))
+        {
+            collect_nodes_inner(tree, nearby_id, out);
+        }
+    }
 }

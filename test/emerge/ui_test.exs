@@ -5,6 +5,7 @@ defmodule Emerge.UITest do
   import Emerge.UI
 
   alias Emerge.Color
+  alias Emerge.Reconcile
   alias Emerge.UI.{Background, Border, Font, Svg}
   alias EmergeSkia.VideoTarget
 
@@ -186,6 +187,33 @@ defmodule Emerge.UITest do
            }
   end
 
+  test "animate_exit stores normalized animation specs" do
+    element =
+      el(
+        [
+          animate_exit(
+            [
+              [width(px(140)), alpha(1.0), move_x(0)],
+              [width(px(64)), alpha(0.0), move_x(-16)]
+            ],
+            220,
+            :ease_in
+          )
+        ],
+        text("bye")
+      )
+
+    assert element.attrs.animate_exit == %{
+             keyframes: [
+               %{width: {:px, 140}, alpha: 1.0, move_x: 0},
+               %{width: {:px, 64}, alpha: 0.0, move_x: -16}
+             ],
+             duration: 220,
+             curve: :ease_in,
+             repeat: :once
+           }
+  end
+
   test "animate rejects mismatched keyframe attrs" do
     assert_raise ArgumentError, ~r/same attribute set/, fn ->
       el(
@@ -204,6 +232,26 @@ defmodule Emerge.UITest do
   test "animate_enter error messages name animate_enter" do
     assert_raise ArgumentError, ~r/animate_enter expects at least 2 keyframes/, fn ->
       el([animate_enter([[width(px(100))]], 200, :linear)], text("bad"))
+    end
+  end
+
+  test "animate_exit only allows repeat once" do
+    assert_raise ArgumentError, ~r/animate_exit expects :repeat to be :once/, fn ->
+      el(
+        [animate_exit([[alpha(1.0)], [alpha(0.0)]], 200, :linear, :loop)],
+        text("bad")
+      )
+    end
+  end
+
+  test "viewport root rejects animate_exit" do
+    assert_raise ArgumentError, ~r/animate_exit is not allowed on the viewport root/, fn ->
+      Reconcile.assign_ids(
+        el(
+          [animate_exit([[alpha(1.0)], [alpha(0.0)]], 200, :linear)],
+          text("bad")
+        )
+      )
     end
   end
 

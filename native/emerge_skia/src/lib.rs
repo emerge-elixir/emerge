@@ -589,6 +589,8 @@ fn spawn_tree_actor_with_initial_tree(
                         registry_requested
                     );
                     animation_runtime.sync_with_tree(&tree, sample_time);
+                    let _ =
+                        animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
                     let output = if animation_runtime.is_empty() {
                         layout_and_refresh_default(&mut tree, constraint, scale)
                     } else {
@@ -1202,6 +1204,10 @@ fn tree_layout<'a>(
         // Collect all frames
         let mut frames = Vec::with_capacity(tree.len());
         for (id, element) in tree.nodes.iter() {
+            if element.is_ghost() {
+                continue;
+            }
+
             if let Some(frame) = element.frame {
                 let mut id_binary = NewBinary::new(env, id.0.len());
                 id_binary.as_mut_slice().copy_from_slice(&id.0);

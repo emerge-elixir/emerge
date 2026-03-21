@@ -18,7 +18,7 @@ pub(super) use self::scope::{
 use self::text::{
     TextDecorationSpec, render_text_input_items, render_text_items, text_decoration_items,
 };
-use super::attrs::{Attrs, BorderRadius};
+use super::attrs::{Attrs, BorderRadius, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
 };
@@ -263,8 +263,8 @@ fn build_host_content_scope(
     Some(RenderScope {
         host_clip: Some(HostClipDescriptor {
             clip: host_clip,
-            scroll_x: attrs.scrollbar_x.unwrap_or(false),
-            scroll_y: attrs.scrollbar_y.unwrap_or(false),
+            scroll_x: effective_scrollbar_x(attrs),
+            scroll_y: effective_scrollbar_y(attrs),
         }),
         items,
         ..RenderScope::default()
@@ -319,20 +319,31 @@ fn build_nearby_scope(
     collect_events: bool,
     scene_state: Option<super::scene::ResolvedNodeState>,
 ) -> Option<RenderScope> {
-    let nearby_id = element.nearby.get(slot)?;
-    build_element_scope(
-        tree,
-        nearby_id,
-        element_context,
-        text_input_focused,
-        text_input_cursor_area,
-        event_acc.as_deref_mut(),
-        scroll_contexts,
-        collect_events,
-        scene_state
-            .map(|state| next_scene_context(state, slot.spec().phase))
-            .unwrap_or_default(),
-    )
+    let mut items = Vec::new();
+
+    for nearby_id in element.nearby.ids(slot) {
+        if let Some(scope) = build_element_scope(
+            tree,
+            nearby_id,
+            element_context,
+            text_input_focused,
+            text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            scroll_contexts,
+            collect_events,
+            scene_state
+                .clone()
+                .map(|state| next_scene_context(state, slot.spec().phase))
+                .unwrap_or_default(),
+        ) {
+            items.push(RenderItem::Scope(scope));
+        }
+    }
+
+    (!items.is_empty()).then_some(RenderScope {
+        items,
+        ..RenderScope::default()
+    })
 }
 
 fn build_children_scope(
@@ -408,12 +419,12 @@ fn build_paragraph_items(
                 child.id,
                 element_context,
                 text_input_focused,
-                    text_input_cursor_area,
-                    event_acc.as_deref_mut(),
-                    scroll_contexts,
-                    collect_events,
-                    child_scene_ctx.clone(),
-                ) {
+                text_input_cursor_area,
+                event_acc.as_deref_mut(),
+                scroll_contexts,
+                collect_events,
+                child_scene_ctx.clone(),
+            ) {
                 items.push(RenderItem::Scope(scope));
             }
         }

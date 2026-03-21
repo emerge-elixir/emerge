@@ -1,5 +1,6 @@
 //! Element types for Emerge UI trees.
 
+use super::animation::AnimationSpec;
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
 use super::attrs::{Attrs, ScrollbarHoverAxis, supports_mouse_over_tracking};
@@ -153,44 +154,76 @@ impl NearbySlot {
 
 #[derive(Clone, Debug, Default)]
 pub struct NearbyMounts {
-    pub behind_content: Option<ElementId>,
-    pub above: Option<ElementId>,
-    pub on_right: Option<ElementId>,
-    pub below: Option<ElementId>,
-    pub on_left: Option<ElementId>,
-    pub in_front: Option<ElementId>,
+    pub behind_content: Vec<ElementId>,
+    pub above: Vec<ElementId>,
+    pub on_right: Vec<ElementId>,
+    pub below: Vec<ElementId>,
+    pub on_left: Vec<ElementId>,
+    pub in_front: Vec<ElementId>,
 }
 
 impl NearbyMounts {
-    pub fn get(&self, slot: NearbySlot) -> Option<&ElementId> {
+    pub fn ids(&self, slot: NearbySlot) -> &[ElementId] {
         match slot {
-            NearbySlot::BehindContent => self.behind_content.as_ref(),
-            NearbySlot::Above => self.above.as_ref(),
-            NearbySlot::OnRight => self.on_right.as_ref(),
-            NearbySlot::Below => self.below.as_ref(),
-            NearbySlot::OnLeft => self.on_left.as_ref(),
-            NearbySlot::InFront => self.in_front.as_ref(),
+            NearbySlot::BehindContent => &self.behind_content,
+            NearbySlot::Above => &self.above,
+            NearbySlot::OnRight => &self.on_right,
+            NearbySlot::Below => &self.below,
+            NearbySlot::OnLeft => &self.on_left,
+            NearbySlot::InFront => &self.in_front,
+        }
+    }
+
+    pub fn ids_mut(&mut self, slot: NearbySlot) -> &mut Vec<ElementId> {
+        match slot {
+            NearbySlot::BehindContent => &mut self.behind_content,
+            NearbySlot::Above => &mut self.above,
+            NearbySlot::OnRight => &mut self.on_right,
+            NearbySlot::Below => &mut self.below,
+            NearbySlot::OnLeft => &mut self.on_left,
+            NearbySlot::InFront => &mut self.in_front,
         }
     }
 
     pub fn set(&mut self, slot: NearbySlot, id: Option<ElementId>) {
-        match slot {
-            NearbySlot::BehindContent => self.behind_content = id,
-            NearbySlot::Above => self.above = id,
-            NearbySlot::OnRight => self.on_right = id,
-            NearbySlot::Below => self.below = id,
-            NearbySlot::OnLeft => self.on_left = id,
-            NearbySlot::InFront => self.in_front = id,
+        let ids = self.ids_mut(slot);
+        ids.clear();
+        if let Some(id) = id {
+            ids.push(id);
         }
     }
 
-    pub fn for_each_overlay_in_paint_order(&self, mut f: impl FnMut(NearbySlot, &ElementId)) {
-        for slot in NearbySlot::OVERLAY_PAINT_ORDER {
-            if let Some(id) = self.get(slot) {
-                f(slot, id);
-            }
-        }
+    pub fn push(&mut self, slot: NearbySlot, id: ElementId) {
+        self.ids_mut(slot).push(id);
     }
+
+    pub fn remove(&mut self, slot: NearbySlot, id: &ElementId) -> bool {
+        let ids = self.ids_mut(slot);
+        let len_before = ids.len();
+        ids.retain(|candidate| candidate != id);
+        len_before != ids.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum NodeResidency {
+    #[default]
+    Live,
+    Ghost,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GhostAttachment {
+    Child {
+        parent_id: ElementId,
+        live_index: usize,
+        seq: u64,
+    },
+    Nearby {
+        host_id: ElementId,
+        slot: NearbySlot,
+        seq: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,11 +246,6 @@ pub struct NearbySlotSpec {
     pub constraint_kind: NearbyConstraintKind,
     pub align_x_active: bool,
     pub align_y_active: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PaintChildRef<'a> {
-    pub id: &'a ElementId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,6 +292,18 @@ pub struct Element {
 
     /// Tree revision when this element was last mounted into the tree.
     pub mounted_at_revision: u64,
+
+    /// Runtime residency marker.
+    pub residency: NodeResidency,
+
+    /// Runtime-only attachment metadata for ghost roots.
+    pub ghost_attachment: Option<GhostAttachment>,
+
+    /// Runtime-only scale active when this ghost snapshot was captured.
+    pub ghost_capture_scale: Option<f32>,
+
+    /// Runtime-only exit animation captured for this ghost root.
+    pub ghost_exit_animation: Option<AnimationSpec>,
 }
 
 impl Element {
@@ -281,22 +321,23 @@ impl Element {
             frame: None,
             measured_frame: None,
             mounted_at_revision: 0,
+            residency: NodeResidency::Live,
+            ghost_attachment: None,
+            ghost_capture_scale: None,
+            ghost_exit_animation: None,
         }
     }
 
-    pub fn for_each_paint_child(&self, mut f: impl FnMut(PaintChildRef<'_>)) {
-        if let Some(id) = self.nearby.get(NearbySlot::BehindContent) {
-            f(PaintChildRef { id });
-        }
+    pub fn is_live(&self) -> bool {
+        matches!(self.residency, NodeResidency::Live)
+    }
 
-        for id in &self.children {
-            f(PaintChildRef { id });
-        }
+    pub fn is_ghost(&self) -> bool {
+        matches!(self.residency, NodeResidency::Ghost)
+    }
 
-        self.nearby.for_each_overlay_in_paint_order(|slot, id| {
-            let _ = slot;
-            f(PaintChildRef { id });
-        });
+    pub fn is_ghost_root(&self) -> bool {
+        self.is_ghost() && self.ghost_attachment.is_some()
     }
 
     pub fn for_each_retained_child(
@@ -349,16 +390,34 @@ fn paragraph_child_mode(tree: &ElementTree, child_id: &ElementId) -> RetainedChi
 }
 
 /// The complete element tree with indexed access.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ElementTree {
     /// Monotonic revision for tree mutations.
     pub revision: u64,
+
+    /// Monotonic sequence used to order ghost attachments.
+    pub next_ghost_seq: u64,
+
+    /// Last layout scale applied to the tree.
+    pub current_scale: f32,
 
     /// Root element ID (if tree is non-empty).
     pub root: Option<ElementId>,
 
     /// All elements indexed by ID for O(1) lookup.
     pub nodes: HashMap<ElementId, Element>,
+}
+
+impl Default for ElementTree {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            next_ghost_seq: 0,
+            current_scale: 1.0,
+            root: None,
+            nodes: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,6 +462,25 @@ impl ElementTree {
         self.revision = revision;
     }
 
+    pub fn current_scale(&self) -> f32 {
+        self.current_scale
+    }
+
+    pub fn set_current_scale(&mut self, scale: f32) {
+        self.current_scale = scale.max(f32::EPSILON);
+    }
+
+    pub fn next_ghost_seq(&mut self) -> u64 {
+        let seq = self.next_ghost_seq;
+        self.next_ghost_seq = self.next_ghost_seq.saturating_add(1);
+        seq
+    }
+
+    pub fn mint_ghost_id(&mut self) -> ElementId {
+        let seq = self.next_ghost_seq();
+        ElementId(format!("__emerge_ghost:{seq}").into_bytes())
+    }
+
     /// Stamp every live node as mounted at the provided revision.
     pub fn stamp_all_mounted_at_revision(&mut self, revision: u64) {
         self.nodes
@@ -414,6 +492,8 @@ impl ElementTree {
     pub fn replace_with_uploaded(&mut self, mut uploaded: ElementTree) {
         let revision = self.revision.saturating_add(1);
         uploaded.set_revision(revision);
+        uploaded.next_ghost_seq = self.next_ghost_seq;
+        uploaded.current_scale = self.current_scale;
         uploaded.stamp_all_mounted_at_revision(revision);
         *self = uploaded;
     }
@@ -439,6 +519,122 @@ impl ElementTree {
         self.bump_revision();
         self.root = None;
         self.nodes.clear();
+    }
+
+    pub fn live_child_ids(&self, parent_id: &ElementId) -> Vec<ElementId> {
+        self.get(parent_id)
+            .map(|element| {
+                element
+                    .children
+                    .iter()
+                    .filter(|child_id| self.get(child_id).is_some_and(Element::is_live))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn merge_live_children_with_ghosts(
+        &self,
+        parent_id: &ElementId,
+        new_live_ids: Vec<ElementId>,
+    ) -> Vec<ElementId> {
+        let mut ghosts: Vec<(ElementId, usize, u64)> = self
+            .get(parent_id)
+            .map(|parent| {
+                parent
+                    .children
+                    .iter()
+                    .filter_map(|child_id| {
+                        let child = self.get(child_id)?;
+                        match child.ghost_attachment.as_ref() {
+                            Some(GhostAttachment::Child {
+                                parent_id: ghost_parent_id,
+                                live_index,
+                                seq,
+                            }) if ghost_parent_id == parent_id => {
+                                Some((child_id.clone(), *live_index, *seq))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ghosts.sort_by_key(|(_, live_index, seq)| (*live_index, *seq));
+
+        let mut merged = Vec::with_capacity(new_live_ids.len() + ghosts.len());
+        let mut ghost_index = 0;
+
+        for live_index in 0..=new_live_ids.len() {
+            while ghost_index < ghosts.len() {
+                let (ghost_id, anchor, _) = &ghosts[ghost_index];
+                if (*anchor).min(new_live_ids.len()) != live_index {
+                    break;
+                }
+
+                merged.push(ghost_id.clone());
+                ghost_index += 1;
+            }
+
+            if let Some(live_id) = new_live_ids.get(live_index) {
+                merged.push(live_id.clone());
+            }
+        }
+
+        merged
+    }
+
+    pub fn merge_nearby_slot_with_ghosts(
+        &self,
+        host_id: &ElementId,
+        slot: NearbySlot,
+        live_id: Option<ElementId>,
+    ) -> Vec<ElementId> {
+        let mut ghosts: Vec<(ElementId, u64)> = self
+            .get(host_id)
+            .map(|host| {
+                host.nearby
+                    .ids(slot)
+                    .iter()
+                    .filter_map(|nearby_id| {
+                        let nearby = self.get(nearby_id)?;
+                        match nearby.ghost_attachment.as_ref() {
+                            Some(GhostAttachment::Nearby {
+                                host_id: ghost_host_id,
+                                slot: ghost_slot,
+                                seq,
+                            }) if ghost_host_id == host_id && *ghost_slot == slot => {
+                                Some((nearby_id.clone(), *seq))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ghosts.sort_by_key(|(_, seq)| *seq);
+
+        let mut merged: Vec<ElementId> = ghosts.into_iter().map(|(id, _)| id).collect();
+
+        if let Some(live_id) = live_id {
+            merged.push(live_id);
+        }
+
+        merged
+    }
+
+    pub fn live_nearby_id(&self, host_id: &ElementId, slot: NearbySlot) -> Option<ElementId> {
+        self.get(host_id).and_then(|host| {
+            host.nearby
+                .ids(slot)
+                .iter()
+                .rev()
+                .find(|nearby_id| self.get(nearby_id).is_some_and(Element::is_live))
+                .cloned()
+        })
     }
 
     /// Apply scroll delta to an element. Returns true if scroll changed.

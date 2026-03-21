@@ -1,4 +1,4 @@
-use super::attrs::{Attrs, ScrollbarHoverAxis};
+use super::attrs::{Attrs, ScrollbarHoverAxis, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::Frame;
 
 pub const SCROLLBAR_THICKNESS: f32 = 5.0;
@@ -47,7 +47,7 @@ fn thickness_for_axis(attrs: &Attrs, axis: ScrollbarAxis) -> f32 {
 }
 
 pub fn horizontal_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetrics> {
-    if !attrs.scrollbar_x.unwrap_or(false) {
+    if !effective_scrollbar_x(attrs) {
         return None;
     }
 
@@ -91,7 +91,7 @@ pub fn horizontal_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetric
 }
 
 pub fn vertical_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetrics> {
-    if !attrs.scrollbar_y.unwrap_or(false) {
+    if !effective_scrollbar_y(attrs) {
         return None;
     }
 

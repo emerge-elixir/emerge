@@ -42,10 +42,18 @@ pub struct EnterAnimationRuntimeEntry {
     pub started_at: Instant,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExitAnimationRuntimeEntry {
+    pub spec: AnimationSpec,
+    pub started_at: Instant,
+    pub capture_scale: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AnimationRuntime {
     animate_entries: HashMap<ElementId, AnimationRuntimeEntry>,
     enter_entries: HashMap<ElementId, EnterAnimationRuntimeEntry>,
+    exit_entries: HashMap<ElementId, ExitAnimationRuntimeEntry>,
     last_seen_revision: u64,
 }
 
@@ -59,11 +67,34 @@ impl AnimationRuntime {
     pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
         self.animate_entries.retain(|id, _| {
             tree.get(id)
-                .is_some_and(|element| element.base_attrs.animate.is_some())
+                .is_some_and(|element| element.is_live() && element.base_attrs.animate.is_some())
         });
-        self.enter_entries.retain(|id, _| tree.get(id).is_some());
+        self.enter_entries
+            .retain(|id, _| tree.get(id).is_some_and(|element| element.is_live()));
+        self.exit_entries.retain(|id, _| {
+            tree.get(id).is_some_and(|element| {
+                element.is_ghost_root() && element.ghost_exit_animation.is_some()
+            })
+        });
 
         for (id, element) in &tree.nodes {
+            if element.is_ghost_root() {
+                if let Some(spec) = element.ghost_exit_animation.as_ref() {
+                    self.exit_entries.entry(id.clone()).or_insert_with(|| {
+                        ExitAnimationRuntimeEntry {
+                            spec: spec.clone(),
+                            started_at,
+                            capture_scale: element.ghost_capture_scale.unwrap_or(1.0),
+                        }
+                    });
+                }
+                continue;
+            }
+
+            if !element.is_live() {
+                continue;
+            }
+
             if tree.was_mounted_after(id, self.last_seen_revision) {
                 self.animate_entries.remove(id);
 
@@ -119,7 +150,9 @@ impl AnimationRuntime {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.animate_entries.is_empty() && self.enter_entries.is_empty()
+        self.animate_entries.is_empty()
+            && self.enter_entries.is_empty()
+            && self.exit_entries.is_empty()
     }
 
     pub fn animate_entry(&self, id: &ElementId) -> Option<&AnimationRuntimeEntry> {
@@ -128,6 +161,36 @@ impl AnimationRuntime {
 
     pub fn enter_entry(&self, id: &ElementId) -> Option<&EnterAnimationRuntimeEntry> {
         self.enter_entries.get(id)
+    }
+
+    pub fn exit_entry(&self, id: &ElementId) -> Option<&ExitAnimationRuntimeEntry> {
+        self.exit_entries.get(id)
+    }
+
+    pub fn prune_completed_exit_ghosts(
+        &mut self,
+        tree: &mut ElementTree,
+        sample_time: Option<Instant>,
+    ) -> bool {
+        let completed_ids: Vec<ElementId> = self
+            .exit_entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                let sample = sample_exit_animation_spec(entry, sample_time, tree.current_scale());
+                (!sample.active).then_some(id.clone())
+            })
+            .collect();
+
+        if completed_ids.is_empty() {
+            return false;
+        }
+
+        for id in completed_ids {
+            self.exit_entries.remove(&id);
+            crate::tree::patch::remove_subtree(tree, &id);
+        }
+
+        true
     }
 }
 
@@ -158,6 +221,15 @@ pub fn apply_animation_overlays(
 ) -> bool {
     tree.nodes.values_mut().fold(false, |active_any, element| {
         if let Some(sample) = runtime
+            .and_then(|state| state.exit_entry(&element.id))
+            .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
+            .filter(|sample| sample.active)
+        {
+            apply_sample_attrs(&mut element.attrs, &sample.attrs);
+            return active_any || sample.active;
+        }
+
+        if let Some(sample) = runtime
             .and_then(|state| state.enter_entry(&element.id))
             .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
             .filter(|sample| sample.active)
@@ -186,6 +258,23 @@ fn sample_enter_animation_spec(
     scale: f64,
 ) -> AnimationSample {
     let scaled_spec = scale_animation_spec(&entry.spec, scale);
+    let runtime_entry = AnimationRuntimeEntry {
+        spec_hash: 0,
+        started_at: entry.started_at,
+    };
+
+    sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
+}
+
+fn sample_exit_animation_spec(
+    entry: &ExitAnimationRuntimeEntry,
+    sample_time: Option<Instant>,
+    current_scale: f32,
+) -> AnimationSample {
+    let scaled_spec = scale_animation_spec(
+        &entry.spec,
+        (current_scale / entry.capture_scale.max(f32::EPSILON)) as f64,
+    );
     let runtime_entry = AnimationRuntimeEntry {
         spec_hash: 0,
         started_at: entry.started_at,
@@ -788,7 +877,7 @@ fn scale_border_width(value: &BorderWidth, scale: f64) -> BorderWidth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::element::{Element, ElementKind};
+    use crate::tree::element::{Element, ElementKind, GhostAttachment, NodeResidency};
 
     fn move_x_spec(
         from_x: f64,
@@ -839,6 +928,43 @@ mod tests {
         tree.insert(element);
         tree.set_revision(tree_revision);
         (tree, id)
+    }
+
+    fn tree_with_exit_ghost() -> (ElementTree, ElementId, ElementId) {
+        let root_id = ElementId::from_term_bytes(vec![10]);
+        let ghost_id = ElementId::from_term_bytes(vec![11]);
+
+        let mut root = Element::with_attrs(
+            root_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        root.children = vec![ghost_id.clone()];
+
+        let mut ghost_attrs = Attrs::default();
+        ghost_attrs.alpha = Some(1.0);
+        let mut ghost = Element::with_attrs(
+            ghost_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            ghost_attrs.clone(),
+        );
+        ghost.base_attrs = ghost_attrs;
+        ghost.residency = NodeResidency::Ghost;
+        ghost.ghost_attachment = Some(GhostAttachment::Child {
+            parent_id: root_id.clone(),
+            live_index: 0,
+            seq: 0,
+        });
+        ghost.ghost_capture_scale = Some(1.0);
+        ghost.ghost_exit_animation = Some(alpha_spec(1.0, 0.0, 100.0));
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(root_id.clone());
+        tree.insert(root);
+        tree.insert(ghost);
+        (tree, root_id, ghost_id)
     }
 
     #[test]
@@ -1007,5 +1133,38 @@ mod tests {
 
         assert!(active);
         assert_eq!(tree.get(&id).unwrap().attrs.move_x, Some(10.0));
+    }
+
+    #[test]
+    fn sync_with_tree_starts_exit_runtime_for_ghost_roots() {
+        let (tree, _root_id, ghost_id) = tree_with_exit_ghost();
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+
+        assert!(runtime.exit_entry(&ghost_id).is_some());
+    }
+
+    #[test]
+    fn prune_completed_exit_ghosts_removes_finished_ghost_subtree() {
+        let (mut tree, root_id, ghost_id) = tree_with_exit_ghost();
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, start);
+        assert!(!runtime.prune_completed_exit_ghosts(
+            &mut tree,
+            Some(start + std::time::Duration::from_millis(50))
+        ));
+        assert!(tree.get(&ghost_id).is_some());
+
+        assert!(runtime.prune_completed_exit_ghosts(
+            &mut tree,
+            Some(start + std::time::Duration::from_millis(150))
+        ));
+        assert!(tree.get(&ghost_id).is_none());
+        assert!(runtime.exit_entry(&ghost_id).is_none());
+        assert!(tree.get(&root_id).unwrap().children.is_empty());
     }
 }

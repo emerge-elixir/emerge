@@ -8,7 +8,7 @@
 use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
-    TextFragment, preserve_runtime_scroll_attrs,
+    TextFragment, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
 };
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
@@ -382,6 +382,8 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
         return false;
     };
 
+    tree.set_current_scale(scale);
+
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
     let animations_active = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
     apply_interaction_styles(tree);
@@ -413,7 +415,11 @@ fn prepare_attrs_for_frame(
 ) -> bool {
     for element in tree.nodes.values_mut() {
         let previous = element.attrs.clone();
-        element.attrs = scale_attrs(&element.base_attrs, scale);
+        let scale_factor = match element.ghost_capture_scale {
+            Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
+            None => scale,
+        };
+        element.attrs = scale_attrs(&element.base_attrs, scale_factor);
         preserve_runtime_scroll_attrs(&previous, &mut element.attrs);
     }
 
@@ -434,6 +440,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         align_y: attrs.align_y,
         scrollbar_y: attrs.scrollbar_y,
         scrollbar_x: attrs.scrollbar_x,
+        ghost_scrollbar_y: attrs.ghost_scrollbar_y,
+        ghost_scrollbar_x: attrs.ghost_scrollbar_x,
         scrollbar_hover_axis: attrs.scrollbar_hover_axis,
         scroll_x: attrs.scroll_x.map(|v| v * scale_f64),
         scroll_y: attrs.scroll_y.map(|v| v * scale_f64),
@@ -526,6 +534,10 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
             .map(|spec| scale_animation_spec(spec, scale_f64)),
         animate_enter: attrs
             .animate_enter
+            .as_ref()
+            .map(|spec| scale_animation_spec(spec, scale_f64)),
+        animate_exit: attrs
+            .animate_exit
             .as_ref()
             .map(|spec| scale_animation_spec(spec, scale_f64)),
         space_evenly: attrs.space_evenly,
@@ -730,7 +742,7 @@ fn measure_element<M: TextMeasurer>(
         .map(|element| {
             let nearby_ids = NearbySlot::PAINT_ORDER
                 .into_iter()
-                .filter_map(|slot| element.nearby.get(slot).cloned())
+                .flat_map(|slot| element.nearby.ids(slot).iter().cloned())
                 .collect();
             (element.children.clone(), nearby_ids)
         })
@@ -1302,8 +1314,8 @@ fn resolve_element<M: TextMeasurer>(
     let align_x = attrs.align_x.unwrap_or_default();
     let align_y = attrs.align_y.unwrap_or_default();
 
-    let scroll_x_enabled = attrs.scrollbar_x.unwrap_or(false);
-    let scroll_y_enabled = attrs.scrollbar_y.unwrap_or(false);
+    let scroll_x_enabled = effective_scrollbar_x(&attrs);
+    let scroll_y_enabled = effective_scrollbar_y(&attrs);
     // Check if this element is scrollable (scrollbars only)
     let is_scrollable = scroll_x_enabled || scroll_y_enabled;
 
@@ -1419,7 +1431,14 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
         .map(|element| {
             NearbySlot::PAINT_ORDER
                 .into_iter()
-                .filter_map(|slot| element.nearby.get(slot).cloned().map(|id| (slot, id)))
+                .flat_map(|slot| {
+                    element
+                        .nearby
+                        .ids(slot)
+                        .iter()
+                        .cloned()
+                        .map(move |id| (slot, id))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -3465,8 +3484,8 @@ fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
         return;
     };
 
-    let scroll_x_enabled = element.attrs.scrollbar_x.unwrap_or(false);
-    let scroll_y_enabled = element.attrs.scrollbar_y.unwrap_or(false);
+    let scroll_x_enabled = effective_scrollbar_x(&element.attrs);
+    let scroll_y_enabled = effective_scrollbar_y(&element.attrs);
 
     if !scroll_x_enabled {
         element.attrs.scroll_x = None;
@@ -3555,7 +3574,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
         child_ids.extend(
             NearbySlot::PAINT_ORDER
                 .into_iter()
-                .filter_map(|slot| element.nearby.get(slot).cloned()),
+                .flat_map(|slot| element.nearby.ids(slot).iter().cloned()),
         );
         child_ids
     };
