@@ -5,14 +5,23 @@ defmodule EmergeDemo.Application do
 
   @impl true
   def start(_type, _args) do
-    children =
-      if Keyword.get(Application.get_env(:emerge_demo, __MODULE__, []), :auto_start?, true) do
-        [Supervisor.child_spec({EmergeDemo.Runtime, []}, restart: :temporary)]
-      else
-        []
-      end
-
     opts = [strategy: :one_for_one, name: EmergeDemo.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children(), opts)
+  end
+
+  if Mix.env() == :test do
+    def children(), do: []
+  else
+    def children() do
+      [
+        %{
+          id: EmergeDemo.State,
+          start: {EmergeDemo.State, :start_link, [[name: EmergeDemo.State]]},
+          type: :worker,
+          restart: :permanent
+        },
+        EmergeDemo
+      ]
+    end
   end
 end
