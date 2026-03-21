@@ -19,10 +19,9 @@ use skia_safe::{
     AlphaType, ColorType, Image,
     gpu::{self, Mipmapped, Protected, SurfaceOrigin, gl::TextureInfo},
 };
-use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
-use crate::backend::wayland::UserEvent;
+use crate::backend::wake::BackendWakeHandle;
 
 rustler::atoms! {
     keepalive,
@@ -436,23 +435,19 @@ pub struct PendingVideoFrame {
 }
 
 #[derive(Clone)]
-pub enum VideoWake {
-    Wayland(Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>),
-    Noop,
-}
+pub struct VideoWake(BackendWakeHandle);
 
 impl VideoWake {
+    pub fn new(wake: BackendWakeHandle) -> Self {
+        Self(wake)
+    }
+
+    pub fn noop() -> Self {
+        Self(BackendWakeHandle::noop())
+    }
+
     pub fn notify(&self) {
-        match self {
-            Self::Wayland(proxy) => {
-                if let Ok(guard) = proxy.lock()
-                    && let Some(proxy) = guard.as_ref()
-                {
-                    let _ = proxy.send_event(UserEvent::VideoFrameAvailable);
-                }
-            }
-            Self::Noop => {}
-        }
+        self.0.notify_video_frame();
     }
 }
 

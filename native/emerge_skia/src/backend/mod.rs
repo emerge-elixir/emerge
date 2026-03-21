@@ -4,4 +4,7 @@
 
 pub mod drm;
 pub mod raster;
+pub mod wake;
 pub mod wayland;
+pub mod wayland_config;
+pub mod wayland_legacy;
