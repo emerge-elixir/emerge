@@ -60,6 +60,7 @@ defmodule Emerge.UI do
                       :alpha,
                       :animate,
                       :animate_enter,
+                      :animate_exit,
                       :space_evenly,
                       :on_click,
                       :on_press,
@@ -508,6 +509,11 @@ defmodule Emerge.UI do
     {:animate_enter, %{keyframes: keyframes, duration: duration, curve: curve, repeat: repeat}}
   end
 
+  @doc "Animate compatible attrs once when the element is removed from the tree"
+  def animate_exit(keyframes, duration, curve, repeat \\ :once) do
+    {:animate_exit, %{keyframes: keyframes, duration: duration, curve: curve, repeat: repeat}}
+  end
+
   @doc "Set image fit mode (`:contain` or `:cover`)"
   def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
 
@@ -608,7 +614,7 @@ defmodule Emerge.UI do
       MapSet.member?(@state_style_key_set, key) ->
         {key, AttrValidation.normalize_state_style!(key, value)}
 
-      key in [:animate, :animate_enter] ->
+      key in [:animate, :animate_enter, :animate_exit] ->
         {key, AttrValidation.normalize_animation!(key, value)}
 
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
@@ -631,6 +637,8 @@ defmodule Emerge.UI do
   defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
 
   defp validate_public_attr_value!(_attrs_owner, :animate_enter, _value), do: :ok
+
+  defp validate_public_attr_value!(_attrs_owner, :animate_exit, _value), do: :ok
 
   defp validate_public_attr_value!(attrs_owner, :width, value),
     do: validate_length!(attrs_owner, :width, value)
