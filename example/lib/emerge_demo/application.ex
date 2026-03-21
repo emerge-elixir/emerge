@@ -9,19 +9,38 @@ defmodule EmergeDemo.Application do
     Supervisor.start_link(children(), opts)
   end
 
-  if Mix.env() == :test do
-    def children(), do: []
-  else
-    def children() do
-      [
-        %{
-          id: EmergeDemo.State,
-          start: {EmergeDemo.State, :start_link, [[name: EmergeDemo.State]]},
-          type: :worker,
-          restart: :permanent
-        },
-        EmergeDemo
-      ]
+  def children(env \\ Mix.env()) do
+    case env do
+      :test ->
+        []
+
+      :dev ->
+        base_children() ++ [hot_reload_child()]
+
+      _other ->
+        base_children()
     end
+  end
+
+  defp base_children do
+    [
+      %{
+        id: EmergeDemo.State,
+        start: {EmergeDemo.State, :start_link, [[name: EmergeDemo.State]]},
+        type: :worker,
+        restart: :permanent
+      },
+      EmergeDemo
+    ]
+  end
+
+  defp hot_reload_child do
+    {Emerge.CodeReloader,
+     dirs: [
+       Path.expand("..", __DIR__),
+       Path.expand("../../../lib", __DIR__),
+       Path.expand("../../../../solve/lib", __DIR__)
+     ],
+     reloadable_apps: [:emerge_demo, :emerge, :solve]}
   end
 end

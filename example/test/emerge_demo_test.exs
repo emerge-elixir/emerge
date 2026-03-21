@@ -152,6 +152,18 @@ defmodule EmergeDemoTest do
     assert_receive {:"$gen_cast", {:emerge_viewport, :flush}}
   end
 
+  test "dev children include the hot reloader" do
+    assert [{Emerge.CodeReloader, opts}] =
+             EmergeDemo.Application.children(:dev)
+             |> Enum.filter(fn
+               {Emerge.CodeReloader, _opts} -> true
+               _other -> false
+             end)
+
+    assert opts[:reloadable_apps] == [:emerge_demo, :emerge, :solve]
+    assert Enum.all?(opts[:dirs], &is_binary/1)
+  end
+
   defp assert_eventually(assertion, attempts \\ 50)
 
   defp assert_eventually(_assertion, 0) do
