@@ -7,8 +7,16 @@ defmodule Emerge.ViewportTest do
     @behaviour Emerge.Viewport.Renderer
 
     @impl true
-    def start(_skia_opts, _renderer_opts) do
-      Agent.start_link(fn -> %{ops: [], running?: true, target: nil} end)
+    def start(skia_opts, renderer_opts) do
+      Agent.start_link(fn ->
+        %{
+          ops: [],
+          running?: true,
+          target: nil,
+          skia_opts: skia_opts,
+          renderer_opts: renderer_opts
+        }
+      end)
     end
 
     @impl true
@@ -59,7 +67,30 @@ defmodule Emerge.ViewportTest do
 
     def ops(renderer), do: Agent.get(renderer, &Enum.reverse(&1.ops))
 
+    def skia_opts(renderer), do: Agent.get(renderer, & &1.skia_opts)
+
+    def renderer_opts(renderer), do: Agent.get(renderer, & &1.renderer_opts)
+
     defp log_op(state, op), do: %{state | ops: [op | state.ops]}
+  end
+
+  defmodule BareSkiaViewport do
+    use Emerge.Viewport
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok, %{},
+       [
+         title: "Viewport Defaults",
+         viewport: [
+           renderer_module: Emerge.ViewportTest.FakeRenderer,
+           renderer_check_interval_ms: nil
+         ]
+       ]}
+    end
+
+    @impl Viewport
+    def render(_state), do: el([], text("defaults"))
   end
 
   defmodule CounterViewport do
@@ -178,6 +209,18 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "mount accepts bare skia opts and infers otp_app" do
+    {:ok, pid} = BareSkiaViewport.start_link()
+
+    renderer = Emerge.Viewport.renderer(pid)
+
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Viewport Defaults"
+    assert FakeRenderer.renderer_opts(renderer) == []
+
+    GenServer.stop(pid)
+  end
+
   test "self-targeted element events route through mailbox and rerender" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.Viewport.renderer(pid)
@@ -263,6 +306,16 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_viewport, :check_renderer})
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+  end
+
+  test "stopping viewport stops renderer" do
+    {:ok, pid} = CounterViewport.start_link(count: 1)
+    renderer = Emerge.Viewport.renderer(pid)
+
+    ref = Process.monitor(renderer)
+    GenServer.stop(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^renderer, :normal}
   end
 
   defp assert_eventually(fun, attempts \\ 40)
