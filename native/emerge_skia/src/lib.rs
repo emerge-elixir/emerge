@@ -35,7 +35,10 @@ use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
-use backend::wayland::{self, UserEvent, WaylandConfig};
+use backend::wake::BackendWakeHandle;
+use backend::wayland;
+use backend::wayland_config::WaylandConfig;
+use backend::wayland_legacy;
 use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
@@ -66,6 +69,7 @@ mod atoms {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendKind {
     Wayland,
+    WaylandLegacy,
     Drm,
 }
 
@@ -90,7 +94,7 @@ impl OffscreenAssetMode {
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend: BackendKind,
-    event_proxy: Arc<Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>>,
+    backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
@@ -212,7 +216,7 @@ impl RendererResource {
         shutdown_renderer_runtime(
             self.backend,
             &self.running_flag,
-            &self.event_proxy,
+            &self.backend_wake,
             &self.stop_flag,
             &self.tree_tx,
             &self.event_tx,
@@ -226,9 +230,9 @@ impl RendererResource {
 }
 
 fn shutdown_renderer_runtime(
-    backend: BackendKind,
+    _backend: BackendKind,
     running_flag: &Arc<AtomicBool>,
-    event_proxy: &Arc<Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>>,
+    backend_wake: &BackendWakeHandle,
     stop_flag: &Arc<AtomicBool>,
     tree_tx: &Sender<TreeMsg>,
     event_tx: &Sender<EventMsg>,
@@ -249,19 +253,7 @@ fn shutdown_renderer_runtime(
         let _ = cursor_tx.send(RenderMsg::Stop);
     }
 
-    match backend {
-        BackendKind::Wayland => {
-            let proxy = match event_proxy.lock() {
-                Ok(mut guard) => guard.take(),
-                Err(poisoned) => poisoned.into_inner().take(),
-            };
-
-            if let Some(proxy) = proxy {
-                let _ = proxy.send_event(UserEvent::Stop);
-            }
-        }
-        BackendKind::Drm => {}
-    }
+    backend_wake.request_stop();
 
     if let Some(handle) = handles.event_handle.take() {
         let _ = handle.join();
@@ -409,7 +401,7 @@ struct TreeActorConfig {
     event_tx: Sender<EventMsg>,
     render_counter: Arc<AtomicU64>,
     log_input: bool,
-    wayland_proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
+    window_wake: BackendWakeHandle,
     initial_width: u32,
     initial_height: u32,
 }
@@ -429,7 +421,7 @@ fn spawn_tree_actor_with_initial_tree(
             event_tx,
             render_counter,
             log_input,
-            wayland_proxy,
+            window_wake,
             initial_width,
             initial_height,
         } = config;
@@ -696,9 +688,7 @@ fn spawn_tree_actor_with_initial_tree(
                         ime_cursor_area: output.ime_cursor_area,
                     });
 
-                    if let Some(proxy) = wayland_proxy.as_ref() {
-                        let _ = proxy.send_event(UserEvent::Redraw);
-                    }
+                    window_wake.request_redraw();
 
                     #[cfg(feature = "hover-trace")]
                     {
@@ -743,7 +733,10 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     assets::start(tree_tx.clone(), log_render);
 
-    let system_clipboard = matches!(config.backend, BackendKind::Wayland);
+    let system_clipboard = matches!(
+        config.backend,
+        BackendKind::Wayland | BackendKind::WaylandLegacy
+    );
     let mut handles = RendererHandles {
         event_handle: Some(spawn_event_actor(
             event_rx,
@@ -758,15 +751,16 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     let initial_height = config.height;
     let release_tx = video::spawn_release_worker();
     let video_registry = Arc::new(VideoRegistry::new(release_tx));
-    let event_proxy = Arc::new(Mutex::new(None));
+    let mut backend_wake = BackendWakeHandle::noop();
 
     let (backend, prime_video_supported) = match config.backend {
-        BackendKind::Wayland => {
+        BackendKind::Wayland | BackendKind::WaylandLegacy => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let video_registry_clone = Arc::clone(&video_registry);
+            let backend_kind = config.backend;
             let wayland_config = WaylandConfig {
                 title: config.title,
                 width: config.width,
@@ -774,7 +768,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             };
 
             handles.backend_handle = Some(thread::spawn(move || {
-                wayland::run(
+                let run_backend = match backend_kind {
+                    BackendKind::Wayland => wayland::run,
+                    BackendKind::WaylandLegacy => wayland_legacy::run,
+                    BackendKind::Drm => unreachable!("drm backend does not use the wayland runner"),
+                };
+
+                run_backend(
                     wayland_config,
                     running_flag_clone,
                     tree_tx_clone,
@@ -789,9 +789,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Wayland,
+                        backend_kind,
                         &running_flag,
-                        &event_proxy,
+                        &backend_wake,
                         &stop_flag,
                         &tree_tx,
                         &event_tx,
@@ -806,9 +806,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 }
                 Err(_) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Wayland,
+                        backend_kind,
                         &running_flag,
-                        &event_proxy,
+                        &backend_wake,
                         &stop_flag,
                         &tree_tx,
                         &event_tx,
@@ -820,14 +820,12 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     );
 
                     return Err(rustler::Error::Term(Box::new(
-                        "failed to receive event proxy",
+                        "failed to receive backend startup info",
                     )));
                 }
             };
 
-            if let Ok(mut guard) = event_proxy.lock() {
-                *guard = Some(startup.proxy.clone());
-            }
+            backend_wake = startup.wake.clone();
 
             handles.tree_handle = Some(spawn_tree_actor(
                 tree_rx,
@@ -836,13 +834,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
                     log_input,
-                    wayland_proxy: Some(startup.proxy.clone()),
+                    window_wake: startup.wake.clone(),
                     initial_width,
                     initial_height,
                 },
             ));
 
-            (BackendKind::Wayland, startup.prime_video_supported)
+            (backend_kind, startup.prime_video_supported)
         }
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
@@ -903,7 +901,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
                     log_input,
-                    wayland_proxy: None,
+                    window_wake: BackendWakeHandle::noop(),
                     initial_width,
                     initial_height,
                 },
@@ -913,16 +911,16 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         }
     };
 
-    let video_wake = if matches!(backend, BackendKind::Wayland) {
-        VideoWake::Wayland(Arc::clone(&event_proxy))
+    let video_wake = if matches!(backend, BackendKind::Wayland | BackendKind::WaylandLegacy) {
+        VideoWake::new(backend_wake.clone())
     } else {
-        VideoWake::Noop
+        VideoWake::noop()
     };
 
     let resource = RendererResource {
         running_flag,
         backend,
-        event_proxy,
+        backend_wake,
         stop_flag,
         tree_tx,
         event_tx,
@@ -962,7 +960,8 @@ fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
     let backend = opts.backend.to_lowercase();
     let backend = match backend.as_str() {
         "drm" => BackendKind::Drm,
-        "wayland" | "x11" => BackendKind::Wayland,
+        "wayland" => BackendKind::Wayland,
+        "wayland_legacy" | "x11" => BackendKind::WaylandLegacy,
         other => {
             return Err(rustler::Error::Term(Box::new(format!(
                 "unsupported backend: {other}"
@@ -1390,7 +1389,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
             event_tx: event_tx.clone(),
             render_counter,
             log_input: false,
-            wayland_proxy: None,
+            window_wake: BackendWakeHandle::noop(),
             initial_width: width,
             initial_height: height,
         },
@@ -1616,7 +1615,7 @@ mod tests {
                     event_tx: event_tx.clone(),
                     render_counter,
                     log_input: false,
-                    wayland_proxy: None,
+                    window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
                     initial_height: height,
                 },
@@ -1737,7 +1736,7 @@ mod tests {
     fn shutdown_renderer_runtime_stops_and_joins_threads() {
         let running_flag = Arc::new(AtomicBool::new(true));
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let event_proxy = Arc::new(Mutex::new(None));
+        let backend_wake = BackendWakeHandle::noop();
 
         let (tree_tx, tree_rx) = bounded(1);
         let (event_tx, event_rx) = bounded(1);
@@ -1799,7 +1798,7 @@ mod tests {
         shutdown_renderer_runtime(
             BackendKind::Drm,
             &running_flag,
-            &event_proxy,
+            &backend_wake,
             &stop_flag,
             &tree_tx,
             &event_tx,

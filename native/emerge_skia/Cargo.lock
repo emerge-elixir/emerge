@@ -563,6 +563,10 @@ dependencies = [
  "rustler",
  "sha2",
  "skia-safe",
+ "smithay-client-toolkit",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "winit",
 ]
 
@@ -2547,6 +2551,7 @@ checksum = "fee64194ccd96bf648f42a65a7e589547096dfa702f7cadef84347b66ad164f9"
 dependencies = [
  "cc",
  "downcast-rs",
+ "raw-window-handle",
  "rustix 1.1.3",
  "scoped-tls",
  "smallvec",
