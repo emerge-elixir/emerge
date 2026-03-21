@@ -178,7 +178,7 @@ defmodule Emerge.Viewport do
   def __handle_continue_mount__(opts, %State{} = state) when is_list(opts) do
     case apply(state.module, :mount, [opts]) do
       {:ok, user_state, mount_opts} when is_list(mount_opts) ->
-        mount_config = parse_mount_config!(mount_opts)
+        mount_config = parse_mount_config!(state.module, mount_opts)
 
         case mount_config.renderer_module.start(
                mount_config.skia_opts,
@@ -387,8 +387,8 @@ defmodule Emerge.Viewport do
     _kind, _reason -> :ok
   end
 
-  defp parse_mount_config!(opts) when is_list(opts) do
-    skia_opts =
+  defp parse_mount_config!(module, opts) when is_atom(module) and is_list(opts) do
+    explicit_skia_opts =
       case Keyword.fetch(opts, :emerge_skia) do
         {:ok, value} when is_list(value) ->
           value
@@ -398,9 +398,15 @@ defmodule Emerge.Viewport do
                 "mount/1 emerge_skia option must be a keyword list, got: #{inspect(other)}"
 
         :error ->
-          raise ArgumentError,
-                "mount/1 must include emerge_skia: [...] options"
+          []
       end
+
+    bare_skia_opts = Keyword.drop(opts, [:emerge_skia, :viewport])
+
+    skia_opts =
+      bare_skia_opts
+      |> Keyword.merge(explicit_skia_opts)
+      |> ensure_skia_otp_app!(module)
 
     viewport_opts =
       case Keyword.get(opts, :viewport, []) do
@@ -478,5 +484,47 @@ defmodule Emerge.Viewport do
       input_mask: input_mask,
       renderer_check_interval_ms: renderer_check_interval_ms
     }
+  end
+
+  defp ensure_skia_otp_app!(skia_opts, module) when is_list(skia_opts) and is_atom(module) do
+    case Keyword.fetch(skia_opts, :otp_app) do
+      {:ok, otp_app} when is_atom(otp_app) ->
+        skia_opts
+
+      {:ok, other} ->
+        raise ArgumentError,
+              "mount/1 otp_app must be an atom, got: #{inspect(other)}"
+
+      :error ->
+        Keyword.put(skia_opts, :otp_app, infer_otp_app!(module))
+    end
+  end
+
+  defp infer_otp_app!(module) when is_atom(module) do
+    case Application.get_application(module) || infer_otp_app_from_module_root(module) do
+      otp_app when is_atom(otp_app) ->
+        otp_app
+
+      nil ->
+        raise ArgumentError,
+              "mount/1 could not infer otp_app for #{inspect(module)}; pass otp_app: :my_app or emerge_skia: [otp_app: :my_app]"
+    end
+  end
+
+  defp infer_otp_app_from_module_root(module) when is_atom(module) do
+    module
+    |> Module.split()
+    |> List.first()
+    |> case do
+      nil ->
+        nil
+
+      root ->
+        root = Macro.underscore(root)
+
+        Enum.find_value(Application.loaded_applications(), fn {otp_app, _description, _version} ->
+          if Atom.to_string(otp_app) == root, do: otp_app
+        end)
+    end
   end
 end
