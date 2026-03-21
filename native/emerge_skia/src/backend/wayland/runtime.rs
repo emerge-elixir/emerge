@@ -11,8 +11,8 @@ use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
 use glutin::prelude::GlSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
-    delegate_xdg_shell, delegate_xdg_window,
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     reexports::{
         calloop::{self, EventLoop},
@@ -22,6 +22,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         pointer::{PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
@@ -35,7 +36,7 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
 
 use crate::{
@@ -55,6 +56,7 @@ use super::{
     egl::{GlEnv, create_gl_env, resize_gl_env},
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
+    keyboard::{KeyboardInputState, key_name_from_keysym, mods_from_sctk, normalize_commit_text},
     present::PresentState,
     protocols::ProtocolHandles,
 };
@@ -95,6 +97,7 @@ pub(super) struct WaylandApp {
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
     input: PointerInputState,
+    pub(super) keyboard: KeyboardInputState,
     exit: bool,
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
@@ -140,6 +143,7 @@ impl WaylandApp {
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
             input: PointerInputState::new(globals, &qh),
+            keyboard: KeyboardInputState::new(),
             exit: false,
             running_flag,
             tree_tx,
@@ -462,6 +466,11 @@ impl SeatHandler for WaylandApp {
                 Ok(pointer) => self.input.pointer = Some(pointer),
                 Err(err) => eprintln!("failed to create wayland pointer: {err}"),
             }
+        } else if capability == Capability::Keyboard && self.keyboard.keyboard.is_none() {
+            match self.input.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboard.keyboard = Some(keyboard),
+                Err(err) => eprintln!("failed to create wayland keyboard: {err}"),
+            }
         }
     }
 
@@ -476,6 +485,18 @@ impl SeatHandler for WaylandApp {
             && let Some(pointer) = self.input.pointer.take()
         {
             pointer.release();
+        } else if capability == Capability::Keyboard
+            && let Some(keyboard) = self.keyboard.keyboard.take()
+        {
+            keyboard.release();
+
+            if self.keyboard.focused {
+                self.send_input_event(InputEvent::Focused { focused: false });
+            }
+
+            self.keyboard.focused = false;
+            self.keyboard.current_mods = 0;
+            self.input.current_mods = 0;
         }
     }
 
@@ -541,7 +562,93 @@ impl PointerHandler for WaylandApp {
     }
 }
 
+impl KeyboardHandler for WaylandApp {
+    fn enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+        if surface == self.window.wl_surface() && !self.keyboard.focused {
+            self.keyboard.focused = true;
+            self.send_input_event(InputEvent::Focused { focused: true });
+        }
+    }
+
+    fn leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+        if surface == self.window.wl_surface() {
+            self.keyboard.focused = false;
+            self.keyboard.current_mods = 0;
+            self.input.current_mods = 0;
+            self.send_input_event(InputEvent::Focused { focused: false });
+        }
+    }
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.send_input_event(InputEvent::Key {
+            key: key_name_from_keysym(event.keysym),
+            action: crate::input::ACTION_PRESS,
+            mods: self.keyboard.current_mods,
+        });
+
+        if let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text) {
+            self.send_input_event(InputEvent::TextCommit {
+                text,
+                mods: self.keyboard.current_mods,
+            });
+        }
+    }
+
+    fn release_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.send_input_event(InputEvent::Key {
+            key: key_name_from_keysym(event.keysym),
+            action: crate::input::ACTION_RELEASE,
+            mods: self.keyboard.current_mods,
+        });
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        modifiers: Modifiers,
+        _layout: u32,
+    ) {
+        let mods = mods_from_sctk(modifiers);
+        self.keyboard.current_mods = mods;
+        self.input.current_mods = mods;
+    }
+}
+
 delegate_compositor!(WaylandApp);
+delegate_keyboard!(WaylandApp);
 delegate_output!(WaylandApp);
 delegate_pointer!(WaylandApp);
 delegate_seat!(WaylandApp);

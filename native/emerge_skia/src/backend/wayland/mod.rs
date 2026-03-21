@@ -3,6 +3,7 @@
 mod egl;
 mod geometry;
 mod input;
+mod keyboard;
 mod present;
 mod protocols;
 mod runtime;
