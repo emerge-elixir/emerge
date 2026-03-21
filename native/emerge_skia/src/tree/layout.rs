@@ -13,6 +13,7 @@ use super::attrs::{
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
 };
+use super::render::DEFAULT_TEXT_COLOR;
 use crate::assets;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -3101,7 +3102,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             .unwrap_or_else(|| "default".to_string());
         let weight = font_ctx.font_weight.unwrap_or(400);
         let italic = font_ctx.font_italic.unwrap_or(false);
-        let color = font_ctx.font_color.unwrap_or(0xFFFFFFFF);
+        let color = font_ctx.font_color.unwrap_or(DEFAULT_TEXT_COLOR);
         let underline = font_ctx.font_underline.unwrap_or(false);
         let strike = font_ctx.font_strike.unwrap_or(false);
 

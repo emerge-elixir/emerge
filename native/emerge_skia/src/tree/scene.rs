@@ -1,8 +1,8 @@
 use super::element::{Element, Frame, RetainedPaintPhase};
-use super::geometry::{visible_bounds, ClipShape, ShapeBounds};
+use super::geometry::{ClipShape, ShapeBounds, visible_bounds};
 use super::scrollbar as tree_scrollbar;
 use super::scrollbar::ScrollbarMetrics;
-use super::transform::{interaction_transform, Affine2, InteractionClip};
+use super::transform::{Affine2, InteractionClip, interaction_transform};
 
 #[derive(Clone, Copy, Debug)]
 struct LocalSceneGeometry {

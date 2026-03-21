@@ -441,19 +441,35 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Set the target process to receive input events.
+  Set the target process to receive renderer events.
 
-  Input events are sent directly to the target process as
-  `{:emerge_skia_event, event}` messages where event is one of:
+  Events are sent directly to the target process as
+  `{:emerge_skia_event, event}` messages.
+
+  Raw input event payloads include:
 
   - `{:cursor_pos, {x, y}}`
   - `{:cursor_button, {button, action, mods, {x, y}}}`
   - `{:cursor_scroll, {{dx, dy}, {x, y}}}`
   - `{:key, {key, action, mods}}`
   - `{:codepoint, {char, mods}}`
+  - `{:text_commit, {text, mods}}`
+  - `{:text_preedit, {text, cursor}}`
+  - `:text_preedit_clear`
   - `{:cursor_entered, entered}`
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
+
+  Element event payloads include:
+
+  - `{id_bin, event_type}`
+  - `{id_bin, event_type, payload}`
+
+  where `id_bin` is an opaque element id and `event_type` is an atom such as
+  `:press`, `:click`, or `:change`.
+
+  Higher-level runtimes should route element events with
+  `Emerge.lookup_event/3` or `Emerge.dispatch_event/3`/`4`.
 
   Where:
   - `button` is an atom like `:left`, `:right`, `:middle`

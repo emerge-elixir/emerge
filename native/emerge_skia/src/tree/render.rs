@@ -8,6 +8,7 @@ mod paint;
 mod scope;
 mod text;
 
+pub(crate) use self::color::DEFAULT_TEXT_COLOR;
 use self::paint::{
     build_background_items, collect_border_items, collect_box_shadow_items,
     collect_scrollbar_items, render_image_items, render_video_items,

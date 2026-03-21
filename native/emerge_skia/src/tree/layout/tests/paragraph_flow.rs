@@ -609,6 +609,30 @@ fn test_paragraph_fragment_colors_from_children() {
 }
 
 #[test]
+fn test_paragraph_fragment_defaults_to_black() {
+    let (mut tree, para_id, _) = build_paragraph(
+        {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Px(200.0));
+            a
+        },
+        vec![("t", ElementKind::Text, text_attrs("Default"))],
+    );
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let para = tree.get(&para_id).unwrap();
+    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(fragments[0].color, 0x000000FF);
+}
+
+#[test]
 fn test_paragraph_inside_el_shifts_fragments() {
     // An el with padding=12 containing a paragraph with text.
     // The paragraph fragments should be offset by the parent's padding.

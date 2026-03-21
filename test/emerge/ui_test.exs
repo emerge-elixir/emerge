@@ -591,7 +591,7 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
-  test "Input.button creates an el with text label and handlers" do
+  test "Input.button creates an el with children and handlers" do
     element =
       Emerge.UI.Input.button(
         [
@@ -601,7 +601,7 @@ defmodule Emerge.UITest do
           on_focus({self(), :save_focused}),
           on_blur({self(), :save_blurred})
         ],
-        "Save"
+        [text("Save")]
       )
 
     assert element.type == :el
@@ -615,6 +615,18 @@ defmodule Emerge.UITest do
     [label] = element.children
     assert label.type == :text
     assert label.attrs.content == "Save"
+  end
+
+  test "event helpers wrap local messages with self" do
+    assert on_press(:save_pressed) == {:on_press, {self(), :save_pressed}}
+    assert on_change(:changed) == {:on_change, {self(), :changed}}
+    assert on_click(:clicked) == {:on_click, {self(), :clicked}}
+  end
+
+  test "event helpers preserve explicit pid payloads" do
+    pid = self()
+    assert on_press({pid, :save_pressed}) == {:on_press, {pid, :save_pressed}}
+    assert on_change({pid, :changed}) == {:on_change, {pid, :changed}}
   end
 
   test "image/2 validates attrs are first" do
@@ -648,6 +660,14 @@ defmodule Emerge.UITest do
                  ~r/Input\.button\/2 expects the first argument to be a list of attributes, got:/,
                  fn ->
                    Emerge.UI.Input.button("Save", [key(:save_btn)])
+                 end
+  end
+
+  test "Input.button/2 expects children list" do
+    assert_raise ArgumentError,
+                 ~r/Input\.button\/2 expects the second argument to be a list of child elements, got:/,
+                 fn ->
+                   Emerge.UI.Input.button([key(:save_btn)], "Save")
                  end
   end
 

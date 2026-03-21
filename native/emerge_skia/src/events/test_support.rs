@@ -6,7 +6,7 @@ use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, 
 use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
 use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, NearbySlot};
 use crate::tree::layout::{
-    layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
+    Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

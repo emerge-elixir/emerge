@@ -261,7 +261,7 @@ defmodule Emerge.DiffStateTest do
           key(:save),
           on_press({self(), :pressed})
         ],
-        "Save"
+        [Emerge.UI.text("Save")]
       )
 
     state = Emerge.diff_state_new(layout)
@@ -337,7 +337,9 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "dispatch_event routes press events" do
-    layout = Emerge.UI.Input.button([key(:save), on_press({self(), :pressed})], "Save")
+    layout =
+      Emerge.UI.Input.button([key(:save), on_press({self(), :pressed})], [Emerge.UI.text("Save")])
+
     state = Emerge.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 

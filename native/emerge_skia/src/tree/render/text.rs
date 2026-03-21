@@ -1,5 +1,5 @@
 use super::box_model::content_insets;
-use super::color::color_to_u32;
+use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
 use super::scope::RenderItem;
 use crate::renderer::{DrawCmd, make_font_with_style};
 use crate::tree::attrs::{Attrs, TextAlign};
@@ -28,7 +28,7 @@ pub(super) fn render_text_items(
         .as_ref()
         .map(color_to_u32)
         .or(inherited.font_color)
-        .unwrap_or(0xFFFFFFFF);
+        .unwrap_or(DEFAULT_TEXT_COLOR);
     let underline = attrs
         .font_underline
         .or(inherited.font_underline)
@@ -117,7 +117,7 @@ pub(super) fn render_text_input_items(
         .as_ref()
         .map(color_to_u32)
         .or(inherited.font_color)
-        .unwrap_or(0xFFFFFFFF);
+        .unwrap_or(DEFAULT_TEXT_COLOR);
     let underline = attrs
         .font_underline
         .or(inherited.font_underline)

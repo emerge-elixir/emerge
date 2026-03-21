@@ -481,7 +481,11 @@ impl Default for RegistryRebuildPayload {
     }
 }
 
-fn text_input_state(element: &Element, adjusted_rect: Rect, screen_to_local: Option<Affine2>) -> TextInputState {
+fn text_input_state(
+    element: &Element,
+    adjusted_rect: Rect,
+    screen_to_local: Option<Affine2>,
+) -> TextInputState {
     let content = element.base_attrs.content.clone().unwrap_or_default();
     let content_len = content.chars().count() as u32;
     let cursor = element
