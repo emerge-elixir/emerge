@@ -1078,6 +1078,74 @@ fn test_layout_row() {
 }
 
 #[test]
+fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
+    let mut tree = ElementTree::new();
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.padding = Some(Padding::Uniform(10.0));
+    row_attrs.spacing = Some(10.0);
+
+    let mut row = make_element("row", ElementKind::Row, row_attrs);
+
+    let child1 = make_element("c1", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(50.0));
+        a.height = Some(Length::Px(20.0));
+        a.padding = Some(Padding::Uniform(2.0));
+        a
+    });
+
+    let child2 = make_element("c2", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(10.0));
+        a.height = Some(Length::Px(20.0));
+        a
+    });
+
+    let child3 = make_element("c3", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(50.0));
+        a.height = Some(Length::Px(20.0));
+        a.padding = Some(Padding::Uniform(2.0));
+        a
+    });
+
+    let row_id = row.id.clone();
+    let c1_id = child1.id.clone();
+    let c2_id = child2.id.clone();
+    let c3_id = child3.id.clone();
+
+    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(child1);
+    tree.insert(child2);
+    tree.insert(child3);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+
+    assert_eq!(row_frame.width, 150.0);
+    assert_eq!(row_frame.height, 40.0);
+    assert_eq!(c1_frame.x, row_frame.x + 10.0);
+    assert_eq!(c2_frame.x, c1_frame.x + c1_frame.width + 10.0);
+    assert_eq!(c3_frame.x, c2_frame.x + c2_frame.width + 10.0);
+    assert_eq!(
+        row_frame.x + row_frame.width - (c3_frame.x + c3_frame.width),
+        10.0
+    );
+}
+
+#[test]
 fn test_layout_column_fill() {
     let mut tree = ElementTree::new();
 
@@ -1889,8 +1957,8 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
         &MockTextMeasurer,
         &FontContext::default(),
     );
-    assert_eq!(weather_card_intrinsic.width, 140.0);
-    assert_eq!(weather_card_intrinsic.height, 82.0);
+    assert_eq!(weather_card_intrinsic.width, 118.0);
+    assert_eq!(weather_card_intrinsic.height, 60.0);
 
     layout_tree(
         &mut tree,
