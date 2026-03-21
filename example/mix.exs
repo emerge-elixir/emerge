@@ -7,6 +7,7 @@ defmodule EmergeDemo.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      listeners: [Emerge.CodeReloader.MixListener],
       deps: deps()
     ]
   end
@@ -23,7 +24,8 @@ defmodule EmergeDemo.MixProject do
   defp deps do
     [
       {:emerge, path: "../."},
-      {:solve, path: "../../solve"}
+      {:solve, path: "../../solve"},
+      {:file_system, "~> 1.0", only: :dev}
     ]
   end
 end
