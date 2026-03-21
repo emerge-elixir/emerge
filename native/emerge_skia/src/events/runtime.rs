@@ -2240,6 +2240,53 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_delete_surrounding_updates_content() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("abcd".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![54]),
+                make_text_input_state("abcd", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![54])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::DeleteSurrounding {
+                before_length: 1,
+                after_length: 1,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == ElementId::from_term_bytes(vec![54]) && content == "ad"
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, cursor, .. }
+                if *element_id == ElementId::from_term_bytes(vec![54]) && *cursor == Some(1)
+        )));
+    }
+
+    #[test]
     fn direct_runtime_hover_leave_clears_hover_state_after_rebuild() {
         let mut attrs = Attrs::default();
         attrs.mouse_over = Some(MouseOverAttrs::default());

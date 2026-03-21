@@ -59,6 +59,7 @@ use super::{
     keyboard::{KeyboardInputState, key_name_from_keysym, mods_from_sctk, normalize_commit_text},
     present::PresentState,
     protocols::ProtocolHandles,
+    text_input::TextInputProtocolState,
 };
 
 #[derive(Clone, Debug)]
@@ -98,6 +99,7 @@ pub(super) struct WaylandApp {
     present: PresentState,
     input: PointerInputState,
     pub(super) keyboard: KeyboardInputState,
+    pub(super) text_input: TextInputProtocolState,
     exit: bool,
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
@@ -144,6 +146,7 @@ impl WaylandApp {
             present: PresentState::default(),
             input: PointerInputState::new(globals, &qh),
             keyboard: KeyboardInputState::new(),
+            text_input: TextInputProtocolState::new(globals, &qh),
             exit: false,
             running_flag,
             tree_tx,
@@ -181,7 +184,7 @@ impl WaylandApp {
         self.present.queue_redraw();
     }
 
-    fn send_input_event(&self, event: InputEvent) {
+    pub(super) fn send_input_event(&self, event: InputEvent) {
         let _ = self.event_tx.send(EventMsg::InputEvent(event));
     }
 
@@ -204,11 +207,23 @@ impl WaylandApp {
                     commands,
                     version,
                     animate,
+                    ime_enabled,
+                    ime_cursor_area,
+                    ime_text_state,
                     ..
                 } => {
                     self.render_state.commands = commands;
                     self.render_state.render_version = version;
                     self.render_state.animate = animate;
+
+                    if self.text_input.update_render_state(
+                        ime_enabled,
+                        ime_cursor_area,
+                        ime_text_state,
+                    ) {
+                        self.text_input.sync(&self.window, &self.geometry);
+                    }
+
                     updated = true;
                 }
                 RenderMsg::CursorUpdate { .. } => {}
@@ -314,6 +329,7 @@ impl WaylandApp {
                 height: self.geometry.buffer_size.1,
                 scale_factor: self.geometry.scale_factor(),
             });
+            self.text_input.sync(&self.window, &self.geometry);
         }
     }
 
@@ -468,7 +484,10 @@ impl SeatHandler for WaylandApp {
             }
         } else if capability == Capability::Keyboard && self.keyboard.keyboard.is_none() {
             match self.input.seat_state.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboard.keyboard = Some(keyboard),
+                Ok(keyboard) => {
+                    self.keyboard.keyboard = Some(keyboard);
+                    self.text_input.create_for_seat(qh, &seat);
+                }
                 Err(err) => eprintln!("failed to create wayland keyboard: {err}"),
             }
         }
@@ -496,7 +515,9 @@ impl SeatHandler for WaylandApp {
 
             self.keyboard.focused = false;
             self.keyboard.current_mods = 0;
+            self.keyboard.ime_preedit_active = false;
             self.input.current_mods = 0;
+            self.text_input.release();
         }
     }
 
@@ -590,6 +611,7 @@ impl KeyboardHandler for WaylandApp {
         if surface == self.window.wl_surface() {
             self.keyboard.focused = false;
             self.keyboard.current_mods = 0;
+            self.keyboard.ime_preedit_active = false;
             self.input.current_mods = 0;
             self.send_input_event(InputEvent::Focused { focused: false });
         }
@@ -609,7 +631,10 @@ impl KeyboardHandler for WaylandApp {
             mods: self.keyboard.current_mods,
         });
 
-        if let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text) {
+        if !self.text_input.protocol_text_active()
+            && !self.keyboard.ime_preedit_active
+            && let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text)
+        {
             self.send_input_event(InputEvent::TextCommit {
                 text,
                 mods: self.keyboard.current_mods,

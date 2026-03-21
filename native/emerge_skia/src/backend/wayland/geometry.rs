@@ -60,6 +60,23 @@ impl SurfaceGeometry {
         )
     }
 
+    pub(super) fn buffer_to_surface_rect(
+        &self,
+        rect: (f32, f32, f32, f32),
+    ) -> (i32, i32, i32, i32) {
+        let logical_width = self.logical_size.0.max(1) as f32;
+        let logical_height = self.logical_size.1.max(1) as f32;
+        let buffer_width = self.buffer_size.0.max(1) as f32;
+        let buffer_height = self.buffer_size.1.max(1) as f32;
+
+        (
+            (rect.0 * logical_width / buffer_width).round() as i32,
+            (rect.1 * logical_height / buffer_height).round() as i32,
+            (rect.2 * logical_width / buffer_width).round().max(1.0) as i32,
+            (rect.3 * logical_height / buffer_height).round().max(1.0) as i32,
+        )
+    }
+
     pub(super) fn apply_to_surface(&mut self, window: &Window, viewport: Option<&WpViewport>) {
         let scale_factor = self.current_scale_factor();
         let fractional_active = self.preferred_fractional_scale.is_some() && viewport.is_some();

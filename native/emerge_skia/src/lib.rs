@@ -686,6 +686,7 @@ fn spawn_tree_actor_with_initial_tree(
                         animate: output.animations_active,
                         ime_enabled: output.ime_enabled,
                         ime_cursor_area: output.ime_cursor_area,
+                        ime_text_state: output.ime_text_state,
                     });
 
                     window_wake.request_redraw();

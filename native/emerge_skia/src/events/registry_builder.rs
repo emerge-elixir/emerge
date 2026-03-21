@@ -1089,6 +1089,8 @@ pub enum ListenerMatcher {
     TextPreeditAny,
     /// Match text preedit clear events.
     TextPreeditClear,
+    /// Match IME delete-surrounding requests.
+    TextDeleteSurroundingAny,
     /// Match middle-button press when pointer is inside `region`.
     CursorButtonMiddlePressInside { region: PointerRegion },
     /// Match window focus lost notifications.
@@ -1134,6 +1136,7 @@ pub enum ListenerMatcherKind {
     TextCommitNoCtrlMeta,
     TextPreeditAny,
     TextPreeditClear,
+    TextDeleteSurroundingAny,
     WindowBlurred,
     WindowCursorLeft,
     WindowResized,
@@ -1202,6 +1205,9 @@ impl ListenerMatcher {
             ListenerMatcher::TextCommitNoCtrlMeta => ListenerMatcherKind::TextCommitNoCtrlMeta,
             ListenerMatcher::TextPreeditAny => ListenerMatcherKind::TextPreeditAny,
             ListenerMatcher::TextPreeditClear => ListenerMatcherKind::TextPreeditClear,
+            ListenerMatcher::TextDeleteSurroundingAny => {
+                ListenerMatcherKind::TextDeleteSurroundingAny
+            }
             ListenerMatcher::WindowBlurred => ListenerMatcherKind::WindowBlurred,
             ListenerMatcher::WindowCursorLeft => ListenerMatcherKind::WindowCursorLeft,
             ListenerMatcher::WindowResized => ListenerMatcherKind::WindowResized,
@@ -1418,6 +1424,9 @@ impl ListenerMatcher {
             }
             ListenerMatcher::TextPreeditClear => {
                 matches!(input.raw(), Some(InputEvent::TextPreeditClear))
+            }
+            ListenerMatcher::TextDeleteSurroundingAny => {
+                matches!(input.raw(), Some(InputEvent::DeleteSurrounding { .. }))
             }
             ListenerMatcher::WindowBlurred => {
                 matches!(input.raw(), Some(InputEvent::Focused { focused }) if !*focused)
@@ -1649,6 +1658,8 @@ pub enum ListenerCompute {
     TextCommitToRuntime { element_id: ElementId },
     /// Build a text preedit action from matched IME input.
     TextInputPreeditToRuntime { element_id: ElementId },
+    /// Build an IME delete-surrounding edit action.
+    TextDeleteSurroundingToRuntime { element_id: ElementId },
     /// Raw cursor position actions plus element-local scrollbar hover transitions.
     RawCursorPosWithScrollbarHover {
         actions: Vec<ListenerAction>,
@@ -1906,6 +1917,11 @@ impl ListenerCompute {
                     .into_iter()
                     .collect()
             }
+            ListenerCompute::TextDeleteSurroundingToRuntime { element_id } => {
+                text_delete_surrounding_action_from_input(input.raw(), element_id)
+                    .into_iter()
+                    .collect()
+            }
             ListenerCompute::RawCursorPosWithScrollbarHover {
                 actions,
                 scrollbar_hover,
@@ -2039,6 +2055,27 @@ fn text_preedit_action_from_input(
     Some(ListenerAction::Semantic(SemanticAction::TextInputPreedit {
         element_id: element_id.clone(),
         request,
+    }))
+}
+
+fn text_delete_surrounding_action_from_input(
+    input: Option<&InputEvent>,
+    element_id: &ElementId,
+) -> Option<ListenerAction> {
+    let (before_length, after_length) = match input? {
+        InputEvent::DeleteSurrounding {
+            before_length,
+            after_length,
+        } => (*before_length, *after_length),
+        _ => return None,
+    };
+
+    Some(ListenerAction::Semantic(SemanticAction::TextInputEdit {
+        element_id: element_id.clone(),
+        request: TextInputEditRequest::DeleteSurrounding {
+            before_length,
+            after_length,
+        },
     }))
 }
 
@@ -2913,6 +2950,36 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                 };
                 actions
             }
+            TextInputEditRequest::DeleteSurrounding {
+                before_length,
+                after_length,
+            } => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_surrounding(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        before_length,
+                        after_length,
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
             TextInputEditRequest::Insert(text) => {
                 let Some(actions) = ({
                     let snapshot = match self.snapshot(&element_id) {
@@ -3267,6 +3334,7 @@ const ELEMENT_LISTENER_SLOTS: &[ElementSlotBuilder] = &[
     slot_text_commit,
     slot_text_preedit,
     slot_text_preedit_clear,
+    slot_text_delete_surrounding,
     slot_key_backspace_press,
     slot_key_delete_press,
     slot_key_left_press,
@@ -4400,6 +4468,20 @@ fn slot_text_preedit_clear(
         element_id: Some(element_id.clone()),
         matcher: ListenerMatcher::TextPreeditClear,
         compute: ListenerCompute::TextInputPreeditToRuntime { element_id },
+    })
+}
+
+/// Build IME delete-surrounding listener for focused text inputs.
+fn slot_text_delete_surrounding(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let element_id = focused_text_input_id(element)?;
+
+    Some(Listener {
+        element_id: Some(element_id.clone()),
+        matcher: ListenerMatcher::TextDeleteSurroundingAny,
+        compute: ListenerCompute::TextDeleteSurroundingToRuntime { element_id },
     })
 }
 
