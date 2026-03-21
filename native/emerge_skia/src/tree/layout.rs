@@ -3632,7 +3632,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // =============================================================================
 
 use super::render::render_tree;
-use crate::events::RegistryRebuildPayload;
+use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::renderer::DrawCmd;
 
 /// Output of layout refresh: both render commands and event registry.
@@ -3641,6 +3641,7 @@ pub struct LayoutOutput {
     pub event_rebuild: RegistryRebuildPayload,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
+    pub ime_text_state: Option<TextInputState>,
     pub animations_active: bool,
 }
 
@@ -3648,12 +3649,24 @@ pub struct LayoutOutput {
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     let render_output = render_tree(tree);
+    let ime_text_state = render_output
+        .event_rebuild
+        .focused_id
+        .as_ref()
+        .and_then(|focused_id| {
+            render_output
+                .event_rebuild
+                .text_inputs
+                .get(focused_id)
+                .cloned()
+        });
 
     LayoutOutput {
         commands: render_output.commands,
         event_rebuild: render_output.event_rebuild,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
         animations_active: false,
     }
 }

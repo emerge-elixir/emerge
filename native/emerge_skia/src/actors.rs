@@ -1,7 +1,7 @@
 use rustler::LocalPid;
 use std::time::Instant;
 
-use crate::events::RegistryRebuildPayload;
+use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::input::InputEvent;
 use crate::renderer::DrawCmd;
 use crate::tree::element::ElementId;
@@ -90,6 +90,7 @@ pub enum RenderMsg {
         animate: bool,
         ime_enabled: bool,
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
+        ime_text_state: Option<TextInputState>,
     },
     CursorUpdate {
         pos: (f32, f32),

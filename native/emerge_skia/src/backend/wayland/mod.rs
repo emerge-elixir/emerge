@@ -7,5 +7,6 @@ mod keyboard;
 mod present;
 mod protocols;
 mod runtime;
+mod text_input;
 
 pub(crate) use runtime::run;

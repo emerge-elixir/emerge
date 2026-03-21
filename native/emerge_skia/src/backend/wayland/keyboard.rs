@@ -7,6 +7,7 @@ pub(super) struct KeyboardInputState {
     pub(super) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(super) focused: bool,
     pub(super) current_mods: u8,
+    pub(super) ime_preedit_active: bool,
 }
 
 impl KeyboardInputState {
@@ -15,6 +16,7 @@ impl KeyboardInputState {
             keyboard: None,
             focused: false,
             current_mods: 0,
+            ime_preedit_active: false,
         }
     }
 }
