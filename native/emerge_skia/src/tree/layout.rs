@@ -801,8 +801,16 @@ fn measure_element<M: TextMeasurer>(
             let (_width, text_height) =
                 measurer.measure_with_font(content, font_size, &family, weight, italic);
             IntrinsicSize {
-                width: text_width + insets.horizontal(),
-                height: text_height + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    text_width,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    text_height,
+                    insets.vertical(),
+                ),
             }
         }
 
@@ -820,10 +828,16 @@ fn measure_element<M: TextMeasurer>(
             };
 
             IntrinsicSize {
-                width: resolve_intrinsic_length(attrs.width.as_ref(), image_width as f32)
-                    + insets.horizontal(),
-                height: resolve_intrinsic_length(attrs.height.as_ref(), image_height as f32)
-                    + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    image_width as f32,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    image_height as f32,
+                    insets.vertical(),
+                ),
             }
         }
 
@@ -833,10 +847,16 @@ fn measure_element<M: TextMeasurer>(
             let max_child_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
 
             IntrinsicSize {
-                width: resolve_intrinsic_length(attrs.width.as_ref(), max_child_width)
-                    + insets.horizontal(),
-                height: resolve_intrinsic_length(attrs.height.as_ref(), max_child_height)
-                    + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    max_child_width,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    max_child_height,
+                    insets.vertical(),
+                ),
             }
         }
 
@@ -851,10 +871,16 @@ fn measure_element<M: TextMeasurer>(
             let max_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
 
             IntrinsicSize {
-                width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width + total_spacing)
-                    + insets.horizontal(),
-                height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    sum_width + total_spacing,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    max_height,
+                    insets.vertical(),
+                ),
             }
         }
 
@@ -869,10 +895,16 @@ fn measure_element<M: TextMeasurer>(
             let sum_height: f32 = child_sizes.iter().map(|s| s.height).sum();
 
             IntrinsicSize {
-                width: resolve_intrinsic_length(attrs.width.as_ref(), max_width)
-                    + insets.horizontal(),
-                height: resolve_intrinsic_length(attrs.height.as_ref(), sum_height + total_spacing)
-                    + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    max_width,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    sum_height + total_spacing,
+                    insets.vertical(),
+                ),
             }
         }
 
@@ -882,10 +914,16 @@ fn measure_element<M: TextMeasurer>(
             let max_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
 
             IntrinsicSize {
-                width: resolve_intrinsic_length(attrs.width.as_ref(), sum_width)
-                    + insets.horizontal(),
-                height: resolve_intrinsic_length(attrs.height.as_ref(), max_height)
-                    + insets.vertical(),
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    sum_width,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    max_height,
+                    insets.vertical(),
+                ),
             }
         }
     };
@@ -922,6 +960,10 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
             inner_size.min(*max_px as f32)
         }
     }
+}
+
+fn resolve_outer_intrinsic_length(length: Option<&Length>, content_size: f32, insets: f32) -> f32 {
+    resolve_intrinsic_length(length, content_size + insets)
 }
 
 // =============================================================================
