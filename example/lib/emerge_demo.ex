@@ -1,11 +1,31 @@
 defmodule EmergeDemo do
   @moduledoc """
-  Example Emerge application that renders a low-latency Membrane WiFi video
-  pipeline into an `EmergeSkia` video target.
+  Example application that composes `Solve` state management with
+  an `Emerge.Viewport` renderer process.
   """
 
-  @spec runtime_config() :: keyword()
-  def runtime_config do
-    Application.get_env(:emerge_demo, EmergeDemo.Runtime, [])
+  use Solve.Lookup
+  use Emerge.Viewport
+
+  @impl Viewport
+  def mount(opts) do
+    {:ok, %{}, Keyword.merge([title: "Emerge Demo"], opts)}
+  end
+
+  @impl Viewport
+  def render(_state) do
+    counter = solve(EmergeDemo.State, :counter)
+    events = events(counter)
+
+    row([spacing(10)], [
+      Input.button([on_press(events[:increment])], [text("+")]),
+      el([], text("Count: #{counter.count}")),
+      Input.button([on_press(events[:decrement])], [text("-")])
+    ])
+  end
+
+  @impl Solve.Lookup
+  def handle_solve_updated(_updated, state) do
+    {:ok, Viewport.schedule_rerender(state)}
   end
 end
