@@ -9,18 +9,10 @@ defmodule EmergeDemo.Application do
     Supervisor.start_link(children(), opts)
   end
 
-  def children(env \\ Mix.env()) do
-    case env do
-      :test ->
-        []
-
-      :dev ->
-        base_children() ++ [hot_reload_child()]
-
-      _other ->
-        base_children()
-    end
-  end
+  def children(env \\ Mix.env())
+  def children(:test), do: []
+  def children(:dev), do: base_children() ++ [hot_reload_child()]
+  def children(_other), do: base_children()
 
   defp base_children do
     [
@@ -37,10 +29,8 @@ defmodule EmergeDemo.Application do
   defp hot_reload_child do
     {Emerge.CodeReloader,
      dirs: [
-       Path.expand("..", __DIR__),
-       Path.expand("../../../lib", __DIR__),
-       Path.expand("../../../../solve/lib", __DIR__)
+       Path.expand("..", __DIR__)
      ],
-     reloadable_apps: [:emerge_demo, :emerge, :solve]}
+     reloadable_apps: [:emerge_demo]}
   end
 end
