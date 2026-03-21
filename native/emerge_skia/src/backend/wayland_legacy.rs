@@ -262,6 +262,7 @@ impl App {
                     animate,
                     ime_enabled,
                     ime_cursor_area,
+                    ..
                 } => {
                     self.render_state.commands = commands;
                     self.render_state.render_version = version;

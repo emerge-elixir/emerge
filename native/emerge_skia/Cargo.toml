@@ -19,7 +19,7 @@ glutin-winit = "0.5"
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"] }
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 raw-window-handle = "0.6"
 gl = "0.14"
 drm = "0.14"

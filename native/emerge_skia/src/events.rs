@@ -425,12 +425,24 @@ impl TextInputState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextInputEditRequest {
-    MoveLeft { extend_selection: bool },
-    MoveRight { extend_selection: bool },
-    MoveHome { extend_selection: bool },
-    MoveEnd { extend_selection: bool },
+    MoveLeft {
+        extend_selection: bool,
+    },
+    MoveRight {
+        extend_selection: bool,
+    },
+    MoveHome {
+        extend_selection: bool,
+    },
+    MoveEnd {
+        extend_selection: bool,
+    },
     Backspace,
     Delete,
+    DeleteSurrounding {
+        before_length: u32,
+        after_length: u32,
+    },
     Insert(String),
 }
 

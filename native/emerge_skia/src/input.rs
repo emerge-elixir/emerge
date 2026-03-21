@@ -48,6 +48,12 @@ pub enum InputEvent {
     /// IME preedit text cleared
     TextPreeditClear,
 
+    /// IME requests deletion of surrounding text in UTF-8 byte lengths
+    DeleteSurrounding {
+        before_length: u32,
+        after_length: u32,
+    },
+
     /// Cursor entered/exited window
     CursorEntered { entered: bool },
 
@@ -106,6 +112,7 @@ rustler::atoms! {
     text_commit,
     text_preedit,
     text_preedit_clear,
+    delete_surrounding,
     cursor_pos,
     cursor_button,
     cursor_scroll,
@@ -146,7 +153,8 @@ impl InputHandler {
             InputEvent::Key { .. } => INPUT_MASK_KEY,
             InputEvent::TextCommit { .. }
             | InputEvent::TextPreedit { .. }
-            | InputEvent::TextPreeditClear => INPUT_MASK_CODEPOINT,
+            | InputEvent::TextPreeditClear
+            | InputEvent::DeleteSurrounding { .. } => INPUT_MASK_CODEPOINT,
             InputEvent::CursorPos { .. } => INPUT_MASK_CURSOR_POS,
             InputEvent::CursorButton { .. } => INPUT_MASK_CURSOR_BUTTON,
             InputEvent::CursorScroll { .. } | InputEvent::CursorScrollLines { .. } => {
@@ -255,6 +263,11 @@ impl Encoder for InputEvent {
             }
 
             InputEvent::TextPreeditClear => text_preedit_clear().encode(env),
+
+            InputEvent::DeleteSurrounding {
+                before_length,
+                after_length,
+            } => (delete_surrounding(), (*before_length, *after_length)).encode(env),
 
             InputEvent::CursorEntered { entered } => (cursor_entered(), *entered).encode(env),
 
