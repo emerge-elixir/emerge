@@ -233,14 +233,6 @@ impl App {
     }
 
     fn send_animation_pulse(&self, presented_at: Instant, predicted_next_present_at: Instant) {
-        crate::debug_trace::hover_trace!(
-            "backend_pulse",
-            "presented_at={:?} predicted_next={:?} cursor=({:.2},{:.2})",
-            presented_at,
-            predicted_next_present_at,
-            self.cursor_pos.0,
-            self.cursor_pos.1
-        );
         let msg = TreeMsg::AnimationPulse {
             presented_at,
             predicted_next_present_at,
@@ -488,14 +480,6 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 self.cursor_pos = (x, y);
-                crate::debug_trace::hover_trace!(
-                    "backend_cursor",
-                    "cursor_moved x={x:.2} y={y:.2} scale={:.2}",
-                    self.env
-                        .as_ref()
-                        .map(|env| env.window.scale_factor())
-                        .unwrap_or(1.0)
-                );
                 self.send_input_event(InputEvent::CursorPos { x, y });
             }
 
