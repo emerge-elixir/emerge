@@ -101,6 +101,7 @@ struct RendererResource {
     prime_video_supported: bool,
     log_render: bool,
     log_input: bool,
+    handles: Mutex<Option<RendererHandles>>,
 }
 
 #[derive(Clone)]
@@ -137,6 +138,14 @@ struct TestHarnessHandles {
     event_handle: thread::JoinHandle<()>,
 }
 
+#[derive(Default)]
+struct RendererHandles {
+    backend_handle: Option<thread::JoinHandle<()>>,
+    input_handle: Option<thread::JoinHandle<()>>,
+    tree_handle: Option<thread::JoinHandle<()>>,
+    event_handle: Option<thread::JoinHandle<()>>,
+}
+
 struct TestHarnessResource {
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
@@ -151,6 +160,12 @@ impl rustler::Resource for RendererResource {}
 impl rustler::Resource for TreeResource {}
 
 impl rustler::Resource for TestHarnessResource {}
+
+impl Drop for RendererResource {
+    fn drop(&mut self) {
+        self.stop_inner();
+    }
+}
 
 impl Drop for TestHarnessResource {
     fn drop(&mut self) {
@@ -181,26 +196,87 @@ impl TestHarnessResource {
 
 impl RendererResource {
     fn stop(&self) {
-        assets::stop();
-        self.stop_flag.store(true, Ordering::Relaxed);
-        send_tree(&self.tree_tx, TreeMsg::Stop, self.log_render);
-        send_event(&self.event_tx, EventMsg::Stop, self.log_input);
-        self.render_tx.send_latest(RenderMsg::Stop);
-        if let Some(cursor_tx) = &self.cursor_tx {
-            let _ = cursor_tx.send(RenderMsg::Stop);
-        }
-        match self.backend {
-            BackendKind::Wayland => {
-                if let Ok(guard) = self.event_proxy.lock()
-                    && let Some(proxy) = guard.as_ref()
-                {
-                    let _ = proxy.send_event(UserEvent::Stop);
-                }
+        self.stop_inner();
+    }
+
+    fn stop_inner(&self) {
+        let mut handles_guard = match self.handles.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        let Some(handles) = handles_guard.take() else {
+            return;
+        };
+
+        shutdown_renderer_runtime(
+            self.backend,
+            &self.running_flag,
+            &self.event_proxy,
+            &self.stop_flag,
+            &self.tree_tx,
+            &self.event_tx,
+            &self.render_tx,
+            self.cursor_tx.as_ref(),
+            handles,
+            self.log_render,
+            self.log_input,
+        );
+    }
+}
+
+fn shutdown_renderer_runtime(
+    backend: BackendKind,
+    running_flag: &Arc<AtomicBool>,
+    event_proxy: &Arc<Mutex<Option<winit::event_loop::EventLoopProxy<UserEvent>>>>,
+    stop_flag: &Arc<AtomicBool>,
+    tree_tx: &Sender<TreeMsg>,
+    event_tx: &Sender<EventMsg>,
+    render_tx: &RenderSender,
+    cursor_tx: Option<&Sender<RenderMsg>>,
+    mut handles: RendererHandles,
+    log_render: bool,
+    log_input: bool,
+) {
+    assets::stop();
+    running_flag.store(false, Ordering::Relaxed);
+    stop_flag.store(true, Ordering::Relaxed);
+    send_tree(tree_tx, TreeMsg::Stop, log_render);
+    send_event(event_tx, EventMsg::Stop, log_input);
+    render_tx.send_latest(RenderMsg::Stop);
+
+    if let Some(cursor_tx) = cursor_tx {
+        let _ = cursor_tx.send(RenderMsg::Stop);
+    }
+
+    match backend {
+        BackendKind::Wayland => {
+            let proxy = match event_proxy.lock() {
+                Ok(mut guard) => guard.take(),
+                Err(poisoned) => poisoned.into_inner().take(),
+            };
+
+            if let Some(proxy) = proxy {
+                let _ = proxy.send_event(UserEvent::Stop);
             }
-            BackendKind::Drm => {
-                self.running_flag.store(false, Ordering::Relaxed);
-            }
         }
+        BackendKind::Drm => {}
+    }
+
+    if let Some(handle) = handles.event_handle.take() {
+        let _ = handle.join();
+    }
+
+    if let Some(handle) = handles.tree_handle.take() {
+        let _ = handle.join();
+    }
+
+    if let Some(handle) = handles.input_handle.take() {
+        let _ = handle.join();
+    }
+
+    if let Some(handle) = handles.backend_handle.take() {
+        let _ = handle.join();
     }
 }
 
@@ -668,7 +744,15 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     assets::start(tree_tx.clone(), log_render);
 
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
-    let _event_handle = spawn_event_actor(event_rx, tree_tx.clone(), log_render, system_clipboard);
+    let mut handles = RendererHandles {
+        event_handle: Some(spawn_event_actor(
+            event_rx,
+            tree_tx.clone(),
+            log_render,
+            system_clipboard,
+        )),
+        ..RendererHandles::default()
+    };
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -689,7 +773,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 height: config.height,
             };
 
-            thread::spawn(move || {
+            handles.backend_handle = Some(thread::spawn(move || {
                 wayland::run(
                     wayland_config,
                     running_flag_clone,
@@ -699,18 +783,53 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     video_registry_clone,
                     proxy_tx,
                 );
-            });
+            }));
 
-            let startup = proxy_rx
-                .recv()
-                .map_err(|_| rustler::Error::Term(Box::new("failed to receive event proxy")))?
-                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+            let startup = match proxy_rx.recv() {
+                Ok(Ok(startup)) => startup,
+                Ok(Err(reason)) => {
+                    shutdown_renderer_runtime(
+                        BackendKind::Wayland,
+                        &running_flag,
+                        &event_proxy,
+                        &stop_flag,
+                        &tree_tx,
+                        &event_tx,
+                        &render_sender,
+                        None,
+                        std::mem::take(&mut handles),
+                        log_render,
+                        log_input,
+                    );
+
+                    return Err(rustler::Error::Term(Box::new(reason)));
+                }
+                Err(_) => {
+                    shutdown_renderer_runtime(
+                        BackendKind::Wayland,
+                        &running_flag,
+                        &event_proxy,
+                        &stop_flag,
+                        &tree_tx,
+                        &event_tx,
+                        &render_sender,
+                        None,
+                        std::mem::take(&mut handles),
+                        log_render,
+                        log_input,
+                    );
+
+                    return Err(rustler::Error::Term(Box::new(
+                        "failed to receive event proxy",
+                    )));
+                }
+            };
 
             if let Ok(mut guard) = event_proxy.lock() {
                 *guard = Some(startup.proxy.clone());
             }
 
-            spawn_tree_actor(
+            handles.tree_handle = Some(spawn_tree_actor(
                 tree_rx,
                 TreeActorConfig {
                     render_sender: render_sender.clone(),
@@ -721,7 +840,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     initial_width,
                     initial_height,
                 },
-            );
+            ));
 
             (BackendKind::Wayland, startup.prime_video_supported)
         }
@@ -734,7 +853,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let drm_input_size = (initial_width, initial_height);
             let video_registry_clone = Arc::clone(&video_registry);
 
-            thread::spawn(move || {
+            handles.input_handle = Some(thread::spawn(move || {
                 let mut input = DrmInput::new(
                     drm_input_size,
                     screen_rx,
@@ -746,7 +865,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     input.poll();
                     std::thread::sleep(Duration::from_millis(2));
                 }
-            });
+            }));
 
             let running_flag_clone = Arc::clone(&running_flag);
             let stop_for_thread = Arc::clone(&stop_flag);
@@ -760,7 +879,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 render_log: log_render,
             };
 
-            thread::spawn(move || {
+            handles.backend_handle = Some(thread::spawn(move || {
                 drm::run(
                     drm::DrmRunContext {
                         stop: stop_for_thread,
@@ -775,9 +894,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     },
                     drm_config,
                 );
-            });
+            }));
 
-            spawn_tree_actor(
+            handles.tree_handle = Some(spawn_tree_actor(
                 tree_rx,
                 TreeActorConfig {
                     render_sender: render_sender.clone(),
@@ -788,7 +907,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     initial_width,
                     initial_height,
                 },
-            );
+            ));
 
             (BackendKind::Drm, true)
         }
@@ -818,6 +937,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         prime_video_supported,
         log_render,
         log_input,
+        handles: Mutex::new(Some(handles)),
     };
 
     Ok(ResourceArc::new(resource))
@@ -862,7 +982,7 @@ fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
     })
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyIo")]
 fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
     renderer.stop();
     atoms::ok()
@@ -1611,6 +1731,96 @@ mod tests {
         }
 
         out
+    }
+
+    #[test]
+    fn shutdown_renderer_runtime_stops_and_joins_threads() {
+        let running_flag = Arc::new(AtomicBool::new(true));
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let event_proxy = Arc::new(Mutex::new(None));
+
+        let (tree_tx, tree_rx) = bounded(1);
+        let (event_tx, event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let render_sender = RenderSender {
+            tx: render_tx,
+            drop_rx: render_rx.clone(),
+            log_render: false,
+        };
+
+        let tree_stopped = Arc::new(AtomicBool::new(false));
+        let event_stopped = Arc::new(AtomicBool::new(false));
+        let backend_stopped = Arc::new(AtomicBool::new(false));
+        let input_stopped = Arc::new(AtomicBool::new(false));
+
+        let tree_handle = {
+            let tree_stopped = Arc::clone(&tree_stopped);
+
+            thread::spawn(move || {
+                if matches!(tree_rx.recv(), Ok(TreeMsg::Stop)) {
+                    tree_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let event_handle = {
+            let event_stopped = Arc::clone(&event_stopped);
+
+            thread::spawn(move || {
+                if matches!(event_rx.recv(), Ok(EventMsg::Stop)) {
+                    event_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let backend_handle = {
+            let backend_stopped = Arc::clone(&backend_stopped);
+
+            thread::spawn(move || {
+                if matches!(render_rx.recv(), Ok(RenderMsg::Stop)) {
+                    backend_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let input_handle = {
+            let input_stopped = Arc::clone(&input_stopped);
+            let stop_flag = Arc::clone(&stop_flag);
+
+            thread::spawn(move || {
+                while !stop_flag.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+
+                input_stopped.store(true, Ordering::Relaxed);
+            })
+        };
+
+        shutdown_renderer_runtime(
+            BackendKind::Drm,
+            &running_flag,
+            &event_proxy,
+            &stop_flag,
+            &tree_tx,
+            &event_tx,
+            &render_sender,
+            None,
+            RendererHandles {
+                backend_handle: Some(backend_handle),
+                input_handle: Some(input_handle),
+                tree_handle: Some(tree_handle),
+                event_handle: Some(event_handle),
+            },
+            false,
+            false,
+        );
+
+        assert!(!running_flag.load(Ordering::Relaxed));
+        assert!(stop_flag.load(Ordering::Relaxed));
+        assert!(tree_stopped.load(Ordering::Relaxed));
+        assert!(event_stopped.load(Ordering::Relaxed));
+        assert!(backend_stopped.load(Ordering::Relaxed));
+        assert!(input_stopped.load(Ordering::Relaxed));
     }
 
     #[test]
