@@ -484,14 +484,33 @@ defmodule Emerge.Engine.AttrValidation do
   defp validate_length!(_attrs_owner, _key, :fill), do: :ok
   defp validate_length!(_attrs_owner, _key, :content), do: :ok
   defp validate_length!(_attrs_owner, _key, {:px, value}) when is_number(value), do: :ok
-  defp validate_length!(_attrs_owner, _key, {:fill, value}) when is_number(value), do: :ok
 
-  defp validate_length!(attrs_owner, key, {:minimum, min_px, inner}) when is_number(min_px) do
+  defp validate_length!(_attrs_owner, _key, {:fill, value}) when is_number(value) and value > 0,
+    do: :ok
+
+  defp validate_length!(attrs_owner, key, {:fill, value}) when is_number(value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} fill weight to be a positive number, got: #{inspect(value)}"
+  end
+
+  defp validate_length!(attrs_owner, key, {:minimum, min_px, inner})
+       when is_number(min_px) and min_px >= 0 do
     validate_length!(attrs_owner, key, inner)
   end
 
-  defp validate_length!(attrs_owner, key, {:maximum, max_px, inner}) when is_number(max_px) do
+  defp validate_length!(attrs_owner, key, {:minimum, min_px, _inner}) when is_number(min_px) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} min length to be non-negative, got: #{inspect(min_px)}"
+  end
+
+  defp validate_length!(attrs_owner, key, {:maximum, max_px, inner})
+       when is_number(max_px) and max_px >= 0 do
     validate_length!(attrs_owner, key, inner)
+  end
+
+  defp validate_length!(attrs_owner, key, {:maximum, max_px, _inner}) when is_number(max_px) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} max length to be non-negative, got: #{inspect(max_px)}"
   end
 
   defp validate_length!(attrs_owner, key, value) do

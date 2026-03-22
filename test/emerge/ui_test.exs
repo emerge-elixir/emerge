@@ -70,6 +70,51 @@ defmodule Emerge.UITest do
     assert Font.word_spacing(4) == {:font_word_spacing, 4}
   end
 
+  test "size helpers return length values" do
+    assert fill() == :fill
+    assert fill(2) == {:fill, 2}
+    assert width(fill(2)) == {:width, {:fill, 2}}
+    assert height(fill(1.5)) == {:height, {:fill, 1.5}}
+    assert min(px(50), fill()) == {:minimum, 50, :fill}
+    assert max(px(120), shrink()) == {:maximum, 120, :content}
+  end
+
+  test "size helpers reject invalid fill and clamp values" do
+    assert_raise ArgumentError, ~r/fill\/1 expects a positive number/, fn ->
+      fill(0)
+    end
+
+    assert_raise ArgumentError, ~r/fill\/1 expects a positive number/, fn ->
+      fill(-1)
+    end
+
+    assert_raise ArgumentError,
+                 ~r/min\/2 expects the first argument to be px\(n\) with a non-negative number/,
+                 fn ->
+                   min(px(-10), fill())
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/max\/2 expects the first argument to be px\(n\) with a non-negative number/,
+                 fn ->
+                   max(px(-10), shrink())
+                 end
+  end
+
+  test "length validation rejects invalid fill and clamp tuples" do
+    assert_raise ArgumentError, ~r/fill weight to be a positive number/, fn ->
+      el([width({:fill, 0})], text("bad"))
+    end
+
+    assert_raise ArgumentError, ~r/min length to be non-negative/, fn ->
+      el([width({:minimum, -10, :fill})], text("bad"))
+    end
+
+    assert_raise ArgumentError, ~r/max length to be non-negative/, fn ->
+      el([height({:maximum, -10, :content})], text("bad"))
+    end
+  end
+
   test "svg/2 accepts Svg.color and marks svg expectations" do
     element = svg([width(px(24)), height(px(24)), Svg.color(:white)], "icons/cloud.svg")
 
@@ -159,7 +204,12 @@ defmodule Emerge.UITest do
           Animation.animate(
             [
               [width(px(100)), padding_xy(12, 6), Transform.move_x(-20), Background.color(:red)],
-              [width(px(160)), padding_each(8, 14, 10, 16), Transform.move_x(20), Background.color(:blue)]
+              [
+                width(px(160)),
+                padding_each(8, 14, 10, 16),
+                Transform.move_x(20),
+                Background.color(:blue)
+              ]
             ],
             420,
             :ease_in_out,
@@ -237,7 +287,13 @@ defmodule Emerge.UITest do
   test "animate rejects mismatched keyframe attrs" do
     assert_raise ArgumentError, ~r/same attribute set/, fn ->
       el(
-        [Animation.animate([[width(px(100))], [width(px(120)), Transform.move_x(10)]], 200, :linear)],
+        [
+          Animation.animate(
+            [[width(px(100))], [width(px(120)), Transform.move_x(10)]],
+            200,
+            :linear
+          )
+        ],
         text("bad")
       )
     end
@@ -258,7 +314,14 @@ defmodule Emerge.UITest do
   test "animate_exit only allows repeat once" do
     assert_raise ArgumentError, ~r/animate_exit expects :repeat to be :once/, fn ->
       el(
-        [Animation.animate_exit([[Transform.alpha(1.0)], [Transform.alpha(0.0)]], 200, :linear, :loop)],
+        [
+          Animation.animate_exit(
+            [[Transform.alpha(1.0)], [Transform.alpha(0.0)]],
+            200,
+            :linear,
+            :loop
+          )
+        ],
         text("bad")
       )
     end
@@ -268,7 +331,9 @@ defmodule Emerge.UITest do
     assert_raise ArgumentError, ~r/animate_exit is not allowed on the viewport root/, fn ->
       Reconcile.assign_ids(
         el(
-          [Animation.animate_exit([[Transform.alpha(1.0)], [Transform.alpha(0.0)]], 200, :linear)],
+          [
+            Animation.animate_exit([[Transform.alpha(1.0)], [Transform.alpha(0.0)]], 200, :linear)
+          ],
           text("bad")
         )
       )
