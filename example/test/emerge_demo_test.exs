@@ -2,13 +2,15 @@ defmodule EmergeDemoTest do
   use ExUnit.Case, async: true
 
   test "handle_solve_updated schedules viewport rerender" do
-    state = %Emerge.Runtime.Viewport.State{module: EmergeDemo, mount_opts: [], user_state: %{}}
+    state = %{
+      __emerge__: %Emerge.Runtime.Viewport.State{module: EmergeDemo}
+    }
 
     assert {:ok, next_state} =
              EmergeDemo.handle_solve_updated(%{EmergeDemo.State => [:counter]}, state)
 
-    assert next_state.dirty?
-    assert next_state.flush_scheduled?
+    assert next_state.__emerge__.dirty?
+    assert next_state.__emerge__.flush_scheduled?
     assert_receive {:"$gen_cast", {:emerge_viewport, :flush}}
   end
 
