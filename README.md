@@ -169,7 +169,8 @@ Compile-time native backends are selected with Elixir config:
 config :emerge, compiled_backends: [:wayland]
 ```
 
-If omitted, `[:wayland]` is assumed. To compile both native window backends:
+If omitted, desktop builds assume `[:wayland]` while Nerves-style builds assume
+`[:drm]`. To compile both native window backends:
 
 ```elixir
 config :emerge, compiled_backends: [:wayland, :drm]

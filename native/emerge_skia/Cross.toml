@@ -1,0 +1,9 @@
+[build.env]
+passthrough = ["RUSTFLAGS", "RUSTLER_PRECOMPILED_DEBUG_MODE", "DRY_RUN"]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update",
+    "apt-get install --assume-yes libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
+]
