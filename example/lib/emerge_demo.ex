@@ -57,6 +57,6 @@ defmodule EmergeDemo do
 
   @impl Solve.Lookup
   def handle_solve_updated(_updated, state) do
-    {:ok, Viewport.schedule_rerender(state)}
+    {:ok, Viewport.rerender(state)}
   end
 end
