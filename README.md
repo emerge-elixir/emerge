@@ -176,6 +176,17 @@ If omitted, desktop builds assume `[:wayland]` while Nerves-style builds assume
 config :emerge, compiled_backends: [:wayland, :drm]
 ```
 
+Release builds can ship precompiled NIFs for the default backend profiles.
+Set `EMERGE_SKIA_BUILD=1` to force a local Rust build instead of downloading a
+precompiled artifact.
+
+Before publishing to Hex, generate and include the checksum file for the
+release assets:
+
+```bash
+mix rustler_precompiled.download EmergeSkia.Native --all --print
+```
+
 Runtime `backend:` options must request a backend that was compiled into the NIF.
 For multi-target apps, use target-specific config to choose the compiled backend set
 for each build.
