@@ -123,14 +123,9 @@ defmodule Emerge.ViewportTest do
       ])
     end
 
-    @impl true
+    @impl Viewport
     def handle_info(:increment, state) do
-      state =
-        state
-        |> Viewport.update_user_state(&Map.update!(&1, :count, fn count -> count + 1 end))
-        |> Viewport.schedule_rerender()
-
-      {:noreply, state}
+      {:noreply, %{state | count: state.count + 1} |> Viewport.rerender()}
     end
   end
 
@@ -153,7 +148,7 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def handle_input(event, state) do
       send(state.test_pid, {:input_event, event})
-      {:ok, %{state | events: [event | state.events]}, rerender: false}
+      {:noreply, %{state | events: [event | state.events]}}
     end
   end
 
@@ -180,9 +175,9 @@ defmodule Emerge.ViewportTest do
       {:wrapped, message, payload, event_type}
     end
 
-    @impl true
+    @impl Viewport
     def handle_info({:wrapped, :input_changed, payload, :change}, state) do
-      send(Viewport.user_state(state).test_pid, {:wrapped_payload, payload})
+      send(state.test_pid, {:wrapped_payload, payload})
       {:noreply, state}
     end
   end
@@ -221,14 +216,9 @@ defmodule Emerge.ViewportTest do
     def render(%{mode: :raise}), do: raise("render boom")
     def render(%{mode: {:label, label}}), do: el([], text(label))
 
-    @impl true
+    @impl Viewport
     def handle_info({:set_mode, mode}, state) do
-      state =
-        state
-        |> Viewport.update_user_state(&Map.put(&1, :mode, mode))
-        |> Viewport.schedule_rerender()
-
-      {:noreply, state}
+      {:noreply, %{state | mode: mode} |> Viewport.rerender()}
     end
   end
 
@@ -241,7 +231,7 @@ defmodule Emerge.ViewportTest do
     assert {:set_input_target, ^pid} = Enum.at(operations, 0)
     assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 1)
 
-    assert Emerge.user_state(pid) == %{count: 3}
+    assert :sys.get_state(pid).count == 3
     assert pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
 
     GenServer.stop(pid)
@@ -266,13 +256,13 @@ defmodule Emerge.ViewportTest do
     state = :sys.get_state(pid)
 
     {id_bin, _events} =
-      Enum.find(state.diff_state.event_registry, fn {_id_bin, events} ->
+      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
         Map.has_key?(events, :press)
       end)
 
     send(pid, {:emerge_skia_event, {id_bin, :press}})
 
-    assert_eventually(fn -> Emerge.user_state(pid).count == 1 end)
+    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
 
     assert_eventually(fn ->
       patch_count =
@@ -289,13 +279,13 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "rerender requests are coalesced" do
+  test "rerender requests from callback state updates are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
 
-    GenServer.cast(pid, {:emerge_viewport, :rerender})
-    GenServer.cast(pid, {:emerge_viewport, :rerender})
-    GenServer.cast(pid, {:emerge_viewport, :rerender})
+    send(pid, :increment)
+    send(pid, :increment)
+    send(pid, :increment)
 
     assert_eventually(
       fn ->
@@ -304,7 +294,7 @@ defmodule Emerge.ViewportTest do
         |> Enum.count(fn
           {:patch_tree, _tree} -> true
           _ -> false
-        end) == 1
+        end) == 1 and :sys.get_state(pid).count == 3
       end,
       100
     )
@@ -330,13 +320,13 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "source reload notifications are coalesced" do
+  test "source reload rerender requests are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
 
-    :ok = Emerge.notify_source_reloaded(%{source: :test})
-    :ok = Emerge.notify_source_reloaded(%{source: :test})
-    :ok = Emerge.notify_source_reloaded(%{source: :test})
+    send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
+    send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
+    send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
 
     assert_eventually(fn ->
       renderer
@@ -358,7 +348,8 @@ defmodule Emerge.ViewportTest do
         assert_eventually(fn ->
           state = :sys.get_state(pid)
 
-          Process.alive?(pid) and is_nil(state.renderer) and is_nil(state.diff_state) and
+          Process.alive?(pid) and is_nil(state.__emerge__.renderer) and
+            is_nil(state.__emerge__.diff_state) and
             pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
         end)
 
@@ -378,7 +369,8 @@ defmodule Emerge.ViewportTest do
         assert_eventually(fn ->
           state = :sys.get_state(pid)
 
-          Process.alive?(pid) and state.renderer != nil and state.diff_state != nil and
+          Process.alive?(pid) and state.__emerge__.renderer != nil and
+            state.__emerge__.diff_state != nil and
             rendered_text(pid) == "recovered" and
             pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
         end)
@@ -404,8 +396,8 @@ defmodule Emerge.ViewportTest do
           state = :sys.get_state(pid)
 
           Process.alive?(pid) and rendered_text(pid) == "before" and
-            count_renderer_ops(renderer, :patch_tree) == 0 and not state.dirty? and
-            not state.flush_scheduled?
+            count_renderer_ops(renderer, :patch_tree) == 0 and not state.__emerge__.dirty? and
+            not state.__emerge__.flush_scheduled?
         end)
       end)
 
@@ -442,7 +434,7 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_skia_event, {:focused, true}})
 
     assert_receive {:input_event, {:focused, true}}
-    assert Emerge.user_state(pid).events == [{:focused, true}]
+    assert :sys.get_state(pid).events == [{:focused, true}]
 
     GenServer.stop(pid)
   end
@@ -453,7 +445,7 @@ defmodule Emerge.ViewportTest do
     state = :sys.get_state(pid)
 
     {id_bin, _events} =
-      Enum.find(state.diff_state.event_registry, fn {_id_bin, events} ->
+      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
         Map.has_key?(events, :change)
       end)
 
@@ -509,10 +501,12 @@ defmodule Emerge.ViewportTest do
 
   defp rendered_text(pid) do
     case :sys.get_state(pid) do
-      %Emerge.Runtime.Viewport.State{
-        diff_state: %Emerge.Engine.DiffState{
-          tree: %Emerge.Engine.Element{
-            children: [%Emerge.Engine.Element{attrs: %{content: content}}]
+      %{
+        __emerge__: %Emerge.Runtime.Viewport.State{
+          diff_state: %Emerge.Engine.DiffState{
+            tree: %Emerge.Engine.Element{
+              children: [%Emerge.Engine.Element{attrs: %{content: content}}]
+            }
           }
         }
       } ->

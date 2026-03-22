@@ -1,10 +1,8 @@
 defmodule Emerge.Runtime.Viewport.State do
   @moduledoc false
 
-  @enforce_keys [:module, :mount_opts]
+  @enforce_keys [:module]
   defstruct module: nil,
-            mount_opts: [],
-            user_state: nil,
             renderer: nil,
             diff_state: nil,
             dirty?: false,
@@ -17,8 +15,6 @@ defmodule Emerge.Runtime.Viewport.State do
 
   @type t :: %__MODULE__{
           module: module(),
-          mount_opts: keyword(),
-          user_state: term(),
           renderer: term() | nil,
           diff_state: Emerge.Engine.diff_state() | nil,
           dirty?: boolean(),
