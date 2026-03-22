@@ -16,10 +16,12 @@ use resvg::usvg;
 use skia_safe::{
     BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter,
     Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect,
-    SamplingOptions, Shader, Surface, TileMode, Typeface, Vector,
+    SamplingOptions, Surface, TileMode, Typeface, Vector,
     canvas::{SaveLayerRec, SrcRectConstraint},
     dash_path_effect,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
+    gradient::{Colors as GradientColors, Gradient, Interpolation},
+    shaders,
 };
 
 use crate::tree::attrs::{BorderStyle, ImageFit};
@@ -855,15 +857,12 @@ impl Renderer {
                         cy + radians.sin() * half_diag,
                     );
 
-                    let colors = [color_from_u32(*from), color_from_u32(*to)];
-                    if let Some(shader) = Shader::linear_gradient(
-                        (start, end),
-                        colors.as_slice(),
-                        None,
-                        TileMode::Clamp,
-                        None,
-                        None,
-                    ) {
+                    let colors = [color_from_u32(*from).into(), color_from_u32(*to).into()];
+                    let gradient_colors =
+                        GradientColors::new_evenly_spaced(&colors, TileMode::Clamp, None);
+                    let gradient = Gradient::new(gradient_colors, Interpolation::default());
+
+                    if let Some(shader) = shaders::linear_gradient((start, end), &gradient, None) {
                         let mut paint = Paint::default();
                         paint.set_shader(shader);
                         paint.set_anti_alias(true);
@@ -988,6 +987,7 @@ impl Renderer {
         }
     }
 
+    #[cfg(feature = "drm")]
     /// Flush the GPU context after manual drawing.
     pub fn flush(&mut self) {
         if let Some(gr) = self.gr_context.as_mut() {
