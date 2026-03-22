@@ -289,9 +289,9 @@ defmodule Emerge.UI do
   end
 
   @doc false
-  def __input_button__(attrs, children) do
-    {attrs, children} = prepare_children!("Input.button/2", attrs, children)
-    build_element(attrs, :el, children)
+  def __input_button__(attrs, child) do
+    {attrs, child} = prepare_single_child!("Input.button/2", attrs, child)
+    build_element(attrs, :el, [child])
   end
 
   @doc """
@@ -1152,9 +1152,9 @@ defmodule Emerge.UI do
       Emerge.UI.__text_input__(attrs, value)
     end
 
-    @doc "Button input with child elements"
-    def button(attrs, children) do
-      Emerge.UI.__input_button__(attrs, children)
+    @doc "Button input with a single child element"
+    def button(attrs, child) do
+      Emerge.UI.__input_button__(attrs, child)
     end
   end
 end

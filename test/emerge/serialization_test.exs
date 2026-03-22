@@ -169,7 +169,7 @@ defmodule Emerge.SerializationTest do
             Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 5, size: 1, color: :black)
           ])
         ],
-        [Emerge.UI.text("Save")]
+        Emerge.UI.text("Save")
       )
 
     {binary, tree} = Serialization.encode(layout)
