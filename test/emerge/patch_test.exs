@@ -679,7 +679,9 @@ defmodule Emerge.Engine.PatchTest do
   defp maybe_add_scroll(tree, nil), do: tree
 
   defp maybe_add_scroll(
-         %Emerge.Engine.Element{children: [%Emerge.Engine.Element{children: [menu, content]} = row]} = tree,
+         %Emerge.Engine.Element{
+           children: [%Emerge.Engine.Element{children: [menu, content]} = row]
+         } = tree,
          value
        ) do
     updated_content = %{content | attrs: Map.put(content.attrs, :scroll_y, value)}

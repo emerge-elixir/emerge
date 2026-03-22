@@ -30,7 +30,8 @@ defmodule Emerge.Engine.DiffState do
   @doc """
   Compute patches for a new tree and return {patch_binary, updated_state, assigned_tree}.
   """
-  @spec diff_and_encode(t(), Emerge.Engine.Element.t()) :: {binary(), t(), Emerge.Engine.Element.t()}
+  @spec diff_and_encode(t(), Emerge.Engine.Element.t()) ::
+          {binary(), t(), Emerge.Engine.Element.t()}
   def diff_and_encode(%__MODULE__{} = state, tree) do
     {vdom, patches, assigned} = Reconcile.reconcile(state.vdom, tree)
 

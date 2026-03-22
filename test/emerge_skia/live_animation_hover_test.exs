@@ -88,7 +88,10 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
 
   test "full upload path activates hover when animated target reaches static cursor" do
     state = Emerge.Engine.diff_state_new()
-    {full_bin, next_state, _assigned_tree} = Emerge.Engine.encode_full(state, AnimatedHitCase.tree())
+
+    {full_bin, next_state, _assigned_tree} =
+      Emerge.Engine.encode_full(state, AnimatedHitCase.tree())
+
     target_id_bin = AnimatedHitCase.target_id_bin_from_state(next_state)
     harness = TestHarness.new(128, 82)
     on_exit(fn -> :ok = TestHarness.stop(harness) end)
@@ -280,7 +283,10 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
       Emerge.Engine.encode_full(state, AnimatedHitCase.demo_like_page_switch_placeholder_tree())
 
     {patch_bin, state, _assigned_tree} =
-      Emerge.Engine.diff_state_update(state, AnimatedHitCase.demo_like_tree_with_log("Animation 0"))
+      Emerge.Engine.diff_state_update(
+        state,
+        AnimatedHitCase.demo_like_tree_with_log("Animation 0")
+      )
 
     target_id_bin = AnimatedHitCase.target_id_bin_from_state(state)
     harness = TestHarness.new(320, 260)
@@ -451,7 +457,10 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
           state = Emerge.Engine.diff_state_new()
 
           {full_bin, state, _assigned_placeholder} =
-            Emerge.Engine.encode_full(state, AnimatedHitCase.demo_like_page_switch_placeholder_tree())
+            Emerge.Engine.encode_full(
+              state,
+              AnimatedHitCase.demo_like_page_switch_placeholder_tree()
+            )
 
           {patch_bin, next_state, _assigned_tree} =
             Emerge.Engine.diff_state_update(state, AnimatedHitCase.demo_like_tree())
