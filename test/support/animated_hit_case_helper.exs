@@ -13,7 +13,13 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
 
   def tree do
     el(
-      [key(:host), width(px(128)), height(px(82)), Nearby.in_front(target()), Background.color(:gray)],
+      [
+        key(:host),
+        width(px(128)),
+        height(px(82)),
+        Nearby.in_front(target()),
+        Background.color(:gray)
+      ],
       underlying()
     )
   end
@@ -234,7 +240,10 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
                 Border.rounded(12),
                 Nearby.in_front(target())
               ],
-              el([center_x(), align_bottom(), Transform.move_y(-8), Font.size(9)], text("Original slot"))
+              el(
+                [center_x(), align_bottom(), Transform.move_y(-8), Font.size(9)],
+                text("Original slot")
+              )
             )
           )
         ])

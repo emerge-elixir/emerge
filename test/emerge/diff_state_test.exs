@@ -40,7 +40,8 @@ defmodule Emerge.Engine.DiffStateTest do
         el([key(:left)], text("left"))
       ])
 
-    {full_bin, patch_bin, _state, _assigned} = Emerge.Engine.encode_full_with_empty_patch(state, layout)
+    {full_bin, patch_bin, _state, _assigned} =
+      Emerge.Engine.encode_full_with_empty_patch(state, layout)
 
     assert is_binary(full_bin)
     assert patch_bin == <<>>
@@ -338,7 +339,10 @@ defmodule Emerge.Engine.DiffStateTest do
 
   test "dispatch_event routes press events" do
     layout =
-      Emerge.UI.Input.button([key(:save), Event.on_press({self(), :pressed})], Emerge.UI.text("Save"))
+      Emerge.UI.Input.button(
+        [key(:save), Event.on_press({self(), :pressed})],
+        Emerge.UI.text("Save")
+      )
 
     state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
