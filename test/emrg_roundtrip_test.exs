@@ -1,9 +1,9 @@
 defmodule EmergeSkia.EmrgRoundtripTest do
   use ExUnit.Case
 
-  import Emerge.UI
+  use Emerge.UI
 
-  defp normalize_tree(%Emerge.Element{} = element) do
+  defp normalize_tree(%Emerge.Engine.Element{} = element) do
     %{
       type: element.type,
       id: element.id,
@@ -14,12 +14,12 @@ defmodule EmergeSkia.EmrgRoundtripTest do
 
   defp normalize_attrs(attrs) do
     attrs
-    |> Emerge.Tree.strip_runtime_attrs()
+    |> Emerge.Engine.Tree.strip_runtime_attrs()
     |> Enum.map(fn {key, value} -> {key, normalize_attr_value(value)} end)
     |> Map.new()
   end
 
-  defp normalize_attr_value(%Emerge.Element{} = element), do: normalize_tree(element)
+  defp normalize_attr_value(%Emerge.Engine.Element{} = element), do: normalize_tree(element)
 
   defp normalize_attr_value(%{type: type, id: id, attrs: attrs, children: children}) do
     %{
@@ -143,7 +143,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               padding(4.0),
               center_x(),
               center_y(),
-              above(
+              Nearby.above(
                 el(
                   [
                     padding(2.0),
@@ -154,7 +154,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                   text("Above")
                 )
               ),
-              below(
+              Nearby.below(
                 el(
                   [
                     padding(2.0),
@@ -165,7 +165,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                   text("Below")
                 )
               ),
-              on_left(
+              Nearby.on_left(
                 el(
                   [
                     padding(2.0),
@@ -176,7 +176,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                   text("Left")
                 )
               ),
-              on_right(
+              Nearby.on_right(
                 el(
                   [
                     padding(2.0),
@@ -187,7 +187,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                   text("Right")
                 )
               ),
-              in_front(
+              Nearby.in_front(
                 el(
                   [
                     padding(2.0),
@@ -198,7 +198,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
                   text("Front")
                 )
               ),
-              behind_content(
+              Nearby.behind_content(
                 el(
                   [
                     padding(2.0),
@@ -222,8 +222,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         ]
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -233,7 +233,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     normalized_decoded = normalize_tree(decoded)
     normalized_assigned = normalize_tree(assigned)
@@ -260,8 +260,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
       width: :fill
     }
 
-    encoded_a = Emerge.AttrCodec.encode_attrs(attrs_a)
-    encoded_b = Emerge.AttrCodec.encode_attrs(attrs_b)
+    encoded_a = Emerge.Engine.AttrCodec.encode_attrs(attrs_a)
+    encoded_b = Emerge.Engine.AttrCodec.encode_attrs(attrs_b)
 
     assert encoded_a == encoded_b
   end
@@ -284,18 +284,18 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         [
           width({:px, 100.0}),
           height({:px, 50.0}),
-          above(nearby_el),
-          below(nearby_el),
-          on_left(nearby_el),
-          on_right(nearby_el),
-          in_front(nearby_el),
-          behind_content(nearby_el)
+          Nearby.above(nearby_el),
+          Nearby.below(nearby_el),
+          Nearby.on_left(nearby_el),
+          Nearby.on_right(nearby_el),
+          Nearby.in_front(nearby_el),
+          Nearby.behind_content(nearby_el)
         ],
         text("Main")
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -305,7 +305,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     normalized_decoded = normalize_tree(decoded)
     normalized_assigned = normalize_tree(assigned)
@@ -329,8 +329,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         ]
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -340,7 +340,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     normalized_decoded = normalize_tree(decoded)
     normalized_assigned = normalize_tree(assigned)
@@ -366,8 +366,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         ]
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -377,7 +377,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     normalized_decoded = normalize_tree(decoded)
     normalized_assigned = normalize_tree(assigned)
@@ -397,8 +397,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         )
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -408,7 +408,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     assert decoded.type == :el
     assert length(decoded.children) == 1
@@ -427,21 +427,21 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         [
           width(px(260)),
           Emerge.UI.Font.size(14.0),
-          on_change({self(), :changed}),
-          on_focus({self(), :focused}),
-          on_blur({self(), :blurred}),
-          focused([alpha(0.85), move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
-          mouse_down([
-            move_y(-1),
-            scale(0.97),
+          Event.on_change({self(), :changed}),
+          Event.on_focus({self(), :focused}),
+          Event.on_blur({self(), :blurred}),
+          Interactive.focused([Transform.alpha(0.85), Transform.move_x(1), Emerge.UI.Border.glow(:cyan, 3)]),
+          Interactive.mouse_down([
+            Transform.move_y(-1),
+            Transform.scale(0.97),
             Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
           ])
         ],
         "quick brown fox"
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -451,7 +451,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     assert assigned.type == :text_input
     assert decoded.type == :text_input
@@ -494,8 +494,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         text("Border test")
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -505,7 +505,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     normalized_decoded = normalize_tree(decoded)
     normalized_assigned = normalize_tree(assigned)
@@ -532,8 +532,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         text("Cyan text")
       )
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -543,7 +543,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     # Verify colors are preserved on the parent element
     assert decoded.attrs[:background] == :cyan
@@ -561,8 +561,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         )
       ])
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -572,7 +572,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     assert normalize_tree(decoded) == normalize_tree(assigned)
     [image_node, bg_node] = decoded.children
@@ -592,8 +592,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         el([width(px(80)), height(px(80)), Emerge.UI.Background.image("img_bg")], none())
       ])
 
-    {_vdom, assigned} = Emerge.Reconcile.assign_ids(tree)
-    encoded = Emerge.Serialization.encode_tree(assigned)
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
 
     roundtrip =
       case EmergeSkia.Native.tree_roundtrip(encoded) do
@@ -603,7 +603,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
       end
 
-    decoded = Emerge.Serialization.decode(roundtrip)
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
 
     [tiled, tiled_x, tiled_y, uncropped, image_default] = decoded.children
 

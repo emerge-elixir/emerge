@@ -7,7 +7,7 @@ defmodule EmergeDemo.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      listeners: [Emerge.CodeReloader.MixListener],
+      listeners: [Emerge.Runtime.CodeReloader.MixListener],
       deps: deps()
     ]
   end

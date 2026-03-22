@@ -1,10 +1,10 @@
-defmodule Emerge.SerializationTest do
+defmodule Emerge.Engine.SerializationTest do
   use ExUnit.Case, async: true
 
-  import Emerge.UI
+  use Emerge.UI
 
-  alias Emerge.Serialization
-  alias Emerge.Tree
+  alias Emerge.Engine.Serialization
+  alias Emerge.Engine.Tree
 
   test "assign_ids assigns stable integer ids" do
     layout =
@@ -116,13 +116,13 @@ defmodule Emerge.SerializationTest do
       Emerge.UI.Input.text(
         [
           width(px(280)),
-          on_change({self(), :changed}),
-          on_focus({self(), :focused}),
-          on_blur({self(), :blurred}),
-          focused([alpha(0.9), move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
-          mouse_down([
-            move_y(-1),
-            scale(0.98),
+          Event.on_change({self(), :changed}),
+          Event.on_focus({self(), :focused}),
+          Event.on_blur({self(), :blurred}),
+          Interactive.focused([Transform.alpha(0.9), Transform.move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
+          Interactive.mouse_down([
+            Transform.move_y(-1),
+            Transform.scale(0.98),
             Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
           ])
         ],
@@ -160,12 +160,12 @@ defmodule Emerge.SerializationTest do
     layout =
       Emerge.UI.Input.button(
         [
-          on_press({self(), :pressed}),
-          on_focus({self(), :focused}),
-          on_blur({self(), :blurred}),
-          focused([alpha(0.9), Emerge.UI.Border.glow(:cyan, 2)]),
-          mouse_down([
-            move_y(-1),
+          Event.on_press({self(), :pressed}),
+          Event.on_focus({self(), :focused}),
+          Event.on_blur({self(), :blurred}),
+          Interactive.focused([Transform.alpha(0.9), Emerge.UI.Border.glow(:cyan, 2)]),
+          Interactive.mouse_down([
+            Transform.move_y(-1),
             Emerge.UI.Border.inner_shadow(offset: {0, 1}, blur: 5, size: 1, color: :black)
           ])
         ],
@@ -224,10 +224,10 @@ defmodule Emerge.SerializationTest do
            }
   end
 
-  defp strip_runtime(%Emerge.Element{} = element) do
+  defp strip_runtime(%Emerge.Engine.Element{} = element) do
     %{
       element
-      | attrs: Emerge.Tree.strip_runtime_attrs(element.attrs),
+      | attrs: Emerge.Engine.Tree.strip_runtime_attrs(element.attrs),
         children: Enum.map(element.children, &strip_runtime/1)
     }
   end

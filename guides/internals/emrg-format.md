@@ -1,11 +1,11 @@
 # EMRG Binary Format Specification
 
 This document specifies the EMRG binary format used by
-`Emerge.Serialization.encode_tree/1`.
+`Emerge.Engine.Serialization.encode_tree/1`.
 
 ## Overview
 
-EMRG is a compact, self-contained encoding of a retained `Emerge.Element` tree.
+EMRG is a compact, self-contained encoding of a retained `Emerge.tree()` value.
 It stores all nodes in a flat list and rebuilds edges by id.
 
 Current format version is `4`.
@@ -72,7 +72,7 @@ video       -> 11
 
 ## Attribute Tags
 
-The attr block continues to use the typed attr encoding from `Emerge.AttrCodec`,
+The attr block continues to use the typed attr encoding from `Emerge.Engine.AttrCodec`,
 but nearby tags are no longer present in v4.
 
 Notable tag coverage includes:

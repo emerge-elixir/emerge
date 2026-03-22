@@ -1,19 +1,39 @@
 defmodule Emerge.UITest do
   use ExUnit.Case, async: true
+  use Emerge.UI
 
   import ExUnit.CaptureIO
-  import Emerge.UI
 
-  alias Emerge.Color
-  alias Emerge.Reconcile
-  alias Emerge.UI.{Background, Border, Font, Svg}
+  alias Emerge.Engine.Reconcile
   alias EmergeSkia.VideoTarget
+
+  defmodule UsingEmergeUIComponent do
+    use Emerge.UI
+
+    def tree do
+      el(
+        [Background.color(color(:sky, 500)), Border.rounded(8), Font.color(color(:white))],
+        Input.button([key(:save), Event.on_press(:save)], text("Save"))
+      )
+    end
+  end
+
+  test "use Emerge.UI imports color helpers and aliases UI modules" do
+    element = UsingEmergeUIComponent.tree()
+
+    assert element.attrs.background == {:color_rgb, {0, 166, 244}}
+    assert element.attrs.border_radius == 8
+    assert element.attrs.font_color == {:color_rgb, {255, 255, 255}}
+
+    assert [%Emerge.Engine.Element{type: :el, children: [%Emerge.Engine.Element{type: :text}]}] =
+             element.children
+  end
 
   test "mouse_over stores decorative attrs" do
     element =
       el(
         [
-          mouse_over([
+          Interactive.mouse_over([
             Background.color(:red),
             Font.color(:white),
             Svg.color(:cyan),
@@ -22,8 +42,8 @@ defmodule Emerge.UITest do
             Font.strike(),
             Font.letter_spacing(1.5),
             Font.word_spacing(3),
-            alpha(0.8),
-            move_x(2)
+            Transform.alpha(0.8),
+            Transform.move_x(2)
           ])
         ],
         text("hi")
@@ -59,19 +79,19 @@ defmodule Emerge.UITest do
     assert element.attrs.svg_expected == true
   end
 
-  test "UI attrs accept Emerge.Color helper tuples" do
+  test "UI attrs accept Emerge.UI.Color helper tuples" do
     element =
       el(
         [
-          Background.color(Color.color(:sky, 200, 0.3)),
-          Border.color(Color.color_rgb(1, 2, 3)),
-          Font.color(Color.color_rgba(4, 5, 6, 0.5))
+          Background.color(color(:sky, 200, 0.3)),
+          Border.color(color_rgb(1, 2, 3)),
+          Font.color(color_rgba(4, 5, 6, 0.5))
         ],
         text("hi")
       )
 
     svg_element =
-      svg([width(px(24)), height(px(24)), Svg.color(Color.color(:white))], "icons/cloud.svg")
+      svg([width(px(24)), height(px(24)), Svg.color(color(:white))], "icons/cloud.svg")
 
     assert element.attrs.background == {:color_rgba, {184, 230, 254, 77}}
     assert element.attrs.border_color == {:color_rgb, {1, 2, 3}}
@@ -87,13 +107,13 @@ defmodule Emerge.UITest do
 
   test "mouse_over rejects non-decorative attrs" do
     assert_raise ArgumentError, ~r/mouse_over only supports decorative attributes/, fn ->
-      el([mouse_over([width(fill())])], text("bad"))
+      el([Interactive.mouse_over([width(fill())])], text("bad"))
     end
   end
 
   test "mouse_over rejects nested mouse_over" do
     assert_raise ArgumentError, ~r/mouse_over does not support nested mouse_over/, fn ->
-      el([mouse_over([mouse_over([alpha(0.5)])])], text("bad"))
+      el([Interactive.mouse_over([Interactive.mouse_over([Transform.alpha(0.5)])])], text("bad"))
     end
   end
 
@@ -101,15 +121,15 @@ defmodule Emerge.UITest do
     element =
       el(
         [
-          focused([
+          Interactive.focused([
             Font.size(20),
             Font.color(:white),
-            alpha(0.9),
+            Transform.alpha(0.9),
             Border.glow(:cyan, 3)
           ]),
-          mouse_down([
+          Interactive.mouse_down([
             Background.color(:blue),
-            move_y(-1),
+            Transform.move_y(-1),
             Border.inner_shadow(offset: {0, 1}, blur: 6, size: 1, color: :black)
           ])
         ],
@@ -136,10 +156,10 @@ defmodule Emerge.UITest do
     element =
       el(
         [
-          animate(
+          Animation.animate(
             [
-              [width(px(100)), padding_xy(12, 6), move_x(-20), Background.color(:red)],
-              [width(px(160)), padding_each(8, 14, 10, 16), move_x(20), Background.color(:blue)]
+              [width(px(100)), padding_xy(12, 6), Transform.move_x(-20), Background.color(:red)],
+              [width(px(160)), padding_each(8, 14, 10, 16), Transform.move_x(20), Background.color(:blue)]
             ],
             420,
             :ease_in_out,
@@ -164,10 +184,10 @@ defmodule Emerge.UITest do
     element =
       el(
         [
-          animate_enter(
+          Animation.animate_enter(
             [
-              [width(px(90)), alpha(0.2), move_y(8)],
-              [width(px(140)), alpha(1.0), move_y(0)]
+              [width(px(90)), Transform.alpha(0.2), Transform.move_y(8)],
+              [width(px(140)), Transform.alpha(1.0), Transform.move_y(0)]
             ],
             260,
             :ease_out
@@ -191,10 +211,10 @@ defmodule Emerge.UITest do
     element =
       el(
         [
-          animate_exit(
+          Animation.animate_exit(
             [
-              [width(px(140)), alpha(1.0), move_x(0)],
-              [width(px(64)), alpha(0.0), move_x(-16)]
+              [width(px(140)), Transform.alpha(1.0), Transform.move_x(0)],
+              [width(px(64)), Transform.alpha(0.0), Transform.move_x(-16)]
             ],
             220,
             :ease_in
@@ -217,7 +237,7 @@ defmodule Emerge.UITest do
   test "animate rejects mismatched keyframe attrs" do
     assert_raise ArgumentError, ~r/same attribute set/, fn ->
       el(
-        [animate([[width(px(100))], [width(px(120)), move_x(10)]], 200, :linear)],
+        [Animation.animate([[width(px(100))], [width(px(120)), Transform.move_x(10)]], 200, :linear)],
         text("bad")
       )
     end
@@ -225,20 +245,20 @@ defmodule Emerge.UITest do
 
   test "animate rejects incompatible width variants" do
     assert_raise ArgumentError, ~r/same length variant/, fn ->
-      el([animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
+      el([Animation.animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
     end
   end
 
   test "animate_enter error messages name animate_enter" do
     assert_raise ArgumentError, ~r/animate_enter expects at least 2 keyframes/, fn ->
-      el([animate_enter([[width(px(100))]], 200, :linear)], text("bad"))
+      el([Animation.animate_enter([[width(px(100))]], 200, :linear)], text("bad"))
     end
   end
 
   test "animate_exit only allows repeat once" do
     assert_raise ArgumentError, ~r/animate_exit expects :repeat to be :once/, fn ->
       el(
-        [animate_exit([[alpha(1.0)], [alpha(0.0)]], 200, :linear, :loop)],
+        [Animation.animate_exit([[Transform.alpha(1.0)], [Transform.alpha(0.0)]], 200, :linear, :loop)],
         text("bad")
       )
     end
@@ -248,7 +268,7 @@ defmodule Emerge.UITest do
     assert_raise ArgumentError, ~r/animate_exit is not allowed on the viewport root/, fn ->
       Reconcile.assign_ids(
         el(
-          [animate_exit([[alpha(1.0)], [alpha(0.0)]], 200, :linear)],
+          [Animation.animate_exit([[Transform.alpha(1.0)], [Transform.alpha(0.0)]], 200, :linear)],
           text("bad")
         )
       )
@@ -259,7 +279,7 @@ defmodule Emerge.UITest do
     element =
       el(
         [
-          focused([
+          Interactive.focused([
             Border.glow(:cyan, 2),
             Border.glow(:blue, 3)
           ])
@@ -292,13 +312,13 @@ defmodule Emerge.UITest do
 
   test "focused rejects non-decorative attrs" do
     assert_raise ArgumentError, ~r/focused only supports decorative attributes/, fn ->
-      el([focused([width(fill())])], text("bad"))
+      el([Interactive.focused([width(fill())])], text("bad"))
     end
   end
 
   test "mouse_down rejects nested state styles" do
     assert_raise ArgumentError, ~r/mouse_down does not support nested focused/, fn ->
-      el([mouse_down([focused([alpha(0.5)])])], text("bad"))
+      el([Interactive.mouse_down([Interactive.focused([Transform.alpha(0.5)])])], text("bad"))
     end
   end
 
@@ -319,7 +339,7 @@ defmodule Emerge.UITest do
     element = paragraph([], [text("Hello")])
 
     assert element.type == :paragraph
-    assert element.attrs == %{__attrs_hash: Emerge.Tree.attrs_hash(%{})}
+    assert element.attrs == %{__attrs_hash: Emerge.Engine.Tree.attrs_hash(%{})}
     assert length(element.children) == 1
   end
 
@@ -560,16 +580,16 @@ defmodule Emerge.UITest do
   end
 
   test "on_change helper returns attr tuple" do
-    assert on_change({self(), :changed}) == {:on_change, {self(), :changed}}
+    assert Event.on_change({self(), :changed}) == {:on_change, {self(), :changed}}
   end
 
   test "on_press helper returns attr tuple" do
-    assert on_press({self(), :pressed}) == {:on_press, {self(), :pressed}}
+    assert Event.on_press({self(), :pressed}) == {:on_press, {self(), :pressed}}
   end
 
   test "focus event helpers return attr tuples" do
-    assert on_focus({self(), :focused}) == {:on_focus, {self(), :focused}}
-    assert on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
+    assert Event.on_focus({self(), :focused}) == {:on_focus, {self(), :focused}}
+    assert Event.on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
   end
 
   test "Input.text creates a text_input element" do
@@ -578,7 +598,7 @@ defmodule Emerge.UITest do
         [
           key(:search),
           width(px(240)),
-          on_change({self(), :search_changed})
+          Event.on_change({self(), :search_changed})
         ],
         "hello"
       )
@@ -597,9 +617,9 @@ defmodule Emerge.UITest do
         [
           key(:save_btn),
           width(px(160)),
-          on_press({self(), :save_pressed}),
-          on_focus({self(), :save_focused}),
-          on_blur({self(), :save_blurred})
+          Event.on_press({self(), :save_pressed}),
+          Event.on_focus({self(), :save_focused}),
+          Event.on_blur({self(), :save_blurred})
         ],
         text("Save")
       )
@@ -618,15 +638,15 @@ defmodule Emerge.UITest do
   end
 
   test "event helpers wrap local messages with self" do
-    assert on_press(:save_pressed) == {:on_press, {self(), :save_pressed}}
-    assert on_change(:changed) == {:on_change, {self(), :changed}}
-    assert on_click(:clicked) == {:on_click, {self(), :clicked}}
+    assert Event.on_press(:save_pressed) == {:on_press, {self(), :save_pressed}}
+    assert Event.on_change(:changed) == {:on_change, {self(), :changed}}
+    assert Event.on_click(:clicked) == {:on_click, {self(), :clicked}}
   end
 
   test "event helpers preserve explicit pid payloads" do
     pid = self()
-    assert on_press({pid, :save_pressed}) == {:on_press, {pid, :save_pressed}}
-    assert on_change({pid, :changed}) == {:on_change, {pid, :changed}}
+    assert Event.on_press({pid, :save_pressed}) == {:on_press, {pid, :save_pressed}}
+    assert Event.on_change({pid, :changed}) == {:on_change, {pid, :changed}}
   end
 
   test "image/2 validates attrs are first" do
