@@ -22,7 +22,7 @@ pub(super) struct FractionalScaleData {
 
 pub(super) struct ProtocolHandles {
     // These protocol objects must stay alive for the lifetime of the surface.
-    _compositor_state: CompositorState,
+    pub(super) compositor_state: CompositorState,
     _viewporter: Option<WpViewporter>,
     pub(super) viewport: Option<WpViewport>,
     _fractional_scale: Option<WpFractionalScaleV1>,
@@ -56,7 +56,7 @@ impl ProtocolHandles {
                 });
 
         Self {
-            _compositor_state: compositor_state,
+            compositor_state,
             _viewporter: viewporter,
             viewport,
             _fractional_scale: fractional_scale,

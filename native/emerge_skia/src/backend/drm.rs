@@ -28,6 +28,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::cursor::CursorState;
+use crate::events::CursorIcon;
 use crate::input::InputEvent;
 use crate::renderer::{RenderState, Renderer};
 use crate::video::{VideoImportContext, VideoRegistry};
@@ -713,7 +714,8 @@ pub struct DrmRunContext {
     pub running_flag: Arc<AtomicBool>,
     pub tree_tx: Sender<TreeMsg>,
     pub render_rx: Receiver<RenderMsg>,
-    pub cursor_rx: Receiver<RenderMsg>,
+    pub cursor_icon_rx: Receiver<CursorIcon>,
+    pub cursor_pos_rx: Receiver<CursorState>,
     pub event_tx: Sender<EventMsg>,
     pub screen_tx: Sender<(u32, u32)>,
     pub render_counter: Arc<AtomicU64>,
@@ -726,7 +728,8 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         running_flag,
         tree_tx,
         render_rx,
-        cursor_rx,
+        cursor_icon_rx,
+        cursor_pos_rx,
         event_tx,
         screen_tx,
         render_counter,
@@ -1020,6 +1023,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut pending_render = true;
         let mut cursor_pos = (0.0, 0.0);
         let mut cursor_visible = true;
+        let mut _current_cursor_icon = CursorIcon::Default;
         let mut last_cursor_pos = cursor_pos;
         let mut last_cursor_visible = cursor_visible;
 
@@ -1072,10 +1076,6 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                             eprintln!("drm render version={version} latest={latest} delta={delta}");
                         }
                     }
-                    RenderMsg::CursorUpdate { pos, visible } => {
-                        cursor_pos = pos;
-                        cursor_visible = visible;
-                    }
                     RenderMsg::Stop => {
                         running_flag.store(false, Ordering::Relaxed);
                         return;
@@ -1083,11 +1083,13 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 }
             }
 
-            while let Ok(msg) = cursor_rx.try_recv() {
-                if let RenderMsg::CursorUpdate { pos, visible } = msg {
-                    cursor_pos = pos;
-                    cursor_visible = visible;
-                }
+            while let Ok(icon) = cursor_icon_rx.try_recv() {
+                _current_cursor_icon = icon;
+            }
+
+            while let Ok(cursor) = cursor_pos_rx.try_recv() {
+                cursor_pos = cursor.pos;
+                cursor_visible = cursor.visible;
             }
 
             if cursor_plane.is_some()
