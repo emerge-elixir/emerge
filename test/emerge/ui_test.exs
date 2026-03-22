@@ -591,7 +591,7 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
-  test "Input.button creates an el with children and handlers" do
+  test "Input.button creates an el with a child and handlers" do
     element =
       Emerge.UI.Input.button(
         [
@@ -601,7 +601,7 @@ defmodule Emerge.UITest do
           on_focus({self(), :save_focused}),
           on_blur({self(), :save_blurred})
         ],
-        [text("Save")]
+        text("Save")
       )
 
     assert element.type == :el
@@ -663,9 +663,9 @@ defmodule Emerge.UITest do
                  end
   end
 
-  test "Input.button/2 expects children list" do
+  test "Input.button/2 expects a single child element" do
     assert_raise ArgumentError,
-                 ~r/Input\.button\/2 expects the second argument to be a list of child elements, got:/,
+                 ~r/Input\.button\/2 expects the second argument to be a single child element, got:/,
                  fn ->
                    Emerge.UI.Input.button([key(:save_btn)], "Save")
                  end

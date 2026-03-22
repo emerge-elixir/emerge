@@ -110,7 +110,7 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def render(state) do
       row([spacing(8)], [
-        Input.button([key(:inc), on_press(:increment)], [text("+")]),
+        Input.button([key(:inc), on_press(:increment)], text("+")),
         el([key(:count)], text(Integer.to_string(state.count)))
       ])
     end

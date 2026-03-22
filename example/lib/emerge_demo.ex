@@ -54,7 +54,7 @@ defmodule EmergeDemo do
         on_press(on_press),
         center_y()
       ],
-      [text(text)]
+      text(text)
     )
   end
 
