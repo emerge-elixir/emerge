@@ -25,6 +25,13 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features wayland"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_wayland
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            use_cross: true
+            variant: ""
+            cargo_args: "--no-default-features --features wayland"
+            system_packages: ""
           - name: nerves_rpi5_drm
             target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04

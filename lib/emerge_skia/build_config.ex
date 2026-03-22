@@ -1,6 +1,9 @@
 defmodule EmergeSkia.BuildConfig do
   @moduledoc false
 
+  @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
+  @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+  @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm]
 
   @default_compiled_backends (
@@ -95,6 +98,15 @@ defmodule EmergeSkia.BuildConfig do
   def default_runtime_backend, do: @default_runtime_backend
 
   @doc false
+  def force_precompiled_build_env_key, do: @force_precompiled_build_env_key
+
+  @doc false
+  def precompiled_targets, do: @precompiled_targets
+
+  @doc false
+  def precompiled_nif_versions, do: @precompiled_nif_versions
+
+  @doc false
   def default_compiled_backends(env) when is_map(env) do
     if nerves_build_env?(env), do: [:drm], else: [:wayland]
   end
@@ -128,6 +140,35 @@ defmodule EmergeSkia.BuildConfig do
     backends
     |> normalize_compiled_backends!()
     |> Enum.map(&Atom.to_string/1)
+  end
+
+  @doc false
+  def precompiled_variants(env \\ System.get_env()) when is_map(env) do
+    %{
+      "aarch64-unknown-linux-gnu" => [
+        nerves_rpi5: fn _config -> nerves_build_env?(env) end
+      ]
+    }
+  end
+
+  @doc false
+  def precompiled_backends(env \\ System.get_env()) when is_map(env) do
+    if nerves_build_env?(env), do: [:drm], else: [:wayland]
+  end
+
+  @doc false
+  def force_precompiled_build?(opts \\ []) when is_list(opts) do
+    env = Keyword.get(opts, :env, System.get_env())
+    checksum_path = Keyword.fetch!(opts, :checksum_path)
+    compiled_backends = Keyword.get(opts, :compiled_backends, compiled_backends())
+    targets = Keyword.get(opts, :targets, @precompiled_targets)
+    nif_versions = Keyword.get(opts, :nif_versions, @precompiled_nif_versions)
+    target_resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
+
+    force_build_requested?(env) ||
+      not File.exists?(checksum_path) ||
+      unsupported_precompiled_target?(target_resolver, targets, nif_versions) ||
+      normalize_compiled_backends!(compiled_backends) != precompiled_backends(env)
   end
 
   @doc false
@@ -170,6 +211,21 @@ defmodule EmergeSkia.BuildConfig do
     case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
       {arch, os} when is_binary(arch) and arch != "" and is_binary(os) and os != "" -> true
       _ -> false
+    end
+  end
+
+  defp default_precompiled_target_resolver(targets, nif_versions) do
+    RustlerPrecompiled.target(%{}, targets, nif_versions)
+  end
+
+  defp force_build_requested?(env) do
+    Map.get(env, @force_precompiled_build_env_key) in ["1", "true"]
+  end
+
+  defp unsupported_precompiled_target?(target_resolver, targets, nif_versions) do
+    case target_resolver.(targets, nif_versions) do
+      {:ok, _target} -> false
+      {:error, _reason} -> true
     end
   end
 

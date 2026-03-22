@@ -1,6 +1,9 @@
 defmodule Emerge.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/colibri-cam/emerge"
+
   @nerves_rust_target_triple_mapping %{
     "armv6-nerves-linux-gnueabihf" => "arm-unknown-linux-gnueabihf",
     "armv7-nerves-linux-gnueabihf" => "armv7-unknown-linux-gnueabihf",
@@ -29,14 +32,18 @@ defmodule Emerge.MixProject do
   def project do
     [
       app: :emerge,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       rustler_opts: rustler_opts(),
+      package: package(),
+      source_url: @source_url,
       deps: deps(),
       name: "Emerge",
       docs: [
         main: "readme",
+        source_url: @source_url,
+        source_ref: "v#{@version}",
         before_closing_body_tag: &before_closing_body_tag/1,
         extras: [
           "README.md",
@@ -70,9 +77,37 @@ defmodule Emerge.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.37.0"},
+      {:rustler, "~> 0.37.0", optional: true},
+      {:rustler_precompiled, "~> 0.8.4"},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false}
     ]
+  end
+
+  defp package do
+    [
+      description: "GPU accelerated GUI framework.",
+      files: package_files(),
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => @source_url
+      }
+    ]
+  end
+
+  defp package_files do
+    [
+      "lib",
+      "native/emerge_skia/src",
+      "native/emerge_skia/Cargo.toml",
+      "native/emerge_skia/Cargo.lock",
+      "native/emerge_skia/Cross.toml",
+      "priv/demo_fonts",
+      "priv/demo_images",
+      "LICENSE",
+      "README.md",
+      "mix.exs",
+      "mix.lock"
+    ] ++ Path.wildcard("checksum-*.exs")
   end
 
   defp rustler_opts do
