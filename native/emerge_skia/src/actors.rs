@@ -92,9 +92,5 @@ pub enum RenderMsg {
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
         ime_text_state: Option<TextInputState>,
     },
-    CursorUpdate {
-        pos: (f32, f32),
-        visible: bool,
-    },
     Stop,
 }
