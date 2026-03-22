@@ -119,7 +119,11 @@ defmodule Emerge.Engine.SerializationTest do
           Event.on_change({self(), :changed}),
           Event.on_focus({self(), :focused}),
           Event.on_blur({self(), :blurred}),
-          Interactive.focused([Transform.alpha(0.9), Transform.move_x(2), Emerge.UI.Border.glow(:cyan, 3)]),
+          Interactive.focused([
+            Transform.alpha(0.9),
+            Transform.move_x(2),
+            Emerge.UI.Border.glow(:cyan, 3)
+          ]),
           Interactive.mouse_down([
             Transform.move_y(-1),
             Transform.scale(0.98),
