@@ -964,7 +964,8 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
     {
         let _ = (title, width, height);
         Err(rustler::Error::Term(Box::new(
-            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
+            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+                .to_string(),
         )))
     }
 }
@@ -1765,6 +1766,16 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "wayland")]
+    fn test_window_backend() -> BackendKind {
+        BackendKind::Wayland
+    }
+
+    #[cfg(all(not(feature = "wayland"), feature = "drm"))]
+    fn test_window_backend() -> BackendKind {
+        BackendKind::Drm
+    }
+
     #[test]
     fn shutdown_renderer_runtime_stops_and_joins_threads() {
         let running_flag = Arc::new(AtomicBool::new(true));
@@ -1829,7 +1840,7 @@ mod tests {
         };
 
         shutdown_renderer_runtime(
-            BackendKind::Wayland,
+            test_window_backend(),
             &running_flag,
             &backend_wake,
             &stop_flag,
@@ -1879,11 +1890,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_backend_name_rejects_x11_backend() {
+    fn parse_backend_name_rejects_unsupported_backend() {
         assert_eq!(
-            parse_backend_name("x11"),
+            parse_backend_name("bogus"),
+            Err("unsupported backend: bogus".to_string())
+        );
+    }
+
+    #[cfg(not(feature = "drm"))]
+    #[test]
+    fn parse_backend_name_rejects_drm_when_not_compiled() {
+        assert_eq!(
+            parse_backend_name("drm"),
             Err(
-                "backend :x11 is no longer supported; use :wayland on a Wayland session"
+                "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+                    .to_string()
+            )
+        );
+    }
+
+    #[cfg(not(feature = "wayland"))]
+    #[test]
+    fn parse_backend_name_rejects_wayland_when_not_compiled() {
+        assert_eq!(
+            parse_backend_name("wayland"),
+            Err(
+                "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                     .to_string()
             )
         );
@@ -2030,24 +2062,20 @@ fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
         #[cfg(feature = "drm")]
         "drm" => Ok(BackendKind::Drm),
         #[cfg(not(feature = "drm"))]
-        "drm" => Err("DRM backend not compiled (enable the 'drm' Cargo feature)".to_string()),
+        "drm" => Err(
+            "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+                .to_string(),
+        ),
         #[cfg(feature = "wayland")]
         "wayland" => Ok(BackendKind::Wayland),
         #[cfg(not(feature = "wayland"))]
         "wayland" => Err(
-            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
+            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+                .to_string(),
         ),
         "wayland_legacy" => {
             Err("backend :wayland_legacy has been removed; use :wayland".to_string())
         }
-        #[cfg(feature = "wayland")]
-        "x11" => Err(
-            "backend :x11 is no longer supported; use :wayland on a Wayland session".to_string(),
-        ),
-        #[cfg(not(feature = "wayland"))]
-        "x11" => Err(
-            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
-        ),
         other => Err(format!("unsupported backend: {other}")),
     }
 }
