@@ -70,7 +70,7 @@ defmodule EmergeSkia do
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`)
+  - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`). The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -93,6 +93,9 @@ defmodule EmergeSkia do
   - `source` (required, logical path under `<otp_app>/priv` or `%Emerge.Assets.Ref{}`)
   - `weight` (default: `400`)
   - `italic` (default: `false`)
+
+  Compile-time backend selection is configured separately with
+  `config :emerge, compiled_backends: [...]`. If omitted, `[:wayland]` is assumed.
   """
   @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
   def start(opts) when is_list(opts) do

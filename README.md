@@ -101,6 +101,22 @@ Padding is the distance between the outer edge and the content, and spacing is t
 - **DRM** — direct framebuffer for Nerves / embedded / kiosk (no window manager needed)
 - **Raster** — offscreen CPU rendering for testing and headless use
 
+Compile-time native backends are selected with Elixir config:
+
+```elixir
+config :emerge, compiled_backends: [:wayland]
+```
+
+If omitted, `[:wayland]` is assumed. To compile both native window backends:
+
+```elixir
+config :emerge, compiled_backends: [:wayland, :drm]
+```
+
+Runtime `backend:` options must request a backend that was compiled into the NIF.
+For multi-target apps, use target-specific config to choose the compiled backend set
+for each build.
+
 ## Requirements
 
 - Elixir 1.19+
