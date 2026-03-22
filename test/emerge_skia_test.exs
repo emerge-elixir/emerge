@@ -161,10 +161,18 @@ defmodule EmergeSkiaTest do
   test "start/1 rejects removed legacy window backends" do
     assert {:error, {:error, "backend :wayland_legacy has been removed; use :wayland"}} =
              EmergeSkia.start(otp_app: :emerge, backend: :wayland_legacy)
+  end
 
+  test "start/1 rejects unsupported backends" do
+    assert {:error, {:error, "unsupported backend: bogus"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :bogus)
+  end
+
+  test "start/1 rejects backends that were not compiled in" do
     assert {:error,
-            {:error, "backend :x11 is no longer supported; use :wayland on a Wayland session"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :x11)
+            {:error,
+             "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :drm)
   end
 
   test "legacy start arities raise explicit otp_app guidance" do
