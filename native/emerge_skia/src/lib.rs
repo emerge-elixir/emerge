@@ -38,7 +38,6 @@ use backend::raster::{RasterBackend, RasterConfig};
 use backend::wake::BackendWakeHandle;
 use backend::wayland;
 use backend::wayland_config::WaylandConfig;
-use backend::wayland_legacy;
 use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
@@ -69,7 +68,6 @@ mod atoms {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendKind {
     Wayland,
-    WaylandLegacy,
     Drm,
 }
 
@@ -728,10 +726,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
     assets::start(tree_tx.clone(), log_render);
 
-    let system_clipboard = matches!(
-        config.backend,
-        BackendKind::Wayland | BackendKind::WaylandLegacy
-    );
+    let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     let mut handles = RendererHandles::default();
 
     let initial_width = config.width;
@@ -741,13 +736,12 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     let mut backend_wake = BackendWakeHandle::noop();
 
     let (backend, prime_video_supported) = match config.backend {
-        BackendKind::Wayland | BackendKind::WaylandLegacy => {
+        BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let video_registry_clone = Arc::clone(&video_registry);
-            let backend_kind = config.backend;
             let wayland_config = WaylandConfig {
                 title: config.title,
                 width: config.width,
@@ -755,13 +749,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             };
 
             handles.backend_handle = Some(thread::spawn(move || {
-                let run_backend = match backend_kind {
-                    BackendKind::Wayland => wayland::run,
-                    BackendKind::WaylandLegacy => wayland_legacy::run,
-                    BackendKind::Drm => unreachable!("drm backend does not use the wayland runner"),
-                };
-
-                run_backend(
+                wayland::run(
                     wayland_config,
                     running_flag_clone,
                     tree_tx_clone,
@@ -777,7 +765,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
-                        backend_kind,
+                        BackendKind::Wayland,
                         &running_flag,
                         &backend_wake,
                         &stop_flag,
@@ -793,7 +781,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 }
                 Err(_) => {
                     shutdown_renderer_runtime(
-                        backend_kind,
+                        BackendKind::Wayland,
                         &running_flag,
                         &backend_wake,
                         &stop_flag,
@@ -826,7 +814,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                 },
             ));
 
-            (backend_kind, startup.prime_video_supported)
+            (BackendKind::Wayland, startup.prime_video_supported)
         }
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
@@ -907,7 +895,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         system_clipboard,
     ));
 
-    let video_wake = if matches!(backend, BackendKind::Wayland | BackendKind::WaylandLegacy) {
+    let video_wake = if matches!(backend, BackendKind::Wayland) {
         VideoWake::new(backend_wake.clone())
     } else {
         VideoWake::noop()
@@ -949,16 +937,8 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
 #[rustler::nif]
 fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
     let backend = opts.backend.to_lowercase();
-    let backend = match backend.as_str() {
-        "drm" => BackendKind::Drm,
-        "wayland" => BackendKind::Wayland,
-        "wayland_legacy" | "x11" => BackendKind::WaylandLegacy,
-        other => {
-            return Err(rustler::Error::Term(Box::new(format!(
-                "unsupported backend: {other}"
-            ))));
-        }
-    };
+    let backend =
+        parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(StartConfig {
         backend,
@@ -978,6 +958,17 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
     atoms::ok()
 }
 
+fn ensure_video_target_mode_supported(
+    prime_video_supported: bool,
+    mode: VideoMode,
+) -> Result<(), String> {
+    if matches!(mode, VideoMode::Prime) && !prime_video_supported {
+        Err("prime video targets require a Prime-capable backend (:wayland or :drm)".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[rustler::nif]
 fn video_target_new(
     renderer: ResourceArc<RendererResource>,
@@ -987,12 +978,7 @@ fn video_target_new(
     mode: String,
 ) -> Result<ResourceArc<VideoTargetResource>, String> {
     let mode = VideoMode::parse(&mode)?;
-
-    if matches!(mode, VideoMode::Prime) && !renderer.prime_video_supported {
-        return Err(
-            "prime video targets require a real Wayland session or the DRM backend".to_string(),
-        );
-    }
+    ensure_video_target_mode_supported(renderer.prime_video_supported, mode)?;
 
     let spec = video::VideoTargetSpec {
         id: id.clone(),
@@ -1834,6 +1820,41 @@ mod tests {
     }
 
     #[test]
+    fn video_target_new_rejects_prime_for_non_prime_backends() {
+        let err = ensure_video_target_mode_supported(false, VideoMode::Prime)
+            .expect_err("prime target should be rejected");
+
+        assert_eq!(
+            err,
+            "prime video targets require a Prime-capable backend (:wayland or :drm)"
+        );
+    }
+
+    #[test]
+    fn video_target_new_accepts_prime_for_prime_capable_wayland_renderer() {
+        assert!(ensure_video_target_mode_supported(true, VideoMode::Prime).is_ok());
+    }
+
+    #[test]
+    fn parse_backend_name_rejects_removed_legacy_backend() {
+        assert_eq!(
+            parse_backend_name("wayland_legacy"),
+            Err("backend :wayland_legacy has been removed; use :wayland".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_backend_name_rejects_x11_backend() {
+        assert_eq!(
+            parse_backend_name("x11"),
+            Err(
+                "backend :x11 is no longer supported; use :wayland on a Wayland session"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn spawned_event_actor_harness_activates_hover_on_first_target_sample() {
         let case = AnimatedNearbyHitCase::width_move_in_front();
         let probe = case.probe("newly_occupied_outside_host");
@@ -1969,3 +1990,16 @@ mod tests {
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);
+fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
+    match value {
+        "drm" => Ok(BackendKind::Drm),
+        "wayland" => Ok(BackendKind::Wayland),
+        "wayland_legacy" => {
+            Err("backend :wayland_legacy has been removed; use :wayland".to_string())
+        }
+        "x11" => Err(
+            "backend :x11 is no longer supported; use :wayland on a Wayland session".to_string(),
+        ),
+        other => Err(format!("unsupported backend: {other}")),
+    }
+}

@@ -54,7 +54,7 @@ use crate::{
     events::CursorIcon,
     input::InputEvent,
     renderer::RenderState,
-    video::VideoRegistry,
+    video::{VideoImportContext, VideoRegistry},
 };
 
 use super::{
@@ -77,6 +77,36 @@ enum WakeAction {
 #[derive(Clone)]
 struct WaylandWake {
     tx: calloop::channel::Sender<WakeAction>,
+}
+
+enum WaylandVideoImportState {
+    PendingGlInit,
+    Ready(VideoImportContext),
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaylandVideoSyncAction {
+    HoldPendingFrames,
+    ImportPendingFrames,
+    DropPendingFrames,
+}
+
+impl WaylandVideoImportState {
+    fn sync_action(&self) -> WaylandVideoSyncAction {
+        match self {
+            Self::PendingGlInit => WaylandVideoSyncAction::HoldPendingFrames,
+            Self::Ready(_) => WaylandVideoSyncAction::ImportPendingFrames,
+            Self::Unavailable => WaylandVideoSyncAction::DropPendingFrames,
+        }
+    }
+
+    fn context(&self) -> Option<&VideoImportContext> {
+        match self {
+            Self::Ready(ctx) => Some(ctx),
+            Self::PendingGlInit | Self::Unavailable => None,
+        }
+    }
 }
 
 impl BackendWake for WaylandWake {
@@ -107,6 +137,7 @@ pub(super) struct WaylandApp {
     current_cursor_icon: CursorIcon,
     pub(super) keyboard: KeyboardInputState,
     pub(super) text_input: TextInputProtocolState,
+    video_import: WaylandVideoImportState,
     exit: bool,
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
@@ -159,6 +190,7 @@ impl WaylandApp {
             current_cursor_icon: CursorIcon::Default,
             keyboard: KeyboardInputState::new(),
             text_input: TextInputProtocolState::new(globals, &qh),
+            video_import: WaylandVideoImportState::PendingGlInit,
             exit: false,
             running_flag,
             tree_tx,
@@ -308,15 +340,33 @@ impl WaylandApp {
     fn draw(&mut self) {
         self.present.request_frame_callback(&self.window, &self.qh);
 
-        let Some(env) = self.env.as_mut() else {
+        let (video_import, env_opt, video_registry) =
+            (&self.video_import, &mut self.env, &self.video_registry);
+        let sync_action = video_import.sync_action();
+        let video_import_ctx = video_import.context();
+
+        let Some(env) = env_opt.as_mut() else {
             return;
         };
 
         let mut video_needs_cleanup = false;
 
-        match env.renderer.sync_video_frames(&self.video_registry, None) {
-            Ok(result) => video_needs_cleanup = result.needs_cleanup,
-            Err(err) => eprintln!("video sync failed: {err}"),
+        match sync_action {
+            WaylandVideoSyncAction::HoldPendingFrames => {}
+            WaylandVideoSyncAction::ImportPendingFrames => {
+                match env
+                    .renderer
+                    .sync_video_frames(video_registry, video_import_ctx)
+                {
+                    Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                    Err(err) => eprintln!("video sync failed: {err}"),
+                }
+            }
+            WaylandVideoSyncAction::DropPendingFrames => {
+                if let Err(err) = video_registry.drain_pending_to_release() {
+                    eprintln!("video sync failed: {err}");
+                }
+            }
         }
 
         env.renderer.render(&self.render_state);
@@ -343,6 +393,20 @@ impl WaylandApp {
             .apply_to_surface(&self.window, self.protocols.viewport.as_ref());
     }
 
+    fn initialize_video_import(&mut self) {
+        if !matches!(self.video_import, WaylandVideoImportState::PendingGlInit) {
+            return;
+        }
+
+        self.video_import = match VideoImportContext::new_current() {
+            Ok(ctx) => WaylandVideoImportState::Ready(ctx),
+            Err(err) => {
+                eprintln!("prime video import unavailable: {err}");
+                WaylandVideoImportState::Unavailable
+            }
+        };
+    }
+
     pub(super) fn reconfigure_surface_geometry(&mut self, conn: &Connection) {
         let previous = self.geometry;
 
@@ -360,8 +424,13 @@ impl WaylandApp {
         let buffer_changed = previous.buffer_size != self.geometry.buffer_size;
 
         if self.env.is_none() {
+            self.video_import = WaylandVideoImportState::PendingGlInit;
+
             match create_gl_env(conn, self.window.wl_surface(), self.geometry.buffer_size) {
-                Ok(env) => self.env = Some(env),
+                Ok(env) => {
+                    self.env = Some(env);
+                    self.initialize_video_import();
+                }
                 Err(err) => {
                     eprintln!("wayland egl setup failed: {err}");
                     self.running_flag.store(false, Ordering::Relaxed);
@@ -875,7 +944,7 @@ pub(crate) fn run(
 
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
-        prime_video_supported: false,
+        prime_video_supported: true,
     }));
 
     while !app.exit {
@@ -888,5 +957,22 @@ pub(crate) fn run(
 
         app.flush_backend_updates(&conn);
         app.maybe_draw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WaylandVideoImportState, WaylandVideoSyncAction};
+
+    #[test]
+    fn wayland_video_import_states_map_to_expected_sync_actions() {
+        assert_eq!(
+            WaylandVideoImportState::PendingGlInit.sync_action(),
+            WaylandVideoSyncAction::HoldPendingFrames
+        );
+        assert_eq!(
+            WaylandVideoImportState::Unavailable.sync_action(),
+            WaylandVideoSyncAction::DropPendingFrames
+        );
     }
 }

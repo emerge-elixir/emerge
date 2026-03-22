@@ -13,9 +13,7 @@ hover-trace = []
 
 [dependencies]
 rustler = "0.37"
-winit = "0.30"
 glutin = "0.32"
-glutin-winit = "0.5"
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"] }
@@ -33,5 +31,4 @@ sha2 = "0.10"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 resvg = "0.47"
 
-# Support both X11 and Wayland
-skia-safe = { version = "0.91.1", default-features = false, features = ["x11", "wayland", "embed-freetype", "binary-cache"] }
+skia-safe = { version = "0.91.1", default-features = false, features = ["wayland", "embed-freetype", "binary-cache"] }
