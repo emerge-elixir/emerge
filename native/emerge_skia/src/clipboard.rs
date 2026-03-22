@@ -6,6 +6,7 @@ pub enum ClipboardTarget {
 
 pub struct ClipboardManager {
     system_enabled: bool,
+    #[cfg(feature = "wayland")]
     system: Option<arboard::Clipboard>,
     fallback_clipboard: String,
     fallback_primary: String,
@@ -15,6 +16,7 @@ impl ClipboardManager {
     pub fn new(system_enabled: bool) -> Self {
         Self {
             system_enabled,
+            #[cfg(feature = "wayland")]
             system: None,
             fallback_clipboard: String::new(),
             fallback_primary: String::new(),
@@ -28,12 +30,14 @@ impl ClipboardManager {
             return;
         }
 
+        #[cfg(feature = "wayland")]
         if let Some(system) = self.system_mut() {
             let _ = set_system_text(system, target, text);
         }
     }
 
     pub fn get_text(&mut self, target: ClipboardTarget) -> Option<String> {
+        #[cfg(feature = "wayland")]
         if self.system_enabled
             && let Some(system) = self.system_mut()
             && let Ok(text) = get_system_text(system, target)
@@ -45,6 +49,7 @@ impl ClipboardManager {
         self.get_fallback(target)
     }
 
+    #[cfg(feature = "wayland")]
     fn system_mut(&mut self) -> Option<&mut arboard::Clipboard> {
         if !self.system_enabled {
             return None;
@@ -84,7 +89,7 @@ impl ClipboardManager {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 fn linux_clipboard_kind(target: ClipboardTarget) -> arboard::LinuxClipboardKind {
     match target {
         ClipboardTarget::Clipboard => arboard::LinuxClipboardKind::Clipboard,
@@ -92,7 +97,7 @@ fn linux_clipboard_kind(target: ClipboardTarget) -> arboard::LinuxClipboardKind 
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 fn set_system_text(
     system: &mut arboard::Clipboard,
     target: ClipboardTarget,
@@ -106,7 +111,7 @@ fn set_system_text(
         .text(text.to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "wayland", not(target_os = "linux")))]
 fn set_system_text(
     system: &mut arboard::Clipboard,
     _target: ClipboardTarget,
@@ -115,7 +120,7 @@ fn set_system_text(
     system.set_text(text.to_string())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 fn get_system_text(
     system: &mut arboard::Clipboard,
     target: ClipboardTarget,
@@ -125,7 +130,7 @@ fn get_system_text(
     system.get().clipboard(linux_clipboard_kind(target)).text()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "wayland", not(target_os = "linux")))]
 fn get_system_text(
     system: &mut arboard::Clipboard,
     _target: ClipboardTarget,
