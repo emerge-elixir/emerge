@@ -22,7 +22,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
         pointer::{
             CursorIcon as SctkCursorIcon, PointerEvent, PointerEventKind, PointerHandler,
             PointerThemeError, ThemeSpec,
@@ -231,6 +231,24 @@ impl WaylandApp {
 
     pub(super) fn send_input_event(&self, event: InputEvent) {
         let _ = self.event_tx.send(EventMsg::InputEvent(event));
+    }
+
+    fn emit_key_press(&self, event: &KeyEvent) {
+        self.send_input_event(InputEvent::Key {
+            key: key_name_from_keysym(event.keysym),
+            action: crate::input::ACTION_PRESS,
+            mods: self.keyboard.current_mods,
+        });
+
+        if !self.text_input.protocol_text_active()
+            && !self.keyboard.ime_preedit_active
+            && let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text)
+        {
+            self.send_input_event(InputEvent::TextCommit {
+                text,
+                mods: self.keyboard.current_mods,
+            });
+        }
     }
 
     fn flush_backend_updates(&mut self, conn: &Connection) {
@@ -754,21 +772,18 @@ impl KeyboardHandler for WaylandApp {
         _serial: u32,
         event: KeyEvent,
     ) {
-        self.send_input_event(InputEvent::Key {
-            key: key_name_from_keysym(event.keysym),
-            action: crate::input::ACTION_PRESS,
-            mods: self.keyboard.current_mods,
-        });
+        self.emit_key_press(&event);
+    }
 
-        if !self.text_input.protocol_text_active()
-            && !self.keyboard.ime_preedit_active
-            && let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text)
-        {
-            self.send_input_event(InputEvent::TextCommit {
-                text,
-                mods: self.keyboard.current_mods,
-            });
-        }
+    fn repeat_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.emit_key_press(&event);
     }
 
     fn release_key(
@@ -793,6 +808,7 @@ impl KeyboardHandler for WaylandApp {
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         modifiers: Modifiers,
+        _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
         let mods = mods_from_sctk(modifiers);
