@@ -21,6 +21,7 @@ mod actors;
 mod assets;
 mod backend;
 mod clipboard;
+#[cfg(feature = "drm")]
 mod cursor;
 mod debug_trace;
 #[cfg(feature = "drm")]

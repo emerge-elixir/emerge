@@ -373,6 +373,7 @@ impl VideoRegistry {
         Ok(())
     }
 
+    #[cfg(feature = "drm")]
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }

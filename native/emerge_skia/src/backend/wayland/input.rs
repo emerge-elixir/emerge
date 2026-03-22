@@ -120,11 +120,15 @@ mod tests {
             AxisScroll {
                 absolute: 6.0,
                 discrete: 2,
+                value120: 0,
+                relative_direction: None,
                 stop: false,
             },
             AxisScroll {
                 absolute: -9.0,
                 discrete: -3,
+                value120: 0,
+                relative_direction: None,
                 stop: false,
             },
             (12.0, 18.0),
@@ -147,11 +151,15 @@ mod tests {
             AxisScroll {
                 absolute: 4.5,
                 discrete: 0,
+                value120: 0,
+                relative_direction: None,
                 stop: false,
             },
             AxisScroll {
                 absolute: -7.25,
                 discrete: 0,
+                value120: 0,
+                relative_direction: None,
                 stop: false,
             },
             (3.0, 5.0),
