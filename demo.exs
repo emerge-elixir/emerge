@@ -1132,7 +1132,7 @@ defmodule Demo do
       row([width(fill()), spacing(12)], [
         el(
           [
-            width(minimum(140, shrink())),
+            width(min(px(140), shrink())),
             padding(10),
             Background.color(color_rgb(70, 65, 95)),
             Border.rounded(8)
@@ -1144,7 +1144,7 @@ defmodule Demo do
         ),
         el(
           [
-            width(maximum(180, fill())),
+            width(max(px(180), fill())),
             padding(10),
             Background.color(color_rgb(85, 65, 95)),
             Border.rounded(8)
@@ -1761,7 +1761,12 @@ defmodule Demo do
             Animation.animate(
               [
                 [width(px(96)), Transform.move_x(-16), Transform.move_y(0), Transform.rotate(0)],
-                [width(px(156)), Transform.move_x(26), Transform.move_y(-10), Transform.rotate(-45)]
+                [
+                  width(px(156)),
+                  Transform.move_x(26),
+                  Transform.move_y(-10),
+                  Transform.rotate(-45)
+                ]
               ],
               1400,
               :ease_in_out,
@@ -2884,7 +2889,7 @@ defmodule Demo do
 
   defp centered_wrapped_cards(cards, max_width) do
     el(
-      [center_x(), width(maximum(max_width, fill()))],
+      [center_x(), width(max(px(max_width), fill()))],
       wrapped_row([width(fill()), spacing_xy(12, 12)], cards)
     )
   end
@@ -3397,7 +3402,7 @@ defmodule Demo do
     stage_padding = 10
     stage_w = frame_w + stage_padding * 2
     stage_h = frame_h + stage_padding * 2
-    card_w = max(stage_w + 20, 220)
+    card_w = Kernel.max(stage_w + 20, 220)
 
     el(
       [
@@ -4216,7 +4221,7 @@ defmodule Demo do
 
   defp take_random_children(children, min_count, max_count) do
     count = min_count + :rand.uniform(max_count - min_count + 1) - 1
-    count = min(count, length(children))
+    count = Kernel.min(count, length(children))
     {picked, rest} = Enum.split(Enum.shuffle(children), count)
     {picked, rest}
   end
@@ -4623,7 +4628,8 @@ defmodule Demo do
   defp event_attr(:mouse_down, label),
     do: Event.on_mouse_down({self(), {:demo_event, label, :mouse_down}})
 
-  defp event_attr(:mouse_up, label), do: Event.on_mouse_up({self(), {:demo_event, label, :mouse_up}})
+  defp event_attr(:mouse_up, label),
+    do: Event.on_mouse_up({self(), {:demo_event, label, :mouse_up}})
 
   defp event_attr(:mouse_enter, label),
     do: Event.on_mouse_enter({self(), {:demo_event, label, :mouse_enter}})

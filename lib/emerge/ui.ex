@@ -1,25 +1,73 @@
 defmodule Emerge.UI do
   @moduledoc """
-  Elm-UI inspired layout primitives for Emerge.
+  Helpers for declaring UI trees.
 
-  ## Example
+  The root `Emerge.UI` module contains the core element constructors:
 
-      defmodule MyApp.Components do
-        use Emerge.UI
+  - `el/2`
+  - `row/2`
+  - `wrapped_row/2`
+  - `column/2`
+  - `text_column/2`
+  - `paragraph/2`
+  - `text/1`
+  - `image/2`
+  - `svg/2`
+  - `video/2`
+  - `none/0`
+  - `key/1`
+  - `image_fit/1`
 
-        def hero do
-          column([spacing(10), center_x()], [
-            el(
-              [width(fill()), height(px(100)), padding(20), Background.color(color(:sky, 700))],
-              text("Hello World")
-            ),
-            row([spacing(20), padding(10)], [
-              el([width(fill())], text("Left")),
-              el([width(fill())], text("Right"))
-            ])
-          ])
-        end
-      end
+  UI is expressed as a tree of elements.
+
+  Each element contains:
+
+  - a type such as `:el`, `:row`, `:column`, or `:text`
+  - attributes stored in a map
+  - children, which are themselves elements
+
+  Container constructors such as `row/2` and `column/2` build parent elements
+  with child elements underneath them. Leaf elements such as `text/1` have no
+  children.
+
+  `use Emerge.UI` brings the most common helpers into scope:
+
+  - imports `Emerge.UI`
+  - imports `Emerge.UI.Color`
+  - imports `Emerge.UI.Size`
+  - imports `Emerge.UI.Space`
+  - imports `Emerge.UI.Scroll`
+  - imports `Emerge.UI.Align`
+
+  It also aliases the grouped helper modules:
+
+  - `Background`
+  - `Border`
+  - `Font`
+  - `Input`
+  - `Svg`
+  - `Event`
+  - `Interactive`
+  - `Transform`
+  - `Animation`
+  - `Nearby`
+
+  The rest of the API is organized by concern:
+
+  - `Emerge.UI.Color` for named and explicit colors
+  - `Emerge.UI.Size` for width, height, and length helpers
+  - `Emerge.UI.Space` for padding and spacing
+  - `Emerge.UI.Scroll` for scroll-related attributes
+  - `Emerge.UI.Align` for alignment helpers
+  - `Emerge.UI.Event` for event handlers
+  - `Emerge.UI.Interactive` for interaction-driven styling
+  - `Emerge.UI.Transform` for movement, rotation, scale, and alpha
+  - `Emerge.UI.Animation` for declarative animations
+  - `Emerge.UI.Nearby` for overlays and nearby positioning
+  - `Emerge.UI.Background`, `Emerge.UI.Border`, `Emerge.UI.Font`, `Emerge.UI.Input`, and `Emerge.UI.Svg` for focused styling and element helpers
+
+  As rendering grows, it is natural to extract parts into smaller regular Elixir
+  functions. Those functions only need to return `Emerge.tree()`.
   """
 
   alias Emerge.Engine.Element
@@ -29,12 +77,11 @@ defmodule Emerge.UI do
 
   @doc """
   Imports the root element DSL and the most common UI helper modules.
-
-  `Emerge.UI` keeps element constructors on the root module while grouping
-  attribute helpers into focused submodules.
   """
   defmacro __using__(_opts) do
     quote do
+      import Kernel, except: [min: 2, max: 2]
+
       import Emerge.UI
       import Emerge.UI.Color
       import Emerge.UI.Size

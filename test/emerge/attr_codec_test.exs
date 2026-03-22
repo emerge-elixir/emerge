@@ -71,8 +71,8 @@ defmodule Emerge.Engine.AttrCodecTest do
 
   test "encode/decode length variants" do
     attrs = %{
-      width: {:minimum, 80, :content},
-      height: {:maximum, 120, {:fill, 2}}
+      width: min(px(80), shrink()),
+      height: max(px(120), fill(2))
     }
 
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
