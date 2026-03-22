@@ -3,20 +3,22 @@ defmodule EmergeSkia.Native do
   NIF bindings for the Skia renderer.
   """
 
-  @compiled_backends (
-                       :emerge
-                       |> Application.compile_env(:compiled_backends, [:wayland])
-                       |> EmergeSkia.BuildConfig.normalize_compiled_backends!()
-                     )
+  @rustler_opts Mix.Project.config()[:rustler_opts] || []
+  @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
 
   @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(@compiled_backends)
 
   use Rustler,
-    otp_app: :emerge,
-    crate: "emerge_skia",
-    path: "native/emerge_skia",
-    default_features: false,
-    features: @cargo_features
+      Keyword.merge(
+        [
+          otp_app: :emerge,
+          crate: "emerge_skia",
+          path: "native/emerge_skia",
+          default_features: false,
+          features: @cargo_features
+        ],
+        @rustler_opts
+      )
 
   @doc """
   Start the Skia renderer with a window.

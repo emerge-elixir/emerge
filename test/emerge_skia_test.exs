@@ -3,6 +3,7 @@ defmodule EmergeSkiaTest do
   doctest EmergeSkia
   use Emerge.UI
 
+  alias EmergeSkia.BuildConfig
   alias Emerge.UI.Svg
 
   defp rgba_at(pixels, width, x, y) do
@@ -169,10 +170,15 @@ defmodule EmergeSkiaTest do
   end
 
   test "start/1 rejects backends that were not compiled in" do
-    assert {:error,
-            {:error,
-             "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :drm)
+    {backend, message} =
+      if :drm in BuildConfig.compiled_backends() do
+        {:wayland,
+         "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"}
+      else
+        {:drm, "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"}
+      end
+
+    assert {:error, {:error, ^message}} = EmergeSkia.start(otp_app: :emerge, backend: backend)
   end
 
   test "legacy start arities raise explicit otp_app guidance" do

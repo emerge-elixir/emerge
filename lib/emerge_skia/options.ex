@@ -18,7 +18,7 @@ defmodule EmergeSkia.Options do
 
     backend =
       opts
-      |> Keyword.get(:backend, :wayland)
+      |> Keyword.get(:backend, EmergeSkia.BuildConfig.default_runtime_backend())
       |> normalize_backend!()
 
     %{
