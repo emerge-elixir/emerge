@@ -1,7 +1,7 @@
 defmodule EmergeSkiaTest do
   use ExUnit.Case
   doctest EmergeSkia
-  import Emerge.UI
+  use Emerge.UI
 
   alias Emerge.UI.Svg
 

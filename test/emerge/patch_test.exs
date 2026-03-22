@@ -1,10 +1,10 @@
-defmodule Emerge.PatchTest do
+defmodule Emerge.Engine.PatchTest do
   use ExUnit.Case, async: true
 
-  import Emerge.UI
+  use Emerge.UI
 
-  alias Emerge.Patch
-  alias Emerge.Tree
+  alias Emerge.Engine.Patch
+  alias Emerge.Engine.Tree
   alias Emerge.UI.{Background, Border, Font}
 
   test "diff detects attribute changes and inserts" do
@@ -124,7 +124,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "diff state keeps ids stable across frames" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       column([key(:root)], [
@@ -132,7 +132,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("two"))
       ])
 
-    {bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
     assert is_binary(bin1)
 
     layout2 =
@@ -142,7 +142,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("three"))
       ])
 
-    {bin2, _state, tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     assert is_binary(bin2)
 
     ids1 = Enum.map(tree1.children, & &1.id)
@@ -153,7 +153,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "keyed reorder emits set_children without inserts or removes" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       column([key(:root)], [
@@ -162,7 +162,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -171,7 +171,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert Enum.any?(patches, fn
@@ -187,7 +187,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "keyed insert emits insert_subtree without set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -195,7 +195,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -204,7 +204,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert Enum.any?(patches, fn
@@ -219,7 +219,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "keyed remove emits remove without set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -228,7 +228,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -236,7 +236,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert Enum.any?(patches, fn
@@ -251,7 +251,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "keyed attribute change emits set_attrs only for that node" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       column([key(:root)], [
@@ -259,7 +259,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -267,7 +267,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     ids = content_id_map(tree1)
@@ -284,7 +284,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "no patches when tree is identical" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout =
       column([key(:root)], [
@@ -292,14 +292,14 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {_bin1, state, _tree1} = Emerge.DiffState.diff_and_encode(state, layout)
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout)
+    {_bin1, state, _tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout)
 
     assert Patch.decode(bin2) == []
   end
 
   test "no extra patches when attrs unchanged but children reorder keyed" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -308,7 +308,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -317,7 +317,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     refute Enum.any?(patches, fn
@@ -327,7 +327,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "set_children preserves child ordering" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       column([key(:root)], [
@@ -336,7 +336,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -345,7 +345,7 @@ defmodule Emerge.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert {:set_children, id, children} =
@@ -359,7 +359,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "unkeyed reorder emits set_attrs but no inserts/removes" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -368,7 +368,7 @@ defmodule Emerge.PatchTest do
         el([], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -377,7 +377,7 @@ defmodule Emerge.PatchTest do
         el([], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     set_attrs =
@@ -401,7 +401,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "mixed keyed/unkeyed reorder raises" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -411,12 +411,12 @@ defmodule Emerge.PatchTest do
       ])
 
     assert_raise ArgumentError, ~r/All siblings must have key/, fn ->
-      Emerge.DiffState.diff_and_encode(state, layout1)
+      Emerge.Engine.DiffState.diff_and_encode(state, layout1)
     end
   end
 
   test "insert with reordering existing nodes emits set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -425,7 +425,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -435,7 +435,7 @@ defmodule Emerge.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert Enum.any?(patches, fn
@@ -451,8 +451,8 @@ defmodule Emerge.PatchTest do
     {tree_a, _state} = Tree.assign_ids(tree_a)
     {tree_b, _state} = Tree.assign_ids(tree_b)
 
-    bin_a = Emerge.Serialization.encode_tree(tree_a)
-    bin_b = Emerge.Serialization.encode_tree(tree_b)
+    bin_a = Emerge.Engine.Serialization.encode_tree(tree_a)
+    bin_b = Emerge.Engine.Serialization.encode_tree(tree_b)
 
     patches = Patch.diff(tree_a, tree_b)
     patch_bin = Patch.encode(patches)
@@ -471,7 +471,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "insert preserving existing order skips set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -480,7 +480,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -490,7 +490,7 @@ defmodule Emerge.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     refute Enum.any?(patches, fn
@@ -500,7 +500,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "multiple inserts preserving existing order skip set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -509,7 +509,7 @@ defmodule Emerge.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -520,7 +520,7 @@ defmodule Emerge.PatchTest do
         el([key(:y)], text("y"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     refute Enum.any?(patches, fn
@@ -530,7 +530,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "remove and insert without reordering preserves order without set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -540,7 +540,7 @@ defmodule Emerge.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -550,7 +550,7 @@ defmodule Emerge.PatchTest do
         el([key(:x)], text("x"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     refute Enum.any?(patches, fn
@@ -560,7 +560,7 @@ defmodule Emerge.PatchTest do
   end
 
   test "multiple inserts with one reorder emit set_children" do
-    state = Emerge.DiffState.new()
+    state = Emerge.Engine.DiffState.new()
 
     layout1 =
       row([key(:root)], [
@@ -570,7 +570,7 @@ defmodule Emerge.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {_bin1, state, tree1} = Emerge.DiffState.diff_and_encode(state, layout1)
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -582,7 +582,7 @@ defmodule Emerge.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.DiffState.diff_and_encode(state, layout2)
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
     patches = Patch.decode(bin2)
 
     assert Enum.any?(patches, fn
@@ -591,7 +591,7 @@ defmodule Emerge.PatchTest do
            end)
   end
 
-  defp content_id_map(%Emerge.Element{children: children}) do
+  defp content_id_map(%Emerge.Engine.Element{children: children}) do
     children
     |> Enum.map(fn child ->
       text = child.children |> hd() |> Map.get(:attrs) |> Map.get(:content)
@@ -612,7 +612,7 @@ defmodule Emerge.PatchTest do
 
   defp normalize_patch({:remove, id}), do: {:remove, id}
 
-  defp normalize_element(%Emerge.Element{} = element) do
+  defp normalize_element(%Emerge.Engine.Element{} = element) do
     %{
       element
       | attrs: normalize_attrs(element.attrs),
@@ -622,14 +622,14 @@ defmodule Emerge.PatchTest do
 
   defp normalize_attrs(attrs) do
     attrs
-    |> Emerge.Tree.strip_runtime_attrs()
+    |> Emerge.Engine.Tree.strip_runtime_attrs()
     |> Enum.map(fn {key, value} -> {key, normalize_value(value)} end)
     |> Map.new()
   end
 
   defp normalize_value(value) when is_number(value), do: value * 1.0
 
-  defp normalize_value(%Emerge.Element{} = element), do: normalize_element(element)
+  defp normalize_value(%Emerge.Engine.Element{} = element), do: normalize_element(element)
 
   defp normalize_value(value) when is_map(value) do
     value
@@ -679,7 +679,7 @@ defmodule Emerge.PatchTest do
   defp maybe_add_scroll(tree, nil), do: tree
 
   defp maybe_add_scroll(
-         %Emerge.Element{children: [%Emerge.Element{children: [menu, content]} = row]} = tree,
+         %Emerge.Engine.Element{children: [%Emerge.Engine.Element{children: [menu, content]} = row]} = tree,
          value
        ) do
     updated_content = %{content | attrs: Map.put(content.attrs, :scroll_y, value)}

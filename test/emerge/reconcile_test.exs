@@ -1,7 +1,7 @@
-defmodule Emerge.ReconcileTest do
+defmodule Emerge.Engine.ReconcileTest do
   use ExUnit.Case, async: false
 
-  import Emerge.UI
+  use Emerge.UI
 
   alias Emerge.UI.{Background, Border, Font}
 
@@ -16,13 +16,13 @@ defmodule Emerge.ReconcileTest do
     tree_a = demo_tree(:overview)
     tree_b = demo_tree(:alignment)
 
-    state = Emerge.diff_state_new()
-    {full_bin, state, _assigned} = Emerge.encode_full(state, tree_a)
+    state = Emerge.Engine.diff_state_new()
+    {full_bin, state, _assigned} = Emerge.Engine.encode_full(state, tree_a)
 
     tree = EmergeSkia.Native.tree_new()
     assert_ok(EmergeSkia.Native.tree_upload(tree, full_bin))
 
-    {patch_bin, _next_state, _assigned} = Emerge.diff_state_update(state, tree_b)
+    {patch_bin, _next_state, _assigned} = Emerge.Engine.diff_state_update(state, tree_b)
     assert_ok(EmergeSkia.Native.tree_patch(tree, patch_bin))
   end
 
@@ -33,9 +33,9 @@ defmodule Emerge.ReconcileTest do
     tree_a = comparison_tree(items)
     tree_b = comparison_tree(scrambled)
 
-    state = Emerge.diff_state_new()
-    {_full_bin, state, _assigned} = Emerge.encode_full(state, tree_a)
-    {_patch_bin, _next_state, assigned} = Emerge.diff_state_update(state, tree_b)
+    state = Emerge.Engine.diff_state_new()
+    {_full_bin, state, _assigned} = Emerge.Engine.encode_full(state, tree_a)
+    {_patch_bin, _next_state, assigned} = Emerge.Engine.diff_state_update(state, tree_b)
 
     assert extract_stable_rows(assigned) == expected_rows(scrambled)
 
@@ -52,15 +52,15 @@ defmodule Emerge.ReconcileTest do
     expected = expected_rows(scrambled)
     expected_count = count_nodes(tree_b)
 
-    state = Emerge.diff_state_new()
-    {full_bin, state, _assigned} = Emerge.encode_full(state, tree_a)
-    {patch_bin, _next_state, _assigned} = Emerge.diff_state_update(state, tree_b)
+    state = Emerge.Engine.diff_state_new()
+    {full_bin, state, _assigned} = Emerge.Engine.encode_full(state, tree_a)
+    {patch_bin, _next_state, _assigned} = Emerge.Engine.diff_state_update(state, tree_b)
 
     tree = EmergeSkia.Native.tree_new()
     assert_ok(EmergeSkia.Native.tree_upload(tree, full_bin))
     {:ok, roundtrip_bin} = EmergeSkia.Native.tree_patch_roundtrip(tree, patch_bin)
 
-    roundtrip_tree = Emerge.Serialization.decode(roundtrip_bin)
+    roundtrip_tree = Emerge.Engine.Serialization.decode(roundtrip_bin)
 
     assert extract_stable_rows(roundtrip_tree) == expected
     assert EmergeSkia.Native.tree_node_count(tree) == expected_count
@@ -86,15 +86,15 @@ defmodule Emerge.ReconcileTest do
     tree_a = stable_only_tree(items_a)
     tree_b = stable_only_tree(items_b)
 
-    state = Emerge.diff_state_new()
-    {full_bin, state, _assigned} = Emerge.encode_full(state, tree_a)
-    {patch_bin, _next_state, _assigned} = Emerge.diff_state_update(state, tree_b)
+    state = Emerge.Engine.diff_state_new()
+    {full_bin, state, _assigned} = Emerge.Engine.encode_full(state, tree_a)
+    {patch_bin, _next_state, _assigned} = Emerge.Engine.diff_state_update(state, tree_b)
 
     tree = EmergeSkia.Native.tree_new()
     assert_ok(EmergeSkia.Native.tree_upload(tree, full_bin))
     {:ok, roundtrip_bin} = EmergeSkia.Native.tree_patch_roundtrip(tree, patch_bin)
 
-    roundtrip_tree = Emerge.Serialization.decode(roundtrip_bin)
+    roundtrip_tree = Emerge.Engine.Serialization.decode(roundtrip_bin)
 
     assert extract_single_column_rows(roundtrip_tree) == expected_rows(items_b)
   end
@@ -109,7 +109,7 @@ defmodule Emerge.ReconcileTest do
       ])
 
     assert_raise ArgumentError, ~r/All siblings must have key/, fn ->
-      Emerge.Reconcile.assign_ids(tree)
+      Emerge.Engine.Reconcile.assign_ids(tree)
     end
   end
 
@@ -179,7 +179,7 @@ defmodule Emerge.ReconcileTest do
         padding(8),
         Background.color(bg),
         Border.rounded(8),
-        on_click({self(), {:demo_nav, page}})
+        Event.on_click({self(), {:demo_nav, page}})
       ],
       el([Font.size(12), Font.color(text_color)], text(label))
     )
@@ -429,19 +429,19 @@ defmodule Emerge.ReconcileTest do
     |> Map.new()
   end
 
-  defp element_children(%Emerge.Element{children: children}), do: children
+  defp element_children(%Emerge.Engine.Element{children: children}), do: children
 
-  defp extract_text(%Emerge.Element{type: :text, attrs: %{content: content}}), do: content
+  defp extract_text(%Emerge.Engine.Element{type: :text, attrs: %{content: content}}), do: content
 
-  defp extract_text(%Emerge.Element{children: children}) do
+  defp extract_text(%Emerge.Engine.Element{children: children}) do
     Enum.find_value(children, &extract_text/1)
   end
 
-  defp collect_ids(%Emerge.Element{id: id, children: children}) do
+  defp collect_ids(%Emerge.Engine.Element{id: id, children: children}) do
     [id | Enum.flat_map(children, &collect_ids/1)]
   end
 
-  defp count_nodes(%Emerge.Element{children: children}) do
+  defp count_nodes(%Emerge.Engine.Element{children: children}) do
     1 + Enum.reduce(children, 0, fn child, acc -> acc + count_nodes(child) end)
   end
 end

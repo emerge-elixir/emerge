@@ -14,34 +14,30 @@ and rendering are implemented in rust for performance reasons.
 ## Quick example
 
 ```elixir
-import Emerge.UI
-alias Emerge.Color
+defmodule MyApp.Components do
+  use Emerge.UI
 
-# Column element that fills viewport, padding to content of 20px
-# elements inside are spaced evenly 
-column([width(fill()), height(fill()), space_evenly(), padding(20)], [
-  # Header element 
-  el([width(fill()), Font.center(), Font.size(24), Font.color(Color.color(:white))],
-    text("Hello from Emerge, this a header")),
-
-  # Two content cards where left is bigger to right by 2:1 ratio
-  row([spacing(12), padding(20)], [
-    el([width({:fill, 2}), padding(16), Background.color(Color.color(:sky, 500)), Border.rounded(8)],
-      text("Left Card")),
-    el([width({:fill, 1}), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
-      text("Right Card"))
-  ]),
-
-  # Three element footer each filling equal portion
-  row([spacing(12), padding(20)], [
-    el([width(fill()), padding(16), Background.color(Color.color(:sky, 500)), Border.rounded(8)],
-      text("Left footer side")),
-    el([width(fill()), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
-      text("Center footer side")),
-    el([width(fill()), padding(16), Background.color(Color.color(:emerald, 500)), Border.rounded(8)],
-      text("Right footer side"))
-  ])
-])
+  def dashboard do
+    column([width(fill()), height(fill()), space_evenly(), padding(20)], [
+      el([width(fill()), Font.center(), Font.size(24), Font.color(color(:white))],
+        text("Hello from Emerge, this is a header")),
+      row([spacing(12), padding(20)], [
+        el([width({:fill, 2}), padding(16), Background.color(color(:sky, 500)), Border.rounded(8)],
+          text("Left Card")),
+        el([width({:fill, 1}), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
+          text("Right Card"))
+      ]),
+      row([spacing(12), padding(20)], [
+        el([width(fill()), padding(16), Background.color(color(:sky, 500)), Border.rounded(8)],
+          text("Left footer side")),
+        el([width(fill()), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
+          text("Center footer side")),
+        el([width(fill()), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
+          text("Right footer side"))
+      ])
+    ])
+  end
+end
 ```
 
 ## Declarative layout
@@ -136,7 +132,7 @@ Use the `~m` sigil by importing `Emerge.Assets.Path`:
 ```elixir
 defmodule MyApp.UI do
   use Emerge.Assets.Path, otp_app: :my_app
-  import Emerge.UI
+  use Emerge.UI
 
   def view do
     column([spacing(16)], [

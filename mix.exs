@@ -23,6 +23,14 @@ defmodule Emerge.MixProject do
         ],
         groups_for_extras: [
           Internals: ~r/guides\/internals\/.*/
+        ],
+        groups_for_modules: [
+          "Public API": [Emerge],
+          UI: ~r/^Emerge\.UI(\.|$)/,
+          Assets: ~r/^Emerge\.Assets(\.|$)/,
+          Runtime: ~r/^Emerge\.Runtime\./,
+          Rendering: ~r/^EmergeSkia(\.|$)/,
+          Engine: ~r/^Emerge\.Engine(\.|$)/
         ]
       ]
     ]

@@ -27,7 +27,7 @@ defmodule EmergeDemo.Application do
   end
 
   defp hot_reload_child do
-    {Emerge.CodeReloader,
+    {Emerge.Runtime.CodeReloader,
      dirs: [
        Path.expand("..", __DIR__)
      ],

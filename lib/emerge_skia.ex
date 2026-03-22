@@ -17,17 +17,19 @@ defmodule EmergeSkia do
         )
 
       import Emerge.UI
-      alias Emerge.Color
+      import Emerge.UI.Color
+      import Emerge.UI.Size
+      import Emerge.UI.Space
 
       tree =
         el(
           [
             width(px(220)),
             height(px(80)),
-            Emerge.UI.Background.color(Color.color(:sky, 500)),
+            Emerge.UI.Background.color(color(:sky, 500)),
             Emerge.UI.Border.rounded(10),
             padding(16),
-            Emerge.UI.Font.color(Color.color(:white)),
+            Emerge.UI.Font.color(color(:white)),
             Emerge.UI.Font.size(24)
           ],
           text("Hello!")
@@ -40,8 +42,8 @@ defmodule EmergeSkia do
 
   ## Color Format
 
-  For `Emerge.UI` styling, prefer `Emerge.Color.color/1..3`,
-  `Emerge.Color.color_rgb/3`, and `Emerge.Color.color_rgba/4`.
+  For `Emerge.UI` styling, prefer `Emerge.UI.Color.color/1..3`,
+  `Emerge.UI.Color.color_rgb/3`, and `Emerge.UI.Color.color_rgba/4`.
 
   `EmergeSkia.rgb/3` and `EmergeSkia.rgba/4` are still available when you need
   packed 32-bit unsigned integers in RGBA format: `0xRRGGBBAA`
@@ -212,8 +214,8 @@ defmodule EmergeSkia do
   Window dimensions come from the initial start config and are updated
   automatically when the window is resized (handled on the Rust side).
   """
-  @spec upload_tree(renderer(), Emerge.Element.t()) ::
-          {Emerge.DiffState.t(), Emerge.Element.t()}
+  @spec upload_tree(renderer(), Emerge.tree()) ::
+          {Emerge.Engine.diff_state(), Emerge.tree()}
   def upload_tree(renderer, tree) do
     TreeRenderer.upload_tree(renderer, tree)
   end
@@ -224,8 +226,8 @@ defmodule EmergeSkia do
   Window dimensions come from the initial start config and are updated
   automatically when the window is resized (handled on the Rust side).
   """
-  @spec patch_tree(renderer(), Emerge.DiffState.t(), Emerge.Element.t()) ::
-          {Emerge.DiffState.t(), Emerge.Element.t()}
+  @spec patch_tree(renderer(), Emerge.Engine.diff_state(), Emerge.tree()) ::
+          {Emerge.Engine.diff_state(), Emerge.tree()}
   def patch_tree(renderer, state, tree) do
     TreeRenderer.patch_tree(renderer, state, tree)
   end
@@ -304,12 +306,13 @@ defmodule EmergeSkia do
   ## Example
 
       import Emerge.UI
-      alias Emerge.Color
+      import Emerge.UI.Color
+      import Emerge.UI.Size
 
       pixels =
         EmergeSkia.render_to_pixels(
           el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(Color.color(:red, 500))],
+            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
             none()
           ),
           otp_app: :my_app,
@@ -319,7 +322,7 @@ defmodule EmergeSkia do
 
       # pixels is 100 * 100 * 4 = 40000 bytes
   """
-  @spec render_to_pixels(Emerge.Element.t(), keyword()) :: binary()
+  @spec render_to_pixels(Emerge.tree(), keyword()) :: binary()
   def render_to_pixels(tree, opts) when is_list(opts) do
     TreeRenderer.render_to_pixels(tree, opts, @default_asset_timeout_ms)
   end
@@ -470,7 +473,7 @@ defmodule EmergeSkia do
   `:press`, `:click`, or `:change`.
 
   Higher-level runtimes should route element events with
-  `Emerge.lookup_event/3` or `Emerge.dispatch_event/3`/`4`.
+  `Emerge.Engine.lookup_event/3` or `Emerge.Engine.dispatch_event/3`/`4`.
 
   Where:
   - `button` is an atom like `:left`, `:right`, `:middle`

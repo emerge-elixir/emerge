@@ -1,9 +1,9 @@
-defmodule Emerge.ColorTest do
+defmodule Emerge.UI.ColorTest do
   use ExUnit.Case, async: true
 
-  doctest Emerge.Color
+  doctest Emerge.UI.Color
 
-  alias Emerge.Color
+  alias Emerge.UI.Color
 
   test "color/1 uses shade 400 by default" do
     assert Color.color(:sky) == {:color_rgb, {0, 188, 255}}
