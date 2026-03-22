@@ -7,7 +7,6 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     thread,
     time::Duration,
@@ -24,6 +23,7 @@ mod backend;
 mod clipboard;
 mod cursor;
 mod debug_trace;
+#[cfg(feature = "drm")]
 mod drm_input;
 mod events;
 mod input;
@@ -33,11 +33,15 @@ mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
+#[cfg(feature = "drm")]
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wake::BackendWakeHandle;
+#[cfg(feature = "wayland")]
 use backend::wayland;
+#[cfg(feature = "wayland")]
 use backend::wayland_config::WaylandConfig;
+#[cfg(feature = "drm")]
 use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
@@ -67,7 +71,9 @@ mod atoms {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendKind {
+    #[cfg(feature = "wayland")]
     Wayland,
+    #[cfg(feature = "drm")]
     Drm,
 }
 
@@ -366,11 +372,15 @@ fn decide_refresh_action(
 #[derive(Clone, Debug)]
 struct StartConfig {
     backend: BackendKind,
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     title: String,
     width: u32,
     height: u32,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_card: Option<String>,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_hw_cursor: bool,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_input_log: bool,
     render_log: bool,
 }
@@ -709,7 +719,10 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
 
+    #[cfg(feature = "drm")]
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
+    #[cfg(not(feature = "drm"))]
+    let log_input = false;
     let log_render = config.render_log;
     set_render_log_enabled(log_render);
 
@@ -722,22 +735,30 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         log_render,
     };
     let (backend_cursor_tx, backend_cursor_rx) = unbounded();
+    #[cfg(feature = "drm")]
     let (drm_cursor_tx, drm_cursor_rx) = bounded(1024);
 
     assets::start(tree_tx.clone(), log_render);
 
+    #[cfg(feature = "wayland")]
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
+    #[cfg(not(feature = "wayland"))]
+    let system_clipboard = false;
     let mut handles = RendererHandles::default();
 
     let initial_width = config.width;
     let initial_height = config.height;
     let release_tx = video::spawn_release_worker();
     let video_registry = Arc::new(VideoRegistry::new(release_tx));
+    #[cfg(feature = "wayland")]
     let mut backend_wake = BackendWakeHandle::noop();
+    #[cfg(not(feature = "wayland"))]
+    let backend_wake = BackendWakeHandle::noop();
 
     let (backend, prime_video_supported) = match config.backend {
+        #[cfg(feature = "wayland")]
         BackendKind::Wayland => {
-            let (proxy_tx, proxy_rx) = mpsc::channel();
+            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
@@ -816,6 +837,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
             (BackendKind::Wayland, startup.prime_video_supported)
         }
+        #[cfg(feature = "drm")]
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
             let event_tx_clone = event_tx.clone();
@@ -895,11 +917,14 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         system_clipboard,
     ));
 
+    #[cfg(feature = "wayland")]
     let video_wake = if matches!(backend, BackendKind::Wayland) {
         VideoWake::new(backend_wake.clone())
     } else {
         VideoWake::noop()
     };
+    #[cfg(not(feature = "wayland"))]
+    let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
         running_flag,
@@ -922,16 +947,26 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 
 #[rustler::nif]
 fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<RendererResource>> {
-    start_with_config(StartConfig {
-        backend: BackendKind::Wayland,
-        title,
-        width,
-        height,
-        drm_card: None,
-        drm_hw_cursor: true,
-        drm_input_log: false,
-        render_log: false,
-    })
+    #[cfg(feature = "wayland")]
+    {
+        start_with_config(StartConfig {
+            backend: BackendKind::Wayland,
+            title,
+            width,
+            height,
+            drm_card: None,
+            drm_hw_cursor: true,
+            drm_input_log: false,
+            render_log: false,
+        })
+    }
+    #[cfg(not(feature = "wayland"))]
+    {
+        let _ = (title, width, height);
+        Err(rustler::Error::Term(Box::new(
+            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
+        )))
+    }
 }
 
 #[rustler::nif]
@@ -1794,7 +1829,7 @@ mod tests {
         };
 
         shutdown_renderer_runtime(
-            BackendKind::Drm,
+            BackendKind::Wayland,
             &running_flag,
             &backend_wake,
             &stop_flag,
@@ -1992,13 +2027,26 @@ mod tests {
 rustler::init!("Elixir.EmergeSkia.Native", load = load);
 fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
     match value {
+        #[cfg(feature = "drm")]
         "drm" => Ok(BackendKind::Drm),
+        #[cfg(not(feature = "drm"))]
+        "drm" => Err("DRM backend not compiled (enable the 'drm' Cargo feature)".to_string()),
+        #[cfg(feature = "wayland")]
         "wayland" => Ok(BackendKind::Wayland),
+        #[cfg(not(feature = "wayland"))]
+        "wayland" => Err(
+            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
+        ),
         "wayland_legacy" => {
             Err("backend :wayland_legacy has been removed; use :wayland".to_string())
         }
+        #[cfg(feature = "wayland")]
         "x11" => Err(
             "backend :x11 is no longer supported; use :wayland on a Wayland session".to_string(),
+        ),
+        #[cfg(not(feature = "wayland"))]
+        "x11" => Err(
+            "Wayland backend not compiled (enable the 'wayland' Cargo feature)".to_string(),
         ),
         other => Err(format!("unsupported backend: {other}")),
     }
