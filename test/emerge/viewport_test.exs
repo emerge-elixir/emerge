@@ -2,10 +2,10 @@ defmodule Emerge.ViewportTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
-  import Emerge.UI
+  use Emerge.UI
 
   defmodule FakeRenderer do
-    @behaviour Emerge.Viewport.Renderer
+    @behaviour Emerge.Runtime.Viewport.Renderer
 
     @impl true
     def start(skia_opts, renderer_opts) do
@@ -54,14 +54,14 @@ defmodule Emerge.ViewportTest do
 
     @impl true
     def upload_tree(renderer, tree) do
-      diff_state = Emerge.diff_state_new(tree)
+      diff_state = Emerge.Engine.diff_state_new(tree)
       Agent.update(renderer, &log_op(&1, {:upload_tree, diff_state.tree}))
       {diff_state, diff_state.tree}
     end
 
     @impl true
     def patch_tree(renderer, diff_state, tree) do
-      {_patch_bin, next_state, assigned_tree} = Emerge.diff_state_update(diff_state, tree)
+      {_patch_bin, next_state, assigned_tree} = Emerge.Engine.diff_state_update(diff_state, tree)
       Agent.update(renderer, &log_op(&1, {:patch_tree, assigned_tree}))
       {next_state, assigned_tree}
     end
@@ -76,7 +76,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule BareSkiaViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(_opts) do
@@ -95,7 +95,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule CounterViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(opts) do
@@ -110,8 +110,16 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def render(state) do
       row([spacing(8)], [
-        Input.button([key(:inc), on_press(:increment)], text("+")),
-        el([key(:count)], text(Integer.to_string(state.count)))
+        Input.button(
+          [
+            key(:inc),
+            Event.on_press(:increment),
+            Background.color(color(:sky, 500)),
+            Border.rounded(4)
+          ],
+          text("+")
+        ),
+        el([key(:count), Font.color(color(:white))], text(Integer.to_string(state.count)))
       ])
     end
 
@@ -127,7 +135,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule InputViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(opts) do
@@ -150,7 +158,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule PayloadViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(opts) do
@@ -164,7 +172,7 @@ defmodule Emerge.ViewportTest do
 
     @impl Viewport
     def render(_state) do
-      Input.text([key(:field), on_change(:input_changed)], "")
+      Input.text([key(:field), Event.on_change(:input_changed)], "")
     end
 
     @impl Viewport
@@ -180,7 +188,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule LivenessViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(_opts) do
@@ -197,7 +205,7 @@ defmodule Emerge.ViewportTest do
   end
 
   defmodule RecoveringViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(opts) do
@@ -227,14 +235,14 @@ defmodule Emerge.ViewportTest do
   test "mount starts renderer and uploads initial tree" do
     {:ok, pid} = CounterViewport.start_link(count: 3)
 
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
     operations = FakeRenderer.ops(renderer)
 
     assert {:set_input_target, ^pid} = Enum.at(operations, 0)
-    assert {:upload_tree, %Emerge.Element{type: :row}} = Enum.at(operations, 1)
+    assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 1)
 
-    assert Emerge.Viewport.user_state(pid) == %{count: 3}
-    assert pid in Emerge.Viewport.ReloadGroup.local_members()
+    assert Emerge.user_state(pid) == %{count: 3}
+    assert pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
 
     GenServer.stop(pid)
   end
@@ -242,7 +250,7 @@ defmodule Emerge.ViewportTest do
   test "mount accepts bare skia opts and infers otp_app" do
     {:ok, pid} = BareSkiaViewport.start_link()
 
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Viewport Defaults"
@@ -253,7 +261,7 @@ defmodule Emerge.ViewportTest do
 
   test "self-targeted element events route through mailbox and rerender" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     state = :sys.get_state(pid)
 
@@ -264,7 +272,7 @@ defmodule Emerge.ViewportTest do
 
     send(pid, {:emerge_skia_event, {id_bin, :press}})
 
-    assert_eventually(fn -> Emerge.Viewport.user_state(pid).count == 1 end)
+    assert_eventually(fn -> Emerge.user_state(pid).count == 1 end)
 
     assert_eventually(fn ->
       patch_count =
@@ -283,7 +291,7 @@ defmodule Emerge.ViewportTest do
 
   test "rerender requests are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     GenServer.cast(pid, {:emerge_viewport, :rerender})
     GenServer.cast(pid, {:emerge_viewport, :rerender})
@@ -306,9 +314,9 @@ defmodule Emerge.ViewportTest do
 
   test "source reload notifications rerender mounted viewports" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
-    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.notify_source_reloaded(%{source: :test})
 
     assert_eventually(fn ->
       renderer
@@ -324,11 +332,11 @@ defmodule Emerge.ViewportTest do
 
   test "source reload notifications are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
-    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
-    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
-    :ok = Emerge.Viewport.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.notify_source_reloaded(%{source: :test})
+    :ok = Emerge.notify_source_reloaded(%{source: :test})
 
     assert_eventually(fn ->
       renderer
@@ -351,7 +359,7 @@ defmodule Emerge.ViewportTest do
           state = :sys.get_state(pid)
 
           Process.alive?(pid) and is_nil(state.renderer) and is_nil(state.diff_state) and
-            pid in Emerge.Viewport.ReloadGroup.local_members()
+            pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
         end)
 
         GenServer.stop(pid)
@@ -372,10 +380,10 @@ defmodule Emerge.ViewportTest do
 
           Process.alive?(pid) and state.renderer != nil and state.diff_state != nil and
             rendered_text(pid) == "recovered" and
-            pid in Emerge.Viewport.ReloadGroup.local_members()
+            pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
         end)
 
-        renderer = Emerge.Viewport.renderer(pid)
+        renderer = Emerge.renderer(pid)
         assert count_renderer_ops(renderer, :upload_tree) == 1
 
         GenServer.stop(pid)
@@ -386,7 +394,7 @@ defmodule Emerge.ViewportTest do
 
   test "rerender failures keep the previous frame and the viewport alive" do
     {:ok, pid} = RecoveringViewport.start_link(mode: {:label, "before"})
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     log =
       capture_log(fn ->
@@ -408,7 +416,7 @@ defmodule Emerge.ViewportTest do
 
   test "viewport can recover after a failed rerender" do
     {:ok, pid} = RecoveringViewport.start_link(mode: {:label, "before"})
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     _log =
       capture_log(fn ->
@@ -434,7 +442,7 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_skia_event, {:focused, true}})
 
     assert_receive {:input_event, {:focused, true}}
-    assert Emerge.Viewport.user_state(pid).events == [{:focused, true}]
+    assert Emerge.user_state(pid).events == [{:focused, true}]
 
     GenServer.stop(pid)
   end
@@ -458,7 +466,7 @@ defmodule Emerge.ViewportTest do
 
   test "renderer liveness check stops viewport when renderer closes" do
     {:ok, pid} = LivenessViewport.start_link()
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
     FakeRenderer.set_running(renderer, false)
 
     ref = Process.monitor(pid)
@@ -469,7 +477,7 @@ defmodule Emerge.ViewportTest do
 
   test "stopping viewport stops renderer" do
     {:ok, pid} = CounterViewport.start_link(count: 1)
-    renderer = Emerge.Viewport.renderer(pid)
+    renderer = Emerge.renderer(pid)
 
     ref = Process.monitor(renderer)
     GenServer.stop(pid)
@@ -501,9 +509,11 @@ defmodule Emerge.ViewportTest do
 
   defp rendered_text(pid) do
     case :sys.get_state(pid) do
-      %Emerge.Viewport.State{
-        diff_state: %Emerge.DiffState{
-          tree: %Emerge.Element{children: [%Emerge.Element{attrs: %{content: content}}]}
+      %Emerge.Runtime.Viewport.State{
+        diff_state: %Emerge.Engine.DiffState{
+          tree: %Emerge.Engine.Element{
+            children: [%Emerge.Engine.Element{attrs: %{content: content}}]
+          }
         }
       } ->
         content

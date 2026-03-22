@@ -1,10 +1,10 @@
-defmodule Emerge.AttrCodecTest do
+defmodule Emerge.Engine.AttrCodecTest do
   use ExUnit.Case, async: true
 
-  import Emerge.UI
+  use Emerge.UI
+  import Emerge.UI.Color
 
-  alias Emerge.AttrCodec
-  alias Emerge.Color
+  alias Emerge.Engine.AttrCodec
 
   test "encode/decode round trip for supported attrs" do
     attrs = %{
@@ -309,12 +309,12 @@ defmodule Emerge.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
-  test "encode/decode Emerge.Color helper tuples" do
+  test "encode/decode Emerge.UI.Color helper tuples" do
     attrs = %{
-      background: Color.color(:sky, 200, 0.3),
-      border_color: Color.color_rgb(1, 2, 3),
-      font_color: Color.color_rgba(4, 5, 6, 0.5),
-      svg_color: Color.color(:white)
+      background: color(:sky, 200, 0.3),
+      border_color: color_rgb(1, 2, 3),
+      font_color: color_rgba(4, 5, 6, 0.5),
+      svg_color: color(:white)
     }
 
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
@@ -499,15 +499,15 @@ defmodule Emerge.AttrCodecTest do
 
   defp normalize_attrs(attrs) do
     attrs
-    |> Emerge.Tree.strip_runtime_attrs()
-    |> Emerge.Tree.strip_nearby_attrs()
+    |> Emerge.Engine.Tree.strip_runtime_attrs()
+    |> Emerge.Engine.Tree.strip_nearby_attrs()
     |> Enum.map(fn {key, value} -> {key, normalize_value(value)} end)
     |> Map.new()
   end
 
   defp normalize_value(value) when is_number(value), do: value * 1.0
 
-  defp normalize_value(%Emerge.Element{} = element) do
+  defp normalize_value(%Emerge.Engine.Element{} = element) do
     %{
       element
       | id: nil,

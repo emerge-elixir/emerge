@@ -1,14 +1,11 @@
 defmodule EmergeDemo do
   @moduledoc """
   Example application that composes `Solve` state management with
-  an `Emerge.Viewport` renderer process.
+  an `Emerge` viewport process.
   """
 
+  use Emerge
   use Solve.Lookup
-  use Emerge.Viewport
-
-  import Emerge.Color
-  alias Emerge.UI.{Background, Border, Font}
 
   @impl Viewport
   def mount(opts) do
@@ -51,7 +48,7 @@ defmodule EmergeDemo do
         Background.color(color(:slate)),
         Font.center(),
         width(px(50)),
-        on_press(on_press),
+        Event.on_press(on_press),
         center_y()
       ],
       text(text)

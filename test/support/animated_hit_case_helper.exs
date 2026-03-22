@@ -1,8 +1,7 @@
 defmodule EmergeSkia.TestSupport.AnimatedHitCase do
-  import Emerge.UI
+  use Emerge.UI
 
-  alias Emerge.Element
-  alias Emerge.UI.{Background, Border, Font}
+  alias Emerge.Engine.Element
 
   @sample_times_ms Enum.to_list(0..1400//50)
   @probes %{
@@ -14,7 +13,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
 
   def tree do
     el(
-      [key(:host), width(px(128)), height(px(82)), in_front(target()), Background.color(:gray)],
+      [key(:host), width(px(128)), height(px(82)), Nearby.in_front(target()), Background.color(:gray)],
       underlying()
     )
   end
@@ -25,7 +24,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
         key(:host),
         width(px(128)),
         height(px(82)),
-        in_front(placeholder_target()),
+        Nearby.in_front(placeholder_target()),
         Background.color(:gray)
       ],
       underlying()
@@ -61,7 +60,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
     target_id_from_tree(assigned_tree) |> :erlang.term_to_binary()
   end
 
-  def target_id_bin_from_state(%Emerge.DiffState{event_registry: event_registry}) do
+  def target_id_bin_from_state(%Emerge.Engine.DiffState{event_registry: event_registry}) do
     Enum.find_value(event_registry, fn {id_bin, events} ->
       case Map.get(events, :mouse_move) do
         {_pid, {:probe, :target}} -> id_bin
@@ -154,7 +153,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
         key(:underlying),
         width(fill()),
         height(fill()),
-        on_mouse_move({self(), {:probe, :underlying}}),
+        Event.on_mouse_move({self(), {:probe, :underlying}}),
         Background.color({:color_rgb, {40, 50, 70}})
       ],
       none()
@@ -163,10 +162,10 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
 
   defp target do
     target_common_attrs([
-      animate(
+      Animation.animate(
         [
-          [width(px(96)), move_x(-16)],
-          [width(px(156)), move_x(26)]
+          [width(px(96)), Transform.move_x(-16)],
+          [width(px(156)), Transform.move_x(26)]
         ],
         1400,
         :ease_in_out,
@@ -176,7 +175,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   end
 
   defp placeholder_target do
-    target_common_attrs([width(px(96)), move_x(-16)])
+    target_common_attrs([width(px(96)), Transform.move_x(-16)])
   end
 
   defp target_common_attrs(extra_attrs) do
@@ -187,11 +186,11 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
         center_x(),
         center_y(),
         Background.color({:color_rgb, {70, 96, 148}}),
-        mouse_over([
+        Interactive.mouse_over([
           Background.color({:color_rgb, {96, 132, 188}}),
           Font.color(:white)
         ]),
-        on_mouse_move({self(), {:probe, :target}})
+        Event.on_mouse_move({self(), {:probe, :target}})
       ] ++ extra_attrs,
       none()
     )
@@ -202,7 +201,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
       [
         width(px(128)),
         height(px(82)),
-        in_front(target()),
+        Nearby.in_front(target()),
         Background.color(:gray)
       ],
       underlying()
@@ -233,9 +232,9 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
                 Border.width(1),
                 Border.color({:color_rgba, {208, 216, 240, 110}}),
                 Border.rounded(12),
-                in_front(target())
+                Nearby.in_front(target())
               ],
-              el([center_x(), align_bottom(), move_y(-8), Font.size(9)], text("Original slot"))
+              el([center_x(), align_bottom(), Transform.move_y(-8), Font.size(9)], text("Original slot"))
             )
           )
         ])
@@ -267,7 +266,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
                 Border.width(1),
                 Border.color({:color_rgba, {208, 216, 240, 110}}),
                 Border.rounded(12),
-                in_front(secondary_hover_target())
+                Nearby.in_front(secondary_hover_target())
               ],
               none()
             )
@@ -301,7 +300,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
                 Border.width(1),
                 Border.color({:color_rgba, {208, 216, 240, 110}}),
                 Border.rounded(12),
-                in_front(secondary_press_target())
+                Nearby.in_front(secondary_press_target())
               ],
               none()
             )
@@ -319,16 +318,16 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
         center_x(),
         center_y(),
         Background.color({:color_rgb, {102, 76, 130}}),
-        mouse_over([
+        Interactive.mouse_over([
           Background.color({:color_rgb, {130, 96, 166}}),
           Font.color(:white)
         ]),
-        on_mouse_enter({self(), {:probe, :hover_enter}}),
-        on_mouse_leave({self(), {:probe, :hover_leave}}),
-        animate(
+        Event.on_mouse_enter({self(), {:probe, :hover_enter}}),
+        Event.on_mouse_leave({self(), {:probe, :hover_leave}}),
+        Animation.animate(
           [
-            [padding_each(10, 12, 10, 12), rotate(-10)],
-            [padding_each(18, 24, 18, 24), rotate(10)]
+            [padding_each(10, 12, 10, 12), Transform.rotate(-10)],
+            [padding_each(18, 24, 18, 24), Transform.rotate(10)]
           ],
           1600,
           :ease_in_out,
@@ -347,16 +346,16 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
         center_x(),
         center_y(),
         Background.color({:color_rgb, {86, 104, 78}}),
-        mouse_over([
+        Interactive.mouse_over([
           Background.color({:color_rgb, {106, 126, 98}}),
           Font.color(:white)
         ]),
-        on_mouse_down({self(), {:probe, :press_down}}),
-        on_mouse_up({self(), {:probe, :press_up}}),
-        animate(
+        Event.on_mouse_down({self(), {:probe, :press_down}}),
+        Event.on_mouse_up({self(), {:probe, :press_up}}),
+        Animation.animate(
           [
-            [height(px(70)), scale(0.94)],
-            [height(px(108)), scale(1.08)]
+            [height(px(70)), Transform.scale(0.94)],
+            [height(px(108)), Transform.scale(1.08)]
           ],
           1200,
           :ease_in_out,

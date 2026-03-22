@@ -1,10 +1,10 @@
-defmodule Emerge.DiffStateTest do
+defmodule Emerge.Engine.DiffStateTest do
   use ExUnit.Case, async: true
 
-  import Emerge.UI
+  use Emerge.UI
 
   test "diff_state_update returns patches and updated state" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       row([key(:root)], [
@@ -12,42 +12,42 @@ defmodule Emerge.DiffStateTest do
         el([key(:right)], text("right"))
       ])
 
-    {bin, next_state, assigned} = Emerge.diff_state_update(state, layout)
+    {bin, next_state, assigned} = Emerge.Engine.diff_state_update(state, layout)
 
     assert is_binary(bin)
     assert assigned.id == next_state.tree.id
   end
 
   test "encode_full returns a full-tree binary and updates state" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       column([key(:root)], [
         el([key(:a)], text("one"))
       ])
 
-    {bin, next_state, assigned} = Emerge.encode_full(state, layout)
+    {bin, next_state, assigned} = Emerge.Engine.encode_full(state, layout)
 
     assert is_binary(bin)
     assert assigned.id == next_state.tree.id
   end
 
   test "encode_full_with_empty_patch returns empty patch stream" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       row([key(:root)], [
         el([key(:left)], text("left"))
       ])
 
-    {full_bin, patch_bin, _state, _assigned} = Emerge.encode_full_with_empty_patch(state, layout)
+    {full_bin, patch_bin, _state, _assigned} = Emerge.Engine.encode_full_with_empty_patch(state, layout)
 
     assert is_binary(full_bin)
     assert patch_bin == <<>>
   end
 
   test "reordering keyed siblings preserves ids" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout1 =
       row([key(:root)], [
@@ -56,7 +56,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, assigned1} = Emerge.diff_state_update(state, layout1)
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -65,7 +65,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:b)], text("b"))
       ])
 
-    {_bin2, _state, assigned2} = Emerge.diff_state_update(state, layout2)
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
 
     ids1 = content_id_map(assigned1)
     ids2 = content_id_map(assigned2)
@@ -76,7 +76,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "keyed preserves ids on reorder" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout1 =
       row([key(:root)], [
@@ -85,7 +85,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, assigned1} = Emerge.diff_state_update(state, layout1)
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -94,7 +94,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:b)], text("b"))
       ])
 
-    {_bin2, _state, assigned2} = Emerge.diff_state_update(state, layout2)
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
 
     ids1 = content_id_map(assigned1)
     ids2 = content_id_map(assigned2)
@@ -105,7 +105,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "duplicate keys raise" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       row([key(:root)], [
@@ -114,12 +114,12 @@ defmodule Emerge.DiffStateTest do
       ])
 
     assert_raise ArgumentError, ~r/duplicate explicit id\/key/, fn ->
-      Emerge.diff_state_update(state, layout)
+      Emerge.Engine.diff_state_update(state, layout)
     end
   end
 
   test "mixed keyed and unkeyed siblings raise" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       row([key(:root)], [
@@ -129,12 +129,12 @@ defmodule Emerge.DiffStateTest do
       ])
 
     assert_raise ArgumentError, ~r/All siblings must have key/, fn ->
-      Emerge.diff_state_update(state, layout)
+      Emerge.Engine.diff_state_update(state, layout)
     end
   end
 
   test "keyed insert/remove keeps existing ids stable" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout1 =
       column([key(:root)], [
@@ -143,7 +143,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, assigned1} = Emerge.diff_state_update(state, layout1)
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -152,7 +152,7 @@ defmodule Emerge.DiffStateTest do
         el([key(:d)], text("d"))
       ])
 
-    {_bin2, _state, assigned2} = Emerge.diff_state_update(state, layout2)
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
 
     ids1 = content_id_map(assigned1)
     ids2 = content_id_map(assigned2)
@@ -164,7 +164,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "duplicate keys across the tree raise" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout =
       row([key(:root)], [
@@ -177,12 +177,12 @@ defmodule Emerge.DiffStateTest do
       ])
 
     assert_raise ArgumentError, ~r/duplicate explicit id\/key/, fn ->
-      Emerge.diff_state_update(state, layout)
+      Emerge.Engine.diff_state_update(state, layout)
     end
   end
 
   test "unkeyed reorder changes ids" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout1 =
       row([key(:root)], [
@@ -191,7 +191,7 @@ defmodule Emerge.DiffStateTest do
         el([], text("c"))
       ])
 
-    {_bin1, state, assigned1} = Emerge.diff_state_update(state, layout1)
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -200,7 +200,7 @@ defmodule Emerge.DiffStateTest do
         el([], text("b"))
       ])
 
-    {_bin2, _state, assigned2} = Emerge.diff_state_update(state, layout2)
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
 
     ids1 = content_id_map(assigned1)
     ids2 = content_id_map(assigned2)
@@ -211,7 +211,7 @@ defmodule Emerge.DiffStateTest do
   end
 
   test "mixed insert with keys and unkeyed raises" do
-    state = Emerge.diff_state_new()
+    state = Emerge.Engine.diff_state_new()
 
     layout1 =
       row([key(:root)], [
@@ -221,16 +221,16 @@ defmodule Emerge.DiffStateTest do
       ])
 
     assert_raise ArgumentError, ~r/All siblings must have key/, fn ->
-      Emerge.diff_state_update(state, layout1)
+      Emerge.Engine.diff_state_update(state, layout1)
     end
   end
 
   test "on_change is registered in event registry" do
-    layout = Emerge.UI.Input.text([key(:field), on_change({self(), :changed})], "hello")
-    state = Emerge.diff_state_new(layout)
+    layout = Emerge.UI.Input.text([key(:field), Event.on_change({self(), :changed})], "hello")
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert {:ok, {pid, :changed}} = Emerge.lookup_event(state, id_bin, :change)
+    assert {:ok, {pid, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
     assert pid == self()
   end
 
@@ -239,17 +239,17 @@ defmodule Emerge.DiffStateTest do
       Emerge.UI.Input.text(
         [
           key(:field),
-          on_focus({self(), :focused}),
-          on_blur({self(), :blurred})
+          Event.on_focus({self(), :focused}),
+          Event.on_blur({self(), :blurred})
         ],
         "hello"
       )
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert {:ok, {focus_pid, :focused}} = Emerge.lookup_event(state, id_bin, :focus)
-    assert {:ok, {blur_pid, :blurred}} = Emerge.lookup_event(state, id_bin, :blur)
+    assert {:ok, {focus_pid, :focused}} = Emerge.Engine.lookup_event(state, id_bin, :focus)
+    assert {:ok, {blur_pid, :blurred}} = Emerge.Engine.lookup_event(state, id_bin, :blur)
     assert focus_pid == self()
     assert blur_pid == self()
   end
@@ -259,15 +259,15 @@ defmodule Emerge.DiffStateTest do
       Emerge.UI.Input.button(
         [
           key(:save),
-          on_press({self(), :pressed})
+          Event.on_press({self(), :pressed})
         ],
         Emerge.UI.text("Save")
       )
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert {:ok, {pid, :pressed}} = Emerge.lookup_event(state, id_bin, :press)
+    assert {:ok, {pid, :pressed}} = Emerge.Engine.lookup_event(state, id_bin, :press)
     assert pid == self()
   end
 
@@ -276,42 +276,42 @@ defmodule Emerge.DiffStateTest do
       Emerge.UI.Input.text(
         [
           key(:field),
-          on_click({self(), :clicked}),
-          on_mouse_enter({self(), :entered}),
-          on_mouse_leave({self(), :left}),
-          on_mouse_move({self(), :moved}),
-          on_change({self(), :changed})
+          Event.on_click({self(), :clicked}),
+          Event.on_mouse_enter({self(), :entered}),
+          Event.on_mouse_leave({self(), :left}),
+          Event.on_mouse_move({self(), :moved}),
+          Event.on_change({self(), :changed})
         ],
         "hello"
       )
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert {:ok, {_, :clicked}} = Emerge.lookup_event(state, id_bin, :click)
-    assert {:ok, {_, :entered}} = Emerge.lookup_event(state, id_bin, :mouse_enter)
-    assert {:ok, {_, :left}} = Emerge.lookup_event(state, id_bin, :mouse_leave)
-    assert {:ok, {_, :moved}} = Emerge.lookup_event(state, id_bin, :mouse_move)
-    assert {:ok, {_, :changed}} = Emerge.lookup_event(state, id_bin, :change)
+    assert {:ok, {_, :clicked}} = Emerge.Engine.lookup_event(state, id_bin, :click)
+    assert {:ok, {_, :entered}} = Emerge.Engine.lookup_event(state, id_bin, :mouse_enter)
+    assert {:ok, {_, :left}} = Emerge.Engine.lookup_event(state, id_bin, :mouse_leave)
+    assert {:ok, {_, :moved}} = Emerge.Engine.lookup_event(state, id_bin, :mouse_move)
+    assert {:ok, {_, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
   end
 
   test "dispatch_event with payload appends payload to tuple message" do
     layout =
-      Emerge.UI.Input.text([key(:field), on_change({self(), {:changed, :field}})], "hello")
+      Emerge.UI.Input.text([key(:field), Event.on_change({self(), {:changed, :field}})], "hello")
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert :ok == Emerge.dispatch_event(state, id_bin, :change, "hello!")
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :change, "hello!")
     assert_receive {:changed, :field, "hello!"}
   end
 
   test "dispatch_event with payload wraps non-tuple message" do
-    layout = Emerge.UI.Input.text([key(:field), on_change({self(), :changed})], "hello")
-    state = Emerge.diff_state_new(layout)
+    layout = Emerge.UI.Input.text([key(:field), Event.on_change({self(), :changed})], "hello")
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert :ok == Emerge.dispatch_event(state, id_bin, :change, "hello!")
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :change, "hello!")
     assert_receive {:changed, "hello!"}
   end
 
@@ -320,34 +320,34 @@ defmodule Emerge.DiffStateTest do
       Emerge.UI.Input.text(
         [
           key(:field),
-          on_focus({self(), :focused}),
-          on_blur({self(), :blurred})
+          Event.on_focus({self(), :focused}),
+          Event.on_blur({self(), :blurred})
         ],
         "hello"
       )
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert :ok == Emerge.dispatch_event(state, id_bin, :focus)
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :focus)
     assert_receive :focused
 
-    assert :ok == Emerge.dispatch_event(state, id_bin, :blur)
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :blur)
     assert_receive :blurred
   end
 
   test "dispatch_event routes press events" do
     layout =
-      Emerge.UI.Input.button([key(:save), on_press({self(), :pressed})], Emerge.UI.text("Save"))
+      Emerge.UI.Input.button([key(:save), Event.on_press({self(), :pressed})], Emerge.UI.text("Save"))
 
-    state = Emerge.diff_state_new(layout)
+    state = Emerge.Engine.diff_state_new(layout)
     id_bin = :erlang.term_to_binary(state.tree.id)
 
-    assert :ok == Emerge.dispatch_event(state, id_bin, :press)
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :press)
     assert_receive :pressed
   end
 
-  defp content_id_map(%Emerge.Element{children: children}) do
+  defp content_id_map(%Emerge.Engine.Element{children: children}) do
     children
     |> Enum.map(fn child ->
       text = child.children |> hd() |> Map.get(:attrs) |> Map.get(:content)

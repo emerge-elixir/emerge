@@ -2,7 +2,7 @@ defmodule EmergeDemoTest do
   use ExUnit.Case, async: true
 
   test "handle_solve_updated schedules viewport rerender" do
-    state = %Emerge.Viewport.State{module: EmergeDemo, mount_opts: [], user_state: %{}}
+    state = %Emerge.Runtime.Viewport.State{module: EmergeDemo, mount_opts: [], user_state: %{}}
 
     assert {:ok, next_state} =
              EmergeDemo.handle_solve_updated(%{EmergeDemo.State => [:counter]}, state)
@@ -13,10 +13,10 @@ defmodule EmergeDemoTest do
   end
 
   test "dev children include the hot reloader" do
-    assert [{Emerge.CodeReloader, opts}] =
+    assert [{Emerge.Runtime.CodeReloader, opts}] =
              EmergeDemo.Application.children(:dev)
              |> Enum.filter(fn
-               {Emerge.CodeReloader, _opts} -> true
+               {Emerge.Runtime.CodeReloader, _opts} -> true
                _other -> false
              end)
 

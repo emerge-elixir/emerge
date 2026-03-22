@@ -5,7 +5,7 @@ trees.
 
 ## Identity Model
 
-- Users build pure `Emerge.Element` trees.
+- Users build pure `Emerge.tree()` values.
 - Normal child identity is derived from `{parent_id, kind, local_identity}`.
 - `local_identity` is `{:k, key}` when a key is provided, otherwise `{:i, index}`.
 - Nearby root identity is derived from `{host_id, slot, local_identity}`.
@@ -15,7 +15,7 @@ trees.
 
 ## Reconciliation
 
-`Emerge.Reconcile` keeps public nearby attrs but normalizes them internally into
+`Emerge.Engine.Reconcile` keeps public nearby attrs but normalizes them internally into
 host-owned mount slots.
 
 - normal `children` reconcile by keyed-or-indexed sibling matching
@@ -45,7 +45,7 @@ Current patch operations are:
 
 ## Full Tree Serialization
 
-`Emerge.Serialization.encode_tree/1` now emits EMRG v4.
+`Emerge.Engine.Serialization.encode_tree/1` now emits EMRG v4.
 
 - Header: `"EMRG" + version + node_count`
 - Per node:

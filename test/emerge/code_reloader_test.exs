@@ -1,14 +1,14 @@
-defmodule Emerge.CodeReloaderTest do
+defmodule Emerge.Runtime.CodeReloaderTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
-  import Emerge.UI
+  use Emerge.UI
 
-  alias Emerge.CodeReloader
-  alias Emerge.CodeReloader.MixListener
+  alias Emerge.Runtime.CodeReloader
+  alias Emerge.Runtime.CodeReloader.MixListener
 
   defmodule FakeRenderer do
-    @behaviour Emerge.Viewport.Renderer
+    @behaviour Emerge.Runtime.Viewport.Renderer
 
     @impl true
     def start(_skia_opts, _renderer_opts) do
@@ -40,14 +40,14 @@ defmodule Emerge.CodeReloaderTest do
 
     @impl true
     def upload_tree(renderer, tree) do
-      diff_state = Emerge.diff_state_new(tree)
+      diff_state = Emerge.Engine.diff_state_new(tree)
       Agent.update(renderer, &log_op(&1, {:upload_tree, diff_state.tree}))
       {diff_state, diff_state.tree}
     end
 
     @impl true
     def patch_tree(renderer, diff_state, tree) do
-      {_patch_bin, next_state, assigned_tree} = Emerge.diff_state_update(diff_state, tree)
+      {_patch_bin, next_state, assigned_tree} = Emerge.Engine.diff_state_update(diff_state, tree)
       Agent.update(renderer, &log_op(&1, {:patch_tree, assigned_tree}))
       {next_state, assigned_tree}
     end
@@ -58,14 +58,14 @@ defmodule Emerge.CodeReloaderTest do
   end
 
   defmodule ReloadViewport do
-    use Emerge.Viewport
+    use Emerge
 
     @impl Viewport
     def mount(_opts) do
       {:ok, %{},
        emerge_skia: [otp_app: :emerge],
        viewport: [
-         renderer_module: Emerge.CodeReloaderTest.FakeRenderer,
+         renderer_module: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
          renderer_check_interval_ms: nil
        ]}
     end
@@ -77,7 +77,7 @@ defmodule Emerge.CodeReloaderTest do
   defmodule FakeWatcher do
     use GenServer
 
-    @behaviour Emerge.CodeReloader.Watcher
+    @behaviour Emerge.Runtime.CodeReloader.Watcher
 
     @impl true
     def start_link(opts) do
@@ -151,7 +151,7 @@ defmodule Emerge.CodeReloaderTest do
 
   test "successful watcher compile rerenders mounted viewports" do
     {:ok, viewport_pid} = ReloadViewport.start_link()
-    renderer = Emerge.Viewport.renderer(viewport_pid)
+    renderer = Emerge.renderer(viewport_pid)
 
     {:ok, reloader_pid} =
       CodeReloader.start_link(
@@ -179,7 +179,7 @@ defmodule Emerge.CodeReloaderTest do
 
   test "failed watcher compile does not rerender mounted viewports" do
     {:ok, viewport_pid} = ReloadViewport.start_link()
-    renderer = Emerge.Viewport.renderer(viewport_pid)
+    renderer = Emerge.renderer(viewport_pid)
 
     {:ok, reloader_pid} =
       CodeReloader.start_link(
@@ -230,7 +230,7 @@ defmodule Emerge.CodeReloaderTest do
     :ok = MixListener.subscribe(self(), [:emerge])
 
     {:ok, viewport_pid} = ReloadViewport.start_link()
-    renderer = Emerge.Viewport.renderer(viewport_pid)
+    renderer = Emerge.renderer(viewport_pid)
 
     send(
       MixListener,
@@ -258,7 +258,7 @@ defmodule Emerge.CodeReloaderTest do
     :ok = MixListener.subscribe(self(), [:emerge])
 
     {:ok, viewport_pid} = ReloadViewport.start_link()
-    renderer = Emerge.Viewport.renderer(viewport_pid)
+    renderer = Emerge.renderer(viewport_pid)
 
     assert PurgedModule.ping() == :pong
     assert :code.is_loaded(PurgedModule) != false
