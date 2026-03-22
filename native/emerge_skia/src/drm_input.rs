@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use crate::actors::{EventMsg, RenderMsg};
+use crate::actors::EventMsg;
+use crate::cursor::CursorState;
 use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
@@ -60,7 +61,7 @@ pub struct DrmInput {
     screen_size: (u32, u32),
     screen_rx: Receiver<(u32, u32)>,
     event_tx: Sender<EventMsg>,
-    cursor_tx: Sender<RenderMsg>,
+    cursor_tx: Sender<CursorState>,
     log_enabled: bool,
 }
 
@@ -69,7 +70,7 @@ impl DrmInput {
         screen_size: (u32, u32),
         screen_rx: Receiver<(u32, u32)>,
         event_tx: Sender<EventMsg>,
-        cursor_tx: Sender<RenderMsg>,
+        cursor_tx: Sender<CursorState>,
         log_enabled: bool,
     ) -> Self {
         let devices = enumerate_devices(log_enabled);
@@ -243,7 +244,7 @@ impl DrmInput {
 
     fn set_cursor_pos(&mut self, x: f32, y: f32) {
         self.cursor_pos = (x, y);
-        let _ = self.cursor_tx.try_send(RenderMsg::CursorUpdate {
+        let _ = self.cursor_tx.try_send(CursorState {
             pos: (x, y),
             visible: true,
         });

@@ -55,8 +55,8 @@ use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest, TextInputEditRequest,
-    TextInputPreeditRequest, TextInputState,
+    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    TextInputEditRequest, TextInputPreeditRequest, TextInputState,
     scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
     text_ops,
 };
@@ -1456,6 +1456,8 @@ pub enum ListenerAction {
     TreeMsg(TreeMsg),
     /// Event-runtime transient mutation.
     RuntimeChange(RuntimeChange),
+    /// Request a cursor icon update from the event runtime.
+    SetCursor(CursorIcon),
     /// Event forwarded to Elixir-side consumers.
     ElixirEvent(ElixirEvent),
     /// Clipboard write performed by the runtime after dispatch.
@@ -3412,6 +3414,36 @@ fn text_input_emit_change(element: &Element) -> Option<bool> {
     (element.kind == ElementKind::TextInput).then_some(element.attrs.on_change.unwrap_or(false))
 }
 
+fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
+    if element.kind == ElementKind::TextInput {
+        Some(CursorIcon::Text)
+    } else if element.attrs.on_click.unwrap_or(false) || element.attrs.on_press.unwrap_or(false) {
+        Some(CursorIcon::Pointer)
+    } else {
+        None
+    }
+}
+
+fn tracks_hover_inside(element: &Element) -> bool {
+    let attrs = &element.attrs;
+    attrs.mouse_over.is_some()
+        || attrs.on_mouse_enter.unwrap_or(false)
+        || attrs.on_mouse_leave.unwrap_or(false)
+}
+
+fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bool {
+    let attrs = &element.attrs;
+    cursor_icon_for_element(element).is_some()
+        || attrs.on_mouse_move.unwrap_or(false)
+        || tracks_hover_inside(element)
+        || attrs.on_mouse_down.unwrap_or(false)
+        || attrs.on_mouse_up.unwrap_or(false)
+        || attrs.mouse_down.is_some()
+        || attrs.mouse_down_active.unwrap_or(false)
+        || is_focusable(element)
+        || has_scrollbar_hover
+}
+
 fn is_focusable(element: &Element) -> bool {
     element.kind == ElementKind::TextInput
         || element.attrs.on_press.unwrap_or(false)
@@ -3987,6 +4019,13 @@ fn emit_window_listeners(out: &mut PrecedenceEmitter<'_>) {
         matcher: ListenerMatcher::WindowResized,
         compute: ListenerCompute::WindowResizeToTree,
     });
+    out.emit(Listener {
+        element_id: None,
+        matcher: ListenerMatcher::CursorPosAnywhere,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::SetCursor(CursorIcon::Default)],
+        },
+    });
 }
 
 /// Build window-level listeners that do not belong to any single element.
@@ -4290,16 +4329,21 @@ fn slot_cursor_pos_inside(
 ) -> Option<Listener> {
     let state = state?;
     let region = pointer_region_for_element(state)?;
+    let scrollbar_hover = scrollbar_hover_compute_for_element(element, Some(state));
+    let has_scrollbar_hover = scrollbar_hover.is_some();
+    let cursor_icon = cursor_icon_for_element(element).or_else(|| {
+        owns_steady_cursor_inside(element, has_scrollbar_hover).then_some(CursorIcon::Default)
+    });
     let actions: Vec<ListenerAction> = [
         mouse_events::cursor_pos_actions(element),
         hover::inside_actions(element),
     ]
     .into_iter()
     .flatten()
+    .chain(cursor_icon.map(ListenerAction::SetCursor))
     .collect();
-    let scrollbar_hover = scrollbar_hover_compute_for_element(element, Some(state));
 
-    (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
+    (!actions.is_empty() || has_scrollbar_hover).then_some(Listener {
         element_id: Some(element.id.clone()),
         matcher: ListenerMatcher::CursorPosInside { region },
         compute: ListenerCompute::RawCursorPosWithScrollbarHover {
@@ -4553,6 +4597,9 @@ fn emit_front_nearby_blockers_for_element(
     let blocker = || ListenerCompute::Static {
         actions: Vec::new(),
     };
+    let cursor_blocker = || ListenerCompute::Static {
+        actions: vec![ListenerAction::SetCursor(CursorIcon::Default)],
+    };
 
     out.emit_all([
         Listener {
@@ -4581,7 +4628,7 @@ fn emit_front_nearby_blockers_for_element(
             matcher: ListenerMatcher::CursorPosInside {
                 region: region.clone(),
             },
-            compute: blocker(),
+            compute: cursor_blocker(),
         },
     ]);
 
@@ -4961,7 +5008,7 @@ mod tests {
         listeners_for_element, registry_for_elements, runtime_listeners_for_overlay,
         window_listeners,
     };
-    use crate::events::{ElementEventKind, TextInputState};
+    use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -5329,6 +5376,24 @@ mod tests {
         first_matching_actions_with_ctx(registry, input, &mut ctx)
     }
 
+    fn actions_without_cursor(actions: &[ListenerAction]) -> Vec<ListenerAction> {
+        actions
+            .iter()
+            .filter(|action| !matches!(action, ListenerAction::SetCursor(_)))
+            .cloned()
+            .collect()
+    }
+
+    fn cursor_actions(actions: &[ListenerAction]) -> Vec<CursorIcon> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                ListenerAction::SetCursor(icon) => Some(*icon),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn first_matching_listener_input_actions_with_ctx(
         registry: &super::Registry,
         input: &ListenerInput,
@@ -5440,12 +5505,13 @@ mod tests {
             })]
         ));
         assert!(matches!(
-            move_actions.as_slice(),
+            actions_without_cursor(&move_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent {
                 kind: ElementEventKind::MouseMove,
                 ..
             })]
         ));
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -5464,18 +5530,19 @@ mod tests {
         ));
 
         let actions = listeners[0].compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions_without_cursor(&actions).len(), 2);
         assert!(matches!(
-            actions[0],
+            actions_without_cursor(&actions)[0],
             ListenerAction::ElixirEvent(ElixirEvent {
                 kind: ElementEventKind::MouseEnter,
                 ..
             })
         ));
         assert!(matches!(
-            actions[1],
+            actions_without_cursor(&actions)[1],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive { active: true, .. })
         ));
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -5487,13 +5554,15 @@ mod tests {
         let element = with_interaction(make_element(4, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
-        assert!(matches!(
-            listeners[0].matcher,
-            ListenerMatcher::CursorLocationLeaveBoundary { .. }
-        ));
+        assert_eq!(listeners.len(), 2);
+        let leave_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorLocationLeaveBoundary { .. }
+            )
+        });
 
-        let actions = listeners[0].compute_listener_input_actions(&ListenerInput::PointerLeave {
+        let actions = leave_listener.compute_listener_input_actions(&ListenerInput::PointerLeave {
             x: 120.0,
             y: 10.0,
             window_left: false,
@@ -5526,25 +5595,27 @@ mod tests {
         });
         let actions = enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
 
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions_without_cursor(&actions).len(), 2);
         assert!(matches!(
-            actions[0],
+            actions_without_cursor(&actions)[0],
             ListenerAction::ElixirEvent(ElixirEvent {
                 kind: ElementEventKind::MouseEnter,
                 ..
             })
         ));
         assert!(matches!(
-            actions[1],
+            actions_without_cursor(&actions)[1],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
             }) if *element_id == ElementId::from_term_bytes(vec![22]) && active
         ));
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
 
         let release_actions =
             enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
-        assert_eq!(release_actions.len(), 2);
+        assert_eq!(actions_without_cursor(&release_actions).len(), 2);
+        assert_eq!(cursor_actions(&release_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -5561,18 +5632,19 @@ mod tests {
 
         let actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
 
-        assert_eq!(actions.len(), 1);
+        assert_eq!(actions_without_cursor(&actions).len(), 1);
         assert!(matches!(
-            actions[0],
+            actions_without_cursor(&actions)[0],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
             }) if *element_id == ElementId::from_term_bytes(vec![24]) && active
         ));
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
 
     #[test]
-    fn listeners_for_element_active_hover_omits_inside_listener_without_move_behavior() {
+    fn listeners_for_element_active_hover_keeps_inside_listener_for_default_cursor() {
         let mut attrs = Attrs::default();
         attrs.on_mouse_enter = Some(true);
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5580,9 +5652,12 @@ mod tests {
         let element = with_interaction(make_element(25, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert!(listeners.iter().all(|listener| {
-            !matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
-        }));
+        let inside_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        });
+        let actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(actions_without_cursor(&actions).is_empty());
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -5684,17 +5759,19 @@ mod tests {
         let element = with_interaction(make_element(5, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
-        assert!(matches!(
-            listeners[0].matcher,
-            ListenerMatcher::CursorButtonLeftPressInside { .. }
-        ));
+        assert_eq!(listeners.len(), 2);
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
         assert_eq!(
-            listeners[0].element_id,
+            press_listener.element_id,
             Some(ElementId::from_term_bytes(vec![5]))
         );
 
-        let actions = listeners[0].compute_actions(&InputEvent::CursorButton {
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
             button: "left".to_string(),
             action: ACTION_PRESS,
             mods: 0,
@@ -5717,13 +5794,15 @@ mod tests {
         let element = with_interaction(make_element(10, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
-        assert!(matches!(
-            listeners[0].matcher,
-            ListenerMatcher::CursorButtonLeftPressInside { .. }
-        ));
+        assert_eq!(listeners.len(), 2);
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
 
-        let actions = listeners[0].compute_actions(&InputEvent::CursorButton {
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
             button: "left".to_string(),
             action: ACTION_PRESS,
             mods: 0,
@@ -5758,9 +5837,15 @@ mod tests {
         let element = with_interaction(make_element(11, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners.len(), 2);
 
-        let actions = listeners[0].compute_actions(&InputEvent::CursorButton {
+        let actions = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        })
+        .compute_actions(&InputEvent::CursorButton {
             button: "left".to_string(),
             action: ACTION_PRESS,
             mods: 0,
@@ -5816,7 +5901,7 @@ mod tests {
         let element = with_interaction(make_element(6, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 4);
+        assert_eq!(listeners.len(), 5);
 
         let release_listener = listener_matching(&listeners, |listener| {
             matches!(
@@ -6099,16 +6184,21 @@ mod tests {
 
         let covered_actions =
             first_matching_actions(&registry, &InputEvent::CursorPos { x: 50.0, y: 10.0 });
-        assert!(covered_actions.is_empty());
+        assert!(actions_without_cursor(&covered_actions).is_empty());
+        assert_eq!(cursor_actions(&covered_actions), vec![CursorIcon::Default]);
 
         let uncovered_actions =
             first_matching_actions(&registry, &InputEvent::CursorPos { x: 120.0, y: 10.0 });
         assert!(matches!(
-            uncovered_actions.as_slice(),
+            actions_without_cursor(&uncovered_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
                 if *element_id == ElementId::from_term_bytes(vec![87])
                     && *kind == ElementEventKind::MouseMove
         ));
+        assert_eq!(
+            cursor_actions(&uncovered_actions),
+            vec![CursorIcon::Default]
+        );
     }
 
     #[test]
@@ -6400,8 +6490,10 @@ mod tests {
         let late_overflow =
             first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
 
-        assert!(initial_inside.is_empty());
-        assert!(initial_overflow.is_empty());
+        assert_eq!(cursor_actions(&initial_inside), vec![CursorIcon::Default]);
+        assert!(actions_without_cursor(&initial_inside).is_empty());
+        assert_eq!(cursor_actions(&initial_overflow), vec![CursorIcon::Default]);
+        assert!(actions_without_cursor(&initial_overflow).is_empty());
 
         for actions in [mid_inside, mid_overflow, late_inside, late_overflow] {
             assert!(matches!(
@@ -6442,8 +6534,10 @@ mod tests {
         let late_overflow =
             first_matching_actions(&late_registry, &InputEvent::CursorPos { x: 130.0, y: 41.0 });
 
-        assert!(initial_inside.is_empty());
-        assert!(initial_overflow.is_empty());
+        assert_eq!(cursor_actions(&initial_inside), vec![CursorIcon::Default]);
+        assert!(actions_without_cursor(&initial_inside).is_empty());
+        assert_eq!(cursor_actions(&initial_overflow), vec![CursorIcon::Default]);
+        assert!(actions_without_cursor(&initial_overflow).is_empty());
 
         for actions in [mid_inside, mid_overflow, late_inside, late_overflow] {
             assert!(matches!(
@@ -6462,10 +6556,16 @@ mod tests {
         let element = with_interaction(make_element(7, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners.len(), 2);
 
-        let matcher_kind = listeners[0].matcher.kind();
-        let actions = listeners[0].compute_actions(&InputEvent::CursorButton {
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
+        let matcher_kind = press_listener.matcher.kind();
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
             button: "left".to_string(),
             action: ACTION_PRESS,
             mods: 0,
@@ -6498,6 +6598,13 @@ mod tests {
                 && origin_x == 10.0
                 && origin_y == 10.0
         ));
+
+        let move_actions = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        })
+        .compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(actions_without_cursor(&move_actions).is_empty());
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Pointer]);
     }
 
     #[test]
@@ -6839,10 +6946,16 @@ mod tests {
         let element = with_interaction(make_element(8, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners.len(), 2);
 
-        let matcher_kind = listeners[0].matcher.kind();
-        let actions = listeners[0].compute_actions(&InputEvent::CursorButton {
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
+        let matcher_kind = press_listener.matcher.kind();
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
             button: "left".to_string(),
             action: ACTION_PRESS,
             mods: 0,
@@ -6890,6 +7003,13 @@ mod tests {
                 && origin_x == 10.0
                 && origin_y == 10.0
         ));
+
+        let move_actions = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        })
+        .compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(actions_without_cursor(&move_actions).is_empty());
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Pointer]);
     }
 
     #[test]
@@ -7903,13 +8023,15 @@ mod tests {
     #[test]
     fn window_listeners_emit_resize_tree_message() {
         let listeners = window_listeners();
-        assert_eq!(listeners.len(), 1);
-        assert!(matches!(
-            listeners[0].matcher,
-            ListenerMatcher::WindowResized
-        ));
+        assert_eq!(listeners.len(), 2);
+        let resize_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::WindowResized)
+        });
+        let cursor_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)
+        });
 
-        let actions = listeners[0].compute_actions(&InputEvent::Resized {
+        let actions = resize_listener.compute_actions(&InputEvent::Resized {
             width: 800,
             height: 600,
             scale_factor: 1.5,
@@ -7920,6 +8042,12 @@ mod tests {
                 if (*width - 800.0).abs() < f32::EPSILON
                     && (*height - 600.0).abs() < f32::EPSILON
                     && (*scale - 1.5).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            cursor_listener
+                .compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 })
+                .as_slice(),
+            [ListenerAction::SetCursor(CursorIcon::Default)]
         ));
     }
 
@@ -8017,10 +8145,11 @@ mod tests {
         let move_actions =
             move_listener.compute_actions(&InputEvent::CursorPos { x: 96.0, y: 10.0 });
         assert!(matches!(
-            move_actions.as_slice(),
+            actions_without_cursor(&move_actions).as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
                 if *element_id == ElementId::from_term_bytes(vec![45]) && *hovered
         ));
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Default]);
 
         let mut hovered_attrs = Attrs::default();
         hovered_attrs.scrollbar_y = Some(true);
@@ -8112,14 +8241,16 @@ mod tests {
             first_matching_actions(&registry, &InputEvent::CursorPos { x: 10.0, y: 45.0 });
 
         assert!(matches!(
-            hit_actions.as_slice(),
+            actions_without_cursor(&hit_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
                 if *element_id == target_id && *kind == ElementEventKind::MouseMove
         ));
+        assert_eq!(cursor_actions(&hit_actions), vec![CursorIcon::Default]);
         assert!(
-            miss_actions.is_empty(),
+            actions_without_cursor(&miss_actions).is_empty(),
             "screen-space hover should miss the target at its pre-scroll position"
         );
+        assert_eq!(cursor_actions(&miss_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -8147,15 +8278,17 @@ mod tests {
             first_matching_actions(&registry, &InputEvent::CursorPos { x: 10.0, y: 10.0 });
 
         assert!(matches!(
-            hit_actions.as_slice(),
+            actions_without_cursor(&hit_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
                 if *element_id == ElementId::from_term_bytes(vec![96])
                     && *kind == ElementEventKind::MouseMove
         ));
+        assert_eq!(cursor_actions(&hit_actions), vec![CursorIcon::Default]);
         assert!(
-            miss_actions.is_empty(),
+            actions_without_cursor(&miss_actions).is_empty(),
             "pointer matching should miss the pre-transform position"
         );
+        assert_eq!(cursor_actions(&miss_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -8182,15 +8315,17 @@ mod tests {
             first_matching_actions(&registry, &InputEvent::CursorPos { x: 90.0, y: 10.0 });
 
         assert!(matches!(
-            hit_actions.as_slice(),
+            actions_without_cursor(&hit_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
                 if *element_id == ElementId::from_term_bytes(vec![97])
                     && *kind == ElementEventKind::MouseMove
         ));
+        assert_eq!(cursor_actions(&hit_actions), vec![CursorIcon::Default]);
         assert!(
-            miss_actions.is_empty(),
+            actions_without_cursor(&miss_actions).is_empty(),
             "pointer matching should respect the rotated visual footprint"
         );
+        assert_eq!(cursor_actions(&miss_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -8258,10 +8393,11 @@ mod tests {
         );
 
         assert!(matches!(
-            actions.as_slice(),
+            actions_without_cursor(&actions).as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
                 if *element_id == child_id && *hovered
         ));
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -8305,10 +8441,11 @@ mod tests {
         );
 
         assert!(matches!(
-            actions.as_slice(),
+            actions_without_cursor(&actions).as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
                 if *element_id == ElementId::from_term_bytes(vec![98]) && *hovered
         ));
+        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
 
     #[test]

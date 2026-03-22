@@ -40,6 +40,7 @@ use crate::backend::wake::{
     BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
 };
 use crate::backend::wayland_config::WaylandConfig;
+use crate::events::CursorIcon;
 use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
@@ -126,6 +127,7 @@ struct App {
     running_flag: Arc<AtomicBool>,
     render_state: RenderState,
     render_rx: Receiver<RenderMsg>,
+    cursor_icon_rx: Receiver<CursorIcon>,
     tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     window_size: (u32, u32),
@@ -162,9 +164,15 @@ impl App {
     }
 
     fn flush_render_updates(&mut self) {
+        self.drain_cursor_icons();
+
         if self.running && self.drain_render_commands() {
             self.queue_redraw();
         }
+    }
+
+    fn drain_cursor_icons(&mut self) {
+        while self.cursor_icon_rx.try_recv().is_ok() {}
     }
 
     fn handle_resize(&mut self, physical_size: winit::dpi::PhysicalSize<u32>) {
@@ -277,7 +285,6 @@ impl App {
                 RenderMsg::Stop => {
                     self.running = false;
                 }
-                RenderMsg::CursorUpdate { .. } => {}
             }
         }
 
@@ -764,6 +771,7 @@ pub fn run(
     tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
+    cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
     proxy_tx: Sender<WindowBackendStartupResult>,
 ) {
@@ -831,6 +839,7 @@ pub fn run(
         running_flag,
         render_state: RenderState::default(),
         render_rx,
+        cursor_icon_rx,
         tree_tx,
         event_tx,
         window_size: (size.width, size.height),

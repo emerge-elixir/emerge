@@ -12,7 +12,7 @@ use glutin::prelude::GlSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_xdg_shell, delegate_xdg_window,
+    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     reexports::{
         calloop::{self, EventLoop},
@@ -23,7 +23,10 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            CursorIcon as SctkCursorIcon, PointerEvent, PointerEventKind, PointerHandler,
+            PointerThemeError, ThemeSpec,
+        },
     },
     shell::{
         WaylandSurface,
@@ -32,6 +35,7 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
+    shm::{Shm, ShmHandler},
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -47,6 +51,7 @@ use crate::{
         },
         wayland_config::WaylandConfig,
     },
+    events::CursorIcon,
     input::InputEvent,
     renderer::RenderState,
     video::VideoRegistry,
@@ -93,17 +98,20 @@ pub(super) struct WaylandApp {
     output_state: OutputState,
     qh: QueueHandle<Self>,
     pub(super) window: Window,
+    shm: Shm,
     env: Option<GlEnv>,
     protocols: ProtocolHandles,
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
     input: PointerInputState,
+    current_cursor_icon: CursorIcon,
     pub(super) keyboard: KeyboardInputState,
     pub(super) text_input: TextInputProtocolState,
     exit: bool,
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
     render_rx: Receiver<RenderMsg>,
+    cursor_icon_rx: Receiver<CursorIcon>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     video_registry: Arc<VideoRegistry>,
     render_state: RenderState,
@@ -118,6 +126,7 @@ impl WaylandApp {
         tree_tx: CrossbeamSender<TreeMsg>,
         event_tx: crossbeam_channel::Sender<EventMsg>,
         render_rx: Receiver<RenderMsg>,
+        cursor_icon_rx: Receiver<CursorIcon>,
         video_registry: Arc<VideoRegistry>,
         config: &WaylandConfig,
     ) -> Result<Self, String> {
@@ -125,6 +134,7 @@ impl WaylandApp {
             .map_err(|err| format!("wl_compositor not available: {err}"))?;
         let xdg_shell = XdgShell::bind(globals, &qh)
             .map_err(|err| format!("xdg shell not available: {err}"))?;
+        let shm = Shm::bind(globals, &qh).map_err(|err| format!("wl_shm not available: {err}"))?;
 
         let surface = compositor_state.create_surface(&qh);
         let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
@@ -140,17 +150,20 @@ impl WaylandApp {
             output_state: OutputState::new(globals, &qh),
             qh: qh.clone(),
             window,
+            shm,
             env: None,
             protocols,
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
             input: PointerInputState::new(globals, &qh),
+            current_cursor_icon: CursorIcon::Default,
             keyboard: KeyboardInputState::new(),
             text_input: TextInputProtocolState::new(globals, &qh),
             exit: false,
             running_flag,
             tree_tx,
             render_rx,
+            cursor_icon_rx,
             event_tx,
             video_registry,
             render_state: RenderState::default(),
@@ -165,14 +178,14 @@ impl WaylandApp {
         Ok(app)
     }
 
-    fn handle_wake_action(&mut self, action: WakeAction) {
+    fn handle_wake_action(&mut self, conn: &Connection, action: WakeAction) {
         match action {
             WakeAction::Stop => {
                 self.running_flag.store(false, Ordering::Relaxed);
                 self.exit = true;
             }
             WakeAction::Redraw => {
-                self.flush_render_updates();
+                self.flush_backend_updates(conn);
             }
             WakeAction::VideoFrameAvailable => {
                 self.queue_redraw();
@@ -188,17 +201,17 @@ impl WaylandApp {
         let _ = self.event_tx.send(EventMsg::InputEvent(event));
     }
 
-    fn flush_render_updates(&mut self) {
+    fn flush_backend_updates(&mut self, conn: &Connection) {
         if self.exit {
             return;
         }
 
-        if self.drain_render_messages() {
+        if self.drain_backend_messages(conn) {
             self.queue_redraw();
         }
     }
 
-    fn drain_render_messages(&mut self) -> bool {
+    fn drain_backend_messages(&mut self, conn: &Connection) -> bool {
         let mut updated = false;
 
         while let Ok(msg) = self.render_rx.try_recv() {
@@ -226,7 +239,6 @@ impl WaylandApp {
 
                     updated = true;
                 }
-                RenderMsg::CursorUpdate { .. } => {}
                 RenderMsg::Stop => {
                     self.running_flag.store(false, Ordering::Relaxed);
                     self.exit = true;
@@ -235,7 +247,46 @@ impl WaylandApp {
             }
         }
 
+        while let Ok(icon) = self.cursor_icon_rx.try_recv() {
+            self.current_cursor_icon = icon;
+
+            if self.input.entered {
+                self.apply_current_cursor_icon(conn);
+            }
+        }
+
         updated
+    }
+
+    fn sctk_cursor_icon(icon: CursorIcon) -> SctkCursorIcon {
+        match icon {
+            CursorIcon::Default => SctkCursorIcon::Default,
+            CursorIcon::Text => SctkCursorIcon::Text,
+            CursorIcon::Pointer => SctkCursorIcon::Pointer,
+        }
+    }
+
+    fn apply_cursor_icon(&self, conn: &Connection, icon: CursorIcon) {
+        let Some(pointer) = self.input.pointer.as_ref() else {
+            return;
+        };
+
+        match pointer.set_cursor(conn, Self::sctk_cursor_icon(icon)) {
+            Ok(()) | Err(PointerThemeError::MissingEnterSerial) => {}
+            Err(PointerThemeError::CursorNotFound) if icon != CursorIcon::Default => {
+                if let Err(err) =
+                    pointer.set_cursor(conn, Self::sctk_cursor_icon(CursorIcon::Default))
+                    && !matches!(err, PointerThemeError::MissingEnterSerial)
+                {
+                    eprintln!("failed to apply wayland fallback cursor: {err}");
+                }
+            }
+            Err(err) => eprintln!("failed to apply wayland cursor: {err}"),
+        }
+    }
+
+    fn apply_current_cursor_icon(&self, conn: &Connection) {
+        self.apply_cursor_icon(conn, self.current_cursor_icon);
     }
 
     fn update_logical_size(&mut self, conn: &Connection, width: u32, height: u32) {
@@ -478,7 +529,15 @@ impl SeatHandler for WaylandApp {
         capability: Capability,
     ) {
         if capability == Capability::Pointer && self.input.pointer.is_none() {
-            match self.input.seat_state.get_pointer(qh, &seat) {
+            let cursor_surface = self.protocols.compositor_state.create_surface(qh);
+
+            match self.input.seat_state.get_pointer_with_theme(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                cursor_surface,
+                ThemeSpec::System,
+            ) {
                 Ok(pointer) => self.input.pointer = Some(pointer),
                 Err(err) => eprintln!("failed to create wayland pointer: {err}"),
             }
@@ -500,10 +559,8 @@ impl SeatHandler for WaylandApp {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer
-            && let Some(pointer) = self.input.pointer.take()
-        {
-            pointer.release();
+        if capability == Capability::Pointer && self.input.pointer.take().is_some() {
+            self.input.entered = false;
         } else if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.keyboard.take()
         {
@@ -527,7 +584,7 @@ impl SeatHandler for WaylandApp {
 impl PointerHandler for WaylandApp {
     fn pointer_frame(
         &mut self,
-        _conn: &Connection,
+        conn: &Connection,
         _qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -544,10 +601,13 @@ impl PointerHandler for WaylandApp {
 
             match event.kind {
                 Enter { .. } => {
+                    self.input.entered = true;
+                    self.apply_cursor_icon(conn, CursorIcon::Default);
                     self.send_input_event(InputEvent::CursorEntered { entered: true });
                     self.send_input_event(InputEvent::CursorPos { x, y });
                 }
                 Leave { .. } => {
+                    self.input.entered = false;
                     self.send_input_event(InputEvent::CursorEntered { entered: false });
                 }
                 Motion { .. } => {
@@ -677,9 +737,16 @@ delegate_keyboard!(WaylandApp);
 delegate_output!(WaylandApp);
 delegate_pointer!(WaylandApp);
 delegate_seat!(WaylandApp);
+delegate_shm!(WaylandApp);
 delegate_xdg_shell!(WaylandApp);
 delegate_xdg_window!(WaylandApp);
 delegate_registry!(WaylandApp);
+
+impl ShmHandler for WaylandApp {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
 
 impl ProvidesRegistryState for WaylandApp {
     fn registry(&mut self) -> &mut RegistryState {
@@ -707,6 +774,7 @@ pub(crate) fn run(
     tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
+    cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
     proxy_tx: Sender<WindowBackendStartupResult>,
 ) {
@@ -762,11 +830,15 @@ pub(crate) fn run(
     }
 
     let (wake_tx, wake_rx) = calloop::channel::channel();
-    if let Err(err) = loop_handle.insert_source(wake_rx, |event, _, state| match event {
-        calloop::channel::Event::Msg(action) => state.handle_wake_action(action),
-        calloop::channel::Event::Closed => {
-            state.running_flag.store(false, Ordering::Relaxed);
-            state.exit = true;
+    if let Err(err) = loop_handle.insert_source(wake_rx, {
+        let conn = conn.clone();
+
+        move |event, _, state| match event {
+            calloop::channel::Event::Msg(action) => state.handle_wake_action(&conn, action),
+            calloop::channel::Event::Closed => {
+                state.running_flag.store(false, Ordering::Relaxed);
+                state.exit = true;
+            }
         }
     }) {
         fail_startup(
@@ -790,6 +862,7 @@ pub(crate) fn run(
         tree_tx,
         event_tx.clone(),
         render_rx,
+        cursor_icon_rx,
         video_registry,
         &config,
     ) {
@@ -813,7 +886,7 @@ pub(crate) fn run(
             break;
         }
 
-        app.flush_render_updates();
+        app.flush_backend_updates(&conn);
         app.maybe_draw();
     }
 }

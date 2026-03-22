@@ -24,14 +24,15 @@ use rustler::LocalPid;
 
 use crate::{
     actors::{EventMsg, TreeMsg},
+    backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{InputEvent, InputHandler},
     tree::{element::ElementId, scrollbar::ScrollbarAxis},
 };
 
 use super::{
-    ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom, click_atom,
-    focus_atom, mouse_down_atom, mouse_enter_atom, mouse_leave_atom, mouse_move_atom,
+    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom,
+    click_atom, focus_atom, mouse_down_atom, mouse_enter_atom, mouse_leave_atom, mouse_move_atom,
     mouse_up_atom, press_atom,
     registry_builder::{
         self, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
@@ -65,6 +66,7 @@ struct PendingDispatchEffects {
     tree_msgs: Vec<TreeMsg>,
     runtime_changes: Vec<RuntimeChange>,
     elixir_event_requires_rebuild: bool,
+    requested_cursor: Option<CursorIcon>,
 }
 
 impl PendingDispatchEffects {
@@ -77,6 +79,7 @@ impl PendingDispatchEffects {
         match action {
             ListenerAction::TreeMsg(msg) => self.tree_msgs.push(msg),
             ListenerAction::RuntimeChange(change) => self.runtime_changes.push(change),
+            ListenerAction::SetCursor(icon) => self.requested_cursor = Some(icon),
             ListenerAction::ElixirEvent(event) => {
                 if dispatch_mode == DispatchMode::CursorRevalidate
                     && event.kind == ElementEventKind::MouseMove
@@ -106,6 +109,9 @@ impl PendingDispatchEffects {
         _dispatch_mode: DispatchMode,
     ) {
         runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
+        if let Some(icon) = self.requested_cursor {
+            runtime.apply_cursor_request(icon);
+        }
 
         if self.elixir_event_requires_rebuild && self.tree_msgs.is_empty() {
             self.tree_msgs.push(TreeMsg::RebuildRegistry);
@@ -233,12 +239,24 @@ struct DirectEventRuntime {
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
     clipboard: ClipboardManager,
+    backend_cursor_tx: Option<Sender<CursorIcon>>,
+    backend_wake: BackendWakeHandle,
     last_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
+    current_cursor_icon: CursorIcon,
 }
 
 impl DirectEventRuntime {
+    #[cfg(test)]
     fn new(system_clipboard: bool) -> Self {
+        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop())
+    }
+
+    fn new_with_backend_cursor(
+        system_clipboard: bool,
+        backend_cursor_tx: Option<Sender<CursorIcon>>,
+        backend_wake: BackendWakeHandle,
+    ) -> Self {
         let base_registry = registry_builder::Registry::default();
         let runtime_overlay = RuntimeOverlayState::default();
         let overlay_registry =
@@ -255,8 +273,11 @@ impl DirectEventRuntime {
             input_handler: InputHandler::new(),
             input_target: None,
             clipboard: ClipboardManager::new(system_clipboard),
+            backend_cursor_tx,
+            backend_wake,
             last_cursor_pos: None,
             cursor_in_window: false,
+            current_cursor_icon: CursorIcon::Default,
         }
     }
 
@@ -378,6 +399,10 @@ impl DirectEventRuntime {
             }
             InputEvent::CursorEntered { entered } => {
                 self.cursor_in_window = *entered;
+
+                if !entered {
+                    self.current_cursor_icon = CursorIcon::Default;
+                }
             }
             _ => {}
         }
@@ -408,6 +433,18 @@ impl DirectEventRuntime {
             )
             || self.runtime_overlay.scrollbar.is_some()
             || self.runtime_overlay.text_drag.is_some()
+    }
+
+    fn apply_cursor_request(&mut self, icon: CursorIcon) {
+        if self.current_cursor_icon != icon {
+            self.current_cursor_icon = icon;
+
+            if let Some(cursor_tx) = self.backend_cursor_tx.as_ref() {
+                let _ = cursor_tx.send(icon);
+            }
+
+            self.backend_wake.request_redraw();
+        }
     }
 
     fn should_preserve_registry_transitions(&self) -> bool {
@@ -999,11 +1036,17 @@ fn forward_observer_input(
 pub(crate) fn spawn_event_actor(
     event_rx: Receiver<EventMsg>,
     tree_tx: Sender<TreeMsg>,
+    backend_cursor_tx: Option<Sender<CursorIcon>>,
+    backend_wake: BackendWakeHandle,
     log_render: bool,
     system_clipboard: bool,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut runtime = DirectEventRuntime::new(system_clipboard);
+        let mut runtime = DirectEventRuntime::new_with_backend_cursor(
+            system_clipboard,
+            backend_cursor_tx,
+            backend_wake,
+        );
         let mut pending_message: Option<EventMsg> = None;
 
         loop {
@@ -1064,9 +1107,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::events::RegistryRebuildPayload;
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
+    use crate::events::{CursorIcon, RegistryRebuildPayload};
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
@@ -1076,7 +1119,7 @@ mod tests {
     use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot};
     use crate::tree::layout::{Constraint, layout_and_refresh_default_with_animation};
     use crate::tree::render::render_tree;
-    use crossbeam_channel::bounded;
+    use crossbeam_channel::{bounded, unbounded};
     use std::time::{Duration, Instant};
 
     fn make_text_input_state(
@@ -2387,6 +2430,148 @@ mod tests {
             TreeMsg::SetMouseOverActive { element_id: id, active }
                 if *id == element_id && *active
         )));
+    }
+
+    #[test]
+    fn direct_runtime_updates_cursor_icon_for_text_pressable_and_fallback() {
+        let text_input = with_interaction_rect(
+            make_element(170, ElementKind::TextInput, Attrs::default()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
+        let mut pressable_attrs = Attrs::default();
+        pressable_attrs.on_press = Some(true);
+        let pressable = with_interaction_rect(
+            make_element(171, ElementKind::El, pressable_attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input, pressable]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Text);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 70.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Pointer);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 130.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Default);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn direct_runtime_sends_cursor_icons_to_backend_transport_once_per_change() {
+        let text_input = with_interaction_rect(
+            make_element(173, ElementKind::TextInput, Attrs::default()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let (cursor_tx, cursor_rx) = unbounded();
+        let mut runtime = DirectEventRuntime::new_with_backend_cursor(
+            false,
+            Some(cursor_tx),
+            BackendWakeHandle::noop(),
+        );
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(cursor_rx.try_recv().ok(), Some(CursorIcon::Text));
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(
+            InputEvent::CursorEntered { entered: false },
+            &tree_tx,
+            false,
+        );
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(cursor_rx.try_recv().ok(), Some(CursorIcon::Text));
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn direct_runtime_cursor_revalidate_updates_icon_without_synthetic_mouse_move() {
+        let initial = with_interaction_rect(
+            make_element(172, ElementKind::El, Attrs::default()),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let initial_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[initial]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let mut moved_attrs = Attrs::default();
+        moved_attrs.on_mouse_move = Some(true);
+        moved_attrs.on_press = Some(true);
+        let moved = with_interaction_rect(
+            make_element(172, ElementKind::El, moved_attrs),
+            60.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let moved_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[moved]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 70.0, y: 10.0 }, &tree_tx, false);
+
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Default);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_registry_update(moved_rebuild, &tree_tx, false);
+
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Pointer);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
     }
 
     #[test]

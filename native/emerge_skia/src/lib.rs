@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::Font;
@@ -99,7 +99,6 @@ struct RendererResource {
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     render_tx: RenderSender,
-    cursor_tx: Option<Sender<RenderMsg>>,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
     prime_video_supported: bool,
@@ -221,7 +220,6 @@ impl RendererResource {
             &self.tree_tx,
             &self.event_tx,
             &self.render_tx,
-            self.cursor_tx.as_ref(),
             handles,
             self.log_render,
             self.log_input,
@@ -237,7 +235,6 @@ fn shutdown_renderer_runtime(
     tree_tx: &Sender<TreeMsg>,
     event_tx: &Sender<EventMsg>,
     render_tx: &RenderSender,
-    cursor_tx: Option<&Sender<RenderMsg>>,
     mut handles: RendererHandles,
     log_render: bool,
     log_input: bool,
@@ -248,10 +245,6 @@ fn shutdown_renderer_runtime(
     send_tree(tree_tx, TreeMsg::Stop, log_render);
     send_event(event_tx, EventMsg::Stop, log_input);
     render_tx.send_latest(RenderMsg::Stop);
-
-    if let Some(cursor_tx) = cursor_tx {
-        let _ = cursor_tx.send(RenderMsg::Stop);
-    }
 
     backend_wake.request_stop();
 
@@ -730,7 +723,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         drop_rx: render_rx.clone(),
         log_render,
     };
-    let (cursor_tx, cursor_rx) = bounded(1024);
+    let (backend_cursor_tx, backend_cursor_rx) = unbounded();
+    let (drm_cursor_tx, drm_cursor_rx) = bounded(1024);
 
     assets::start(tree_tx.clone(), log_render);
 
@@ -738,15 +732,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         config.backend,
         BackendKind::Wayland | BackendKind::WaylandLegacy
     );
-    let mut handles = RendererHandles {
-        event_handle: Some(spawn_event_actor(
-            event_rx,
-            tree_tx.clone(),
-            log_render,
-            system_clipboard,
-        )),
-        ..RendererHandles::default()
-    };
+    let mut handles = RendererHandles::default();
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -781,6 +767,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     tree_tx_clone,
                     event_tx_clone,
                     render_rx,
+                    backend_cursor_rx,
                     video_registry_clone,
                     proxy_tx,
                 );
@@ -797,7 +784,6 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         &tree_tx,
                         &event_tx,
                         &render_sender,
-                        None,
                         std::mem::take(&mut handles),
                         log_render,
                         log_input,
@@ -814,7 +800,6 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         &tree_tx,
                         &event_tx,
                         &render_sender,
-                        None,
                         std::mem::take(&mut handles),
                         log_render,
                         log_input,
@@ -846,7 +831,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
             let event_tx_clone = event_tx.clone();
-            let cursor_tx_clone = cursor_tx.clone();
+            let drm_cursor_tx_clone = drm_cursor_tx.clone();
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
             let drm_input_size = (initial_width, initial_height);
@@ -857,7 +842,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     drm_input_size,
                     screen_rx,
                     event_tx_clone,
-                    cursor_tx_clone,
+                    drm_cursor_tx_clone,
                     input_log,
                 );
                 while !stop_clone.load(Ordering::Relaxed) {
@@ -885,7 +870,8 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         running_flag: running_flag_clone,
                         tree_tx: tree_tx_clone,
                         render_rx,
-                        cursor_rx,
+                        cursor_icon_rx: backend_cursor_rx,
+                        cursor_pos_rx: drm_cursor_rx,
                         event_tx: event_tx_clone,
                         screen_tx,
                         render_counter: render_counter_clone,
@@ -912,6 +898,15 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         }
     };
 
+    handles.event_handle = Some(spawn_event_actor(
+        event_rx,
+        tree_tx.clone(),
+        Some(backend_cursor_tx),
+        backend_wake.clone(),
+        log_render,
+        system_clipboard,
+    ));
+
     let video_wake = if matches!(backend, BackendKind::Wayland | BackendKind::WaylandLegacy) {
         VideoWake::new(backend_wake.clone())
     } else {
@@ -926,11 +921,6 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         tree_tx,
         event_tx,
         render_tx: render_sender,
-        cursor_tx: if matches!(backend, BackendKind::Drm) {
-            Some(cursor_tx)
-        } else {
-            None
-        },
         video_registry,
         video_wake,
         prime_video_supported,
@@ -1382,7 +1372,14 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         }
     });
 
-    let event_handle = spawn_event_actor(event_rx, tree_tx.clone(), false, false);
+    let event_handle = spawn_event_actor(
+        event_rx,
+        tree_tx.clone(),
+        None,
+        BackendWakeHandle::noop(),
+        false,
+        false,
+    );
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
         TreeActorConfig {
@@ -1608,7 +1605,14 @@ mod tests {
                 }
             });
 
-            let event_handle = spawn_event_actor(event_rx, tree_tx.clone(), false, false);
+            let event_handle = spawn_event_actor(
+                event_rx,
+                tree_tx.clone(),
+                None,
+                BackendWakeHandle::noop(),
+                false,
+                false,
+            );
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
                 TreeActorConfig {
@@ -1693,7 +1697,14 @@ mod tests {
         fn new() -> Self {
             let (event_tx, event_rx) = bounded(4096);
             let (tree_tx, tree_rx) = bounded(4096);
-            let handle = spawn_event_actor(event_rx, tree_tx, false, false);
+            let handle = spawn_event_actor(
+                event_rx,
+                tree_tx,
+                None,
+                BackendWakeHandle::noop(),
+                false,
+                false,
+            );
 
             Self {
                 event_tx,
@@ -1804,7 +1815,6 @@ mod tests {
             &tree_tx,
             &event_tx,
             &render_sender,
-            None,
             RendererHandles {
                 backend_handle: Some(backend_handle),
                 input_handle: Some(input_handle),

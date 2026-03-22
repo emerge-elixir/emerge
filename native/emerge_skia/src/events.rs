@@ -72,6 +72,13 @@ pub enum ElementEventKind {
     Change,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CursorIcon {
+    Default,
+    Text,
+    Pointer,
+}
+
 /// Unified text-input state used by both rebuild output and runtime editing.
 ///
 /// `TextInputState` combines:
