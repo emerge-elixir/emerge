@@ -20,8 +20,14 @@ defmodule Emerge.UI.Size do
   @doc "Pixel size helper"
   def px(n) when is_number(n), do: {:px, n}
 
-  @doc "Fill available space. Use `{:fill, n}` for weighted distribution."
+  @doc "Fill available space. Use `fill(n)` for weighted distribution."
   def fill, do: :fill
+
+  def fill(weight) when is_number(weight) and weight > 0, do: {:fill, weight}
+
+  def fill(weight) do
+    raise ArgumentError, "fill/1 expects a positive number, got: #{inspect(weight)}"
+  end
 
   @doc "Size to content"
   def content, do: :content
@@ -30,12 +36,24 @@ defmodule Emerge.UI.Size do
   def shrink, do: :content
 
   @doc """
-  Minimum size constraint. The resolved length must be at least n pixels.
+  Minimum size constraint. The resolved length must be at least the given pixel length.
   """
-  def minimum(n, length) when is_number(n), do: {:minimum, n, length}
+  def min({:px, min_px}, length) when is_number(min_px) and min_px >= 0,
+    do: {:minimum, min_px, length}
+
+  def min(length_px, _length) do
+    raise ArgumentError,
+          "min/2 expects the first argument to be px(n) with a non-negative number, got: #{inspect(length_px)}"
+  end
 
   @doc """
-  Maximum size constraint. The resolved length must be at most n pixels.
+  Maximum size constraint. The resolved length must be at most the given pixel length.
   """
-  def maximum(n, length) when is_number(n), do: {:maximum, n, length}
+  def max({:px, max_px}, length) when is_number(max_px) and max_px >= 0,
+    do: {:maximum, max_px, length}
+
+  def max(length_px, _length) do
+    raise ArgumentError,
+          "max/2 expects the first argument to be px(n) with a non-negative number, got: #{inspect(length_px)}"
+  end
 end

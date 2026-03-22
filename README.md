@@ -1,49 +1,116 @@
 # Emerge
 
-GUI framework for Elixir.
+GPU accelerated GUI framework.
 
-Emerge lets you build native graphical interfaces in Elixir using a declarative,
-Elm-UI inspired API.
+Write GUIs directly from Elixir using declarative API
+inspired by [Elm-UI](https://package.elm-lang.org/packages/mdgriffith/elm-ui/1.1.8/) library.
 
-Main inspiration came from needing easy to use GUI framework for Nerves projects
-but it should work for general-purpose desktop apps too.
-
-It is backed by Skia for GPU-accelerated rendering.Layout engine, input event processing
-and rendering are implemented in rust for performance reasons.
+It makes writing layouts simple, fun and easy to modify as layout and style are centralized.
+UI is tree of elements where each element has attributes and children.
+`row(attrs, children)`
 
 ## Quick example
 
+
 ```elixir
-defmodule MyApp.Components do
+defmodule MyApp.Counter do
+  use Emerge
+
+  @impl Viewport
+  def mount(opts) do
+    state = %{count: 0}
+    {:ok, state, Keyword.merge([title: "Counter"], opts)}
+  end
+
+  @impl Viewport
+  def render(state) do
+    row([spacing(12), padding(12)], [
+      el([Font.color(color(:white))], text("Count: #{state.count}")),
+      Input.button(
+        [
+          padding(10),
+          Background.color(color(:sky, 500)),
+          Border.rounded(8),
+          Event.on_press(:increment)
+        ],
+        text("+")
+      )
+    ])
+  end
+
+  @impl Viewport
+  def handle_info(:increment, state) do
+    {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
+  end
+end
+```
+
+This example uses internal state similar to LiveView but I would strongly
+discourage you from that pattern and encourage you to take a look at [Solve](https://github.com/emerge-elixir/solve)
+for state management as by design is no way to create stateful component beyond viewport.
+Solve will also save you from prop drilling.
+
+
+## Rendering organization
+
+As rendering grows, it is natural to split it into smaller chunks. Emerge
+uses plain elixir functions to achieve this. A function only needs to return
+`Emerge.tree()`, which every element in Emerge.UI returns.
+
+```elixir
+defmodule MyApp.UI do
   use Emerge.UI
 
-  def dashboard do
-    column([width(fill()), height(fill()), space_evenly(), padding(20)], [
-      el([width(fill()), Font.center(), Font.size(24), Font.color(color(:white))],
-        text("Hello from Emerge, this is a header")),
-      row([spacing(12), padding(20)], [
-        el([width({:fill, 2}), padding(16), Background.color(color(:sky, 500)), Border.rounded(8)],
-          text("Left Card")),
-        el([width({:fill, 1}), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
-          text("Right Card"))
-      ]),
-      row([spacing(12), padding(20)], [
-        el([width(fill()), padding(16), Background.color(color(:sky, 500)), Border.rounded(8)],
-          text("Left footer side")),
-        el([width(fill()), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
-          text("Center footer side")),
-        el([width(fill()), padding(16), Background.color(color(:emerald, 500)), Border.rounded(8)],
-          text("Right footer side"))
+  def dashboard(user) do
+    column([padding(20), spacing(16)], [
+      header(user),
+      stats(user),
+      actions()
+    ])
+  end
+
+  def header(user) do
+    el([Font.size(24), Font.color(color(:white))], text("Welcome #{user.name}"))
+  end
+
+  def stats(user) do
+    row([spacing(12)], [
+      stat("Projects", Integer.to_string(user.project_count)),
+      stat("Tasks", Integer.to_string(user.task_count))
+    ])
+  end
+
+  def stat(label, value) do
+    el(
+      [
+        width(fill()),
+        padding(12),
+        Background.color(color(:slate, 800)),
+        Border.rounded(8)
+      ],
+      column([spacing(4)], [
+        el([Font.color(color(:slate, 300))], text(label)),
+        el([Font.size(18), Font.color(color(:white))], text(value))
       ])
+    )
+  end
+
+  def actions do
+    row([spacing(12)], [
+      Input.button(
+        [
+          padding(10),
+          Background.color(color(:sky, 500)),
+          Border.rounded(8),
+          Event.on_press(:save)
+        ],
+        text("Save")
+      )
     ])
   end
 end
 ```
 
-## Declarative layout
-
-Emerge layout syntax is heavily inspired and influence by `elm-ui` library.
-Markup is defined by simple elixir functions, no templating or xml style things.
 
 ### Layout elements
 
@@ -66,17 +133,16 @@ attributes where px is number.
 Sizing can also be relative to elements peer element:
 - `shrink` attribute will shrink an element to fit it's contents it is also a default.
 - `fill` Fill the available space. The available space will be split evenly between elements that have width fill.
-- `{:fill, n}` Fill available space by ratio. `fill` is equivalent to `{:fill, 1}`
-- `min(px)`/`max(px)` Define min/max size of an element, can be used in combination with `shrink`/`fill`
+- `fill(n)` Fill available space by ratio. `fill()` is equivalent to `fill(1)`
+- `min(px(50), fill())` / `max(px(300), shrink())` Clamp a length while still composing with `fill()` or `shrink()`
 
 ### Spacing
 
-Same as in elm-ui there is no concept of margins.
+Spacing in Emerge is achieved by using `padding` and `spacing`.
 
 Padding is the distance between the outer edge and the content, and spacing is the space between children.
 
-
-## Features
+### Features
 
 - Backgrounds (solid color, linear gradient, and image cover/contain/repeat)
 - Image rendering (`image/2` elements and `Background.image/2`)
