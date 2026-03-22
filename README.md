@@ -97,12 +97,9 @@ Padding is the distance between the outer edge and the content, and spacing is t
 
 ## Backends
 
-- **Wayland** — windowed desktop apps (default)
+- **Wayland** — windowed desktop apps on a Wayland session (default)
 - **DRM** — direct framebuffer for Nerves / embedded / kiosk (no window manager needed)
 - **Raster** — offscreen CPU rendering for testing and headless use
-
-The Wayland backend uses winit, which can fall back to X11 automatically if no
-Wayland display is available — but X11 is not a first-class supported target.
 
 ## Requirements
 

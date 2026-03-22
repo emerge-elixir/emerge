@@ -6,7 +6,7 @@ EmergeSkia is a Skia renderer for Elixir with EMRG tree integration.
 
 Multi-backend Skia renderer with:
 - Draw command decoding and rendering
-- Wayland/X11 windowing
+- Wayland windowing
 - Raster (offscreen CPU) backend
 - Push-based input event delivery
 - EventProcessor thread for hit testing, click/scroll dispatch, and redraws
