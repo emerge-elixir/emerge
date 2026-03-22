@@ -8,27 +8,38 @@ name = "emerge_skia"
 crate-type = ["cdylib"]
 
 [features]
-default = []
+default = ["wayland"]
 hover-trace = []
+wayland = [
+    "dep:glutin",
+    "dep:smithay-client-toolkit",
+    "dep:wayland-client",
+    "dep:wayland-backend",
+    "dep:wayland-protocols",
+    "dep:raw-window-handle",
+    "dep:arboard",
+    "skia-safe/wayland",
+]
+drm = ["dep:drm", "dep:gbm", "dep:evdev"]
 
 [dependencies]
 rustler = "0.37"
-glutin = "0.32"
-smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop", "xkbcommon"] }
-wayland-client = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"] }
-wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
-raw-window-handle = "0.6"
+glutin = { version = "0.32", optional = true }
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop", "xkbcommon"], optional = true }
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 gl = "0.14"
-drm = "0.14"
-gbm = { version = "0.18", features = ["drm-support"] }
+drm = { version = "0.14", optional = true }
+gbm = { version = "0.18", features = ["drm-support"], optional = true }
 glutin_egl_sys = "0.7"
 libloading = "0.8"
-evdev = "0.12"
+evdev = { version = "0.12", optional = true }
 libc = "0.2"
 crossbeam-channel = "0.5"
 sha2 = "0.10"
-arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
 resvg = "0.47"
 
-skia-safe = { version = "0.91.1", default-features = false, features = ["wayland", "embed-freetype", "binary-cache"] }
+skia-safe = { version = "0.91.1", default-features = false, features = ["gl", "embed-freetype", "binary-cache"] }
