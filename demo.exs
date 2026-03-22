@@ -29,8 +29,8 @@ argv =
   )
 
 backend = Keyword.get(cli_opts, :backend, "wayland")
-width = Keyword.get(cli_opts, :width, 1920)
-height = Keyword.get(cli_opts, :height, 1080)
+width = Keyword.get(cli_opts, :width, 3840)
+height = Keyword.get(cli_opts, :height, 2160)
 card = Keyword.get(cli_opts, :card)
 input_log = Keyword.get(cli_opts, :input_log, false)
 render_log = Keyword.get(cli_opts, :render_log, false)
