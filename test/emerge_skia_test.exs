@@ -158,6 +158,15 @@ defmodule EmergeSkiaTest do
     end
   end
 
+  test "start/1 rejects removed legacy window backends" do
+    assert {:error, {:error, "backend :wayland_legacy has been removed; use :wayland"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :wayland_legacy)
+
+    assert {:error,
+            {:error, "backend :x11 is no longer supported; use :wayland on a Wayland session"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :x11)
+  end
+
   test "legacy start arities raise explicit otp_app guidance" do
     assert_raise ArgumentError, ~r/requires explicit otp_app/, fn ->
       EmergeSkia.start()
@@ -219,5 +228,11 @@ defmodule EmergeSkiaTest do
 
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
+  end
+
+  test "video_target/2 accepts :prime mode at the Elixir API layer" do
+    assert_raise ArgumentError, ~r/argument error/, fn ->
+      EmergeSkia.video_target(make_ref(), id: "preview", width: 64, height: 32, mode: :prime)
+    end
   end
 end

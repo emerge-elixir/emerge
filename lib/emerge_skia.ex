@@ -70,7 +70,7 @@ defmodule EmergeSkia do
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `backend` - Backend selection (`:wayland`, `:wayland_legacy`, or `:drm`, default: `:wayland`)
+  - `backend` - Backend selection (`:wayland` or `:drm`, default: `:wayland`)
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -158,7 +158,8 @@ defmodule EmergeSkia do
   @doc """
   Create a renderer-owned video target.
 
-  V1 supports fixed-size `:prime` targets only.
+  V1 supports fixed-size `:prime` targets only on Prime-capable backends
+  (`:wayland` and `:drm`).
   """
   @spec video_target(renderer(), keyword()) :: {:ok, video_target()} | {:error, term()}
   def video_target(renderer, opts) when is_list(opts) do

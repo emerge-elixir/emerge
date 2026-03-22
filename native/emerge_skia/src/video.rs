@@ -12,14 +12,12 @@ use std::thread;
 use crossbeam_channel::{Sender, unbounded};
 use glutin_egl_sys::egl;
 use libloading::Library;
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
 use skia_safe::{
     AlphaType, ColorType, Image,
     gpu::{self, Mipmapped, Protected, SurfaceOrigin, gl::TextureInfo},
 };
-use winit::window::Window;
 
 use crate::backend::wake::BackendWakeHandle;
 
@@ -414,6 +412,16 @@ impl VideoRegistry {
             .collect())
     }
 
+    pub fn drain_pending_to_release(&self) -> Result<(), String> {
+        let snapshot = self.snapshot_pending()?;
+
+        for pending in snapshot.pending {
+            self.defer_release(pending.frame);
+        }
+
+        Ok(())
+    }
+
     pub fn defer_release(&self, frame: PrimeFrame) {
         if let Err(err) = self.release_tx.send(frame) {
             let frame = err.into_inner();
@@ -479,14 +487,6 @@ pub fn spawn_release_worker() -> Sender<PrimeFrame> {
             }
         });
     tx
-}
-
-pub fn wayland_prime_supported(window: &Window) -> bool {
-    window
-        .display_handle()
-        .ok()
-        .map(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)))
-        .unwrap_or(false)
 }
 
 type GlEglImageTargetTexture2DOes = unsafe extern "system" fn(u32, *const c_void);
@@ -1404,5 +1404,89 @@ impl RendererVideoState {
 
     pub fn image(&self, id: &str) -> Option<(&Image, u32, u32)> {
         self.targets.get(id).and_then(RenderedVideoTarget::image)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    fn test_prime_frame(width: u32, height: u32) -> PrimeFrame {
+        PrimeFrame {
+            width,
+            height,
+            format: DRM_FORMAT_NV12,
+            objects: Vec::new(),
+            planes: Vec::new(),
+            keepalive: FrozenTerm {
+                env: None,
+                saved: None,
+            },
+            owner_pid: unsafe { std::mem::zeroed() },
+        }
+    }
+
+    #[test]
+    fn drain_pending_to_release_moves_pending_frames_to_release_queue() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx);
+
+        registry
+            .create_target(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+
+        registry
+            .submit_prime("preview", test_prime_frame(64, 32))
+            .expect("frame should be accepted");
+        registry
+            .drain_pending_to_release()
+            .expect("pending frames should drain");
+
+        assert!(
+            registry
+                .snapshot_pending()
+                .expect("snapshot should succeed")
+                .pending
+                .is_empty()
+        );
+
+        let released = release_rx.try_recv().expect("expected released frame");
+        assert_eq!(released.width, 64);
+        assert_eq!(released.height, 32);
+        assert!(release_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn drain_pending_to_release_is_noop_when_registry_has_no_pending_frames() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx);
+
+        registry
+            .create_target(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+
+        registry
+            .drain_pending_to_release()
+            .expect("empty drain should succeed");
+
+        assert!(release_rx.try_recv().is_err());
+        assert!(
+            registry
+                .snapshot_pending()
+                .expect("snapshot should succeed")
+                .pending
+                .is_empty()
+        );
     }
 }

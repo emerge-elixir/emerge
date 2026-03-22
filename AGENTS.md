@@ -9,7 +9,7 @@ mix deps.get                    # Install Elixir dependencies
 mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
 mix test                        # Run tests
 mix docs                        # Generate ExDoc documentation
-mix run demo.exs                # Run the demo (requires display: X11 or Wayland)
+mix run demo.exs                # Run the demo (requires a Wayland display)
 
 # Rust-specific (from native/emerge_skia/)
 cargo clippy                    # Lint Rust code
@@ -42,13 +42,13 @@ Rust tree actor: layout_and_refresh_default(tree, constraint, scale)
 Render thread: SkiaRenderer.render() draws to GPU surface
     │
     ▼
-backend: winit window (Wayland) / libdrm / raster...
+backend: smithay-client-toolkit Wayland / libdrm / raster...
 
 ```
 
 Events
 ```
-backend: winit window (Wayland) / libinput
+backend: Wayland seat events / libinput
     │
     │ Raw Input Events 
     ▼
@@ -69,13 +69,13 @@ TreeActor:rerender / Elixir: event forwarding
 **Rust Side** (`native/emerge_skia/src/lib.rs`):
 - `SkiaRenderer` - wraps Skia surface/context, executes draw commands
 - `RendererResource` - NIF resource holding render state and event proxy
-- `App` - winit `ApplicationHandler` managing window events
+- `WaylandApp` - smithay-client-toolkit app state managing Wayland events
 - `LayoutOutput` struct - bundles render commands + event registry, returned by `refresh()` and `layout_and_refresh_default()`
 - `refresh()` / `layout_and_refresh_default()` - produce both outputs after DOM/scroll changes
 
 ### Threading Model
 
-The NIF spawns a dedicated thread for the winit event loop (required because BEAM owns the main thread). Communication happens via:
+The NIF spawns dedicated native threads for the backend event loop and runtime actors. Communication happens via:
 - `Arc<Mutex<RendererState>>` - commands from Elixir to render thread
 - `EventLoopProxy<UserEvent>` - signals (Redraw/Stop) from Elixir to event loop
 
@@ -95,7 +95,7 @@ Commands are Elixir tuples decoded in Rust:
 
 ### Platform Support
 
-Linux only (X11 and Wayland). The Cargo.toml enables both backends via skia-safe features. The event loop uses `EventLoopBuilderExtX11::with_any_thread(true)` to run on non-main threads.
+Linux only (Wayland and DRM). The window backend uses smithay-client-toolkit plus EGL/Skia on Wayland.
 
 ## Related Projects
 
@@ -107,7 +107,7 @@ The goal is to match scenic_driver_skia's architecture: **one renderer, multiple
 
 ### Backends Needed
 
-1. **Wayland** - Windowed GL surface (current implementation uses winit/glutin)
+1. **Wayland** - Windowed EGL/Skia surface via smithay-client-toolkit
 2. **DRM** - Direct framebuffer rendering for embedded/kiosk (no window manager)
 3. **Raster** - Offscreen CPU rendering to RGB buffer (for testing/headless)
 
@@ -117,7 +117,7 @@ The goal is to match scenic_driver_skia's architecture: **one renderer, multiple
 native/scenic_driver_skia/src/
 ├── lib.rs           # NIF entry, script parsing
 ├── renderer.rs      # Core SkiaRenderer (backend-agnostic drawing)
-├── backend.rs       # Wayland backend (winit/glutin)
+├── backend.rs       # Wayland backend
 ├── drm_backend.rs   # DRM backend (direct framebuffer)
 ├── raster_backend.rs # Offscreen RGB buffer
 └── input.rs         # Input event handling
