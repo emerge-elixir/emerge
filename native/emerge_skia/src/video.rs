@@ -413,6 +413,7 @@ impl VideoRegistry {
             .collect())
     }
 
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub fn drain_pending_to_release(&self) -> Result<(), String> {
         let snapshot = self.snapshot_pending()?;
 
@@ -447,6 +448,7 @@ pub struct PendingVideoFrame {
 pub struct VideoWake(BackendWakeHandle);
 
 impl VideoWake {
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub fn new(wake: BackendWakeHandle) -> Self {
         Self(wake)
     }

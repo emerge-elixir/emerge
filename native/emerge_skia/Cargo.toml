@@ -35,8 +35,8 @@ drm = { version = "0.14", optional = true }
 gbm = { version = "0.18", default-features = false, features = ["drm-support", "import-egl"], optional = true }
 glutin_egl_sys = "0.7"
 libloading = "0.9"
-evdev = { version = "0.13", optional = true }
 libc = "0.2"
+evdev = { version = "0.13", optional = true }
 crossbeam-channel = "0.5"
 sha2 = "0.10"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
