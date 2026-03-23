@@ -45,7 +45,9 @@ use backend::wayland_config::WaylandConfig;
 #[cfg(feature = "drm")]
 use drm_input::DrmInput;
 use events::spawn_event_actor;
-use renderer::{RenderState, get_default_typeface, load_font, set_render_log_enabled};
+use renderer::{
+    RenderState, clear_global_caches, get_default_typeface, load_font, set_render_log_enabled,
+};
 use std::time::Instant;
 use tree::animation::AnimationRuntime;
 use tree::element::{ElementId, ElementTree};
@@ -199,6 +201,8 @@ impl TestHarnessResource {
         let _ = handles.event_handle.join();
         let _ = handles.tree_handle.join();
         assets::stop();
+        clear_global_caches();
+        trim_process_allocator();
     }
 }
 
@@ -268,7 +272,21 @@ fn shutdown_renderer_runtime(
     if let Some(handle) = handles.backend_handle.take() {
         let _ = handle.join();
     }
+
+    clear_global_caches();
+    trim_process_allocator();
 }
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(not(test))]
+fn trim_process_allocator() {
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(any(test, not(all(target_os = "linux", target_env = "gnu"))))]
+fn trim_process_allocator() {}
 
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     match tree_tx.try_send(msg) {
@@ -1759,6 +1777,8 @@ mod tests {
             let _ = self.event_handle.join();
             let _ = self.tree_handle.join();
             assets::stop();
+            clear_global_caches();
+            trim_process_allocator();
         }
     }
 

@@ -88,8 +88,11 @@ pub enum RenderMsg {
         commands: Vec<DrawCmd>,
         version: u64,
         animate: bool,
+        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
         ime_enabled: bool,
+        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
+        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
         ime_text_state: Option<TextInputState>,
     },
     Stop,

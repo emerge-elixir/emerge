@@ -40,21 +40,25 @@ pub enum InputEvent {
     TextCommit { text: String, mods: u8 },
 
     /// IME preedit text update for focused text input
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     TextPreedit {
         text: String,
         cursor: Option<(u32, u32)>,
     },
 
     /// IME preedit text cleared
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     TextPreeditClear,
 
     /// IME requests deletion of surrounding text in UTF-8 byte lengths
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     DeleteSurrounding {
         before_length: u32,
         after_length: u32,
     },
 
     /// Cursor entered/exited window
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     CursorEntered { entered: bool },
 
     /// Window resized
@@ -65,6 +69,7 @@ pub enum InputEvent {
     },
 
     /// Window focused/unfocused
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     Focused { focused: bool },
 }
 

@@ -50,11 +50,13 @@ impl std::panic::RefUnwindSafe for BackendWakeHandle {}
 
 impl std::panic::UnwindSafe for BackendWakeHandle {}
 
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 pub(crate) struct WindowBackendStartupInfo {
     pub(crate) wake: BackendWakeHandle,
     pub(crate) prime_video_supported: bool,
 }
 
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 pub(crate) type WindowBackendStartupResult = Result<WindowBackendStartupInfo, String>;
 
 struct NoopWake;
