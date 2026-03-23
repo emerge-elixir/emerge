@@ -25,6 +25,7 @@ struct InputDevice {
     last_abs_scaled: Option<(f32, f32)>,
     touch_active: bool,
     touch_tracking: bool,
+    pending_direct_touch_button: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,8 +37,9 @@ struct AbsAxisState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbsMode {
-    Absolute,
+    AbsolutePointer,
     RelativeFromAbs,
+    DirectTouch,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -115,18 +117,38 @@ impl DrmInput {
                         update_abs_state(device, axis, value, screen_size);
                     }
                     EventSummary::Synchronization(_, Synchronization::SYN_REPORT, _) => {
-                        let action = {
+                        let (abs_mode, action, pending_direct_touch_button) = {
                             let device = &mut self.devices[idx];
-                            consume_abs_action(device, screen_size)
+                            (
+                                device.abs_mode,
+                                consume_abs_action(device, screen_size),
+                                device.pending_direct_touch_button.take(),
+                            )
                         };
-                        match action {
-                            AbsAction::Absolute(x, y) => {
-                                self.handle_abs_position(x, y, screen_size)
+
+                        let direct_touch_had_position = matches!(action, AbsAction::Absolute(_, _));
+
+                        match (abs_mode, action) {
+                            (AbsMode::AbsolutePointer, AbsAction::Absolute(x, y)) => {
+                                self.handle_abs_position(x, y, true)
                             }
-                            AbsAction::Relative(dx, dy) => {
+                            (AbsMode::RelativeFromAbs, AbsAction::Relative(dx, dy)) => {
                                 self.handle_abs_relative(dx, dy, screen_size)
                             }
-                            AbsAction::None => {}
+                            (AbsMode::DirectTouch, AbsAction::Absolute(x, y)) => {
+                                self.handle_abs_position(x, y, false)
+                            }
+                            _ => {}
+                        }
+
+                        if abs_mode == AbsMode::DirectTouch {
+                            if pending_direct_touch_button.is_some() && !direct_touch_had_position {
+                                self.set_cursor_visible(false);
+                            }
+
+                            if let Some(action) = pending_direct_touch_button {
+                                self.push_left_button(action);
+                            }
                         }
                     }
                     _ => {}
@@ -221,12 +243,12 @@ impl DrmInput {
         let (width, height) = screen_size;
         x = x.clamp(0.0, width.saturating_sub(1) as f32);
         y = y.clamp(0.0, height.saturating_sub(1) as f32);
-        self.set_cursor_pos(x, y);
+        self.set_cursor_state(x, y, true);
         self.push_input(InputEvent::CursorPos { x, y });
     }
 
-    fn handle_abs_position(&mut self, x: f32, y: f32, _screen_size: (u32, u32)) {
-        self.set_cursor_pos(x, y);
+    fn handle_abs_position(&mut self, x: f32, y: f32, visible: bool) {
+        self.set_cursor_state(x, y, visible);
         self.push_input(InputEvent::CursorPos { x, y });
     }
 
@@ -237,15 +259,33 @@ impl DrmInput {
         let (width, height) = screen_size;
         x = x.clamp(0.0, width.saturating_sub(1) as f32);
         y = y.clamp(0.0, height.saturating_sub(1) as f32);
-        self.set_cursor_pos(x, y);
+        self.set_cursor_state(x, y, true);
         self.push_input(InputEvent::CursorPos { x, y });
     }
 
-    fn set_cursor_pos(&mut self, x: f32, y: f32) {
+    fn set_cursor_state(&mut self, x: f32, y: f32, visible: bool) {
         self.cursor_pos = (x, y);
         let _ = self.cursor_tx.try_send(CursorState {
             pos: (x, y),
-            visible: true,
+            visible,
+        });
+    }
+
+    fn set_cursor_visible(&mut self, visible: bool) {
+        let _ = self.cursor_tx.try_send(CursorState {
+            pos: self.cursor_pos,
+            visible,
+        });
+    }
+
+    fn push_left_button(&self, action: u8) {
+        let (x, y) = self.cursor_pos;
+        self.push_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action,
+            mods: modifiers_to_mask(self.modifiers),
+            x,
+            y,
         });
     }
 
@@ -316,6 +356,7 @@ fn enumerate_devices(log_enabled: bool) -> Vec<InputDevice> {
             last_abs_scaled: None,
             touch_active: false,
             touch_tracking: false,
+            pending_direct_touch_button: None,
         });
     }
 
@@ -346,11 +387,11 @@ fn update_abs_state(
         screen_size.1.saturating_sub(1) as i32,
     );
     match axis {
-        AbsoluteAxisType::ABS_X => {
+        AbsoluteAxisType::ABS_X | AbsoluteAxisType::ABS_MT_POSITION_X => {
             device.abs_x = Some(update_axis_state(device.abs_x, value, fallback.0));
             device.abs_x_dirty = true;
         }
-        AbsoluteAxisType::ABS_Y => {
+        AbsoluteAxisType::ABS_Y | AbsoluteAxisType::ABS_MT_POSITION_Y => {
             device.abs_y = Some(update_axis_state(device.abs_y, value, fallback.1));
             device.abs_y_dirty = true;
         }
@@ -429,8 +470,14 @@ fn init_abs_axes(device: &Device) -> (Option<AbsAxisState>, Option<AbsAxisState>
         return (None, None);
     };
 
-    let abs_x = axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_X.0 as usize));
-    let abs_y = axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_Y.0 as usize));
+    let abs_x =
+        axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_X.0 as usize)).or_else(|| {
+            axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_MT_POSITION_X.0 as usize))
+        });
+    let abs_y =
+        axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_Y.0 as usize)).or_else(|| {
+            axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_MT_POSITION_Y.0 as usize))
+        });
     (abs_x, abs_y)
 }
 
@@ -442,12 +489,49 @@ fn axis_state_from_abs(info: Option<&input_absinfo>) -> Option<AbsAxisState> {
     })
 }
 
+fn classify_abs_mode(
+    direct_prop: bool,
+    pointer_prop: bool,
+    buttonpad_prop: bool,
+    topbuttonpad_prop: bool,
+    semi_mt_prop: bool,
+    touchpad_key_hint: bool,
+    touch_key_hint: bool,
+    mt_position_hint: bool,
+    name_touchpad_hint: bool,
+    name_touch_hint: bool,
+) -> AbsMode {
+    let touchpad = !direct_prop
+        && ((pointer_prop
+            && (buttonpad_prop || topbuttonpad_prop || semi_mt_prop || touchpad_key_hint))
+            || name_touchpad_hint);
+
+    let direct_touch =
+        direct_prop || name_touch_hint || (!touchpad && (mt_position_hint || touch_key_hint));
+
+    if direct_touch {
+        AbsMode::DirectTouch
+    } else if touchpad {
+        AbsMode::RelativeFromAbs
+    } else {
+        AbsMode::AbsolutePointer
+    }
+}
+
 fn detect_abs_mode(device: &Device) -> (AbsMode, String) {
-    let has_abs = device.supported_absolute_axes().is_some_and(|axes| {
-        axes.contains(AbsoluteAxisType::ABS_X) && axes.contains(AbsoluteAxisType::ABS_Y)
-    });
+    let (has_abs_xy, has_mt_position) = device
+        .supported_absolute_axes()
+        .map(|axes| {
+            (
+                axes.contains(AbsoluteAxisType::ABS_X) && axes.contains(AbsoluteAxisType::ABS_Y),
+                axes.contains(AbsoluteAxisType::ABS_MT_POSITION_X)
+                    && axes.contains(AbsoluteAxisType::ABS_MT_POSITION_Y),
+            )
+        })
+        .unwrap_or((false, false));
+    let has_abs = has_abs_xy || has_mt_position;
     if !has_abs {
-        return (AbsMode::Absolute, "abs_axes=none".to_string());
+        return (AbsMode::AbsolutePointer, "abs_axes=none".to_string());
     }
 
     let props = device.properties();
@@ -457,57 +541,155 @@ fn detect_abs_mode(device: &Device) -> (AbsMode, String) {
     let semi_mt_prop = props.contains(PropType::SEMI_MT);
     let pointer_prop = props.contains(PropType::POINTER);
 
-    let key_hint = device.supported_keys().is_some_and(|keys| {
+    let touchpad_key_hint = device.supported_keys().is_some_and(|keys| {
         keys.contains(Key::BTN_TOOL_FINGER)
-            || keys.contains(Key::BTN_TOUCH)
+            || keys.contains(Key::BTN_TOOL_DOUBLETAP)
+            || keys.contains(Key::BTN_TOOL_TRIPLETAP)
+            || keys.contains(Key::BTN_TOOL_QUADTAP)
+            || keys.contains(Key::BTN_TOOL_QUINTTAP)
+    });
+    let touch_key_hint = device.supported_keys().is_some_and(|keys| {
+        keys.contains(Key::BTN_TOUCH)
+            || keys.contains(Key::BTN_TOOL_FINGER)
             || keys.contains(Key::BTN_TOOL_DOUBLETAP)
             || keys.contains(Key::BTN_TOOL_TRIPLETAP)
             || keys.contains(Key::BTN_TOOL_QUADTAP)
             || keys.contains(Key::BTN_TOOL_QUINTTAP)
     });
 
-    let name_hint = device
+    let name = device
         .name()
-        .map(|name| name.to_ascii_lowercase().contains("touchpad"))
-        .unwrap_or(false);
-
-    let touchpad = !direct_prop
-        && ((pointer_prop && (buttonpad_prop || topbuttonpad_prop || semi_mt_prop || key_hint))
-            || name_hint);
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let name_touchpad_hint = name.contains("touchpad");
+    let name_touch_hint = !name_touchpad_hint
+        && (name.contains("touchscreen")
+            || name.contains("touch screen")
+            || name.contains("touch")
+            || name.contains("waveshare"));
 
     let info = format!(
-        "abs_axes=xy direct={} pointer={} buttonpad={} topbuttonpad={} semi_mt={} key_hint={} name_hint={}",
+        "abs_xy={} mt_xy={} direct={} pointer={} buttonpad={} topbuttonpad={} semi_mt={} touchpad_key={} touch_key={} name_touchpad={} name_touch={}",
+        has_abs_xy,
+        has_mt_position,
         direct_prop,
         pointer_prop,
         buttonpad_prop,
         topbuttonpad_prop,
         semi_mt_prop,
-        key_hint,
-        name_hint
+        touchpad_key_hint,
+        touch_key_hint,
+        name_touchpad_hint,
+        name_touch_hint
     );
 
-    if touchpad {
-        (AbsMode::RelativeFromAbs, info)
+    (
+        classify_abs_mode(
+            direct_prop,
+            pointer_prop,
+            buttonpad_prop,
+            topbuttonpad_prop,
+            semi_mt_prop,
+            touchpad_key_hint,
+            touch_key_hint,
+            has_mt_position,
+            name_touchpad_hint,
+            name_touch_hint,
+        ),
+        info,
+    )
+}
+
+fn direct_touch_button_action(abs_mode: AbsMode, key: Key, pressed: bool) -> Option<u8> {
+    (abs_mode == AbsMode::DirectTouch && key == Key::BTN_TOUCH).then_some(if pressed {
+        ACTION_PRESS
     } else {
-        (AbsMode::Absolute, info)
-    }
+        ACTION_RELEASE
+    })
 }
 
 impl DrmInput {
     fn handle_key_event_with_device(&mut self, idx: usize, key: Key, value: i32) {
         let pressed = value != 0;
-        if let Some(device) = self.devices.get_mut(idx)
-            && device.abs_mode == AbsMode::RelativeFromAbs
-            && is_touch_tracking_key(key)
-        {
-            device.touch_tracking = true;
-            device.touch_active = pressed;
-            if pressed {
-                device.last_abs_scaled = None;
+        if let Some(device) = self.devices.get_mut(idx) {
+            if let Some(action) = direct_touch_button_action(device.abs_mode, key, pressed) {
+                device.pending_direct_touch_button = Some(action);
+                return;
+            }
+
+            if device.abs_mode == AbsMode::RelativeFromAbs && is_touch_tracking_key(key) {
+                device.touch_tracking = true;
+                device.touch_active = pressed;
+                if pressed {
+                    device.last_abs_scaled = None;
+                }
             }
         }
 
         self.handle_key_event(key, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_abs_mode_keeps_touchpad_devices_relative_from_abs() {
+        assert_eq!(
+            classify_abs_mode(
+                false, true, true, false, false, true, true, true, false, false
+            ),
+            AbsMode::RelativeFromAbs
+        );
+        assert_eq!(
+            classify_abs_mode(
+                false, false, false, false, false, false, false, false, true, false
+            ),
+            AbsMode::RelativeFromAbs
+        );
+    }
+
+    #[test]
+    fn classify_abs_mode_marks_direct_touch_devices_as_direct_touch() {
+        assert_eq!(
+            classify_abs_mode(
+                true, true, false, false, false, false, true, true, false, false
+            ),
+            AbsMode::DirectTouch
+        );
+        assert_eq!(
+            classify_abs_mode(
+                false, true, false, false, false, false, true, true, false, false
+            ),
+            AbsMode::DirectTouch
+        );
+        assert_eq!(
+            classify_abs_mode(
+                false, true, false, false, false, false, true, false, false, true
+            ),
+            AbsMode::DirectTouch
+        );
+    }
+
+    #[test]
+    fn direct_touch_button_action_only_synthesizes_for_direct_touch_btn_touch() {
+        assert_eq!(
+            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOUCH, true),
+            Some(ACTION_PRESS)
+        );
+        assert_eq!(
+            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOUCH, false),
+            Some(ACTION_RELEASE)
+        );
+        assert_eq!(
+            direct_touch_button_action(AbsMode::RelativeFromAbs, Key::BTN_TOUCH, true),
+            None
+        );
+        assert_eq!(
+            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOOL_FINGER, true),
+            None
+        );
     }
 }
 
