@@ -109,6 +109,14 @@ impl WaylandVideoImportState {
     }
 }
 
+fn should_reconfigure_surface(size_changed: bool, env_missing: bool) -> bool {
+    size_changed || env_missing
+}
+
+fn should_draw_frame(present: &PresentState, env_ready: bool, exit: bool) -> bool {
+    env_ready && present.can_draw(exit)
+}
+
 impl BackendWake for WaylandWake {
     fn request_stop(&self) {
         let _ = self.tx.send(WakeAction::Stop);
@@ -340,7 +348,9 @@ impl WaylandApp {
     }
 
     fn update_logical_size(&mut self, conn: &Connection, width: u32, height: u32) {
-        if !self.geometry.set_logical_size(width, height) {
+        let size_changed = self.geometry.set_logical_size(width, height);
+
+        if !should_reconfigure_surface(size_changed, self.env.is_none()) {
             return;
         }
 
@@ -348,7 +358,7 @@ impl WaylandApp {
     }
 
     fn maybe_draw(&mut self) {
-        if !self.present.can_draw(self.exit) {
+        if !should_draw_frame(&self.present, self.env.is_some(), self.exit) {
             return;
         }
 
@@ -356,16 +366,15 @@ impl WaylandApp {
     }
 
     fn draw(&mut self) {
-        self.present.request_frame_callback(&self.window, &self.qh);
-
-        let (video_import, env_opt, video_registry) =
-            (&self.video_import, &mut self.env, &self.video_registry);
+        let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
         let video_import_ctx = video_import.context();
 
-        let Some(env) = env_opt.as_mut() else {
+        let Some(env) = self.env.as_mut() else {
             return;
         };
+
+        self.present.request_frame_callback(&self.window, &self.qh);
 
         let mut video_needs_cleanup = false;
 
@@ -978,7 +987,10 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{WaylandVideoImportState, WaylandVideoSyncAction};
+    use super::{
+        PresentState, WaylandVideoImportState, WaylandVideoSyncAction,
+        should_draw_frame, should_reconfigure_surface,
+    };
 
     #[test]
     fn wayland_video_import_states_map_to_expected_sync_actions() {
@@ -990,5 +1002,25 @@ mod tests {
             WaylandVideoImportState::Unavailable.sync_action(),
             WaylandVideoSyncAction::DropPendingFrames
         );
+    }
+
+    #[test]
+    fn same_size_first_configure_still_requires_surface_reconfigure_when_env_missing() {
+        assert!(should_reconfigure_surface(false, true));
+        assert!(should_reconfigure_surface(true, false));
+        assert!(should_reconfigure_surface(true, true));
+        assert!(!should_reconfigure_surface(false, false));
+    }
+
+    #[test]
+    fn draw_requires_gl_env_before_present_state_starts_frame() {
+        let mut present = PresentState::default();
+        present.configured = true;
+        present.queue_redraw();
+
+        assert!(present.can_draw(false));
+        assert!(!should_draw_frame(&present, false, false));
+        assert!(should_draw_frame(&present, true, false));
+        assert!(!should_draw_frame(&present, true, true));
     }
 }
