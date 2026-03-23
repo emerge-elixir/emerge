@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::raw::c_void;
 use std::ptr;
+use std::sync::mpsc::Sender as StartupSender;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -14,7 +15,7 @@ use drm::ClientCapability;
 use drm::Device as BasicDevice;
 use drm::control::{
     self, AtomicCommitFlags, Device as ControlDevice, PlaneType, ResourceHandles, atomic,
-    connector, crtc, framebuffer, plane, property,
+    connector, crtc, encoder, framebuffer, plane, property,
 };
 use gbm::{
     AsRaw, BufferObject, BufferObjectFlags, Device as GbmDevice, Format as GbmFormat, Surface,
@@ -78,6 +79,214 @@ fn open_card(card_path: Option<&str>) -> Result<Card, String> {
         .map_err(|e| format!("failed to open {card_path}: {e}"))?;
 
     Ok(Card(fd))
+}
+
+fn sleep_with_stop(stop: &Arc<AtomicBool>, duration: Duration) {
+    let deadline = Instant::now() + duration;
+
+    while !stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        std::thread::sleep((deadline - now).min(Duration::from_millis(25)));
+    }
+}
+
+fn release_master_lock(card: &Card) {
+    if let Err(err) = card.release_master_lock() {
+        eprintln!("DRM master release failed: {err}");
+    }
+}
+
+fn handle_startup_failure_with_card(
+    card: &Card,
+    startup_tx: &mut Option<StartupSender<Result<(), String>>>,
+    running_flag: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
+    retries_remaining: &mut u32,
+    retry_interval: Duration,
+    message: String,
+) -> bool {
+    release_master_lock(card);
+
+    handle_startup_failure(
+        startup_tx,
+        running_flag,
+        stop,
+        retries_remaining,
+        retry_interval,
+        message,
+    )
+}
+
+fn handle_startup_failure(
+    startup_tx: &mut Option<StartupSender<Result<(), String>>>,
+    running_flag: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
+    retries_remaining: &mut u32,
+    retry_interval: Duration,
+    message: String,
+) -> bool {
+    if startup_tx.is_none() {
+        eprintln!("DRM backend unavailable: {message}");
+        sleep_with_stop(stop, retry_interval);
+
+        if stop.load(Ordering::Relaxed) {
+            running_flag.store(false, Ordering::Relaxed);
+            return true;
+        }
+
+        return false;
+    }
+
+    if *retries_remaining == 0 {
+        let final_message = format!("DRM backend unavailable: {message}");
+        eprintln!("{final_message}");
+
+        if let Some(startup_tx) = startup_tx.take() {
+            let _ = startup_tx.send(Err(final_message));
+        }
+
+        running_flag.store(false, Ordering::Relaxed);
+        return true;
+    }
+
+    *retries_remaining -= 1;
+    eprintln!(
+        "DRM backend unavailable: {message} (retrying, {} attempts left)",
+        *retries_remaining
+    );
+    sleep_with_stop(stop, retry_interval);
+
+    if stop.load(Ordering::Relaxed) {
+        if let Some(startup_tx) = startup_tx.take() {
+            let _ = startup_tx.send(Err("DRM startup aborted".to_string()));
+        }
+
+        running_flag.store(false, Ordering::Relaxed);
+        return true;
+    }
+
+    false
+}
+
+fn mode_blob_id(mode_blob: &property::Value<'static>) -> Option<u64> {
+    match mode_blob {
+        property::Value::Blob(blob) if *blob != 0 => Some(*blob),
+        _ => None,
+    }
+}
+
+fn destroy_mode_blob(card: &Card, blob_id: Option<u64>) {
+    if let Some(blob_id) = blob_id {
+        let _ = card.destroy_property_blob(blob_id);
+    }
+}
+
+fn destroy_framebuffers(card: &Card, framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>) {
+    for (_, framebuffer) in framebuffer_cache.drain() {
+        let _ = card.destroy_framebuffer(framebuffer);
+    }
+}
+
+fn destroy_session_resources(
+    card: &Card,
+    cursor_plane: Option<CursorPlane>,
+    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    mode_blob_id: Option<u64>,
+) {
+    if let Some(cursor_plane) = cursor_plane {
+        let _ = card.destroy_framebuffer(cursor_plane.fb);
+    }
+
+    destroy_framebuffers(card, framebuffer_cache);
+    destroy_mode_blob(card, mode_blob_id);
+}
+
+fn teardown_drm_output(
+    card: &Card,
+    connector: connector::Handle,
+    crtc_handle: crtc::Handle,
+    plane: plane::Handle,
+    con_props: &HashMap<String, property::Info>,
+    crtc_props: &HashMap<String, property::Info>,
+    plane_props: &HashMap<String, property::Info>,
+    cursor_plane: Option<&CursorPlane>,
+) -> Result<(), String> {
+    let mut req = atomic::AtomicModeReq::new();
+
+    if let Some(cursor_plane) = cursor_plane {
+        if let Ok(fb_handle) = prop_handle(&cursor_plane.props, "FB_ID") {
+            req.add_property(
+                cursor_plane.handle,
+                fb_handle,
+                property::Value::Framebuffer(None),
+            );
+        }
+
+        if let Ok(crtc_prop) = prop_handle(&cursor_plane.props, "CRTC_ID") {
+            req.add_property(cursor_plane.handle, crtc_prop, property::Value::CRTC(None));
+        }
+    }
+
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "FB_ID")?,
+        property::Value::Framebuffer(None),
+    );
+    req.add_property(
+        plane,
+        prop_handle(plane_props, "CRTC_ID")?,
+        property::Value::CRTC(None),
+    );
+    req.add_property(
+        connector,
+        prop_handle(con_props, "CRTC_ID")?,
+        property::Value::CRTC(None),
+    );
+    req.add_property(
+        crtc_handle,
+        prop_handle(crtc_props, "ACTIVE")?,
+        property::Value::Boolean(false),
+    );
+
+    if let Ok(mode_handle) = prop_handle(crtc_props, "MODE_ID") {
+        req.add_property(crtc_handle, mode_handle, property::Value::Blob(0));
+    }
+
+    card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
+        .map_err(|e| format!("tearing down DRM output failed: {e}"))
+}
+
+fn cleanup_active_session(
+    card: &Card,
+    connector: connector::Handle,
+    crtc_handle: crtc::Handle,
+    plane: plane::Handle,
+    con_props: &HashMap<String, property::Info>,
+    crtc_props: &HashMap<String, property::Info>,
+    plane_props: &HashMap<String, property::Info>,
+    cursor_plane: Option<CursorPlane>,
+    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    mode_blob_id: Option<u64>,
+) {
+    if let Err(err) = teardown_drm_output(
+        card,
+        connector,
+        crtc_handle,
+        plane,
+        con_props,
+        crtc_props,
+        plane_props,
+        cursor_plane.as_ref(),
+    ) {
+        eprintln!("DRM teardown failed: {err}");
+    }
+
+    destroy_session_resources(card, cursor_plane, framebuffer_cache, mode_blob_id);
+    release_master_lock(card);
 }
 
 fn mode_distance(mode: &control::Mode, requested: (u32, u32)) -> i64 {
@@ -144,7 +353,17 @@ fn first_connected_connector(
     card: &Card,
     resources: &ResourceHandles,
     requested: Option<(u32, u32)>,
-) -> Result<(connector::Handle, control::Mode, crtc::Handle), String> {
+) -> Result<
+    (
+        connector::Handle,
+        control::Mode,
+        crtc::Handle,
+        encoder::Handle,
+    ),
+    String,
+> {
+    let mut last_error = None;
+
     for handle in resources.connectors() {
         let info = card
             .get_connector(*handle, false)
@@ -154,19 +373,66 @@ fn first_connected_connector(
             continue;
         }
 
-        let mode = choose_mode(info.modes(), requested)
-            .map_err(|err| format!("connector {handle:?} {err}"))?;
+        let mode = match choose_mode(info.modes(), requested) {
+            Ok(mode) => mode,
+            Err(err) => {
+                last_error = Some(format!("connector {handle:?} {err}"));
+                continue;
+            }
+        };
 
-        let crtc = resources
-            .crtcs()
-            .first()
-            .copied()
-            .ok_or_else(|| "no available CRTCs".to_string())?;
-
-        return Ok((*handle, mode, crtc));
+        match pick_encoder_and_crtc(card, resources, &info) {
+            Ok((encoder, crtc)) => return Ok((*handle, mode, crtc, encoder)),
+            Err(err) => last_error = Some(err),
+        }
     }
 
-    Err("no connected DRM connectors found".into())
+    if let Some(err) = last_error {
+        Err(err)
+    } else {
+        Err("no connected DRM connectors found".into())
+    }
+}
+
+fn pick_encoder_and_crtc(
+    card: &Card,
+    resources: &ResourceHandles,
+    connector_info: &connector::Info,
+) -> Result<(encoder::Handle, crtc::Handle), String> {
+    let mut encoder_handles = Vec::new();
+
+    if let Some(current_encoder) = connector_info.current_encoder() {
+        encoder_handles.push(current_encoder);
+    }
+
+    for encoder_handle in connector_info.encoders() {
+        if !encoder_handles.contains(encoder_handle) {
+            encoder_handles.push(*encoder_handle);
+        }
+    }
+
+    for encoder_handle in encoder_handles {
+        let encoder_info = card
+            .get_encoder(encoder_handle)
+            .map_err(|e| format!("failed to read encoder {encoder_handle:?}: {e}"))?;
+
+        if let Some(crtc_handle) = encoder_info.crtc() {
+            return Ok((encoder_handle, crtc_handle));
+        }
+
+        if let Some(crtc_handle) = resources
+            .filter_crtcs(encoder_info.possible_crtcs())
+            .first()
+            .copied()
+        {
+            return Ok((encoder_handle, crtc_handle));
+        }
+    }
+
+    Err(format!(
+        "connector {:?} has no usable encoder/CRTC pair",
+        connector_info.handle()
+    ))
 }
 
 fn is_primary_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
@@ -705,11 +971,14 @@ fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_
 pub struct DrmRunConfig {
     pub requested_size: Option<(u32, u32)>,
     pub card_path: Option<String>,
+    pub startup_retries: u32,
+    pub retry_interval_ms: u32,
     pub hw_cursor: bool,
     pub render_log: bool,
 }
 
 pub struct DrmRunContext {
+    pub startup_tx: StartupSender<Result<(), String>>,
     pub stop: Arc<AtomicBool>,
     pub running_flag: Arc<AtomicBool>,
     pub tree_tx: Sender<TreeMsg>,
@@ -724,6 +993,7 @@ pub struct DrmRunContext {
 
 pub fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
+        startup_tx,
         stop,
         running_flag,
         tree_tx,
@@ -736,36 +1006,10 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         video_registry,
     } = context;
 
-    let card = match open_card(config.card_path.as_deref()) {
-        Ok(card) => card,
-        Err(e) => {
-            eprintln!("DRM backend unavailable: {e}");
-            running_flag.store(false, Ordering::Relaxed);
-            return;
-        }
-    };
-
-    if let Err(e) = card.set_client_capability(ClientCapability::UniversalPlanes, true) {
-        eprintln!("DRM backend unavailable: {e}");
-        running_flag.store(false, Ordering::Relaxed);
-        return;
-    }
-    if let Err(e) = card.set_client_capability(ClientCapability::Atomic, true) {
-        eprintln!("DRM backend unavailable: {e}");
-        running_flag.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    let gbm_device = match GbmDevice::new(card.as_fd()) {
-        Ok(device) => device,
-        Err(e) => {
-            eprintln!("DRM backend unavailable: {e}");
-            running_flag.store(false, Ordering::Relaxed);
-            return;
-        }
-    };
-
     let log_render = config.render_log;
+    let mut startup_tx = Some(startup_tx);
+    let retry_interval = Duration::from_millis(config.retry_interval_ms as u64);
+    let mut startup_retries_remaining = config.startup_retries;
     let mut last_dimensions: Option<(u32, u32)> = None;
     let hotplug_interval = Duration::from_millis(750);
     let mut logged_cursor_info = false;
@@ -773,34 +1017,151 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
     loop {
         if stop.load(Ordering::Relaxed) {
+            if let Some(startup_tx) = startup_tx.take() {
+                let _ = startup_tx.send(Err("DRM startup aborted".to_string()));
+            }
             running_flag.store(false, Ordering::Relaxed);
             break;
         }
 
-        let resources = match card.resource_handles() {
-            Ok(handles) => handles,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+        let card = match open_card(config.card_path.as_deref()) {
+            Ok(card) => card,
+            Err(err) => {
+                if handle_startup_failure(
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    err,
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
 
-        let (connector, mode, crtc_handle) =
+        if let Err(err) = card.acquire_master_lock() {
+            if handle_startup_failure(
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                format!("acquiring DRM master failed: {err}"),
+            ) {
+                break;
+            }
+
+            continue;
+        }
+
+        if let Err(err) = card.set_client_capability(ClientCapability::UniversalPlanes, true) {
+            if handle_startup_failure_with_card(
+                &card,
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                format!("enabling universal planes failed: {err}"),
+            ) {
+                break;
+            }
+
+            continue;
+        }
+
+        if let Err(err) = card.set_client_capability(ClientCapability::Atomic, true) {
+            if handle_startup_failure_with_card(
+                &card,
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                format!("enabling atomic modesetting failed: {err}"),
+            ) {
+                break;
+            }
+
+            continue;
+        }
+
+        let gbm_device = match GbmDevice::new(card.as_fd()) {
+            Ok(device) => device,
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("creating GBM device failed: {err}"),
+                ) {
+                    break;
+                }
+
+                continue;
+            }
+        };
+
+        let resources = match card.resource_handles() {
+            Ok(handles) => handles,
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("querying DRM resources failed: {err}"),
+                ) {
+                    break;
+                }
+
+                continue;
+            }
+        };
+
+        let (connector, mode, crtc_handle, encoder_handle) =
             match first_connected_connector(&card, &resources, config.requested_size) {
                 Ok(values) => values,
-                Err(e) => {
-                    eprintln!("DRM backend unavailable: {e}");
-                    std::thread::sleep(Duration::from_millis(250));
+                Err(err) => {
+                    if handle_startup_failure_with_card(
+                        &card,
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        format!("selecting connector failed: {err}"),
+                    ) {
+                        break;
+                    }
+
                     continue;
                 }
             };
 
         let plane = match find_primary_plane(&card, &resources, crtc_handle) {
             Ok(handle) => handle,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("selecting primary plane failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -810,9 +1171,19 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             .and_then(|props| props.as_hashmap(&card))
         {
             Ok(props) => props,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("reading connector properties failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -821,9 +1192,19 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             .and_then(|props| props.as_hashmap(&card))
         {
             Ok(props) => props,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("reading CRTC properties failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -832,9 +1213,19 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             .and_then(|props| props.as_hashmap(&card))
         {
             Ok(props) => props,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("reading plane properties failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -845,6 +1236,13 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         let frame_interval = Duration::from_secs_f64(1.0 / refresh_hz);
         let _ = screen_tx.send(dimensions);
         if !logged_mode_info {
+            println!(
+                "DRM resources: connector={} encoder={} crtc={} plane={}",
+                u32::from(connector),
+                u32::from(encoder_handle),
+                u32::from(crtc_handle),
+                u32::from(plane)
+            );
             println!(
                 "DRM mode: {}x{} @ {}Hz",
                 dimensions.0,
@@ -893,18 +1291,38 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING,
         ) {
             Ok(surface) => surface,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("creating GBM surface failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
 
         let (egl_lib, egl_api) = match load_egl() {
             Ok(values) => values,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("loading EGL failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -915,9 +1333,19 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             gbm_surface.as_raw() as *mut c_void,
         ) {
             Ok(values) => values,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("initializing EGL failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -932,9 +1360,19 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let mut renderer = match create_renderer(&egl_state.egl, dimensions) {
             Ok(renderer) => renderer,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("creating renderer failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -948,12 +1386,23 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let mode_blob = match card.create_property_blob(&mode) {
             Ok(blob) => blob,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("creating mode blob failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
+        let mode_blob_id = mode_blob_id(&mode_blob);
 
         let mut framebuffer_cache: HashMap<u32, framebuffer::Handle> = HashMap::new();
 
@@ -966,25 +1415,76 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 .SwapBuffers(egl_state.display, egl_state.surface)
         } == egl::FALSE
         {
-            eprintln!("DRM backend unavailable: eglSwapBuffers failed");
-            std::thread::sleep(Duration::from_millis(250));
+            destroy_session_resources(
+                &card,
+                cursor_plane.take(),
+                &mut framebuffer_cache,
+                mode_blob_id,
+            );
+
+            if handle_startup_failure_with_card(
+                &card,
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                "eglSwapBuffers failed".to_string(),
+            ) {
+                break;
+            }
+
             continue;
         }
 
         let bo = match unsafe { gbm_surface.lock_front_buffer() } {
             Ok(bo) => bo,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                destroy_session_resources(
+                    &card,
+                    cursor_plane.take(),
+                    &mut framebuffer_cache,
+                    mode_blob_id,
+                );
+
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("locking first GBM buffer failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
 
         let fb = match framebuffer_for_bo(&card, &mut framebuffer_cache, &bo) {
             Ok(fb) => fb,
-            Err(e) => {
-                eprintln!("DRM backend unavailable: {e}");
-                std::thread::sleep(Duration::from_millis(250));
+            Err(err) => {
+                destroy_session_resources(
+                    &card,
+                    cursor_plane.take(),
+                    &mut framebuffer_cache,
+                    mode_blob_id,
+                );
+
+                if handle_startup_failure_with_card(
+                    &card,
+                    &mut startup_tx,
+                    &running_flag,
+                    &stop,
+                    &mut startup_retries_remaining,
+                    retry_interval,
+                    format!("creating framebuffer failed: {err}"),
+                ) {
+                    break;
+                }
+
                 continue;
             }
         };
@@ -1005,16 +1505,57 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             add_plane_properties(&mut atomic_req, plane, &plane_props, crtc_handle, fb)?;
             add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
         })() {
-            eprintln!("DRM backend unavailable: {e}");
-            std::thread::sleep(Duration::from_millis(250));
+            drop(bo);
+            destroy_session_resources(
+                &card,
+                cursor_plane.take(),
+                &mut framebuffer_cache,
+                mode_blob_id,
+            );
+
+            if handle_startup_failure_with_card(
+                &card,
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                format!("preparing initial atomic commit failed: {e}"),
+            ) {
+                break;
+            }
+
             continue;
         }
 
-        if let Err(e) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
-            eprintln!("DRM backend unavailable: {e}");
-            std::thread::sleep(Duration::from_millis(250));
+        if let Err(err) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
+            drop(bo);
+            destroy_session_resources(
+                &card,
+                cursor_plane.take(),
+                &mut framebuffer_cache,
+                mode_blob_id,
+            );
+
+            if handle_startup_failure_with_card(
+                &card,
+                &mut startup_tx,
+                &running_flag,
+                &stop,
+                &mut startup_retries_remaining,
+                retry_interval,
+                format!("initial atomic commit failed: {err}"),
+            ) {
+                break;
+            }
+
             continue;
         }
+
+        if let Some(startup_tx) = startup_tx.take() {
+            let _ = startup_tx.send(Ok(()));
+        }
+
         if log_render {
             eprintln!("drm present version={}", render_state.render_version);
         }
@@ -1029,11 +1570,12 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
         let mut last_video_generation = video_registry.generation();
+        let mut stop_requested = false;
 
         loop {
             if stop.load(Ordering::Relaxed) {
-                running_flag.store(false, Ordering::Relaxed);
-                return;
+                stop_requested = true;
+                break;
             }
 
             if Instant::now() >= next_hotplug_check {
@@ -1043,7 +1585,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 };
                 let next = first_connected_connector(&card, &resources, config.requested_size);
                 match next {
-                    Ok((next_connector, next_mode, next_crtc)) => {
+                    Ok((next_connector, next_mode, next_crtc, _next_encoder)) => {
                         let next_dimensions = next_mode.size();
                         let next_dimensions = (next_dimensions.0 as u32, next_dimensions.1 as u32);
                         if next_connector != connector
@@ -1077,10 +1619,14 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         }
                     }
                     RenderMsg::Stop => {
-                        running_flag.store(false, Ordering::Relaxed);
-                        return;
+                        stop_requested = true;
+                        break;
                     }
                 }
+            }
+
+            if stop_requested {
+                break;
             }
 
             while let Ok(icon) = cursor_icon_rx.try_recv() {
@@ -1212,6 +1758,25 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 pending_render = video_needs_cleanup;
             }
             std::thread::sleep(Duration::from_millis(4));
+        }
+
+        drop(current_bo.take());
+        cleanup_active_session(
+            &card,
+            connector,
+            crtc_handle,
+            plane,
+            &con_props,
+            &crtc_props,
+            &plane_props,
+            cursor_plane.take(),
+            &mut framebuffer_cache,
+            mode_blob_id,
+        );
+
+        if stop_requested {
+            running_flag.store(false, Ordering::Relaxed);
+            break;
         }
     }
 }
