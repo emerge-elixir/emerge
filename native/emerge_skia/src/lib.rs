@@ -15,8 +15,6 @@ use std::{
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
-use skia_safe::Font;
-
 mod actors;
 mod assets;
 mod backend;
@@ -46,7 +44,7 @@ use backend::wayland_config::WaylandConfig;
 use drm_input::DrmInput;
 use events::spawn_event_actor;
 use renderer::{
-    RenderState, clear_global_caches, get_default_typeface, load_font, set_render_log_enabled,
+    RenderState, clear_global_caches, load_font, make_font_with_style, set_render_log_enabled,
 };
 use std::time::Instant;
 use tree::animation::AnimationRuntime;
@@ -1139,8 +1137,7 @@ fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Resu
 
 #[rustler::nif]
 fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
-    let typeface = get_default_typeface();
-    let font = Font::new(&*typeface, font_size);
+    let font = make_font_with_style("default", 400, false, font_size);
 
     let (width, _bounds) = font.measure_str(&text, None);
     let (_, metrics) = font.metrics();

@@ -14,11 +14,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use resvg::usvg;
 use skia_safe::{
-    BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontMgr, Image, MaskFilter,
-    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect,
-    SamplingOptions, Surface, TileMode, Typeface, Vector,
+    BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontHinting, FontMgr, Image,
+    MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect,
+    Rect, SamplingOptions, Surface, TileMode, Typeface, Vector,
     canvas::{SaveLayerRec, SrcRectConstraint},
     dash_path_effect,
+    font::Edging as FontEdging,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
     gradient::{Colors as GradientColors, Gradient, Interpolation},
     shaders,
@@ -234,6 +235,7 @@ fn resolve_typeface_with_fallback(
 pub fn make_font_with_style(family: &str, weight: u16, italic: bool, size: f32) -> Font {
     let (typeface, exact) = resolve_typeface_with_fallback(family, weight, italic);
     let mut font = Font::new(&*typeface, size);
+    configure_text_font(&mut font);
 
     if !exact {
         if weight >= 600 {
@@ -259,10 +261,12 @@ pub fn make_font_with_style(family: &str, weight: u16, italic: bool, size: f32) 
     font
 }
 
-/// Get a typeface with fallback to default if not found.
-pub fn get_typeface_with_fallback(family: &str, weight: u16, italic: bool) -> Arc<Typeface> {
-    let (tf, _exact) = resolve_typeface_with_fallback(family, weight, italic);
-    tf
+fn configure_text_font(font: &mut Font) {
+    font.set_subpixel(true);
+    font.set_linear_metrics(true);
+    font.set_baseline_snap(false);
+    font.set_edging(FontEdging::AntiAlias);
+    font.set_hinting(FontHinting::Slight);
 }
 
 /// Load a font from binary data and register it in the cache.
@@ -278,11 +282,6 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
     cache.insert(FontKey::new(family, weight, italic), Arc::new(typeface));
 
     Ok(())
-}
-
-/// Get the default typeface (for backward compatibility).
-pub fn get_default_typeface() -> Arc<Typeface> {
-    get_typeface_with_fallback("default", 400, false)
 }
 
 #[derive(Clone)]
@@ -2095,6 +2094,17 @@ mod tests {
             expected,
             actual
         );
+    }
+
+    #[test]
+    fn test_make_font_with_style_uses_stable_text_settings() {
+        let font = make_font_with_style("default", 400, false, 16.0);
+
+        assert!(font.is_subpixel());
+        assert!(font.is_linear_metrics());
+        assert!(!font.is_baseline_snap());
+        assert_eq!(font.edging(), FontEdging::AntiAlias);
+        assert_eq!(font.hinting(), FontHinting::Slight);
     }
 
     fn point_in_rounded_rect(
