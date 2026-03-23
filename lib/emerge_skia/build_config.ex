@@ -44,7 +44,17 @@ defmodule EmergeSkia.BuildConfig do
                                      false
                                  end
 
+                               has_mix_target? =
+                                 case Map.get(env, "MIX_TARGET") do
+                                   target when is_binary(target) and target not in ["", "host"] ->
+                                     true
+
+                                   _ ->
+                                     false
+                                 end
+
                                if Map.get(env, "NERVES_SDK_SYSROOT") not in [nil, ""] or
+                                    has_mix_target? or
                                     cc_prefix in [
                                       "armv6-nerves-linux-gnueabihf",
                                       "armv7-nerves-linux-gnueabihf",
@@ -114,6 +124,7 @@ defmodule EmergeSkia.BuildConfig do
   @doc false
   def nerves_build_env?(env) when is_map(env) do
     value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) ||
+      mix_target?(env) ||
       nerves_compiler?(Map.get(env, "CC")) ||
       target_env?(env)
   end
@@ -210,6 +221,13 @@ defmodule EmergeSkia.BuildConfig do
   defp target_env?(env) do
     case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
       {arch, os} when is_binary(arch) and arch != "" and is_binary(os) and os != "" -> true
+      _ -> false
+    end
+  end
+
+  defp mix_target?(env) do
+    case Map.get(env, "MIX_TARGET") do
+      target when is_binary(target) and target not in ["", "host"] -> true
       _ -> false
     end
   end

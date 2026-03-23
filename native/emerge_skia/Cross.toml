@@ -1,3 +1,6 @@
+# These package installs run inside cross's Debian-based build image, not on the
+# host machine. Local source builds on Arch or other distros still use the host
+# toolchain and system libraries directly.
 [build.env]
 passthrough = ["RUSTFLAGS", "RUSTLER_PRECOMPILED_DEBUG_MODE", "DRY_RUN"]
 

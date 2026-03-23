@@ -1,5 +1,6 @@
 use evdev::{
-    AbsoluteAxisType, Device, InputEventKind, Key, PropType, RelativeAxisType, Synchronization,
+    AbsoluteAxisCode as AbsoluteAxisType, Device, EventSummary, KeyCode as Key, PropType,
+    RelativeAxisCode as RelativeAxisType, SynchronizationCode as Synchronization,
 };
 use libc::input_absinfo;
 use std::fs;
@@ -102,32 +103,30 @@ impl DrmInput {
             };
 
             for event in events {
-                match event.kind() {
-                    InputEventKind::Key(key) => {
-                        self.handle_key_event_with_device(idx, key, event.value());
+                match event.destructure() {
+                    EventSummary::Key(_, key, value) => {
+                        self.handle_key_event_with_device(idx, key, value);
                     }
-                    InputEventKind::RelAxis(axis) => {
-                        self.handle_rel_event(axis, event.value(), screen_size);
+                    EventSummary::RelativeAxis(_, axis, value) => {
+                        self.handle_rel_event(axis, value, screen_size);
                     }
-                    InputEventKind::AbsAxis(axis) => {
+                    EventSummary::AbsoluteAxis(_, axis, value) => {
                         let device = &mut self.devices[idx];
-                        update_abs_state(device, axis, event.value(), screen_size);
+                        update_abs_state(device, axis, value, screen_size);
                     }
-                    InputEventKind::Synchronization(sync) => {
-                        if sync == Synchronization::SYN_REPORT {
-                            let action = {
-                                let device = &mut self.devices[idx];
-                                consume_abs_action(device, screen_size)
-                            };
-                            match action {
-                                AbsAction::Absolute(x, y) => {
-                                    self.handle_abs_position(x, y, screen_size)
-                                }
-                                AbsAction::Relative(dx, dy) => {
-                                    self.handle_abs_relative(dx, dy, screen_size)
-                                }
-                                AbsAction::None => {}
+                    EventSummary::Synchronization(_, Synchronization::SYN_REPORT, _) => {
+                        let action = {
+                            let device = &mut self.devices[idx];
+                            consume_abs_action(device, screen_size)
+                        };
+                        match action {
+                            AbsAction::Absolute(x, y) => {
+                                self.handle_abs_position(x, y, screen_size)
                             }
+                            AbsAction::Relative(dx, dy) => {
+                                self.handle_abs_relative(dx, dy, screen_size)
+                            }
+                            AbsAction::None => {}
                         }
                     }
                     _ => {}

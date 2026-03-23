@@ -7,6 +7,8 @@ defmodule EmergeDemo do
   use Emerge
   use Solve.Lookup
 
+  alias Emerge.UI.Animation
+
   @impl Viewport
   def mount(opts) do
     {:ok, %{}, Keyword.merge([title: "Emerge Demo"], opts)}
@@ -18,7 +20,20 @@ defmodule EmergeDemo do
     events = events(counter)
 
     el(
-      [width(fill()), height(fill())],
+      [
+        Animation.animate(
+          [
+            [Background.color(color(:gray, 950))],
+            [Background.color(color(:gray, 800))],
+            [Background.color(color(:gray, 950))]
+          ],
+          5000,
+          :linear,
+          :loop
+        ),
+        width(fill()),
+        height(fill())
+      ],
       row(
         [
           center_y(),

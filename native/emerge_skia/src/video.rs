@@ -975,7 +975,12 @@ fn shader_info_log(shader: u32) -> String {
     }
     let mut buf = vec![0u8; len as usize];
     unsafe {
-        gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut i8);
+        gl::GetShaderInfoLog(
+            shader,
+            len,
+            ptr::null_mut(),
+            buf.as_mut_ptr() as *mut gl::types::GLchar,
+        );
     }
     String::from_utf8_lossy(&buf)
         .trim_end_matches('\0')
@@ -992,7 +997,12 @@ fn program_info_log(program: u32) -> String {
     }
     let mut buf = vec![0u8; len as usize];
     unsafe {
-        gl::GetProgramInfoLog(program, len, ptr::null_mut(), buf.as_mut_ptr() as *mut i8);
+        gl::GetProgramInfoLog(
+            program,
+            len,
+            ptr::null_mut(),
+            buf.as_mut_ptr() as *mut gl::types::GLchar,
+        );
     }
     String::from_utf8_lossy(&buf)
         .trim_end_matches('\0')

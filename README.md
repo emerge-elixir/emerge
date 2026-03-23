@@ -180,6 +180,14 @@ Release builds can ship precompiled NIFs for the default backend profiles.
 Set `EMERGE_SKIA_BUILD=1` to force a local Rust build instead of downloading a
 precompiled artifact.
 
+`native/emerge_skia/Cross.toml` is only for `cross` container builds. Its
+package installation commands run inside cross's Debian-based image, not on
+your local Linux distro.
+
+Nerves builds are currently configured to use a Skia feature set with published
+`rust-skia` binary-cache artifacts, so Raspberry Pi 5 builds avoid a full local
+Skia source build.
+
 Before publishing to Hex, generate and include the checksum file for the
 release assets:
 
