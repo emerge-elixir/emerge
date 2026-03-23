@@ -168,27 +168,28 @@ static FONT_CACHE: OnceLock<Mutex<HashMap<FontKey, Arc<Typeface>>>> = OnceLock::
 static SYNTHETIC_LOGGED: OnceLock<Mutex<HashSet<FontKey>>> = OnceLock::new();
 static RENDER_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
+fn default_font_cache() -> HashMap<FontKey, Arc<Typeface>> {
+    let mut cache = HashMap::new();
+    let font_mgr = FontMgr::new();
+
+    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_REGULAR, 0) {
+        cache.insert(FontKey::default_regular(), Arc::new(tf));
+    }
+    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD, 0) {
+        cache.insert(FontKey::default_bold(), Arc::new(tf));
+    }
+    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_ITALIC, 0) {
+        cache.insert(FontKey::default_italic(), Arc::new(tf));
+    }
+    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD_ITALIC, 0) {
+        cache.insert(FontKey::default_bold_italic(), Arc::new(tf));
+    }
+
+    cache
+}
+
 fn get_font_cache() -> &'static Mutex<HashMap<FontKey, Arc<Typeface>>> {
-    FONT_CACHE.get_or_init(|| {
-        let mut cache = HashMap::new();
-        let font_mgr = FontMgr::new();
-
-        // Load embedded default fonts
-        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_REGULAR, 0) {
-            cache.insert(FontKey::default_regular(), Arc::new(tf));
-        }
-        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD, 0) {
-            cache.insert(FontKey::default_bold(), Arc::new(tf));
-        }
-        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_ITALIC, 0) {
-            cache.insert(FontKey::default_italic(), Arc::new(tf));
-        }
-        if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD_ITALIC, 0) {
-            cache.insert(FontKey::default_bold_italic(), Arc::new(tf));
-        }
-
-        Mutex::new(cache)
-    })
+    FONT_CACHE.get_or_init(|| Mutex::new(default_font_cache()))
 }
 
 fn get_synthetic_log_cache() -> &'static Mutex<HashSet<FontKey>> {
@@ -354,6 +355,38 @@ fn get_asset_cache() -> &'static Mutex<HashMap<String, Arc<CachedAsset>>> {
 fn get_rendered_vector_cache() -> &'static Mutex<RenderedVectorCache> {
     RENDERED_VECTOR_CACHE.get_or_init(|| Mutex::new(RenderedVectorCache::default()))
 }
+
+#[cfg(not(test))]
+pub fn clear_global_caches() {
+    if let Some(cache) = FONT_CACHE.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        *cache = default_font_cache();
+    }
+
+    if let Some(cache) = SYNTHETIC_LOGGED.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        cache.clear();
+    }
+
+    if let Some(cache) = ASSET_CACHE.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        cache.clear();
+    }
+
+    if let Some(cache) = RENDERED_VECTOR_CACHE.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        *cache = RenderedVectorCache::default();
+    }
+
+    skia_safe::graphics::purge_all_caches();
+}
+
+#[cfg(test)]
+pub fn clear_global_caches() {}
 
 fn cached_asset(id: &str) -> Option<Arc<CachedAsset>> {
     let cache = get_asset_cache().lock().ok()?;
@@ -541,6 +574,7 @@ fn remove_asset(id: &str) {
 // Renderer
 // ============================================================================
 
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub enum SurfaceSource {
     Gl {
@@ -554,8 +588,26 @@ pub enum SurfaceSource {
 pub struct Renderer {
     surface: Surface,
     gr_context: Option<skia_safe::gpu::DirectContext>,
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     source: SurfaceSource,
     video_state: RendererVideoState,
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        let _ = std::mem::take(&mut self.video_state);
+
+        if let Some(gr_context) = self.gr_context.as_mut() {
+            gr_context
+                .flush_and_submit()
+                .perform_deferred_cleanup(std::time::Duration::ZERO, None)
+                .free_gpu_resources()
+                .flush_and_submit();
+        }
+
+        #[cfg(not(test))]
+        skia_safe::graphics::purge_all_caches();
+    }
 }
 
 impl Renderer {
@@ -620,6 +672,7 @@ impl Renderer {
     }
 
     /// Resize the surface (only works for GL surfaces).
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub fn resize(&mut self, dimensions: (u32, u32)) {
         if let SurfaceSource::Gl {
             fb_info,
