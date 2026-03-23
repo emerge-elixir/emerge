@@ -31,8 +31,8 @@ wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"], opt
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 gl = "0.14"
-drm = { version = "0.15", optional = true }
-gbm = { version = "0.18", features = ["drm-support"], optional = true }
+drm = { version = "0.14", optional = true }
+gbm = { version = "0.18", default-features = false, features = ["drm-support", "import-egl"], optional = true }
 glutin_egl_sys = "0.7"
 libloading = "0.9"
 evdev = { version = "0.13", optional = true }
@@ -43,4 +43,4 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 resvg = "0.47"
 skia-bindings = { version = "=0.93.1", default-features = false, features = ["jpeg"] }
 
-skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "embed-freetype", "binary-cache"] }
+skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "pdf", "binary-cache"] }

@@ -380,6 +380,10 @@ struct StartConfig {
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_card: Option<String>,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    drm_startup_retries: u32,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    drm_retry_interval_ms: u32,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_hw_cursor: bool,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_input_log: bool,
@@ -393,6 +397,8 @@ struct StartOptsNif {
     width: u32,
     height: u32,
     drm_card: Option<String>,
+    drm_startup_retries: u32,
+    drm_retry_interval_ms: u32,
     hw_cursor: bool,
     input_log: bool,
     render_log: bool,
@@ -841,6 +847,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         #[cfg(feature = "drm")]
         BackendKind::Drm => {
             let (screen_tx, screen_rx) = bounded(1);
+            let (startup_tx, startup_rx) = std::sync::mpsc::channel();
             let event_tx_clone = event_tx.clone();
             let drm_cursor_tx_clone = drm_cursor_tx.clone();
             let stop_clone = Arc::clone(&stop_flag);
@@ -869,7 +876,9 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let event_tx_clone = event_tx.clone();
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
-                card_path: config.drm_card,
+                card_path: config.drm_card.clone(),
+                startup_retries: config.drm_startup_retries,
+                retry_interval_ms: config.drm_retry_interval_ms,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
             };
@@ -877,6 +886,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             handles.backend_handle = Some(thread::spawn(move || {
                 drm::run(
                     drm::DrmRunContext {
+                        startup_tx,
                         stop: stop_for_thread,
                         running_flag: running_flag_clone,
                         tree_tx: tree_tx_clone,
@@ -891,6 +901,44 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     drm_config,
                 );
             }));
+
+            match startup_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => {
+                    shutdown_renderer_runtime(
+                        BackendKind::Drm,
+                        &running_flag,
+                        &backend_wake,
+                        &stop_flag,
+                        &tree_tx,
+                        &event_tx,
+                        &render_sender,
+                        std::mem::take(&mut handles),
+                        log_render,
+                        log_input,
+                    );
+
+                    return Err(rustler::Error::Term(Box::new(reason)));
+                }
+                Err(_) => {
+                    shutdown_renderer_runtime(
+                        BackendKind::Drm,
+                        &running_flag,
+                        &backend_wake,
+                        &stop_flag,
+                        &tree_tx,
+                        &event_tx,
+                        &render_sender,
+                        std::mem::take(&mut handles),
+                        log_render,
+                        log_input,
+                    );
+
+                    return Err(rustler::Error::Term(Box::new(
+                        "failed to receive DRM backend startup info",
+                    )));
+                }
+            }
 
             handles.tree_handle = Some(spawn_tree_actor(
                 tree_rx,
@@ -956,6 +1004,8 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
             width,
             height,
             drm_card: None,
+            drm_startup_retries: 40,
+            drm_retry_interval_ms: 250,
             drm_hw_cursor: true,
             drm_input_log: false,
             render_log: false,
@@ -983,6 +1033,8 @@ fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
         width: opts.width,
         height: opts.height,
         drm_card: opts.drm_card,
+        drm_startup_retries: opts.drm_startup_retries,
+        drm_retry_interval_ms: opts.drm_retry_interval_ms,
         drm_hw_cursor: opts.hw_cursor,
         drm_input_log: opts.input_log,
         render_log: opts.render_log,

@@ -27,6 +27,14 @@ defmodule EmergeSkia.Options do
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
       drm_card: normalize_optional_string(Keyword.get(opts, :drm_card)),
+      drm_startup_retries:
+        opts
+        |> Keyword.get(:drm_startup_retries, 40)
+        |> normalize_non_negative_integer!(":drm_startup_retries"),
+      drm_retry_interval_ms:
+        opts
+        |> Keyword.get(:drm_retry_interval_ms, 250)
+        |> normalize_non_negative_integer!(":drm_retry_interval_ms"),
       hw_cursor: Keyword.get(opts, :hw_cursor, true),
       input_log: Keyword.get(opts, :input_log, false),
       render_log: Keyword.get(opts, :render_log, false)
@@ -114,6 +122,16 @@ defmodule EmergeSkia.Options do
 
   def normalize_positive_integer!(value, field_name) do
     raise ArgumentError, "#{field_name} must be a positive integer, got: #{inspect(value)}"
+  end
+
+  @doc false
+  def normalize_non_negative_integer!(value, _field_name)
+      when is_integer(value) and value >= 0,
+      do: value
+
+  def normalize_non_negative_integer!(value, field_name) do
+    raise ArgumentError,
+          "#{field_name} must be a non-negative integer, got: #{inspect(value)}"
   end
 
   @doc false

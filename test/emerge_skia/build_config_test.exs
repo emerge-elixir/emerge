@@ -19,6 +19,10 @@ defmodule EmergeSkia.BuildConfigTest do
              [:drm]
   end
 
+  test "default_compiled_backends uses drm for non-host MIX_TARGET values" do
+    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "rpi5"}) == [:drm]
+  end
+
   test "default_compiled_backends uses drm for known Nerves compiler prefixes" do
     assert BuildConfig.default_compiled_backends(%{"CC" => "aarch64-nerves-linux-gnu-gcc"}) ==
              [:drm]
@@ -34,6 +38,7 @@ defmodule EmergeSkia.BuildConfigTest do
 
   test "default_compiled_backends uses wayland outside Nerves build environments" do
     assert BuildConfig.default_compiled_backends(%{}) == [:wayland]
+    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "host"}) == [:wayland]
   end
 
   test "normalize_compiled_backends! accepts an empty backend list" do

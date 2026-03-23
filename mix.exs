@@ -15,6 +15,8 @@ defmodule Emerge.MixProject do
     "CC",
     "CXX",
     "CFLAGS",
+    "CLANGCC",
+    "CLANGCXX",
     "CPPFLAGS",
     "CXXFLAGS",
     "LDFLAGS",
@@ -192,11 +194,105 @@ defmodule Emerge.MixProject do
       |> String.upcase()
       |> String.replace("-", "_")
 
-    env
+    effective_env = effective_rustler_env(env)
+
+    effective_env
     |> passthrough_env()
+    |> maybe_put_env(
+      "SDKTARGETSYSROOT",
+      Map.get(effective_env, "SDKTARGETSYSROOT") || Map.get(effective_env, "NERVES_SDK_SYSROOT")
+    )
     |> maybe_put_env("CARGO_TARGET_#{target_key}_LINKER", Map.get(env, "CC"))
     |> maybe_put_env("HOST_CC", Map.get(env, "HOST_CC") || System.find_executable("cc"))
     |> maybe_put_env("HOST_CXX", Map.get(env, "HOST_CXX") || System.find_executable("c++"))
+  end
+
+  defp effective_rustler_env(env) do
+    if nerves_build_env?(env) do
+      env
+      |> Map.put_new("SDKTARGETSYSROOT", Map.get(env, "NERVES_SDK_SYSROOT"))
+      |> maybe_put_map_value("CC", skia_clang_command(env, "clang"))
+      |> maybe_put_map_value("CXX", skia_clang_command(env, "clang++"))
+      |> maybe_put_map_value("CLANGCC", skia_clang_command(env, "clang"))
+      |> maybe_put_map_value("CLANGCXX", skia_clang_command(env, "clang++"))
+    else
+      env
+    end
+  end
+
+  defp skia_clang_command(env, clang_binary) do
+    if nerves_build_env?(env) do
+      with sysroot when is_binary(sysroot) and sysroot != "" <- Map.get(env, "NERVES_SDK_SYSROOT"),
+           clang when is_binary(clang) <- System.find_executable(clang_binary) do
+        [clang | skia_clang_flags(env, sysroot)] |> Enum.join(" ")
+      else
+        _ -> nil
+      end
+    end
+  end
+
+  defp skia_clang_flags(env, sysroot) do
+    [
+      "--sysroot=#{sysroot}",
+      gcc_toolchain_flag(env)
+    ] ++ nerves_cxx_include_flags(env)
+  end
+
+  defp gcc_toolchain_flag(env) do
+    env
+    |> Map.get("CC")
+    |> compiler_executable_path()
+    |> case do
+      nil -> nil
+      compiler_path -> "--gcc-toolchain=#{compiler_path |> Path.dirname() |> Path.dirname()}"
+    end
+  end
+
+  defp nerves_cxx_include_flags(env) do
+    with toolchain when is_binary(toolchain) and toolchain != "" <-
+           Map.get(env, "NERVES_TOOLCHAIN"),
+         prefix when is_binary(prefix) and prefix != "" <- Map.get(env, "CC") |> compiler_prefix(),
+         version when is_binary(version) and version != "" <-
+           nerves_gxx_version(toolchain, prefix) do
+      [
+        Path.join([toolchain, prefix, "include", "c++", version]),
+        Path.join([toolchain, prefix, "include", "c++", version, prefix]),
+        Path.join([toolchain, "lib", "gcc", prefix, version, "include"]),
+        Path.join([toolchain, "lib", "gcc", prefix, version, "include-fixed"])
+      ]
+      |> Enum.filter(&File.exists?/1)
+      |> Enum.map(&"-I#{&1}")
+    else
+      _ -> []
+    end
+  end
+
+  defp nerves_gxx_version(toolchain, prefix) do
+    Path.join([toolchain, prefix, "include", "c++", "*"])
+    |> Path.wildcard()
+    |> Enum.sort()
+    |> List.last()
+    |> case do
+      nil -> nil
+      version_dir -> Path.basename(version_dir)
+    end
+  end
+
+  defp compiler_executable_path(nil), do: nil
+
+  defp compiler_executable_path(compiler) do
+    compiler
+    |> String.split(~r/\s+/, trim: true)
+    |> List.first()
+    |> case do
+      nil ->
+        nil
+
+      executable ->
+        if Path.type(executable) == :absolute,
+          do: executable,
+          else: System.find_executable(executable)
+    end
   end
 
   defp passthrough_env(env) do
@@ -204,6 +300,40 @@ defmodule Emerge.MixProject do
       maybe_put_env(acc, key, Map.get(env, key))
     end)
   end
+
+  defp nerves_build_env?(env) do
+    value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) ||
+      mix_target?(env) ||
+      nerves_compiler?(Map.get(env, "CC")) ||
+      target_env?(env)
+  end
+
+  defp mix_target?(env) do
+    case Map.get(env, "MIX_TARGET") do
+      target when is_binary(target) and target not in ["", "host"] -> true
+      _ -> false
+    end
+  end
+
+  defp nerves_compiler?(compiler) do
+    compiler
+    |> compiler_prefix()
+    |> then(&(&1 in Map.keys(@nerves_rust_target_triple_mapping)))
+  end
+
+  defp target_env?(env) do
+    case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
+      {arch, os} when is_binary(arch) and arch != "" and is_binary(os) and os != "" -> true
+      _ -> false
+    end
+  end
+
+  defp value_present?(value) when is_binary(value), do: value != ""
+  defp value_present?(_value), do: false
+
+  defp maybe_put_map_value(map, _key, nil), do: map
+  defp maybe_put_map_value(map, _key, ""), do: map
+  defp maybe_put_map_value(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_env(env, _key, nil), do: env
   defp maybe_put_env(env, _key, ""), do: env

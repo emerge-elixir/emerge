@@ -25,7 +25,8 @@ defmodule EmergeDemo.MixProject do
     [
       {:emerge, path: "../."},
       {:solve, path: "../../solve"},
-      {:file_system, "~> 1.0", only: :dev}
+      {:file_system, "~> 1.0", only: :dev},
+      {:rustler, "~> 0.37", optional: true}
     ]
   end
 end
