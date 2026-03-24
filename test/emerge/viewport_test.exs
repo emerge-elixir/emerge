@@ -14,6 +14,7 @@ defmodule Emerge.ViewportTest do
           ops: [],
           running?: true,
           target: nil,
+          log_target: nil,
           skia_opts: skia_opts,
           renderer_opts: renderer_opts
         }
@@ -41,6 +42,17 @@ defmodule Emerge.ViewportTest do
         state
         |> Map.put(:target, pid)
         |> log_op({:set_input_target, pid})
+      end)
+
+      :ok
+    end
+
+    @impl true
+    def set_log_target(renderer, pid) do
+      Agent.update(renderer, fn state ->
+        state
+        |> Map.put(:log_target, pid)
+        |> log_op({:set_log_target, pid})
       end)
 
       :ok
@@ -229,7 +241,8 @@ defmodule Emerge.ViewportTest do
     operations = FakeRenderer.ops(renderer)
 
     assert {:set_input_target, ^pid} = Enum.at(operations, 0)
-    assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 1)
+    assert {:set_log_target, ^pid} = Enum.at(operations, 1)
+    assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 2)
 
     assert :sys.get_state(pid).count == 3
     assert pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
@@ -277,6 +290,19 @@ defmodule Emerge.ViewportTest do
     end)
 
     GenServer.stop(pid)
+  end
+
+  test "native renderer log messages are forwarded to Logger" do
+    log =
+      capture_log(fn ->
+        assert {:noreply, %{}} =
+                 Emerge.Runtime.Viewport.handle_info(
+                   {:emerge_skia_log, :warning, "drm", "DRM cursor: hardware plane enabled"},
+                   %{}
+                 )
+      end)
+
+    assert log =~ "EmergeSkia native[drm] DRM cursor: hardware plane enabled"
   end
 
   test "rerender requests from callback state updates are coalesced" do

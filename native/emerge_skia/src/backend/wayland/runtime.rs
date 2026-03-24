@@ -988,8 +988,8 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        PresentState, WaylandVideoImportState, WaylandVideoSyncAction,
-        should_draw_frame, should_reconfigure_surface,
+        PresentState, WaylandVideoImportState, WaylandVideoSyncAction, should_draw_frame,
+        should_reconfigure_surface,
     };
 
     #[test]

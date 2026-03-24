@@ -31,6 +31,7 @@ use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
 use std::collections::HashMap;
 
 use crate::input::InputEvent;
+use crate::native_log::NativeLogLevel;
 use crate::renderer::make_font_with_style;
 use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 #[cfg(test)]
@@ -630,8 +631,23 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     });
 }
 
+#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+pub(crate) fn send_log_event(pid: LocalPid, level: NativeLogLevel, source: &str, message: &str) {
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |inner_env| {
+        (
+            emerge_skia_log(),
+            log_level_atom(level),
+            source.to_string(),
+            message.to_string(),
+        )
+            .encode(inner_env)
+    });
+}
+
 rustler::atoms! {
     emerge_skia_event,
+    emerge_skia_log,
     click,
     press,
     change,
@@ -642,6 +658,9 @@ rustler::atoms! {
     mouse_enter,
     mouse_leave,
     mouse_move,
+    info,
+    warning,
+    error,
 }
 
 pub(crate) fn click_atom() -> Atom {
@@ -682,6 +701,15 @@ pub(crate) fn mouse_leave_atom() -> Atom {
 
 pub(crate) fn mouse_move_atom() -> Atom {
     mouse_move()
+}
+
+#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+fn log_level_atom(level: NativeLogLevel) -> Atom {
+    match level {
+        NativeLogLevel::Info => info(),
+        NativeLogLevel::Warning => warning(),
+        NativeLogLevel::Error => error(),
+    }
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ defmodule Emerge.Runtime.Viewport.Config do
     stop: 1,
     running?: 1,
     set_input_target: 2,
+    set_log_target: 2,
     set_input_mask: 2,
     upload_tree: 2,
     patch_tree: 3

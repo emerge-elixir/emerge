@@ -3,19 +3,29 @@ use evdev::{
     RelativeAxisCode as RelativeAxisType, SynchronizationCode as Synchronization,
 };
 use libc::input_absinfo;
+use std::collections::HashSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TrySendError};
 
 use crate::actors::EventMsg;
-use crate::cursor::CursorState;
+use crate::backend::wake::BackendWakeHandle;
+use crate::cursor::{CursorState, SharedCursorState};
 use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
+use crate::linux_wait::{EventFd, poll_fds};
 
 struct InputDevice {
+    path: PathBuf,
     device: Device,
     abs_x: Option<AbsAxisState>,
     abs_y: Option<AbsAxisState>,
@@ -64,7 +74,13 @@ pub struct DrmInput {
     screen_size: (u32, u32),
     screen_rx: Receiver<(u32, u32)>,
     event_tx: Sender<EventMsg>,
-    cursor_tx: Sender<CursorState>,
+    cursor_state: Arc<SharedCursorState>,
+    stop: Arc<AtomicBool>,
+    backend_wake: BackendWakeHandle,
+    input_wake: EventFd,
+    pending_cursor_pos: Option<(f32, f32)>,
+    next_rescan_at: Instant,
+    rescan_interval: Duration,
     log_enabled: bool,
 }
 
@@ -73,10 +89,14 @@ impl DrmInput {
         screen_size: (u32, u32),
         screen_rx: Receiver<(u32, u32)>,
         event_tx: Sender<EventMsg>,
-        cursor_tx: Sender<CursorState>,
+        cursor_state: Arc<SharedCursorState>,
+        stop: Arc<AtomicBool>,
+        backend_wake: BackendWakeHandle,
+        input_wake: EventFd,
         log_enabled: bool,
     ) -> Self {
         let devices = enumerate_devices(log_enabled);
+        let rescan_interval = Duration::from_millis(500);
         Self {
             devices,
             cursor_pos: (0.0, 0.0),
@@ -85,8 +105,43 @@ impl DrmInput {
             screen_size,
             screen_rx,
             event_tx,
-            cursor_tx,
+            cursor_state,
+            stop,
+            backend_wake,
+            input_wake,
+            pending_cursor_pos: None,
+            next_rescan_at: Instant::now() + rescan_interval,
+            rescan_interval,
             log_enabled,
+        }
+    }
+
+    pub fn run(&mut self) {
+        while !self.stop.load(Ordering::Relaxed) {
+            let mut poll_fds_buf = self.build_pollfds();
+            let timeout = Some(self.next_wait_timeout());
+
+            if let Err(err) = poll_fds(&mut poll_fds_buf, timeout) {
+                if self.log_enabled {
+                    eprintln!("drm_input poll error: {err}");
+                }
+                self.poll();
+                continue;
+            }
+
+            if poll_fds_buf
+                .last()
+                .map(|pollfd| (pollfd.revents & libc::POLLIN) != 0)
+                .unwrap_or(false)
+            {
+                let _ = self.input_wake.drain();
+            }
+
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            self.poll();
         }
     }
 
@@ -94,13 +149,28 @@ impl DrmInput {
         while let Ok(size) = self.screen_rx.try_recv() {
             self.screen_size = size;
         }
+
+        let now = Instant::now();
+        if now >= self.next_rescan_at {
+            self.rescan_devices();
+            self.next_rescan_at = now + self.rescan_interval;
+        }
+
         let screen_size = self.screen_size;
-        for idx in 0..self.devices.len() {
-            let events = {
+        let mut idx = 0;
+        while idx < self.devices.len() {
+            let events = match {
                 let device = &mut self.devices[idx];
                 match device.device.fetch_events() {
-                    Ok(events) => events.collect::<Vec<_>>(),
-                    Err(_) => Vec::new(),
+                    Ok(events) => Ok(events.collect::<Vec<_>>()),
+                    Err(err) if should_remove_device_on_fetch_error(&err) => Err(err),
+                    Err(_) => Ok(Vec::new()),
+                }
+            } {
+                Ok(events) => events,
+                Err(err) => {
+                    self.remove_device(idx, Some(err));
+                    continue;
                 }
             };
 
@@ -154,7 +224,75 @@ impl DrmInput {
                     _ => {}
                 }
             }
+
+            idx += 1;
         }
+
+        self.flush_pending_cursor_pos_nonblocking();
+    }
+
+    fn rescan_devices(&mut self) {
+        let discovered_paths = list_event_device_paths();
+        let existing_paths = self
+            .devices
+            .iter()
+            .map(|device| device.path.clone())
+            .collect::<Vec<_>>();
+        let (removed_paths, added_paths) =
+            reconcile_device_paths(&existing_paths, &discovered_paths);
+        let removed_set = removed_paths.into_iter().collect::<HashSet<_>>();
+
+        self.devices.retain(|device| {
+            let remove = removed_set.contains(&device.path);
+            if remove && self.log_enabled {
+                eprintln!("drm_input remove device={:?}", device.path);
+            }
+            !remove
+        });
+
+        for path in added_paths {
+            if let Some(device) = open_input_device(&path, self.log_enabled, Some("add")) {
+                self.devices.push(device);
+            }
+        }
+    }
+
+    fn remove_device(&mut self, idx: usize, error: Option<std::io::Error>) {
+        if idx >= self.devices.len() {
+            return;
+        }
+
+        let device = self.devices.remove(idx);
+        if self.log_enabled {
+            if let Some(err) = error {
+                eprintln!("drm_input remove device={:?} error={err}", device.path);
+            } else {
+                eprintln!("drm_input remove device={:?}", device.path);
+            }
+        }
+    }
+
+    fn next_wait_timeout(&self) -> Duration {
+        self.next_rescan_at
+            .saturating_duration_since(Instant::now())
+    }
+
+    fn build_pollfds(&self) -> Vec<libc::pollfd> {
+        let mut poll_fds_buf = self
+            .devices
+            .iter()
+            .map(|device| libc::pollfd {
+                fd: device.device.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect::<Vec<_>>();
+        poll_fds_buf.push(libc::pollfd {
+            fd: self.input_wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        poll_fds_buf
     }
 
     fn handle_key_event(&mut self, key: Key, value: i32) {
@@ -172,7 +310,8 @@ impl DrmInput {
                 ACTION_RELEASE
             };
             let mods = modifiers_to_mask(self.modifiers);
-            self.push_input(InputEvent::CursorButton {
+            self.flush_pending_cursor_pos_blocking();
+            self.push_input_blocking(InputEvent::CursorButton {
                 button: button.to_string(),
                 action,
                 mods,
@@ -192,7 +331,7 @@ impl DrmInput {
         } else {
             ACTION_RELEASE
         };
-        self.push_input(InputEvent::Key {
+        self.push_input_blocking(InputEvent::Key {
             key: key_kind_to_name(key_kind),
             action,
             mods,
@@ -201,7 +340,7 @@ impl DrmInput {
         if pressed
             && let Some(codepoint) = key_to_codepoint(key_kind, self.modifiers, self.caps_lock)
         {
-            self.push_input(InputEvent::TextCommit {
+            self.push_input_blocking(InputEvent::TextCommit {
                 text: codepoint.to_string(),
                 mods,
             });
@@ -219,7 +358,8 @@ impl DrmInput {
             }
             RelativeAxisType::REL_WHEEL => {
                 let (cx, cy) = self.cursor_pos;
-                self.push_input(InputEvent::CursorScrollLines {
+                self.flush_pending_cursor_pos_blocking();
+                self.push_input_blocking(InputEvent::CursorScrollLines {
                     dx: 0.0,
                     dy: value as f32,
                     x: cx,
@@ -229,7 +369,8 @@ impl DrmInput {
             }
             RelativeAxisType::REL_HWHEEL => {
                 let (cx, cy) = self.cursor_pos;
-                self.push_input(InputEvent::CursorScrollLines {
+                self.flush_pending_cursor_pos_blocking();
+                self.push_input_blocking(InputEvent::CursorScrollLines {
                     dx: value as f32,
                     dy: 0.0,
                     x: cx,
@@ -244,12 +385,12 @@ impl DrmInput {
         x = x.clamp(0.0, width.saturating_sub(1) as f32);
         y = y.clamp(0.0, height.saturating_sub(1) as f32);
         self.set_cursor_state(x, y, true);
-        self.push_input(InputEvent::CursorPos { x, y });
+        self.queue_cursor_pos(x, y);
     }
 
     fn handle_abs_position(&mut self, x: f32, y: f32, visible: bool) {
         self.set_cursor_state(x, y, visible);
-        self.push_input(InputEvent::CursorPos { x, y });
+        self.queue_cursor_pos(x, y);
     }
 
     fn handle_abs_relative(&mut self, dx: f32, dy: f32, screen_size: (u32, u32)) {
@@ -260,27 +401,36 @@ impl DrmInput {
         x = x.clamp(0.0, width.saturating_sub(1) as f32);
         y = y.clamp(0.0, height.saturating_sub(1) as f32);
         self.set_cursor_state(x, y, true);
-        self.push_input(InputEvent::CursorPos { x, y });
+        self.queue_cursor_pos(x, y);
     }
 
     fn set_cursor_state(&mut self, x: f32, y: f32, visible: bool) {
+        let previous = self.cursor_state.snapshot();
         self.cursor_pos = (x, y);
-        let _ = self.cursor_tx.try_send(CursorState {
+        let snapshot = self.cursor_state.update(CursorState {
             pos: (x, y),
             visible,
         });
+        if snapshot.version != previous.version {
+            self.backend_wake.request_redraw();
+        }
     }
 
     fn set_cursor_visible(&mut self, visible: bool) {
-        let _ = self.cursor_tx.try_send(CursorState {
+        let previous = self.cursor_state.snapshot();
+        let snapshot = self.cursor_state.update(CursorState {
             pos: self.cursor_pos,
             visible,
         });
+        if snapshot.version != previous.version {
+            self.backend_wake.request_redraw();
+        }
     }
 
-    fn push_left_button(&self, action: u8) {
+    fn push_left_button(&mut self, action: u8) {
         let (x, y) = self.cursor_pos;
-        self.push_input(InputEvent::CursorButton {
+        self.flush_pending_cursor_pos_blocking();
+        self.push_input_blocking(InputEvent::CursorButton {
             button: "left".to_string(),
             action,
             mods: modifiers_to_mask(self.modifiers),
@@ -299,7 +449,60 @@ impl DrmInput {
         }
     }
 
-    fn push_input(&self, event: InputEvent) {
+    fn queue_cursor_pos(&mut self, x: f32, y: f32) {
+        self.pending_cursor_pos = Some((x, y));
+    }
+
+    fn flush_pending_cursor_pos_nonblocking(&mut self) {
+        let Some((x, y)) = self.pending_cursor_pos else {
+            return;
+        };
+
+        match self.try_push_input(InputEvent::CursorPos { x, y }) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {
+                self.pending_cursor_pos = None;
+            }
+            Err(TrySendError::Full(_)) => {}
+        }
+    }
+
+    fn flush_pending_cursor_pos_blocking(&mut self) {
+        let Some((x, y)) = self.pending_cursor_pos.take() else {
+            return;
+        };
+
+        self.push_input_blocking(InputEvent::CursorPos { x, y });
+    }
+
+    fn push_input_blocking(&self, event: InputEvent) {
+        let mut msg = EventMsg::InputEvent(event);
+        loop {
+            match self.event_tx.try_send(msg) {
+                Ok(()) | Err(TrySendError::Disconnected(_)) => break,
+                Err(TrySendError::Full(returned_msg)) => {
+                    msg = returned_msg;
+                }
+            }
+
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            if self.log_enabled {
+                eprintln!("event channel full, waiting to send");
+            }
+
+            match self.event_tx.send_timeout(msg, Duration::from_millis(10)) {
+                Ok(()) => break,
+                Err(SendTimeoutError::Timeout(returned_msg)) => {
+                    msg = returned_msg;
+                }
+                Err(SendTimeoutError::Disconnected(_)) => break,
+            }
+        }
+    }
+
+    fn try_push_input(&self, event: InputEvent) -> Result<(), TrySendError<EventMsg>> {
         if self.log_enabled
             && let InputEvent::CursorPos { x, y } = &event
         {
@@ -307,60 +510,71 @@ impl DrmInput {
         }
 
         let msg = EventMsg::InputEvent(event);
-        match self.event_tx.try_send(msg) {
-            Ok(()) => {}
-            Err(TrySendError::Full(msg)) => {
-                if self.log_enabled {
-                    eprintln!("event channel full, blocking send");
-                }
-                let _ = self.event_tx.send(msg);
-            }
-            Err(TrySendError::Disconnected(_)) => {}
-        }
+        self.event_tx.try_send(msg)
     }
 }
 
-fn enumerate_devices(log_enabled: bool) -> Vec<InputDevice> {
-    let mut devices = Vec::new();
+fn list_event_device_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     let entries = match fs::read_dir("/dev/input") {
         Ok(entries) => entries,
-        Err(_) => return devices,
+        Err(_) => return paths,
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !is_event_device(&path) {
-            continue;
+        if is_event_device(&path) {
+            paths.push(path);
         }
-        let device = match Device::open(&path) {
-            Ok(device) => device,
-            Err(_) => continue,
-        };
-        set_non_blocking(device.as_raw_fd());
-        let (abs_mode, info) = detect_abs_mode(&device);
-        let (abs_x, abs_y) = init_abs_axes(&device);
-        if log_enabled {
-            let name = device.name().unwrap_or("unknown");
+    }
+
+    paths.sort();
+    paths
+}
+
+fn enumerate_devices(log_enabled: bool) -> Vec<InputDevice> {
+    list_event_device_paths()
+        .into_iter()
+        .filter_map(|path| open_input_device(&path, log_enabled, None))
+        .collect()
+}
+
+fn open_input_device(path: &Path, log_enabled: bool, action: Option<&str>) -> Option<InputDevice> {
+    let device = match Device::open(path) {
+        Ok(device) => device,
+        Err(_) => return None,
+    };
+    set_non_blocking(device.as_raw_fd());
+    let (abs_mode, info) = detect_abs_mode(&device);
+    let (abs_x, abs_y) = init_abs_axes(&device);
+    if log_enabled {
+        let name = device.name().unwrap_or("unknown");
+        if let Some(action) = action {
+            eprintln!(
+                "drm_input {action} device={:?} name=\"{}\" abs_mode={:?} {}",
+                path, name, abs_mode, info
+            );
+        } else {
             eprintln!(
                 "drm_input device={:?} name=\"{}\" abs_mode={:?} {}",
                 path, name, abs_mode, info
             );
         }
-        devices.push(InputDevice {
-            device,
-            abs_x,
-            abs_y,
-            abs_x_dirty: false,
-            abs_y_dirty: false,
-            abs_mode,
-            last_abs_scaled: None,
-            touch_active: false,
-            touch_tracking: false,
-            pending_direct_touch_button: None,
-        });
     }
 
-    devices
+    Some(InputDevice {
+        path: path.to_path_buf(),
+        device,
+        abs_x,
+        abs_y,
+        abs_x_dirty: false,
+        abs_y_dirty: false,
+        abs_mode,
+        last_abs_scaled: None,
+        touch_active: false,
+        touch_tracking: false,
+        pending_direct_touch_button: None,
+    })
 }
 
 fn is_event_device(path: &Path) -> bool {
@@ -368,6 +582,31 @@ fn is_event_device(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("event"))
         .unwrap_or(false)
+}
+
+fn reconcile_device_paths(
+    existing_paths: &[PathBuf],
+    discovered_paths: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let existing = existing_paths.iter().cloned().collect::<HashSet<_>>();
+    let discovered = discovered_paths.iter().cloned().collect::<HashSet<_>>();
+
+    let removed = existing_paths
+        .iter()
+        .filter(|path| !discovered.contains(*path))
+        .cloned()
+        .collect();
+    let added = discovered_paths
+        .iter()
+        .filter(|path| !existing.contains(*path))
+        .cloned()
+        .collect();
+
+    (removed, added)
+}
+
+fn should_remove_device_on_fetch_error(err: &std::io::Error) -> bool {
+    !matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
 }
 
 enum AbsAction {
@@ -633,6 +872,133 @@ impl DrmInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cursor::SharedCursorState;
+    use crossbeam_channel::bounded;
+
+    fn test_input(event_capacity: usize) -> (DrmInput, Receiver<EventMsg>, Arc<SharedCursorState>) {
+        let (_screen_tx, screen_rx) = bounded(1);
+        let (event_tx, event_rx) = bounded(event_capacity);
+        let cursor_state = Arc::new(SharedCursorState::new(CursorState {
+            pos: (0.0, 0.0),
+            visible: true,
+        }));
+
+        let input = DrmInput {
+            devices: Vec::new(),
+            cursor_pos: (0.0, 0.0),
+            modifiers: Modifiers::default(),
+            caps_lock: false,
+            screen_size: (640, 480),
+            screen_rx,
+            event_tx,
+            cursor_state: Arc::clone(&cursor_state),
+            stop: Arc::new(AtomicBool::new(false)),
+            backend_wake: BackendWakeHandle::noop(),
+            input_wake: EventFd::new().expect("eventfd available for tests"),
+            pending_cursor_pos: None,
+            next_rescan_at: Instant::now() + Duration::from_millis(500),
+            rescan_interval: Duration::from_millis(500),
+            log_enabled: false,
+        };
+
+        (input, event_rx, cursor_state)
+    }
+
+    #[test]
+    fn poll_flushes_only_latest_pending_cursor_position() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_abs_position(10.0, 12.0, true);
+        input.handle_abs_position(24.0, 36.0, true);
+        input.poll();
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
+        ));
+        assert!(event_rx.try_recv().is_err());
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (24.0, 36.0));
+        assert!(snapshot.state.visible);
+    }
+
+    #[test]
+    fn cursor_motion_flushes_before_button_event() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(14.0, 18.0, true);
+        input.handle_key_event(Key::BTN_LEFT, 1);
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 14.0).abs() < f32::EPSILON && (y - 18.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_PRESS
+                    && (x - 14.0).abs() < f32::EPSILON
+                    && (y - 18.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn cursor_motion_flushes_before_scroll_event() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(30.0, 40.0, true);
+        input.handle_rel_event(RelativeAxisType::REL_WHEEL, 2, (640, 480));
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 30.0).abs() < f32::EPSILON && (y - 40.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
+                if dx.abs() < f32::EPSILON
+                    && (dy - 2.0).abs() < f32::EPSILON
+                    && (x - 30.0).abs() < f32::EPSILON
+                    && (y - 40.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn nonblocking_cursor_flush_keeps_latest_pending_position_when_queue_is_full() {
+        let (mut input, event_rx, _) = test_input(1);
+
+        input
+            .event_tx
+            .send(EventMsg::InputEvent(InputEvent::Key {
+                key: "a".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+            }))
+            .unwrap();
+
+        input.handle_abs_position(50.0, 60.0, true);
+        input.flush_pending_cursor_pos_nonblocking();
+
+        assert_eq!(input.pending_cursor_pos, Some((50.0, 60.0)));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, .. })) if key == "a"
+        ));
+
+        input.flush_pending_cursor_pos_nonblocking();
+
+        assert!(input.pending_cursor_pos.is_none());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 50.0).abs() < f32::EPSILON && (y - 60.0).abs() < f32::EPSILON
+        ));
+    }
 
     #[test]
     fn classify_abs_mode_keeps_touchpad_devices_relative_from_abs() {
@@ -690,6 +1056,45 @@ mod tests {
             direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOOL_FINGER, true),
             None
         );
+    }
+
+    #[test]
+    fn reconcile_device_paths_reports_removed_and_added_paths() {
+        let existing = vec![
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event1"),
+        ];
+        let discovered = vec![
+            PathBuf::from("/dev/input/event1"),
+            PathBuf::from("/dev/input/event2"),
+        ];
+
+        let (removed, added) = reconcile_device_paths(&existing, &discovered);
+
+        assert_eq!(removed, vec![PathBuf::from("/dev/input/event0")]);
+        assert_eq!(added, vec![PathBuf::from("/dev/input/event2")]);
+    }
+
+    #[test]
+    fn reconcile_device_paths_preserves_existing_devices_without_duplicates() {
+        let existing = vec![PathBuf::from("/dev/input/event0")];
+        let discovered = vec![PathBuf::from("/dev/input/event0")];
+
+        let (removed, added) = reconcile_device_paths(&existing, &discovered);
+
+        assert!(removed.is_empty());
+        assert!(added.is_empty());
+    }
+
+    #[test]
+    fn should_remove_device_on_fetch_error_ignores_would_block() {
+        let would_block = std::io::Error::from(ErrorKind::WouldBlock);
+        let interrupted = std::io::Error::from(ErrorKind::Interrupted);
+        let other = std::io::Error::from(ErrorKind::BrokenPipe);
+
+        assert!(!should_remove_device_on_fetch_error(&would_block));
+        assert!(!should_remove_device_on_fetch_error(&interrupted));
+        assert!(should_remove_device_on_fetch_error(&other));
     }
 }
 

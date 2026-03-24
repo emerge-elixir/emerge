@@ -33,6 +33,12 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
 
     @impl true
+    def set_log_target(renderer, pid) do
+      Agent.update(renderer, &log_op(&1, {:set_log_target, pid}))
+      :ok
+    end
+
+    @impl true
     def set_input_mask(renderer, mask) do
       Agent.update(renderer, &log_op(&1, {:set_input_mask, mask}))
       :ok

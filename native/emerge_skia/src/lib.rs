@@ -27,6 +27,9 @@ mod drm_input;
 mod events;
 mod input;
 mod render_scene;
+#[cfg(feature = "drm")]
+mod linux_wait;
+mod native_log;
 mod renderer;
 mod tree;
 mod video;
@@ -42,8 +45,13 @@ use backend::wayland;
 #[cfg(feature = "wayland")]
 use backend::wayland_config::WaylandConfig;
 #[cfg(feature = "drm")]
+use cursor::{CursorState, SharedCursorState};
+#[cfg(feature = "drm")]
 use drm_input::DrmInput;
 use events::spawn_event_actor;
+#[cfg(feature = "drm")]
+use linux_wait::EventFd;
+use native_log::NativeLogRelay;
 use renderer::{
     RenderState, clear_global_caches, load_font, make_font_with_style, set_render_log_enabled,
 };
@@ -108,6 +116,7 @@ struct RendererResource {
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
     prime_video_supported: bool,
+    native_log: Arc<NativeLogRelay>,
     log_render: bool,
     log_input: bool,
     handles: Mutex<Option<RendererHandles>>,
@@ -738,10 +747,14 @@ fn spawn_tree_actor_with_initial_tree(
     })
 }
 
-fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResource>> {
+fn start_with_config(
+    config: StartConfig,
+    initial_log_target: Option<LocalPid>,
+) -> NifResult<ResourceArc<RendererResource>> {
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
+    let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
 
     #[cfg(feature = "drm")]
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
@@ -760,7 +773,10 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     };
     let (backend_cursor_tx, backend_cursor_rx) = unbounded();
     #[cfg(feature = "drm")]
-    let (drm_cursor_tx, drm_cursor_rx) = bounded(1024);
+    let drm_cursor_state = Arc::new(SharedCursorState::new(CursorState {
+        pos: (0.0, 0.0),
+        visible: true,
+    }));
 
     assets::start(tree_tx.clone(), log_render);
 
@@ -774,9 +790,10 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
     let initial_height = config.height;
     let release_tx = video::spawn_release_worker();
     let video_registry = Arc::new(VideoRegistry::new(release_tx));
-    #[cfg(feature = "wayland")]
+    #[cfg(any(feature = "wayland", feature = "drm"))]
+    #[allow(unused_assignments)]
     let mut backend_wake = BackendWakeHandle::noop();
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(any(feature = "wayland", feature = "drm")))]
     let backend_wake = BackendWakeHandle::noop();
 
     let (backend, prime_video_supported) = match config.backend {
@@ -863,13 +880,28 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         }
         #[cfg(feature = "drm")]
         BackendKind::Drm => {
+            let presenter_wake = EventFd::new().map_err(|err| {
+                rustler::Error::Term(Box::new(format!(
+                    "creating DRM presenter wake failed: {err}"
+                )))
+            })?;
+            let input_wake = EventFd::new().map_err(|err| {
+                rustler::Error::Term(Box::new(format!("creating DRM input wake failed: {err}")))
+            })?;
+            backend_wake = BackendWakeHandle::new(drm::DrmBackendWake::new(
+                presenter_wake.clone(),
+                input_wake.clone(),
+            ));
+
             let (screen_tx, screen_rx) = bounded(1);
             let (startup_tx, startup_rx) = std::sync::mpsc::channel();
             let event_tx_clone = event_tx.clone();
-            let drm_cursor_tx_clone = drm_cursor_tx.clone();
+            let drm_cursor_state_for_input = Arc::clone(&drm_cursor_state);
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
             let drm_input_size = (initial_width, initial_height);
+            let backend_wake_for_input = backend_wake.clone();
+            let input_wake_for_input = input_wake.clone();
             let video_registry_clone = Arc::clone(&video_registry);
 
             handles.input_handle = Some(thread::spawn(move || {
@@ -877,13 +909,13 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     drm_input_size,
                     screen_rx,
                     event_tx_clone,
-                    drm_cursor_tx_clone,
+                    drm_cursor_state_for_input,
+                    Arc::clone(&stop_clone),
+                    backend_wake_for_input,
+                    input_wake_for_input,
                     input_log,
                 );
-                while !stop_clone.load(Ordering::Relaxed) {
-                    input.poll();
-                    std::thread::sleep(Duration::from_millis(2));
-                }
+                input.run();
             }));
 
             let running_flag_clone = Arc::clone(&running_flag);
@@ -891,6 +923,10 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
             let render_counter_clone = Arc::clone(&render_counter);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
+            let drm_cursor_state_for_backend = Arc::clone(&drm_cursor_state);
+            let native_log_for_backend = Arc::clone(&native_log);
+            let presenter_wake_for_backend = presenter_wake.clone();
+            let input_wake_for_backend = input_wake.clone();
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
                 card_path: config.drm_card.clone(),
@@ -906,13 +942,16 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                         startup_tx,
                         stop: stop_for_thread,
                         running_flag: running_flag_clone,
+                        presenter_wake: presenter_wake_for_backend,
+                        input_wake: input_wake_for_backend,
                         tree_tx: tree_tx_clone,
                         render_rx,
                         cursor_icon_rx: backend_cursor_rx,
-                        cursor_pos_rx: drm_cursor_rx,
+                        cursor_state: drm_cursor_state_for_backend,
                         event_tx: event_tx_clone,
                         screen_tx,
                         render_counter: render_counter_clone,
+                        native_log: native_log_for_backend,
                         video_registry: video_registry_clone,
                     },
                     drm_config,
@@ -964,7 +1003,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
                     log_input,
-                    window_wake: BackendWakeHandle::noop(),
+                    window_wake: backend_wake.clone(),
                     initial_width,
                     initial_height,
                 },
@@ -983,13 +1022,16 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         system_clipboard,
     ));
 
-    #[cfg(feature = "wayland")]
-    let video_wake = if matches!(backend, BackendKind::Wayland) {
-        VideoWake::new(backend_wake.clone())
-    } else {
-        VideoWake::noop()
+    #[cfg(any(feature = "wayland", feature = "drm"))]
+    let video_wake = match backend {
+        #[cfg(feature = "wayland")]
+        BackendKind::Wayland => VideoWake::new(backend_wake.clone()),
+        #[cfg(feature = "drm")]
+        BackendKind::Drm => VideoWake::new(backend_wake.clone()),
+        #[allow(unreachable_patterns)]
+        _ => VideoWake::noop(),
     };
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(any(feature = "wayland", feature = "drm")))]
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
@@ -1003,6 +1045,7 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
         video_registry,
         video_wake,
         prime_video_supported,
+        native_log,
         log_render,
         log_input,
         handles: Mutex::new(Some(handles)),
@@ -1012,25 +1055,33 @@ fn start_with_config(config: StartConfig) -> NifResult<ResourceArc<RendererResou
 }
 
 #[rustler::nif]
-fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<RendererResource>> {
+fn start(
+    env: Env,
+    title: String,
+    width: u32,
+    height: u32,
+) -> NifResult<ResourceArc<RendererResource>> {
     #[cfg(feature = "wayland")]
     {
-        start_with_config(StartConfig {
-            backend: BackendKind::Wayland,
-            title,
-            width,
-            height,
-            drm_card: None,
-            drm_startup_retries: 40,
-            drm_retry_interval_ms: 250,
-            drm_hw_cursor: true,
-            drm_input_log: false,
-            render_log: false,
-        })
+        start_with_config(
+            StartConfig {
+                backend: BackendKind::Wayland,
+                title,
+                width,
+                height,
+                drm_card: None,
+                drm_startup_retries: 40,
+                drm_retry_interval_ms: 250,
+                drm_hw_cursor: true,
+                drm_input_log: false,
+                render_log: false,
+            },
+            Some(env.pid()),
+        )
     }
     #[cfg(not(feature = "wayland"))]
     {
-        let _ = (title, width, height);
+        let _ = (env, title, width, height);
         Err(rustler::Error::Term(Box::new(
             "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),
@@ -1039,23 +1090,26 @@ fn start(title: String, width: u32, height: u32) -> NifResult<ResourceArc<Render
 }
 
 #[rustler::nif]
-fn start_opts(opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
+fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
-    start_with_config(StartConfig {
-        backend,
-        title: opts.title,
-        width: opts.width,
-        height: opts.height,
-        drm_card: opts.drm_card,
-        drm_startup_retries: opts.drm_startup_retries,
-        drm_retry_interval_ms: opts.drm_retry_interval_ms,
-        drm_hw_cursor: opts.hw_cursor,
-        drm_input_log: opts.input_log,
-        render_log: opts.render_log,
-    })
+    start_with_config(
+        StartConfig {
+            backend,
+            title: opts.title,
+            width: opts.width,
+            height: opts.height,
+            drm_card: opts.drm_card,
+            drm_startup_retries: opts.drm_startup_retries,
+            drm_retry_interval_ms: opts.drm_retry_interval_ms,
+            drm_hw_cursor: opts.hw_cursor,
+            drm_input_log: opts.input_log,
+            render_log: opts.render_log,
+        },
+        Some(env.pid()),
+    )
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -1225,6 +1279,12 @@ fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPi
         EventMsg::SetInputTarget(pid),
         renderer.log_input,
     );
+    atoms::ok()
+}
+
+#[rustler::nif]
+fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
+    renderer.native_log.set_target(pid);
     atoms::ok()
 }
 

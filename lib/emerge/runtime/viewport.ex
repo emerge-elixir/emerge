@@ -33,6 +33,12 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   @impl true
+  def handle_info({:emerge_skia_log, level, source, message}, state) do
+    log_native_renderer_message(level, source, message)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:emerge_skia_event, event}, state) do
     handle_skia_event(event, state)
   end
@@ -418,6 +424,7 @@ defmodule Emerge.Runtime.Viewport do
 
     case safe_invoke(fn ->
            :ok = runtime.renderer_module.set_input_target(renderer, self())
+           :ok = runtime.renderer_module.set_log_target(renderer, self())
 
            if is_integer(runtime.input_mask) do
              :ok = runtime.renderer_module.set_input_mask(renderer, runtime.input_mask)
@@ -479,6 +486,22 @@ defmodule Emerge.Runtime.Viewport do
       failure
     ])
   end
+
+  defp log_native_renderer_message(level, source, message) do
+    Logger.log(normalize_native_log_level(level), fn ->
+      {[
+         "EmergeSkia native[",
+         to_string(source),
+         "] ",
+         to_string(message)
+       ], [native_renderer: true, native_renderer_source: source]}
+    end)
+  end
+
+  defp normalize_native_log_level(level) when level in [:debug, :info, :warning, :error],
+    do: level
+
+  defp normalize_native_log_level(_level), do: :info
 
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"
