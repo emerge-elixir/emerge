@@ -143,7 +143,8 @@ fn test_render_scrollbar_y_thumb() {
         content_height: 150.0,
     };
     let tree = build_tree_with_frame(attrs, frame);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let background = only_draw(&draws, |draw| {
         matches!(
@@ -159,7 +160,25 @@ fn test_render_scrollbar_y_thumb() {
     });
 
     assert!(background.clips.is_empty());
-    assert_eq!(thumb.clips.len(), 1);
+    let thumb_clip_scopes = clip_scope_chain(&trace, thumb);
+    assert_eq!(thumb_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(thumb_clip_scopes[0]).expect("thumb should be inside a clip scope"),
+        &[ClipShape {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+            },
+            radii: Some(CornerRadii {
+                tl: 8.0,
+                tr: 8.0,
+                br: 8.0,
+                bl: 8.0,
+            }),
+        }]
+    );
     assert_eq!(
         thumb.clips[0].shape,
         ClipShape {
@@ -201,7 +220,8 @@ fn test_render_scrollbar_x_thumb() {
         content_height: 40.0,
     };
     let tree = build_tree_with_frame(attrs, frame);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     only_draw(&draws, |draw| {
         matches!(
@@ -218,7 +238,25 @@ fn test_render_scrollbar_x_thumb() {
             DrawPrimitive::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR)
         )
     });
-    assert_eq!(thumb.clips.len(), 1);
+    let thumb_clip_scopes = clip_scope_chain(&trace, thumb);
+    assert_eq!(thumb_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(thumb_clip_scopes[0]).expect("thumb should be inside a clip scope"),
+        &[ClipShape {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0,
+            },
+            radii: Some(CornerRadii {
+                tl: 4.0,
+                tr: 6.0,
+                br: 12.0,
+                bl: 8.0,
+            }),
+        }]
+    );
     assert_eq!(
         thumb.clips[0].shape,
         ClipShape {

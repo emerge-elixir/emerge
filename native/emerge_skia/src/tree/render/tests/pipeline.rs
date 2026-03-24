@@ -3,6 +3,36 @@ use super::*;
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
 use crate::tree::transform::{element_transform, Affine2};
 
+fn build_two_child_tree(
+    root_attrs: Attrs,
+    root_frame: Frame,
+    left_attrs: Attrs,
+    left_frame: Frame,
+    right_attrs: Attrs,
+    right_frame: Frame,
+) -> ElementTree {
+    let root_id = ElementId::from_term_bytes(vec![200]);
+    let left_id = ElementId::from_term_bytes(vec![201]);
+    let right_id = ElementId::from_term_bytes(vec![202]);
+
+    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![left_id.clone(), right_id.clone()];
+    root.frame = Some(root_frame);
+
+    let mut left = Element::with_attrs(left_id, ElementKind::El, Vec::new(), left_attrs);
+    left.frame = Some(left_frame);
+
+    let mut right = Element::with_attrs(right_id, ElementKind::El, Vec::new(), right_attrs);
+    right.frame = Some(right_frame);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(root_id);
+    tree.insert(root);
+    tree.insert(left);
+    tree.insert(right);
+    tree
+}
+
 #[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
     let root_id = ElementId::from_term_bytes(vec![40]);
@@ -86,15 +116,97 @@ fn test_render_nested_wrapper_children_use_host_clips() {
     tree.insert(text_holder);
     tree.insert(text);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let text_draw = only_draw(
-        &draws,
+        draws,
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "Overview"),
     );
-    assert!(
-        text_draw.clips.len() >= 3,
-        "nested hosts should each clip their own content subtree"
+    let clip_scopes = clip_scope_chain(&trace, text_draw);
+    assert_eq!(
+        clip_scopes.len(),
+        4,
+        "nested hosts should contribute distinct clip scopes"
+    );
+    assert_eq!(
+        clip_scope_shapes(clip_scopes[0]).expect("root clip scope should expose its shape"),
+        &[ClipShape {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 220.0,
+                height: 120.0,
+            },
+            radii: None,
+        }]
+    );
+    assert_eq!(
+        clip_scope_shapes(clip_scopes[1]).expect("column clip scope should expose its shape"),
+        &[
+            ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 220.0,
+                    height: 120.0,
+                },
+                radii: None,
+            },
+            ClipShape {
+                rect: Rect {
+                    x: 16.0,
+                    y: 14.0,
+                    width: 180.0,
+                    height: 60.0,
+                },
+                radii: None,
+            },
+        ]
+    );
+    assert_eq!(
+        clip_scope_shapes(clip_scopes[2]).expect("holder clip scope should expose its shape"),
+        &[
+            ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 220.0,
+                    height: 120.0,
+                },
+                radii: None,
+            },
+            ClipShape {
+                rect: Rect {
+                    x: 16.0,
+                    y: 14.0,
+                    width: 180.0,
+                    height: 60.0,
+                },
+                radii: None,
+            },
+            ClipShape {
+                rect: Rect {
+                    x: 16.0,
+                    y: 14.0,
+                    width: 180.0,
+                    height: 40.0,
+                },
+                radii: None,
+            },
+        ]
+    );
+    assert_eq!(
+        clip_scope_shapes(clip_scopes[3]).expect("text clip scope should expose its shape"),
+        &[ClipShape {
+            rect: Rect {
+                x: 24.0,
+                y: 22.0,
+                width: 100.0,
+                height: 28.0,
+            },
+            radii: None,
+        }]
     );
 }
 
@@ -165,7 +277,8 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
     tree.insert(left);
     tree.insert(right);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
     let expected_root_clip = ClipShape {
         rect: Rect {
             x: 0.0,
@@ -191,14 +304,35 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
 
     assert_eq!(left_draw.cumulative_transform, left_transform);
     assert_eq!(right_draw.cumulative_transform, right_transform);
-    assert!(left_draw
-        .clips
-        .iter()
-        .any(|clip| clip.shape == expected_root_clip));
-    assert!(right_draw
-        .clips
-        .iter()
-        .any(|clip| clip.shape == expected_root_clip));
+
+    let left_scopes = scope_chain(&trace, left_draw);
+    assert!(matches!(left_scopes[0].kind, ScopeKind::Alpha { alpha } if alpha == 0.85));
+    assert!(matches!(left_scopes[1].kind, ScopeKind::Clip { .. }));
+    assert_eq!(
+        clip_scope_shapes(left_scopes[1]).unwrap(),
+        &[expected_root_clip]
+    );
+    assert!(
+        matches!(left_scopes[2].kind, ScopeKind::Transform { transform } if transform == left_transform)
+    );
+    assert_eq!(
+        left_draw.clips[0].transform_at_application,
+        Affine2::identity()
+    );
+
+    let right_scopes = scope_chain(&trace, right_draw);
+    assert!(matches!(right_scopes[0].kind, ScopeKind::Clip { .. }));
+    assert_eq!(
+        clip_scope_shapes(right_scopes[0]).unwrap(),
+        &[expected_root_clip]
+    );
+    assert!(
+        matches!(right_scopes[1].kind, ScopeKind::Transform { transform } if transform == right_transform)
+    );
+    assert_eq!(
+        right_draw.clips[0].transform_at_application,
+        Affine2::identity()
+    );
 }
 
 #[test]
@@ -246,7 +380,8 @@ fn test_render_rounded_parent_clips_child_background_corners() {
     tree.insert(root);
     tree.insert(child);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
     let child_rect = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
@@ -254,23 +389,27 @@ fn test_render_rounded_parent_clips_child_background_corners() {
         )
     });
 
-    assert!(child_rect.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 365.0,
-                    height: 160.0,
-                },
-                radii: Some(CornerRadii {
-                    tl: 12.0,
-                    tr: 12.0,
-                    br: 12.0,
-                    bl: 12.0,
-                }),
-            }
-    }));
+    let root_clip_scope = clip_scope_chain(&trace, child_rect)
+        .into_iter()
+        .next()
+        .expect("child background should retain its parent clip scope");
+    assert_eq!(
+        clip_scope_shapes(root_clip_scope).unwrap(),
+        &[ClipShape {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 365.0,
+                height: 160.0,
+            },
+            radii: Some(CornerRadii {
+                tl: 12.0,
+                tr: 12.0,
+                br: 12.0,
+                bl: 12.0,
+            }),
+        }]
+    );
 }
 
 #[test]
@@ -380,7 +519,8 @@ fn test_render_emits_translate_for_move() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let draw = only_draw(&draws, |resolved| {
         matches!(
@@ -407,7 +547,8 @@ fn test_render_emits_rotate_for_rotation() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let draw = only_draw(&draws, |resolved| {
         matches!(
@@ -434,7 +575,8 @@ fn test_render_emits_scale_for_scale() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let draw = only_draw(&draws, |resolved| {
         matches!(
@@ -450,7 +592,8 @@ fn test_render_emits_alpha_layer() {
     let mut attrs = Attrs::default();
     attrs.alpha = Some(0.5);
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let draw = only_draw(&draws, |resolved| {
         matches!(
@@ -458,8 +601,9 @@ fn test_render_emits_alpha_layer() {
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    assert_eq!(draw.alpha_scopes.len(), 1);
-    assert_eq!(draw.alpha_scopes[0].alpha, 0.5);
+    let alpha_scopes = alpha_scope_chain(&trace, draw);
+    assert_eq!(alpha_scopes.len(), 1);
+    assert_eq!(alpha_scope_value(alpha_scopes[0]), Some(0.5));
 }
 
 #[test]
@@ -545,10 +689,134 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
 }
 
 #[test]
+fn test_tree_clip_scope_does_not_clip_following_sibling_pixels() {
+    let tree = build_two_child_tree(
+        Attrs::default(),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 10.0,
+            content_width: 40.0,
+            content_height: 10.0,
+        },
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+        solid_fill_attrs((0, 0, 255)),
+        Frame {
+            x: 20.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(40, 10, &tree);
+
+    assert_eq!(rgba_at(&pixels, 40, 5, 5), (255, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 40, 25, 5), (0, 0, 255, 255));
+}
+
+#[test]
+fn test_tree_alpha_scope_does_not_affect_following_sibling_pixels() {
+    let mut left_attrs = solid_fill_attrs((255, 0, 0));
+    left_attrs.alpha = Some(0.5);
+
+    let tree = build_two_child_tree(
+        Attrs::default(),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 10.0,
+            content_width: 40.0,
+            content_height: 10.0,
+        },
+        left_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+        solid_fill_attrs((0, 0, 255)),
+        Frame {
+            x: 20.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(40, 10, &tree);
+    let red = rgba_at(&pixels, 40, 5, 5);
+    let blue = rgba_at(&pixels, 40, 25, 5);
+
+    assert!(red.3 > 0 && red.3 < 255);
+    assert_eq!(blue, (0, 0, 255, 255));
+}
+
+#[test]
+fn test_tree_transform_scope_does_not_affect_following_sibling_pixels() {
+    let mut left_attrs = solid_fill_attrs((255, 0, 0));
+    left_attrs.move_x = Some(10.0);
+
+    let tree = build_two_child_tree(
+        Attrs::default(),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 50.0,
+            height: 10.0,
+            content_width: 50.0,
+            content_height: 10.0,
+        },
+        left_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+        solid_fill_attrs((0, 0, 255)),
+        Frame {
+            x: 20.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            content_width: 10.0,
+            content_height: 10.0,
+        },
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(50, 10, &tree);
+
+    assert_eq!(rgba_at(&pixels, 50, 15, 5), (255, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 50, 25, 5), (0, 0, 255, 255));
+    assert_eq!(rgba_at(&pixels, 50, 35, 5).3, 0);
+}
+
+#[test]
 fn test_render_skips_transform_when_default() {
     let attrs = Attrs::default();
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let draw = only_draw(&draws, |resolved| {
         matches!(
@@ -608,7 +876,8 @@ fn test_render_nearby_behind_and_in_front_order() {
         },
         11,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let background = only_draw(&draws, |draw| {
         matches!(
@@ -631,8 +900,8 @@ fn test_render_nearby_behind_and_in_front_order() {
 
     assert!(paints_before(background, behind));
     assert!(paints_before(behind, front));
-    assert_eq!(behind.clips.len(), 1);
-    assert!(front.clips.is_empty());
+    assert_eq!(clip_scope_chain(&trace, behind).len(), 1);
+    assert!(clip_scope_chain(&trace, front).is_empty());
 }
 
 #[test]
@@ -681,7 +950,8 @@ fn test_render_behind_between_background_and_children() {
         12,
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let background = only_draw(&draws, |draw| {
         matches!(
@@ -704,9 +974,16 @@ fn test_render_behind_between_background_and_children() {
 
     assert!(paints_before(background, behind));
     assert!(paints_before(behind, child));
-    assert_eq!(behind.clips.len(), 1);
-    assert_eq!(child.clips.len(), 1);
-    assert_eq!(behind.clips[0].shape, child.clips[0].shape);
+
+    let behind_clip_scopes = clip_scope_chain(&trace, behind);
+    let child_clip_scopes = clip_scope_chain(&trace, child);
+    assert_eq!(behind_clip_scopes.len(), 1);
+    assert_eq!(child_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(behind_clip_scopes[0]).unwrap(),
+        clip_scope_shapes(child_clip_scopes[0]).unwrap()
+    );
+    assert!(!same_immediate_clip_scope(&trace, behind, child));
 }
 
 #[test]
@@ -756,7 +1033,8 @@ fn test_render_behind_inside_host_clip() {
         13,
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let behind = only_draw(&draws, |draw| {
         matches!(
@@ -771,9 +1049,15 @@ fn test_render_behind_inside_host_clip() {
         )
     });
 
-    assert_eq!(behind.clips.len(), 1);
-    assert_eq!(child.clips.len(), 1);
-    assert_eq!(behind.clips[0].shape, child.clips[0].shape);
+    let behind_clip_scopes = clip_scope_chain(&trace, behind);
+    let child_clip_scopes = clip_scope_chain(&trace, child);
+    assert_eq!(behind_clip_scopes.len(), 1);
+    assert_eq!(child_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(behind_clip_scopes[0]).unwrap(),
+        clip_scope_shapes(child_clip_scopes[0]).unwrap()
+    );
+    assert!(!same_immediate_clip_scope(&trace, behind, child));
 }
 
 #[test]
@@ -825,7 +1109,8 @@ fn test_render_nearby_above_below_order_after_parent() {
         },
         15,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let background = only_draw(&draws, |draw| {
         matches!(
@@ -899,7 +1184,8 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
         22,
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let child = only_draw(&draws, |draw| {
         matches!(
@@ -914,8 +1200,8 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
         )
     });
 
-    assert_eq!(child.clips.len(), 1);
-    assert!(nearby.clips.is_empty());
+    assert_eq!(clip_scope_chain(&trace, child).len(), 1);
+    assert!(clip_scope_chain(&trace, nearby).is_empty());
     assert!(paints_before(child, nearby));
 }
 
@@ -952,7 +1238,8 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
         },
         16,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let background = only_draw(&draws, |draw| {
         matches!(
@@ -1004,7 +1291,8 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
         },
         17,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     only_draw(&draws, |draw| {
         matches!(
@@ -1047,7 +1335,8 @@ fn test_render_above_fill_width_uses_parent_slot() {
         },
         18,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     only_draw(&draws, |draw| {
         matches!(
@@ -1090,7 +1379,8 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
         },
         19,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     only_draw(&draws, |draw| {
         matches!(
@@ -1134,7 +1424,8 @@ fn test_render_in_front_ignores_host_clip() {
         },
         20,
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let front = only_draw(&draws, |draw| {
         matches!(
@@ -1179,7 +1470,8 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
         },
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let shadow = only_draw(&draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
@@ -1191,8 +1483,8 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
         )
     });
 
-    assert!(shadow.clips.is_empty());
-    assert_eq!(body.clips.len(), 1);
+    assert!(clip_scope_chain(&trace, shadow).is_empty());
+    assert_eq!(clip_scope_chain(&trace, body).len(), 1);
     assert!(paints_before(shadow, body));
 }
 
@@ -1231,7 +1523,8 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
         },
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let shadow = only_draw(&draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
@@ -1243,9 +1536,14 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
         )
     });
 
-    assert_eq!(shadow.clips.len(), 1);
-    assert_eq!(body.clips.len(), 1);
-    assert_eq!(shadow.clips[0].shape, body.clips[0].shape);
+    let shadow_clip_scopes = clip_scope_chain(&trace, shadow);
+    let body_clip_scopes = clip_scope_chain(&trace, body);
+    assert_eq!(shadow_clip_scopes.len(), 1);
+    assert_eq!(body_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(shadow_clip_scopes[0]).unwrap(),
+        clip_scope_shapes(body_clip_scopes[0]).unwrap()
+    );
 }
 
 #[test]
@@ -1285,7 +1583,8 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         },
     );
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let shadow = only_draw(&draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
@@ -1311,10 +1610,18 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         }),
     };
 
-    assert_eq!(shadow.clips.len(), 1);
-    assert_eq!(body.clips.len(), 1);
-    assert_eq!(shadow.clips[0].shape, expected_clip);
-    assert_eq!(body.clips[0].shape, expected_clip);
+    let shadow_clip_scopes = clip_scope_chain(&trace, shadow);
+    let body_clip_scopes = clip_scope_chain(&trace, body);
+    assert_eq!(shadow_clip_scopes.len(), 1);
+    assert_eq!(body_clip_scopes.len(), 1);
+    assert_eq!(
+        clip_scope_shapes(shadow_clip_scopes[0]).unwrap(),
+        &[expected_clip]
+    );
+    assert_eq!(
+        clip_scope_shapes(body_clip_scopes[0]).unwrap(),
+        &[expected_clip]
+    );
 }
 
 #[test]
@@ -1401,7 +1708,8 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     tree.insert(child_b);
     tree.insert(child_c);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     assert!(
         draws
@@ -1495,7 +1803,8 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     tree.insert(inner);
     tree.insert(text);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let text_draw = only_draw(
         &draws,
@@ -1568,7 +1877,8 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     tree.insert(root);
     tree.insert(text);
 
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let text_draw = only_draw(
         &draws,
@@ -1631,7 +1941,8 @@ fn test_border_renders_after_host_clip_pops() {
             content_height: 10.0,
         },
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
 
     let child_draw = only_draw(&draws, |draw| {
         matches!(
@@ -1642,25 +1953,26 @@ fn test_border_renders_after_host_clip_pops() {
     let border_draw = only_draw(&draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Border(..))
     });
+    let expected_host_clip = ClipShape {
+        rect: Rect {
+            x: 2.0,
+            y: 2.0,
+            width: 96.0,
+            height: 46.0,
+        },
+        radii: Some(CornerRadii {
+            tl: 6.0,
+            tr: 6.0,
+            br: 6.0,
+            bl: 6.0,
+        }),
+    };
 
-    assert!(child_draw.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 2.0,
-                    y: 2.0,
-                    width: 96.0,
-                    height: 46.0,
-                },
-                radii: Some(CornerRadii {
-                    tl: 6.0,
-                    tr: 6.0,
-                    br: 6.0,
-                    bl: 6.0,
-                }),
-            }
-    }));
-    assert!(border_draw.clips.is_empty());
+    let child_clip_scopes = clip_scope_chain(&trace, child_draw);
+    assert!(child_clip_scopes
+        .iter()
+        .any(|scope| { clip_scope_shapes(scope).unwrap() == &[expected_host_clip] }));
+    assert!(scope_chain(&trace, border_draw).is_empty());
     assert!(paints_before(child_draw, border_draw));
 }
 
@@ -1697,20 +2009,21 @@ fn test_host_clip_pushes_once_for_square_border() {
             content_height: 150.0,
         },
     );
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let expected_host_clip = ClipShape {
+        rect: Rect {
+            x: 2.0,
+            y: 2.0,
+            width: 96.0,
+            height: 46.0,
+        },
+        radii: None,
+    };
 
-    let clip_scope_count = unique_clip_scope_count(&draws, |clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 2.0,
-                    y: 2.0,
-                    width: 96.0,
-                    height: 46.0,
-                },
-                radii: None,
-            }
-    });
+    let clip_scope_count = clip_scope_usage(
+        &trace,
+        |scope| matches!(clip_scope_shapes(scope), Some([clip]) if *clip == expected_host_clip),
+    );
 
     assert_eq!(clip_scope_count, 1, "should have only one host clip scope");
 }
