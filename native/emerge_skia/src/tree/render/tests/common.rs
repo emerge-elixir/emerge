@@ -4,18 +4,32 @@ use crate::renderer::{RenderState, Renderer};
 use crate::tree::geometry::ClipShape;
 use crate::tree::transform::Affine2;
 use skia_safe::Color as SkColor;
-use std::collections::HashSet;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ScopeKind {
+    Clip { clips: Vec<ClipShape> },
+    Transform { transform: Affine2 },
+    Alpha { alpha: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScopeRecord {
+    pub id: usize,
+    pub parent_id: Option<usize>,
+    pub kind: ScopeKind,
+    pub entry_transform: Affine2,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AppliedClip {
-    pub id: usize,
+    pub scope_id: usize,
     pub shape: ClipShape,
     pub transform_at_application: Affine2,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AlphaScope {
-    pub id: usize,
+    pub scope_id: usize,
     pub alpha: f32,
 }
 
@@ -26,6 +40,13 @@ pub(crate) struct ResolvedDraw {
     pub cumulative_transform: Affine2,
     pub clips: Vec<AppliedClip>,
     pub alpha_scopes: Vec<AlphaScope>,
+    pub scope_path: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SceneTrace {
+    pub scopes: Vec<ScopeRecord>,
+    pub draws: Vec<ResolvedDraw>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -33,12 +54,12 @@ struct ObserveContext {
     cumulative_transform: Affine2,
     clips: Vec<AppliedClip>,
     alpha_scopes: Vec<AlphaScope>,
+    scope_path: Vec<usize>,
 }
 
 #[derive(Debug, Default)]
 struct ObserveState {
-    next_clip_id: usize,
-    next_alpha_id: usize,
+    next_scope_id: usize,
     next_paint_order: usize,
 }
 
@@ -46,28 +67,39 @@ pub(super) fn render_output(tree: &ElementTree) -> super::super::RenderOutput {
     super::super::render_tree(tree)
 }
 
+pub(super) fn trace_output(tree: &ElementTree) -> (super::super::RenderOutput, SceneTrace) {
+    let output = render_output(tree);
+    let trace = trace_scene(&output.scene);
+    (output, trace)
+}
+
+pub(super) fn trace_tree(tree: &ElementTree) -> SceneTrace {
+    trace_output(tree).1
+}
+
 pub(super) fn observe_output(
     tree: &ElementTree,
 ) -> (super::super::RenderOutput, Vec<ResolvedDraw>) {
-    let output = render_output(tree);
-    let draws = observe_scene(&output.scene);
-    (output, draws)
+    let (output, trace) = trace_output(tree);
+    (output, trace.draws)
 }
 
 pub(super) fn observe_tree(tree: &ElementTree) -> Vec<ResolvedDraw> {
-    observe_output(tree).1
+    trace_tree(tree).draws
 }
 
-pub(super) fn observe_scene(scene: &RenderScene) -> Vec<ResolvedDraw> {
+pub(super) fn trace_scene(scene: &RenderScene) -> SceneTrace {
     let mut draws = Vec::new();
+    let mut scopes = Vec::new();
     let mut state = ObserveState::default();
-    observe_nodes(
+    trace_nodes(
         &scene.nodes,
         &ObserveContext::default(),
         &mut state,
+        &mut scopes,
         &mut draws,
     );
-    draws
+    SceneTrace { scopes, draws }
 }
 
 pub(super) fn render_scene_to_pixels(width: u32, height: u32, scene: RenderScene) -> Vec<u8> {
@@ -106,6 +138,16 @@ pub(super) fn rgba_at(pixels: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8,
     )
 }
 
+pub(super) fn render_tree_to_pixels(
+    width: u32,
+    height: u32,
+    tree: &ElementTree,
+) -> (super::super::RenderOutput, Vec<u8>) {
+    let output = render_output(tree);
+    let pixels = render_scene_to_pixels(width, height, output.scene.clone());
+    (output, pixels)
+}
+
 pub(super) fn only_draw<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> &'a ResolvedDraw
 where
     F: Fn(&ResolvedDraw) -> bool,
@@ -129,62 +171,169 @@ pub(super) fn paints_before(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
 pub(super) fn shares_alpha_scope(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
     a.alpha_scopes
         .iter()
-        .map(|scope| scope.id)
-        .eq(b.alpha_scopes.iter().map(|scope| scope.id))
+        .map(|scope| scope.scope_id)
+        .eq(b.alpha_scopes.iter().map(|scope| scope.scope_id))
 }
 
-pub(super) fn unique_clip_scope_count<F>(draws: &[ResolvedDraw], pred: F) -> usize
+pub(super) fn scope<'a>(trace: &'a SceneTrace, scope_id: usize) -> &'a ScopeRecord {
+    trace
+        .scopes
+        .iter()
+        .find(|scope| scope.id == scope_id)
+        .expect("scope id should exist in scene trace")
+}
+
+pub(super) fn scope_chain<'a>(trace: &'a SceneTrace, draw: &ResolvedDraw) -> Vec<&'a ScopeRecord> {
+    draw.scope_path
+        .iter()
+        .map(|scope_id| scope(trace, *scope_id))
+        .collect()
+}
+
+pub(super) fn matching_scopes<'a, F>(
+    trace: &'a SceneTrace,
+    draw: &ResolvedDraw,
+    pred: F,
+) -> Vec<&'a ScopeRecord>
 where
-    F: Fn(&AppliedClip) -> bool,
+    F: Fn(&ScopeRecord) -> bool,
 {
-    let mut clip_ids = HashSet::new();
-    for draw in draws {
-        for clip in &draw.clips {
-            if pred(clip) {
-                clip_ids.insert(clip.id);
-            }
-        }
-    }
-
-    clip_ids.len()
+    scope_chain(trace, draw)
+        .into_iter()
+        .filter(|scope| pred(scope))
+        .collect()
 }
 
-fn observe_nodes(
+pub(super) fn clip_scope_chain<'a>(
+    trace: &'a SceneTrace,
+    draw: &ResolvedDraw,
+) -> Vec<&'a ScopeRecord> {
+    matching_scopes(trace, draw, |scope| {
+        matches!(scope.kind, ScopeKind::Clip { .. })
+    })
+}
+
+pub(super) fn alpha_scope_chain<'a>(
+    trace: &'a SceneTrace,
+    draw: &ResolvedDraw,
+) -> Vec<&'a ScopeRecord> {
+    matching_scopes(trace, draw, |scope| {
+        matches!(scope.kind, ScopeKind::Alpha { .. })
+    })
+}
+
+pub(super) fn clip_scope_shapes(scope: &ScopeRecord) -> Option<&[ClipShape]> {
+    match &scope.kind {
+        ScopeKind::Clip { clips } => Some(clips.as_slice()),
+        _ => None,
+    }
+}
+
+pub(super) fn alpha_scope_value(scope: &ScopeRecord) -> Option<f32> {
+    match scope.kind {
+        ScopeKind::Alpha { alpha } => Some(alpha),
+        _ => None,
+    }
+}
+
+pub(super) fn same_immediate_clip_scope(
+    trace: &SceneTrace,
+    a: &ResolvedDraw,
+    b: &ResolvedDraw,
+) -> bool {
+    immediate_clip_scope(trace, a).map(|scope| scope.id)
+        == immediate_clip_scope(trace, b).map(|scope| scope.id)
+}
+
+pub(super) fn immediate_clip_scope<'a>(
+    trace: &'a SceneTrace,
+    draw: &ResolvedDraw,
+) -> Option<&'a ScopeRecord> {
+    draw.scope_path.iter().rev().find_map(|scope_id| {
+        let scope = scope(trace, *scope_id);
+        matches!(scope.kind, ScopeKind::Clip { .. }).then_some(scope)
+    })
+}
+
+pub(super) fn clip_scope_usage<F>(trace: &SceneTrace, pred: F) -> usize
+where
+    F: Fn(&ScopeRecord) -> bool,
+{
+    trace.scopes.iter().filter(|scope| pred(scope)).count()
+}
+
+fn trace_nodes(
     nodes: &[RenderNode],
     context: &ObserveContext,
     state: &mut ObserveState,
+    scopes: &mut Vec<ScopeRecord>,
     draws: &mut Vec<ResolvedDraw>,
 ) {
     for node in nodes {
         match node {
             RenderNode::Clip { clips, children } => {
+                let scope_id = state.next_scope_id;
+                state.next_scope_id += 1;
+
+                scopes.push(ScopeRecord {
+                    id: scope_id,
+                    parent_id: context.scope_path.last().copied(),
+                    kind: ScopeKind::Clip {
+                        clips: clips.clone(),
+                    },
+                    entry_transform: context.cumulative_transform,
+                });
+
                 let mut next_context = context.clone();
+                next_context.scope_path.push(scope_id);
                 for clip in clips {
                     next_context.clips.push(AppliedClip {
-                        id: state.next_clip_id,
+                        scope_id,
                         shape: *clip,
                         transform_at_application: context.cumulative_transform,
                     });
-                    state.next_clip_id += 1;
                 }
-                observe_nodes(children, &next_context, state, draws);
+                trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::Transform {
                 transform,
                 children,
             } => {
+                let scope_id = state.next_scope_id;
+                state.next_scope_id += 1;
+
+                scopes.push(ScopeRecord {
+                    id: scope_id,
+                    parent_id: context.scope_path.last().copied(),
+                    kind: ScopeKind::Transform {
+                        transform: *transform,
+                    },
+                    entry_transform: context.cumulative_transform,
+                });
+
                 let mut next_context = context.clone();
+                next_context.scope_path.push(scope_id);
                 next_context.cumulative_transform = context.cumulative_transform.mul(*transform);
-                observe_nodes(children, &next_context, state, draws);
+                trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::Alpha { alpha, children } => {
+                let scope_id = state.next_scope_id;
+                state.next_scope_id += 1;
+
+                scopes.push(ScopeRecord {
+                    id: scope_id,
+                    parent_id: context.scope_path.last().copied(),
+                    kind: ScopeKind::Alpha { alpha: *alpha },
+                    entry_transform: context.cumulative_transform,
+                });
+
                 let mut next_context = context.clone();
+                next_context.scope_path.push(scope_id);
                 next_context.alpha_scopes.push(AlphaScope {
-                    id: state.next_alpha_id,
+                    scope_id,
                     alpha: *alpha,
                 });
-                state.next_alpha_id += 1;
-                observe_nodes(children, &next_context, state, draws);
+                trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::Primitive(primitive) => {
                 draws.push(ResolvedDraw {
@@ -193,6 +342,7 @@ fn observe_nodes(
                     cumulative_transform: context.cumulative_transform,
                     clips: context.clips.clone(),
                     alpha_scopes: context.alpha_scopes.clone(),
+                    scope_path: context.scope_path.clone(),
                 });
                 state.next_paint_order += 1;
             }
