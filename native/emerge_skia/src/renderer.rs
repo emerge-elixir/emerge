@@ -1970,6 +1970,16 @@ mod tests {
         height: u32,
         primitives: Vec<DrawPrimitive>,
     ) -> Vec<u8> {
+        render_scene_graph_to_pixels(
+            width,
+            height,
+            RenderScene {
+                nodes: primitives.into_iter().map(RenderNode::Primitive).collect(),
+            },
+        )
+    }
+
+    fn render_scene_graph_to_pixels(width: u32, height: u32, scene: RenderScene) -> Vec<u8> {
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
             skia_safe::ColorType::RGBA8888,
@@ -1981,12 +1991,7 @@ mod tests {
 
         let mut renderer = Renderer::from_surface(surface);
         let state = RenderState {
-            scene: RenderScene {
-                nodes: primitives
-                    .into_iter()
-                    .map(RenderNode::Primitive)
-                    .collect(),
-            },
+            scene,
             clear_color: Color::TRANSPARENT,
             render_version: 1,
             animate: false,
@@ -2112,6 +2117,123 @@ mod tests {
             expected,
             actual
         );
+    }
+
+    #[test]
+    fn test_render_clip_scope_restores_before_following_sibling() {
+        let pixels = render_scene_graph_to_pixels(
+            40,
+            10,
+            RenderScene {
+                nodes: vec![
+                    RenderNode::Clip {
+                        clips: vec![ClipShape {
+                            rect: crate::tree::geometry::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: 10.0,
+                                height: 10.0,
+                            },
+                            radii: None,
+                        }],
+                        children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                        ))],
+                    },
+                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                ],
+            },
+        );
+
+        assert_eq!(rgba_at(&pixels, 40, 5, 5), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 40, 25, 5), (0, 0, 255, 255));
+    }
+
+    #[test]
+    fn test_render_transform_scope_restores_before_following_sibling() {
+        let pixels = render_scene_graph_to_pixels(
+            50,
+            10,
+            RenderScene {
+                nodes: vec![
+                    RenderNode::Transform {
+                        transform: Affine2::translation(10.0, 0.0),
+                        children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                        ))],
+                    },
+                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                ],
+            },
+        );
+
+        assert_eq!(rgba_at(&pixels, 50, 15, 5), (255, 0, 0, 255));
+        assert_eq!(rgba_at(&pixels, 50, 25, 5), (0, 0, 255, 255));
+        assert_eq!(rgba_at(&pixels, 50, 35, 5).3, 0);
+    }
+
+    #[test]
+    fn test_render_alpha_scope_restores_before_following_sibling() {
+        let pixels = render_scene_graph_to_pixels(
+            40,
+            10,
+            RenderScene {
+                nodes: vec![
+                    RenderNode::Alpha {
+                        alpha: 0.5,
+                        children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                        ))],
+                    },
+                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                ],
+            },
+        );
+
+        let red = rgba_at(&pixels, 40, 5, 5);
+        let blue = rgba_at(&pixels, 40, 25, 5);
+
+        assert!(red.3 > 0 && red.3 < 255);
+        assert_eq!(blue, (0, 0, 255, 255));
+    }
+
+    #[test]
+    fn test_nested_render_scopes_restore_before_following_sibling() {
+        let pixels = render_scene_graph_to_pixels(
+            60,
+            10,
+            RenderScene {
+                nodes: vec![
+                    RenderNode::Clip {
+                        clips: vec![ClipShape {
+                            rect: crate::tree::geometry::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: 20.0,
+                                height: 10.0,
+                            },
+                            radii: None,
+                        }],
+                        children: vec![RenderNode::Transform {
+                            transform: Affine2::translation(10.0, 0.0),
+                            children: vec![RenderNode::Alpha {
+                                alpha: 0.5,
+                                children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                                    0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                                ))],
+                            }],
+                        }],
+                    },
+                    RenderNode::Primitive(DrawPrimitive::Rect(30.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                ],
+            },
+        );
+
+        let red = rgba_at(&pixels, 60, 15, 5);
+        let blue = rgba_at(&pixels, 60, 35, 5);
+
+        assert!(red.3 > 0 && red.3 < 255);
+        assert_eq!(blue, (0, 0, 255, 255));
     }
 
     #[test]
