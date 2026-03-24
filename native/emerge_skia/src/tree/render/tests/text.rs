@@ -1,6 +1,6 @@
 use super::super::text::{
-    TEXT_SELECTION_COLOR, measure_text_width_with_font, text_metrics_with_font,
-    text_offset_for_char_index,
+    measure_text_width_with_font, text_metrics_with_font, text_offset_for_char_index,
+    TEXT_SELECTION_COLOR,
 };
 use super::common::*;
 use super::*;
@@ -44,11 +44,9 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
         .collect();
 
     assert_eq!(decoration_rects.len(), 2);
-    assert!(
-        decoration_rects
-            .iter()
-            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
-    );
+    assert!(decoration_rects
+        .iter()
+        .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
 }
 
 #[test]
@@ -181,11 +179,9 @@ fn test_render_text_leaf_uses_host_clip() {
     );
     let commands = render_tree(&tree);
 
-    assert!(
-        commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
-    );
+    assert!(commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::TextWithFont(..))));
     assert!(
         commands.iter().any(|cmd| matches!(
             cmd,
@@ -239,7 +235,8 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
     let preedit_width = measure_text_width_with_font("xy", 16.0, "default", 400, false, 0.0, 0.0);
     let underline_y = baseline_y + 16.0_f32 * 0.08 - (16.0_f32 * 0.06).max(1.0) / 2.0;
 
-    let has_preedit_underline = output.commands.iter().any(|cmd| match cmd {
+    let commands = flatten_scene(&output.scene);
+    let has_preedit_underline = commands.iter().any(|cmd| match cmd {
         DrawCmd::Rect(x, y, w, _h, _color) => {
             (x - preedit_x).abs() < 0.3
                 && (y - underline_y).abs() < 0.3
@@ -272,7 +269,8 @@ fn test_render_text_input_selection_emits_highlight_rect() {
     let tree = build_text_input_tree_with_frame(attrs, frame);
     let output = super::super::render_tree(&tree);
 
-    let has_selection_rect = output.commands.iter().any(|cmd| match cmd {
+    let commands = flatten_scene(&output.scene);
+    let has_selection_rect = commands.iter().any(|cmd| match cmd {
         DrawCmd::Rect(_x, _y, w, h, color) => {
             *color == TEXT_SELECTION_COLOR && *w > 0.0 && *h > 0.0
         }

@@ -14,7 +14,7 @@ matching it against listeners rebuilt from that tree in precedence order.
 - Listener dispatch is
   `InputEvent -> ListenerInput -> first matching listener in precedence order -> ordered ListenerAction list`.
 - The rebuild output is generated during the same main-tree walk that produces
-  draw commands.
+  the render scene.
 
 At a high level:
 
@@ -32,11 +32,11 @@ The tree actor:
 - applies and coalesces those mutations against the retained tree
 - runs `layout_and_refresh_default(...)` when the tree actually changed
 - produces:
-  - draw commands
+  - render scene
   - IME state
   - `RegistryRebuildPayload`
 - sends `EventMsg::RegistryUpdate { rebuild }` to the event actor
-- sends render commands to the render thread
+- sends the render scene to the render thread
 
 ### Event Actor
 
@@ -56,7 +56,7 @@ The event actor:
 
 ### Render Thread
 
-The render thread only consumes draw commands and IME state. It does not perform
+The render thread only consumes the render scene and IME state. It does not perform
 event matching.
 
 ## End-To-End Flow
@@ -77,7 +77,7 @@ Backend input
        -> if tree changed: layout + render + rebuild base listener data
        -> if only registry rebuild was requested: may reuse cached rebuild
        -> sends EventMsg::RegistryUpdate { rebuild }
-       -> sends RenderMsg::Commands
+       -> sends RenderMsg::Scene
   -> Event actor
        -> installs rebuild
        -> reconciles retained rebuild state

@@ -3633,11 +3633,11 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 
 use super::render::render_tree;
 use crate::events::{RegistryRebuildPayload, TextInputState};
-use crate::renderer::DrawCmd;
+use crate::render_scene::RenderScene;
 
 /// Output of layout refresh: both render commands and event registry.
 pub struct LayoutOutput {
-    pub commands: Vec<DrawCmd>,
+    pub scene: RenderScene,
     pub event_rebuild: RegistryRebuildPayload,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
@@ -3662,7 +3662,7 @@ pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
         });
 
     LayoutOutput {
-        commands: render_output.commands,
+        scene: render_output.scene,
         event_rebuild: render_output.event_rebuild,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,

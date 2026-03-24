@@ -274,8 +274,8 @@ impl WaylandApp {
 
         while let Ok(msg) = self.render_rx.try_recv() {
             match msg {
-                RenderMsg::Commands {
-                    commands,
+                RenderMsg::Scene {
+                    scene,
                     version,
                     animate,
                     ime_enabled,
@@ -283,7 +283,7 @@ impl WaylandApp {
                     ime_text_state,
                     ..
                 } => {
-                    self.render_state.commands = commands;
+                    self.render_state.scene = scene;
                     self.render_state.render_version = version;
                     self.render_state.animate = animate;
 

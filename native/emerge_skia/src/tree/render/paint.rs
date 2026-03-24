@@ -1,24 +1,23 @@
 use super::box_model::{border_radius_uniform, content_rect};
 use super::color::color_to_u32;
-use super::scope::{RenderItem, RenderScope};
 use crate::assets::{self, AssetStatus};
-use crate::renderer::{AssetKind, DrawCmd};
+use crate::render_scene::{DrawPrimitive, RenderNode};
 use crate::tree::attrs::{
     Attrs, Background, BorderRadius, BorderStyle, BorderWidth, ImageFit, ImageSource,
 };
 use crate::tree::element::Frame;
-use crate::tree::geometry::{ClipShape, Rect, self_shape as geometry_self_shape};
+use crate::tree::geometry::{self_shape as geometry_self_shape, ClipShape, Rect};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar;
 
 pub(super) const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 
-pub(super) fn collect_box_shadow_items(
+pub(super) fn collect_box_shadow_nodes(
     frame: Frame,
     attrs: &Attrs,
     radius: Option<&BorderRadius>,
     inset: bool,
-) -> Vec<RenderItem> {
+) -> Vec<RenderNode> {
     let Some(shadows) = &attrs.box_shadows else {
         return Vec::new();
     };
@@ -36,8 +35,8 @@ pub(super) fn collect_box_shadow_items(
             let size = shadow.size as f32;
             let color = color_to_u32(&shadow.color);
 
-            RenderItem::Draw(if inset {
-                DrawCmd::InsetShadow(
+            RenderNode::Primitive(if inset {
+                DrawPrimitive::InsetShadow(
                     rect.x,
                     rect.y,
                     rect.width,
@@ -50,7 +49,7 @@ pub(super) fn collect_box_shadow_items(
                     color,
                 )
             } else {
-                DrawCmd::Shadow(
+                DrawPrimitive::Shadow(
                     rect.x,
                     rect.y,
                     rect.width,
@@ -67,11 +66,11 @@ pub(super) fn collect_box_shadow_items(
         .collect()
 }
 
-pub(super) fn build_background_items(
+pub(super) fn build_background_nodes(
     frame: Frame,
     attrs: &Attrs,
     radius: Option<&BorderRadius>,
-) -> Vec<RenderItem> {
+) -> Vec<RenderNode> {
     let Some(background) = &attrs.background else {
         return Vec::new();
     };
@@ -79,40 +78,46 @@ pub(super) fn build_background_items(
     match background {
         Background::Color(color) => {
             let fill = color_to_u32(color);
-            collect_background_rect_items(frame, radius, fill)
+            collect_background_rect_nodes(frame, radius, fill)
         }
-        Background::Gradient { from, to, angle } => vec![RenderItem::Draw(DrawCmd::Gradient(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-            color_to_u32(from),
-            color_to_u32(to),
-            *angle as f32,
-            border_radius_uniform(radius),
-        ))],
+        Background::Gradient { from, to, angle } => {
+            vec![RenderNode::Primitive(DrawPrimitive::Gradient(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                color_to_u32(from),
+                color_to_u32(to),
+                *angle as f32,
+                border_radius_uniform(radius),
+            ))]
+        }
         Background::Image { source, fit } => {
-            let image_item =
-                paint_item_for_image_source(Rect::from_frame(frame), source, *fit, None, false);
+            let image_node =
+                paint_node_for_image_source(Rect::from_frame(frame), source, *fit, None, false);
+            let Some(image_node) = image_node else {
+                return Vec::new();
+            };
+
             let shape = geometry_self_shape(frame, attrs);
             let clip = ClipShape {
                 rect: shape.rect,
                 radii: shape.radii,
             };
+
             if shape.radii.is_some() {
-                vec![RenderItem::Scope(RenderScope {
-                    local_clip: Some(clip),
-                    items: image_item.into_iter().map(RenderItem::Draw).collect(),
-                    ..RenderScope::default()
-                })]
+                vec![RenderNode::Clip {
+                    clips: vec![clip],
+                    children: vec![image_node],
+                }]
             } else {
-                image_item.into_iter().map(RenderItem::Draw).collect()
+                vec![image_node]
             }
         }
     }
 }
 
-pub(super) fn render_image_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem> {
+pub(super) fn render_image_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
     let Some(source) = attrs.image_src.as_ref() else {
         return Vec::new();
     };
@@ -120,7 +125,7 @@ pub(super) fn render_image_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
     let fit = attrs.image_fit.unwrap_or(ImageFit::Contain);
     let (draw_x, draw_y, draw_w, draw_h) = content_rect(frame, attrs);
 
-    paint_item_for_image_source(
+    paint_node_for_image_source(
         Rect {
             x: draw_x,
             y: draw_y,
@@ -133,11 +138,10 @@ pub(super) fn render_image_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
         attrs.svg_expected.unwrap_or(false),
     )
     .into_iter()
-    .map(RenderItem::Draw)
     .collect()
 }
 
-pub(super) fn render_video_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem> {
+pub(super) fn render_video_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
     let Some(target_id) = attrs.video_target.as_ref() else {
         return Vec::new();
     };
@@ -149,7 +153,7 @@ pub(super) fn render_video_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
         return Vec::new();
     }
 
-    vec![RenderItem::Draw(DrawCmd::Video(
+    vec![RenderNode::Primitive(DrawPrimitive::Video(
         draw_x,
         draw_y,
         draw_w,
@@ -159,13 +163,13 @@ pub(super) fn render_video_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem>
     ))]
 }
 
-fn paint_item_for_image_source(
+fn paint_node_for_image_source(
     rect: Rect,
     source: &ImageSource,
     fit: ImageFit,
     svg_tint: Option<u32>,
     svg_expected: bool,
-) -> Option<DrawCmd> {
+) -> Option<RenderNode> {
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
@@ -176,18 +180,18 @@ fn paint_item_for_image_source(
         Some(AssetStatus::Ready(asset)) => {
             let asset_is_vector = matches!(
                 crate::renderer::asset_kind(&asset.id),
-                Some(AssetKind::Vector)
+                Some(crate::renderer::AssetKind::Vector)
             );
 
             if svg_expected && !asset_is_vector {
-                Some(DrawCmd::ImageFailed(
+                Some(RenderNode::Primitive(DrawPrimitive::ImageFailed(
                     rect.x,
                     rect.y,
                     rect.width,
                     rect.height,
-                ))
+                )))
             } else {
-                Some(DrawCmd::Image(
+                Some(RenderNode::Primitive(DrawPrimitive::Image(
                     rect.x,
                     rect.y,
                     rect.width,
@@ -199,36 +203,36 @@ fn paint_item_for_image_source(
                     } else {
                         None
                     },
-                ))
+                )))
             }
         }
-        Some(AssetStatus::Failed) => Some(DrawCmd::ImageFailed(
+        Some(AssetStatus::Failed) => Some(RenderNode::Primitive(DrawPrimitive::ImageFailed(
             rect.x,
             rect.y,
             rect.width,
             rect.height,
-        )),
-        _ => Some(DrawCmd::ImageLoading(
+        ))),
+        _ => Some(RenderNode::Primitive(DrawPrimitive::ImageLoading(
             rect.x,
             rect.y,
             rect.width,
             rect.height,
-        )),
+        ))),
     }
 }
 
-pub(super) fn collect_scrollbar_items(
+pub(super) fn collect_scrollbar_nodes(
     scene_state: Option<&ResolvedNodeState>,
     frame: Frame,
     attrs: &Attrs,
-) -> Vec<RenderItem> {
-    let mut items = Vec::new();
+) -> Vec<RenderNode> {
+    let mut nodes = Vec::new();
 
     if let Some(metrics) = scene_state
         .and_then(|state| state.scrollbar_y)
         .or_else(|| scrollbar::vertical_metrics(frame, attrs))
     {
-        items.push(RenderItem::Draw(DrawCmd::RoundedRect(
+        nodes.push(RenderNode::Primitive(DrawPrimitive::RoundedRect(
             metrics.thumb_x,
             metrics.thumb_y,
             metrics.thumb_width,
@@ -242,7 +246,7 @@ pub(super) fn collect_scrollbar_items(
         .and_then(|state| state.scrollbar_x)
         .or_else(|| scrollbar::horizontal_metrics(frame, attrs))
     {
-        items.push(RenderItem::Draw(DrawCmd::RoundedRect(
+        nodes.push(RenderNode::Primitive(DrawPrimitive::RoundedRect(
             metrics.thumb_x,
             metrics.thumb_y,
             metrics.thumb_width,
@@ -252,16 +256,16 @@ pub(super) fn collect_scrollbar_items(
         )));
     }
 
-    items
+    nodes
 }
 
-pub(super) fn collect_background_rect_items(
+pub(super) fn collect_background_rect_nodes(
     frame: Frame,
     radius: Option<&BorderRadius>,
     fill: u32,
-) -> Vec<RenderItem> {
-    let item = match radius {
-        Some(BorderRadius::Uniform(value)) if *value > 0.0 => Some(DrawCmd::RoundedRect(
+) -> Vec<RenderNode> {
+    let primitive = match radius {
+        Some(BorderRadius::Uniform(value)) if *value > 0.0 => Some(DrawPrimitive::RoundedRect(
             frame.x,
             frame.y,
             frame.width,
@@ -269,7 +273,7 @@ pub(super) fn collect_background_rect_items(
             *value as f32,
             fill,
         )),
-        Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawCmd::RoundedRectCorners(
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawPrimitive::RoundedRectCorners(
             frame.x,
             frame.y,
             frame.width,
@@ -280,7 +284,7 @@ pub(super) fn collect_background_rect_items(
             *bl as f32,
             fill,
         )),
-        _ => Some(DrawCmd::Rect(
+        _ => Some(DrawPrimitive::Rect(
             frame.x,
             frame.y,
             frame.width,
@@ -289,10 +293,10 @@ pub(super) fn collect_background_rect_items(
         )),
     };
 
-    item.into_iter().map(RenderItem::Draw).collect()
+    primitive.into_iter().map(RenderNode::Primitive).collect()
 }
 
-pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderItem> {
+pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
     let radius = attrs.border_radius.as_ref();
     let Some(border_width) = attrs.border_width.as_ref() else {
         return Vec::new();
@@ -304,9 +308,9 @@ pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderIte
     let color = color_to_u32(border_color);
     let style = attrs.border_style.unwrap_or(BorderStyle::Solid);
 
-    let item = match border_width {
+    let primitive = match border_width {
         BorderWidth::Uniform(w) if *w > 0.0 => match radius {
-            Some(BorderRadius::Uniform(value)) if *value > 0.0 => Some(DrawCmd::Border(
+            Some(BorderRadius::Uniform(value)) if *value > 0.0 => Some(DrawPrimitive::Border(
                 frame.x,
                 frame.y,
                 frame.width,
@@ -316,7 +320,7 @@ pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderIte
                 color,
                 style,
             )),
-            Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawCmd::BorderCorners(
+            Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawPrimitive::BorderCorners(
                 frame.x,
                 frame.y,
                 frame.width,
@@ -329,7 +333,7 @@ pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderIte
                 color,
                 style,
             )),
-            _ => Some(DrawCmd::Border(
+            _ => Some(DrawPrimitive::Border(
                 frame.x,
                 frame.y,
                 frame.width,
@@ -345,7 +349,7 @@ pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderIte
             right,
             bottom,
             left,
-        } => Some(DrawCmd::BorderEdges(
+        } => Some(DrawPrimitive::BorderEdges(
             frame.x,
             frame.y,
             frame.width,
@@ -361,5 +365,5 @@ pub(super) fn collect_border_items(frame: Frame, attrs: &Attrs) -> Vec<RenderIte
         _ => None,
     };
 
-    item.into_iter().map(RenderItem::Draw).collect()
+    primitive.into_iter().map(RenderNode::Primitive).collect()
 }

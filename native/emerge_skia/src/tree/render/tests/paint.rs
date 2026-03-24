@@ -39,11 +39,9 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
 
     let commands = render_tree(&tree);
 
-    assert!(
-        commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _)))
-    );
+    assert!(commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::ImageLoading(_, _, _, _))));
 }
 
 #[test]
@@ -121,11 +119,9 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
 
     let commands = render_tree(&tree);
 
-    assert!(
-        commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::ImageFailed(0.0, 0.0, 20.0, 20.0)))
-    );
+    assert!(commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::ImageFailed(0.0, 0.0, 20.0, 20.0))));
 }
 
 #[test]
@@ -356,11 +352,9 @@ fn test_render_no_border_without_color() {
     let tree = build_tree_with_attrs(attrs);
     let commands = render_tree(&tree);
 
-    assert!(
-        !commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..)))
-    );
+    assert!(!commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Border(..) | DrawCmd::BorderEdges(..))));
 }
 
 #[test]
