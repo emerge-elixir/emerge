@@ -54,7 +54,7 @@ defmodule EmergeDemo do
                        ) do
                   [
                     button.("+", events[:increment]),
-                    button("Plus", events[:increment])
+                    button.("Plus", events[:increment])
                   ]
                 end,
                 [
@@ -111,24 +111,19 @@ defmodule EmergeDemo do
     )
   end
 
-  def button_disabled(text, on_press) do
+  def button_disabled(text, _on_press) do
     Input.button(
       [
         padding(20),
         Border.rounded(6),
         Background.color(color(:slate)),
         Font.center(),
-        Event.on_press(on_press),
         center_y(),
         Transform.alpha(0.4),
         Border.shadow(offset: {2,2}, size: 2),
       ],
       text(text)
     )
-  end
-
-  def hole_percentage(p) do
-    (100 - 36 * p) / 36
   end
 
   @impl Solve.Lookup
