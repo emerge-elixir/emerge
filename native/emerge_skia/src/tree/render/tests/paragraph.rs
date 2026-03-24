@@ -46,13 +46,12 @@ fn test_render_paragraph_emits_text_commands() {
     };
 
     let tree = build_paragraph_tree(attrs, frame);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    // Should produce TextWithFont commands for each fragment
-    let text_cmds: Vec<(f32, f32, String, u32, u16)> = commands
+    let text_cmds: Vec<(f32, f32, String, u32, u16)> = draws
         .iter()
-        .filter_map(|cmd| match cmd {
-            DrawCmd::TextWithFont(x, y, text, _size, color, _family, weight, _italic) => {
+        .filter_map(|draw| match &draw.primitive {
+            DrawPrimitive::TextWithFont(x, y, text, _size, color, _family, weight, _italic) => {
                 Some((*x, *y, text.clone(), *color, *weight))
             }
             _ => None,
@@ -132,14 +131,20 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     tree.insert(paragraph);
     tree.insert(float_el);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands.iter().any(|cmd| {
-        matches!(cmd, DrawCmd::Rect(x, y, w, h, color) if *x == 0.0 && *y == 0.0 && *w == 20.0 && *h == 20.0 && *color == 0xFF0000FF)
-    }));
-    assert!(commands.iter().any(|cmd| {
-        matches!(cmd, DrawCmd::TextWithFont(x, y, text, _, _, _, _, _) if *x == 24.0 && *y == 20.0 && text == "AA")
-    }));
+    let float_draw = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 20.0, 20.0, 0xFF0000FF)
+        )
+    });
+    let text_draw = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(x, y, text, _, _, _, _, _) if *x == 24.0 && *y == 20.0 && text == "AA"),
+    );
+
+    assert!(paints_before(float_draw, text_draw));
 }
 
 #[test]
@@ -276,18 +281,17 @@ fn test_render_paragraph_underline_and_strike() {
     };
 
     let tree = build_paragraph_tree(attrs, frame);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    // Should have text command + 2 decoration rects (underline + strike)
-    let text_count = commands
+    let text_count = draws
         .iter()
-        .filter(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+        .filter(|draw| matches!(draw.primitive, DrawPrimitive::TextWithFont(..)))
         .count();
     assert_eq!(text_count, 1);
 
-    let decoration_rects: Vec<_> = commands
+    let decoration_rects: Vec<_> = draws
         .iter()
-        .filter(|cmd| matches!(cmd, DrawCmd::Rect(_, _, _, _, color) if *color == 0x010203FF))
+        .filter(|draw| matches!(draw.primitive, DrawPrimitive::Rect(_, _, _, _, 0x010203FF)))
         .collect();
     assert_eq!(decoration_rects.len(), 2);
 }
@@ -307,12 +311,11 @@ fn test_render_paragraph_no_fragments() {
     };
 
     let tree = build_paragraph_tree(attrs, frame);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    // No text or rect commands should be emitted
-    let text_count = commands
+    let text_count = draws
         .iter()
-        .filter(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
+        .filter(|draw| matches!(draw.primitive, DrawPrimitive::TextWithFont(..)))
         .count();
     assert_eq!(text_count, 0);
 }
@@ -347,17 +350,20 @@ fn test_render_paragraph_with_background() {
     };
 
     let tree = build_paragraph_tree(attrs, frame);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    // Background should be rendered before text
-    let bg_idx = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Rect(_, _, 100.0, 20.0, 0x000080FF)))
-        .expect("background rect should exist");
-    let text_idx = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
-        .expect("text command should exist");
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, 100.0, 20.0, 0x000080FF)
+        )
+    });
+    let text = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::TextWithFont(..))
+    });
 
-    assert!(bg_idx < text_idx, "background should render before text");
+    assert!(
+        paints_before(background, text),
+        "background should render before text"
+    );
 }

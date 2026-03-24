@@ -26,19 +26,21 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands.iter().any(|cmd| {
+    assert!(draws.iter().any(|draw| {
         matches!(
-            cmd,
-            DrawCmd::TextWithFont(_, _, content, _, _, _, _, _) if content == "Decorated"
+            &draw.primitive,
+            DrawPrimitive::TextWithFont(_, _, content, _, _, _, _, _) if content == "Decorated"
         )
     }));
 
-    let decoration_rects: Vec<(f32, f32, f32, f32)> = commands
+    let decoration_rects: Vec<(f32, f32, f32, f32)> = draws
         .iter()
-        .filter_map(|cmd| match cmd {
-            DrawCmd::Rect(x, y, w, h, color) if *color == 0x010203FF => Some((*x, *y, *w, *h)),
+        .filter_map(|draw| match &draw.primitive {
+            DrawPrimitive::Rect(x, y, w, h, color) if *color == 0x010203FF => {
+                Some((*x, *y, *w, *h))
+            }
             _ => None,
         })
         .collect();
@@ -67,14 +69,14 @@ fn test_render_text_defaults_to_black() {
         },
     );
 
-    let commands = render_tree(&tree);
-    let text_cmd = commands
-        .iter()
-        .find(|cmd| matches!(cmd, DrawCmd::TextWithFont(_, _, content, _, _, _, _, _) if content == "Default"))
-        .expect("text command should exist");
+    let draws = observe_tree(&tree);
+    let text_cmd = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, content, _, _, _, _, _) if content == "Default"),
+    );
 
-    match text_cmd {
-        DrawCmd::TextWithFont(_, _, _, _, color, _, _, _) => {
+    match &text_cmd.primitive {
+        DrawPrimitive::TextWithFont(_, _, _, _, color, _, _, _) => {
             assert_eq!(*color, 0x000000FF);
         }
         _ => unreachable!(),
@@ -101,12 +103,12 @@ fn test_render_text_with_spacing_emits_per_glyph_commands() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    let text_cmds: Vec<(f32, String)> = commands
+    let text_cmds: Vec<(f32, String)> = draws
         .iter()
-        .filter_map(|cmd| match cmd {
-            DrawCmd::TextWithFont(x, _y, text, _size, _fill, _family, _weight, _italic) => {
+        .filter_map(|draw| match &draw.primitive {
+            DrawPrimitive::TextWithFont(x, _y, text, _size, _fill, _family, _weight, _italic) => {
                 Some((*x, text.clone()))
             }
             _ => None,
@@ -141,16 +143,15 @@ fn test_render_text_insets_by_padding_and_border() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
     let (ascent, _) = text_metrics_with_font(16.0, "default", 400, false);
 
-    let text_cmd = commands
-        .iter()
-        .find(|cmd| matches!(cmd, DrawCmd::TextWithFont(..)))
-        .expect("text command should exist");
+    let text_cmd = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::TextWithFont(..))
+    });
 
-    match text_cmd {
-        DrawCmd::TextWithFont(x, y, content, _, _, _, _, _) => {
+    match &text_cmd.primitive {
+        DrawPrimitive::TextWithFont(x, y, content, _, _, _, _, _) => {
             assert_eq!(*x, 17.0, "x should include 4px padding + 3px border");
             assert_eq!(*y, 27.0 + ascent, "baseline should include top insets");
             assert_eq!(content, "Inset");
@@ -177,18 +178,13 @@ fn test_render_text_leaf_uses_host_clip() {
             content_height: 24.0,
         },
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands
-        .iter()
-        .any(|cmd| matches!(cmd, DrawCmd::TextWithFont(..))));
+    let text_draw = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::TextWithFont(..))
+    });
     assert!(
-        commands.iter().any(|cmd| matches!(
-            cmd,
-            DrawCmd::PushClip(..)
-                | DrawCmd::PushClipRounded(..)
-                | DrawCmd::PushClipRoundedCorners(..)
-        )),
+        !text_draw.clips.is_empty(),
         "text leaves should render inside their host clip"
     );
 }
@@ -213,7 +209,7 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
     };
 
     let tree = build_text_input_tree_with_frame(attrs, frame);
-    let output = super::super::render_tree(&tree);
+    let (output, draws) = observe_output(&tree);
 
     assert!(output.text_input_focused);
 
@@ -235,9 +231,8 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
     let preedit_width = measure_text_width_with_font("xy", 16.0, "default", 400, false, 0.0, 0.0);
     let underline_y = baseline_y + 16.0_f32 * 0.08 - (16.0_f32 * 0.06).max(1.0) / 2.0;
 
-    let commands = flatten_scene(&output.scene);
-    let has_preedit_underline = commands.iter().any(|cmd| match cmd {
-        DrawCmd::Rect(x, y, w, _h, _color) => {
+    let has_preedit_underline = draws.iter().any(|draw| match &draw.primitive {
+        DrawPrimitive::Rect(x, y, w, _h, _color) => {
             (x - preedit_x).abs() < 0.3
                 && (y - underline_y).abs() < 0.3
                 && (w - preedit_width).abs() < 0.3
@@ -267,11 +262,10 @@ fn test_render_text_input_selection_emits_highlight_rect() {
     };
 
     let tree = build_text_input_tree_with_frame(attrs, frame);
-    let output = super::super::render_tree(&tree);
+    let (_output, draws) = observe_output(&tree);
 
-    let commands = flatten_scene(&output.scene);
-    let has_selection_rect = commands.iter().any(|cmd| match cmd {
-        DrawCmd::Rect(_x, _y, w, h, color) => {
+    let has_selection_rect = draws.iter().any(|draw| match &draw.primitive {
+        DrawPrimitive::Rect(_x, _y, w, h, color) => {
             *color == TEXT_SELECTION_COLOR && *w > 0.0 && *h > 0.0
         }
         _ => false,
@@ -394,15 +388,15 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     tree.insert(row2);
     tree.insert(row2_text);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands.iter().any(|cmd| matches!(
-        cmd,
-        DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "Scrollable item 1"
+    assert!(draws.iter().any(|draw| matches!(
+        &draw.primitive,
+        DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "Scrollable item 1"
     )));
-    assert!(commands.iter().any(|cmd| matches!(
-        cmd,
-        DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "Scrollable item 2"
+    assert!(draws.iter().any(|draw| matches!(
+        &draw.primitive,
+        DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "Scrollable item 2"
     )));
 }
 
@@ -442,12 +436,12 @@ fn test_nearby_text_inherits_parent_font_context() {
         },
         21,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands.iter().any(|cmd| {
+    assert!(draws.iter().any(|draw| {
         matches!(
-            cmd,
-            DrawCmd::TextWithFont(_, _, text, font_size, _, _, _, _)
+            &draw.primitive,
+            DrawPrimitive::TextWithFont(_, _, text, font_size, _, _, _, _)
                 if text == "Hi" && (*font_size - 24.0).abs() < f32::EPSILON
         )
     }));

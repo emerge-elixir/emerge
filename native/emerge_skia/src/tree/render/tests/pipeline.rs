@@ -1,6 +1,7 @@
 use super::common::*;
 use super::*;
-use crate::tree::transform::element_transform;
+use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
+use crate::tree::transform::{element_transform, Affine2};
 
 #[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
@@ -85,23 +86,14 @@ fn test_render_nested_wrapper_children_use_host_clips() {
     tree.insert(text_holder);
     tree.insert(text);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands.iter().any(|cmd| matches!(
-        cmd,
-        DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "Overview"
-    )));
+    let text_draw = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "Overview"),
+    );
     assert!(
-        commands
-            .iter()
-            .filter(|cmd| matches!(
-                cmd,
-                DrawCmd::PushClip(..)
-                    | DrawCmd::PushClipRounded(..)
-                    | DrawCmd::PushClipRoundedCorners(..)
-            ))
-            .count()
-            >= 3,
+        text_draw.clips.len() >= 3,
         "nested hosts should each clip their own content subtree"
     );
 }
@@ -173,30 +165,40 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
     tree.insert(left);
     tree.insert(right);
 
-    let commands = render_tree(&tree);
-    let root_clip = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::PushClip(0.0, 0.0, 220.0, 60.0)))
-        .expect("parent row should clip its content");
-    let left_push = commands
-        .iter()
-        .position(
-            |cmd| matches!(cmd, DrawCmd::PushTransform(transform) if *transform == left_transform),
-        )
-        .expect("transformed child should emit left transform");
-    let right_push = commands
-        .iter()
-        .position(
-            |cmd| matches!(cmd, DrawCmd::PushTransform(transform) if *transform == right_transform),
-        )
-        .expect("transformed child should emit right transform");
-    let root_pop = commands
-        .iter()
-        .rposition(|cmd| matches!(cmd, DrawCmd::PopClip))
-        .expect("parent clip should pop");
+    let draws = observe_tree(&tree);
+    let expected_root_clip = ClipShape {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 60.0,
+        },
+        radii: None,
+    };
 
-    assert!(root_clip < left_push && left_push < root_pop);
-    assert!(root_clip < right_push && right_push < root_pop);
+    let left_draw = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 104.0, 60.0, 0x32465AFF)
+        )
+    });
+    let right_draw = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(116.0, 0.0, 104.0, 60.0, 0x463C5AFF)
+        )
+    });
+
+    assert_eq!(left_draw.cumulative_transform, left_transform);
+    assert_eq!(right_draw.cumulative_transform, right_transform);
+    assert!(left_draw
+        .clips
+        .iter()
+        .any(|clip| clip.shape == expected_root_clip));
+    assert!(right_draw
+        .clips
+        .iter()
+        .any(|clip| clip.shape == expected_root_clip));
 }
 
 #[test]
@@ -244,23 +246,31 @@ fn test_render_rounded_parent_clips_child_background_corners() {
     tree.insert(root);
     tree.insert(child);
 
-    let commands = render_tree(&tree);
-    let root_clip = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::PushClipRounded(0.0, 0.0, 365.0, 160.0, 12.0)))
-        .expect("rounded parent should clip its content");
-    let child_rect = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Rect(0.0, 0.0, 365.0, 80.0, 0xF0EDF8FF)))
-        .expect("child background should render inside rounded clip");
-    let root_pop = commands
-        .iter()
-        .skip(root_clip + 1)
-        .position(|cmd| matches!(cmd, DrawCmd::PopClip))
-        .map(|idx| idx + root_clip + 1)
-        .expect("rounded parent clip should pop");
+    let draws = observe_tree(&tree);
+    let child_rect = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 365.0, 80.0, 0xF0EDF8FF)
+        )
+    });
 
-    assert!(root_clip < child_rect && child_rect < root_pop);
+    assert!(child_rect.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 365.0,
+                    height: 160.0,
+                },
+                radii: Some(CornerRadii {
+                    tl: 12.0,
+                    tr: 12.0,
+                    br: 12.0,
+                    bl: 12.0,
+                }),
+            }
+    }));
 }
 
 #[test]
@@ -370,16 +380,15 @@ fn test_render_emits_translate_for_move() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::PushTransform(expected_transform),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PopTransform,
-        ]
-    );
+    let draw = only_draw(&draws, |resolved| {
+        matches!(
+            resolved.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    assert_eq!(draw.cumulative_transform, expected_transform);
 }
 
 #[test]
@@ -398,16 +407,15 @@ fn test_render_emits_rotate_for_rotation() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::PushTransform(expected_transform),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PopTransform,
-        ]
-    );
+    let draw = only_draw(&draws, |resolved| {
+        matches!(
+            resolved.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    assert_eq!(draw.cumulative_transform, expected_transform);
 }
 
 #[test]
@@ -426,16 +434,15 @@ fn test_render_emits_scale_for_scale() {
         &attrs,
     );
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::PushTransform(expected_transform),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PopTransform,
-        ]
-    );
+    let draw = only_draw(&draws, |resolved| {
+        matches!(
+            resolved.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    assert_eq!(draw.cumulative_transform, expected_transform);
 }
 
 #[test]
@@ -443,16 +450,16 @@ fn test_render_emits_alpha_layer() {
     let mut attrs = Attrs::default();
     attrs.alpha = Some(0.5);
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::PushAlpha(0.5),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PopAlpha,
-        ]
-    );
+    let draw = only_draw(&draws, |resolved| {
+        matches!(
+            resolved.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    assert_eq!(draw.alpha_scopes.len(), 1);
+    assert_eq!(draw.alpha_scopes[0].alpha, 0.5);
 }
 
 #[test]
@@ -506,7 +513,19 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
     tree.insert(parent);
     tree.insert(child);
 
-    let output = render_output(&tree);
+    let (output, draws) = observe_output(&tree);
+    let shadow_draw = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let body_draw = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(20.0, 15.0, 30.0, 15.0, 0xFFFFFFFF)
+        )
+    });
+
+    assert!(shares_alpha_scope(shadow_draw, body_draw));
+
     let pixels = render_scene_to_pixels(100, 50, output.scene);
     let shadow = rgba_at(&pixels, 100, 18, 22);
     let body = rgba_at(&pixels, 100, 25, 22);
@@ -529,12 +548,16 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
 fn test_render_skips_transform_when_default() {
     let attrs = Attrs::default();
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)]
-    );
+    let draw = only_draw(&draws, |resolved| {
+        matches!(
+            resolved.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    assert_eq!(draw.cumulative_transform, Affine2::identity());
+    assert!(draw.alpha_scopes.is_empty());
 }
 
 #[test]
@@ -585,18 +608,31 @@ fn test_render_nearby_behind_and_in_front_order() {
         },
         11,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF),
-            DrawCmd::PopClip,
-            DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF),
-        ]
-    );
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    let behind = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
+        )
+    });
+    let front = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF)
+        )
+    });
+
+    assert!(paints_before(background, behind));
+    assert!(paints_before(behind, front));
+    assert_eq!(behind.clips.len(), 1);
+    assert!(front.clips.is_empty());
 }
 
 #[test]
@@ -645,20 +681,32 @@ fn test_render_behind_between_background_and_children() {
         12,
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF),
-            DrawCmd::PopClip,
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF),
-            DrawCmd::PopClip,
-        ]
-    );
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    let behind = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
+        )
+    });
+    let child = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF)
+        )
+    });
+
+    assert!(paints_before(background, behind));
+    assert!(paints_before(behind, child));
+    assert_eq!(behind.clips.len(), 1);
+    assert_eq!(child.clips.len(), 1);
+    assert_eq!(behind.clips[0].shape, child.clips[0].shape);
 }
 
 #[test]
@@ -708,20 +756,24 @@ fn test_render_behind_inside_host_clip() {
         13,
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
-            DrawCmd::PopClip,
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF),
-            DrawCmd::PopClip,
-        ]
-    );
+    let behind = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+        )
+    });
+    let child = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
+        )
+    });
+
+    assert_eq!(behind.clips.len(), 1);
+    assert_eq!(child.clips.len(), 1);
+    assert_eq!(behind.clips[0].shape, child.clips[0].shape);
 }
 
 #[test]
@@ -773,16 +825,31 @@ fn test_render_nearby_above_below_order_after_parent() {
         },
         15,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF),
-            DrawCmd::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF),
-        ]
-    );
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    let above = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF)
+        )
+    });
+    let below = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF)
+        )
+    });
+
+    assert!(paints_before(background, above));
+    assert!(paints_before(above, below));
+    assert!(above.clips.is_empty());
+    assert!(below.clips.is_empty());
 }
 
 #[test]
@@ -832,18 +899,24 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
         22,
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF),
-            DrawCmd::PopClip,
-            DrawCmd::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF),
-        ]
-    );
+    let child = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
+        )
+    });
+    let nearby = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF)
+        )
+    });
+
+    assert_eq!(child.clips.len(), 1);
+    assert!(nearby.clips.is_empty());
+    assert!(paints_before(child, nearby));
 }
 
 #[test]
@@ -879,15 +952,23 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
         },
         16,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
-        ]
-    );
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
+    let front = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+        )
+    });
+
+    assert!(paints_before(background, front));
+    assert!(front.clips.is_empty());
 }
 
 #[test]
@@ -923,15 +1004,14 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
         },
         17,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF),
-        ]
-    );
+    only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF)
+        )
+    });
 }
 
 #[test]
@@ -967,15 +1047,14 @@ fn test_render_above_fill_width_uses_parent_slot() {
         },
         18,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF),
-        ]
-    );
+    only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF)
+        )
+    });
 }
 
 #[test]
@@ -1011,15 +1090,14 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
         },
         19,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF),
-        ]
-    );
+    only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF)
+        )
+    });
 }
 
 #[test]
@@ -1056,15 +1134,15 @@ fn test_render_in_front_ignores_host_clip() {
         },
         20,
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
-        ]
-    );
+    let front = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+        )
+    });
+    assert!(front.clips.is_empty());
 }
 
 #[test]
@@ -1101,18 +1179,21 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF),
-            DrawCmd::PopClip,
-        ]
-    );
+    let shadow = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let body = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+        )
+    });
+
+    assert!(shadow.clips.is_empty());
+    assert_eq!(body.clips.len(), 1);
+    assert!(paints_before(shadow, body));
 }
 
 #[test]
@@ -1150,20 +1231,21 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
-            DrawCmd::PopClip,
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF),
-            DrawCmd::PopClip,
-        ]
-    );
+    let shadow = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let body = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+        )
+    });
+
+    assert_eq!(shadow.clips.len(), 1);
+    assert_eq!(body.clips.len(), 1);
+    assert_eq!(shadow.clips[0].shape, body.clips[0].shape);
 }
 
 #[test]
@@ -1203,20 +1285,36 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         },
     );
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert_eq!(
-        commands,
-        vec![
-            DrawCmd::RoundedRect(0.0, 0.0, 100.0, 50.0, 8.0, 0x000000FF),
-            DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
-            DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
-            DrawCmd::PopClip,
-            DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
-            DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF),
-            DrawCmd::PopClip,
-        ]
-    );
+    let shadow = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let body = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+        )
+    });
+    let expected_clip = ClipShape {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        },
+        radii: Some(CornerRadii {
+            tl: 8.0,
+            tr: 8.0,
+            br: 8.0,
+            bl: 8.0,
+        }),
+    };
+
+    assert_eq!(shadow.clips.len(), 1);
+    assert_eq!(body.clips.len(), 1);
+    assert_eq!(shadow.clips[0].shape, expected_clip);
+    assert_eq!(body.clips[0].shape, expected_clip);
 }
 
 #[test]
@@ -1303,38 +1401,38 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     tree.insert(child_b);
     tree.insert(child_c);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(matches!(
-        commands[1],
-        DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0)
-    ));
     assert!(
-        !commands
+        draws
             .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_))),
-        "scroll rendering should not emit extra transform wrappers"
-    );
-
-    let child_c_idx = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Rect(0.0, 30.0, 100.0, 20.0, 0x0000FFFF)))
-        .expect("third child should render at its scrolled screen-space position");
-    let shadow_idx = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Shadow(..)))
-        .expect("shadowed child should render shadow");
-
-    assert!(
-        child_c_idx > shadow_idx,
-        "later siblings should render after the shadowed child"
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_) | DrawCmd::PopTransform)),
+            .all(|draw| draw.cumulative_transform == Affine2::identity()),
         "scroll rendering should not need transform wrappers"
     );
+
+    let shadow = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let child_c = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 30.0, 100.0, 20.0, 0x0000FFFF)
+        )
+    });
+
+    assert!(paints_before(shadow, child_c));
+    assert!(shadow.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 50.0,
+                },
+                radii: None,
+            }
+    }));
 }
 
 #[test]
@@ -1397,35 +1495,38 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     tree.insert(inner);
     tree.insert(text);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    let inner_clip = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::PushClip(10.0, 50.0, 80.0, 40.0)))
-        .expect("inner host clip should use adjusted screen-space geometry");
-    let text_idx = commands
-        .iter()
-        .position(|cmd| {
-            matches!(cmd, DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "visible")
-        })
-        .expect("inner scrolled text should render");
+    let text_draw = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "visible"),
+    );
 
-    assert!(
-        text_idx > inner_clip,
-        "inner scrolled content should render inside the adjusted host clip"
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_))),
-        "nested scroll rendering should not rely on transform wrappers for scroll offsets"
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushClip(10.0, 200.0, 80.0, 40.0))),
-        "inner host clip should no longer use pre-scroll local coordinates"
-    );
+    assert_eq!(text_draw.cumulative_transform, Affine2::identity());
+    assert!(text_draw.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 10.0,
+                    y: 50.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                radii: None,
+            }
+    }));
+    assert!(!text_draw.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 10.0,
+                    y: 200.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                radii: None,
+            }
+    }));
 }
 
 #[test]
@@ -1467,18 +1568,36 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     tree.insert(root);
     tree.insert(text);
 
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    assert!(commands
-        .iter()
-        .any(|cmd| matches!(cmd, DrawCmd::PushClip(50.0, 60.0, 120.0, 40.0))));
-    assert!(!commands
-        .iter()
-        .any(|cmd| matches!(cmd, DrawCmd::PushClip(0.0, 0.0, 120.0, 40.0))));
-    assert!(commands.iter().any(|cmd| matches!(
-        cmd,
-        DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"
-    )));
+    let text_draw = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"),
+    );
+    assert!(text_draw.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 50.0,
+                    y: 60.0,
+                    width: 120.0,
+                    height: 40.0,
+                },
+                radii: None,
+            }
+    }));
+    assert!(!text_draw.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 120.0,
+                    height: 40.0,
+                },
+                radii: None,
+            }
+    }));
 }
 
 #[test]
@@ -1512,36 +1631,37 @@ fn test_border_renders_after_host_clip_pops() {
             content_height: 10.0,
         },
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    let clip_push = commands
-        .iter()
-        .enumerate()
-        .find(|(_, cmd)| matches!(cmd, DrawCmd::PushClipRounded(..)))
-        .map(|(i, _)| i)
-        .expect("rounded host clip should exist");
-    let clip_pop = commands
-        .iter()
-        .enumerate()
-        .find(|(_, cmd)| matches!(cmd, DrawCmd::PopClip))
-        .map(|(i, _)| i)
-        .expect("host clip pop should exist");
-    let border_idx = commands
-        .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Border(..)))
-        .expect("Border should exist");
+    let child_draw = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0xFFFFFFFF)
+        )
+    });
+    let border_draw = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Border(..))
+    });
 
-    match &commands[clip_push] {
-        DrawCmd::PushClipRounded(x, y, w, h, r) => {
-            assert_eq!((*x, *y, *w, *h, *r), (2.0, 2.0, 96.0, 46.0, 6.0));
-        }
-        _ => panic!("host clip should be PushClipRounded"),
-    }
-
-    assert!(
-        border_idx > clip_pop,
-        "border ({border_idx}) must render after host clip pop ({clip_pop})"
-    );
+    assert!(child_draw.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 2.0,
+                    y: 2.0,
+                    width: 96.0,
+                    height: 46.0,
+                },
+                radii: Some(CornerRadii {
+                    tl: 6.0,
+                    tr: 6.0,
+                    br: 6.0,
+                    bl: 6.0,
+                }),
+            }
+    }));
+    assert!(border_draw.clips.is_empty());
+    assert!(paints_before(child_draw, border_draw));
 }
 
 #[test]
@@ -1550,15 +1670,10 @@ fn test_render_skips_host_clip_when_nothing_uses_it() {
     attrs.border_radius = Some(BorderRadius::Uniform(8.0));
 
     let tree = build_tree_with_attrs(attrs);
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
     assert!(
-        !commands.iter().any(|cmd| matches!(
-            cmd,
-            DrawCmd::PushClip(..)
-                | DrawCmd::PushClipRounded(..)
-                | DrawCmd::PushClipRoundedCorners(..)
-        )),
+        draws.iter().all(|draw| draw.clips.is_empty()),
         "plain hosts without clipped content should not emit host clips"
     );
 }
@@ -1582,19 +1697,20 @@ fn test_host_clip_pushes_once_for_square_border() {
             content_height: 150.0,
         },
     );
-    let commands = render_tree(&tree);
+    let draws = observe_tree(&tree);
 
-    let clip_push_count = commands
-        .iter()
-        .filter(|cmd| {
-            matches!(
-                cmd,
-                DrawCmd::PushClip(..)
-                    | DrawCmd::PushClipRounded(..)
-                    | DrawCmd::PushClipRoundedCorners(..)
-            )
-        })
-        .count();
+    let clip_scope_count = unique_clip_scope_count(&draws, |clip| {
+        clip.shape
+            == ClipShape {
+                rect: Rect {
+                    x: 2.0,
+                    y: 2.0,
+                    width: 96.0,
+                    height: 46.0,
+                },
+                radii: None,
+            }
+    });
 
-    assert_eq!(clip_push_count, 1, "should have only one host clip push");
+    assert_eq!(clip_scope_count, 1, "should have only one host clip scope");
 }

@@ -1,72 +1,73 @@
 use super::*;
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::renderer::{RenderState, Renderer};
-use crate::tree::geometry::{ClipShape, CornerRadii};
+use crate::tree::geometry::ClipShape;
 use crate::tree::transform::Affine2;
 use skia_safe::Color as SkColor;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum DebugRenderCmd {
-    Rect(f32, f32, f32, f32, u32),
-    RoundedRect(f32, f32, f32, f32, f32, u32),
-    RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
-    BorderCorners(
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        u32,
-        BorderStyle,
-    ),
-    BorderEdges(
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        u32,
-        BorderStyle,
-    ),
-    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
-    Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
-    Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
-    Video(f32, f32, f32, f32, String, ImageFit),
-    ImageLoading(f32, f32, f32, f32),
-    ImageFailed(f32, f32, f32, f32),
-    PushClip(f32, f32, f32, f32),
-    PushClipRounded(f32, f32, f32, f32, f32),
-    PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
-    PopClip,
-    PushTransform(Affine2),
-    PopTransform,
-    PushAlpha(f32),
-    PopAlpha,
+pub(crate) struct AppliedClip {
+    pub id: usize,
+    pub shape: ClipShape,
+    pub transform_at_application: Affine2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AlphaScope {
+    pub id: usize,
+    pub alpha: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedDraw {
+    pub primitive: DrawPrimitive,
+    pub paint_order: usize,
+    pub cumulative_transform: Affine2,
+    pub clips: Vec<AppliedClip>,
+    pub alpha_scopes: Vec<AlphaScope>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ObserveContext {
+    cumulative_transform: Affine2,
+    clips: Vec<AppliedClip>,
+    alpha_scopes: Vec<AlphaScope>,
+}
+
+#[derive(Debug, Default)]
+struct ObserveState {
+    next_clip_id: usize,
+    next_alpha_id: usize,
+    next_paint_order: usize,
 }
 
 pub(super) fn render_output(tree: &ElementTree) -> super::super::RenderOutput {
     super::super::render_tree(tree)
 }
 
-pub(super) fn render_tree(tree: &ElementTree) -> Vec<DebugRenderCmd> {
-    flatten_scene(&render_output(tree).scene)
+pub(super) fn observe_output(
+    tree: &ElementTree,
+) -> (super::super::RenderOutput, Vec<ResolvedDraw>) {
+    let output = render_output(tree);
+    let draws = observe_scene(&output.scene);
+    (output, draws)
 }
 
-pub(super) fn flatten_scene(scene: &RenderScene) -> Vec<DebugRenderCmd> {
-    let mut commands = Vec::new();
-    flatten_nodes(&scene.nodes, &mut commands);
-    commands
+pub(super) fn observe_tree(tree: &ElementTree) -> Vec<ResolvedDraw> {
+    observe_output(tree).1
+}
+
+pub(super) fn observe_scene(scene: &RenderScene) -> Vec<ResolvedDraw> {
+    let mut draws = Vec::new();
+    let mut state = ObserveState::default();
+    observe_nodes(
+        &scene.nodes,
+        &ObserveContext::default(),
+        &mut state,
+        &mut draws,
+    );
+    draws
 }
 
 pub(super) fn render_scene_to_pixels(width: u32, height: u32, scene: RenderScene) -> Vec<u8> {
@@ -105,123 +106,97 @@ pub(super) fn rgba_at(pixels: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8,
     )
 }
 
-fn flatten_nodes(nodes: &[RenderNode], commands: &mut Vec<DebugRenderCmd>) {
+pub(super) fn only_draw<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> &'a ResolvedDraw
+where
+    F: Fn(&ResolvedDraw) -> bool,
+{
+    let matches = matching_draws(draws, pred);
+    assert_eq!(matches.len(), 1, "expected exactly one matching draw");
+    matches[0]
+}
+
+pub(super) fn matching_draws<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> Vec<&'a ResolvedDraw>
+where
+    F: Fn(&ResolvedDraw) -> bool,
+{
+    draws.iter().filter(|draw| pred(draw)).collect()
+}
+
+pub(super) fn paints_before(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
+    a.paint_order < b.paint_order
+}
+
+pub(super) fn shares_alpha_scope(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
+    a.alpha_scopes
+        .iter()
+        .map(|scope| scope.id)
+        .eq(b.alpha_scopes.iter().map(|scope| scope.id))
+}
+
+pub(super) fn unique_clip_scope_count<F>(draws: &[ResolvedDraw], pred: F) -> usize
+where
+    F: Fn(&AppliedClip) -> bool,
+{
+    let mut clip_ids = HashSet::new();
+    for draw in draws {
+        for clip in &draw.clips {
+            if pred(clip) {
+                clip_ids.insert(clip.id);
+            }
+        }
+    }
+
+    clip_ids.len()
+}
+
+fn observe_nodes(
+    nodes: &[RenderNode],
+    context: &ObserveContext,
+    state: &mut ObserveState,
+    draws: &mut Vec<ResolvedDraw>,
+) {
     for node in nodes {
         match node {
             RenderNode::Clip { clips, children } => {
-                let clip_count = push_debug_clips(clips, commands);
-                flatten_nodes(children, commands);
-                for _ in 0..clip_count {
-                    commands.push(DebugRenderCmd::PopClip);
+                let mut next_context = context.clone();
+                for clip in clips {
+                    next_context.clips.push(AppliedClip {
+                        id: state.next_clip_id,
+                        shape: *clip,
+                        transform_at_application: context.cumulative_transform,
+                    });
+                    state.next_clip_id += 1;
                 }
+                observe_nodes(children, &next_context, state, draws);
             }
             RenderNode::Transform {
                 transform,
                 children,
             } => {
-                commands.push(DebugRenderCmd::PushTransform(*transform));
-                flatten_nodes(children, commands);
-                commands.push(DebugRenderCmd::PopTransform);
+                let mut next_context = context.clone();
+                next_context.cumulative_transform = context.cumulative_transform.mul(*transform);
+                observe_nodes(children, &next_context, state, draws);
             }
             RenderNode::Alpha { alpha, children } => {
-                commands.push(DebugRenderCmd::PushAlpha(*alpha));
-                flatten_nodes(children, commands);
-                commands.push(DebugRenderCmd::PopAlpha);
+                let mut next_context = context.clone();
+                next_context.alpha_scopes.push(AlphaScope {
+                    id: state.next_alpha_id,
+                    alpha: *alpha,
+                });
+                state.next_alpha_id += 1;
+                observe_nodes(children, &next_context, state, draws);
             }
             RenderNode::Primitive(primitive) => {
-                commands.push(debug_cmd_for_primitive(primitive));
+                draws.push(ResolvedDraw {
+                    primitive: primitive.clone(),
+                    paint_order: state.next_paint_order,
+                    cumulative_transform: context.cumulative_transform,
+                    clips: context.clips.clone(),
+                    alpha_scopes: context.alpha_scopes.clone(),
+                });
+                state.next_paint_order += 1;
             }
         }
-    }
-}
-
-fn push_debug_clips(clips: &[ClipShape], commands: &mut Vec<DebugRenderCmd>) -> usize {
-    for clip in clips {
-        match clip.radii {
-            None => commands.push(DebugRenderCmd::PushClip(
-                clip.rect.x,
-                clip.rect.y,
-                clip.rect.width,
-                clip.rect.height,
-            )),
-            Some(CornerRadii { tl, tr, br, bl }) if tl == tr && tr == br && br == bl => {
-                commands.push(DebugRenderCmd::PushClipRounded(
-                    clip.rect.x,
-                    clip.rect.y,
-                    clip.rect.width,
-                    clip.rect.height,
-                    tl,
-                ));
-            }
-            Some(CornerRadii { tl, tr, br, bl }) => {
-                commands.push(DebugRenderCmd::PushClipRoundedCorners(
-                    clip.rect.x,
-                    clip.rect.y,
-                    clip.rect.width,
-                    clip.rect.height,
-                    tl,
-                    tr,
-                    br,
-                    bl,
-                ));
-            }
-        }
-    }
-
-    clips.len()
-}
-
-fn debug_cmd_for_primitive(primitive: &DrawPrimitive) -> DebugRenderCmd {
-    match primitive {
-        DrawPrimitive::Rect(x, y, w, h, color) => DebugRenderCmd::Rect(*x, *y, *w, *h, *color),
-        DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
-            DebugRenderCmd::RoundedRect(*x, *y, *w, *h, *radius, *color)
-        }
-        DrawPrimitive::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, color) => {
-            DebugRenderCmd::RoundedRectCorners(*x, *y, *w, *h, *tl, *tr, *br, *bl, *color)
-        }
-        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
-            DebugRenderCmd::Border(*x, *y, *w, *h, *radius, *width, *color, *style)
-        }
-        DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
-            DebugRenderCmd::BorderCorners(
-                *x, *y, *w, *h, *tl, *tr, *br, *bl, *width, *color, *style,
-            )
-        }
-        DrawPrimitive::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
-            DebugRenderCmd::BorderEdges(
-                *x, *y, *w, *h, *radius, *top, *right, *bottom, *left, *color, *style,
-            )
-        }
-        DrawPrimitive::Shadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
-            DebugRenderCmd::Shadow(*x, *y, *w, *h, *ox, *oy, *blur, *size, *radius, *color)
-        }
-        DrawPrimitive::InsetShadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
-            DebugRenderCmd::InsetShadow(*x, *y, *w, *h, *ox, *oy, *blur, *size, *radius, *color)
-        }
-        DrawPrimitive::TextWithFont(x, y, text, size, color, family, weight, italic) => {
-            DebugRenderCmd::TextWithFont(
-                *x,
-                *y,
-                text.clone(),
-                *size,
-                *color,
-                family.clone(),
-                *weight,
-                *italic,
-            )
-        }
-        DrawPrimitive::Gradient(x, y, w, h, from, to, angle, radius) => {
-            DebugRenderCmd::Gradient(*x, *y, *w, *h, *from, *to, *angle, *radius)
-        }
-        DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
-            DebugRenderCmd::Image(*x, *y, *w, *h, image_id.clone(), *fit, *svg_tint)
-        }
-        DrawPrimitive::Video(x, y, w, h, target_id, fit) => {
-            DebugRenderCmd::Video(*x, *y, *w, *h, target_id.clone(), *fit)
-        }
-        DrawPrimitive::ImageLoading(x, y, w, h) => DebugRenderCmd::ImageLoading(*x, *y, *w, *h),
-        DrawPrimitive::ImageFailed(x, y, w, h) => DebugRenderCmd::ImageFailed(*x, *y, *w, *h),
     }
 }
 
