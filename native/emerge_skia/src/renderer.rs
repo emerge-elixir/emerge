@@ -1,9 +1,9 @@
 //! Backend-agnostic Skia renderer.
 //!
 //! This module contains:
-//! - `DrawCmd` enum for backend-agnostic paint and state commands
-//! - `RenderState` for holding commands between frames
-//! - `Renderer` struct that executes draw commands on a Skia surface
+//! - `RenderScene` / `RenderNode` scene graph types
+//! - `RenderState` for holding scene data between frames
+//! - `Renderer` struct that executes scene nodes on a Skia surface
 //! - Font cache for text rendering
 
 use std::collections::{HashMap, HashSet};
@@ -16,7 +16,7 @@ use resvg::usvg;
 use skia_safe::{
     BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontHinting, FontMgr, Image,
     MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect,
-    Rect, SamplingOptions, Surface, TileMode, Typeface, Vector,
+    Rect, SamplingOptions, Surface, TileMode, Typeface,
     canvas::{SaveLayerRec, SrcRectConstraint},
     dash_path_effect,
     font::Edging as FontEdging,
@@ -25,80 +25,18 @@ use skia_safe::{
     shaders,
 };
 
+use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::tree::attrs::{BorderStyle, ImageFit};
+use crate::tree::geometry::{ClipShape, CornerRadii};
+use crate::tree::transform::Affine2;
 use crate::video::{RendererVideoState, VideoSyncResult};
-
-// ============================================================================
-// Draw Commands
-// ============================================================================
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DrawCmd {
-    Rect(f32, f32, f32, f32, u32),
-    RoundedRect(f32, f32, f32, f32, f32, u32),
-    RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
-    BorderCorners(
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        u32,
-        BorderStyle,
-    ),
-    /// Per-edge border: x, y, w, h, radius, top, right, bottom, left, color, style
-    BorderEdges(
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        u32,
-        BorderStyle,
-    ),
-    /// Outer shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
-    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    /// Inner (inset) shadow: x, y, w, h, offset_x, offset_y, blur, size, radius, color
-    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    /// Text with custom font: x, y, text, font_size, color, family, weight, italic
-    TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
-    /// Gradient: x, y, w, h, from_color, to_color, angle, radius
-    Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
-    /// Image draw: x, y, w, h, image_id, fit, optional template tint
-    Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
-    /// Video draw: x, y, w, h, target_id, fit
-    Video(f32, f32, f32, f32, String, ImageFit),
-    /// Loading placeholder: x, y, w, h
-    ImageLoading(f32, f32, f32, f32),
-    /// Failed placeholder: x, y, w, h
-    ImageFailed(f32, f32, f32, f32),
-    PushClip(f32, f32, f32, f32),
-    PushClipRounded(f32, f32, f32, f32, f32),
-    PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
-    PopClip,
-    Translate(f32, f32),
-    Rotate(f32),
-    Scale(f32, f32),
-    SaveLayerAlpha(f32),
-    Save,
-    Restore,
-}
 
 // ============================================================================
 // Render State
 // ============================================================================
 
 pub struct RenderState {
-    pub commands: Vec<DrawCmd>,
+    pub scene: RenderScene,
     pub clear_color: Color,
     pub render_version: u64,
     pub animate: bool,
@@ -107,7 +45,7 @@ pub struct RenderState {
 impl Default for RenderState {
     fn default() -> Self {
         Self {
-            commands: Vec::new(),
+            scene: RenderScene::default(),
             clear_color: Color::WHITE,
             render_version: 0,
             animate: false,
@@ -695,241 +633,359 @@ impl Renderer {
         let canvas = self.surface.canvas();
         canvas.clear(state.clear_color);
 
-        for cmd in &state.commands {
-            match cmd {
-                DrawCmd::Rect(x, y, w, h, fill) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*fill));
-                    paint.set_anti_alias(true);
-                    canvas.draw_rect(rect, &paint);
-                }
+        Self::render_nodes(canvas, &state.scene.nodes, &self.video_state);
 
-                DrawCmd::RoundedRect(x, y, w, h, radius, fill) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let rrect = RRect::new_rect_xy(rect, *radius, *radius);
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*fill));
-                    paint.set_anti_alias(true);
-                    canvas.draw_rrect(rrect, &paint);
-                }
+        if let Some(gr) = self.gr_context.as_mut() {
+            gr.flush_and_submit();
+        }
+    }
 
-                DrawCmd::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, fill) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let radii = [
-                        Point::new(*tl, *tl),
-                        Point::new(*tr, *tr),
-                        Point::new(*br, *br),
-                        Point::new(*bl, *bl),
-                    ];
-                    let rrect = RRect::new_rect_radii(rect, &radii);
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*fill));
-                    paint.set_anti_alias(true);
-                    canvas.draw_rrect(rrect, &paint);
+    fn render_nodes(
+        canvas: &skia_safe::Canvas,
+        nodes: &[RenderNode],
+        video_state: &RendererVideoState,
+    ) {
+        for node in nodes {
+            match node {
+                RenderNode::Clip { clips, children } => {
+                    Self::render_clip_node(canvas, clips, children, video_state)
                 }
+                RenderNode::Transform { transform, children } => {
+                    Self::render_transform_node(canvas, *transform, children, video_state)
+                }
+                RenderNode::Alpha { alpha, children } => {
+                    Self::render_alpha_node(canvas, *alpha, children, video_state)
+                }
+                RenderNode::Primitive(primitive) => {
+                    Self::render_primitive(canvas, primitive, video_state)
+                }
+            }
+        }
+    }
 
-                DrawCmd::Border(x, y, w, h, radius, width, color, style) => {
-                    draw_border(
-                        canvas,
-                        BorderDrawSpec {
-                            rect: RectSpec {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                            },
-                            corners: [*radius, *radius, *radius, *radius],
-                            insets: EdgeInsets::uniform(*width),
-                            color: *color,
-                            style: *style,
+    fn render_clip_node(
+        canvas: &skia_safe::Canvas,
+        clips: &[ClipShape],
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if clips.is_empty() {
+            Self::render_nodes(canvas, children, video_state);
+            return;
+        }
+
+        canvas.save();
+        for clip in clips {
+            apply_clip_shape(canvas, clip);
+        }
+        Self::render_nodes(canvas, children, video_state);
+        canvas.restore();
+    }
+
+    fn render_transform_node(
+        canvas: &skia_safe::Canvas,
+        transform: Affine2,
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if transform.is_identity() {
+            Self::render_nodes(canvas, children, video_state);
+            return;
+        }
+
+        canvas.save();
+        let matrix = matrix_from_affine2(transform);
+        canvas.concat(&matrix);
+        Self::render_nodes(canvas, children, video_state);
+        canvas.restore();
+    }
+
+    fn render_alpha_node(
+        canvas: &skia_safe::Canvas,
+        alpha: f32,
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if alpha >= 1.0 {
+            Self::render_nodes(canvas, children, video_state);
+            return;
+        }
+
+        let clamped = alpha.clamp(0.0, 1.0);
+        let alpha_u8 = (clamped * 255.0).round() as u8;
+        canvas.save_layer_alpha(None, alpha_u8.into());
+        Self::render_nodes(canvas, children, video_state);
+        canvas.restore();
+    }
+
+    fn render_primitive(
+        canvas: &skia_safe::Canvas,
+        primitive: &DrawPrimitive,
+        video_state: &RendererVideoState,
+    ) {
+        match primitive {
+            DrawPrimitive::Rect(x, y, w, h, fill) => {
+                let rect = Rect::from_xywh(*x, *y, *w, *h);
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*fill));
+                paint.set_anti_alias(true);
+                canvas.draw_rect(rect, &paint);
+            }
+
+            DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
+                let rect = Rect::from_xywh(*x, *y, *w, *h);
+                let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*fill));
+                paint.set_anti_alias(true);
+                canvas.draw_rrect(rrect, &paint);
+            }
+
+            DrawPrimitive::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, fill) => {
+                let rect = Rect::from_xywh(*x, *y, *w, *h);
+                let radii = [
+                    Point::new(*tl, *tl),
+                    Point::new(*tr, *tr),
+                    Point::new(*br, *br),
+                    Point::new(*bl, *bl),
+                ];
+                let rrect = RRect::new_rect_radii(rect, &radii);
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*fill));
+                paint.set_anti_alias(true);
+                canvas.draw_rrect(rrect, &paint);
+            }
+
+            DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
+                draw_border(
+                    canvas,
+                    BorderDrawSpec {
+                        rect: RectSpec {
+                            x: *x,
+                            y: *y,
+                            w: *w,
+                            h: *h,
                         },
-                    );
-                }
+                        corners: [*radius, *radius, *radius, *radius],
+                        insets: EdgeInsets::uniform(*width),
+                        color: *color,
+                        style: *style,
+                    },
+                );
+            }
 
-                DrawCmd::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
-                    draw_border(
-                        canvas,
-                        BorderDrawSpec {
-                            rect: RectSpec {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                            },
-                            corners: [*tl, *tr, *br, *bl],
-                            insets: EdgeInsets::uniform(*width),
-                            color: *color,
-                            style: *style,
+            DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
+                draw_border(
+                    canvas,
+                    BorderDrawSpec {
+                        rect: RectSpec {
+                            x: *x,
+                            y: *y,
+                            w: *w,
+                            h: *h,
                         },
-                    );
-                }
+                        corners: [*tl, *tr, *br, *bl],
+                        insets: EdgeInsets::uniform(*width),
+                        color: *color,
+                        style: *style,
+                    },
+                );
+            }
 
-                DrawCmd::BorderEdges(
-                    x,
-                    y,
-                    w,
-                    h,
-                    radius,
-                    top,
-                    right,
-                    bottom,
-                    left,
-                    color,
-                    style,
-                ) => {
-                    draw_border(
-                        canvas,
-                        BorderDrawSpec {
-                            rect: RectSpec {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                            },
-                            corners: [*radius, *radius, *radius, *radius],
-                            insets: EdgeInsets {
-                                top: *top,
-                                right: *right,
-                                bottom: *bottom,
-                                left: *left,
-                            },
-                            color: *color,
-                            style: *style,
+            DrawPrimitive::BorderEdges(
+                x,
+                y,
+                w,
+                h,
+                radius,
+                top,
+                right,
+                bottom,
+                left,
+                color,
+                style,
+            ) => {
+                draw_border(
+                    canvas,
+                    BorderDrawSpec {
+                        rect: RectSpec {
+                            x: *x,
+                            y: *y,
+                            w: *w,
+                            h: *h,
                         },
-                    );
-                }
+                        corners: [*radius, *radius, *radius, *radius],
+                        insets: EdgeInsets {
+                            top: *top,
+                            right: *right,
+                            bottom: *bottom,
+                            left: *left,
+                        },
+                        color: *color,
+                        style: *style,
+                    },
+                );
+            }
 
-                DrawCmd::Shadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
-                    // Expand rect by spread size and offset
-                    let shadow_x = *x + *offset_x - *size;
-                    let shadow_y = *y + *offset_y - *size;
-                    let shadow_w = *w + *size * 2.0;
-                    let shadow_h = *h + *size * 2.0;
-                    let shadow_radius = (*radius + *size).max(0.0);
+            DrawPrimitive::Shadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+                let shadow_x = *x + *offset_x - *size;
+                let shadow_y = *y + *offset_y - *size;
+                let shadow_w = *w + *size * 2.0;
+                let shadow_h = *h + *size * 2.0;
+                let shadow_radius = (*radius + *size).max(0.0);
 
-                    let rect = Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h);
-                    let rrect = if shadow_radius > 0.0 {
-                        RRect::new_rect_xy(rect, shadow_radius, shadow_radius)
-                    } else {
-                        RRect::new_rect(rect)
-                    };
+                let rect = Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h);
+                let rrect = if shadow_radius > 0.0 {
+                    RRect::new_rect_xy(rect, shadow_radius, shadow_radius)
+                } else {
+                    RRect::new_rect(rect)
+                };
 
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*color));
-                    paint.set_anti_alias(true);
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*color));
+                paint.set_anti_alias(true);
 
-                    if *blur > 0.0 {
-                        let sigma = *blur / 2.0;
-                        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
-                            paint.set_mask_filter(filter);
-                        }
-                    }
-
-                    canvas.draw_rrect(rrect, &paint);
-                }
-
-                DrawCmd::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
-                    // Clip to the element bounds so shadow doesn't leak outside
-                    let bounds_rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let bounds_rrect = if *radius > 0.0 {
-                        RRect::new_rect_xy(bounds_rect, *radius, *radius)
-                    } else {
-                        RRect::new_rect(bounds_rect)
-                    };
-
-                    canvas.save();
-                    canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Intersect, true);
-
-                    // Create inset shadow by drawing a large rect with a hole
-                    let inset_x = *x + *offset_x + *size;
-                    let inset_y = *y + *offset_y + *size;
-                    let inset_w = *w - *size * 2.0;
-                    let inset_h = *h - *size * 2.0;
-                    let inset_radius = (*radius - *size).max(0.0);
-
-                    let inner_rect =
-                        Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
-                    let inner_rrect = if inset_radius > 0.0 {
-                        RRect::new_rect_xy(inner_rect, inset_radius, inset_radius)
-                    } else {
-                        RRect::new_rect(inner_rect)
-                    };
-
-                    // Create a path: large outer rect minus inner rrect (EvenOdd)
-                    let margin = (*blur + *size) * 4.0 + 100.0;
-                    let outer_rect = Rect::from_xywh(
-                        *x - margin,
-                        *y - margin,
-                        *w + margin * 2.0,
-                        *h + margin * 2.0,
-                    );
-                    let mut builder = PathBuilder::new_with_fill_type(PathFillType::EvenOdd);
-                    builder.add_rect(outer_rect, None, None);
-                    builder.add_rrect(inner_rrect, None, None);
-                    let path = builder.detach();
-
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*color));
-                    paint.set_anti_alias(true);
-
-                    if *blur > 0.0 {
-                        let sigma = *blur / 2.0;
-                        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
-                            paint.set_mask_filter(filter);
-                        }
-                    }
-
-                    canvas.draw_path(&path, &paint);
-                    canvas.restore();
-                }
-
-                DrawCmd::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
-                    let font = make_font_with_style(family, *weight, *italic, *font_size);
-                    let mut paint = Paint::default();
-                    paint.set_color(color_from_u32(*fill));
-                    paint.set_anti_alias(true);
-                    canvas.draw_str(text, (*x, *y), &font, &paint);
-                }
-
-                DrawCmd::Gradient(x, y, w, h, from, to, angle, radius) => {
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-
-                    let radians = angle.to_radians();
-                    let cx = x + w / 2.0;
-                    let cy = y + h / 2.0;
-                    let half_diag = (w * w + h * h).sqrt() / 2.0;
-
-                    let start = (
-                        cx - radians.cos() * half_diag,
-                        cy - radians.sin() * half_diag,
-                    );
-                    let end = (
-                        cx + radians.cos() * half_diag,
-                        cy + radians.sin() * half_diag,
-                    );
-
-                    let colors = [color_from_u32(*from).into(), color_from_u32(*to).into()];
-                    let gradient_colors =
-                        GradientColors::new_evenly_spaced(&colors, TileMode::Clamp, None);
-                    let gradient = Gradient::new(gradient_colors, Interpolation::default());
-
-                    if let Some(shader) = shaders::linear_gradient((start, end), &gradient, None) {
-                        let mut paint = Paint::default();
-                        paint.set_shader(shader);
-                        paint.set_anti_alias(true);
-                        if *radius > 0.0 {
-                            let rrect = RRect::new_rect_xy(rect, *radius, *radius);
-                            canvas.draw_rrect(rrect, &paint);
-                        } else {
-                            canvas.draw_rect(rect, &paint);
-                        }
+                if *blur > 0.0 {
+                    let sigma = *blur / 2.0;
+                    if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+                        paint.set_mask_filter(filter);
                     }
                 }
 
-                DrawCmd::Image(x, y, w, h, image_id, fit, svg_tint) => {
-                    draw_cached_asset_with_fit(
+                canvas.draw_rrect(rrect, &paint);
+            }
+
+            DrawPrimitive::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+                let bounds_rect = Rect::from_xywh(*x, *y, *w, *h);
+                let bounds_rrect = if *radius > 0.0 {
+                    RRect::new_rect_xy(bounds_rect, *radius, *radius)
+                } else {
+                    RRect::new_rect(bounds_rect)
+                };
+
+                canvas.save();
+                canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Intersect, true);
+
+                let inset_x = *x + *offset_x + *size;
+                let inset_y = *y + *offset_y + *size;
+                let inset_w = *w - *size * 2.0;
+                let inset_h = *h - *size * 2.0;
+                let inset_radius = (*radius - *size).max(0.0);
+
+                let inner_rect =
+                    Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
+                let inner_rrect = if inset_radius > 0.0 {
+                    RRect::new_rect_xy(inner_rect, inset_radius, inset_radius)
+                } else {
+                    RRect::new_rect(inner_rect)
+                };
+
+                let margin = (*blur + *size) * 4.0 + 100.0;
+                let outer_rect = Rect::from_xywh(
+                    *x - margin,
+                    *y - margin,
+                    *w + margin * 2.0,
+                    *h + margin * 2.0,
+                );
+                let mut builder = PathBuilder::new_with_fill_type(PathFillType::EvenOdd);
+                builder.add_rect(outer_rect, None, None);
+                builder.add_rrect(inner_rrect, None, None);
+                let path = builder.detach();
+
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*color));
+                paint.set_anti_alias(true);
+
+                if *blur > 0.0 {
+                    let sigma = *blur / 2.0;
+                    if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+                        paint.set_mask_filter(filter);
+                    }
+                }
+
+                canvas.draw_path(&path, &paint);
+                canvas.restore();
+            }
+
+            DrawPrimitive::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
+                let font = make_font_with_style(family, *weight, *italic, *font_size);
+                let mut paint = Paint::default();
+                paint.set_color(color_from_u32(*fill));
+                paint.set_anti_alias(true);
+                canvas.draw_str(text, (*x, *y), &font, &paint);
+            }
+
+            DrawPrimitive::Gradient(x, y, w, h, from, to, angle, radius) => {
+                let rect = Rect::from_xywh(*x, *y, *w, *h);
+
+                let radians = angle.to_radians();
+                let cx = x + w / 2.0;
+                let cy = y + h / 2.0;
+                let half_diag = (w * w + h * h).sqrt() / 2.0;
+
+                let start = (
+                    cx - radians.cos() * half_diag,
+                    cy - radians.sin() * half_diag,
+                );
+                let end = (
+                    cx + radians.cos() * half_diag,
+                    cy + radians.sin() * half_diag,
+                );
+
+                let colors = [color_from_u32(*from).into(), color_from_u32(*to).into()];
+                let gradient_colors =
+                    GradientColors::new_evenly_spaced(&colors, TileMode::Clamp, None);
+                let gradient = Gradient::new(gradient_colors, Interpolation::default());
+
+                if let Some(shader) = shaders::linear_gradient((start, end), &gradient, None) {
+                    let mut paint = Paint::default();
+                    paint.set_shader(shader);
+                    paint.set_anti_alias(true);
+                    if *radius > 0.0 {
+                        let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                        canvas.draw_rrect(rrect, &paint);
+                    } else {
+                        canvas.draw_rect(rect, &paint);
+                    }
+                }
+            }
+
+            DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
+                draw_cached_asset_with_fit(
+                    canvas,
+                    ImageDrawSpec {
+                        rect: RectSpec {
+                            x: *x,
+                            y: *y,
+                            w: *w,
+                            h: *h,
+                        },
+                        image_id,
+                        fit: *fit,
+                        svg_tint: *svg_tint,
+                    },
+                );
+            }
+
+            DrawPrimitive::Video(x, y, w, h, target_id, fit) => {
+                if let Some((image, image_width, image_height)) = video_state.image(target_id) {
+                    draw_image_with_fit(
                         canvas,
+                        image,
+                        image_width,
+                        image_height,
                         ImageDrawSpec {
                             rect: RectSpec {
                                 x: *x,
@@ -937,105 +993,21 @@ impl Renderer {
                                 w: *w,
                                 h: *h,
                             },
-                            image_id,
+                            image_id: target_id,
                             fit: *fit,
-                            svg_tint: *svg_tint,
+                            svg_tint: None,
                         },
                     );
                 }
-
-                DrawCmd::Video(x, y, w, h, target_id, fit) => {
-                    if let Some((image, image_width, image_height)) =
-                        self.video_state.image(target_id)
-                    {
-                        draw_image_with_fit(
-                            canvas,
-                            image,
-                            image_width,
-                            image_height,
-                            ImageDrawSpec {
-                                rect: RectSpec {
-                                    x: *x,
-                                    y: *y,
-                                    w: *w,
-                                    h: *h,
-                                },
-                                image_id: target_id,
-                                fit: *fit,
-                                svg_tint: None,
-                            },
-                        );
-                    }
-                }
-
-                DrawCmd::ImageLoading(x, y, w, h) => {
-                    draw_image_loading(canvas, *x, *y, *w, *h);
-                }
-
-                DrawCmd::ImageFailed(x, y, w, h) => {
-                    draw_image_failed(canvas, *x, *y, *w, *h);
-                }
-
-                DrawCmd::PushClip(x, y, w, h) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
-                }
-
-                DrawCmd::PushClipRounded(x, y, w, h, radius) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let rrect = RRect::new_rect_xy(rect, *radius, *radius);
-                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
-                }
-
-                DrawCmd::PushClipRoundedCorners(x, y, w, h, tl, tr, br, bl) => {
-                    canvas.save();
-                    let rect = Rect::from_xywh(*x, *y, *w, *h);
-                    let radii = [
-                        Point::new(*tl, *tl),
-                        Point::new(*tr, *tr),
-                        Point::new(*br, *br),
-                        Point::new(*bl, *bl),
-                    ];
-                    let rrect = RRect::new_rect_radii(rect, &radii);
-                    canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
-                }
-
-                DrawCmd::PopClip => {
-                    canvas.restore();
-                }
-
-                DrawCmd::Translate(x, y) => {
-                    canvas.translate(Vector::new(*x, *y));
-                }
-
-                DrawCmd::Rotate(degrees) => {
-                    canvas.rotate(*degrees, None);
-                }
-
-                DrawCmd::Scale(x, y) => {
-                    canvas.scale((*x, *y));
-                }
-
-                DrawCmd::SaveLayerAlpha(alpha) => {
-                    let clamped = alpha.clamp(0.0, 1.0);
-                    let alpha_u8 = (clamped * 255.0).round() as u8;
-                    canvas.save_layer_alpha(None, alpha_u8.into());
-                }
-
-                DrawCmd::Save => {
-                    canvas.save();
-                }
-
-                DrawCmd::Restore => {
-                    canvas.restore();
-                }
             }
-        }
 
-        if let Some(gr) = self.gr_context.as_mut() {
-            gr.flush_and_submit();
+            DrawPrimitive::ImageLoading(x, y, w, h) => {
+                draw_image_loading(canvas, *x, *y, *w, *h);
+            }
+
+            DrawPrimitive::ImageFailed(x, y, w, h) => {
+                draw_image_failed(canvas, *x, *y, *w, *h);
+            }
         }
     }
 
@@ -1094,6 +1066,39 @@ struct BorderDrawSpec {
     insets: EdgeInsets,
     color: u32,
     style: BorderStyle,
+}
+
+fn matrix_from_affine2(transform: Affine2) -> Matrix {
+    Matrix::new_all(
+        transform.xx,
+        transform.xy,
+        transform.tx,
+        transform.yx,
+        transform.yy,
+        transform.ty,
+        0.0,
+        0.0,
+        1.0,
+    )
+}
+
+fn apply_clip_shape(canvas: &skia_safe::Canvas, clip: &ClipShape) {
+    let rect = Rect::from_xywh(clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height);
+    match clip.radii {
+        None => {
+            canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
+        }
+        Some(CornerRadii { tl, tr, br, bl }) => {
+            let radii = [
+                Point::new(tl, tl),
+                Point::new(tr, tr),
+                Point::new(br, br),
+                Point::new(bl, bl),
+            ];
+            let rrect = RRect::new_rect_radii(rect, &radii);
+            canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        }
+    }
 }
 
 fn create_gl_surface(
@@ -1960,7 +1965,11 @@ mod tests {
         true
     }
 
-    fn render_commands_to_pixels(width: u32, height: u32, commands: Vec<DrawCmd>) -> Vec<u8> {
+    fn render_commands_to_pixels(
+        width: u32,
+        height: u32,
+        primitives: Vec<DrawPrimitive>,
+    ) -> Vec<u8> {
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
             skia_safe::ColorType::RGBA8888,
@@ -1972,7 +1981,12 @@ mod tests {
 
         let mut renderer = Renderer::from_surface(surface);
         let state = RenderState {
-            commands,
+            scene: RenderScene {
+                nodes: primitives
+                    .into_iter()
+                    .map(RenderNode::Primitive)
+                    .collect(),
+            },
             clear_color: Color::TRANSPARENT,
             render_version: 1,
             animate: false,
@@ -2011,8 +2025,12 @@ mod tests {
         pixels
     }
 
-    fn render_single_command_to_pixels(width: u32, height: u32, cmd: DrawCmd) -> Vec<u8> {
-        render_commands_to_pixels(width, height, vec![cmd])
+    fn render_single_command_to_pixels(
+        width: u32,
+        height: u32,
+        primitive: DrawPrimitive,
+    ) -> Vec<u8> {
+        render_commands_to_pixels(width, height, vec![primitive])
     }
 
     fn rgba_at(pixels: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
@@ -2278,7 +2296,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             32,
             32,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 8.0,
                 8.0,
                 15.0,
@@ -2331,7 +2349,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2367,7 +2385,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             20,
             20,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 4.0,
                 5.0,
                 8.0,
@@ -2402,7 +2420,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             20,
             20,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 4.0,
                 5.0,
                 8.0,
@@ -2441,7 +2459,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2476,7 +2494,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2515,7 +2533,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2552,7 +2570,7 @@ mod tests {
         let pixels = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2588,7 +2606,7 @@ mod tests {
         let first = render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2601,7 +2619,7 @@ mod tests {
         let second = render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2635,7 +2653,7 @@ mod tests {
         render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2648,7 +2666,7 @@ mod tests {
         render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2684,7 +2702,7 @@ mod tests {
         let first = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2697,7 +2715,7 @@ mod tests {
         let second = render_commands_to_pixels(
             8,
             8,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 8.0,
@@ -2736,7 +2754,7 @@ mod tests {
         let red_pixels = render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2757,7 +2775,7 @@ mod tests {
         let blue_pixels = render_commands_to_pixels(
             4,
             4,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 4.0,
@@ -2791,7 +2809,7 @@ mod tests {
         render_commands_to_pixels(
             513,
             513,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 513.0,
@@ -2804,7 +2822,7 @@ mod tests {
         render_commands_to_pixels(
             513,
             513,
-            vec![DrawCmd::Image(
+            vec![DrawPrimitive::Image(
                 0.0,
                 0.0,
                 513.0,
@@ -3125,7 +3143,7 @@ mod tests {
         let pixels = render_single_command_to_pixels(
             160,
             100,
-            DrawCmd::BorderEdges(
+            DrawPrimitive::BorderEdges(
                 20.0,
                 20.0,
                 100.0,
@@ -3163,7 +3181,7 @@ mod tests {
             let pixels = render_single_command_to_pixels(
                 180,
                 120,
-                DrawCmd::BorderEdges(
+                DrawPrimitive::BorderEdges(
                     20.0, 20.0, 100.0, 40.0, 8.0, 4.0, 1.0, 4.0, 1.0, 0x78C8A0FF, style,
                 ),
             );

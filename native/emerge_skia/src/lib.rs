@@ -26,6 +26,7 @@ mod debug_trace;
 mod drm_input;
 mod events;
 mod input;
+mod render_scene;
 mod renderer;
 mod tree;
 mod video;
@@ -704,8 +705,8 @@ fn spawn_tree_actor_with_initial_tree(
                     );
 
                     let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    render_sender.send_latest(RenderMsg::Commands {
-                        commands: output.commands,
+                    render_sender.send_latest(RenderMsg::Scene {
+                        scene: output.scene,
                         version,
                         animate: output.animations_active,
                         ime_enabled: output.ime_enabled,
@@ -1274,7 +1275,7 @@ fn render_tree_to_pixels_nif<'a>(
     let mut backend = RasterBackend::new(&config)?;
 
     let state = RenderState {
-        commands: output.commands,
+        scene: output.scene,
         ..Default::default()
     };
 

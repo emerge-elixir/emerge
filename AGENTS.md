@@ -37,7 +37,7 @@ Elixir: EmergeSkia.upload_tree(renderer, tree)
     ▼
 Rust tree actor: layout_and_refresh_default(tree, constraint, scale)
     │
-    │  produces Vec<DrawCmd> + event rebuild
+    │  produces RenderScene + event rebuild
     ▼
 Render thread: SkiaRenderer.render() draws to GPU surface
     │
@@ -67,7 +67,7 @@ TreeActor:rerender / Elixir: event forwarding
 - `EmergeSkia.Native` (`lib/emerge_skia/native.ex`) - Rustler NIF bindings
 
 **Rust Side** (`native/emerge_skia/src/lib.rs`):
-- `SkiaRenderer` - wraps Skia surface/context, executes draw commands
+- `SkiaRenderer` - wraps Skia surface/context, executes render scenes
 - `RendererResource` - NIF resource holding render state and event proxy
 - `WaylandApp` - smithay-client-toolkit app state managing Wayland events
 - `LayoutOutput` struct - bundles render commands + event registry, returned by `refresh()` and `layout_and_refresh_default()`

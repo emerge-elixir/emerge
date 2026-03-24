@@ -1602,13 +1602,13 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
             while let Ok(msg) = render_rx.try_recv() {
                 match msg {
-                    RenderMsg::Commands {
-                        commands,
+                    RenderMsg::Scene {
+                        scene,
                         version,
                         animate,
                         ..
                     } => {
-                        render_state.commands = commands;
+                        render_state.scene = scene;
                         render_state.render_version = version;
                         render_state.animate = animate;
                         pending_render = true;

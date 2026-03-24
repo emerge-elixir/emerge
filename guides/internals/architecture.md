@@ -27,7 +27,7 @@ Multi-backend Skia renderer with:
 - Elixir-side tree definition + EMRG encoder
 - Three-pass layout engine (scale + measurement + resolution)
 - Scale factor support for high-DPI displays
-- Tree-to-DrawCmd rendering
+- Tree-to-render-scene rendering
 
 ## Architecture Diagram
 
@@ -36,7 +36,7 @@ between them:
 
 - Elixir/BEAM owns app state and UI tree definition, and consumes processed events.
 - `UI Runtime (Rust)` is centered on `Tree actor`, `Event actor`, and internal `Assets actor`.
-- `Backend (Rust)` is split into `Render loop` (consumes draw commands) and `Event capture`
+- `Backend (Rust)` is split into `Render loop` (consumes render scenes) and `Event capture`
   (emits standardized events to runtime).
 
 ```mermaid
@@ -74,7 +74,7 @@ flowchart TD
 
   APP e31@--> |tree definition| TREE
   EVENT e32@--> |processed events| APP
-  TREE e33@--> |draw commands| RENDER_LOOP
+  TREE e33@--> |render scene| RENDER_LOOP
   EVENT_CAPTURE e34@--> |standardized events| EVENT
 
   class e31 dir1
@@ -88,7 +88,8 @@ flowchart TD
 ```
 lib.rs (NIF entry, resources, registration)
     │
-    ├── renderer.rs (DrawCmd, RenderState, font cache)
+    ├── render_scene.rs (RenderScene, RenderNode, DrawPrimitive)
+    ├── renderer.rs (scene renderer, RenderState, font cache)
     │
     ├── backend/
     │   ├── wayland.rs (windowed)
@@ -107,7 +108,7 @@ lib.rs (NIF entry, resources, registration)
         ├── deserialize.rs (EMRG binary parser)
         ├── patch.rs (incremental tree updates)
         ├── layout.rs (three-pass: scale → measure → resolve)
-        ├── render.rs (ElementTree → Vec<DrawCmd>, reads pre-scaled attrs)
+        ├── render.rs (ElementTree → RenderScene, reads pre-scaled attrs)
         ├── scrollbar.rs (scrollbar geometry/metrics shared by render + events)
         └── serialize.rs (ElementTree → EMRG binary)
 ```

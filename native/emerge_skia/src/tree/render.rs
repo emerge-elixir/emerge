@@ -1,39 +1,102 @@
-//! Render an ElementTree into DrawCmds.
+//! Render an ElementTree into a render scene.
 //!
 //! Reads from pre-scaled attrs (scaling is applied in the layout pass).
 
 mod box_model;
 mod color;
 mod paint;
-mod scope;
 mod text;
 
 pub(crate) use self::color::DEFAULT_TEXT_COLOR;
 use self::paint::{
-    build_background_items, collect_border_items, collect_box_shadow_items,
-    collect_scrollbar_items, render_image_items, render_video_items,
-};
-pub(super) use self::scope::{
-    HostClipDescriptor, InheritedClipMode, RenderItem, RenderScope, ScopeTransform,
+    build_background_nodes, collect_border_nodes, collect_box_shadow_nodes,
+    collect_scrollbar_nodes, render_image_nodes, render_video_nodes,
 };
 use self::text::{
     TextDecorationSpec, render_text_input_items, render_text_items, text_decoration_items,
 };
-use super::attrs::{Attrs, BorderRadius, effective_scrollbar_x, effective_scrollbar_y};
+use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
 };
+use super::geometry::{ClipShape, Rect, host_clip_shape};
 use super::layout::FontContext;
-use super::render_lower::lower_render_scope;
-use super::scene::{SceneContext, child_context as next_scene_context, resolve_node_state};
+use super::scene::{
+    ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
+};
+use super::transform::element_transform;
 use crate::events::{RegistryRebuildPayload, registry_builder};
-use crate::renderer::{DrawCmd, make_font_with_style};
+use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
+use crate::renderer::make_font_with_style;
 
 pub(crate) struct RenderOutput {
-    pub commands: Vec<DrawCmd>,
+    pub scene: RenderScene,
     pub event_rebuild: RegistryRebuildPayload,
     pub text_input_focused: bool,
     pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HostClipDescriptor {
+    clip: ClipShape,
+    scroll_x: bool,
+    scroll_y: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RenderBuildContext {
+    scene_bounds: Rect,
+    inherited_host_clips: Vec<HostClipDescriptor>,
+}
+
+impl RenderBuildContext {
+    fn with_host_clip(&self, clip: HostClipDescriptor) -> Self {
+        let mut inherited_host_clips = self.inherited_host_clips.clone();
+        inherited_host_clips.push(clip);
+        Self {
+            scene_bounds: self.scene_bounds,
+            inherited_host_clips,
+        }
+    }
+
+    fn without_host_clips(&self) -> Self {
+        Self {
+            scene_bounds: self.scene_bounds,
+            inherited_host_clips: Vec::new(),
+        }
+    }
+
+    fn full_clip_shapes(&self) -> Vec<ClipShape> {
+        self.inherited_host_clips.iter().map(|clip| clip.clip).collect()
+    }
+
+    fn shadow_clip_shapes(&self) -> Vec<ClipShape> {
+        self.inherited_host_clips
+            .iter()
+            .filter_map(|clip| match (clip.scroll_x, clip.scroll_y) {
+                (false, false) => None,
+                (true, true) => Some(clip.clip),
+                (true, false) => Some(ClipShape {
+                    rect: Rect {
+                        x: clip.clip.rect.x,
+                        y: self.scene_bounds.y,
+                        width: clip.clip.rect.width,
+                        height: self.scene_bounds.height,
+                    },
+                    radii: None,
+                }),
+                (false, true) => Some(ClipShape {
+                    rect: Rect {
+                        x: self.scene_bounds.x,
+                        y: clip.clip.rect.y,
+                        width: self.scene_bounds.width,
+                        height: clip.clip.rect.height,
+                    },
+                    radii: None,
+                }),
+            })
+            .collect()
+    }
 }
 
 /// Render the tree and collect rebuild metadata.
@@ -41,7 +104,7 @@ pub(crate) struct RenderOutput {
 pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     let Some(root) = tree.root.as_ref() else {
         return RenderOutput {
-            commands: Vec::new(),
+            scene: RenderScene::default(),
             event_rebuild: RegistryRebuildPayload::default(),
             text_input_focused: false,
             text_input_cursor_area: None,
@@ -51,7 +114,11 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     let mut text_input_focused = false;
     let mut text_input_cursor_area = None;
     let mut rebuild_acc = registry_builder::RegistryBuildAcc::default();
-    let root_scope = match build_element_scope(
+    let render_ctx = RenderBuildContext {
+        scene_bounds: scene_bounds_for_root(tree, root),
+        ..RenderBuildContext::default()
+    };
+    let nodes = build_element_nodes(
         tree,
         root,
         &FontContext::default(),
@@ -61,21 +128,18 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
         &[],
         true,
         SceneContext::default(),
-    ) {
-        Some(scope) => scope,
-        None => RenderScope::default(),
-    };
-    let commands = lower_render_scope(&root_scope, scene_bounds_for_root(tree, root));
+        &render_ctx,
+    );
 
     RenderOutput {
-        commands,
+        scene: RenderScene { nodes },
         event_rebuild: registry_builder::finalize_registry_rebuild(rebuild_acc),
         text_input_focused,
         text_input_cursor_area,
     }
 }
 
-fn build_element_scope(
+fn build_element_nodes(
     tree: &ElementTree,
     id: &ElementId,
     inherited: &FontContext,
@@ -85,9 +149,15 @@ fn build_element_scope(
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
     scene_ctx: SceneContext,
-) -> Option<RenderScope> {
-    let element = tree.get(id)?;
-    let frame = element.frame?;
+    render_ctx: &RenderBuildContext,
+) -> Vec<RenderNode> {
+    let Some(element) = tree.get(id) else {
+        return Vec::new();
+    };
+    let Some(frame) = element.frame else {
+        return Vec::new();
+    };
+
     let attrs = &element.attrs;
     let radius = attrs.border_radius.as_ref();
     let scene_state = resolve_node_state(element, scene_ctx);
@@ -95,6 +165,8 @@ fn build_element_scope(
         .as_ref()
         .map(|state| state.adjusted_frame)
         .unwrap_or(frame);
+    let transform = element_transform(render_frame, attrs);
+    let alpha = attrs.alpha.unwrap_or(1.0) as f32;
 
     let element_context = inherited.merge_with_attrs(attrs);
     let next_scroll_contexts = if collect_events {
@@ -112,23 +184,18 @@ fn build_element_scope(
         scroll_contexts.to_vec()
     };
 
-    let mut scope = RenderScope {
-        transform: scope_transform(render_frame, attrs),
-        ..RenderScope::default()
-    };
+    let mut sections = Vec::new();
 
-    if let Some(shadow_scope) = build_outer_shadow_scope(render_frame, attrs, radius) {
-        scope.items.push(RenderItem::Scope(shadow_scope));
-    }
+    let outer_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, false);
+    sections.extend(wrap_with_clips(
+        wrap_with_transform(outer_shadow_nodes, transform),
+        render_ctx.shadow_clip_shapes(),
+    ));
 
-    scope
-        .items
-        .extend(build_background_items(render_frame, attrs, radius));
-    scope
-        .items
-        .extend(collect_box_shadow_items(render_frame, attrs, radius, true));
-
-    if let Some(content_scope) = build_host_content_scope(
+    let mut normal_nodes = Vec::new();
+    normal_nodes.extend(build_background_nodes(render_frame, attrs, radius));
+    normal_nodes.extend(collect_box_shadow_nodes(render_frame, attrs, radius, true));
+    normal_nodes.extend(build_host_content_nodes(
         tree,
         element,
         render_frame,
@@ -139,49 +206,34 @@ fn build_element_scope(
         &next_scroll_contexts,
         collect_events,
         scene_state.clone(),
-    ) {
-        scope.items.push(RenderItem::Scope(content_scope));
-    }
+        render_ctx,
+    ));
+    normal_nodes.extend(collect_border_nodes(render_frame, attrs));
+    sections.extend(wrap_with_clips(
+        wrap_with_transform(normal_nodes, transform),
+        render_ctx.full_clip_shapes(),
+    ));
 
-    scope
-        .items
-        .extend(collect_border_items(render_frame, attrs));
+    sections.extend(wrap_with_transform(
+        build_front_nearby_nodes(
+            tree,
+            element,
+            &element_context,
+            text_input_focused,
+            text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            scroll_contexts,
+            collect_events,
+            scene_state,
+            &render_ctx.without_host_clips(),
+        ),
+        transform,
+    ));
 
-    if let Some(front_scope) = build_front_nearby_scope(
-        tree,
-        element,
-        &element_context,
-        text_input_focused,
-        text_input_cursor_area,
-        event_acc.as_deref_mut(),
-        scroll_contexts,
-        collect_events,
-        scene_state.clone(),
-    ) {
-        scope.items.push(RenderItem::Scope(front_scope));
-    }
-
-    Some(scope)
+    wrap_with_alpha(sections, alpha)
 }
 
-fn build_outer_shadow_scope(
-    frame: Frame,
-    attrs: &Attrs,
-    radius: Option<&BorderRadius>,
-) -> Option<RenderScope> {
-    if !has_outer_shadows(attrs) {
-        return None;
-    }
-
-    let items = collect_box_shadow_items(frame, attrs, radius, false);
-    Some(RenderScope {
-        inherited_clip_mode: InheritedClipMode::ShadowAxes,
-        items,
-        ..RenderScope::default()
-    })
-}
-
-fn build_host_content_scope(
+fn build_host_content_nodes(
     tree: &ElementTree,
     element: &Element,
     render_frame: Frame,
@@ -191,12 +243,21 @@ fn build_host_content_scope(
     mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> Option<RenderScope> {
+    scene_state: Option<ResolvedNodeState>,
+    render_ctx: &RenderBuildContext,
+) -> Vec<RenderNode> {
     let attrs = &element.attrs;
-    let mut items = Vec::new();
+    let current_host_clip = HostClipDescriptor {
+        clip: scene_state
+            .as_ref()
+            .map(|state| state.host_clip)
+            .unwrap_or_else(|| host_clip_shape(render_frame, attrs)),
+        scroll_x: effective_scrollbar_x(attrs),
+        scroll_y: effective_scrollbar_y(attrs),
+    };
+    let child_render_ctx = render_ctx.with_host_clip(current_host_clip);
 
-    if let Some(behind_scope) = build_nearby_scope(
+    let mut nodes = build_nearby_nodes(
         tree,
         element,
         NearbySlot::BehindContent,
@@ -207,21 +268,23 @@ fn build_host_content_scope(
         scroll_contexts,
         collect_events,
         scene_state.clone(),
-    ) {
-        items.push(RenderItem::Scope(behind_scope));
-    }
+        &child_render_ctx,
+    );
 
-    items.extend(build_own_content_items(
-        element,
-        render_frame,
-        attrs,
-        element_context,
-        text_input_focused,
-        text_input_cursor_area,
+    nodes.extend(wrap_with_clips(
+        build_own_content_nodes(
+            element,
+            render_frame,
+            attrs,
+            element_context,
+            text_input_focused,
+            text_input_cursor_area,
+        ),
+        vec![current_host_clip.clip],
     ));
 
     if element.kind == ElementKind::Paragraph {
-        items.extend(build_paragraph_items(
+        nodes.extend(build_paragraph_nodes(
             tree,
             element,
             element_context,
@@ -231,48 +294,33 @@ fn build_host_content_scope(
             scroll_contexts,
             collect_events,
             scene_state.clone(),
+            &child_render_ctx,
+            current_host_clip.clip,
         ));
-    } else if let Some(children_scope) = build_children_scope(
-        tree,
-        element,
-        element_context,
-        text_input_focused,
-        text_input_cursor_area,
-        event_acc.as_deref_mut(),
-        scroll_contexts,
-        collect_events,
-        scene_state.clone(),
-    ) {
-        items.push(RenderItem::Scope(children_scope));
+    } else {
+        nodes.extend(build_children_nodes(
+            tree,
+            element,
+            element_context,
+            text_input_focused,
+            text_input_cursor_area,
+            event_acc.as_deref_mut(),
+            scroll_contexts,
+            collect_events,
+            scene_state.clone(),
+            &child_render_ctx,
+        ));
     }
 
-    items.extend(collect_scrollbar_items(
-        scene_state.as_ref(),
-        render_frame,
-        attrs,
+    nodes.extend(wrap_with_clips(
+        collect_scrollbar_nodes(scene_state.as_ref(), render_frame, attrs),
+        vec![current_host_clip.clip],
     ));
 
-    if items.is_empty() {
-        return None;
-    }
-
-    let host_clip = scene_state
-        .as_ref()
-        .map(|state| state.host_clip)
-        .unwrap_or_else(|| super::geometry::host_clip_shape(render_frame, attrs));
-
-    Some(RenderScope {
-        host_clip: Some(HostClipDescriptor {
-            clip: host_clip,
-            scroll_x: effective_scrollbar_x(attrs),
-            scroll_y: effective_scrollbar_y(attrs),
-        }),
-        items,
-        ..RenderScope::default()
-    })
+    nodes
 }
 
-fn build_front_nearby_scope(
+fn build_front_nearby_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
@@ -281,11 +329,12 @@ fn build_front_nearby_scope(
     mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> Option<RenderScope> {
-    let mut items = Vec::new();
+    scene_state: Option<ResolvedNodeState>,
+    render_ctx: &RenderBuildContext,
+) -> Vec<RenderNode> {
+    let mut nodes = Vec::new();
     for slot in NearbySlot::OVERLAY_PAINT_ORDER {
-        if let Some(scope) = build_nearby_scope(
+        nodes.extend(build_nearby_nodes(
             tree,
             element,
             slot,
@@ -296,19 +345,13 @@ fn build_front_nearby_scope(
             scroll_contexts,
             collect_events,
             scene_state.clone(),
-        ) {
-            items.push(RenderItem::Scope(scope));
-        }
+            render_ctx,
+        ));
     }
-
-    (!items.is_empty()).then_some(RenderScope {
-        inherited_clip_mode: InheritedClipMode::None,
-        items,
-        ..RenderScope::default()
-    })
+    nodes
 }
 
-fn build_nearby_scope(
+fn build_nearby_nodes(
     tree: &ElementTree,
     element: &Element,
     slot: NearbySlot,
@@ -318,12 +361,13 @@ fn build_nearby_scope(
     mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> Option<RenderScope> {
-    let mut items = Vec::new();
+    scene_state: Option<ResolvedNodeState>,
+    render_ctx: &RenderBuildContext,
+) -> Vec<RenderNode> {
+    let mut nodes = Vec::new();
 
     for nearby_id in element.nearby.ids(slot) {
-        if let Some(scope) = build_element_scope(
+        nodes.extend(build_element_nodes(
             tree,
             nearby_id,
             element_context,
@@ -336,18 +380,14 @@ fn build_nearby_scope(
                 .clone()
                 .map(|state| next_scene_context(state, slot.spec().phase))
                 .unwrap_or_default(),
-        ) {
-            items.push(RenderItem::Scope(scope));
-        }
+            render_ctx,
+        ));
     }
 
-    (!items.is_empty()).then_some(RenderScope {
-        items,
-        ..RenderScope::default()
-    })
+    nodes
 }
 
-fn build_children_scope(
+fn build_children_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
@@ -356,41 +396,35 @@ fn build_children_scope(
     mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> Option<RenderScope> {
-    if element.children.is_empty() {
-        return None;
-    }
-
-    let mut items = Vec::new();
-    for child_id in &element.children {
-        if let Some(scope) = build_element_scope(
-            tree,
-            child_id,
-            element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
-            scene_state
-                .clone()
-                .map(|state| {
-                    next_scene_context(state, super::element::RetainedPaintPhase::Children)
-                })
-                .unwrap_or_default(),
-        ) {
-            items.push(RenderItem::Scope(scope));
-        }
-    }
-
-    Some(RenderScope {
-        items,
-        ..RenderScope::default()
-    })
+    scene_state: Option<ResolvedNodeState>,
+    render_ctx: &RenderBuildContext,
+) -> Vec<RenderNode> {
+    element
+        .children
+        .iter()
+        .flat_map(|child_id| {
+            build_element_nodes(
+                tree,
+                child_id,
+                element_context,
+                text_input_focused,
+                text_input_cursor_area,
+                event_acc.as_deref_mut(),
+                scroll_contexts,
+                collect_events,
+                scene_state
+                    .clone()
+                    .map(|state| {
+                        next_scene_context(state, super::element::RetainedPaintPhase::Children)
+                    })
+                    .unwrap_or_default(),
+                render_ctx,
+            )
+        })
+        .collect()
 }
 
-fn build_paragraph_items(
+fn build_paragraph_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
@@ -399,9 +433,10 @@ fn build_paragraph_items(
     mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
     scroll_contexts: &[registry_builder::ScrollContext],
     collect_events: bool,
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> Vec<RenderItem> {
-    let mut items = Vec::new();
+    scene_state: Option<ResolvedNodeState>,
+    render_ctx: &RenderBuildContext,
+    current_host_clip: ClipShape,
+) -> Vec<RenderNode> {
     let child_scene_ctx = paragraph_children_scene_context(scene_state.clone());
     let fragment_offset = scene_state
         .as_ref()
@@ -413,9 +448,10 @@ fn build_paragraph_items(
         })
         .unwrap_or_default();
 
+    let mut nodes = Vec::new();
     element.for_each_retained_child(tree, |child| match child.mode {
         RetainedChildMode::Scope => {
-            if let Some(scope) = build_element_scope(
+            nodes.extend(build_element_nodes(
                 tree,
                 child.id,
                 element_context,
@@ -425,9 +461,8 @@ fn build_paragraph_items(
                 scroll_contexts,
                 collect_events,
                 child_scene_ctx.clone(),
-            ) {
-                items.push(RenderItem::Scope(scope));
-            }
+                render_ctx,
+            ));
         }
         RetainedChildMode::InlineEventOnly => {
             if collect_events && let Some(acc) = event_acc.as_deref_mut() {
@@ -442,12 +477,12 @@ fn build_paragraph_items(
         }
     });
 
-    let mut fragment_items = Vec::new();
+    let mut fragment_nodes = Vec::new();
     if let Some(fragments) = &element.attrs.paragraph_fragments {
         for frag in fragments {
             let x = frag.x + fragment_offset.0;
             let baseline_y = frag.y + fragment_offset.1 + frag.ascent;
-            fragment_items.push(RenderItem::Draw(DrawCmd::TextWithFont(
+            fragment_nodes.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
                 x,
                 baseline_y,
                 frag.text.clone(),
@@ -462,7 +497,7 @@ fn build_paragraph_items(
                 let font =
                     make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
                 let (word_width, _) = font.measure_str(&frag.text, None);
-                fragment_items.extend(text_decoration_items(TextDecorationSpec {
+                fragment_nodes.extend(text_decoration_items(TextDecorationSpec {
                     x,
                     baseline_y,
                     width: word_width,
@@ -474,31 +509,29 @@ fn build_paragraph_items(
             }
         }
     }
-    items.extend(fragment_items);
+    nodes.extend(wrap_with_clips(fragment_nodes, vec![current_host_clip]));
 
-    items
+    nodes
 }
 
-fn paragraph_children_scene_context(
-    scene_state: Option<super::scene::ResolvedNodeState>,
-) -> SceneContext {
+fn paragraph_children_scene_context(scene_state: Option<ResolvedNodeState>) -> SceneContext {
     scene_state
         .map(|state| next_scene_context(state, super::element::RetainedPaintPhase::Children))
         .unwrap_or_default()
 }
 
-fn build_own_content_items(
+fn build_own_content_nodes(
     element: &Element,
     frame: Frame,
     attrs: &Attrs,
     inherited: &FontContext,
     text_input_focused: &mut bool,
     text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-) -> Vec<RenderItem> {
-    let mut items = Vec::new();
+) -> Vec<RenderNode> {
+    let mut nodes = Vec::new();
 
     match element.kind {
-        ElementKind::Text => items.extend(render_text_items(frame, attrs, inherited)),
+        ElementKind::Text => nodes.extend(render_text_items(frame, attrs, inherited)),
         ElementKind::TextInput => {
             if attrs.text_input_focused.unwrap_or(false) {
                 *text_input_focused = true;
@@ -506,53 +539,68 @@ fn build_own_content_items(
 
             if text_input_cursor_area.is_none() {
                 *text_input_cursor_area =
-                    render_text_input_items(&mut items, frame, attrs, inherited);
+                    render_text_input_items(&mut nodes, frame, attrs, inherited);
             } else {
-                let _ = render_text_input_items(&mut items, frame, attrs, inherited);
+                let _ = render_text_input_items(&mut nodes, frame, attrs, inherited);
             }
         }
-        ElementKind::Image => items.extend(render_image_items(frame, attrs)),
-        ElementKind::Video => items.extend(render_video_items(frame, attrs)),
+        ElementKind::Image => nodes.extend(render_image_nodes(frame, attrs)),
+        ElementKind::Video => nodes.extend(render_video_nodes(frame, attrs)),
         _ => {}
     }
 
-    items
+    nodes
 }
 
-fn scope_transform(frame: Frame, attrs: &super::attrs::Attrs) -> Option<ScopeTransform> {
-    let move_x = attrs.move_x.unwrap_or(0.0) as f32;
-    let move_y = attrs.move_y.unwrap_or(0.0) as f32;
-    let rotate = attrs.rotate.unwrap_or(0.0) as f32;
-    let scale = attrs.scale.unwrap_or(1.0) as f32;
-    let alpha = attrs.alpha.unwrap_or(1.0) as f32;
+fn wrap_with_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
 
-    let has_translation = move_x != 0.0 || move_y != 0.0;
-    let has_rotation = rotate != 0.0;
-    let has_scale = (scale - 1.0).abs() > f32::EPSILON;
-    let has_alpha = alpha < 1.0;
+    if clips.is_empty() {
+        return nodes;
+    }
 
-    (has_translation || has_rotation || has_scale || has_alpha).then_some(ScopeTransform {
-        move_x,
-        move_y,
-        rotate,
-        scale,
-        center_x: frame.x + frame.width / 2.0,
-        center_y: frame.y + frame.height / 2.0,
+    vec![RenderNode::Clip {
+        clips,
+        children: nodes,
+    }]
+}
+
+fn wrap_with_transform(nodes: Vec<RenderNode>, transform: crate::tree::transform::Affine2) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    if transform.is_identity() {
+        return nodes;
+    }
+
+    vec![RenderNode::Transform {
+        transform,
+        children: nodes,
+    }]
+}
+
+fn wrap_with_alpha(nodes: Vec<RenderNode>, alpha: f32) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    if alpha >= 1.0 {
+        return nodes;
+    }
+
+    vec![RenderNode::Alpha {
         alpha,
-    })
+        children: nodes,
+    }]
 }
 
-fn has_outer_shadows(attrs: &Attrs) -> bool {
-    attrs
-        .box_shadows
-        .as_ref()
-        .is_some_and(|shadows| shadows.iter().any(|shadow| !shadow.inset))
-}
-
-fn scene_bounds_for_root(tree: &ElementTree, root: &ElementId) -> super::geometry::Rect {
+fn scene_bounds_for_root(tree: &ElementTree, root: &ElementId) -> Rect {
     tree.get(root)
         .and_then(|element| element.frame)
-        .map(super::geometry::Rect::from_frame)
+        .map(Rect::from_frame)
         .unwrap_or_default()
 }
 

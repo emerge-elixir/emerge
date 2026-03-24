@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::input::InputEvent;
-use crate::renderer::DrawCmd;
+use crate::render_scene::RenderScene;
 use crate::tree::element::ElementId;
 
 #[derive(Debug, Clone)]
@@ -84,8 +84,8 @@ pub enum EventMsg {
 
 #[derive(Debug)]
 pub enum RenderMsg {
-    Commands {
-        commands: Vec<DrawCmd>,
+    Scene {
+        scene: RenderScene,
         version: u64,
         animate: bool,
         #[cfg_attr(not(feature = "wayland"), allow(dead_code))]

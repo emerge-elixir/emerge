@@ -1,5 +1,6 @@
 use super::common::*;
 use super::*;
+use crate::tree::transform::element_transform;
 
 #[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
@@ -145,6 +146,7 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         content_width: 104.0,
         content_height: 60.0,
     });
+    let left_transform = element_transform(left.frame.expect("left frame"), &left.attrs);
 
     let mut right_attrs = Attrs::default();
     right_attrs.background = Some(Background::Color(Color::Rgb {
@@ -163,6 +165,7 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         content_width: 104.0,
         content_height: 60.0,
     });
+    let right_transform = element_transform(right.frame.expect("right frame"), &right.attrs);
 
     let mut tree = ElementTree::new();
     tree.root = Some(root_id);
@@ -175,21 +178,25 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         .iter()
         .position(|cmd| matches!(cmd, DrawCmd::PushClip(0.0, 0.0, 220.0, 60.0)))
         .expect("parent row should clip its content");
-    let rotate = commands
+    let left_push = commands
         .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Rotate(-6.0)))
-        .expect("transformed child should rotate");
-    let scale = commands
+        .position(
+            |cmd| matches!(cmd, DrawCmd::PushTransform(transform) if *transform == left_transform),
+        )
+        .expect("transformed child should emit left transform");
+    let right_push = commands
         .iter()
-        .position(|cmd| matches!(cmd, DrawCmd::Scale(x, y) if *x == 1.06 && *y == 1.06))
-        .expect("transformed child should scale");
+        .position(
+            |cmd| matches!(cmd, DrawCmd::PushTransform(transform) if *transform == right_transform),
+        )
+        .expect("transformed child should emit right transform");
     let root_pop = commands
         .iter()
         .rposition(|cmd| matches!(cmd, DrawCmd::PopClip))
         .expect("parent clip should pop");
 
-    assert!(root_clip < rotate && rotate < root_pop);
-    assert!(root_clip < scale && scale < root_pop);
+    assert!(root_clip < left_push && left_push < root_pop);
+    assert!(root_clip < right_push && right_push < root_pop);
 }
 
 #[test]
@@ -351,16 +358,26 @@ fn test_render_emits_translate_for_move() {
     let mut attrs = Attrs::default();
     attrs.move_x = Some(10.0);
     attrs.move_y = Some(5.0);
+    let expected_transform = element_transform(
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        },
+        &attrs,
+    );
     let tree = build_tree_with_attrs(attrs);
     let commands = render_tree(&tree);
 
     assert_eq!(
         commands,
         vec![
-            DrawCmd::Save,
-            DrawCmd::Translate(10.0, 5.0),
+            DrawCmd::PushTransform(expected_transform),
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Restore,
+            DrawCmd::PopTransform,
         ]
     );
 }
@@ -369,18 +386,26 @@ fn test_render_emits_translate_for_move() {
 fn test_render_emits_rotate_for_rotation() {
     let mut attrs = Attrs::default();
     attrs.rotate = Some(45.0);
+    let expected_transform = element_transform(
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        },
+        &attrs,
+    );
     let tree = build_tree_with_attrs(attrs);
     let commands = render_tree(&tree);
 
     assert_eq!(
         commands,
         vec![
-            DrawCmd::Save,
-            DrawCmd::Translate(50.0, 25.0),
-            DrawCmd::Rotate(45.0),
-            DrawCmd::Translate(-50.0, -25.0),
+            DrawCmd::PushTransform(expected_transform),
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Restore,
+            DrawCmd::PopTransform,
         ]
     );
 }
@@ -389,18 +414,26 @@ fn test_render_emits_rotate_for_rotation() {
 fn test_render_emits_scale_for_scale() {
     let mut attrs = Attrs::default();
     attrs.scale = Some(1.1);
+    let expected_transform = element_transform(
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        },
+        &attrs,
+    );
     let tree = build_tree_with_attrs(attrs);
     let commands = render_tree(&tree);
 
     assert_eq!(
         commands,
         vec![
-            DrawCmd::Save,
-            DrawCmd::Translate(50.0, 25.0),
-            DrawCmd::Scale(1.1, 1.1),
-            DrawCmd::Translate(-50.0, -25.0),
+            DrawCmd::PushTransform(expected_transform),
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Restore,
+            DrawCmd::PopTransform,
         ]
     );
 }
@@ -415,13 +448,81 @@ fn test_render_emits_alpha_layer() {
     assert_eq!(
         commands,
         vec![
-            DrawCmd::Save,
-            DrawCmd::SaveLayerAlpha(0.5),
+            DrawCmd::PushAlpha(0.5),
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::Restore,
-            DrawCmd::Restore,
+            DrawCmd::PopAlpha,
         ]
     );
+}
+
+#[test]
+fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip() {
+    let parent_id = ElementId::from_term_bytes(vec![90]);
+    let child_id = ElementId::from_term_bytes(vec![91]);
+
+    let mut parent_attrs = Attrs::default();
+    parent_attrs.scrollbar_y = Some(true);
+
+    let mut parent =
+        Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![child_id.clone()];
+    parent.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 50.0,
+        content_width: 100.0,
+        content_height: 50.0,
+    });
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    }));
+    child_attrs.alpha = Some(0.5);
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        size: 4.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
+    child.frame = Some(Frame {
+        x: 20.0,
+        y: 15.0,
+        width: 30.0,
+        height: 15.0,
+        content_width: 30.0,
+        content_height: 15.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(parent_id);
+    tree.insert(parent);
+    tree.insert(child);
+
+    let output = render_output(&tree);
+    let pixels = render_scene_to_pixels(100, 50, output.scene);
+    let shadow = rgba_at(&pixels, 100, 18, 22);
+    let body = rgba_at(&pixels, 100, 25, 22);
+    let outside = rgba_at(&pixels, 100, 15, 22);
+
+    assert_eq!(
+        outside.3, 0,
+        "pixel outside the shadow halo should stay transparent"
+    );
+    assert!(shadow.3 > 0, "shadow halo should remain visible");
+    assert!(
+        shadow.3 < 255,
+        "shadow halo should inherit the alpha wrapper"
+    );
+    assert!(body.3 > 0, "body fill should render");
+    assert!(body.3 < 255, "body fill should also inherit alpha");
 }
 
 #[test]
@@ -552,6 +653,8 @@ fn test_render_behind_between_background_and_children() {
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
             DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF),
+            DrawCmd::PopClip,
+            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF),
             DrawCmd::PopClip,
         ]
@@ -613,6 +716,8 @@ fn test_render_behind_inside_host_clip() {
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
             DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF),
+            DrawCmd::PopClip,
+            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF),
             DrawCmd::PopClip,
         ]
@@ -737,8 +842,6 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
             DrawCmd::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF),
             DrawCmd::PopClip,
             DrawCmd::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::PopClip,
         ]
     );
 }
@@ -1004,8 +1107,6 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
         commands,
         vec![
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::PopClip,
             DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
             DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF),
@@ -1055,8 +1156,6 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
         commands,
         vec![
             DrawCmd::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF),
-            DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
-            DrawCmd::PopClip,
             DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0),
             DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
             DrawCmd::PopClip,
@@ -1110,8 +1209,6 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         commands,
         vec![
             DrawCmd::RoundedRect(0.0, 0.0, 100.0, 50.0, 8.0, 0x000000FF),
-            DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
-            DrawCmd::PopClip,
             DrawCmd::PushClipRounded(0.0, 0.0, 100.0, 50.0, 8.0),
             DrawCmd::Shadow(10.0, 12.0, 30.0, 15.0, 2.0, 2.0, 8.0, 4.0, 0.0, 0x000000FF),
             DrawCmd::PopClip,
@@ -1213,11 +1310,10 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
         DrawCmd::PushClip(0.0, 0.0, 100.0, 50.0)
     ));
     assert!(
-        !commands.iter().any(|cmd| matches!(
-            cmd,
-            DrawCmd::Translate(0.0, -10.0) | DrawCmd::Translate(0.0, 10.0)
-        )),
-        "scroll rendering should not emit extra translation commands"
+        !commands
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_))),
+        "scroll rendering should not emit extra transform wrappers"
     );
 
     let child_c_idx = commands
@@ -1236,8 +1332,8 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     assert!(
         !commands
             .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Save | DrawCmd::Restore)),
-        "scroll rendering should not need save/restore wrappers"
+            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_) | DrawCmd::PopTransform)),
+        "scroll rendering should not need transform wrappers"
     );
 }
 
@@ -1321,8 +1417,8 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     assert!(
         !commands
             .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::Translate(0.0, -150.0))),
-        "nested scroll rendering should not rely on scroll translation commands"
+            .any(|cmd| matches!(cmd, DrawCmd::PushTransform(_))),
+        "nested scroll rendering should not rely on transform wrappers for scroll offsets"
     );
     assert!(
         !commands
@@ -1373,16 +1469,12 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
 
     let commands = render_tree(&tree);
 
-    assert!(
-        commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushClip(50.0, 60.0, 120.0, 40.0)))
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|cmd| matches!(cmd, DrawCmd::PushClip(0.0, 0.0, 120.0, 40.0)))
-    );
+    assert!(commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::PushClip(50.0, 60.0, 120.0, 40.0))));
+    assert!(!commands
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::PushClip(0.0, 0.0, 120.0, 40.0))));
     assert!(commands.iter().any(|cmd| matches!(
         cmd,
         DrawCmd::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"

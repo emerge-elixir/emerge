@@ -1,6 +1,6 @@
 use super::attrs::Attrs;
 use super::element::Frame;
-use super::geometry::{ClipShape, Rect, point_hits_clip};
+use super::geometry::{point_hits_clip, ClipShape, Rect};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
@@ -34,6 +34,10 @@ impl Affine2 {
             tx: 0.0,
             ty: 0.0,
         }
+    }
+
+    pub fn is_identity(self) -> bool {
+        self == Self::identity()
     }
 
     pub const fn translation(dx: f32, dy: f32) -> Self {
@@ -190,7 +194,7 @@ impl InteractionClip {
     }
 }
 
-pub fn interaction_transform(frame: Frame, attrs: &Attrs) -> Affine2 {
+pub fn element_transform(frame: Frame, attrs: &Attrs) -> Affine2 {
     let move_x = attrs.move_x.unwrap_or(0.0) as f32;
     let move_y = attrs.move_y.unwrap_or(0.0) as f32;
     let rotate = attrs.rotate.unwrap_or(0.0) as f32;
@@ -253,7 +257,7 @@ mod tests {
             content_width: 80.0,
             content_height: 20.0,
         };
-        let transform = interaction_transform(frame, &attrs);
+        let transform = element_transform(frame, &attrs);
         let center = Point {
             x: frame.x + frame.width / 2.0,
             y: frame.y + frame.height / 2.0,

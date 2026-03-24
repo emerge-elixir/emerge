@@ -1,8 +1,8 @@
 use super::element::{Element, Frame, RetainedPaintPhase};
-use super::geometry::{ClipShape, ShapeBounds, visible_bounds};
+use super::geometry::{visible_bounds, ClipShape, ShapeBounds};
 use super::scrollbar as tree_scrollbar;
 use super::scrollbar::ScrollbarMetrics;
-use super::transform::{Affine2, InteractionClip, interaction_transform};
+use super::transform::{element_transform, Affine2, InteractionClip};
 
 #[derive(Clone, Copy, Debug)]
 struct LocalSceneGeometry {
@@ -79,7 +79,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     let scrollbar_y = scene
         .scrollbar_y
         .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
-    let local_transform = interaction_transform(adjusted_frame, &element.attrs);
+    let local_transform = element_transform(adjusted_frame, &element.attrs);
     let interaction_transform = ctx.interaction_transform.mul(local_transform);
     let interaction_inverse = interaction_transform.inverse();
 
