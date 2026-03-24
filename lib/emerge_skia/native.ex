@@ -222,6 +222,15 @@ defmodule EmergeSkia.Native do
   @spec set_input_target(reference(), pid() | nil) :: :ok
   def set_input_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc """
+  Set the target process to receive native renderer log messages.
+
+  Native logs are sent directly to the target process as
+  `{:emerge_skia_log, level, source, message}` messages.
+  """
+  @spec set_log_target(reference(), pid() | nil) :: :ok
+  def set_log_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+
   # ===========================================================================
   # Tree Functions (Emerge Integration)
   # ===========================================================================

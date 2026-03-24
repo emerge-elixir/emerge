@@ -53,8 +53,10 @@ use super::{
 ///   - runtime state changes
 ///   - tree messages
 ///
-/// If a listener emits Elixir events but no tree messages, flushing injects
+/// If a listener emits Elixir events but no tree messages, flushing may inject
 /// `TreeMsg::RebuildRegistry` so the tree actor will send fresh listener data.
+/// Plain `MouseMove` events are exempt so cursor motion can stay latest-wins
+/// without forcing a rebuild cycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DispatchMode {
     Normal,
@@ -87,7 +89,9 @@ impl PendingDispatchEffects {
                     return self;
                 }
 
-                self.elixir_event_requires_rebuild = true;
+                if event.kind != ElementEventKind::MouseMove {
+                    self.elixir_event_requires_rebuild = true;
+                }
                 runtime.send_elixir_event(event);
             }
             ListenerAction::ClipboardWrite { target, text } => {
@@ -1021,6 +1025,29 @@ fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
     coalesced
 }
 
+fn drain_fresh_input_events(
+    initial_event: InputEvent,
+    event_rx: &Receiver<EventMsg>,
+    pending_message: &mut Option<EventMsg>,
+) -> Vec<InputEvent> {
+    if !matches!(initial_event, InputEvent::CursorPos { .. }) {
+        return vec![initial_event];
+    }
+
+    let mut events = vec![initial_event];
+    while let Ok(message) = event_rx.try_recv() {
+        match message {
+            EventMsg::InputEvent(event @ InputEvent::CursorPos { .. }) => events.push(event),
+            other => {
+                *pending_message = Some(other);
+                break;
+            }
+        }
+    }
+
+    coalesce_input_events(&mut events)
+}
+
 fn forward_observer_input(
     event: &InputEvent,
     input_handler: &InputHandler,
@@ -1060,7 +1087,10 @@ pub(crate) fn spawn_event_actor(
 
             match message {
                 EventMsg::InputEvent(event) => {
-                    runtime.handle_input_event(event, &tree_tx, log_render)
+                    let events = drain_fresh_input_events(event, &event_rx, &mut pending_message);
+                    for event in events {
+                        runtime.handle_input_event(event, &tree_tx, log_render);
+                    }
                 }
                 EventMsg::RegistryUpdate { rebuild } => {
                     let rebuild = if runtime.should_preserve_registry_transitions() {
@@ -1417,6 +1447,51 @@ mod tests {
             buffered[1],
             InputEvent::CursorPos { x, y }
                 if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn drain_fresh_input_events_coalesces_cursor_bursts_and_preserves_next_message() {
+        let (event_tx, event_rx) = bounded(8);
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorPos {
+                x: 2.0,
+                y: 3.0,
+            }))
+            .unwrap();
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorPos {
+                x: 4.0,
+                y: 5.0,
+            }))
+            .unwrap();
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 4.0,
+                y: 5.0,
+            }))
+            .unwrap();
+
+        let mut pending = None;
+        let drained = drain_fresh_input_events(
+            InputEvent::CursorPos { x: 1.0, y: 1.0 },
+            &event_rx,
+            &mut pending,
+        );
+
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(
+            drained[0],
+            InputEvent::CursorPos { x, y }
+                if (x - 4.0).abs() < f32::EPSILON && (y - 5.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            pending,
+            Some(EventMsg::InputEvent(InputEvent::CursorButton { button, action, .. }))
+                if button == "left" && action == crate::input::ACTION_PRESS
         ));
     }
 
@@ -2069,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_elixir_only_listener_marks_stale_and_requests_rebuild() {
+    fn direct_runtime_elixir_only_mouse_move_stays_fresh_without_rebuild() {
         let mut attrs = Attrs::default();
         attrs.on_mouse_move = Some(true);
         let element = with_interaction(make_element(42, ElementKind::El, attrs));
@@ -2087,11 +2162,11 @@ mod tests {
 
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         let msgs = drain_msgs(&tree_rx);
         assert!(
             msgs.iter()
-                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry))
+                .all(|msg| !matches!(msg, TreeMsg::RebuildRegistry))
         );
     }
 
@@ -2700,11 +2775,16 @@ mod tests {
 
             match label {
                 "newly_occupied_inside_host" => {
-                    assert!(runtime.listener_lane.is_stale());
-                    let _ = drain_msgs(&tree_rx);
-                    runtime.handle_registry_update(case.rebuild_at(0, false), &tree_tx, false);
-                    assert!(!runtime.listener_lane.is_stale());
-                    let _ = drain_msgs(&tree_rx);
+                    assert!(
+                        !runtime.listener_lane.is_stale(),
+                        "probe {label} should stay fresh for mousemove-only target"
+                    );
+                    assert!(
+                        drain_msgs(&tree_rx)
+                            .iter()
+                            .all(|msg| !matches!(msg, TreeMsg::RebuildRegistry)),
+                        "probe {label} should not request rebuild at 0ms"
+                    );
                 }
                 "newly_occupied_outside_host" => {
                     assert!(

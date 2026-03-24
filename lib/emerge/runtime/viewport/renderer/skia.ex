@@ -16,6 +16,9 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   def set_input_target(renderer, pid), do: EmergeSkia.set_input_target(renderer, pid)
 
   @impl true
+  def set_log_target(renderer, pid), do: EmergeSkia.set_log_target(renderer, pid)
+
+  @impl true
   def set_input_mask(renderer, mask), do: EmergeSkia.set_input_mask(renderer, mask)
 
   @impl true

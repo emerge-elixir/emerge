@@ -5,6 +5,7 @@ defmodule Emerge.Runtime.Viewport.Renderer do
   @callback stop(term()) :: :ok
   @callback running?(term()) :: boolean()
   @callback set_input_target(term(), pid() | nil) :: :ok
+  @callback set_log_target(term(), pid() | nil) :: :ok
   @callback set_input_mask(term(), non_neg_integer()) :: :ok
 
   @callback upload_tree(term(), Emerge.Engine.Element.t()) ::

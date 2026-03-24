@@ -82,6 +82,10 @@ defmodule EmergeSkia do
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `assets` - Asset runtime policy options (optional)
 
+  Native renderer logs are delivered to the process that starts the renderer as
+  `{:emerge_skia_log, level, source, message}` messages. Call
+  `set_log_target/2` to redirect them.
+
   `assets` options:
   - `runtime_paths.enabled` (default: `false`)
   - `runtime_paths.allowlist` (default: `[]`)
@@ -468,6 +472,10 @@ defmodule EmergeSkia do
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
 
+  On DRM, raw `{:cursor_pos, {x, y}}` delivery is latest-wins under load so
+  pointer motion does not stall rendering. Button, scroll, key, and text events
+  remain ordered.
+
   Element event payloads include:
 
   - `{id_bin, event_type}`
@@ -500,6 +508,17 @@ defmodule EmergeSkia do
   @spec set_input_target(renderer(), pid() | nil) :: :ok
   def set_input_target(renderer, pid) do
     Native.set_input_target(renderer, pid)
+  end
+
+  @doc """
+  Set the target process to receive native renderer log messages.
+
+  Native logs are sent directly to the target process as
+  `{:emerge_skia_log, level, source, message}` messages.
+  """
+  @spec set_log_target(renderer(), pid() | nil) :: :ok
+  def set_log_target(renderer, pid) do
+    Native.set_log_target(renderer, pid)
   end
 
   defp normalize_native_ok(:ok), do: :ok
