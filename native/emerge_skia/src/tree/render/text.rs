@@ -1,10 +1,10 @@
 use super::box_model::content_insets;
-use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
-use super::scope::RenderItem;
-use crate::renderer::{DrawCmd, make_font_with_style};
+use super::color::{color_to_u32, DEFAULT_TEXT_COLOR};
+use crate::render_scene::{DrawPrimitive, RenderNode};
+use crate::renderer::make_font_with_style;
 use crate::tree::attrs::{Attrs, TextAlign};
 use crate::tree::element::Frame;
-use crate::tree::layout::{FontContext, font_info_with_inheritance};
+use crate::tree::layout::{font_info_with_inheritance, FontContext};
 
 pub(super) const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 
@@ -12,7 +12,7 @@ pub(super) fn render_text_items(
     frame: Frame,
     attrs: &Attrs,
     inherited: &FontContext,
-) -> Vec<RenderItem> {
+) -> Vec<RenderNode> {
     let Some(content) = attrs.content.as_deref() else {
         return Vec::new();
     };
@@ -96,7 +96,7 @@ pub(super) fn render_text_items(
 }
 
 pub(super) fn render_text_input_items(
-    items: &mut Vec<RenderItem>,
+    items: &mut Vec<RenderNode>,
     frame: Frame,
     attrs: &Attrs,
     inherited: &FontContext,
@@ -222,7 +222,7 @@ pub(super) fn render_text_input_items(
             if selection_width > 0.0 {
                 let selection_top = baseline_y - ascent;
                 let selection_height = (ascent + descent).max(font_size * 0.9);
-                items.push(RenderItem::Draw(DrawCmd::Rect(
+                items.push(RenderNode::Primitive(DrawPrimitive::Rect(
                     text_x + start_offset,
                     selection_top,
                     selection_width,
@@ -316,7 +316,7 @@ pub(super) fn render_text_input_items(
         let caret_height = (ascent + descent).max(font_size * 0.9);
         let caret_width = (font_size * 0.08).max(1.0);
 
-        items.push(RenderItem::Draw(DrawCmd::Rect(
+        items.push(RenderNode::Primitive(DrawPrimitive::Rect(
             caret_x,
             caret_top,
             caret_width,
@@ -341,7 +341,7 @@ pub(super) fn text_run_items(
     italic: bool,
     letter_spacing: f32,
     word_spacing: f32,
-) -> Vec<RenderItem> {
+) -> Vec<RenderNode> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -349,7 +349,7 @@ pub(super) fn text_run_items(
     let mut items = Vec::new();
 
     if letter_spacing == 0.0 && word_spacing == 0.0 {
-        items.push(RenderItem::Draw(DrawCmd::TextWithFont(
+        items.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
             x,
             baseline_y,
             text.to_string(),
@@ -368,7 +368,7 @@ pub(super) fn text_run_items(
 
     while let Some(ch) = chars.next() {
         let glyph = ch.to_string();
-        items.push(RenderItem::Draw(DrawCmd::TextWithFont(
+        items.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
             cursor_x,
             baseline_y,
             glyph.clone(),
@@ -393,7 +393,7 @@ pub(super) fn text_run_items(
     items
 }
 
-pub(super) fn text_decoration_items(spec: TextDecorationSpec) -> Vec<RenderItem> {
+pub(super) fn text_decoration_items(spec: TextDecorationSpec) -> Vec<RenderNode> {
     let TextDecorationSpec {
         x,
         baseline_y,
@@ -413,13 +413,13 @@ pub(super) fn text_decoration_items(spec: TextDecorationSpec) -> Vec<RenderItem>
 
     if underline {
         let y = baseline_y + font_size * 0.08 - thickness / 2.0;
-        items.push(RenderItem::Draw(DrawCmd::Rect(
+        items.push(RenderNode::Primitive(DrawPrimitive::Rect(
             x, y, width, thickness, color,
         )));
     }
     if strike {
         let y = baseline_y - font_size * 0.3 - thickness / 2.0;
-        items.push(RenderItem::Draw(DrawCmd::Rect(
+        items.push(RenderNode::Primitive(DrawPrimitive::Rect(
             x, y, width, thickness, color,
         )));
     }

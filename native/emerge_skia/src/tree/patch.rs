@@ -8,12 +8,12 @@
 //!   - 4: remove - id_len(4) + id
 //!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{AnimationSpec, scale_animation_spec};
+use super::animation::{scale_animation_spec, AnimationSpec};
 use super::attrs::{
-    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
-    preserve_runtime_scroll_attrs,
+    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
+    Attrs,
 };
-use super::deserialize::{DecodeError, decode_tree};
+use super::deserialize::{decode_tree, DecodeError};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMounts, NearbySlot,
     NodeResidency,
@@ -1181,7 +1181,7 @@ mod tests {
             .filter_map(|listener| listener.element_id.clone())
             .collect();
 
-        assert!(!output.commands.is_empty());
+        assert!(!output.scene.nodes.is_empty());
         assert!(press_ids.is_empty());
     }
 

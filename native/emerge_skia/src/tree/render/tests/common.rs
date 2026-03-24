@@ -1,7 +1,228 @@
 use super::*;
+use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
+use crate::renderer::{RenderState, Renderer};
+use crate::tree::geometry::{ClipShape, CornerRadii};
+use crate::tree::transform::Affine2;
+use skia_safe::Color as SkColor;
 
-pub(super) fn render_tree(tree: &ElementTree) -> Vec<DrawCmd> {
-    super::super::render_tree(tree).commands
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DebugRenderCmd {
+    Rect(f32, f32, f32, f32, u32),
+    RoundedRect(f32, f32, f32, f32, f32, u32),
+    RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
+    Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    BorderCorners(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        u32,
+        BorderStyle,
+    ),
+    BorderEdges(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        u32,
+        BorderStyle,
+    ),
+    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
+    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
+    TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
+    Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
+    Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
+    Video(f32, f32, f32, f32, String, ImageFit),
+    ImageLoading(f32, f32, f32, f32),
+    ImageFailed(f32, f32, f32, f32),
+    PushClip(f32, f32, f32, f32),
+    PushClipRounded(f32, f32, f32, f32, f32),
+    PushClipRoundedCorners(f32, f32, f32, f32, f32, f32, f32, f32),
+    PopClip,
+    PushTransform(Affine2),
+    PopTransform,
+    PushAlpha(f32),
+    PopAlpha,
+}
+
+pub(super) fn render_output(tree: &ElementTree) -> super::super::RenderOutput {
+    super::super::render_tree(tree)
+}
+
+pub(super) fn render_tree(tree: &ElementTree) -> Vec<DebugRenderCmd> {
+    flatten_scene(&render_output(tree).scene)
+}
+
+pub(super) fn flatten_scene(scene: &RenderScene) -> Vec<DebugRenderCmd> {
+    let mut commands = Vec::new();
+    flatten_nodes(&scene.nodes, &mut commands);
+    commands
+}
+
+pub(super) fn render_scene_to_pixels(width: u32, height: u32, scene: RenderScene) -> Vec<u8> {
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render test");
+
+    let mut renderer = Renderer::from_surface(surface);
+    let state = RenderState {
+        scene,
+        clear_color: SkColor::TRANSPARENT,
+        render_version: 1,
+        animate: false,
+    };
+    renderer.render(&state);
+
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    renderer
+        .surface_mut()
+        .read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+    pixels
+}
+
+pub(super) fn rgba_at(pixels: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
+    let idx = ((y * width + x) * 4) as usize;
+    (
+        pixels[idx],
+        pixels[idx + 1],
+        pixels[idx + 2],
+        pixels[idx + 3],
+    )
+}
+
+fn flatten_nodes(nodes: &[RenderNode], commands: &mut Vec<DebugRenderCmd>) {
+    for node in nodes {
+        match node {
+            RenderNode::Clip { clips, children } => {
+                let clip_count = push_debug_clips(clips, commands);
+                flatten_nodes(children, commands);
+                for _ in 0..clip_count {
+                    commands.push(DebugRenderCmd::PopClip);
+                }
+            }
+            RenderNode::Transform {
+                transform,
+                children,
+            } => {
+                commands.push(DebugRenderCmd::PushTransform(*transform));
+                flatten_nodes(children, commands);
+                commands.push(DebugRenderCmd::PopTransform);
+            }
+            RenderNode::Alpha { alpha, children } => {
+                commands.push(DebugRenderCmd::PushAlpha(*alpha));
+                flatten_nodes(children, commands);
+                commands.push(DebugRenderCmd::PopAlpha);
+            }
+            RenderNode::Primitive(primitive) => {
+                commands.push(debug_cmd_for_primitive(primitive));
+            }
+        }
+    }
+}
+
+fn push_debug_clips(clips: &[ClipShape], commands: &mut Vec<DebugRenderCmd>) -> usize {
+    for clip in clips {
+        match clip.radii {
+            None => commands.push(DebugRenderCmd::PushClip(
+                clip.rect.x,
+                clip.rect.y,
+                clip.rect.width,
+                clip.rect.height,
+            )),
+            Some(CornerRadii { tl, tr, br, bl }) if tl == tr && tr == br && br == bl => {
+                commands.push(DebugRenderCmd::PushClipRounded(
+                    clip.rect.x,
+                    clip.rect.y,
+                    clip.rect.width,
+                    clip.rect.height,
+                    tl,
+                ));
+            }
+            Some(CornerRadii { tl, tr, br, bl }) => {
+                commands.push(DebugRenderCmd::PushClipRoundedCorners(
+                    clip.rect.x,
+                    clip.rect.y,
+                    clip.rect.width,
+                    clip.rect.height,
+                    tl,
+                    tr,
+                    br,
+                    bl,
+                ));
+            }
+        }
+    }
+
+    clips.len()
+}
+
+fn debug_cmd_for_primitive(primitive: &DrawPrimitive) -> DebugRenderCmd {
+    match primitive {
+        DrawPrimitive::Rect(x, y, w, h, color) => DebugRenderCmd::Rect(*x, *y, *w, *h, *color),
+        DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
+            DebugRenderCmd::RoundedRect(*x, *y, *w, *h, *radius, *color)
+        }
+        DrawPrimitive::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, color) => {
+            DebugRenderCmd::RoundedRectCorners(*x, *y, *w, *h, *tl, *tr, *br, *bl, *color)
+        }
+        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
+            DebugRenderCmd::Border(*x, *y, *w, *h, *radius, *width, *color, *style)
+        }
+        DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
+            DebugRenderCmd::BorderCorners(
+                *x, *y, *w, *h, *tl, *tr, *br, *bl, *width, *color, *style,
+            )
+        }
+        DrawPrimitive::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
+            DebugRenderCmd::BorderEdges(
+                *x, *y, *w, *h, *radius, *top, *right, *bottom, *left, *color, *style,
+            )
+        }
+        DrawPrimitive::Shadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
+            DebugRenderCmd::Shadow(*x, *y, *w, *h, *ox, *oy, *blur, *size, *radius, *color)
+        }
+        DrawPrimitive::InsetShadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
+            DebugRenderCmd::InsetShadow(*x, *y, *w, *h, *ox, *oy, *blur, *size, *radius, *color)
+        }
+        DrawPrimitive::TextWithFont(x, y, text, size, color, family, weight, italic) => {
+            DebugRenderCmd::TextWithFont(
+                *x,
+                *y,
+                text.clone(),
+                *size,
+                *color,
+                family.clone(),
+                *weight,
+                *italic,
+            )
+        }
+        DrawPrimitive::Gradient(x, y, w, h, from, to, angle, radius) => {
+            DebugRenderCmd::Gradient(*x, *y, *w, *h, *from, *to, *angle, *radius)
+        }
+        DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
+            DebugRenderCmd::Image(*x, *y, *w, *h, image_id.clone(), *fit, *svg_tint)
+        }
+        DrawPrimitive::Video(x, y, w, h, target_id, fit) => {
+            DebugRenderCmd::Video(*x, *y, *w, *h, target_id.clone(), *fit)
+        }
+        DrawPrimitive::ImageLoading(x, y, w, h) => DebugRenderCmd::ImageLoading(*x, *y, *w, *h),
+        DrawPrimitive::ImageFailed(x, y, w, h) => DebugRenderCmd::ImageFailed(*x, *y, *w, *h),
+    }
 }
 
 pub(super) fn build_tree_with_attrs(mut attrs: Attrs) -> ElementTree {
