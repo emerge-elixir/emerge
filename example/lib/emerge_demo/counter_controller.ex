@@ -5,14 +5,19 @@ defmodule EmergeDemo.CounterController do
 
   @impl true
   def init(_params, _dependencies) do
-    %{count: 0}
+    %{count: 1}
   end
 
   def increment(_payload, state, _dependencies, _callbacks, _init_params) do
-    %{state | count: state.count + 1}
+    %{state | count: min(100, state.count + 1)}
   end
 
   def decrement(_payload, state, _dependencies, _callbacks, _init_params) do
-    %{state | count: state.count - 1}
+    %{state | count: max(1, state.count - 1)}
+  end
+
+  @impl true
+  def expose(%{count: count}, _, _init_params) do
+    %{count: count, can_increment?: count < 100, can_decrement?: count > 1}
   end
 end
