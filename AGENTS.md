@@ -10,6 +10,7 @@ mix compile                     # Compile Elixir + Rust NIF (first build downloa
 mix test                        # Run tests
 mix docs                        # Generate ExDoc documentation
 mix run demo.exs                # Run the demo (requires a Wayland display)
+./ci-tests.sh                   # Run the full CI check suite locally
 
 # Rust-specific (from native/emerge_skia/)
 cargo clippy                    # Lint Rust code
@@ -20,6 +21,7 @@ cargo build --release           # Build release (mix compile does this automatic
 ## Testing Expectations
 
 - Always run `cargo test` and `mix test` after implementing changes.
+- Prefer `./ci-tests.sh` when validating full local CI coverage (`quality`, `test`, `dialyzer`, or `all`).
 
 ## Architecture
 

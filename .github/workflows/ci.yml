@@ -1,4 +1,4 @@
-name: Quality
+name: CI
 
 on:
   pull_request:
@@ -8,8 +8,8 @@ on:
       - master
 
 jobs:
-  elixir-quality:
-    name: Elixir Quality
+  ci:
+    name: Elixir and Rust CI
     runs-on: ubuntu-22.04
 
     steps:
@@ -22,6 +22,9 @@ jobs:
           elixir-version: "1.19.0"
           otp-version: "28.0"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache Mix dependencies and build
         uses: actions/cache@v4
         with:
@@ -32,11 +35,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
+      - name: Cache Cargo dependencies and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/emerge_skia/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Check formatting
-        run: mix format --check-formatted
-
-      - name: Run Credo
-        run: mix credo --strict
+      - name: Run CI test script
+        run: ./ci-tests.sh

@@ -214,6 +214,22 @@ mix test
 mix run demo.exs
 ```
 
+## Local CI Checks
+
+Run the same checks used in CI with:
+
+```bash
+./ci-tests.sh
+```
+
+You can also run individual groups:
+
+```bash
+./ci-tests.sh quality
+./ci-tests.sh test
+./ci-tests.sh dialyzer
+```
+
 ## Image Assets
 
 EmergeSkia resolves image **sources** asynchronously in the Rust pipeline after
