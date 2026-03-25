@@ -163,12 +163,18 @@ pub enum ScrollbarHoverAxis {
     Y,
 }
 
-/// Decorative attributes to apply while mouse is over an element.
+/// Decorative attributes to apply for interaction state styles.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MouseOverAttrs {
     pub background: Option<Background>,
+    pub border_radius: Option<BorderRadius>,
+    pub border_width: Option<BorderWidth>,
+    pub border_style: Option<BorderStyle>,
     pub border_color: Option<Color>,
     pub box_shadows: Option<Vec<BoxShadow>>,
+    pub font: Option<Font>,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
     pub font_color: Option<Color>,
     pub svg_color: Option<Color>,
     pub font_size: Option<f64>,
@@ -176,6 +182,7 @@ pub struct MouseOverAttrs {
     pub font_strike: Option<bool>,
     pub font_letter_spacing: Option<f64>,
     pub font_word_spacing: Option<f64>,
+    pub text_align: Option<TextAlign>,
     pub move_x: Option<f64>,
     pub move_y: Option<f64>,
     pub rotate: Option<f64>,
@@ -657,8 +664,14 @@ fn decode_decorative_style_attrs(
         let tag = nested.read_u8()?;
         match tag {
             TAG_BACKGROUND => out.background = Some(decode_background(&mut nested)?),
+            TAG_BORDER_RADIUS => out.border_radius = Some(decode_radius(&mut nested)?),
+            TAG_BORDER_WIDTH => out.border_width = Some(decode_border_width(&mut nested)?),
+            TAG_BORDER_STYLE => out.border_style = Some(decode_border_style(&mut nested)?),
             TAG_BORDER_COLOR => out.border_color = Some(decode_color(&mut nested)?),
             TAG_BOX_SHADOW => out.box_shadows = Some(decode_box_shadows(&mut nested)?),
+            TAG_FONT => out.font = Some(decode_font(&mut nested)?),
+            TAG_FONT_WEIGHT => out.font_weight = Some(decode_font_weight(&mut nested)?),
+            TAG_FONT_STYLE => out.font_style = Some(decode_font_style(&mut nested)?),
             TAG_FONT_COLOR => out.font_color = Some(decode_color(&mut nested)?),
             TAG_SVG_COLOR => out.svg_color = Some(decode_color(&mut nested)?),
             TAG_FONT_SIZE => out.font_size = Some(nested.read_f64()?),
@@ -666,6 +679,7 @@ fn decode_decorative_style_attrs(
             TAG_FONT_STRIKE => out.font_strike = Some(nested.read_bool()?),
             TAG_FONT_LETTER_SPACING => out.font_letter_spacing = Some(nested.read_f64()?),
             TAG_FONT_WORD_SPACING => out.font_word_spacing = Some(nested.read_f64()?),
+            TAG_TEXT_ALIGN => out.text_align = Some(decode_text_align(&mut nested)?),
             TAG_MOVE_X => out.move_x = Some(nested.read_f64()?),
             TAG_MOVE_Y => out.move_y = Some(nested.read_f64()?),
             TAG_ROTATE => out.rotate = Some(nested.read_f64()?),
@@ -1420,6 +1434,51 @@ mod tests {
         assert_eq!(mouse_over.font_strike, Some(true));
         assert_eq!(mouse_over.font_letter_spacing, Some(2.0));
         assert_eq!(mouse_over.font_word_spacing, Some(4.0));
+    }
+
+    #[test]
+    fn test_decode_mouse_over_border_and_font_attrs() {
+        let mut nested = vec![0, 7, 13, 0];
+        nested.extend_from_slice(&6.0_f64.to_be_bytes());
+        nested.push(14);
+        nested.push(1);
+        nested.extend_from_slice(&1.0_f64.to_be_bytes());
+        nested.extend_from_slice(&2.0_f64.to_be_bytes());
+        nested.extend_from_slice(&3.0_f64.to_be_bytes());
+        nested.extend_from_slice(&4.0_f64.to_be_bytes());
+        nested.push(51);
+        nested.push(1);
+        nested.push(18);
+        nested.push(0);
+        nested.extend_from_slice(&[0, 7, b'd', b'i', b's', b'p', b'l', b'a', b'y']);
+        nested.push(19);
+        nested.extend_from_slice(&[0, 4, b'b', b'o', b'l', b'd']);
+        nested.push(20);
+        nested.extend_from_slice(&[0, 6, b'i', b't', b'a', b'l', b'i', b'c']);
+        nested.push(30);
+        nested.push(1);
+
+        let mut data = vec![0, 1, 46];
+        data.extend_from_slice(&(nested.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nested);
+
+        let attrs = decode_attrs(&data).unwrap();
+        let mouse_over = attrs.mouse_over.unwrap();
+        assert_eq!(mouse_over.border_radius, Some(BorderRadius::Uniform(6.0)));
+        assert_eq!(
+            mouse_over.border_width,
+            Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            })
+        );
+        assert_eq!(mouse_over.border_style, Some(BorderStyle::Dashed));
+        assert_eq!(mouse_over.font, Some(Font::Atom("display".to_string())));
+        assert_eq!(mouse_over.font_weight, Some(FontWeight("bold".to_string())));
+        assert_eq!(mouse_over.font_style, Some(FontStyle("italic".to_string())));
+        assert_eq!(mouse_over.text_align, Some(TextAlign::Center));
     }
 
     #[test]

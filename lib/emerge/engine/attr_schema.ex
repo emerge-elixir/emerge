@@ -3,8 +3,14 @@ defmodule Emerge.Engine.AttrSchema do
 
   @decorative_state_keys [
     :background,
+    :border_radius,
+    :border_width,
+    :border_style,
     :border_color,
     :box_shadow,
+    :font,
+    :font_weight,
+    :font_style,
     :font_color,
     :svg_color,
     :font_size,
@@ -12,6 +18,7 @@ defmodule Emerge.Engine.AttrSchema do
     :font_strike,
     :font_letter_spacing,
     :font_word_spacing,
+    :text_align,
     :move_x,
     :move_y,
     :rotate,

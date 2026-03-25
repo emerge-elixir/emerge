@@ -21,7 +21,7 @@ Multi-backend Skia renderer with:
 - Drag-scroll support with deadzone and finger-like direction
 - Scroll state preserved across layout/patch with resize-aware clamping
 - Clip- and rounded-corner-aware hit testing
-- Declarative state styling (`mouse_over`, `focused`, `mouse_down`) with runtime active-state application
+- Declarative state styling (`mouse_over`, `focused`, `mouse_down`) with runtime active-state application for background, border, font, SVG, and transform attrs
 - Source-based image assets resolved asynchronously in Rust after tree upload/patch
 - EMRG tree deserialization and patching
 - Elixir-side tree definition + EMRG encoder

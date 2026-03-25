@@ -337,6 +337,18 @@ Layout then merges active style blocks in this order:
 
 Later style layers win on conflicts.
 
+State style blocks currently support decorative attrs from these categories:
+
+- background
+- border: `border_radius`, `border_width`, `border_style`, `border_color`, `box_shadow`
+- font: `font`, `font_weight`, `font_style`, `font_size`, `font_color`, `font_underline`, `font_strike`, `font_letter_spacing`, `font_word_spacing`, `text_align`
+- svg tint: `svg_color`
+- transforms: `move_x`, `move_y`, `rotate`, `scale`, `alpha`
+
+Because these styles are merged before measurement and resolution, layout-affecting
+decorative attrs such as `border_width` and `text_align` participate in the
+same frame as the active interaction state.
+
 ## Scroll Behavior
 
 Wheel, drag-scroll, and key-scroll all use the same directional availability

@@ -146,13 +146,20 @@ defmodule Emerge.Engine.AttrCodecTest do
     attrs = %{
       mouse_over: %{
         background: {:color_rgb, {20, 30, 40}},
+        border_radius: {1, 2, 3, 4},
+        border_width: {2, 4, 6, 8},
+        border_style: :dashed,
         border_color: {:color_rgba, {10, 20, 30, 255}},
+        font: :display,
+        font_weight: :bold,
+        font_style: :italic,
         font_color: :white,
         font_size: 22,
         font_underline: true,
         font_strike: true,
         font_letter_spacing: 1.5,
         font_word_spacing: 2.25,
+        text_align: :center,
         move_x: 5,
         move_y: -2,
         rotate: 12,
@@ -169,16 +176,30 @@ defmodule Emerge.Engine.AttrCodecTest do
   test "encode/decode focused and mouse_down decorative attrs" do
     attrs = %{
       focused: %{
+        border_radius: 6,
+        border_width: 2,
+        border_style: :solid,
+        font: "mono",
+        font_weight: :bold,
+        font_style: :italic,
         font_size: 18,
         font_color: :white,
         alpha: 0.6,
+        text_align: :right,
         box_shadow: [
           %{offset_x: 0, offset_y: 0, blur: 8, size: 2, color: :cyan, inset: false}
         ]
       },
       mouse_down: %{
+        border_radius: {9, 8, 7, 6},
+        border_width: {1, 3, 5, 7},
+        border_style: :dotted,
         border_color: {:color_rgb, {10, 20, 30}},
+        font: :serif,
+        font_weight: :bold,
+        font_style: :italic,
         move_y: -2,
+        text_align: :center,
         box_shadow: [
           %{offset_x: 0, offset_y: 1, blur: 6, size: 1, color: :black, inset: true}
         ]

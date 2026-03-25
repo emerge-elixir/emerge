@@ -75,28 +75,28 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Border
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| width | ✅ | N/A | ✅ | |
-| color | ✅ | N/A | ✅ | |
-| rounded (uniform) | ✅ | N/A | ✅ | |
-| roundEach | ✅ | N/A | ✅ | Per-corner rendering |
-| widthEach | ✅ | N/A | ✅ | Per-edge width with clip-based rendering |
-| dashed/dotted | ✅ | N/A | ✅ | DashPathEffect-based rendering |
-| shadow | ✅ | N/A | ✅ | MaskFilter blur, supports inset |
-| glow | ✅ | N/A | ✅ | Sugar over shadow with zero offset |
+| width | ✅ | N/A | ✅ | Interaction-style compatible |
+| color | ✅ | N/A | ✅ | Interaction-style compatible |
+| rounded (uniform) | ✅ | N/A | ✅ | Interaction-style compatible |
+| roundEach | ✅ | N/A | ✅ | Per-corner rendering + interaction-style compatible |
+| widthEach | ✅ | N/A | ✅ | Per-edge width with clip-based rendering + interaction-style compatible |
+| dashed/dotted | ✅ | N/A | ✅ | DashPathEffect-based rendering + interaction-style compatible |
+| shadow | ✅ | N/A | ✅ | MaskFilter blur, supports inset; interaction-style compatible |
+| glow | ✅ | N/A | ✅ | Sugar over shadow with zero offset; interaction-style compatible |
 
 #### Typography
 | Feature | Elixir API | Layout | Render | Notes |
 |---------|------------|--------|--------|-------|
-| Font.size | ✅ | ✅ | ✅ | |
-| Font.color | ✅ | N/A | ✅ | |
-| Font.family | ✅ | ✅ | ✅ | Family inheritance + fallback |
-| Font.bold | ✅ | ✅ | ✅ | Weight mapping with synthetic fallback |
-| Font.italic | ✅ | ✅ | ✅ | Italic mapping with synthetic fallback |
-| Font.strike | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
-| Font.underline | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
-| Font.letterSpacing | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
-| Font.wordSpacing | ✅ | ✅ | ✅ | Inherited + mouse_over compatible |
-| Font.alignLeft/Right/Center | ✅ | ✅ | ✅ | Text alignment |
+| Font.size | ✅ | ✅ | ✅ | Inherited + interaction-style compatible |
+| Font.color | ✅ | N/A | ✅ | Inherited + interaction-style compatible |
+| Font.family | ✅ | ✅ | ✅ | Family inheritance + fallback; interaction-style compatible |
+| Font.bold | ✅ | ✅ | ✅ | Weight mapping with synthetic fallback; interaction-style compatible |
+| Font.italic | ✅ | ✅ | ✅ | Italic mapping with synthetic fallback; interaction-style compatible |
+| Font.strike | ✅ | ✅ | ✅ | Inherited + interaction-style compatible |
+| Font.underline | ✅ | ✅ | ✅ | Inherited + interaction-style compatible |
+| Font.letterSpacing | ✅ | ✅ | ✅ | Inherited + interaction-style compatible |
+| Font.wordSpacing | ✅ | ✅ | ✅ | Inherited + interaction-style compatible |
+| Font.alignLeft/Right/Center | ✅ | ✅ | ✅ | Text alignment + interaction-style compatible |
 
 #### Transforms
 | Feature | Elixir API | Layout | Render | Notes |

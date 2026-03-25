@@ -60,11 +60,11 @@ defmodule Emerge.UI do
   - `Emerge.UI.Scroll` for scroll-related attributes
   - `Emerge.UI.Align` for alignment helpers
   - `Emerge.UI.Event` for event handlers
-  - `Emerge.UI.Interactive` for interaction-driven styling
+  - `Emerge.UI.Interactive` for interaction-driven background, border, font, SVG, and transform styling
   - `Emerge.UI.Transform` for movement, rotation, scale, and alpha
   - `Emerge.UI.Animation` for declarative animations
   - `Emerge.UI.Nearby` for overlays and nearby positioning
-  - `Emerge.UI.Background`, `Emerge.UI.Border`, `Emerge.UI.Font`, `Emerge.UI.Input`, and `Emerge.UI.Svg` for focused styling and element helpers
+  - `Emerge.UI.Background`, `Emerge.UI.Border`, `Emerge.UI.Font`, `Emerge.UI.Input`, and `Emerge.UI.Svg` for styling helpers and element helpers
 
   As rendering grows, it is natural to extract parts into smaller regular Elixir
   functions. Those functions only need to return `Emerge.tree()`.

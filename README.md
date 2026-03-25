@@ -150,7 +150,7 @@ Padding is the distance between the outer edge and the content, and spacing is t
 - Font customization (family, weight, style, size, decorations, spacing)
 - Scrollable containers with native scrollbars
 - Mouse and keyboard input events
-- Declarative interaction styling (`mouse_over`, `focused`, `mouse_down`)
+- Declarative interaction styling (`mouse_over`, `focused`, `mouse_down`) for background, border, font, SVG tint, and transform attrs
 - Transforms (move, rotate, scale, alpha)
 - Overlay positioning (`above`, `below`, `in_front`, etc.)
 - High-DPI scaling
