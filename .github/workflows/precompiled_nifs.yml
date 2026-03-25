@@ -27,18 +27,18 @@ jobs:
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_wayland
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: true
+            os: ubuntu-24.04-arm
+            use_cross: false
             variant: ""
             cargo_args: "--no-default-features --features wayland"
-            system_packages: ""
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libwayland-dev libxkbcommon-dev"
           - name: nerves_rpi5_drm
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: true
+            os: ubuntu-24.04-arm
+            use_cross: false
             variant: "nerves_rpi5"
             cargo_args: "--no-default-features --features drm"
-            system_packages: ""
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libxkbcommon-dev"
 
     steps:
       - name: Checkout source code
