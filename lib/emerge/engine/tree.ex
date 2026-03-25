@@ -9,7 +9,7 @@ defmodule Emerge.Engine.Tree do
   alias Emerge.Engine.Tree.Nearby
 
   @type id_state :: %{
-          explicit_seen: MapSet.t()
+          explicit_seen: term()
         }
 
   @doc """

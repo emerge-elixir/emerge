@@ -75,9 +75,44 @@ defmodule Emerge.UI do
   alias Emerge.UI.Internal.Validation
   alias Emerge.UI.Size
 
+  @typedoc "An Emerge UI element."
+  @type element :: Element.t()
+
+  @typedoc "A tree of UI returned by DSL helpers."
+  @type t :: element()
+
+  @typedoc "A single public UI attribute tuple."
+  @type attr :: {atom(), term()}
+
+  @typedoc "A list of public UI attribute tuples."
+  @type attrs :: [attr()]
+
+  @typedoc "A single child element."
+  @type child :: element()
+
+  @typedoc "A list of child elements."
+  @type children :: [child()]
+
+  @typedoc "A stable key used to retain identity among siblings."
+  @type key :: term()
+
+  @typedoc "Image fit modes accepted by `image_fit/1`."
+  @type image_fit_mode :: :contain | :cover
+
+  @typedoc "An image source accepted by `image/2` and `svg/2`."
+  @type image_source ::
+          binary() | atom() | {:id, binary()} | {:path, binary()} | Emerge.Assets.Ref.t()
+
+  @typedoc "A video target accepted by `video/2`."
+  @type video_target :: EmergeSkia.VideoTarget.t()
+
+  @type key_attr :: {:key, key()}
+  @type image_fit_attr :: {:image_fit, image_fit_mode()}
+
   @doc """
   Imports the root element DSL and the most common UI helper modules.
   """
+  @spec __using__(term()) :: Macro.t()
   defmacro __using__(_opts) do
     quote do
       import Kernel, except: [min: 2, max: 2]
@@ -113,6 +148,7 @@ defmodule Emerge.UI do
 
       el([padding(10), Font.size(20), Font.color(:white)], text("Hello"))
   """
+  @spec el(attrs(), child()) :: t()
   def el(attrs, child) do
     {attrs, child} = Builder.prepare_single_child!("el/2", attrs, child)
     Builder.build_element(attrs, :el, [child])
@@ -129,6 +165,7 @@ defmodule Emerge.UI do
         el([], text("C"))
       ])
   """
+  @spec row(attrs(), children()) :: t()
   def row(attrs, children) do
     {attrs, children} = Builder.prepare_children!("row/2", attrs, children)
     Builder.build_element(attrs, :row, children)
@@ -145,6 +182,7 @@ defmodule Emerge.UI do
         el([], text("Three"))
       ])
   """
+  @spec wrapped_row(attrs(), children()) :: t()
   def wrapped_row(attrs, children) do
     {attrs, children} = Builder.prepare_children!("wrapped_row/2", attrs, children)
     Builder.build_element(attrs, :wrapped_row, children)
@@ -160,6 +198,7 @@ defmodule Emerge.UI do
         text("Line 2")
       ])
   """
+  @spec column(attrs(), children()) :: t()
   def column(attrs, children) do
     {attrs, children} = Builder.prepare_children!("column/2", attrs, children)
     Builder.build_element(attrs, :column, children)
@@ -175,6 +214,7 @@ defmodule Emerge.UI do
 
   You can override these by passing explicit width/height attributes.
   """
+  @spec text_column(attrs(), children()) :: t()
   def text_column(attrs, children) do
     {attrs, children} = Builder.prepare_children!("text_column/2", attrs, children)
 
@@ -190,6 +230,7 @@ defmodule Emerge.UI do
   Children should be `text/1` elements or `el/2`-wrapped text elements.
   Words flow left-to-right and wrap at the container width.
   """
+  @spec paragraph(attrs(), children()) :: t()
   def paragraph(attrs, children) do
     {attrs, children} = Builder.prepare_children!("paragraph/2", attrs, children)
     Builder.build_element(attrs, :paragraph, children)
@@ -202,6 +243,7 @@ defmodule Emerge.UI do
 
   Use `paragraph/2` or `text_column/2` for wrapped text flows.
   """
+  @spec text(String.t()) :: t()
   def text(content) when is_binary(content) do
     Builder.build_element(%{content: content}, :text, [])
   end
@@ -216,6 +258,7 @@ defmodule Emerge.UI do
   `source` can be a verified `~m"..."` reference, logical asset path,
   runtime file path, or `{:id, image_id}`.
   """
+  @spec image(attrs(), image_source()) :: t()
   def image(attrs, source) do
     attrs = Builder.prepare_attrs!("image/2", attrs)
     source = Validation.validate_image_source!("image/2", source)
@@ -231,6 +274,7 @@ defmodule Emerge.UI do
   Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
   template tinting to all visible pixels.
   """
+  @spec svg(attrs(), image_source()) :: t()
   def svg(attrs, source) do
     attrs = Builder.prepare_attrs!("svg/2", attrs, extra_public_attr_keys: [:svg_color])
     source = Validation.validate_image_source!("svg/2", source)
@@ -244,6 +288,7 @@ defmodule Emerge.UI do
   @doc """
   A video element backed by a renderer-owned video target.
   """
+  @spec video(attrs(), video_target()) :: t()
   def video(attrs, target) do
     attrs = Builder.prepare_attrs!("video/2", attrs)
     target = Validation.validate_video_target!("video/2", target)
@@ -258,13 +303,16 @@ defmodule Emerge.UI do
   @doc """
   An empty element that takes up no space.
   """
+  @spec none() :: t()
   def none do
     %Element{type: :none, attrs: %{}, children: []}
   end
 
   @doc "Provide a stable key for identity in lists (all siblings must have keys)."
+  @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}
 
   @doc "Set image fit mode (`:contain` or `:cover`)"
+  @spec image_fit(image_fit_mode()) :: image_fit_attr()
   def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
 end

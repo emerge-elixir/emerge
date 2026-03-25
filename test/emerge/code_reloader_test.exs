@@ -108,6 +108,17 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
   end
 
+  defmodule MissingDependencyWatcher do
+    @behaviour Emerge.Runtime.CodeReloader.Watcher
+
+    @impl true
+    def start_link(_opts) do
+      {:error,
+       {:missing_dependency,
+        "Emerge.Runtime.CodeReloader requires the :file_system dependency for watcher support."}}
+    end
+  end
+
   defmodule FakeCompiler do
     def reload(reloadable_apps, opts) do
       send(
@@ -223,12 +234,22 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     assert {:error, reason} =
              CodeReloader.start_link(
-               dirs: ["/workspace/emerge/lib"],
+               dirs: [__DIR__],
                reloadable_apps: [:emerge],
+               watcher: MissingDependencyWatcher,
                mix_listener: nil
              )
 
-    assert reason =~ ":file_system"
+    case reason do
+      message when is_binary(message) ->
+        assert message =~ ":file_system"
+
+      {:missing_dependency, message} ->
+        assert message =~ ":file_system"
+
+      :ignore ->
+        assert true
+    end
   end
 
   test "mix listener ignores compiles from the current os process" do

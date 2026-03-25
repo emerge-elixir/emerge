@@ -76,7 +76,15 @@ defmodule Emerge.UI.Internal.Validation do
 
   @override_warning_store_key :emerge_ui_override_warnings
 
-  @spec parse_attrs(list(), String.t(), keyword()) :: map()
+  @type attrs_owner :: String.t()
+  @type attrs_options :: keyword()
+  @type attrs_map :: map()
+  @type attrs_list :: Emerge.UI.attrs()
+  @type state_style_key :: :mouse_over | :focused | :mouse_down
+  @type image_source :: Emerge.UI.image_source()
+
+  @spec parse_attrs(attrs_list(), attrs_owner()) :: attrs_map()
+  @spec parse_attrs(attrs_list(), attrs_owner(), attrs_options()) :: attrs_map()
   def parse_attrs(attrs, attrs_owner, opts \\ []) do
     warn_overrides = Keyword.get(opts, :warn_overrides, true)
     extra_public_attr_keys = MapSet.new(Keyword.get(opts, :extra_public_attr_keys, []))
@@ -94,13 +102,13 @@ defmodule Emerge.UI.Internal.Validation do
     end)
   end
 
-  @spec parse_state_style_attrs(list(), atom()) :: map()
+  @spec parse_state_style_attrs(attrs_list(), state_style_key()) :: attrs_map()
   def parse_state_style_attrs(attrs, style_key) do
     attrs = validate_attrs_list!("#{style_key}/1", attrs)
     AttrValidation.normalize_state_style!(style_key, attrs)
   end
 
-  @spec validate_attrs_list!(String.t(), term()) :: list()
+  @spec validate_attrs_list!(attrs_owner(), term()) :: attrs_list()
   def validate_attrs_list!(_function_name, attrs) when is_list(attrs), do: attrs
 
   def validate_attrs_list!(function_name, other) do
@@ -108,7 +116,7 @@ defmodule Emerge.UI.Internal.Validation do
           "#{function_name} expects the first argument to be a list of attributes, got: #{inspect(other)}"
   end
 
-  @spec validate_child_element!(String.t(), term()) :: Element.t()
+  @spec validate_child_element!(attrs_owner(), term()) :: Element.t()
   def validate_child_element!(_function_name, %Element{} = child), do: child
 
   def validate_child_element!(function_name, children) when is_list(children) do
@@ -122,7 +130,7 @@ defmodule Emerge.UI.Internal.Validation do
           "#{function_name} expects the second argument to be a single child element, got: #{inspect(other)}"
   end
 
-  @spec validate_children_list!(String.t(), term()) :: [Element.t()]
+  @spec validate_children_list!(attrs_owner(), term()) :: [Element.t()]
   def validate_children_list!(function_name, children) when is_list(children) do
     Enum.each(children, fn child ->
       case child do
@@ -146,7 +154,7 @@ defmodule Emerge.UI.Internal.Validation do
             "Use #{container_name}(attrs, [child]) for a single child."
   end
 
-  @spec validate_binary_string!(String.t(), term()) :: binary()
+  @spec validate_binary_string!(attrs_owner(), term()) :: binary()
   def validate_binary_string!(_function_name, value) when is_binary(value), do: value
 
   def validate_binary_string!(function_name, other) do
@@ -154,7 +162,7 @@ defmodule Emerge.UI.Internal.Validation do
           "#{function_name} expects the second argument to be a binary string, got: #{inspect(other)}"
   end
 
-  @spec validate_video_target!(String.t(), term()) :: VideoTarget.t()
+  @spec validate_video_target!(attrs_owner(), term()) :: VideoTarget.t()
   def validate_video_target!(_function_name, %VideoTarget{} = target), do: target
 
   def validate_video_target!(function_name, other) do
@@ -162,6 +170,7 @@ defmodule Emerge.UI.Internal.Validation do
           "#{function_name} expects the second argument to be an EmergeSkia.VideoTarget, got: #{inspect(other)}"
   end
 
+  @spec validate_image_source!(attrs_owner(), image_source()) :: image_source()
   def validate_image_source!(_attrs_owner, %Emerge.Assets.Ref{path: path} = source)
       when is_binary(path),
       do: source

@@ -1,0 +1,50 @@
+name: Private Hex Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish (tag or branch)
+        required: true
+        default: main
+      organization:
+        description: Hex organization to publish to
+        required: true
+
+jobs:
+  publish:
+    name: Publish private Hex package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.0"
+          otp-version: "28.3"
+
+      - name: Install Hex
+        run: mix local.hex --force
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Generate precompiled checksum file
+        env:
+          EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN }}
+        run: mix rustler_precompiled.download EmergeSkia.Native --all --print
+
+      - name: Verify Hex package contents
+        run: mix hex.build --unpack
+
+      - name: Publish to private Hex organization
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --organization "${{ inputs.organization }}" --yes
