@@ -26,10 +26,10 @@ mod debug_trace;
 mod drm_input;
 mod events;
 mod input;
-mod render_scene;
 #[cfg(feature = "drm")]
 mod linux_wait;
 mod native_log;
+mod render_scene;
 mod renderer;
 mod tree;
 mod video;
@@ -48,7 +48,7 @@ use backend::wayland_config::WaylandConfig;
 use cursor::{CursorState, SharedCursorState};
 #[cfg(feature = "drm")]
 use drm_input::DrmInput;
-use events::spawn_event_actor;
+use events::{CursorIcon, spawn_event_actor};
 #[cfg(feature = "drm")]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
@@ -404,6 +404,8 @@ struct StartConfig {
     width: u32,
     height: u32,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    asset_config: AssetConfig,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_card: Option<String>,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_startup_retries: u32,
@@ -412,8 +414,18 @@ struct StartConfig {
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_hw_cursor: bool,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_input_log: bool,
     render_log: bool,
+}
+
+#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub(crate) struct DrmCursorOverrideConfig {
+    pub icon: CursorIcon,
+    pub source: String,
+    pub hotspot: (f32, f32),
 }
 
 #[derive(rustler::NifMap)]
@@ -423,11 +435,26 @@ struct StartOptsNif {
     width: u32,
     height: u32,
     drm_card: Option<String>,
+    asset_sources: Vec<String>,
+    asset_runtime_enabled: bool,
+    asset_allowlist: Vec<String>,
+    asset_follow_symlinks: bool,
+    asset_max_file_size: u64,
+    asset_extensions: Vec<String>,
+    drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
     hw_cursor: bool,
     input_log: bool,
     render_log: bool,
+}
+
+#[derive(rustler::NifMap)]
+struct DrmCursorOverrideNif {
+    icon: String,
+    source: String,
+    hotspot_x: f32,
+    hotspot_y: f32,
 }
 
 struct TreeActorConfig {
@@ -775,7 +802,7 @@ fn start_with_config(
     #[cfg(feature = "drm")]
     let drm_cursor_state = Arc::new(SharedCursorState::new(CursorState {
         pos: (0.0, 0.0),
-        visible: true,
+        visible: false,
     }));
 
     assets::start(tree_tx.clone(), log_render);
@@ -930,7 +957,9 @@ fn start_with_config(
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
                 card_path: config.drm_card.clone(),
+                asset_config: config.asset_config.clone(),
                 startup_retries: config.drm_startup_retries,
+                cursor_overrides: config.drm_cursor_overrides.clone(),
                 retry_interval_ms: config.drm_retry_interval_ms,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
@@ -1069,10 +1098,12 @@ fn start(
                 title,
                 width,
                 height,
+                asset_config: AssetConfig::default(),
                 drm_card: None,
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
                 drm_hw_cursor: true,
+                drm_cursor_overrides: Vec::new(),
                 drm_input_log: false,
                 render_log: false,
             },
@@ -1094,6 +1125,16 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let asset_config = AssetConfig {
+        sources: opts.asset_sources,
+        runtime_enabled: opts.asset_runtime_enabled,
+        runtime_allowlist: opts.asset_allowlist,
+        runtime_follow_symlinks: opts.asset_follow_symlinks,
+        runtime_max_file_size: opts.asset_max_file_size,
+        runtime_extensions: opts.asset_extensions,
+    };
+    let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(
         StartConfig {
@@ -1101,10 +1142,12 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             title: opts.title,
             width: opts.width,
             height: opts.height,
+            asset_config,
             drm_card: opts.drm_card,
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
             drm_hw_cursor: opts.hw_cursor,
+            drm_cursor_overrides,
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
         },
@@ -2188,6 +2231,31 @@ mod tests {
 }
 
 rustler::init!("Elixir.EmergeSkia.Native", load = load);
+
+fn parse_drm_cursor_overrides(
+    overrides: Vec<DrmCursorOverrideNif>,
+) -> Result<Vec<DrmCursorOverrideConfig>, String> {
+    overrides
+        .into_iter()
+        .map(|entry| {
+            Ok(DrmCursorOverrideConfig {
+                icon: parse_cursor_icon_name(&entry.icon)?,
+                source: entry.source,
+                hotspot: (entry.hotspot_x, entry.hotspot_y),
+            })
+        })
+        .collect()
+}
+
+fn parse_cursor_icon_name(value: &str) -> Result<CursorIcon, String> {
+    match value {
+        "default" => Ok(CursorIcon::Default),
+        "text" => Ok(CursorIcon::Text),
+        "pointer" => Ok(CursorIcon::Pointer),
+        other => Err(format!("unsupported DRM cursor icon: {other}")),
+    }
+}
+
 fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
     match value {
         #[cfg(feature = "drm")]

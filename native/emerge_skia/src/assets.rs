@@ -481,7 +481,7 @@ fn path_is_svg(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_logical_path(logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
+pub(crate) fn resolve_logical_path(logical: &str, config: &AssetConfig) -> Result<PathBuf, String> {
     let relative = logical_asset_relative_path(logical)?;
 
     if config.sources.is_empty() {
@@ -572,7 +572,7 @@ fn canonical_asset_id(data: &[u8]) -> String {
     format!("img_{digest:x}")
 }
 
-fn resolve_runtime_path(path: &str, config: &AssetConfig) -> Result<PathBuf, String> {
+pub(crate) fn resolve_runtime_path(path: &str, config: &AssetConfig) -> Result<PathBuf, String> {
     if !config.runtime_enabled {
         return Err(format!("runtime paths disabled: {path}"));
     }
@@ -691,5 +691,14 @@ fn expand_path(path: &str) -> String {
     match std::env::current_dir() {
         Ok(cwd) => cwd.join(candidate).display().to_string(),
         Err(_) => candidate.display().to_string(),
+    }
+}
+
+#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+pub(crate) fn resolve_configured_path(path: &str, config: &AssetConfig) -> Result<PathBuf, String> {
+    if Path::new(path).is_absolute() {
+        resolve_runtime_path(path, config)
+    } else {
+        resolve_logical_path(path, config)
     }
 }

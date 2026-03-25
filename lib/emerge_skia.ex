@@ -78,6 +78,7 @@ defmodule EmergeSkia do
   - `height` - Window height in pixels (default: 600)
   - `drm_card` - DRM device path (default: `/dev/dri/card0`)
   - `hw_cursor` - Enable hardware cursor when available (default: true)
+  - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `assets` - Asset runtime policy options (optional)
@@ -100,6 +101,13 @@ defmodule EmergeSkia do
   - `weight` (default: `400`)
   - `italic` (default: `false`)
 
+  Each `drm_cursor` entry supports:
+  - `source` (required, `.png` or `.svg`; logical path under `<otp_app>/priv`, `%Emerge.Assets.Ref{}`, or an absolute runtime path allowed by `assets.runtime_paths`)
+  - `hotspot` (required `{x, y}` tuple; integers and floats are allowed)
+
+  DRM cursor overrides are applied only on the `:drm` backend. Missing icons fall back to
+  the built-in `mocu-black-right` theme.
+
   Compile-time backend selection is configured separately with
   `config :emerge, compiled_backends: [...]`. If omitted, desktop builds assume
   `[:wayland]` and Nerves-style builds assume `[:drm]`.
@@ -109,7 +117,17 @@ defmodule EmergeSkia do
     opts = Options.normalize_start_keyword_opts!(opts)
     asset_config = Assets.normalize_asset_config!(opts)
 
-    case Native.start_opts(Options.build_start_native_opts!(opts)) do
+    native_opts =
+      opts
+      |> Options.build_start_native_opts!()
+      |> Map.merge(Assets.native_start_asset_config(asset_config))
+      |> Map.put(:drm_cursor, Assets.normalize_drm_cursor_overrides!(opts))
+
+    if native_opts.drm_cursor != [] and String.downcase(native_opts.backend) == "wayland" do
+      raise ArgumentError, "drm_cursor is only supported with backend: :drm"
+    end
+
+    case Native.start_opts(native_opts) do
       ref when is_reference(ref) ->
         case Assets.initialize_renderer_assets(ref, asset_config) do
           :ok ->

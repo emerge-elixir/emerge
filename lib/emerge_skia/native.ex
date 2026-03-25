@@ -59,6 +59,20 @@ defmodule EmergeSkia.Native do
           required(:drm_card) => String.t() | nil,
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),
+          required(:asset_sources) => [String.t()],
+          required(:asset_runtime_enabled) => boolean(),
+          required(:asset_allowlist) => [String.t()],
+          required(:asset_follow_symlinks) => boolean(),
+          required(:asset_max_file_size) => pos_integer(),
+          required(:asset_extensions) => [String.t()],
+          required(:drm_cursor) => [
+            %{
+              required(:icon) => String.t(),
+              required(:source) => String.t(),
+              required(:hotspot_x) => float(),
+              required(:hotspot_y) => float()
+            }
+          ],
           required(:hw_cursor) => boolean(),
           required(:input_log) => boolean(),
           required(:render_log) => boolean()
