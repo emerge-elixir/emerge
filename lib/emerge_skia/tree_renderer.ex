@@ -13,6 +13,7 @@ defmodule EmergeSkia.TreeRenderer do
 
     case Native.renderer_upload(renderer, full_bin) do
       :ok -> :ok
+      {:ok, :ok} -> :ok
       {:error, reason} -> raise "renderer_upload failed: #{reason}"
     end
 
@@ -26,6 +27,7 @@ defmodule EmergeSkia.TreeRenderer do
 
     case Native.renderer_patch(renderer, patch_bin) do
       :ok -> :ok
+      {:ok, :ok} -> :ok
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
     end
 

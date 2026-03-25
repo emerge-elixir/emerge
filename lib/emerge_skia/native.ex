@@ -76,14 +76,14 @@ defmodule EmergeSkia.Native do
   Upload a full EMRG tree, run layout, and render immediately.
   Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_upload(reference(), binary()) :: :ok | {:error, String.t()}
+  @spec renderer_upload(reference(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
   def renderer_upload(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Apply EMRG patches, run layout, and render immediately.
   Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_patch(reference(), binary()) :: :ok | {:error, String.t()}
+  @spec renderer_patch(reference(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
   def renderer_patch(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
