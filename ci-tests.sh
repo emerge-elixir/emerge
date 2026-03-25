@@ -11,7 +11,7 @@ run_quality() {
 
 run_tests() {
   mix test
-  cargo test --manifest-path native/emerge_skia/Cargo.toml
+  cargo test --release --manifest-path native/emerge_skia/Cargo.toml
 }
 
 run_dialyzer() {
