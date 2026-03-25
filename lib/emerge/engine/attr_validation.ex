@@ -63,9 +63,35 @@ defmodule Emerge.Engine.AttrValidation do
     value
   end
 
+  def normalize_decorative_value!(attrs_owner, :border_radius, value) do
+    validate_radius!(attrs_owner, :border_radius, value)
+    value
+  end
+
+  def normalize_decorative_value!(attrs_owner, :border_width, value) do
+    validate_border_width!(attrs_owner, value)
+    value
+  end
+
+  def normalize_decorative_value!(attrs_owner, :border_style, value) do
+    validate_border_style!(attrs_owner, value)
+    value
+  end
+
   def normalize_decorative_value!(attrs_owner, key, value)
       when key in [:border_color, :font_color, :svg_color] do
     validate_color_attr!(attrs_owner, key, value)
+    value
+  end
+
+  def normalize_decorative_value!(attrs_owner, :font, value) do
+    validate_font_attr!(attrs_owner, value)
+    value
+  end
+
+  def normalize_decorative_value!(attrs_owner, key, value)
+      when key in [:font_weight, :font_style] do
+    validate_atom_attr!(attrs_owner, key, value)
     value
   end
 
@@ -87,6 +113,11 @@ defmodule Emerge.Engine.AttrValidation do
   def normalize_decorative_value!(attrs_owner, key, value)
       when key in [:font_underline, :font_strike] do
     validate_boolean_attr!(attrs_owner, key, value)
+    value
+  end
+
+  def normalize_decorative_value!(attrs_owner, :text_align, value) do
+    validate_text_align!(attrs_owner, value)
     value
   end
 
@@ -417,6 +448,35 @@ defmodule Emerge.Engine.AttrValidation do
         raise ArgumentError,
               "#{attrs_owner} expects #{inspect(key)} to be a supported color, got: #{inspect(value)}"
     end
+  end
+
+  defp validate_font_attr!(_attrs_owner, value) when is_atom(value) or is_binary(value), do: :ok
+
+  defp validate_font_attr!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :font to be an atom or binary, got: #{inspect(value)}"
+  end
+
+  defp validate_atom_attr!(_attrs_owner, _key, value) when is_atom(value), do: :ok
+
+  defp validate_atom_attr!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be an atom, got: #{inspect(value)}"
+  end
+
+  defp validate_text_align!(_attrs_owner, value) when value in [:left, :center, :right], do: :ok
+
+  defp validate_text_align!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :text_align to be one of :left, :center, or :right, got: #{inspect(value)}"
+  end
+
+  defp validate_border_style!(_attrs_owner, value) when value in [:solid, :dashed, :dotted],
+    do: :ok
+
+  defp validate_border_style!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :border_style to be :solid, :dashed, or :dotted, got: #{inspect(value)}"
   end
 
   defp validate_background!(attrs_owner, {:gradient, from, to, angle}) when is_number(angle) do

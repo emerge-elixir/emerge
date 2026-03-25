@@ -63,6 +63,45 @@ defmodule Emerge.UITest do
            }
   end
 
+  test "interaction styles accept border and font attrs" do
+    element =
+      el(
+        [
+          Interactive.mouse_over([
+            Border.rounded_each(1, 2, 3, 4),
+            Border.width_each(5, 6, 7, 8),
+            Border.dashed(),
+            Font.family(:display),
+            Font.bold(),
+            Font.italic(),
+            Font.center()
+          ]),
+          Interactive.focused([
+            Border.rounded(9),
+            Border.width(2),
+            Border.dotted(),
+            Font.family("mono"),
+            Font.align_right()
+          ])
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.mouse_over.border_radius == {1, 2, 3, 4}
+    assert element.attrs.mouse_over.border_width == {5, 6, 7, 8}
+    assert element.attrs.mouse_over.border_style == :dashed
+    assert element.attrs.mouse_over.font == :display
+    assert element.attrs.mouse_over.font_weight == :bold
+    assert element.attrs.mouse_over.font_style == :italic
+    assert element.attrs.mouse_over.text_align == :center
+
+    assert element.attrs.focused.border_radius == 9
+    assert element.attrs.focused.border_width == 2
+    assert element.attrs.focused.border_style == :dotted
+    assert element.attrs.focused.font == "mono"
+    assert element.attrs.focused.text_align == :right
+  end
+
   test "font decoration and spacing helpers return attrs" do
     assert Font.underline() == {:font_underline, true}
     assert Font.strike() == {:font_strike, true}
