@@ -802,7 +802,7 @@ fn start_with_config(
     #[cfg(feature = "drm")]
     let drm_cursor_state = Arc::new(SharedCursorState::new(CursorState {
         pos: (0.0, 0.0),
-        visible: true,
+        visible: false,
     }));
 
     assets::start(tree_tx.clone(), log_render);
