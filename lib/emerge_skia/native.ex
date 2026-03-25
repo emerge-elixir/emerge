@@ -44,7 +44,7 @@ defmodule EmergeSkia.Native do
   Returns a renderer resource that can be used with other functions.
   """
   @spec start(String.t(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, reference()} | {:error, term()}
+          reference() | {:ok, reference()} | {:error, term()}
   def start(_title, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -58,10 +58,12 @@ defmodule EmergeSkia.Native do
           required(:width) => non_neg_integer(),
           required(:height) => non_neg_integer(),
           required(:drm_card) => String.t() | nil,
+          required(:drm_startup_retries) => non_neg_integer(),
+          required(:drm_retry_interval_ms) => non_neg_integer(),
           required(:hw_cursor) => boolean(),
           required(:input_log) => boolean(),
           required(:render_log) => boolean()
-        }) :: {:ok, reference()} | {:error, term()}
+        }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -106,7 +108,7 @@ defmodule EmergeSkia.Native do
       :ok = EmergeSkia.Native.load_font_nif("my-font", 700, false, data)
   """
   @spec load_font_nif(String.t(), non_neg_integer(), boolean(), binary()) ::
-          :ok | {:error, String.t()}
+          :ok | {:ok, atom()} | {:error, String.t()}
   def load_font_nif(_name, _weight, _italic, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -142,14 +144,15 @@ defmodule EmergeSkia.Native do
   Create a renderer-owned video target.
   """
   @spec video_target_new(reference(), String.t(), pos_integer(), pos_integer(), String.t()) ::
-          reference() | {:error, String.t()}
+          reference() | {:ok, reference()} | {:error, String.t()}
   def video_target_new(_renderer, _id, _width, _height, _mode),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Submit a DRM Prime descriptor to a video target.
   """
-  @spec video_target_submit_prime(reference(), map()) :: :ok | {:error, String.t()}
+  @spec video_target_submit_prime(reference(), map()) ::
+          :ok | {:ok, atom()} | {:error, String.t()}
   def video_target_submit_prime(_target, _desc), do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
@@ -175,7 +178,7 @@ defmodule EmergeSkia.Native do
           [String.t()],
           String.t(),
           pos_integer()
-        ) :: {:ok, binary()} | {:error, String.t()}
+        ) :: binary() | {:ok, binary()} | {:error, String.t()}
   def render_tree_to_pixels_nif(
         _data,
         _width,
@@ -251,7 +254,8 @@ defmodule EmergeSkia.Native do
   @doc """
   Upload a full tree and return the encoded EMRG binary.
   """
-  @spec tree_upload_roundtrip(reference(), binary()) :: {:ok, binary()} | {:error, String.t()}
+  @spec tree_upload_roundtrip(reference(), binary()) ::
+          binary() | {:ok, binary()} | {:error, String.t()}
   def tree_upload_roundtrip(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -263,7 +267,8 @@ defmodule EmergeSkia.Native do
   @doc """
   Apply patches to an existing tree and return the encoded EMRG binary.
   """
-  @spec tree_patch_roundtrip(reference(), binary()) :: {:ok, binary()} | {:error, String.t()}
+  @spec tree_patch_roundtrip(reference(), binary()) ::
+          binary() | {:ok, binary()} | {:error, String.t()}
   def tree_patch_roundtrip(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -304,33 +309,36 @@ defmodule EmergeSkia.Native do
   def tree_roundtrip(_data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_new(pos_integer(), pos_integer()) :: reference()
+  @spec test_harness_new(pos_integer(), pos_integer()) ::
+          reference() | {:ok, reference()} | {:error, String.t()}
   def test_harness_new(_width, _height), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_upload(reference(), binary()) :: :ok | {:error, String.t()}
+  @spec test_harness_upload(reference(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
   def test_harness_upload(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_patch(reference(), binary()) :: :ok | {:error, String.t()}
+  @spec test_harness_patch(reference(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
   def test_harness_patch(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_cursor_pos(reference(), number(), number()) :: :ok | {:error, String.t()}
+  @spec test_harness_cursor_pos(reference(), number(), number()) ::
+          :ok | {:ok, atom()} | {:error, String.t()}
   def test_harness_cursor_pos(_harness, _x, _y), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
   @spec test_harness_animation_pulse(reference(), non_neg_integer(), non_neg_integer()) ::
-          :ok | {:error, String.t()}
+          :ok | {:ok, atom()} | {:error, String.t()}
   def test_harness_animation_pulse(_harness, _presented_ms, _predicted_ms),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_reset_clock(reference()) :: :ok
+  @spec test_harness_reset_clock(reference()) :: :ok | {:ok, atom()}
   def test_harness_reset_clock(_harness), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_await_render(reference(), non_neg_integer()) :: :ok | {:error, String.t()}
+  @spec test_harness_await_render(reference(), non_neg_integer()) ::
+          :ok | {:ok, atom()} | {:error, String.t()}
   def test_harness_await_render(_harness, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
@@ -340,6 +348,6 @@ defmodule EmergeSkia.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec test_harness_stop(reference()) :: :ok
+  @spec test_harness_stop(reference()) :: :ok | {:ok, atom()}
   def test_harness_stop(_harness), do: :erlang.nif_error(:nif_not_loaded)
 end

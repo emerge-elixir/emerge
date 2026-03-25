@@ -14,8 +14,8 @@ defmodule Emerge.Runtime.Viewport do
   require Logger
 
   alias Emerge.Runtime.Viewport.Config
-  alias Emerge.Runtime.Viewport.State
   alias Emerge.Runtime.Viewport.ReloadGroup
+  alias Emerge.Runtime.Viewport.State
 
   @genserver_start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
   @runtime_key :__emerge__
@@ -370,12 +370,10 @@ defmodule Emerge.Runtime.Viewport do
   defp apply_tree_to_renderer(state, tree) when is_map(state) do
     runtime = runtime!(state)
 
-    cond do
-      not is_nil(runtime.renderer) and not is_nil(runtime.diff_state) ->
-        patch_existing_renderer(state, runtime, tree)
-
-      true ->
-        start_and_upload_renderer(state, runtime, tree)
+    if not is_nil(runtime.renderer) and not is_nil(runtime.diff_state) do
+      patch_existing_renderer(state, runtime, tree)
+    else
+      start_and_upload_renderer(state, runtime, tree)
     end
   end
 
@@ -460,15 +458,13 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp safe_invoke(fun) when is_function(fun, 0) do
-    try do
-      {:ok, fun.()}
-    rescue
-      exception ->
-        {:error, Exception.format(:error, exception, __STACKTRACE__)}
-    catch
-      kind, reason ->
-        {:error, Exception.format(kind, reason, __STACKTRACE__)}
-    end
+    {:ok, fun.()}
+  rescue
+    exception ->
+      {:error, Exception.format(:error, exception, __STACKTRACE__)}
+  catch
+    kind, reason ->
+      {:error, Exception.format(kind, reason, __STACKTRACE__)}
   end
 
   defp safe_render_tree(state) when is_map(state) do

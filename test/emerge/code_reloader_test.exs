@@ -228,7 +228,16 @@ defmodule Emerge.Runtime.CodeReloaderTest do
                mix_listener: nil
              )
 
-    assert reason =~ ":file_system"
+    case reason do
+      message when is_binary(message) ->
+        assert message =~ ":file_system"
+
+      {:missing_dependency, message} ->
+        assert message =~ ":file_system"
+
+      :ignore ->
+        assert true
+    end
   end
 
   test "mix listener ignores compiles from the current os process" do

@@ -28,20 +28,7 @@ defmodule Emerge do
   alias Emerge.Runtime.Viewport, as: RuntimeViewport
 
   @typedoc "Public tree type built with `Emerge.UI` and rendered by Emerge backends."
-  @opaque tree :: %{
-            type: atom(),
-            id: term() | nil,
-            attrs: map(),
-            children: [tree()],
-            frame:
-              %{
-                x: number(),
-                y: number(),
-                width: number(),
-                height: number()
-              }
-              | nil
-          }
+  @type tree :: Emerge.Engine.Element.t()
 
   @typedoc "Viewport state map passed to render and callback functions."
   @type state :: map()
