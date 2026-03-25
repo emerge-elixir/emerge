@@ -236,6 +236,16 @@ defmodule EmergeSkiaTest do
     end
   end
 
+  test "start/1 rejects drm_cursor on wayland" do
+    assert_raise ArgumentError, ~r/drm_cursor is only supported with backend: :drm/, fn ->
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :wayland,
+        drm_cursor: [default: [source: "demo_images/tile_quad.svg", hotspot: {1, 1}]]
+      )
+    end
+  end
+
   test "load_font_file/4 normalizes native ok tuple" do
     priv_dir = :code.priv_dir(:emerge) |> List.to_string()
     path = Path.join(priv_dir, "demo_fonts/Lobster-Regular.ttf")
