@@ -89,10 +89,8 @@ defmodule EmergeSkia.Assets do
   @doc false
   @spec initialize_renderer_assets(reference(), config()) :: :ok | {:error, term()}
   def initialize_renderer_assets(renderer, asset_config) do
-    with :ok <- configure_assets_for_renderer(renderer, asset_config),
-         :ok <- preload_font_assets(asset_config) do
-      :ok
-    end
+    :ok = configure_assets_for_renderer(renderer, asset_config)
+    preload_font_assets(asset_config)
   end
 
   @doc false
@@ -137,19 +135,15 @@ defmodule EmergeSkia.Assets do
   end
 
   defp configure_assets_for_renderer(renderer, asset_config) do
-    case Native.configure_assets_nif(
-           renderer,
-           [asset_config.priv_dir],
-           asset_config.runtime_enabled,
-           asset_config.runtime_allowlist,
-           asset_config.runtime_follow_symlinks,
-           asset_config.runtime_max_file_size,
-           asset_config.runtime_extensions
-         ) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:configure_assets_failed, reason}}
-      other -> {:error, {:configure_assets_failed, other}}
-    end
+    Native.configure_assets_nif(
+      renderer,
+      [asset_config.priv_dir],
+      asset_config.runtime_enabled,
+      asset_config.runtime_allowlist,
+      asset_config.runtime_follow_symlinks,
+      asset_config.runtime_max_file_size,
+      asset_config.runtime_extensions
+    )
   end
 
   defp normalize_otp_app!(opts) do
@@ -262,7 +256,7 @@ defmodule EmergeSkia.Assets do
     duplicates = keys -- Enum.uniq(keys)
 
     if duplicates != [] do
-      duplicates = duplicates |> Enum.uniq() |> Enum.map(&inspect/1) |> Enum.join(", ")
+      duplicates = duplicates |> Enum.uniq() |> Enum.map_join(", ", &inspect/1)
       raise ArgumentError, "duplicate assets.fonts entries for variants: #{duplicates}"
     end
   end
@@ -272,7 +266,6 @@ defmodule EmergeSkia.Assets do
   defp normalize_native_ok(:ok), do: :ok
   defp normalize_native_ok({:ok, _}), do: :ok
   defp normalize_native_ok({:error, reason}), do: {:error, reason}
-  defp normalize_native_ok(other), do: {:error, {:unexpected_native_result, other}}
 
   defp otp_app_priv_dir!(otp_app) do
     case :code.priv_dir(otp_app) do

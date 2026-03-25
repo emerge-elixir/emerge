@@ -443,6 +443,8 @@ defmodule Emerge.UI.Color do
       iex> Emerge.UI.Color.color(:black, 400, 0.5)
       {:color_rgba, {0, 0, 0, 128}}
   """
+  @spec color(color()) :: t()
+  @spec color(color(), shade()) :: t()
   @spec color(color(), shade(), number()) :: t()
   def color(name, shade \\ @default_shade, alpha \\ 1.0) do
     name = validate_name!(name)

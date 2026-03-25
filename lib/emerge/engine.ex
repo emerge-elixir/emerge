@@ -7,12 +7,8 @@ defmodule Emerge.Engine do
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Serialization
 
-  @typedoc "Opaque incremental diff state used between tree uploads and patches."
-  @opaque diff_state :: %{
-            tree: Emerge.tree() | nil,
-            vdom: term() | nil,
-            event_registry: %{binary() => %{atom() => {pid(), term()}}}
-          }
+  @typedoc "Incremental diff state used between tree uploads and patches."
+  @type diff_state :: DiffState.t()
 
   @doc """
   Initialize a diff state for incremental updates.

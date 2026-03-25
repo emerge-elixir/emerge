@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  ci:
+    name: Elixir and Rust CI
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.0"
+          otp-version: "28.3"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Cache Mix dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Cache Cargo dependencies and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/emerge_skia/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Run CI test script
+        run: ./ci-tests.sh

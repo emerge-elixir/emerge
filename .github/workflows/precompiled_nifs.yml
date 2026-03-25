@@ -20,25 +20,46 @@ jobs:
         job:
           - name: linux_wayland
             target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             use_cross: false
             variant: ""
             cargo_args: "--no-default-features --features wayland"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libwayland-dev libxkbcommon-dev"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_drm
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "drm"
+            cargo_args: "--no-default-features --features drm"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_drm_wayland
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "drm_wayland"
+            cargo_args: "--no-default-features --features wayland drm"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_wayland
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use_cross: true
+            os: ubuntu-24.04-arm
+            use_cross: false
             variant: ""
             cargo_args: "--no-default-features --features wayland"
-            system_packages: ""
-          - name: nerves_rpi5_drm
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_drm
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use_cross: true
-            variant: "nerves_rpi5"
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "drm"
             cargo_args: "--no-default-features --features drm"
-            system_packages: ""
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_aarch64_drm_wayland
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "drm_wayland"
+            cargo_args: "--no-default-features --features wayland drm"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
 
     steps:
       - name: Checkout source code
@@ -46,16 +67,7 @@ jobs:
 
       - name: Extract project version
         shell: bash
-        run: |
-          python - <<'PY' >> "$GITHUB_ENV"
-          import pathlib, re
-
-          match = re.search(r'version:\s*"([^"]+)"', pathlib.Path("mix.exs").read_text())
-          if not match:
-              raise SystemExit("Could not determine project version from mix.exs")
-
-          print(f"PROJECT_VERSION={match.group(1)}")
-          PY
+        run: echo "PROJECT_VERSION=$(mix emerge.version)" >> "$GITHUB_ENV"
 
       - name: Install Linux build dependencies
         if: ${{ matrix.job.system_packages != '' }}

@@ -132,7 +132,7 @@ defmodule Emerge.Engine.ReconcileTest do
     )
   end
 
-  defp header_section() do
+  defp header_section do
     el(
       [
         width(:fill),

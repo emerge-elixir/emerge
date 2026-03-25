@@ -7,6 +7,7 @@ defmodule EmergeSkia.TestHarness do
   def new(width, height) do
     case Native.test_harness_new(width, height) do
       {:ok, harness} -> harness
+      {:error, reason} -> raise "test_harness_new failed: #{reason}"
       harness -> harness
     end
   end

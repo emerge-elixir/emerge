@@ -3,8 +3,8 @@ defmodule EmergeSkiaTest do
   doctest EmergeSkia
   use Emerge.UI
 
-  alias EmergeSkia.BuildConfig
   alias Emerge.UI.Svg
+  alias EmergeSkia.BuildConfig
 
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4

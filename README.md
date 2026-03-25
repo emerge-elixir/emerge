@@ -180,6 +180,19 @@ Release builds can ship precompiled NIFs for the default backend profiles.
 Set `EMERGE_SKIA_BUILD=1` to force a local Rust build instead of downloading a
 precompiled artifact.
 
+During the private release phase, precompiled NIF artifacts are downloaded from
+private GitHub releases. Consumers need a token with read access to the release
+artifacts:
+
+```bash
+export EMERGE_SKIA_GITHUB_TOKEN="$(gh auth token)"
+gh auth status
+```
+
+`gh` is only a convenient way to source the token. The package itself reads
+`EMERGE_SKIA_GITHUB_TOKEN` directly and does not require the GitHub CLI at
+runtime.
+
 `native/emerge_skia/Cross.toml` is only for `cross` container builds. Its
 package installation commands run inside cross's Debian-based image, not on
 your local Linux distro.
@@ -194,6 +207,14 @@ release assets:
 ```bash
 mix rustler_precompiled.download EmergeSkia.Native --all --print
 ```
+
+For a private Hex dry run, the recommended release flow is:
+
+1. tag and publish the private GitHub release assets
+2. export `EMERGE_SKIA_GITHUB_TOKEN`
+3. generate `checksum-Elixir.EmergeSkia.Native.exs`
+4. verify package contents with `mix hex.build --unpack`
+5. publish with `mix hex.publish --organization YOUR_ORG`
 
 Runtime `backend:` options must request a backend that was compiled into the NIF.
 For multi-target apps, use target-specific config to choose the compiled backend set
@@ -212,6 +233,22 @@ mix deps.get
 mix compile
 mix test
 mix run demo.exs
+```
+
+## Local CI Checks
+
+Run the same checks used in CI with:
+
+```bash
+./ci-tests.sh
+```
+
+You can also run individual groups:
+
+```bash
+./ci-tests.sh quality
+./ci-tests.sh test
+./ci-tests.sh dialyzer
 ```
 
 ## Image Assets

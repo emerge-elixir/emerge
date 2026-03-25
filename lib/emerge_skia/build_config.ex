@@ -1,10 +1,14 @@
 defmodule EmergeSkia.BuildConfig do
   @moduledoc false
 
+  @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
+  @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
+  @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
   @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm]
+  @default_precompiled_source_url Mix.Project.config()[:source_url]
 
   @default_compiled_backends (
                                env = System.get_env()
@@ -117,6 +121,12 @@ defmodule EmergeSkia.BuildConfig do
   def precompiled_nif_versions, do: @precompiled_nif_versions
 
   @doc false
+  def github_token_env_key, do: @github_token_env_key
+
+  @doc false
+  def precompiled_source_url_env_key, do: @precompiled_source_url_env_key
+
+  @doc false
   def default_compiled_backends(env) when is_map(env) do
     if nerves_build_env?(env), do: [:drm], else: [:wayland]
   end
@@ -125,8 +135,7 @@ defmodule EmergeSkia.BuildConfig do
   def nerves_build_env?(env) when is_map(env) do
     value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) ||
       mix_target?(env) ||
-      nerves_compiler?(Map.get(env, "CC")) ||
-      target_env?(env)
+      nerves_compiler?(Map.get(env, "CC"))
   end
 
   @doc false
@@ -154,17 +163,71 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def precompiled_variants(env \\ System.get_env()) when is_map(env) do
+  def precompiled_variants(env \\ System.get_env(), compiled_backends \\ compiled_backends())
+      when is_map(env) and is_list(compiled_backends) do
     %{
+      "x86_64-unknown-linux-gnu" => [
+        drm: fn _config ->
+          precompiled_variant?(env, compiled_backends, "x86_64-unknown-linux-gnu", :drm)
+        end,
+        drm_wayland: fn _config ->
+          precompiled_variant?(env, compiled_backends, "x86_64-unknown-linux-gnu", :drm_wayland)
+        end
+      ],
       "aarch64-unknown-linux-gnu" => [
-        nerves_rpi5: fn _config -> nerves_build_env?(env) end
+        drm: fn _config ->
+          precompiled_variant?(env, compiled_backends, "aarch64-unknown-linux-gnu", :drm)
+        end,
+        drm_wayland: fn _config ->
+          precompiled_variant?(env, compiled_backends, "aarch64-unknown-linux-gnu", :drm_wayland)
+        end
       ]
     }
   end
 
   @doc false
-  def precompiled_backends(env \\ System.get_env()) when is_map(env) do
-    if nerves_build_env?(env), do: [:drm], else: [:wayland]
+  def precompiled_profile(env, compiled_backends, target)
+      when is_map(env) and is_list(compiled_backends) and is_binary(target) do
+    compiled_backends = normalize_compiled_backends!(compiled_backends)
+
+    cond do
+      compiled_backends == [:wayland] and target in @precompiled_targets ->
+        {:ok, %{target: target, variant: nil, backends: compiled_backends}}
+
+      target == "x86_64-unknown-linux-gnu" and compiled_backends == [:drm] ->
+        {:ok, %{target: target, variant: :drm, backends: compiled_backends}}
+
+      target == "x86_64-unknown-linux-gnu" and compiled_backends == [:wayland, :drm] ->
+        {:ok, %{target: target, variant: :drm_wayland, backends: compiled_backends}}
+
+      target == "aarch64-unknown-linux-gnu" and compiled_backends == [:drm] ->
+        {:ok, %{target: target, variant: :drm, backends: compiled_backends}}
+
+      target == "aarch64-unknown-linux-gnu" and compiled_backends == [:wayland, :drm] ->
+        {:ok, %{target: target, variant: :drm_wayland, backends: compiled_backends}}
+
+      true ->
+        {:error, :unsupported_profile}
+    end
+  end
+
+  @doc false
+  def precompiled_source_url(env \\ System.get_env()) when is_map(env) do
+    Map.get(env, @precompiled_source_url_env_key, @default_precompiled_source_url)
+  end
+
+  @doc false
+  def precompiled_tar_gz_url(file_name), do: precompiled_tar_gz_url(file_name, System.get_env())
+
+  @doc false
+  def precompiled_tar_gz_url(file_name, env) when is_binary(file_name) and is_map(env) do
+    source_url = precompiled_source_url(env)
+    direct_url = "#{source_url}/releases/download/v#{@version}/#{file_name}"
+
+    case github_release_asset_request(source_url, @version, file_name, env) do
+      {:ok, request} -> request
+      :error -> maybe_authenticated_direct_url(direct_url, env)
+    end
   end
 
   @doc false
@@ -178,8 +241,13 @@ defmodule EmergeSkia.BuildConfig do
 
     force_build_requested?(env) ||
       not File.exists?(checksum_path) ||
-      unsupported_precompiled_target?(target_resolver, targets, nif_versions) ||
-      normalize_compiled_backends!(compiled_backends) != precompiled_backends(env)
+      unsupported_precompiled_profile?(
+        env,
+        compiled_backends,
+        target_resolver,
+        targets,
+        nif_versions
+      )
   end
 
   @doc false
@@ -195,33 +263,12 @@ defmodule EmergeSkia.BuildConfig do
   defp nerves_compiler?(nil), do: false
 
   defp nerves_compiler?(compiler) do
-    compiler
-    |> String.split(~r/\s+/, trim: true)
-    |> List.first()
-    |> case do
-      nil ->
-        false
-
-      path ->
-        path
-        |> Path.basename()
-        |> String.split("-")
-        |> Enum.drop(-1)
-        |> Enum.join("-")
-        |> case do
-          "armv6-nerves-linux-gnueabihf" -> true
-          "armv7-nerves-linux-gnueabihf" -> true
-          "aarch64-nerves-linux-gnu" -> true
-          "x86_64-nerves-linux-musl" -> true
-          _other -> false
-        end
-    end
-  end
-
-  defp target_env?(env) do
-    case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
-      {arch, os} when is_binary(arch) and arch != "" and is_binary(os) and os != "" -> true
-      _ -> false
+    case compiler_prefix(compiler) do
+      "armv6-nerves-linux-gnueabihf" -> true
+      "armv7-nerves-linux-gnueabihf" -> true
+      "aarch64-nerves-linux-gnu" -> true
+      "x86_64-nerves-linux-musl" -> true
+      _other -> false
     end
   end
 
@@ -240,10 +287,118 @@ defmodule EmergeSkia.BuildConfig do
     Map.get(env, @force_precompiled_build_env_key) in ["1", "true"]
   end
 
-  defp unsupported_precompiled_target?(target_resolver, targets, nif_versions) do
-    case target_resolver.(targets, nif_versions) do
-      {:ok, _target} -> false
-      {:error, _reason} -> true
+  defp maybe_authenticated_direct_url(url, env) do
+    case Map.get(env, @github_token_env_key) do
+      token when is_binary(token) and token != "" ->
+        {url,
+         [
+           {"Authorization", "Bearer #{token}"},
+           {"Accept", "application/octet-stream"}
+         ]}
+
+      _ ->
+        url
+    end
+  end
+
+  defp github_release_asset_request(source_url, version, file_name, env) do
+    with token when is_binary(token) and token != "" <- Map.get(env, @github_token_env_key),
+         {:ok, owner, repo} <- github_repo(source_url),
+         {:ok, asset_url} <- github_release_asset_url(owner, repo, version, file_name, token) do
+      {:ok,
+       {asset_url,
+        [
+          {"Authorization", "Bearer #{token}"},
+          {"Accept", "application/octet-stream"},
+          {"X-GitHub-Api-Version", "2022-11-28"}
+        ]}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp github_repo(source_url) when is_binary(source_url) do
+    case Regex.run(~r/^https:\/\/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/, source_url) do
+      [_, owner, repo] -> {:ok, owner, repo}
+      _ -> :error
+    end
+  end
+
+  defp github_release_asset_url(owner, repo, version, file_name, token) do
+    release_url = "https://api.github.com/repos/#{owner}/#{repo}/releases/tags/v#{version}"
+
+    headers = [
+      {~c"Authorization", ~c"Bearer " ++ String.to_charlist(token)},
+      {~c"Accept", ~c"application/vnd.github+json"},
+      {~c"X-GitHub-Api-Version", ~c"2022-11-28"},
+      {~c"User-Agent", ~c"emerge-skia-precompiled"}
+    ]
+
+    :inets.start()
+    :ssl.start()
+
+    case :httpc.request(:get, {String.to_charlist(release_url), headers}, [],
+           body_format: :binary
+         ) do
+      {:ok, {{_, 200, _}, _response_headers, body}} ->
+        with {:ok, %{"assets" => assets}} <- Jason.decode(body),
+             %{"url" => asset_url} <- Enum.find(assets, &(&1["name"] == file_name)) do
+          {:ok, asset_url}
+        else
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp unsupported_precompiled_profile?(
+         env,
+         compiled_backends,
+         target_resolver,
+         targets,
+         nif_versions
+       ) do
+    with {:ok, nif_target} <- target_resolver.(targets, nif_versions),
+         {:ok, target} <- target_from_nif_target(nif_target),
+         {:ok, _profile} <- precompiled_profile(env, compiled_backends, target) do
+      false
+    else
+      _ -> true
+    end
+  end
+
+  defp target_from_nif_target(nif_target) when is_binary(nif_target) do
+    case String.split(nif_target, "-", parts: 3) do
+      ["nif", _nif_version, target] when target != "" -> {:ok, target}
+      _ -> {:error, :invalid_nif_target}
+    end
+  end
+
+  defp precompiled_variant?(env, compiled_backends, target, variant) do
+    case precompiled_profile(env, compiled_backends, target) do
+      {:ok, %{variant: ^variant}} -> true
+      _ -> false
+    end
+  end
+
+  defp compiler_prefix(nil), do: nil
+
+  defp compiler_prefix(compiler) do
+    compiler
+    |> String.split(~r/\s+/, trim: true)
+    |> List.first()
+    |> case do
+      nil ->
+        nil
+
+      path ->
+        path
+        |> Path.basename()
+        |> String.split("-")
+        |> Enum.drop(-1)
+        |> Enum.join("-")
     end
   end
 
