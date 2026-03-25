@@ -25,6 +25,16 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
       - name: Cache Mix dependencies and build
         uses: actions/cache@v4
         with:
