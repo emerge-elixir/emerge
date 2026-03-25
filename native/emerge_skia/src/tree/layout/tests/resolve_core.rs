@@ -554,6 +554,75 @@ fn test_text_align_center_without_explicit_width_fills_constraint() {
 }
 
 #[test]
+fn test_mouse_over_text_align_center_without_explicit_width_fills_constraint() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.content = Some("Hello".to_string());
+    attrs.font_size = Some(16.0);
+    attrs.mouse_over = Some(MouseOverAttrs {
+        text_align: Some(TextAlign::Center),
+        ..Default::default()
+    });
+    attrs.mouse_over_active = Some(true);
+
+    let text = make_element("text", ElementKind::Text, attrs);
+    let text_id = text.id.clone();
+    tree.root = Some(text_id.clone());
+    tree.insert(text);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(200.0, 100.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let frame = tree.get(&text_id).unwrap().frame.unwrap();
+    assert_eq!(frame.width, 200.0);
+    assert_eq!(frame.height, 16.0);
+}
+
+#[test]
+fn test_mouse_over_border_width_affects_content_sizing() {
+    let mut tree = ElementTree::new();
+
+    let mut parent_attrs = Attrs::default();
+    parent_attrs.width = Some(Length::Content);
+    parent_attrs.height = Some(Length::Content);
+    parent_attrs.mouse_over = Some(MouseOverAttrs {
+        border_width: Some(BorderWidth::Uniform(3.0)),
+        ..Default::default()
+    });
+    parent_attrs.mouse_over_active = Some(true);
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.content = Some("Hi".to_string());
+    child_attrs.font_size = Some(10.0);
+
+    let mut parent = make_element("root", ElementKind::El, parent_attrs);
+    let child = make_element("child", ElementKind::Text, child_attrs);
+    let root_id = parent.id.clone();
+    let child_id = child.id.clone();
+
+    parent.children = vec![child_id.clone()];
+    tree.root = Some(root_id.clone());
+    tree.insert(parent);
+    tree.insert(child);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(300.0, 200.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    assert_eq!(frame.width, 22.0);
+    assert_eq!(frame.height, 16.0);
+}
+
+#[test]
 fn test_el_alignment_uses_asymmetric_padding_and_border_content_box() {
     let mut tree = ElementTree::new();
 

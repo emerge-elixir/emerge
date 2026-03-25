@@ -548,6 +548,15 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
 fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs {
     MouseOverAttrs {
         background: attrs.background.clone(),
+        border_radius: attrs
+            .border_radius
+            .as_ref()
+            .map(|radius| scale_border_radius(radius, scale)),
+        border_width: attrs
+            .border_width
+            .as_ref()
+            .map(|width| scale_border_width(width, scale)),
+        border_style: attrs.border_style,
         border_color: attrs.border_color.clone(),
         box_shadows: attrs.box_shadows.as_ref().map(|shadows| {
             shadows
@@ -562,6 +571,9 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
                 })
                 .collect()
         }),
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
         font_color: attrs.font_color.clone(),
         svg_color: attrs.svg_color.clone(),
         font_size: attrs.font_size.map(|v| v * scale),
@@ -569,6 +581,7 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
         font_strike: attrs.font_strike,
         font_letter_spacing: attrs.font_letter_spacing.map(|v| v * scale),
         font_word_spacing: attrs.font_word_spacing.map(|v| v * scale),
+        text_align: attrs.text_align,
         move_x: attrs.move_x.map(|v| v * scale),
         move_y: attrs.move_y.map(|v| v * scale),
         rotate: attrs.rotate,
@@ -603,11 +616,29 @@ fn apply_decorative_style(attrs: &mut Attrs, style: &MouseOverAttrs) {
     if let Some(background) = style.background.clone() {
         attrs.background = Some(background);
     }
+    if let Some(border_radius) = style.border_radius.clone() {
+        attrs.border_radius = Some(border_radius);
+    }
+    if let Some(border_width) = style.border_width.clone() {
+        attrs.border_width = Some(border_width);
+    }
+    if let Some(border_style) = style.border_style {
+        attrs.border_style = Some(border_style);
+    }
     if let Some(border_color) = style.border_color.clone() {
         attrs.border_color = Some(border_color);
     }
     if let Some(box_shadows) = style.box_shadows.clone() {
         attrs.box_shadows = Some(box_shadows);
+    }
+    if let Some(font) = style.font.clone() {
+        attrs.font = Some(font);
+    }
+    if let Some(font_weight) = style.font_weight.clone() {
+        attrs.font_weight = Some(font_weight);
+    }
+    if let Some(font_style) = style.font_style.clone() {
+        attrs.font_style = Some(font_style);
     }
     if let Some(font_color) = style.font_color.clone() {
         attrs.font_color = Some(font_color);
@@ -629,6 +660,9 @@ fn apply_decorative_style(attrs: &mut Attrs, style: &MouseOverAttrs) {
     }
     if let Some(font_word_spacing) = style.font_word_spacing {
         attrs.font_word_spacing = Some(font_word_spacing);
+    }
+    if let Some(text_align) = style.text_align {
+        attrs.text_align = Some(text_align);
     }
     if let Some(move_x) = style.move_x {
         attrs.move_x = Some(move_x);

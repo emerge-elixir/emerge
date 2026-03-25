@@ -2,6 +2,7 @@ use super::super::*;
 use super::common::*;
 use crate::events::test_support::AnimatedNearbyHitCase;
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
+use crate::tree::attrs::{BorderRadius, BorderStyle, FontStyle, FontWeight};
 
 #[test]
 fn test_layout_with_scale() {
@@ -124,11 +125,23 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
                 b: 50,
             },
         )),
+        border_radius: Some(BorderRadius::Uniform(6.0)),
+        border_width: Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        }),
+        border_style: Some(BorderStyle::Dashed),
+        font: Some(Font::Atom("display".to_string())),
+        font_weight: Some(FontWeight("bold".to_string())),
+        font_style: Some(FontStyle("italic".to_string())),
         font_size: Some(22.0),
         font_underline: Some(true),
         font_strike: Some(true),
         font_letter_spacing: Some(3.0),
         font_word_spacing: Some(4.0),
+        text_align: Some(TextAlign::Center),
         move_x: Some(5.0),
         alpha: Some(0.5),
         ..Default::default()
@@ -148,11 +161,35 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
     );
 
     let updated = tree.get(&root_id).unwrap();
+    assert_eq!(
+        updated.attrs.border_radius,
+        Some(BorderRadius::Uniform(6.0))
+    );
+    assert_eq!(
+        updated.attrs.border_width,
+        Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        })
+    );
+    assert_eq!(updated.attrs.border_style, Some(BorderStyle::Dashed));
+    assert_eq!(updated.attrs.font, Some(Font::Atom("display".to_string())));
+    assert_eq!(
+        updated.attrs.font_weight,
+        Some(FontWeight("bold".to_string()))
+    );
+    assert_eq!(
+        updated.attrs.font_style,
+        Some(FontStyle("italic".to_string()))
+    );
     assert_eq!(updated.attrs.font_size, Some(22.0));
     assert_eq!(updated.attrs.font_underline, Some(true));
     assert_eq!(updated.attrs.font_strike, Some(true));
     assert_eq!(updated.attrs.font_letter_spacing, Some(3.0));
     assert_eq!(updated.attrs.font_word_spacing, Some(4.0));
+    assert_eq!(updated.attrs.text_align, Some(TextAlign::Center));
     assert_eq!(updated.attrs.move_x, Some(5.0));
     assert_eq!(updated.attrs.alpha, Some(0.5));
     assert_eq!(
@@ -175,6 +212,8 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     attrs.width = Some(Length::Px(100.0));
     attrs.height = Some(Length::Px(40.0));
     attrs.mouse_over = Some(MouseOverAttrs {
+        border_width: Some(BorderWidth::Uniform(1.0)),
+        border_style: Some(BorderStyle::Dashed),
         border_color: Some(crate::tree::attrs::Color::Rgb {
             r: 160,
             g: 90,
@@ -188,16 +227,23 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             color: crate::tree::attrs::Color::Named("black".to_string()),
             inset: false,
         }]),
+        font: Some(Font::Atom("hover".to_string())),
         font_size: Some(18.0),
+        text_align: Some(TextAlign::Left),
         move_x: Some(5.0),
         ..Default::default()
     });
     attrs.focused = Some(MouseOverAttrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_style: Some(BorderStyle::Solid),
         border_color: Some(crate::tree::attrs::Color::Rgb {
             r: 80,
             g: 160,
             b: 90,
         }),
+        font: Some(Font::Atom("focus".to_string())),
+        font_weight: Some(FontWeight("bold".to_string())),
+        font_style: Some(FontStyle("italic".to_string())),
         font_size: Some(24.0),
         font_color: Some(crate::tree::attrs::Color::Rgb {
             r: 220,
@@ -212,10 +258,13 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             color: crate::tree::attrs::Color::Named("cyan".to_string()),
             inset: false,
         }]),
+        text_align: Some(TextAlign::Center),
         alpha: Some(0.8),
         ..Default::default()
     });
     attrs.mouse_down = Some(MouseOverAttrs {
+        border_width: Some(BorderWidth::Uniform(3.0)),
+        border_style: Some(BorderStyle::Dotted),
         border_color: Some(crate::tree::attrs::Color::Rgb {
             r: 70,
             g: 90,
@@ -229,7 +278,9 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             color: crate::tree::attrs::Color::Named("white".to_string()),
             inset: true,
         }]),
+        font: Some(Font::String("pressed".to_string())),
         font_size: Some(30.0),
+        text_align: Some(TextAlign::Right),
         move_y: Some(-2.0),
         ..Default::default()
     });
@@ -267,6 +318,21 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
             b: 255
         })
     );
+    assert_eq!(updated.attrs.border_width, Some(BorderWidth::Uniform(3.0)));
+    assert_eq!(updated.attrs.border_style, Some(BorderStyle::Dotted));
+    assert_eq!(
+        updated.attrs.font,
+        Some(Font::String("pressed".to_string()))
+    );
+    assert_eq!(
+        updated.attrs.font_weight,
+        Some(FontWeight("bold".to_string()))
+    );
+    assert_eq!(
+        updated.attrs.font_style,
+        Some(FontStyle("italic".to_string()))
+    );
+    assert_eq!(updated.attrs.text_align, Some(TextAlign::Right));
     assert_eq!(updated.attrs.move_x, Some(5.0));
     assert_eq!(updated.attrs.move_y, Some(-2.0));
     assert_eq!(updated.attrs.alpha, Some(0.8));
@@ -364,9 +430,26 @@ fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
 fn test_scale_attrs_scales_mouse_over_numeric_fields() {
     let mut attrs = Attrs::default();
     attrs.mouse_over = Some(MouseOverAttrs {
+        border_radius: Some(BorderRadius::Corners {
+            tl: 1.0,
+            tr: 2.0,
+            br: 3.0,
+            bl: 4.0,
+        }),
+        border_width: Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        }),
+        border_style: Some(BorderStyle::Dashed),
+        font: Some(Font::Atom("display".to_string())),
+        font_weight: Some(FontWeight("bold".to_string())),
+        font_style: Some(FontStyle("italic".to_string())),
         font_size: Some(12.0),
         font_letter_spacing: Some(1.0),
         font_word_spacing: Some(2.0),
+        text_align: Some(TextAlign::Center),
         move_x: Some(-3.0),
         move_y: Some(4.0),
         box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
@@ -380,8 +463,15 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         ..Default::default()
     });
     attrs.focused = Some(MouseOverAttrs {
+        border_radius: Some(BorderRadius::Uniform(5.0)),
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_style: Some(BorderStyle::Dotted),
+        font: Some(Font::String("mono".to_string())),
+        font_weight: Some(FontWeight("bold".to_string())),
+        font_style: Some(FontStyle("italic".to_string())),
         font_size: Some(10.0),
         alpha: Some(0.5),
+        text_align: Some(TextAlign::Right),
         box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
             offset_x: 0.0,
             offset_y: 0.0,
@@ -393,8 +483,15 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         ..Default::default()
     });
     attrs.mouse_down = Some(MouseOverAttrs {
+        border_radius: Some(BorderRadius::Uniform(2.0)),
+        border_width: Some(BorderWidth::Uniform(1.5)),
+        border_style: Some(BorderStyle::Solid),
+        font: Some(Font::Atom("serif".to_string())),
+        font_weight: Some(FontWeight("bold".to_string())),
+        font_style: Some(FontStyle("italic".to_string())),
         move_x: Some(3.0),
         move_y: Some(-2.0),
+        text_align: Some(TextAlign::Left),
         box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
             offset_x: 0.5,
             offset_y: 1.5,
@@ -412,9 +509,32 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         .as_ref()
         .expect("scaled mouse_over attrs should exist");
 
+    assert_eq!(
+        hover.border_radius,
+        Some(BorderRadius::Corners {
+            tl: 2.0,
+            tr: 4.0,
+            br: 6.0,
+            bl: 8.0,
+        })
+    );
+    assert_eq!(
+        hover.border_width,
+        Some(BorderWidth::Sides {
+            top: 2.0,
+            right: 4.0,
+            bottom: 6.0,
+            left: 8.0,
+        })
+    );
+    assert_eq!(hover.border_style, Some(BorderStyle::Dashed));
+    assert_eq!(hover.font, Some(Font::Atom("display".to_string())));
+    assert_eq!(hover.font_weight, Some(FontWeight("bold".to_string())));
+    assert_eq!(hover.font_style, Some(FontStyle("italic".to_string())));
     assert_eq!(hover.font_size, Some(24.0));
     assert_eq!(hover.font_letter_spacing, Some(2.0));
     assert_eq!(hover.font_word_spacing, Some(4.0));
+    assert_eq!(hover.text_align, Some(TextAlign::Center));
     assert_eq!(hover.move_x, Some(-6.0));
     assert_eq!(hover.move_y, Some(8.0));
     let hover_shadow = hover
@@ -431,8 +551,15 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         .focused
         .as_ref()
         .expect("scaled focused attrs should exist");
+    assert_eq!(focused.border_radius, Some(BorderRadius::Uniform(10.0)));
+    assert_eq!(focused.border_width, Some(BorderWidth::Uniform(4.0)));
+    assert_eq!(focused.border_style, Some(BorderStyle::Dotted));
+    assert_eq!(focused.font, Some(Font::String("mono".to_string())));
+    assert_eq!(focused.font_weight, Some(FontWeight("bold".to_string())));
+    assert_eq!(focused.font_style, Some(FontStyle("italic".to_string())));
     assert_eq!(focused.font_size, Some(20.0));
     assert_eq!(focused.alpha, Some(0.5));
+    assert_eq!(focused.text_align, Some(TextAlign::Right));
     let focused_shadow = focused
         .box_shadows
         .as_ref()
@@ -445,8 +572,15 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
         .mouse_down
         .as_ref()
         .expect("scaled mouse_down attrs should exist");
+    assert_eq!(mouse_down.border_radius, Some(BorderRadius::Uniform(4.0)));
+    assert_eq!(mouse_down.border_width, Some(BorderWidth::Uniform(3.0)));
+    assert_eq!(mouse_down.border_style, Some(BorderStyle::Solid));
+    assert_eq!(mouse_down.font, Some(Font::Atom("serif".to_string())));
+    assert_eq!(mouse_down.font_weight, Some(FontWeight("bold".to_string())));
+    assert_eq!(mouse_down.font_style, Some(FontStyle("italic".to_string())));
     assert_eq!(mouse_down.move_x, Some(6.0));
     assert_eq!(mouse_down.move_y, Some(-4.0));
+    assert_eq!(mouse_down.text_align, Some(TextAlign::Left));
     let mouse_down_shadow = mouse_down
         .box_shadows
         .as_ref()
