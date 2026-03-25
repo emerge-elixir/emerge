@@ -12,6 +12,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod cursor_theme;
+
 use drm::ClientCapability;
 use drm::Device as BasicDevice;
 use drm::control::{
@@ -24,11 +26,13 @@ use gbm::{
 use glutin_egl_sys::egl;
 use glutin_egl_sys::egl::types::{EGLConfig, EGLContext, EGLDisplay, EGLSurface, EGLenum, EGLint};
 use libloading::Library;
-use skia_safe::{Color, Paint, PaintStyle, gpu::gl::FramebufferInfo};
+use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
+use crate::DrmCursorOverrideConfig;
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
+use crate::assets::AssetConfig;
 use crate::backend::wake::BackendWake;
 use crate::cursor::{CursorState, SharedCursorState};
 use crate::events::CursorIcon;
@@ -37,6 +41,8 @@ use crate::linux_wait::{EventFd, poll_fds};
 use crate::native_log::NativeLogRelay;
 use crate::renderer::{RenderState, Renderer};
 use crate::video::{VideoImportContext, VideoRegistry};
+
+use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
 
@@ -97,7 +103,7 @@ struct EglState {
 
 struct CursorPlane {
     commit: CursorPlaneCommit,
-    _bo: BufferObject<()>,
+    bo: BufferObject<()>,
 }
 
 struct PreparedPrimaryFrame {
@@ -118,6 +124,7 @@ struct CurrentPrimaryFrame {
 struct SubmittedCursorState {
     version: Option<u64>,
     visible: bool,
+    icon: CursorIcon,
 }
 
 struct InFlightCommit {
@@ -165,6 +172,12 @@ struct CursorPlaneCommit {
 impl CursorPlane {
     fn commit(&self) -> &CursorPlaneCommit {
         &self.commit
+    }
+
+    fn write_visual(&mut self, visual: &CursorVisual) -> Result<(), String> {
+        self.bo
+            .write(visual.plane_bgra())
+            .map_err(|err| format!("failed to write cursor bo: {err}"))
     }
 }
 
@@ -642,46 +655,12 @@ fn prop_handle(
         .ok_or_else(|| format!("missing property {name}"))
 }
 
-fn draw_cursor_bitmap(size: u32) -> Vec<u8> {
-    let mut data = vec![0u8; (size * size * 4) as usize];
-
-    for y in 0..size {
-        for x in 0..size {
-            let mut a = 0;
-            let mut r = 0;
-            let mut g = 0;
-            let mut b = 0;
-            let white = (x < 2 && y < 18) || (y < 2 && x < 18) || (x == y && x < 18);
-            let outline = (x == 2 && y < 18) || (y == 2 && x < 18) || ((x == y) && x < 18 && x > 0);
-            if white {
-                a = 255;
-                r = 255;
-                g = 255;
-                b = 255;
-            }
-            if outline {
-                a = 255;
-                r = 0;
-                g = 0;
-                b = 0;
-            }
-
-            let idx = ((y * size + x) * 4) as usize;
-            data[idx] = b;
-            data[idx + 1] = g;
-            data[idx + 2] = r;
-            data[idx + 3] = a;
-        }
-    }
-
-    data
-}
-
 fn create_cursor_plane<T: AsFd>(
     card: &Card,
     gbm_device: &GbmDevice<T>,
     resources: &ResourceHandles,
     crtc_handle: crtc::Handle,
+    theme: &DrmCursorTheme,
 ) -> Result<Option<CursorPlane>, String> {
     let Some(handle) = find_cursor_plane(card, resources, crtc_handle)? else {
         return Ok(None);
@@ -692,7 +671,7 @@ fn create_cursor_plane<T: AsFd>(
         .map_err(|e| format!("failed to read cursor plane properties: {e}"))?;
     let props = Arc::new(props);
 
-    let size = (64, 64);
+    let size = CURSOR_PLANE_SIZE;
     let mut bo = gbm_device
         .create_buffer_object(
             size.0,
@@ -702,8 +681,7 @@ fn create_cursor_plane<T: AsFd>(
         )
         .map_err(|e| format!("failed to create cursor bo: {e}"))?;
 
-    let data = draw_cursor_bitmap(size.0);
-    bo.write(&data)
+    bo.write(theme.cursor(CursorIcon::Default).plane_bgra())
         .map_err(|e| format!("failed to write cursor bo: {e}"))?;
 
     let fb = card
@@ -717,13 +695,14 @@ fn create_cursor_plane<T: AsFd>(
             fb,
             size,
         },
-        _bo: bo,
+        bo,
     }))
 }
 
 fn cursor_plane_position(
     cursor: CursorState,
     plane_size: (u32, u32),
+    hotspot: (f32, f32),
     screen_size: (u32, u32),
 ) -> Option<(i64, i64)> {
     if !cursor.visible {
@@ -735,8 +714,10 @@ fn cursor_plane_position(
     let min_y = -(plane_size.1 as i64) + 1;
     let max_x = screen_w.saturating_sub(1) as i64;
     let max_y = screen_h.saturating_sub(1) as i64;
-    let x = (cursor.pos.0.round() as i64).clamp(min_x, max_x);
-    let y = (cursor.pos.1.round() as i64).clamp(min_y, max_y);
+    let x = (cursor.pos.0 - hotspot.0).round() as i64;
+    let y = (cursor.pos.1 - hotspot.1).round() as i64;
+    let x = x.clamp(min_x, max_x);
+    let y = y.clamp(min_y, max_y);
     Some((x, y))
 }
 
@@ -745,9 +726,10 @@ fn add_cursor_plane_properties(
     crtc_handle: crtc::Handle,
     plane: &CursorPlaneCommit,
     cursor: CursorState,
+    visual: &CursorVisual,
     screen_size: (u32, u32),
 ) -> Result<(), String> {
-    if let Some((x, y)) = cursor_plane_position(cursor, plane.size, screen_size) {
+    if let Some((x, y)) = cursor_plane_position(cursor, plane.size, visual.hotspot(), screen_size) {
         req.add_property(
             plane.handle,
             prop_handle(&plane.props, "FB_ID")?,
@@ -912,10 +894,26 @@ mod tests {
                 visible: true,
             },
             (64, 64),
+            (7.0, 2.0),
             (128, 128),
         );
 
-        assert_eq!(position, Some((-20, 127)));
+        assert_eq!(position, Some((-27, 127)));
+    }
+
+    #[test]
+    fn cursor_plane_position_accounts_for_hotspot_offset() {
+        let position = cursor_plane_position(
+            CursorState {
+                pos: (40.0, 24.0),
+                visible: true,
+            },
+            (64, 64),
+            (7.0, 2.0),
+            (128, 128),
+        );
+
+        assert_eq!(position, Some((33, 22)));
     }
 
     #[test]
@@ -926,6 +924,7 @@ mod tests {
                 visible: false,
             },
             (64, 64),
+            (11.5, 11.5),
             (128, 128),
         );
 
@@ -1184,7 +1183,8 @@ fn prepare_primary_frame(
     cursor_pos: (f32, f32),
     cursor_visible: bool,
     hw_cursor_enabled: bool,
-    dimensions: (u32, u32),
+    cursor_icon: CursorIcon,
+    cursor_theme: &DrmCursorTheme,
     video_registry: &Arc<VideoRegistry>,
     video_import: Option<&VideoImportContext>,
     egl_state: &EglState,
@@ -1199,7 +1199,7 @@ fn prepare_primary_frame(
     }
     renderer.render(render_state);
     if !hw_cursor_enabled && cursor_visible {
-        draw_software_cursor(renderer, cursor_pos, dimensions);
+        draw_software_cursor(renderer, cursor_theme.cursor(cursor_icon), cursor_pos);
     }
 
     if unsafe {
@@ -1224,23 +1224,17 @@ fn prepare_primary_frame(
     })
 }
 
-fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_size: (u32, u32)) {
-    let (width, height) = screen_size;
-    let x = cursor_pos.0.clamp(0.0, width.saturating_sub(1) as f32);
-    let y = cursor_pos.1.clamp(0.0, height.saturating_sub(1) as f32);
-
+fn draw_software_cursor(renderer: &mut Renderer, visual: &CursorVisual, cursor_pos: (f32, f32)) {
+    let (cursor_width, cursor_height) = visual.size();
+    let hotspot = visual.hotspot();
+    let x = cursor_pos.0 - hotspot.0;
+    let y = cursor_pos.1 - hotspot.1;
     let canvas = renderer.surface_mut().canvas();
-    let mut fill = Paint::default();
-    fill.set_anti_alias(true);
-    fill.set_color(Color::from_argb(240, 255, 255, 255));
-    canvas.draw_circle((x, y), 4.0, &fill);
-
-    let mut stroke = Paint::default();
-    stroke.set_anti_alias(true);
-    stroke.set_style(PaintStyle::Stroke);
-    stroke.set_stroke_width(1.0);
-    stroke.set_color(Color::from_argb(200, 0, 0, 0));
-    canvas.draw_circle((x, y), 4.0, &stroke);
+    let sampling =
+        skia_safe::SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None);
+    let paint = Paint::default();
+    let dst = Rect::from_xywh(x, y, cursor_width as f32, cursor_height as f32);
+    canvas.draw_image_rect_with_sampling_options(visual.image(), None, dst, sampling, &paint);
 
     renderer.flush();
 }
@@ -1249,7 +1243,9 @@ fn draw_software_cursor(renderer: &mut Renderer, cursor_pos: (f32, f32), screen_
 pub struct DrmRunConfig {
     pub requested_size: Option<(u32, u32)>,
     pub card_path: Option<String>,
+    pub asset_config: AssetConfig,
     pub startup_retries: u32,
+    pub cursor_overrides: Vec<DrmCursorOverrideConfig>,
     pub retry_interval_ms: u32,
     pub hw_cursor: bool,
     pub render_log: bool,
@@ -1298,6 +1294,16 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
     let hotplug_interval = Duration::from_millis(750);
     let mut logged_cursor_info = false;
     let mut logged_mode_info = false;
+    let cursor_theme = match DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides) {
+        Ok(theme) => theme,
+        Err(err) => {
+            if let Some(startup_tx) = startup_tx.take() {
+                let _ = startup_tx.send(Err(format!("DRM cursor setup failed: {err}")));
+            }
+            running_flag.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -1554,7 +1560,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
 
         let mut cursor_plane = if config.hw_cursor {
-            match create_cursor_plane(&card, &gbm_device, &resources, crtc_handle) {
+            match create_cursor_plane(&card, &gbm_device, &resources, crtc_handle, &cursor_theme) {
                 Ok(plane) => plane,
                 Err(e) => {
                     native_log.warning("drm", format!("DRM cursor setup failed: {e}"));
@@ -1866,12 +1872,14 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut cursor_snapshot = cursor_state.snapshot();
         let mut cursor_pos = cursor_snapshot.state.pos;
         let mut cursor_visible = cursor_snapshot.state.visible;
-        let mut _current_cursor_icon = CursorIcon::Default;
+        let mut current_cursor_icon = CursorIcon::Default;
         let mut last_cursor_pos = cursor_pos;
         let mut last_cursor_visible = cursor_visible;
+        let mut last_cursor_icon = current_cursor_icon;
         let mut hw_cursor_enabled = cursor_plane.is_some();
         let mut committed_cursor_version: Option<u64> = None;
         let mut committed_cursor_visible = false;
+        let mut committed_cursor_icon: Option<CursorIcon> = None;
         let mut present_state = DrmPresentState::new(frame_interval);
         let mut follow_up_primary_until: Option<Instant> = None;
         let mut retry_commit_at: Option<Instant> = None;
@@ -1943,6 +1951,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                     if let Some(cursor) = submitted.cursor {
                                         committed_cursor_version = cursor.version;
                                         committed_cursor_visible = cursor.visible;
+                                        committed_cursor_icon = Some(cursor.icon);
                                     }
                                 }
                             }
@@ -2028,7 +2037,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
 
             while let Ok(icon) = cursor_icon_rx.try_recv() {
-                _current_cursor_icon = icon;
+                current_cursor_icon = icon;
             }
 
             cursor_snapshot = cursor_state.snapshot();
@@ -2042,6 +2051,9 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 if cursor_visible != last_cursor_visible {
                     desired_primary_generation = desired_primary_generation.wrapping_add(1);
                 }
+                if cursor_visible && current_cursor_icon != last_cursor_icon {
+                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                }
             }
 
             let video_generation = video_registry.generation();
@@ -2052,6 +2064,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
             last_cursor_pos = cursor_pos;
             last_cursor_visible = cursor_visible;
+            last_cursor_icon = current_cursor_icon;
 
             let primary_dirty = desired_primary_generation != committed_primary_generation;
             if in_flight.is_none()
@@ -2066,7 +2079,8 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     cursor_pos,
                     cursor_visible,
                     hw_cursor_enabled,
-                    dimensions,
+                    current_cursor_icon,
+                    &cursor_theme,
                     &video_registry,
                     video_import.as_ref(),
                     &egl_state,
@@ -2093,7 +2107,8 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             let submit_cursor = cursor_plane.is_some()
                 && in_flight.is_none()
                 && ((hw_cursor_enabled
-                    && committed_cursor_version != Some(cursor_snapshot.version))
+                    && (committed_cursor_version != Some(cursor_snapshot.version)
+                        || committed_cursor_icon != Some(current_cursor_icon)))
                     || (!hw_cursor_enabled && committed_cursor_visible));
             let now = Instant::now();
             let defer_cursor_only = should_defer_cursor_only_commit(
@@ -2124,6 +2139,24 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     break;
                 }
 
+                let cursor_visual = cursor_theme.cursor(current_cursor_icon);
+
+                if submit_cursor && hw_cursor_enabled {
+                    if let Some(cursor_plane) = cursor_plane.as_mut()
+                        && let Err(err) = cursor_plane.write_visual(cursor_visual)
+                    {
+                        native_log.error(
+                            "drm",
+                            format!("DRM cursor setup failed during cursor upload: {err}"),
+                        );
+                        hw_cursor_enabled = false;
+                        committed_cursor_visible = false;
+                        committed_cursor_icon = None;
+                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                        continue;
+                    }
+                }
+
                 if submit_cursor && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)
                 {
                     let cursor_for_commit = if hw_cursor_enabled {
@@ -2140,6 +2173,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         crtc_handle,
                         plane,
                         cursor_for_commit,
+                        cursor_visual,
                         dimensions,
                     ) {
                         if hw_cursor_enabled {
@@ -2149,6 +2183,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                             );
                             hw_cursor_enabled = false;
                             committed_cursor_visible = false;
+                            committed_cursor_icon = None;
                             desired_primary_generation = desired_primary_generation.wrapping_add(1);
                             continue;
                         }
@@ -2177,6 +2212,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         None
                                     },
                                     visible: hw_cursor_enabled && cursor_snapshot.state.visible,
+                                    icon: current_cursor_icon,
                                 })
                             } else {
                                 None
@@ -2214,6 +2250,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         pos: cursor_pos,
                                         visible: false,
                                     },
+                                    cursor_theme.cursor(current_cursor_icon),
                                     dimensions,
                                 );
                                 let _ = add_plane_properties(
@@ -2228,6 +2265,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                             hw_cursor_enabled = false;
                             committed_cursor_visible = false;
+                            committed_cursor_icon = None;
                             desired_primary_generation = desired_primary_generation.wrapping_add(1);
                             continue;
                         }

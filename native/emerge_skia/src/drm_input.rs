@@ -303,6 +303,7 @@ impl DrmInput {
         }
 
         if let Some(button) = evdev_key_to_button(key) {
+            self.set_cursor_visible(true);
             let (x, y) = self.cursor_pos;
             let action = if pressed {
                 ACTION_PRESS
@@ -357,6 +358,7 @@ impl DrmInput {
                 y += value as f32;
             }
             RelativeAxisType::REL_WHEEL => {
+                self.set_cursor_visible(true);
                 let (cx, cy) = self.cursor_pos;
                 self.flush_pending_cursor_pos_blocking();
                 self.push_input_blocking(InputEvent::CursorScrollLines {
@@ -368,6 +370,7 @@ impl DrmInput {
                 return;
             }
             RelativeAxisType::REL_HWHEEL => {
+                self.set_cursor_visible(true);
                 let (cx, cy) = self.cursor_pos;
                 self.flush_pending_cursor_pos_blocking();
                 self.push_input_blocking(InputEvent::CursorScrollLines {
@@ -880,7 +883,7 @@ mod tests {
         let (event_tx, event_rx) = bounded(event_capacity);
         let cursor_state = Arc::new(SharedCursorState::new(CursorState {
             pos: (0.0, 0.0),
-            visible: true,
+            visible: false,
         }));
 
         let input = DrmInput {
@@ -925,6 +928,15 @@ mod tests {
     }
 
     #[test]
+    fn cursor_starts_hidden_until_pointer_activity() {
+        let (_, _, cursor_state) = test_input(8);
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(!snapshot.state.visible);
+    }
+
+    #[test]
     fn cursor_motion_flushes_before_button_event() {
         let (mut input, event_rx, _) = test_input(8);
 
@@ -943,6 +955,25 @@ mod tests {
                     && action == ACTION_PRESS
                     && (x - 14.0).abs() < f32::EPSILON
                     && (y - 18.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn button_press_makes_hidden_cursor_visible() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_key_event(Key::BTN_LEFT, 1);
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(snapshot.state.visible);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_PRESS
+                    && x.abs() < f32::EPSILON
+                    && y.abs() < f32::EPSILON
         ));
     }
 
@@ -966,6 +997,37 @@ mod tests {
                     && (x - 30.0).abs() < f32::EPSILON
                     && (y - 40.0).abs() < f32::EPSILON
         ));
+    }
+
+    #[test]
+    fn wheel_scroll_makes_hidden_cursor_visible() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_rel_event(RelativeAxisType::REL_WHEEL, 2, (640, 480));
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(snapshot.state.visible);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
+                if dx.abs() < f32::EPSILON
+                    && (dy - 2.0).abs() < f32::EPSILON
+                    && x.abs() < f32::EPSILON
+                    && y.abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn direct_touch_position_hides_cursor() {
+        let (mut input, _, cursor_state) = test_input(8);
+
+        input.handle_abs_position(12.0, 18.0, true);
+        input.handle_abs_position(24.0, 36.0, false);
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (24.0, 36.0));
+        assert!(!snapshot.state.visible);
     }
 
     #[test]

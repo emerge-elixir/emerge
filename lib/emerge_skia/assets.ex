@@ -1,9 +1,12 @@
 defmodule EmergeSkia.Assets do
   @moduledoc false
 
+  alias Emerge.Assets.Ref
   alias EmergeSkia.Native
   alias EmergeSkia.Options
 
+  @supported_drm_cursor_icons [:default, :text, :pointer]
+  @supported_drm_cursor_extensions [".png", ".svg"]
   @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
   @default_runtime_max_file_size 25_000_000
   @default_font_extensions [".ttf", ".otf", ".ttc"]
@@ -24,6 +27,13 @@ defmodule EmergeSkia.Assets do
           source: String.t(),
           weight: 100..900,
           italic: boolean()
+        }
+
+  @type drm_cursor_override :: %{
+          icon: String.t(),
+          source: String.t(),
+          hotspot_x: float(),
+          hotspot_y: float()
         }
 
   @doc false
@@ -91,6 +101,27 @@ defmodule EmergeSkia.Assets do
   def initialize_renderer_assets(renderer, asset_config) do
     :ok = configure_assets_for_renderer(renderer, asset_config)
     preload_font_assets(asset_config)
+  end
+
+  @doc false
+  @spec native_start_asset_config(config()) :: map()
+  def native_start_asset_config(asset_config) do
+    %{
+      asset_sources: [asset_config.priv_dir],
+      asset_runtime_enabled: asset_config.runtime_enabled,
+      asset_allowlist: asset_config.runtime_allowlist,
+      asset_follow_symlinks: asset_config.runtime_follow_symlinks,
+      asset_max_file_size: asset_config.runtime_max_file_size,
+      asset_extensions: asset_config.runtime_extensions
+    }
+  end
+
+  @doc false
+  @spec normalize_drm_cursor_overrides!(keyword()) :: [drm_cursor_override()]
+  def normalize_drm_cursor_overrides!(opts) do
+    opts
+    |> Keyword.get(:drm_cursor, [])
+    |> normalize_drm_cursor_entries!()
   end
 
   @doc false
@@ -243,6 +274,139 @@ defmodule EmergeSkia.Assets do
     end
 
     normalized
+  end
+
+  defp normalize_drm_cursor_entries!([]), do: []
+
+  defp normalize_drm_cursor_entries!(entries) do
+    entries
+    |> Options.normalize_keyword_or_map!("drm_cursor")
+    |> Enum.map(fn {icon, entry} ->
+      icon = normalize_drm_cursor_icon!(icon)
+      entry = Options.normalize_keyword_or_map!(entry, "drm_cursor.#{icon}")
+
+      validate_allowed_keys!(entry, ["source", "hotspot"], "drm_cursor.#{icon}")
+
+      source =
+        entry
+        |> fetch_option!(:source, "drm_cursor.#{icon}.source")
+        |> normalize_drm_cursor_source!("drm_cursor.#{icon}.source")
+
+      {hotspot_x, hotspot_y} =
+        entry
+        |> fetch_option!(:hotspot, "drm_cursor.#{icon}.hotspot")
+        |> normalize_drm_cursor_hotspot!("drm_cursor.#{icon}.hotspot")
+
+      %{
+        icon: icon,
+        source: source,
+        hotspot_x: hotspot_x,
+        hotspot_y: hotspot_y
+      }
+    end)
+  end
+
+  defp normalize_drm_cursor_icon!(icon) when icon in @supported_drm_cursor_icons,
+    do: Atom.to_string(icon)
+
+  defp normalize_drm_cursor_icon!(icon) when is_binary(icon) do
+    normalized = icon |> String.trim() |> String.downcase()
+
+    if normalized in Enum.map(@supported_drm_cursor_icons, &Atom.to_string/1) do
+      normalized
+    else
+      raise ArgumentError,
+            "drm_cursor keys must be one of #{inspect(@supported_drm_cursor_icons)}, got: #{inspect(icon)}"
+    end
+  end
+
+  defp normalize_drm_cursor_icon!(icon) do
+    raise ArgumentError,
+          "drm_cursor keys must be one of #{inspect(@supported_drm_cursor_icons)}, got: #{inspect(icon)}"
+  end
+
+  defp normalize_drm_cursor_source!(%Ref{path: path}, field_name) when is_binary(path) do
+    path
+    |> normalize_logical_source!()
+    |> validate_drm_cursor_extension!(field_name)
+  end
+
+  defp normalize_drm_cursor_source!(path, field_name) when is_binary(path) do
+    normalized = Options.normalize_non_empty_string!(path, field_name)
+
+    case Path.type(normalized) do
+      :absolute ->
+        normalized
+        |> Path.expand()
+        |> validate_drm_cursor_extension!(field_name)
+
+      _ ->
+        normalized
+        |> normalize_logical_source!()
+        |> validate_drm_cursor_extension!(field_name)
+    end
+  end
+
+  defp normalize_drm_cursor_source!(other, field_name) do
+    raise ArgumentError,
+          "#{field_name} must be a logical string path, absolute runtime path, or %Emerge.Assets.Ref{}, got: #{inspect(other)}"
+  end
+
+  defp normalize_drm_cursor_hotspot!({x, y}, field_name) do
+    {normalize_non_negative_number!(x, field_name), normalize_non_negative_number!(y, field_name)}
+  end
+
+  defp normalize_drm_cursor_hotspot!(value, field_name) do
+    raise ArgumentError,
+          "#{field_name} must be a {x, y} tuple of non-negative numbers, got: #{inspect(value)}"
+  end
+
+  defp normalize_non_negative_number!(value, _field_name) when is_integer(value) and value >= 0,
+    do: value / 1.0
+
+  defp normalize_non_negative_number!(value, _field_name)
+       when is_float(value) and value >= 0.0,
+       do: value
+
+  defp normalize_non_negative_number!(value, field_name) do
+    raise ArgumentError,
+          "#{field_name} must contain non-negative finite numbers, got: #{inspect(value)}"
+  end
+
+  defp validate_drm_cursor_extension!(path, field_name) do
+    extension = Path.extname(path) |> String.downcase()
+
+    if extension in @supported_drm_cursor_extensions do
+      path
+    else
+      raise ArgumentError,
+            "#{field_name} extension must be one of #{inspect(@supported_drm_cursor_extensions)}, got: #{inspect(path)}"
+    end
+  end
+
+  defp validate_allowed_keys!(opts, allowed_keys, field_name) do
+    invalid_keys =
+      opts
+      |> Enum.map(fn {key, _value} -> key end)
+      |> Enum.reject(&(to_string(&1) in allowed_keys))
+
+    if invalid_keys != [] do
+      raise ArgumentError,
+            "#{field_name} supports only #{inspect(allowed_keys)} keys, got: #{inspect(invalid_keys)}"
+    end
+  end
+
+  defp fetch_option!(opts, key, field_name) do
+    string_key = Atom.to_string(key)
+
+    case Enum.find_value(opts, fn
+           {^key, value} -> {:ok, value}
+           {^string_key, value} -> {:ok, value}
+           _ -> nil
+         end) do
+      {:ok, value} -> value
+      nil -> raise ArgumentError, "missing required #{field_name} option"
+    end
   end
 
   defp normalize_path_list!(list, field_name) do
