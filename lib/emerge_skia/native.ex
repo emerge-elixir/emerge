@@ -4,8 +4,7 @@ defmodule EmergeSkia.Native do
   """
 
   @version Mix.Project.config()[:version]
-  @source_url Mix.Project.config()[:source_url]
-  @base_url "#{@source_url}/releases/download/v#{@version}"
+  @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
   @rustler_opts Mix.Project.config()[:rustler_opts] || []
   @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
   @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
