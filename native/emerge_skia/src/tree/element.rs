@@ -17,6 +17,13 @@ impl ElementId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextInputContentOrigin {
+    Event,
+    #[default]
+    TreePatch,
+}
+
 /// The type/kind of an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementKind {
@@ -278,6 +285,9 @@ pub struct Element {
     /// Scaled attributes (populated by layout pass, used by render).
     pub attrs: Attrs,
 
+    /// Runtime-only origin label for current text-input content.
+    pub text_input_content_origin: TextInputContentOrigin,
+
     /// Child element IDs (order matters).
     pub children: Vec<ElementId>,
 
@@ -316,6 +326,7 @@ impl Element {
             attrs_raw,
             base_attrs: attrs.clone(),
             attrs,
+            text_input_content_origin: TextInputContentOrigin::TreePatch,
             children: Vec::new(),
             nearby: NearbyMounts::default(),
             frame: None,
@@ -743,6 +754,11 @@ impl ElementTree {
 
         element.base_attrs.content = Some(content.clone());
         element.attrs.content = Some(content.clone());
+
+        if element.text_input_content_origin != TextInputContentOrigin::Event {
+            element.text_input_content_origin = TextInputContentOrigin::Event;
+            changed = true;
+        }
 
         let len = text_char_len(&content);
         if let Some(cursor) = element.attrs.text_input_cursor {
@@ -1264,12 +1280,35 @@ mod tests {
         let node = tree.get(&id).unwrap();
         assert_eq!(node.base_attrs.content.as_deref(), Some("hey"));
         assert_eq!(node.attrs.content.as_deref(), Some("hey"));
+        assert_eq!(
+            node.text_input_content_origin,
+            TextInputContentOrigin::Event
+        );
         assert_eq!(node.attrs.text_input_cursor, Some(3));
         assert_eq!(node.attrs.text_input_selection_anchor, None);
         assert_eq!(node.attrs.text_input_preedit, None);
         assert_eq!(node.attrs.text_input_preedit_cursor, None);
 
         assert!(!tree.set_text_input_content(&id, "hey".to_string()));
+    }
+
+    #[test]
+    fn test_set_text_input_content_marks_event_origin_without_content_change() {
+        let id = ElementId::from_term_bytes(vec![14]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("same".to_string());
+        let element = Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        assert!(tree.set_text_input_content(&id, "same".to_string()));
+        assert_eq!(
+            tree.get(&id).unwrap().text_input_content_origin,
+            TextInputContentOrigin::Event
+        );
+        assert!(!tree.set_text_input_content(&id, "same".to_string()));
     }
 
     #[test]
