@@ -38,7 +38,7 @@ use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
-use crate::tree::element::{Element, ElementId};
+use crate::tree::element::{Element, ElementId, TextInputContentOrigin};
 use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
@@ -98,6 +98,7 @@ pub enum CursorIcon {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextInputState {
     pub content: String,
+    pub content_origin: TextInputContentOrigin,
     pub content_len: u32,
     pub cursor: u32,
     pub selection_anchor: Option<u32>,
@@ -514,6 +515,7 @@ fn text_input_state(
 
     TextInputState {
         content,
+        content_origin: element.text_input_content_origin,
         content_len,
         cursor,
         selection_anchor,
@@ -780,6 +782,14 @@ mod tests {
                 .text_inputs
                 .get(&ElementId::from_term_bytes(vec![2]))
                 .expect("text input present")
+                .content_origin,
+            TextInputContentOrigin::TreePatch
+        );
+        assert_eq!(
+            rebuild
+                .text_inputs
+                .get(&ElementId::from_term_bytes(vec![2]))
+                .expect("text input present")
                 .cursor,
             2
         );
@@ -795,6 +805,7 @@ mod tests {
     fn text_input_cursor_from_click_point_uses_screen_to_local_transform() {
         let state = TextInputState {
             content: "ab".to_string(),
+            content_origin: TextInputContentOrigin::TreePatch,
             content_len: 2,
             cursor: 0,
             selection_anchor: None,

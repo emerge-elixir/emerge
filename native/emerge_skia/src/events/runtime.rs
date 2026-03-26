@@ -17,7 +17,11 @@
 //! - `overlay_registry` for transient runtime follow-up listeners
 //! - `LayeredRegistryView` to read both in one precedence order without
 //!   materializing a merged registry
-use std::{collections::HashMap, thread};
+use std::{
+    collections::{HashMap, VecDeque},
+    thread,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use rustler::LocalPid;
@@ -27,7 +31,10 @@ use crate::{
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{InputEvent, InputHandler},
-    tree::{element::ElementId, scrollbar::ScrollbarAxis},
+    tree::{
+        element::{ElementId, TextInputContentOrigin},
+        scrollbar::ScrollbarAxis,
+    },
 };
 
 use super::{
@@ -41,6 +48,14 @@ use super::{
     scrollbar::ScrollbarNode,
     send_element_event, send_element_event_with_string_payload, send_input_event,
 };
+
+const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingTextPatch {
+    content: String,
+    expires_at: Instant,
+}
 
 /// Deferred effects collected from one listener dispatch.
 ///
@@ -239,6 +254,7 @@ struct DirectEventRuntime {
     listener_lane: ListenerLaneState,
     focused_id: Option<ElementId>,
     text_states: HashMap<ElementId, TextInputState>,
+    pending_text_patches: HashMap<ElementId, VecDeque<PendingTextPatch>>,
     scrollbar_nodes: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
@@ -273,6 +289,7 @@ impl DirectEventRuntime {
             listener_lane: ListenerLaneState::initially_stale(),
             focused_id: None,
             text_states: HashMap::new(),
+            pending_text_patches: HashMap::new(),
             scrollbar_nodes: HashMap::new(),
             input_handler: InputHandler::new(),
             input_target: None,
@@ -348,6 +365,7 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
+        self.prune_expired_pending_text_patches();
         self.base_registry = rebuild.base_registry;
         self.scrollbar_nodes = rebuild.scrollbars;
 
@@ -358,6 +376,7 @@ impl DirectEventRuntime {
         if reconcile_text_input_states(
             &rebuild.text_inputs,
             &mut self.text_states,
+            &mut self.pending_text_patches,
             &self.focused_id,
             tree_tx,
             log_render,
@@ -630,11 +649,42 @@ impl DirectEventRuntime {
             RuntimeChange::SetTextInputState { element_id, state } => {
                 self.apply_text_input_state(&element_id, state);
             }
+            RuntimeChange::ExpectTextInputPatchValue {
+                element_id,
+                content,
+            } => {
+                self.enqueue_pending_text_patch(element_id, content);
+            }
         }
     }
 
     fn apply_text_input_state(&mut self, element_id: &ElementId, state: TextInputState) {
         self.text_states.insert(element_id.clone(), state);
+    }
+
+    fn enqueue_pending_text_patch(&mut self, element_id: ElementId, content: String) {
+        let now = Instant::now();
+        let queue = self.pending_text_patches.entry(element_id).or_default();
+        prune_expired_pending_text_patch_queue(queue, now);
+
+        if let Some(existing) = queue.back_mut()
+            && existing.content == content
+        {
+            existing.expires_at = now + PENDING_TEXT_PATCH_TTL;
+        } else {
+            queue.push_back(PendingTextPatch {
+                content,
+                expires_at: now + PENDING_TEXT_PATCH_TTL,
+            });
+        }
+    }
+
+    fn prune_expired_pending_text_patches(&mut self) {
+        let now = Instant::now();
+        self.pending_text_patches.retain(|_, queue| {
+            prune_expired_pending_text_patch_queue(queue, now);
+            !queue.is_empty()
+        });
     }
 
     fn reconcile_runtime_overlay(&mut self, text_inputs: &HashMap<ElementId, TextInputState>) {
@@ -648,9 +698,9 @@ impl DirectEventRuntime {
             self.runtime_overlay.click_press = None;
         }
 
-        self.runtime_overlay
-            .key_presses
-            .retain(|tracker| registry_builder::base_has_key_press_source(&self.base_registry, tracker));
+        self.runtime_overlay.key_presses.retain(|tracker| {
+            registry_builder::base_has_key_press_source(&self.base_registry, tracker)
+        });
 
         match self.runtime_overlay.drag {
             registry_builder::DragTrackerState::Inactive => {}
@@ -807,9 +857,47 @@ fn send_content_update(
     true
 }
 
+fn prune_expired_pending_text_patch_queue(queue: &mut VecDeque<PendingTextPatch>, now: Instant) {
+    while queue
+        .front()
+        .is_some_and(|pending| pending.expires_at <= now)
+    {
+        queue.pop_front();
+    }
+}
+
+fn consume_pending_text_patch_match(
+    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
+    element_id: &ElementId,
+    content: &str,
+) -> bool {
+    let matched = pending_text_patches
+        .get_mut(element_id)
+        .and_then(|queue| {
+            let match_index = queue
+                .iter()
+                .position(|pending| pending.content == content)?;
+            (0..=match_index).for_each(|_| {
+                queue.pop_front();
+            });
+            Some(())
+        })
+        .is_some();
+
+    if pending_text_patches
+        .get(element_id)
+        .is_some_and(|queue| queue.is_empty())
+    {
+        pending_text_patches.remove(element_id);
+    }
+
+    matched
+}
+
 fn reconcile_text_input_states(
     text_inputs: &HashMap<ElementId, TextInputState>,
     states: &mut HashMap<ElementId, TextInputState>,
+    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
     focused: &Option<ElementId>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
@@ -826,25 +914,79 @@ fn reconcile_text_input_states(
         element_id: &ElementId,
         rebuild_state: &TextInputState,
         state: &mut TextInputState,
+        pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
-        let mut changed_tree = false;
+        fn preserve_runtime_focused_text_input(
+            element_id: &ElementId,
+            rebuild_state: &TextInputState,
+            state: &mut TextInputState,
+            tree_tx: &Sender<TreeMsg>,
+            log_render: bool,
+        ) -> bool {
+            let mut changed_tree = false;
 
-        state.copy_rebuild_metadata_from(rebuild_state);
-        if state.content != rebuild_state.content {
-            changed_tree |=
-                send_content_update(tree_tx, log_render, element_id, state.content.clone());
+            state.copy_rebuild_metadata_from(rebuild_state);
+            if rebuild_state.content_origin == TextInputContentOrigin::Event
+                && state.content != rebuild_state.content
+            {
+                changed_tree |=
+                    send_content_update(tree_tx, log_render, element_id, state.content.clone());
+            }
+
+            state.focused = true;
+            state.normalize_runtime();
+
+            if text_input_runtime_mismatch(rebuild_state, state) {
+                changed_tree |= send_runtime_update(tree_tx, log_render, element_id, state);
+            }
+
+            changed_tree
         }
 
-        state.focused = true;
-        state.normalize_runtime();
+        fn accept_tree_patch_focused_text_input(
+            element_id: &ElementId,
+            rebuild_state: &TextInputState,
+            state: &mut TextInputState,
+            tree_tx: &Sender<TreeMsg>,
+            log_render: bool,
+        ) -> bool {
+            *state = rebuild_state.clone();
+            state.focused = true;
+            state.normalize_runtime();
 
-        if text_input_runtime_mismatch(rebuild_state, state) {
-            changed_tree |= send_runtime_update(tree_tx, log_render, element_id, state);
+            text_input_runtime_mismatch(rebuild_state, state)
+                && send_runtime_update(tree_tx, log_render, element_id, state)
         }
 
-        changed_tree
+        let preserve_runtime = match rebuild_state.content_origin {
+            TextInputContentOrigin::Event => true,
+            TextInputContentOrigin::TreePatch => consume_pending_text_patch_match(
+                pending_text_patches,
+                element_id,
+                &rebuild_state.content,
+            ),
+        };
+
+        if preserve_runtime {
+            preserve_runtime_focused_text_input(
+                element_id,
+                rebuild_state,
+                state,
+                tree_tx,
+                log_render,
+            )
+        } else {
+            pending_text_patches.remove(element_id);
+            accept_tree_patch_focused_text_input(
+                element_id,
+                rebuild_state,
+                state,
+                tree_tx,
+                log_render,
+            )
+        }
     }
 
     fn reset_unfocused_text_input_from_rebuild(
@@ -876,14 +1018,25 @@ fn reconcile_text_input_states(
             .or_insert_with(|| rebuild_state.clone());
 
         if should_focus {
-            changed_tree |=
-                reconcile_focused_text_input(&id, rebuild_state, state, tree_tx, log_render);
+            changed_tree |= reconcile_focused_text_input(
+                &id,
+                rebuild_state,
+                state,
+                pending_text_patches,
+                tree_tx,
+                log_render,
+            );
         } else {
             reset_unfocused_text_input_from_rebuild(state, rebuild_state);
         }
     }
 
     states.retain(|id, _| text_inputs.contains_key(id));
+    pending_text_patches.retain(|id, queue| {
+        text_inputs.contains_key(id)
+            && focused.as_ref().is_some_and(|focused_id| focused_id == id)
+            && !queue.is_empty()
+    });
     changed_tree
 }
 
@@ -1154,7 +1307,7 @@ fn coalesce_registry_updates(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
 
     use super::*;
     use crate::events::registry_builder::{self, FocusRevealScroll};
@@ -1167,7 +1320,9 @@ mod tests {
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
     use crate::tree::element::ElementId;
-    use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot};
+    use crate::tree::element::{
+        Element, ElementKind, ElementTree, Frame, NearbySlot, TextInputContentOrigin,
+    };
     use crate::tree::layout::{Constraint, layout_and_refresh_default_with_animation};
     use crate::tree::render::render_tree;
     use crossbeam_channel::{bounded, unbounded};
@@ -1179,8 +1334,25 @@ mod tests {
         selection_anchor: Option<u32>,
         focused: bool,
     ) -> TextInputState {
+        make_text_input_state_with_origin(
+            content,
+            TextInputContentOrigin::TreePatch,
+            cursor,
+            selection_anchor,
+            focused,
+        )
+    }
+
+    fn make_text_input_state_with_origin(
+        content: &str,
+        content_origin: TextInputContentOrigin,
+        cursor: u32,
+        selection_anchor: Option<u32>,
+        focused: bool,
+    ) -> TextInputState {
         TextInputState {
             content: content.to_string(),
+            content_origin,
             content_len: content.chars().count() as u32,
             cursor,
             selection_anchor,
@@ -2442,6 +2614,199 @@ mod tests {
             TreeMsg::SetTextInputContent { element_id, content }
                 if *element_id == input_id.clone() && content == "abcd"
         )));
+    }
+
+    #[test]
+    fn focused_tree_patch_matching_pending_value_preserves_runtime_content() {
+        let input_id = ElementId::from_term_bytes(vec![55]);
+        let rebuild_ab = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state_with_origin(
+                    "ab",
+                    TextInputContentOrigin::TreePatch,
+                    2,
+                    None,
+                    true,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("abc", 3, None, true),
+        );
+        runtime.pending_text_patches.insert(
+            input_id.clone(),
+            VecDeque::from([
+                PendingTextPatch {
+                    content: "ab".to_string(),
+                    expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                },
+                PendingTextPatch {
+                    content: "abc".to_string(),
+                    expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                },
+            ]),
+        );
+
+        runtime.handle_registry_update(rebuild_ab, &tree_tx, false);
+
+        let session = runtime
+            .text_states
+            .get(&input_id)
+            .expect("session preserved");
+        assert_eq!(session.content, "abc");
+        assert_eq!(session.cursor, 3);
+        assert_eq!(
+            runtime
+                .pending_text_patches
+                .get(&input_id)
+                .expect("latest pending retained")
+                .iter()
+                .map(|pending| pending.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc"]
+        );
+        assert!(drain_msgs(&tree_rx).iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "abc"
+        )));
+    }
+
+    #[test]
+    fn focused_tree_patch_non_pending_value_is_accepted() {
+        let input_id = ElementId::from_term_bytes(vec![56]);
+        let rebuild_remote = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state_with_origin(
+                    "server",
+                    TextInputContentOrigin::TreePatch,
+                    6,
+                    None,
+                    true,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("abc", 3, None, true),
+        );
+        runtime.pending_text_patches.insert(
+            input_id.clone(),
+            VecDeque::from([PendingTextPatch {
+                content: "abc".to_string(),
+                expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild_remote, &tree_tx, false);
+
+        let session = runtime
+            .text_states
+            .get(&input_id)
+            .expect("session accepted");
+        assert_eq!(session.content, "server");
+        assert_eq!(session.content_origin, TextInputContentOrigin::TreePatch);
+        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn focused_tree_patch_accepts_value_after_pending_expiration() {
+        let input_id = ElementId::from_term_bytes(vec![57]);
+        let rebuild_remote = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state_with_origin(
+                    "server",
+                    TextInputContentOrigin::TreePatch,
+                    6,
+                    None,
+                    true,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("abc", 3, None, true),
+        );
+        runtime.pending_text_patches.insert(
+            input_id.clone(),
+            VecDeque::from([PendingTextPatch {
+                content: "abc".to_string(),
+                expires_at: Instant::now() - Duration::from_millis(1),
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild_remote, &tree_tx, false);
+
+        assert_eq!(
+            runtime
+                .text_states
+                .get(&input_id)
+                .expect("expired pending should not block")
+                .content,
+            "server"
+        );
+        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn unfocused_rebuild_clears_pending_text_patches() {
+        let input_id = ElementId::from_term_bytes(vec![58]);
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state_with_origin(
+                    "abc",
+                    TextInputContentOrigin::TreePatch,
+                    3,
+                    None,
+                    false,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+        };
+
+        let (tree_tx, _tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.pending_text_patches.insert(
+            input_id.clone(),
+            VecDeque::from([PendingTextPatch {
+                content: "abc".to_string(),
+                expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        assert!(!runtime.pending_text_patches.contains_key(&input_id));
     }
 
     #[test]
