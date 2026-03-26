@@ -386,9 +386,10 @@ defmodule Emerge.UI.Event do
     ensure_only_keys!(attr, binding, [:key, :mods, :match, :payload, :route])
 
     key =
-      binding
-      |> Map.fetch!(:key)
-      |> normalize_key_name!(attr)
+      case Map.fetch(binding, :key) do
+        {:ok, key} -> normalize_key_name!(key, attr)
+        :error -> missing_key_binding_field!(attr)
+      end
 
     mods =
       binding
@@ -401,16 +402,13 @@ defmodule Emerge.UI.Event do
       |> normalize_key_match_mode!(attr)
 
     payload =
-      binding
-      |> Map.fetch!(:payload)
-      |> normalize_event_payload!(attr)
+      case Map.fetch(binding, :payload) do
+        {:ok, payload} -> normalize_event_payload!(payload, attr)
+        :error -> missing_key_binding_field!(attr)
+      end
 
     route = key_route_id(binding_event_type(attr), key, mods, match)
     %{key: key, mods: mods, match: match, payload: payload, route: route}
-  rescue
-    KeyError ->
-      raise ArgumentError,
-            "#{inspect(attr)} expects each key binding map to include :key and :payload"
   end
 
   defp normalize_key_binding!(attr, other) do
@@ -433,9 +431,10 @@ defmodule Emerge.UI.Event do
         ensure_only_keys!(event_type, Map.new(keyword), [:key, :mods, :match])
 
         key =
-          keyword
-          |> Keyword.fetch!(:key)
-          |> normalize_key_name!(event_type)
+          case Keyword.fetch(keyword, :key) do
+            {:ok, key} -> normalize_key_name!(key, event_type)
+            :error -> missing_key_matcher_key!(event_type)
+          end
 
         mods =
           keyword
@@ -453,10 +452,6 @@ defmodule Emerge.UI.Event do
         raise ArgumentError,
               "#{inspect(event_type)} expects a key atom or keyword matcher, got: #{inspect(other)}"
     end
-  rescue
-    KeyError ->
-      raise ArgumentError,
-            "#{inspect(event_type)} keyword matcher expects a :key entry"
   end
 
   defp normalize_key_name!(value, owner) when is_atom(value) do
@@ -517,4 +512,14 @@ defmodule Emerge.UI.Event do
   defp binding_event_type(:on_key_down), do: :key_down
   defp binding_event_type(:on_key_up), do: :key_up
   defp binding_event_type(:on_key_press), do: :key_press
+
+  defp missing_key_binding_field!(attr) do
+    raise ArgumentError,
+          "#{inspect(attr)} expects each key binding map to include :key and :payload"
+  end
+
+  defp missing_key_matcher_key!(event_type) do
+    raise ArgumentError,
+          "#{inspect(event_type)} keyword matcher expects a :key entry"
+  end
 end
