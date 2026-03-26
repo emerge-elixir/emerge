@@ -79,6 +79,7 @@ pub struct DrmInput {
     backend_wake: BackendWakeHandle,
     input_wake: EventFd,
     pending_cursor_pos: Option<(f32, f32)>,
+    pending_pointer_buttons: Vec<(String, u8, u8)>,
     next_rescan_at: Instant,
     rescan_interval: Duration,
     log_enabled: bool,
@@ -110,6 +111,7 @@ impl DrmInput {
             backend_wake,
             input_wake,
             pending_cursor_pos: None,
+            pending_pointer_buttons: Vec::new(),
             next_rescan_at: Instant::now() + rescan_interval,
             rescan_interval,
             log_enabled,
@@ -220,6 +222,8 @@ impl DrmInput {
                                 self.push_left_button(action);
                             }
                         }
+
+                        self.flush_pending_pointer_buttons_blocking();
                     }
                     _ => {}
                 }
@@ -304,21 +308,14 @@ impl DrmInput {
 
         if let Some(button) = evdev_key_to_button(key) {
             self.set_cursor_visible(true);
-            let (x, y) = self.cursor_pos;
             let action = if pressed {
                 ACTION_PRESS
             } else {
                 ACTION_RELEASE
             };
             let mods = modifiers_to_mask(self.modifiers);
-            self.flush_pending_cursor_pos_blocking();
-            self.push_input_blocking(InputEvent::CursorButton {
-                button: button.to_string(),
-                action,
-                mods,
-                x,
-                y,
-            });
+            self.pending_pointer_buttons
+                .push((button.to_string(), action, mods));
             return;
         }
 
@@ -431,8 +428,8 @@ impl DrmInput {
     }
 
     fn push_left_button(&mut self, action: u8) {
-        let (x, y) = self.cursor_pos;
         self.flush_pending_cursor_pos_blocking();
+        let (x, y) = self.cursor_pos;
         self.push_input_blocking(InputEvent::CursorButton {
             button: "left".to_string(),
             action,
@@ -475,6 +472,26 @@ impl DrmInput {
         };
 
         self.push_input_blocking(InputEvent::CursorPos { x, y });
+    }
+
+    fn flush_pending_pointer_buttons_blocking(&mut self) {
+        if self.pending_pointer_buttons.is_empty() {
+            return;
+        }
+
+        self.flush_pending_cursor_pos_blocking();
+        let (x, y) = self.cursor_pos;
+        let pending_buttons = std::mem::take(&mut self.pending_pointer_buttons);
+
+        for (button, action, mods) in pending_buttons {
+            self.push_input_blocking(InputEvent::CursorButton {
+                button,
+                action,
+                mods,
+                x,
+                y,
+            });
+        }
     }
 
     fn push_input_blocking(&self, event: InputEvent) {
@@ -899,6 +916,7 @@ mod tests {
             backend_wake: BackendWakeHandle::noop(),
             input_wake: EventFd::new().expect("eventfd available for tests"),
             pending_cursor_pos: None,
+            pending_pointer_buttons: Vec::new(),
             next_rescan_at: Instant::now() + Duration::from_millis(500),
             rescan_interval: Duration::from_millis(500),
             log_enabled: false,
@@ -942,6 +960,7 @@ mod tests {
 
         input.handle_abs_position(14.0, 18.0, true);
         input.handle_key_event(Key::BTN_LEFT, 1);
+        input.flush_pending_pointer_buttons_blocking();
 
         assert!(matches!(
             event_rx.try_recv(),
@@ -963,6 +982,7 @@ mod tests {
         let (mut input, event_rx, cursor_state) = test_input(8);
 
         input.handle_key_event(Key::BTN_LEFT, 1);
+        input.flush_pending_pointer_buttons_blocking();
 
         let snapshot = cursor_state.snapshot();
         assert_eq!(snapshot.state.pos, (0.0, 0.0));
@@ -1015,6 +1035,37 @@ mod tests {
                     && (dy - 2.0).abs() < f32::EPSILON
                     && x.abs() < f32::EPSILON
                     && y.abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn pointer_button_report_uses_final_cursor_position_when_motion_arrives_later() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(10.0, 12.0, true);
+        input.flush_pending_cursor_pos_blocking();
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 10.0).abs() < f32::EPSILON && (y - 12.0).abs() < f32::EPSILON
+        ));
+
+        input.handle_key_event(Key::BTN_LEFT, 0);
+        input.handle_abs_position(24.0, 36.0, true);
+        input.flush_pending_pointer_buttons_blocking();
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_RELEASE
+                    && (x - 24.0).abs() < f32::EPSILON
+                    && (y - 36.0).abs() < f32::EPSILON
         ));
     }
 
