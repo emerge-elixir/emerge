@@ -8,15 +8,15 @@
 //!   - 4: remove - id_len(4) + id
 //!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{scale_animation_spec, AnimationSpec};
+use super::animation::{AnimationSpec, scale_animation_spec};
 use super::attrs::{
-    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
-    Attrs,
+    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
+    preserve_runtime_scroll_attrs,
 };
-use super::deserialize::{decode_tree, DecodeError};
+use super::deserialize::{DecodeError, decode_tree};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMounts, NearbySlot,
-    NodeResidency,
+    NodeResidency, TextInputContentOrigin,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -253,10 +253,15 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
                 .ok_or_else(|| "SetAttrs: node not found".to_string())?;
             element.attrs_raw = attrs_raw.clone();
             let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            let content_is_from_patch =
+                element.kind == ElementKind::TextInput && decoded.content.is_some();
             element.base_attrs = decoded.clone();
             let mut merged = decoded;
             preserve_runtime_scroll_attrs(&element.attrs, &mut merged);
             element.attrs = merged;
+            if content_is_from_patch {
+                element.text_input_content_origin = TextInputContentOrigin::TreePatch;
+            }
         }
 
         Patch::SetChildren { id, children } => {
@@ -591,6 +596,7 @@ fn clone_as_ghost(
         attrs_raw: Vec::new(),
         base_attrs: attrs.clone(),
         attrs,
+        text_input_content_origin: old.text_input_content_origin,
         children: old
             .children
             .iter()
@@ -727,7 +733,9 @@ mod tests {
     use crate::events::registry_builder::ListenerMatcherKind;
     use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
     use crate::tree::attrs::Attrs;
-    use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
+    use crate::tree::element::{
+        Element, ElementId, ElementKind, Frame, NearbySlot, TextInputContentOrigin,
+    };
 
     fn exit_alpha_spec() -> AnimationSpec {
         let mut from = Attrs::default();
@@ -952,6 +960,64 @@ mod tests {
         .unwrap();
 
         assert_eq!(tree.get(&id).unwrap().mounted_at_revision, 4);
+    }
+
+    #[test]
+    fn test_set_attrs_marks_text_input_content_as_tree_patch_when_content_present() {
+        let id = ElementId::from_term_bytes(vec![17]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("before".to_string());
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        element.text_input_content_origin = TextInputContentOrigin::Event;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
+            }],
+        )
+        .unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.base_attrs.content.as_deref(), Some("after"));
+        assert_eq!(
+            updated.text_input_content_origin,
+            TextInputContentOrigin::TreePatch
+        );
+    }
+
+    #[test]
+    fn test_set_attrs_preserves_text_input_content_origin_when_content_absent() {
+        let id = ElementId::from_term_bytes(vec![18]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("before".to_string());
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        element.text_input_content_origin = TextInputContentOrigin::Event;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: Vec::new(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(
+            tree.get(&id).unwrap().text_input_content_origin,
+            TextInputContentOrigin::Event
+        );
     }
 
     #[test]
