@@ -512,7 +512,11 @@ defmodule EmergeSkia do
   - `button` is an atom like `:left`, `:right`, `:middle`
   - `action` is 0 for release, 1 for press
   - `mods` is a list of modifier atoms like `[:shift, :ctrl]`
-  - `key` is a canonical atom like `:escape`, `:enter`, `:a`, `:digit_1`, or `:arrow_left`
+  - `key` is a canonical atom like `:escape`, `:enter`, `:a`, `:digit_1`, `:arrow_left`, or `:plus`
+
+  Raw key events stay layout-independent. Text-producing input is delivered separately
+  through text commit/preedit events. For example, `Shift+=` reports raw key `:equal`
+  with `[:shift]` and still commits the text `"+"`.
 
   ## Example
 

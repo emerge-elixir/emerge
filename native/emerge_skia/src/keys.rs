@@ -38,6 +38,8 @@ pub enum CanonicalKey {
     Digit9,
     Minus,
     Equal,
+    Plus,
+    Asterisk,
     LeftBracket,
     RightBracket,
     Backslash,
@@ -141,6 +143,8 @@ impl CanonicalKey {
             CanonicalKey::Digit9 => "digit_9",
             CanonicalKey::Minus => "minus",
             CanonicalKey::Equal => "equal",
+            CanonicalKey::Plus => "plus",
+            CanonicalKey::Asterisk => "asterisk",
             CanonicalKey::LeftBracket => "left_bracket",
             CanonicalKey::RightBracket => "right_bracket",
             CanonicalKey::Backslash => "backslash",
@@ -244,6 +248,8 @@ impl CanonicalKey {
             "digit_9" => CanonicalKey::Digit9,
             "minus" => CanonicalKey::Minus,
             "equal" => CanonicalKey::Equal,
+            "plus" => CanonicalKey::Plus,
+            "asterisk" => CanonicalKey::Asterisk,
             "left_bracket" => CanonicalKey::LeftBracket,
             "right_bracket" => CanonicalKey::RightBracket,
             "backslash" => CanonicalKey::Backslash,
@@ -372,6 +378,8 @@ mod tests {
         assert_eq!(CanonicalKey::Digit1.atom_name(), "digit_1");
         assert_eq!(CanonicalKey::ArrowLeft.atom_name(), "arrow_left");
         assert_eq!(CanonicalKey::AltGraph.atom_name(), "alt_graph");
+        assert_eq!(CanonicalKey::Plus.atom_name(), "plus");
+        assert_eq!(CanonicalKey::Asterisk.atom_name(), "asterisk");
     }
 
     #[test]
@@ -388,6 +396,8 @@ mod tests {
             CanonicalKey::from_printable_char('.'),
             Some(CanonicalKey::Period)
         );
+        assert_eq!(CanonicalKey::from_printable_char('+'), None);
+        assert_eq!(CanonicalKey::from_printable_char('*'), None);
         assert_eq!(CanonicalKey::from_printable_char('é'), None);
     }
 
@@ -396,6 +406,10 @@ mod tests {
         assert_eq!(
             CanonicalKey::from_atom_name(CanonicalKey::ContextMenu.atom_name()),
             Some(CanonicalKey::ContextMenu)
+        );
+        assert_eq!(
+            CanonicalKey::from_atom_name(CanonicalKey::Plus.atom_name()),
+            Some(CanonicalKey::Plus)
         );
         assert_eq!(CanonicalKey::from_atom_name("bogus"), None);
     }

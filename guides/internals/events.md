@@ -296,11 +296,15 @@ Focused elements can also register direct keyboard listeners:
 - `on_key_press`
 
 Keyboard listener matchers use canonical key atoms such as `:enter`, `:a`,
-`:digit_1`, and `:arrow_left`, plus modifier filters drawn from
+`:digit_1`, `:arrow_left`, and `:plus`, plus modifier filters drawn from
 `[:shift, :ctrl, :alt, :meta]`.
 
 `on_key_press` is release-based: it arms on matching key-down and completes on
 matching key-up. `on_key_up` runs before `on_key_press` completion.
+
+Raw key events stay canonical and layout-independent. Text input still arrives
+through text commit events, so `Shift+=` matches raw key `:equal` with `:shift`
+while committing the text `"+"`.
 
 ### Mouse Down / Mouse Up
 
