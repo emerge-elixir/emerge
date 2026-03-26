@@ -2003,7 +2003,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         animate,
                         ..
                     } => {
-                        render_state.scene = scene;
+                        render_state.scene = *scene;
                         render_state.render_version = version;
                         render_state.animate = animate;
                         desired_primary_generation = desired_primary_generation.wrapping_add(1);

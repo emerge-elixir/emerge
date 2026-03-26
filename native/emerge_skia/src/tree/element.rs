@@ -114,37 +114,37 @@ impl NearbySlot {
         match self {
             Self::BehindContent => NearbySlotSpec {
                 phase: RetainedPaintPhase::BehindContent,
-                constraint_kind: NearbyConstraintKind::HostBox,
+                constraint_kind: NearbyConstraintKind::Box,
                 align_x_active: true,
                 align_y_active: true,
             },
             Self::Above => NearbySlotSpec {
                 phase: RetainedPaintPhase::Overlay(self),
-                constraint_kind: NearbyConstraintKind::HostWidthBand,
+                constraint_kind: NearbyConstraintKind::WidthBand,
                 align_x_active: true,
                 align_y_active: false,
             },
             Self::OnRight => NearbySlotSpec {
                 phase: RetainedPaintPhase::Overlay(self),
-                constraint_kind: NearbyConstraintKind::HostHeightBand,
+                constraint_kind: NearbyConstraintKind::HeightBand,
                 align_x_active: false,
                 align_y_active: true,
             },
             Self::Below => NearbySlotSpec {
                 phase: RetainedPaintPhase::Overlay(self),
-                constraint_kind: NearbyConstraintKind::HostWidthBand,
+                constraint_kind: NearbyConstraintKind::WidthBand,
                 align_x_active: true,
                 align_y_active: false,
             },
             Self::OnLeft => NearbySlotSpec {
                 phase: RetainedPaintPhase::Overlay(self),
-                constraint_kind: NearbyConstraintKind::HostHeightBand,
+                constraint_kind: NearbyConstraintKind::HeightBand,
                 align_x_active: false,
                 align_y_active: true,
             },
             Self::InFront => NearbySlotSpec {
                 phase: RetainedPaintPhase::Overlay(self),
-                constraint_kind: NearbyConstraintKind::HostBox,
+                constraint_kind: NearbyConstraintKind::Box,
                 align_x_active: true,
                 align_y_active: true,
             },
@@ -235,9 +235,9 @@ pub enum RetainedPaintPhase {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NearbyConstraintKind {
-    HostBox,
-    HostWidthBand,
-    HostHeightBand,
+    Box,
+    WidthBand,
+    HeightBand,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

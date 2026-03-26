@@ -76,17 +76,9 @@ const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
 ///
 /// - `Registry::in_precedence_order(...)` when constructing listeners
 /// - `Registry::view()` when reading them in dispatch order
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Registry {
     listeners: Vec<Listener>,
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            listeners: Vec::new(),
-        }
-    }
 }
 
 impl Registry {
@@ -396,6 +388,19 @@ pub struct ScrollbarDragTracker {
     pub scroll_range: f32,
     pub current_scroll: f32,
     pub screen_to_local: Option<Affine2>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollbarPressSpec {
+    axis: ScrollbarAxis,
+    area: ScrollbarHitArea,
+    track_start: f32,
+    track_len: f32,
+    thumb_start: f32,
+    thumb_len: f32,
+    scroll_offset: f32,
+    scroll_range: f32,
+    screen_to_local: Option<Affine2>,
 }
 
 /// Text-selection drag tracker state used to rematerialize cursor followups.
@@ -947,10 +952,10 @@ pub(crate) struct PointerDragBootstrap {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextInputKeyEditKind {
-    MoveLeft,
-    MoveRight,
-    MoveHome,
-    MoveEnd,
+    Left,
+    Right,
+    Home,
+    End,
 }
 
 fn runtime_source_listener<'a>(
@@ -1825,15 +1830,7 @@ pub enum ListenerCompute {
     /// Start scrollbar drag tracking from a thumb or track press.
     ScrollbarPressToRuntime {
         element_id: ElementId,
-        axis: ScrollbarAxis,
-        area: ScrollbarHitArea,
-        track_start: f32,
-        track_len: f32,
-        thumb_start: f32,
-        thumb_len: f32,
-        scroll_offset: f32,
-        scroll_range: f32,
-        screen_to_local: Option<Affine2>,
+        spec: ScrollbarPressSpec,
     },
     /// Emit scrollbar drag tree updates and update current scroll position.
     ScrollbarDragMove { tracker: ScrollbarDragTracker },
@@ -2059,31 +2056,8 @@ impl ListenerCompute {
                 Some(input) => drag_scroll_actions_from_input(input, *last_x, *last_y, ctx),
                 None => Vec::new(),
             },
-            ListenerCompute::ScrollbarPressToRuntime {
-                element_id,
-                axis,
-                area,
-                track_start,
-                track_len,
-                thumb_start,
-                thumb_len,
-                scroll_offset,
-                scroll_range,
-                screen_to_local,
-            } => match input.raw() {
-                Some(input) => scrollbar_press_actions_from_input(
-                    input,
-                    element_id,
-                    *axis,
-                    *area,
-                    *track_start,
-                    *track_len,
-                    *thumb_start,
-                    *thumb_len,
-                    *scroll_offset,
-                    *scroll_range,
-                    *screen_to_local,
-                ),
+            ListenerCompute::ScrollbarPressToRuntime { element_id, spec } => match input.raw() {
+                Some(input) => scrollbar_press_actions_from_input(input, element_id, *spec),
                 None => Vec::new(),
             },
             ListenerCompute::ScrollbarDragMove { tracker } => match input.raw() {
@@ -2161,7 +2135,7 @@ impl ListenerCompute {
                 Some(InputEvent::CursorPos { x, y }) => actions
                     .iter()
                     .cloned()
-                    .chain(scrollbar_hover.into_iter().flat_map(|scrollbar_hover| {
+                    .chain(scrollbar_hover.iter().flat_map(|scrollbar_hover| {
                         scrollbar_hover_delta_actions(scrollbar_hover, Some((*x, *y)))
                     }))
                     .collect(),
@@ -2174,7 +2148,7 @@ impl ListenerCompute {
                 ListenerInput::PointerLeave { .. } => actions
                     .iter()
                     .cloned()
-                    .chain(scrollbar_hover.into_iter().flat_map(|scrollbar_hover| {
+                    .chain(scrollbar_hover.iter().flat_map(|scrollbar_hover| {
                         scrollbar_hover_delta_actions(scrollbar_hover, None)
                     }))
                     .collect(),
@@ -2230,7 +2204,7 @@ fn text_key_edit_request(
     let has_selection = selection_anchor.is_some_and(|anchor| anchor != cursor);
 
     match kind {
-        TextInputKeyEditKind::MoveLeft => {
+        TextInputKeyEditKind::Left => {
             let can_move = if extend_selection {
                 cursor > 0
             } else {
@@ -2238,7 +2212,7 @@ fn text_key_edit_request(
             };
             can_move.then_some(TextInputEditRequest::MoveLeft { extend_selection })
         }
-        TextInputKeyEditKind::MoveRight => {
+        TextInputKeyEditKind::Right => {
             let can_move = if extend_selection {
                 cursor < content_len
             } else {
@@ -2246,7 +2220,7 @@ fn text_key_edit_request(
             };
             can_move.then_some(TextInputEditRequest::MoveRight { extend_selection })
         }
-        TextInputKeyEditKind::MoveHome => {
+        TextInputKeyEditKind::Home => {
             let can_move = if extend_selection {
                 cursor > 0
             } else {
@@ -2254,7 +2228,7 @@ fn text_key_edit_request(
             };
             can_move.then_some(TextInputEditRequest::MoveHome { extend_selection })
         }
-        TextInputKeyEditKind::MoveEnd => {
+        TextInputKeyEditKind::End => {
             let can_move = if extend_selection {
                 cursor < content_len
             } else {
@@ -2587,19 +2561,21 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
     let dy = *y - last_y;
 
     let moved = dx != 0.0 || dy != 0.0;
-    moved
-        .then(|| {
-            redispatch_scroll_components_from_input(
-                &InputEvent::CursorScroll {
-                    dx,
-                    dy,
-                    x: *x,
-                    y: *y,
-                },
-                ctx,
-            )
-        })
-        .unwrap_or_default()
+    let actions = if moved {
+        redispatch_scroll_components_from_input(
+            &InputEvent::CursorScroll {
+                dx,
+                dy,
+                x: *x,
+                y: *y,
+            },
+            ctx,
+        )
+    } else {
+        Vec::new()
+    };
+
+    actions
         .into_iter()
         .chain(moved.then_some(ListenerAction::RuntimeChange(
             RuntimeChange::UpdateDragTrackerPointer {
@@ -3408,15 +3384,7 @@ fn cursor_from_click_point(snapshot: &TextInputState, x: f32, y: f32) -> u32 {
 fn scrollbar_press_actions_from_input(
     input: &InputEvent,
     element_id: &ElementId,
-    axis: ScrollbarAxis,
-    area: ScrollbarHitArea,
-    track_start: f32,
-    track_len: f32,
-    thumb_start: f32,
-    thumb_len: f32,
-    scroll_offset: f32,
-    scroll_range: f32,
-    screen_to_local: Option<Affine2>,
+    spec: ScrollbarPressSpec,
 ) -> Vec<ListenerAction> {
     let InputEvent::CursorButton {
         button,
@@ -3432,22 +3400,22 @@ fn scrollbar_press_actions_from_input(
         return Vec::new();
     }
 
-    let Some(pointer_axis) = scrollbar_pointer_axis(axis, screen_to_local, *x, *y) else {
+    let Some(pointer_axis) = scrollbar_pointer_axis(spec.axis, spec.screen_to_local, *x, *y) else {
         return Vec::new();
     };
-    let (pointer_offset, target_scroll) = match area {
+    let (pointer_offset, target_scroll) = match spec.area {
         ScrollbarHitArea::Thumb => (
-            (pointer_axis - thumb_start).clamp(0.0, thumb_len),
-            scroll_offset,
+            (pointer_axis - spec.thumb_start).clamp(0.0, spec.thumb_len),
+            spec.scroll_offset,
         ),
         ScrollbarHitArea::Track => {
-            let pointer_offset = thumb_len / 2.0;
+            let pointer_offset = spec.thumb_len / 2.0;
             let target_scroll = tree_scrollbar_target_from_pointer(
                 pointer_axis,
-                track_start,
-                track_len,
+                spec.track_start,
+                spec.track_len,
                 pointer_offset,
-                scroll_range,
+                spec.scroll_range,
             );
             (pointer_offset, target_scroll)
         }
@@ -3455,25 +3423,25 @@ fn scrollbar_press_actions_from_input(
 
     let tracker = ScrollbarDragTracker {
         element_id: element_id.clone(),
-        axis,
-        track_start,
-        track_len,
-        thumb_len,
+        axis: spec.axis,
+        track_start: spec.track_start,
+        track_len: spec.track_len,
+        thumb_len: spec.thumb_len,
         pointer_offset,
-        scroll_range,
+        scroll_range: spec.scroll_range,
         current_scroll: target_scroll,
-        screen_to_local,
+        screen_to_local: spec.screen_to_local,
     };
 
-    let delta = scroll_offset - target_scroll;
+    let delta = spec.scroll_offset - target_scroll;
 
     [ListenerAction::RuntimeChange(
         RuntimeChange::StartScrollbarDrag { tracker },
     )]
     .into_iter()
     .chain(
-        (area == ScrollbarHitArea::Track && delta.abs() >= f32::EPSILON)
-            .then_some(scrollbar_drag_tree_action(element_id, axis, delta)),
+        (spec.area == ScrollbarHitArea::Track && delta.abs() >= f32::EPSILON)
+            .then_some(scrollbar_drag_tree_action(element_id, spec.axis, delta)),
     )
     .collect()
 }
@@ -4555,15 +4523,17 @@ fn scrollbar_press_listener(
         matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
         compute: ListenerCompute::ScrollbarPressToRuntime {
             element_id: element.id.clone(),
-            axis: scrollbar.axis,
-            area,
-            track_start: scrollbar.track_start,
-            track_len: scrollbar.track_len,
-            thumb_start: scrollbar.thumb_start,
-            thumb_len: scrollbar.thumb_len,
-            scroll_offset: scrollbar.scroll_offset,
-            scroll_range: scrollbar.scroll_range,
-            screen_to_local: scrollbar.screen_to_local,
+            spec: ScrollbarPressSpec {
+                axis: scrollbar.axis,
+                area,
+                track_start: scrollbar.track_start,
+                track_len: scrollbar.track_len,
+                thumb_start: scrollbar.thumb_start,
+                thumb_len: scrollbar.thumb_len,
+                scroll_offset: scrollbar.scroll_offset,
+                scroll_range: scrollbar.scroll_range,
+                screen_to_local: scrollbar.screen_to_local,
+            },
         },
     }
 }
@@ -4631,7 +4601,7 @@ fn slot_key_left_press(element: &Element, _state: Option<&ResolvedNodeState>) ->
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyLeftPressNoCtrlAltMeta,
-        TextInputKeyEditKind::MoveLeft,
+        TextInputKeyEditKind::Left,
     )
 }
 
@@ -4640,7 +4610,7 @@ fn slot_key_right_press(element: &Element, _state: Option<&ResolvedNodeState>) -
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyRightPressNoCtrlAltMeta,
-        TextInputKeyEditKind::MoveRight,
+        TextInputKeyEditKind::Right,
     )
 }
 
@@ -4649,7 +4619,7 @@ fn slot_key_home_press(element: &Element, _state: Option<&ResolvedNodeState>) ->
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyHomePressNoCtrlAltMeta,
-        TextInputKeyEditKind::MoveHome,
+        TextInputKeyEditKind::Home,
     )
 }
 
@@ -4658,7 +4628,7 @@ fn slot_key_end_press(element: &Element, _state: Option<&ResolvedNodeState>) -> 
     slot_text_key_edit(
         element,
         ListenerMatcher::KeyEndPressNoCtrlAltMeta,
-        TextInputKeyEditKind::MoveEnd,
+        TextInputKeyEditKind::End,
     )
 }
 
@@ -5404,7 +5374,7 @@ mod tests {
         ElixirEvent, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction, ListenerCompute,
         ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
         NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
-        ScrollbarDragTracker, ScrollbarHitArea, TextDragTracker,
+        ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, TextDragTracker,
     };
     use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
@@ -9124,8 +9094,11 @@ mod tests {
             matches!(
                 listener.compute,
                 ListenerCompute::ScrollbarPressToRuntime {
-                    axis: ScrollbarAxis::Y,
-                    area: ScrollbarHitArea::Thumb,
+                    spec: ScrollbarPressSpec {
+                        axis: ScrollbarAxis::Y,
+                        area: ScrollbarHitArea::Thumb,
+                        ..
+                    },
                     ..
                 }
             )
@@ -9148,8 +9121,11 @@ mod tests {
             matches!(
                 listener.compute,
                 ListenerCompute::ScrollbarPressToRuntime {
-                    axis: ScrollbarAxis::Y,
-                    area: ScrollbarHitArea::Track,
+                    spec: ScrollbarPressSpec {
+                        axis: ScrollbarAxis::Y,
+                        area: ScrollbarHitArea::Track,
+                        ..
+                    },
                     ..
                 }
             )
