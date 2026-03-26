@@ -7358,6 +7358,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
