@@ -61,9 +61,19 @@ struct Modifiers {
     meta: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrintableText {
+    Letter(char),
+    ShiftPair { base: char, shifted: char },
+    Literal(char),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyKind {
-    Character(char),
+    Printable {
+        key: CanonicalKey,
+        text: PrintableText,
+    },
     Key(CanonicalKey),
 }
 
@@ -1115,6 +1125,118 @@ mod tests {
     }
 
     #[test]
+    fn evdev_key_to_kind_exposes_canonical_keys_for_symbols_and_keypad_operators() {
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key")),
+            CanonicalKey::Equal
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_8).expect("digit 8 key")),
+            CanonicalKey::Digit8
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key")),
+            CanonicalKey::Plus
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(
+                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key")
+            ),
+            CanonicalKey::Asterisk
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPDOT).expect("kp dot key")),
+            CanonicalKey::Period
+        );
+    }
+
+    #[test]
+    fn key_to_codepoint_preserves_shifted_and_keypad_text_output() {
+        let shift_mods = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key"),
+                shift_mods,
+                false
+            ),
+            Some('+')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_8).expect("digit 8 key"),
+                shift_mods,
+                false
+            ),
+            Some('*')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_LEFTBRACE).expect("left brace key"),
+                shift_mods,
+                false
+            ),
+            Some('{')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key"),
+                Modifiers::default(),
+                false
+            ),
+            Some('+')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key"),
+                shift_mods,
+                false
+            ),
+            Some('*')
+        );
+    }
+
+    #[test]
+    fn handle_key_event_emits_canonical_key_and_shifted_text_commit() {
+        let (mut input, event_rx, _) = test_input(8);
+        input.modifiers.shift = true;
+
+        input.handle_key_event(Key::KEY_EQUAL, 1);
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
+                if key == CanonicalKey::Equal && action == ACTION_PRESS && mods == MOD_SHIFT
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
+                if text == "+" && mods == MOD_SHIFT
+        ));
+    }
+
+    #[test]
+    fn handle_key_event_emits_keypad_plus_text_without_shift() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_key_event(Key::KEY_KPPLUS, 1);
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
+                if key == CanonicalKey::Plus && action == ACTION_PRESS && mods == 0
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
+                if text == "+" && mods == 0
+        ));
+    }
+
+    #[test]
     fn classify_abs_mode_keeps_touchpad_devices_relative_from_abs() {
         assert_eq!(
             classify_abs_mode(
@@ -1250,45 +1372,66 @@ fn modifiers_to_mask(mods: Modifiers) -> u8 {
     mask
 }
 
+fn printable_letter(key: CanonicalKey, ch: char) -> KeyKind {
+    KeyKind::Printable {
+        key,
+        text: PrintableText::Letter(ch),
+    }
+}
+
+fn printable_shift_pair(key: CanonicalKey, base: char, shifted: char) -> KeyKind {
+    KeyKind::Printable {
+        key,
+        text: PrintableText::ShiftPair { base, shifted },
+    }
+}
+
+fn printable_literal(key: CanonicalKey, ch: char) -> KeyKind {
+    KeyKind::Printable {
+        key,
+        text: PrintableText::Literal(ch),
+    }
+}
+
 fn evdev_key_to_kind(key: Key) -> Option<KeyKind> {
     let kind = match key {
-        Key::KEY_A => KeyKind::Character('a'),
-        Key::KEY_B => KeyKind::Character('b'),
-        Key::KEY_C => KeyKind::Character('c'),
-        Key::KEY_D => KeyKind::Character('d'),
-        Key::KEY_E => KeyKind::Character('e'),
-        Key::KEY_F => KeyKind::Character('f'),
-        Key::KEY_G => KeyKind::Character('g'),
-        Key::KEY_H => KeyKind::Character('h'),
-        Key::KEY_I => KeyKind::Character('i'),
-        Key::KEY_J => KeyKind::Character('j'),
-        Key::KEY_K => KeyKind::Character('k'),
-        Key::KEY_L => KeyKind::Character('l'),
-        Key::KEY_M => KeyKind::Character('m'),
-        Key::KEY_N => KeyKind::Character('n'),
-        Key::KEY_O => KeyKind::Character('o'),
-        Key::KEY_P => KeyKind::Character('p'),
-        Key::KEY_Q => KeyKind::Character('q'),
-        Key::KEY_R => KeyKind::Character('r'),
-        Key::KEY_S => KeyKind::Character('s'),
-        Key::KEY_T => KeyKind::Character('t'),
-        Key::KEY_U => KeyKind::Character('u'),
-        Key::KEY_V => KeyKind::Character('v'),
-        Key::KEY_W => KeyKind::Character('w'),
-        Key::KEY_X => KeyKind::Character('x'),
-        Key::KEY_Y => KeyKind::Character('y'),
-        Key::KEY_Z => KeyKind::Character('z'),
-        Key::KEY_0 => KeyKind::Character('0'),
-        Key::KEY_1 => KeyKind::Character('1'),
-        Key::KEY_2 => KeyKind::Character('2'),
-        Key::KEY_3 => KeyKind::Character('3'),
-        Key::KEY_4 => KeyKind::Character('4'),
-        Key::KEY_5 => KeyKind::Character('5'),
-        Key::KEY_6 => KeyKind::Character('6'),
-        Key::KEY_7 => KeyKind::Character('7'),
-        Key::KEY_8 => KeyKind::Character('8'),
-        Key::KEY_9 => KeyKind::Character('9'),
-        Key::KEY_SPACE => KeyKind::Character(' '),
+        Key::KEY_A => printable_letter(CanonicalKey::A, 'a'),
+        Key::KEY_B => printable_letter(CanonicalKey::B, 'b'),
+        Key::KEY_C => printable_letter(CanonicalKey::C, 'c'),
+        Key::KEY_D => printable_letter(CanonicalKey::D, 'd'),
+        Key::KEY_E => printable_letter(CanonicalKey::E, 'e'),
+        Key::KEY_F => printable_letter(CanonicalKey::F, 'f'),
+        Key::KEY_G => printable_letter(CanonicalKey::G, 'g'),
+        Key::KEY_H => printable_letter(CanonicalKey::H, 'h'),
+        Key::KEY_I => printable_letter(CanonicalKey::I, 'i'),
+        Key::KEY_J => printable_letter(CanonicalKey::J, 'j'),
+        Key::KEY_K => printable_letter(CanonicalKey::K, 'k'),
+        Key::KEY_L => printable_letter(CanonicalKey::L, 'l'),
+        Key::KEY_M => printable_letter(CanonicalKey::M, 'm'),
+        Key::KEY_N => printable_letter(CanonicalKey::N, 'n'),
+        Key::KEY_O => printable_letter(CanonicalKey::O, 'o'),
+        Key::KEY_P => printable_letter(CanonicalKey::P, 'p'),
+        Key::KEY_Q => printable_letter(CanonicalKey::Q, 'q'),
+        Key::KEY_R => printable_letter(CanonicalKey::R, 'r'),
+        Key::KEY_S => printable_letter(CanonicalKey::S, 's'),
+        Key::KEY_T => printable_letter(CanonicalKey::T, 't'),
+        Key::KEY_U => printable_letter(CanonicalKey::U, 'u'),
+        Key::KEY_V => printable_letter(CanonicalKey::V, 'v'),
+        Key::KEY_W => printable_letter(CanonicalKey::W, 'w'),
+        Key::KEY_X => printable_letter(CanonicalKey::X, 'x'),
+        Key::KEY_Y => printable_letter(CanonicalKey::Y, 'y'),
+        Key::KEY_Z => printable_letter(CanonicalKey::Z, 'z'),
+        Key::KEY_0 => printable_shift_pair(CanonicalKey::Digit0, '0', ')'),
+        Key::KEY_1 => printable_shift_pair(CanonicalKey::Digit1, '1', '!'),
+        Key::KEY_2 => printable_shift_pair(CanonicalKey::Digit2, '2', '@'),
+        Key::KEY_3 => printable_shift_pair(CanonicalKey::Digit3, '3', '#'),
+        Key::KEY_4 => printable_shift_pair(CanonicalKey::Digit4, '4', '$'),
+        Key::KEY_5 => printable_shift_pair(CanonicalKey::Digit5, '5', '%'),
+        Key::KEY_6 => printable_shift_pair(CanonicalKey::Digit6, '6', '^'),
+        Key::KEY_7 => printable_shift_pair(CanonicalKey::Digit7, '7', '&'),
+        Key::KEY_8 => printable_shift_pair(CanonicalKey::Digit8, '8', '*'),
+        Key::KEY_9 => printable_shift_pair(CanonicalKey::Digit9, '9', '('),
+        Key::KEY_SPACE => printable_literal(CanonicalKey::Space, ' '),
         Key::KEY_ENTER => KeyKind::Key(CanonicalKey::Enter),
         Key::KEY_TAB => KeyKind::Key(CanonicalKey::Tab),
         Key::KEY_ESC => KeyKind::Key(CanonicalKey::Escape),
@@ -1338,33 +1481,33 @@ fn evdev_key_to_kind(key: Key) -> Option<KeyKind> {
         Key::KEY_F22 => KeyKind::Key(CanonicalKey::F22),
         Key::KEY_F23 => KeyKind::Key(CanonicalKey::F23),
         Key::KEY_F24 => KeyKind::Key(CanonicalKey::F24),
-        Key::KEY_MINUS => KeyKind::Character('-'),
-        Key::KEY_EQUAL => KeyKind::Character('='),
-        Key::KEY_LEFTBRACE => KeyKind::Character('['),
-        Key::KEY_RIGHTBRACE => KeyKind::Character(']'),
-        Key::KEY_BACKSLASH => KeyKind::Character('\\'),
-        Key::KEY_SEMICOLON => KeyKind::Character(';'),
-        Key::KEY_APOSTROPHE => KeyKind::Character('\''),
-        Key::KEY_GRAVE => KeyKind::Character('`'),
-        Key::KEY_COMMA => KeyKind::Character(','),
-        Key::KEY_DOT => KeyKind::Character('.'),
-        Key::KEY_SLASH => KeyKind::Character('/'),
-        Key::KEY_KP0 => KeyKind::Character('0'),
-        Key::KEY_KP1 => KeyKind::Character('1'),
-        Key::KEY_KP2 => KeyKind::Character('2'),
-        Key::KEY_KP3 => KeyKind::Character('3'),
-        Key::KEY_KP4 => KeyKind::Character('4'),
-        Key::KEY_KP5 => KeyKind::Character('5'),
-        Key::KEY_KP6 => KeyKind::Character('6'),
-        Key::KEY_KP7 => KeyKind::Character('7'),
-        Key::KEY_KP8 => KeyKind::Character('8'),
-        Key::KEY_KP9 => KeyKind::Character('9'),
-        Key::KEY_KPDOT => KeyKind::Character('.'),
-        Key::KEY_KPSLASH => KeyKind::Character('/'),
-        Key::KEY_KPASTERISK => KeyKind::Character('*'),
-        Key::KEY_KPMINUS => KeyKind::Character('-'),
-        Key::KEY_KPPLUS => KeyKind::Character('+'),
-        Key::KEY_KPEQUAL => KeyKind::Character('='),
+        Key::KEY_MINUS => printable_shift_pair(CanonicalKey::Minus, '-', '_'),
+        Key::KEY_EQUAL => printable_shift_pair(CanonicalKey::Equal, '=', '+'),
+        Key::KEY_LEFTBRACE => printable_shift_pair(CanonicalKey::LeftBracket, '[', '{'),
+        Key::KEY_RIGHTBRACE => printable_shift_pair(CanonicalKey::RightBracket, ']', '}'),
+        Key::KEY_BACKSLASH => printable_shift_pair(CanonicalKey::Backslash, '\\', '|'),
+        Key::KEY_SEMICOLON => printable_shift_pair(CanonicalKey::Semicolon, ';', ':'),
+        Key::KEY_APOSTROPHE => printable_shift_pair(CanonicalKey::Apostrophe, '\'', '"'),
+        Key::KEY_GRAVE => printable_shift_pair(CanonicalKey::Grave, '`', '~'),
+        Key::KEY_COMMA => printable_shift_pair(CanonicalKey::Comma, ',', '<'),
+        Key::KEY_DOT => printable_shift_pair(CanonicalKey::Period, '.', '>'),
+        Key::KEY_SLASH => printable_shift_pair(CanonicalKey::Slash, '/', '?'),
+        Key::KEY_KP0 => printable_literal(CanonicalKey::Digit0, '0'),
+        Key::KEY_KP1 => printable_literal(CanonicalKey::Digit1, '1'),
+        Key::KEY_KP2 => printable_literal(CanonicalKey::Digit2, '2'),
+        Key::KEY_KP3 => printable_literal(CanonicalKey::Digit3, '3'),
+        Key::KEY_KP4 => printable_literal(CanonicalKey::Digit4, '4'),
+        Key::KEY_KP5 => printable_literal(CanonicalKey::Digit5, '5'),
+        Key::KEY_KP6 => printable_literal(CanonicalKey::Digit6, '6'),
+        Key::KEY_KP7 => printable_literal(CanonicalKey::Digit7, '7'),
+        Key::KEY_KP8 => printable_literal(CanonicalKey::Digit8, '8'),
+        Key::KEY_KP9 => printable_literal(CanonicalKey::Digit9, '9'),
+        Key::KEY_KPDOT => printable_literal(CanonicalKey::Period, '.'),
+        Key::KEY_KPSLASH => printable_literal(CanonicalKey::Slash, '/'),
+        Key::KEY_KPASTERISK => printable_literal(CanonicalKey::Asterisk, '*'),
+        Key::KEY_KPMINUS => printable_literal(CanonicalKey::Minus, '-'),
+        Key::KEY_KPPLUS => printable_literal(CanonicalKey::Plus, '+'),
+        Key::KEY_KPEQUAL => printable_literal(CanonicalKey::Equal, '='),
         Key::KEY_KPENTER => KeyKind::Key(CanonicalKey::Enter),
         _ => return None,
     };
@@ -1374,7 +1517,7 @@ fn evdev_key_to_kind(key: Key) -> Option<KeyKind> {
 
 fn key_kind_to_canonical_key(key: KeyKind) -> CanonicalKey {
     match key {
-        KeyKind::Character(ch) => CanonicalKey::from_printable_char(ch).unwrap_or(CanonicalKey::Unknown),
+        KeyKind::Printable { key, .. } => key,
         KeyKind::Key(key) => key,
     }
 }
@@ -1391,117 +1534,35 @@ fn evdev_key_to_button(key: Key) -> Option<&'static str> {
 }
 
 fn key_to_codepoint(key: KeyKind, mods: Modifiers, caps_lock: bool) -> Option<char> {
-    let shift = mods.shift;
-    let uppercase = shift ^ caps_lock;
     match key {
-        KeyKind::Character(ch) => Some(match ch {
-            'a'..='z' => {
-                if uppercase {
-                    ch.to_ascii_uppercase()
-                } else {
-                    ch
-                }
-            }
-            '0'..='9' => shift_digit(ch, shift)?,
-            '-' => {
-                if shift {
-                    '_'
-                } else {
-                    '-'
-                }
-            }
-            '=' => {
-                if shift {
-                    '+'
-                } else {
-                    '='
-                }
-            }
-            '[' => {
-                if shift {
-                    '{'
-                } else {
-                    '['
-                }
-            }
-            ']' => {
-                if shift {
-                    '}'
-                } else {
-                    ']'
-                }
-            }
-            '\\' => {
-                if shift {
-                    '|'
-                } else {
-                    '\\'
-                }
-            }
-            ';' => {
-                if shift {
-                    ':'
-                } else {
-                    ';'
-                }
-            }
-            '\'' => {
-                if shift {
-                    '"'
-                } else {
-                    '\''
-                }
-            }
-            '`' => {
-                if shift {
-                    '~'
-                } else {
-                    '`'
-                }
-            }
-            ',' => {
-                if shift {
-                    '<'
-                } else {
-                    ','
-                }
-            }
-            '.' => {
-                if shift {
-                    '>'
-                } else {
-                    '.'
-                }
-            }
-            '/' => {
-                if shift {
-                    '?'
-                } else {
-                    '/'
-                }
-            }
-            ' ' => ' ',
-            _ => return None,
-        }),
+        KeyKind::Printable { text, .. } => printable_text_to_codepoint(text, mods, caps_lock),
         KeyKind::Key(_) => None,
     }
 }
 
-fn shift_digit(ch: char, shift: bool) -> Option<char> {
-    if !shift {
-        return Some(ch);
-    }
-    Some(match ch {
-        '1' => '!',
-        '2' => '@',
-        '3' => '#',
-        '4' => '$',
-        '5' => '%',
-        '6' => '^',
-        '7' => '&',
-        '8' => '*',
-        '9' => '(',
-        '0' => ')',
-        _ => return None,
+fn printable_text_to_codepoint(
+    text: PrintableText,
+    mods: Modifiers,
+    caps_lock: bool,
+) -> Option<char> {
+    let shift = mods.shift;
+    let uppercase = shift ^ caps_lock;
+
+    Some(match text {
+        PrintableText::Letter(ch) => {
+            if uppercase {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            }
+        }
+        PrintableText::ShiftPair { base, shifted } => {
+            if shift {
+                shifted
+            } else {
+                base
+            }
+        }
+        PrintableText::Literal(ch) => ch,
     })
 }

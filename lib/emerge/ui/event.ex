@@ -55,6 +55,8 @@ defmodule Emerge.UI.Event do
           | :digit_9
           | :minus
           | :equal
+          | :plus
+          | :asterisk
           | :left_bracket
           | :right_bracket
           | :backslash
@@ -195,6 +197,8 @@ defmodule Emerge.UI.Event do
     :digit_9,
     :minus,
     :equal,
+    :plus,
+    :asterisk,
     :left_bracket,
     :right_bracket,
     :backslash,

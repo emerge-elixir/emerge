@@ -112,10 +112,8 @@ pub(super) fn key_from_keysym(keysym: Keysym) -> CanonicalKey {
         Keysym::Print => CanonicalKey::PrintScreen,
         Keysym::Pause => CanonicalKey::Pause,
         Keysym::Menu => CanonicalKey::ContextMenu,
-        _ => keysym
-            .key_char()
-            .filter(|ch| !ch.is_control())
-            .and_then(CanonicalKey::from_printable_char)
+        _ => keypad_canonical_key(keysym)
+            .or_else(|| non_keypad_canonical_key(keysym))
             .or_else(|| {
                 keysym
                     .name()
@@ -123,6 +121,66 @@ pub(super) fn key_from_keysym(keysym: Keysym) -> CanonicalKey {
                     .and_then(|name| CanonicalKey::from_atom_name(&name))
             })
             .unwrap_or(CanonicalKey::Unknown),
+    }
+}
+
+fn keypad_canonical_key(keysym: Keysym) -> Option<CanonicalKey> {
+    if !keysym.is_keypad_key() {
+        return None;
+    }
+
+    match keysym.key_char().filter(|ch| !ch.is_control())? {
+        '0' => Some(CanonicalKey::Digit0),
+        '1' => Some(CanonicalKey::Digit1),
+        '2' => Some(CanonicalKey::Digit2),
+        '3' => Some(CanonicalKey::Digit3),
+        '4' => Some(CanonicalKey::Digit4),
+        '5' => Some(CanonicalKey::Digit5),
+        '6' => Some(CanonicalKey::Digit6),
+        '7' => Some(CanonicalKey::Digit7),
+        '8' => Some(CanonicalKey::Digit8),
+        '9' => Some(CanonicalKey::Digit9),
+        '.' => Some(CanonicalKey::Period),
+        '/' => Some(CanonicalKey::Slash),
+        '-' => Some(CanonicalKey::Minus),
+        '=' => Some(CanonicalKey::Equal),
+        '+' => Some(CanonicalKey::Plus),
+        '*' => Some(CanonicalKey::Asterisk),
+        ' ' => Some(CanonicalKey::Space),
+        _ => None,
+    }
+}
+
+fn non_keypad_canonical_key(keysym: Keysym) -> Option<CanonicalKey> {
+    if keysym.is_keypad_key() {
+        return None;
+    }
+
+    let ch = keysym.key_char().filter(|ch| !ch.is_control())?;
+
+    match ch {
+        '0' | ')' => Some(CanonicalKey::Digit0),
+        '1' | '!' => Some(CanonicalKey::Digit1),
+        '2' | '@' => Some(CanonicalKey::Digit2),
+        '3' | '#' => Some(CanonicalKey::Digit3),
+        '4' | '$' => Some(CanonicalKey::Digit4),
+        '5' | '%' => Some(CanonicalKey::Digit5),
+        '6' | '^' => Some(CanonicalKey::Digit6),
+        '7' | '&' => Some(CanonicalKey::Digit7),
+        '8' | '*' => Some(CanonicalKey::Digit8),
+        '9' | '(' => Some(CanonicalKey::Digit9),
+        '-' | '_' => Some(CanonicalKey::Minus),
+        '=' | '+' => Some(CanonicalKey::Equal),
+        '[' | '{' => Some(CanonicalKey::LeftBracket),
+        ']' | '}' => Some(CanonicalKey::RightBracket),
+        '\\' | '|' => Some(CanonicalKey::Backslash),
+        ';' | ':' => Some(CanonicalKey::Semicolon),
+        '\'' | '"' => Some(CanonicalKey::Apostrophe),
+        '`' | '~' => Some(CanonicalKey::Grave),
+        ',' | '<' => Some(CanonicalKey::Comma),
+        '.' | '>' => Some(CanonicalKey::Period),
+        '/' | '?' => Some(CanonicalKey::Slash),
+        _ => CanonicalKey::from_printable_char(ch),
     }
 }
 
@@ -160,6 +218,30 @@ mod tests {
     fn key_from_keysym_normalizes_printable_characters() {
         assert_eq!(key_from_keysym(Keysym::a), CanonicalKey::A);
         assert_eq!(key_from_keysym(Keysym::A), CanonicalKey::A);
+    }
+
+    #[test]
+    fn key_from_keysym_normalizes_shifted_symbols_to_logical_keys() {
+        assert_eq!(key_from_keysym(Keysym::from_char('+')), CanonicalKey::Equal);
+        assert_eq!(
+            key_from_keysym(Keysym::from_char('*')),
+            CanonicalKey::Digit8
+        );
+        assert_eq!(
+            key_from_keysym(Keysym::from_char('{')),
+            CanonicalKey::LeftBracket
+        );
+        assert_eq!(key_from_keysym(Keysym::from_char('?')), CanonicalKey::Slash);
+    }
+
+    #[test]
+    fn key_from_keysym_maps_keypad_symbols_to_canonical_keys() {
+        assert_eq!(key_from_keysym(Keysym::new(0xffab)), CanonicalKey::Plus);
+        assert_eq!(key_from_keysym(Keysym::new(0xffaa)), CanonicalKey::Asterisk);
+        assert_eq!(key_from_keysym(Keysym::new(0xffae)), CanonicalKey::Period);
+        assert_eq!(key_from_keysym(Keysym::new(0xffaf)), CanonicalKey::Slash);
+        assert_eq!(key_from_keysym(Keysym::new(0xffbd)), CanonicalKey::Equal);
+        assert_eq!(key_from_keysym(Keysym::new(0xffb1)), CanonicalKey::Digit1);
     }
 
     #[test]
