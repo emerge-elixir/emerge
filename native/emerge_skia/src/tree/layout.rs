@@ -1560,12 +1560,12 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
 
 fn nearby_constraint(parent_frame: Frame, slot: NearbySlot) -> Constraint {
     match slot.spec().constraint_kind {
-        NearbyConstraintKind::HostBox => Constraint::new(parent_frame.width, parent_frame.height),
-        NearbyConstraintKind::HostWidthBand => Constraint::with_space(
+        NearbyConstraintKind::Box => Constraint::new(parent_frame.width, parent_frame.height),
+        NearbyConstraintKind::WidthBand => Constraint::with_space(
             AvailableSpace::Definite(parent_frame.width),
             AvailableSpace::MaxContent,
         ),
-        NearbyConstraintKind::HostHeightBand => Constraint::with_space(
+        NearbyConstraintKind::HeightBand => Constraint::with_space(
             AvailableSpace::MaxContent,
             AvailableSpace::Definite(parent_frame.height),
         ),

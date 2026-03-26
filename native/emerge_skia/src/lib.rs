@@ -108,7 +108,6 @@ impl OffscreenAssetMode {
 
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
-    backend: BackendKind,
     backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
     tree_tx: Sender<TreeMsg>,
@@ -163,6 +162,17 @@ struct RendererHandles {
     input_handle: Option<thread::JoinHandle<()>>,
     tree_handle: Option<thread::JoinHandle<()>>,
     event_handle: Option<thread::JoinHandle<()>>,
+}
+
+struct ShutdownRuntimeContext<'a> {
+    running_flag: &'a Arc<AtomicBool>,
+    backend_wake: &'a BackendWakeHandle,
+    stop_flag: &'a Arc<AtomicBool>,
+    tree_tx: &'a Sender<TreeMsg>,
+    event_tx: &'a Sender<EventMsg>,
+    render_tx: &'a RenderSender,
+    log_render: bool,
+    log_input: bool,
 }
 
 struct TestHarnessResource {
@@ -231,32 +241,33 @@ impl RendererResource {
         };
 
         shutdown_renderer_runtime(
-            self.backend,
-            &self.running_flag,
-            &self.backend_wake,
-            &self.stop_flag,
-            &self.tree_tx,
-            &self.event_tx,
-            &self.render_tx,
+            ShutdownRuntimeContext {
+                running_flag: &self.running_flag,
+                backend_wake: &self.backend_wake,
+                stop_flag: &self.stop_flag,
+                tree_tx: &self.tree_tx,
+                event_tx: &self.event_tx,
+                render_tx: &self.render_tx,
+                log_render: self.log_render,
+                log_input: self.log_input,
+            },
             handles,
-            self.log_render,
-            self.log_input,
         );
     }
 }
 
-fn shutdown_renderer_runtime(
-    _backend: BackendKind,
-    running_flag: &Arc<AtomicBool>,
-    backend_wake: &BackendWakeHandle,
-    stop_flag: &Arc<AtomicBool>,
-    tree_tx: &Sender<TreeMsg>,
-    event_tx: &Sender<EventMsg>,
-    render_tx: &RenderSender,
-    mut handles: RendererHandles,
-    log_render: bool,
-    log_input: bool,
-) {
+fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext<'_>, mut handles: RendererHandles) {
+    let ShutdownRuntimeContext {
+        running_flag,
+        backend_wake,
+        stop_flag,
+        tree_tx,
+        event_tx,
+        render_tx,
+        log_render,
+        log_input,
+    } = ctx;
+
     assets::stop();
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
@@ -456,6 +467,21 @@ struct DrmCursorOverrideNif {
     source: String,
     hotspot_x: f32,
     hotspot_y: f32,
+}
+
+#[derive(rustler::NifMap)]
+struct RenderTreeToPixelsOptsNif {
+    width: u32,
+    height: u32,
+    scale: f32,
+    sources: Vec<String>,
+    runtime_enabled: bool,
+    allowlist: Vec<String>,
+    follow_symlinks: bool,
+    max_file_size: u64,
+    extensions: Vec<String>,
+    asset_mode: String,
+    asset_timeout_ms: u64,
 }
 
 struct TreeActorConfig {
@@ -743,12 +769,12 @@ fn spawn_tree_actor_with_initial_tree(
 
                     let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
                     render_sender.send_latest(RenderMsg::Scene {
-                        scene: output.scene,
+                        scene: Box::new(output.scene),
                         version,
                         animate: output.animations_active,
                         ime_enabled: output.ime_enabled,
                         ime_cursor_area: output.ime_cursor_area,
-                        ime_text_state: output.ime_text_state,
+                        ime_text_state: Box::new(output.ime_text_state),
                     });
 
                     window_wake.request_redraw();
@@ -839,48 +865,50 @@ fn start_with_config(
             };
 
             handles.backend_handle = Some(thread::spawn(move || {
-                wayland::run(
-                    wayland_config,
-                    running_flag_clone,
-                    tree_tx_clone,
-                    event_tx_clone,
+                wayland::run(wayland::WaylandRunArgs {
+                    config: wayland_config,
+                    running_flag: running_flag_clone,
+                    tree_tx: tree_tx_clone,
+                    event_tx: event_tx_clone,
                     render_rx,
-                    backend_cursor_rx,
-                    video_registry_clone,
+                    cursor_icon_rx: backend_cursor_rx,
+                    video_registry: video_registry_clone,
                     proxy_tx,
-                );
+                });
             }));
 
             let startup = match proxy_rx.recv() {
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Wayland,
-                        &running_flag,
-                        &backend_wake,
-                        &stop_flag,
-                        &tree_tx,
-                        &event_tx,
-                        &render_sender,
+                        ShutdownRuntimeContext {
+                            running_flag: &running_flag,
+                            backend_wake: &backend_wake,
+                            stop_flag: &stop_flag,
+                            tree_tx: &tree_tx,
+                            event_tx: &event_tx,
+                            render_tx: &render_sender,
+                            log_render,
+                            log_input,
+                        },
                         std::mem::take(&mut handles),
-                        log_render,
-                        log_input,
                     );
 
                     return Err(rustler::Error::Term(Box::new(reason)));
                 }
                 Err(_) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Wayland,
-                        &running_flag,
-                        &backend_wake,
-                        &stop_flag,
-                        &tree_tx,
-                        &event_tx,
-                        &render_sender,
+                        ShutdownRuntimeContext {
+                            running_flag: &running_flag,
+                            backend_wake: &backend_wake,
+                            stop_flag: &stop_flag,
+                            tree_tx: &tree_tx,
+                            event_tx: &event_tx,
+                            render_tx: &render_sender,
+                            log_render,
+                            log_input,
+                        },
                         std::mem::take(&mut handles),
-                        log_render,
-                        log_input,
                     );
 
                     return Err(rustler::Error::Term(Box::new(
@@ -992,32 +1020,34 @@ fn start_with_config(
                 Ok(Ok(())) => {}
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Drm,
-                        &running_flag,
-                        &backend_wake,
-                        &stop_flag,
-                        &tree_tx,
-                        &event_tx,
-                        &render_sender,
+                        ShutdownRuntimeContext {
+                            running_flag: &running_flag,
+                            backend_wake: &backend_wake,
+                            stop_flag: &stop_flag,
+                            tree_tx: &tree_tx,
+                            event_tx: &event_tx,
+                            render_tx: &render_sender,
+                            log_render,
+                            log_input,
+                        },
                         std::mem::take(&mut handles),
-                        log_render,
-                        log_input,
                     );
 
                     return Err(rustler::Error::Term(Box::new(reason)));
                 }
                 Err(_) => {
                     shutdown_renderer_runtime(
-                        BackendKind::Drm,
-                        &running_flag,
-                        &backend_wake,
-                        &stop_flag,
-                        &tree_tx,
-                        &event_tx,
-                        &render_sender,
+                        ShutdownRuntimeContext {
+                            running_flag: &running_flag,
+                            backend_wake: &backend_wake,
+                            stop_flag: &stop_flag,
+                            tree_tx: &tree_tx,
+                            event_tx: &event_tx,
+                            render_tx: &render_sender,
+                            log_render,
+                            log_input,
+                        },
                         std::mem::take(&mut handles),
-                        log_render,
-                        log_input,
                     );
 
                     return Err(rustler::Error::Term(Box::new(
@@ -1066,7 +1096,6 @@ fn start_with_config(
 
     let resource = RendererResource {
         running_flag,
-        backend,
         backend_wake,
         stop_flag,
         tree_tx,
@@ -1341,41 +1370,37 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
 fn render_tree_to_pixels_nif<'a>(
     env: Env<'a>,
     data: Binary,
-    width: u32,
-    height: u32,
-    scale: f32,
-    sources: Vec<String>,
-    runtime_enabled: bool,
-    allowlist: Vec<String>,
-    follow_symlinks: bool,
-    max_file_size: u64,
-    extensions: Vec<String>,
-    asset_mode: String,
-    asset_timeout_ms: u64,
+    opts: RenderTreeToPixelsOptsNif,
 ) -> Result<Binary<'a>, String> {
-    let mode = OffscreenAssetMode::parse(&asset_mode)?;
+    let mode = OffscreenAssetMode::parse(&opts.asset_mode)?;
     let mut tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
 
     assets::configure(AssetConfig {
-        sources,
-        runtime_enabled,
-        runtime_allowlist: allowlist,
-        runtime_follow_symlinks: follow_symlinks,
-        runtime_max_file_size: max_file_size,
-        runtime_extensions: extensions,
+        sources: opts.sources,
+        runtime_enabled: opts.runtime_enabled,
+        runtime_allowlist: opts.allowlist,
+        runtime_follow_symlinks: opts.follow_symlinks,
+        runtime_max_file_size: opts.max_file_size,
+        runtime_extensions: opts.extensions,
     });
 
     match mode {
         OffscreenAssetMode::Await => {
-            assets::resolve_tree_sources_sync(&tree, Some(Duration::from_millis(asset_timeout_ms)))?
+            assets::resolve_tree_sources_sync(
+                &tree,
+                Some(Duration::from_millis(opts.asset_timeout_ms)),
+            )?
         }
         OffscreenAssetMode::Snapshot => assets::snapshot_tree_sources(&tree),
     }
 
-    let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-    let output = layout_and_refresh_default(&mut tree, constraint, scale);
+    let constraint = tree::layout::Constraint::new(opts.width as f32, opts.height as f32);
+    let output = layout_and_refresh_default(&mut tree, constraint, opts.scale);
 
-    let config = RasterConfig { width, height };
+    let config = RasterConfig {
+        width: opts.width,
+        height: opts.height,
+    };
     let mut backend = RasterBackend::new(&config)?;
 
     let state = RenderState {
@@ -2015,21 +2040,22 @@ mod tests {
         };
 
         shutdown_renderer_runtime(
-            test_window_backend(),
-            &running_flag,
-            &backend_wake,
-            &stop_flag,
-            &tree_tx,
-            &event_tx,
-            &render_sender,
+            ShutdownRuntimeContext {
+                running_flag: &running_flag,
+                backend_wake: &backend_wake,
+                stop_flag: &stop_flag,
+                tree_tx: &tree_tx,
+                event_tx: &event_tx,
+                render_tx: &render_sender,
+                log_render: false,
+                log_input: false,
+            },
             RendererHandles {
                 backend_handle: Some(backend_handle),
                 input_handle: Some(input_handle),
                 tree_handle: Some(tree_handle),
                 event_handle: Some(event_handle),
             },
-            false,
-            false,
         );
 
         assert!(!running_flag.load(Ordering::Relaxed));

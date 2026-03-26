@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -476,7 +476,7 @@ fn interpolate_attrs(from: &Attrs, to: &Attrs, t: f64) -> Attrs {
             from.box_shadows.as_ref(),
             to.box_shadows.as_ref(),
             t,
-            interpolate_box_shadows,
+            |from, to, t| interpolate_box_shadows(from, to, t),
         ),
         font_size: interpolate_opt_copy(from.font_size, to.font_size, t, lerp_f64),
         font_color: interpolate_opt_ref(
@@ -753,7 +753,7 @@ fn interpolate_background(from: &Background, to: &Background, t: f64) -> Backgro
     }
 }
 
-fn interpolate_box_shadows(from: &Vec<BoxShadow>, to: &Vec<BoxShadow>, t: f64) -> Vec<BoxShadow> {
+fn interpolate_box_shadows(from: &[BoxShadow], to: &[BoxShadow], t: f64) -> Vec<BoxShadow> {
     from.iter()
         .zip(to.iter())
         .map(|(from, to)| BoxShadow {

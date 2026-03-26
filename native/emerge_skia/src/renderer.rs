@@ -225,7 +225,7 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
 #[derive(Clone)]
 enum CachedAssetKind {
     Raster(Image),
-    Vector(usvg::Tree),
+    Vector(Box<usvg::Tree>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,7 +478,7 @@ pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), Str
     cache.insert(
         id.to_string(),
         Arc::new(CachedAsset {
-            kind: CachedAssetKind::Vector(tree),
+            kind: CachedAssetKind::Vector(Box::new(tree)),
             width,
             height,
         }),
@@ -1182,7 +1182,7 @@ fn draw_image_with_fit(
             );
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
-            draw_tiled_image(canvas, image, x, y, w, h, spec.fit, spec.svg_tint);
+            draw_tiled_image(canvas, image, Rect::from_xywh(x, y, w, h), spec.fit, spec.svg_tint);
         }
     }
 }
@@ -1327,7 +1327,13 @@ fn draw_vector_asset_with_fit(
                 return;
             };
 
-            draw_tiled_image(canvas, &image, x, y, w, h, spec.fit, spec.svg_tint);
+            draw_tiled_image(
+                canvas,
+                &image,
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                spec.svg_tint,
+            );
         }
     }
 }
@@ -1335,10 +1341,7 @@ fn draw_vector_asset_with_fit(
 fn draw_tiled_image(
     canvas: &skia_safe::Canvas,
     image: &Image,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    bounds: Rect,
     fit: ImageFit,
     tint: Option<u32>,
 ) {
@@ -1347,7 +1350,7 @@ fn draw_tiled_image(
     };
 
     let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
-    let local_matrix = Matrix::translate((x, y));
+    let local_matrix = Matrix::translate((bounds.x(), bounds.y()));
     let Some(shader) = image.to_shader(Some(tile_modes), sampling, Some(&local_matrix)) else {
         return;
     };
@@ -1356,7 +1359,7 @@ fn draw_tiled_image(
     paint.set_anti_alias(false);
     paint.set_shader(shader);
 
-    let dst_rect = Rect::from_xywh(x, y, w, h);
+    let dst_rect = bounds;
     if let Some(tint) = tint {
         draw_with_template_tint(canvas, dst_rect, tint, |canvas| {
             canvas.draw_rect(dst_rect, &paint);

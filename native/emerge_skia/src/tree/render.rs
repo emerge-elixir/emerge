@@ -99,6 +99,38 @@ impl RenderBuildContext {
     }
 }
 
+struct RenderOutputs<'a> {
+    text_input_focused: &'a mut bool,
+    text_input_cursor_area: &'a mut Option<(f32, f32, f32, f32)>,
+    event_acc: Option<&'a mut registry_builder::RegistryBuildAcc>,
+}
+
+impl<'a> RenderOutputs<'a> {
+    fn event_acc_mut(&mut self) -> Option<&mut registry_builder::RegistryBuildAcc> {
+        self.event_acc.as_deref_mut()
+    }
+
+    fn reborrow(&mut self) -> RenderOutputs<'_> {
+        let event_acc = self.event_acc.as_deref_mut();
+        let text_input_focused = &mut *self.text_input_focused;
+        let text_input_cursor_area = &mut *self.text_input_cursor_area;
+
+        RenderOutputs {
+            text_input_focused,
+            text_input_cursor_area,
+            event_acc,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RenderTraversal<'a> {
+    scroll_contexts: &'a [registry_builder::ScrollContext],
+    collect_events: bool,
+    scene_ctx: SceneContext,
+    render_ctx: &'a RenderBuildContext,
+}
+
 /// Render the tree and collect rebuild metadata.
 /// Reads from pre-scaled attrs (layout pass must run first).
 pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
@@ -118,17 +150,22 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
         scene_bounds: scene_bounds_for_root(tree, root),
         ..RenderBuildContext::default()
     };
+    let mut outputs = RenderOutputs {
+        text_input_focused: &mut text_input_focused,
+        text_input_cursor_area: &mut text_input_cursor_area,
+        event_acc: Some(&mut rebuild_acc),
+    };
     let nodes = build_element_nodes(
         tree,
         root,
         &FontContext::default(),
-        &mut text_input_focused,
-        &mut text_input_cursor_area,
-        Some(&mut rebuild_acc),
-        &[],
-        true,
-        SceneContext::default(),
-        &render_ctx,
+        &mut outputs,
+        RenderTraversal {
+            scroll_contexts: &[],
+            collect_events: true,
+            scene_ctx: SceneContext::default(),
+            render_ctx: &render_ctx,
+        },
     );
 
     RenderOutput {
@@ -143,13 +180,8 @@ fn build_element_nodes(
     tree: &ElementTree,
     id: &ElementId,
     inherited: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
-    scene_ctx: SceneContext,
-    render_ctx: &RenderBuildContext,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
 ) -> Vec<RenderNode> {
     let Some(element) = tree.get(id) else {
         return Vec::new();
@@ -160,7 +192,7 @@ fn build_element_nodes(
 
     let attrs = &element.attrs;
     let radius = attrs.border_radius.as_ref();
-    let scene_state = resolve_node_state(element, scene_ctx);
+    let scene_state = resolve_node_state(element, traversal.scene_ctx.clone());
     let render_frame = scene_state
         .as_ref()
         .map(|state| state.adjusted_frame)
@@ -169,19 +201,19 @@ fn build_element_nodes(
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
 
     let element_context = inherited.merge_with_attrs(attrs);
-    let next_scroll_contexts = if collect_events {
-        if let Some(acc) = event_acc.as_deref_mut() {
+    let next_scroll_contexts = if traversal.collect_events {
+        if let Some(acc) = outputs.event_acc_mut() {
             registry_builder::accumulate_element_rebuild(
                 acc,
                 element,
                 scene_state.as_ref(),
-                scroll_contexts,
+                traversal.scroll_contexts,
             )
         } else {
-            scroll_contexts.to_vec()
+            traversal.scroll_contexts.to_vec()
         }
     } else {
-        scroll_contexts.to_vec()
+        traversal.scroll_contexts.to_vec()
     };
 
     let mut sections = Vec::new();
@@ -189,7 +221,7 @@ fn build_element_nodes(
     let outer_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, false);
     sections.extend(wrap_with_clips(
         wrap_with_transform(outer_shadow_nodes, transform),
-        render_ctx.shadow_clip_shapes(),
+        traversal.render_ctx.shadow_clip_shapes(),
     ));
 
     let mut normal_nodes = Vec::new();
@@ -200,18 +232,19 @@ fn build_element_nodes(
         element,
         render_frame,
         &element_context,
-        text_input_focused,
-        text_input_cursor_area,
-        event_acc.as_deref_mut(),
-        &next_scroll_contexts,
-        collect_events,
+        &mut outputs.reborrow(),
+        RenderTraversal {
+            scroll_contexts: &next_scroll_contexts,
+            collect_events: traversal.collect_events,
+            scene_ctx: traversal.scene_ctx.clone(),
+            render_ctx: traversal.render_ctx,
+        },
         scene_state.clone(),
-        render_ctx,
     ));
     normal_nodes.extend(collect_border_nodes(render_frame, attrs));
     sections.extend(wrap_with_clips(
         wrap_with_transform(normal_nodes, transform),
-        render_ctx.full_clip_shapes(),
+        traversal.render_ctx.full_clip_shapes(),
     ));
 
     sections.extend(wrap_with_transform(
@@ -219,13 +252,14 @@ fn build_element_nodes(
             tree,
             element,
             &element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
+            &mut outputs.reborrow(),
+            RenderTraversal {
+                scroll_contexts: traversal.scroll_contexts,
+                collect_events: traversal.collect_events,
+                scene_ctx: traversal.scene_ctx,
+                render_ctx: &traversal.render_ctx.without_host_clips(),
+            },
             scene_state,
-            &render_ctx.without_host_clips(),
         ),
         transform,
     ));
@@ -238,13 +272,9 @@ fn build_host_content_nodes(
     element: &Element,
     render_frame: Frame,
     element_context: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
-    render_ctx: &RenderBuildContext,
 ) -> Vec<RenderNode> {
     let attrs = &element.attrs;
     let current_host_clip = HostClipDescriptor {
@@ -255,20 +285,21 @@ fn build_host_content_nodes(
         scroll_x: effective_scrollbar_x(attrs),
         scroll_y: effective_scrollbar_y(attrs),
     };
-    let child_render_ctx = render_ctx.with_host_clip(current_host_clip);
+    let child_render_ctx = traversal.render_ctx.with_host_clip(current_host_clip);
 
     let mut nodes = build_nearby_nodes(
         tree,
         element,
         NearbySlot::BehindContent,
         element_context,
-        text_input_focused,
-        text_input_cursor_area,
-        event_acc.as_deref_mut(),
-        scroll_contexts,
-        collect_events,
+        &mut outputs.reborrow(),
+        RenderTraversal {
+            scroll_contexts: traversal.scroll_contexts,
+            collect_events: traversal.collect_events,
+            scene_ctx: traversal.scene_ctx.clone(),
+            render_ctx: &child_render_ctx,
+        },
         scene_state.clone(),
-        &child_render_ctx,
     );
 
     nodes.extend(wrap_with_clips(
@@ -277,8 +308,8 @@ fn build_host_content_nodes(
             render_frame,
             attrs,
             element_context,
-            text_input_focused,
-            text_input_cursor_area,
+            outputs.text_input_focused,
+            outputs.text_input_cursor_area,
         ),
         vec![current_host_clip.clip],
     ));
@@ -288,13 +319,14 @@ fn build_host_content_nodes(
             tree,
             element,
             element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
+            &mut outputs.reborrow(),
+            RenderTraversal {
+                scroll_contexts: traversal.scroll_contexts,
+                collect_events: traversal.collect_events,
+                scene_ctx: traversal.scene_ctx.clone(),
+                render_ctx: &child_render_ctx,
+            },
             scene_state.clone(),
-            &child_render_ctx,
             current_host_clip.clip,
         ));
     } else {
@@ -302,13 +334,14 @@ fn build_host_content_nodes(
             tree,
             element,
             element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
+            &mut outputs.reborrow(),
+            RenderTraversal {
+                scroll_contexts: traversal.scroll_contexts,
+                collect_events: traversal.collect_events,
+                scene_ctx: traversal.scene_ctx.clone(),
+                render_ctx: &child_render_ctx,
+            },
             scene_state.clone(),
-            &child_render_ctx,
         ));
     }
 
@@ -324,13 +357,9 @@ fn build_front_nearby_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
-    render_ctx: &RenderBuildContext,
 ) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
     for slot in NearbySlot::OVERLAY_PAINT_ORDER {
@@ -339,13 +368,9 @@ fn build_front_nearby_nodes(
             element,
             slot,
             element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
+            &mut outputs.reborrow(),
+            traversal.clone(),
             scene_state.clone(),
-            render_ctx,
         ));
     }
     nodes
@@ -356,13 +381,9 @@ fn build_nearby_nodes(
     element: &Element,
     slot: NearbySlot,
     element_context: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
-    render_ctx: &RenderBuildContext,
 ) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
 
@@ -371,16 +392,16 @@ fn build_nearby_nodes(
             tree,
             nearby_id,
             element_context,
-            text_input_focused,
-            text_input_cursor_area,
-            event_acc.as_deref_mut(),
-            scroll_contexts,
-            collect_events,
-            scene_state
-                .clone()
-                .map(|state| next_scene_context(state, slot.spec().phase))
-                .unwrap_or_default(),
-            render_ctx,
+            &mut outputs.reborrow(),
+            RenderTraversal {
+                scroll_contexts: traversal.scroll_contexts,
+                collect_events: traversal.collect_events,
+                scene_ctx: scene_state
+                    .clone()
+                    .map(|state| next_scene_context(state, slot.spec().phase))
+                    .unwrap_or_default(),
+                render_ctx: traversal.render_ctx,
+            },
         ));
     }
 
@@ -391,13 +412,9 @@ fn build_children_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
-    render_ctx: &RenderBuildContext,
 ) -> Vec<RenderNode> {
     element
         .children
@@ -407,18 +424,18 @@ fn build_children_nodes(
                 tree,
                 child_id,
                 element_context,
-                text_input_focused,
-                text_input_cursor_area,
-                event_acc.as_deref_mut(),
-                scroll_contexts,
-                collect_events,
-                scene_state
-                    .clone()
-                    .map(|state| {
-                        next_scene_context(state, super::element::RetainedPaintPhase::Children)
-                    })
-                    .unwrap_or_default(),
-                render_ctx,
+                &mut outputs.reborrow(),
+                RenderTraversal {
+                    scroll_contexts: traversal.scroll_contexts,
+                    collect_events: traversal.collect_events,
+                    scene_ctx: scene_state
+                        .clone()
+                        .map(|state| {
+                            next_scene_context(state, super::element::RetainedPaintPhase::Children)
+                        })
+                        .unwrap_or_default(),
+                    render_ctx: traversal.render_ctx,
+                },
             )
         })
         .collect()
@@ -428,13 +445,9 @@ fn build_paragraph_nodes(
     tree: &ElementTree,
     element: &Element,
     element_context: &FontContext,
-    text_input_focused: &mut bool,
-    text_input_cursor_area: &mut Option<(f32, f32, f32, f32)>,
-    mut event_acc: Option<&mut registry_builder::RegistryBuildAcc>,
-    scroll_contexts: &[registry_builder::ScrollContext],
-    collect_events: bool,
+    outputs: &mut RenderOutputs<'_>,
+    traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
-    render_ctx: &RenderBuildContext,
     current_host_clip: ClipShape,
 ) -> Vec<RenderNode> {
     let child_scene_ctx = paragraph_children_scene_context(scene_state.clone());
@@ -455,22 +468,22 @@ fn build_paragraph_nodes(
                 tree,
                 child.id,
                 element_context,
-                text_input_focused,
-                text_input_cursor_area,
-                event_acc.as_deref_mut(),
-                scroll_contexts,
-                collect_events,
-                child_scene_ctx.clone(),
-                render_ctx,
+                &mut outputs.reborrow(),
+                RenderTraversal {
+                    scroll_contexts: traversal.scroll_contexts,
+                    collect_events: traversal.collect_events,
+                    scene_ctx: child_scene_ctx.clone(),
+                    render_ctx: traversal.render_ctx,
+                },
             ));
         }
         RetainedChildMode::InlineEventOnly => {
-            if collect_events && let Some(acc) = event_acc.as_deref_mut() {
+            if traversal.collect_events && let Some(acc) = outputs.event_acc_mut() {
                 registry_builder::accumulate_subtree_rebuild(
                     tree,
                     child.id,
                     acc,
-                    scroll_contexts,
+                    traversal.scroll_contexts,
                     child_scene_ctx.clone(),
                 );
             }

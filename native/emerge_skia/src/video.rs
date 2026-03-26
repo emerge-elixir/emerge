@@ -1,22 +1,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CString, c_void};
+use std::ffi::{c_void, CString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use std::thread;
 
-use crossbeam_channel::{Sender, unbounded};
+use crossbeam_channel::{unbounded, Sender};
 use glutin_egl_sys::egl;
 use libloading::Library;
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
 use skia_safe::{
+    gpu::{self, gl::TextureInfo, Mipmapped, Protected, SurfaceOrigin},
     AlphaType, ColorType, Image,
-    gpu::{self, Mipmapped, Protected, SurfaceOrigin, gl::TextureInfo},
 };
 
 use crate::backend::wake::BackendWakeHandle;
@@ -637,7 +637,12 @@ impl EglDmabufSupport {
             egl,
             _lib: lib,
             display,
-            image_target_texture_2d_oes: unsafe { std::mem::transmute(func) },
+            image_target_texture_2d_oes: unsafe {
+                std::mem::transmute::<
+                    *const libc::c_void,
+                    unsafe extern "system" fn(u32, *const libc::c_void),
+                >(func)
+            },
         })
     }
 
@@ -1045,10 +1050,7 @@ impl ImportedExternalFrame {
                 gl::TEXTURE_WRAP_T,
                 gl::CLAMP_TO_EDGE as i32,
             );
-            (support.image_target_texture_2d_oes)(
-                GL_TEXTURE_EXTERNAL_OES,
-                egl_image as *const c_void,
-            );
+            (support.image_target_texture_2d_oes)(GL_TEXTURE_EXTERNAL_OES, egl_image);
             gl::BindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
         }
 
@@ -1356,16 +1358,9 @@ impl Drop for RenderedVideoTarget {
     }
 }
 
+#[derive(Default)]
 pub struct RendererVideoState {
     targets: HashMap<String, RenderedVideoTarget>,
-}
-
-impl Default for RendererVideoState {
-    fn default() -> Self {
-        Self {
-            targets: HashMap::new(),
-        }
-    }
 }
 
 impl RendererVideoState {
@@ -1461,13 +1456,11 @@ mod tests {
             .drain_pending_to_release()
             .expect("pending frames should drain");
 
-        assert!(
-            registry
-                .snapshot_pending()
-                .expect("snapshot should succeed")
-                .pending
-                .is_empty()
-        );
+        assert!(registry
+            .snapshot_pending()
+            .expect("snapshot should succeed")
+            .pending
+            .is_empty());
 
         let released = release_rx.try_recv().expect("expected released frame");
         assert_eq!(released.width, 64);
@@ -1494,12 +1487,10 @@ mod tests {
             .expect("empty drain should succeed");
 
         assert!(release_rx.try_recv().is_err());
-        assert!(
-            registry
-                .snapshot_pending()
-                .expect("snapshot should succeed")
-                .pending
-                .is_empty()
-        );
+        assert!(registry
+            .snapshot_pending()
+            .expect("snapshot should succeed")
+            .pending
+            .is_empty());
     }
 }
