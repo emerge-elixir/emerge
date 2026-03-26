@@ -6,6 +6,7 @@ defmodule Emerge.Engine.AttrCodec do
   alias Emerge.Engine.AttrValidation
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.Engine.Tree.Nearby
+  alias Emerge.UI.Event
 
   @type_tag %{
     width: 1,
@@ -65,7 +66,10 @@ defmodule Emerge.Engine.AttrCodec do
     svg_expected: 64,
     animate: 65,
     animate_enter: 66,
-    animate_exit: 67
+    animate_exit: 67,
+    on_key_down: 68,
+    on_key_up: 69,
+    on_key_press: 70
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -159,6 +163,9 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:animate, value), do: encode_animation(value, :animate)
   defp encode_value(:animate_enter, value), do: encode_animation(value, :animate_enter)
   defp encode_value(:animate_exit, value), do: encode_animation(value, :animate_exit)
+  defp encode_value(:on_key_down, value), do: encode_key_bindings(value)
+  defp encode_value(:on_key_up, value), do: encode_key_bindings(value)
+  defp encode_value(:on_key_press, value), do: encode_key_bindings(value)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -218,6 +225,9 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:animate, rest), do: decode_animation(rest, :animate)
   defp decode_value(:animate_enter, rest), do: decode_animation(rest, :animate_enter)
   defp decode_value(:animate_exit, rest), do: decode_animation(rest, :animate_exit)
+  defp decode_value(:on_key_down, rest), do: decode_key_bindings(rest)
+  defp decode_value(:on_key_up, rest), do: decode_key_bindings(rest)
+  defp decode_value(:on_key_press, rest), do: decode_key_bindings(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)
@@ -306,6 +316,39 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_animation_repeat(<<2, count::unsigned-32, rest::binary>>),
     do: {{:times, count}, rest}
 
+  defp encode_key_bindings(bindings) when is_list(bindings) do
+    payload = [<<length(bindings)::unsigned-16>> | Enum.map(bindings, &encode_key_binding/1)]
+    payload = IO.iodata_to_binary(payload)
+    <<byte_size(payload)::unsigned-32, payload::binary>>
+  end
+
+  defp decode_key_bindings(<<len::unsigned-32, rest::binary>>) do
+    <<payload::binary-size(len), rest::binary>> = rest
+    {bindings, <<>>} = decode_key_bindings_payload(payload, [])
+    {bindings, rest}
+  end
+
+  defp decode_key_bindings_payload(<<count::unsigned-16, rest::binary>>, acc) do
+    decode_key_bindings_payload(rest, acc, count)
+  end
+
+  defp decode_key_bindings_payload(rest, acc, 0), do: {Enum.reverse(acc), rest}
+
+  defp decode_key_bindings_payload(rest, acc, count) do
+    {route, rest} = decode_string(rest)
+    {key, rest} = decode_atom(rest)
+    <<mods_mask::unsigned-8, match_tag::unsigned-8, rest::binary>> = rest
+
+    binding = %{
+      route: route,
+      key: key,
+      mods: decode_key_modifiers(mods_mask),
+      match: decode_key_match_mode(match_tag)
+    }
+
+    decode_key_bindings_payload(rest, [binding | acc], count - 1)
+  end
+
   defp encode_bool(true), do: <<1>>
   defp encode_bool(false), do: <<0>>
   defp encode_bool(value), do: encode_bool(!!value)
@@ -336,6 +379,41 @@ defmodule Emerge.Engine.AttrCodec do
     <<value::binary-size(len), rest::binary>> = rest
     {value, rest}
   end
+
+  defp encode_key_binding(binding) do
+    %{key: key, mods: mods, match: match, route: route} = Event.key_binding_descriptor(binding)
+
+    [
+      encode_string(route),
+      encode_atom(key),
+      <<encode_key_modifiers(mods)::unsigned-8, encode_key_match_mode(match)::unsigned-8>>
+    ]
+  end
+
+  defp encode_key_modifiers(mods) when is_list(mods) do
+    Enum.reduce(mods, 0, fn
+      :shift, acc -> Bitwise.bor(acc, 0x01)
+      :ctrl, acc -> Bitwise.bor(acc, 0x02)
+      :alt, acc -> Bitwise.bor(acc, 0x04)
+      :meta, acc -> Bitwise.bor(acc, 0x08)
+    end)
+  end
+
+  defp decode_key_modifiers(mask) when is_integer(mask) do
+    [
+      Bitwise.band(mask, 0x01) != 0 && :shift,
+      Bitwise.band(mask, 0x02) != 0 && :ctrl,
+      Bitwise.band(mask, 0x04) != 0 && :alt,
+      Bitwise.band(mask, 0x08) != 0 && :meta
+    ]
+    |> Enum.reject(&(&1 == false))
+  end
+
+  defp encode_key_match_mode(:exact), do: 0
+  defp encode_key_match_mode(:all), do: 1
+
+  defp decode_key_match_mode(0), do: :exact
+  defp decode_key_match_mode(1), do: :all
 
   defp encode_atom(value) when is_atom(value) do
     encoded = Atom.to_string(value)

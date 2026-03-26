@@ -61,7 +61,7 @@ use super::{
     egl::{GlEnv, create_gl_env, resize_gl_env},
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
-    keyboard::{KeyboardInputState, key_name_from_keysym, mods_from_sctk, normalize_commit_text},
+    keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk, normalize_commit_text},
     present::PresentState,
     protocols::ProtocolHandles,
     text_input::TextInputProtocolState,
@@ -243,7 +243,7 @@ impl WaylandApp {
 
     fn emit_key_press(&self, event: &KeyEvent) {
         self.send_input_event(InputEvent::Key {
-            key: key_name_from_keysym(event.keysym),
+            key: key_from_keysym(event.keysym),
             action: crate::input::ACTION_PRESS,
             mods: self.keyboard.current_mods,
         });
@@ -804,7 +804,7 @@ impl KeyboardHandler for WaylandApp {
         event: KeyEvent,
     ) {
         self.send_input_event(InputEvent::Key {
-            key: key_name_from_keysym(event.keysym),
+            key: key_from_keysym(event.keysym),
             action: crate::input::ACTION_RELEASE,
             mods: self.keyboard.current_mods,
         });

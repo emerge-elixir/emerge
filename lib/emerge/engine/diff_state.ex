@@ -10,7 +10,7 @@ defmodule Emerge.Engine.DiffState do
   @type t :: %__MODULE__{
           tree: Emerge.Engine.Element.t() | nil,
           vdom: VNode.t() | nil,
-          event_registry: %{binary() => %{atom() => {pid(), term()}}}
+          event_registry: %{binary() => %{term() => {pid(), term()}}}
         }
 
   defstruct tree: nil, vdom: nil, event_registry: %{}
@@ -47,15 +47,15 @@ defmodule Emerge.Engine.DiffState do
     dispatch_event(state, id_bin, :click)
   end
 
-  @spec dispatch_event(t(), binary(), atom()) :: :ok
+  @spec dispatch_event(t(), binary(), term()) :: :ok
   def dispatch_event(%__MODULE__{event_registry: registry}, id_bin, event)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     dispatch_event_with_payload(%__MODULE__{event_registry: registry}, id_bin, event, :no_payload)
   end
 
-  @spec dispatch_event(t(), binary(), atom(), term()) :: :ok
+  @spec dispatch_event(t(), binary(), term(), term()) :: :ok
   def dispatch_event(%__MODULE__{event_registry: registry}, id_bin, event, payload)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     dispatch_event_with_payload(
       %__MODULE__{event_registry: registry},
       id_bin,
@@ -82,9 +82,9 @@ defmodule Emerge.Engine.DiffState do
 
   defp dispatch_message(msg, {:with_payload, payload}), do: {msg, payload}
 
-  @spec lookup_event(t(), binary(), atom()) :: {:ok, {pid(), term()}} | :error
+  @spec lookup_event(t(), binary(), term()) :: {:ok, {pid(), term()}} | :error
   def lookup_event(%__MODULE__{event_registry: registry}, id_bin, event)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     case Map.get(registry, id_bin, %{}) |> Map.get(event) do
       {pid, msg} when is_pid(pid) -> {:ok, {pid, msg}}
       _ -> :error
@@ -108,6 +108,9 @@ defmodule Emerge.Engine.DiffState do
     |> register_event(element, :on_change, :change)
     |> register_event(element, :on_focus, :focus)
     |> register_event(element, :on_blur, :blur)
+    |> register_key_events(element, :on_key_down, :key_down)
+    |> register_key_events(element, :on_key_up, :key_up)
+    |> register_key_events(element, :on_key_press, :key_press)
     |> then(fn registry ->
       registry =
         Enum.reduce(element.children, registry, fn child, next_registry ->
@@ -133,4 +136,28 @@ defmodule Emerge.Engine.DiffState do
         acc
     end
   end
+
+  defp register_key_events(acc, element, attr, event_type) do
+    case Map.get(element.attrs, attr) do
+      bindings when is_list(bindings) ->
+        Enum.reduce(bindings, acc, fn binding, next_acc ->
+          register_key_event(next_acc, element, event_type, binding)
+        end)
+
+      _ ->
+        acc
+    end
+  end
+
+  defp register_key_event(acc, element, event_type, %{route: route, payload: {pid, msg}})
+       when is_binary(route) and is_pid(pid) do
+    id_bin = :erlang.term_to_binary(element.id)
+    event = {event_type, route}
+
+    Map.update(acc, id_bin, %{event => {pid, msg}}, fn events ->
+      Map.put(events, event, {pid, msg})
+    end)
+  end
+
+  defp register_key_event(acc, _element, _event_type, _binding), do: acc
 end

@@ -68,27 +68,27 @@ defmodule Emerge.Engine do
   @doc """
   Dispatch an element event to the handler registered for an element id.
   """
-  @spec dispatch_event(diff_state(), binary(), atom()) :: :ok
+  @spec dispatch_event(diff_state(), binary(), term()) :: :ok
   def dispatch_event(%DiffState{} = state, id_bin, event)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     DiffState.dispatch_event(state, id_bin, event)
   end
 
   @doc """
   Dispatch an element event with payload to the registered handler.
   """
-  @spec dispatch_event(diff_state(), binary(), atom(), term()) :: :ok
+  @spec dispatch_event(diff_state(), binary(), term(), term()) :: :ok
   def dispatch_event(%DiffState{} = state, id_bin, event, payload)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     DiffState.dispatch_event(state, id_bin, event, payload)
   end
 
   @doc """
   Lookup the handler payload for an element event.
   """
-  @spec lookup_event(diff_state(), binary(), atom()) :: {:ok, {pid(), term()}} | :error
+  @spec lookup_event(diff_state(), binary(), term()) :: {:ok, {pid(), term()}} | :error
   def lookup_event(%DiffState{} = state, id_bin, event)
-      when is_binary(id_bin) and is_atom(event) do
+      when is_binary(id_bin) do
     DiffState.lookup_event(state, id_bin, event)
   end
 end

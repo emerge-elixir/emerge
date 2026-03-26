@@ -289,6 +289,19 @@ flow:
 
 `on_press` also has focused keyboard `Enter` support.
 
+Focused elements can also register direct keyboard listeners:
+
+- `on_key_down`
+- `on_key_up`
+- `on_key_press`
+
+Keyboard listener matchers use canonical key atoms such as `:enter`, `:a`,
+`:digit_1`, and `:arrow_left`, plus modifier filters drawn from
+`[:shift, :ctrl, :alt, :meta]`.
+
+`on_key_press` is release-based: it arms on matching key-down and completes on
+matching key-up. `on_key_up` runs before `on_key_press` completion.
+
 ### Mouse Down / Mouse Up
 
 - `on_mouse_down` is left-button only
@@ -454,10 +467,14 @@ Current focusable behavior includes elements that are:
 - text inputs
 - pressable
 - explicitly focus-listening (`on_focus`, `on_blur`)
+- keyboard-listening (`on_key_down`, `on_key_up`, `on_key_press`)
 
 ### Focus Changes
 
 Focus transitions are expanded into concrete actions such as:
+
+- Tab / Shift+Tab traversal is handled on key-down, matching mainstream toolkit behavior
+- `on_key_press` remains available for completed key gestures that should fire on release
 
 - blur element event
 - focus element event

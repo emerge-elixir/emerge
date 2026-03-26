@@ -26,6 +26,7 @@ mod debug_trace;
 mod drm_input;
 mod events;
 mod input;
+mod keys;
 #[cfg(feature = "drm")]
 mod linux_wait;
 mod native_log;

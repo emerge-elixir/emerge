@@ -131,8 +131,20 @@ defmodule Emerge.Runtime.Viewport do
   @spec handle_skia_event(term(), t()) :: {:noreply, t()} | {:stop, term(), t()}
   def handle_skia_event(event, state) when is_map(state) do
     case event do
-      {id_bin, event_type} when is_binary(id_bin) and is_atom(event_type) ->
-        route_element_event(state, id_bin, event_type, :no_payload)
+      {id_bin, event_ref} when is_binary(id_bin) ->
+        route_element_event(state, id_bin, event_ref, :no_payload)
+        {:noreply, state}
+
+      {id_bin, :key_down, route} when is_binary(id_bin) and is_binary(route) ->
+        route_element_event(state, id_bin, {:key_down, route}, :no_payload)
+        {:noreply, state}
+
+      {id_bin, :key_up, route} when is_binary(id_bin) and is_binary(route) ->
+        route_element_event(state, id_bin, {:key_up, route}, :no_payload)
+        {:noreply, state}
+
+      {id_bin, :key_press, route} when is_binary(id_bin) and is_binary(route) ->
+        route_element_event(state, id_bin, {:key_press, route}, :no_payload)
         {:noreply, state}
 
       {id_bin, event_type, payload} when is_binary(id_bin) and is_atom(event_type) ->
@@ -222,7 +234,7 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  @spec default_wrap_payload(term(), term(), atom()) :: term()
+  @spec default_wrap_payload(term(), term(), term()) :: term()
   def default_wrap_payload(message, payload, _event_type) when is_tuple(message) do
     Tuple.insert_at(message, tuple_size(message), payload)
   end
@@ -273,13 +285,13 @@ defmodule Emerge.Runtime.Viewport do
     state
   end
 
-  defp route_element_event(state, id_bin, event_type, payload_mode) do
+  defp route_element_event(state, id_bin, event_ref, payload_mode) do
     runtime = runtime!(state)
 
     if is_nil(runtime.diff_state) do
       :ok
     else
-      case Emerge.Engine.lookup_event(runtime.diff_state, id_bin, event_type) do
+      case Emerge.Engine.lookup_event(runtime.diff_state, id_bin, event_ref) do
         {:ok, {pid, message}} when is_pid(pid) ->
           routed_message =
             case payload_mode do
@@ -287,7 +299,7 @@ defmodule Emerge.Runtime.Viewport do
                 message
 
               {:with_payload, payload} ->
-                apply(runtime.module, :wrap_payload, [message, payload, event_type])
+                apply(runtime.module, :wrap_payload, [message, payload, event_ref])
             end
 
           send(pid, routed_message)

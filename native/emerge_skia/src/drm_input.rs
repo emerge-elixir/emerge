@@ -22,6 +22,7 @@ use crate::cursor::{CursorState, SharedCursorState};
 use crate::input::{
     ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
 };
+use crate::keys::CanonicalKey;
 use crate::linux_wait::{EventFd, poll_fds};
 
 struct InputDevice {
@@ -63,7 +64,7 @@ struct Modifiers {
 #[derive(Clone, Copy, Debug)]
 enum KeyKind {
     Character(char),
-    Named(&'static str),
+    Key(CanonicalKey),
 }
 
 pub struct DrmInput {
@@ -330,7 +331,7 @@ impl DrmInput {
             ACTION_RELEASE
         };
         self.push_input_blocking(InputEvent::Key {
-            key: key_kind_to_name(key_kind),
+            key: key_kind_to_canonical_key(key_kind),
             action,
             mods,
         });
@@ -1088,7 +1089,7 @@ mod tests {
         input
             .event_tx
             .send(EventMsg::InputEvent(InputEvent::Key {
-                key: "a".to_string(),
+                key: CanonicalKey::A,
                 action: ACTION_PRESS,
                 mods: 0,
             }))
@@ -1100,7 +1101,7 @@ mod tests {
         assert_eq!(input.pending_cursor_pos, Some((50.0, 60.0)));
         assert!(matches!(
             event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::Key { key, .. })) if key == "a"
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, .. })) if key == CanonicalKey::A
         ));
 
         input.flush_pending_cursor_pos_nonblocking();
@@ -1288,55 +1289,55 @@ fn evdev_key_to_kind(key: Key) -> Option<KeyKind> {
         Key::KEY_8 => KeyKind::Character('8'),
         Key::KEY_9 => KeyKind::Character('9'),
         Key::KEY_SPACE => KeyKind::Character(' '),
-        Key::KEY_ENTER => KeyKind::Named("enter"),
-        Key::KEY_TAB => KeyKind::Named("tab"),
-        Key::KEY_ESC => KeyKind::Named("escape"),
-        Key::KEY_BACKSPACE => KeyKind::Named("backspace"),
-        Key::KEY_INSERT => KeyKind::Named("insert"),
-        Key::KEY_DELETE => KeyKind::Named("delete"),
-        Key::KEY_LEFT => KeyKind::Named("left"),
-        Key::KEY_RIGHT => KeyKind::Named("right"),
-        Key::KEY_UP => KeyKind::Named("up"),
-        Key::KEY_DOWN => KeyKind::Named("down"),
-        Key::KEY_PAGEUP => KeyKind::Named("page_up"),
-        Key::KEY_PAGEDOWN => KeyKind::Named("page_down"),
-        Key::KEY_HOME => KeyKind::Named("home"),
-        Key::KEY_END => KeyKind::Named("end"),
-        Key::KEY_CAPSLOCK => KeyKind::Named("caps_lock"),
-        Key::KEY_SCROLLLOCK => KeyKind::Named("scroll_lock"),
-        Key::KEY_NUMLOCK => KeyKind::Named("num_lock"),
-        Key::KEY_SYSRQ => KeyKind::Named("print_screen"),
-        Key::KEY_PAUSE => KeyKind::Named("pause"),
-        Key::KEY_MENU => KeyKind::Named("context_menu"),
-        Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => KeyKind::Named("shift"),
-        Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => KeyKind::Named("control"),
-        Key::KEY_LEFTALT => KeyKind::Named("alt"),
-        Key::KEY_RIGHTALT => KeyKind::Named("altgraph"),
-        Key::KEY_LEFTMETA | Key::KEY_RIGHTMETA => KeyKind::Named("super"),
-        Key::KEY_F1 => KeyKind::Named("f1"),
-        Key::KEY_F2 => KeyKind::Named("f2"),
-        Key::KEY_F3 => KeyKind::Named("f3"),
-        Key::KEY_F4 => KeyKind::Named("f4"),
-        Key::KEY_F5 => KeyKind::Named("f5"),
-        Key::KEY_F6 => KeyKind::Named("f6"),
-        Key::KEY_F7 => KeyKind::Named("f7"),
-        Key::KEY_F8 => KeyKind::Named("f8"),
-        Key::KEY_F9 => KeyKind::Named("f9"),
-        Key::KEY_F10 => KeyKind::Named("f10"),
-        Key::KEY_F11 => KeyKind::Named("f11"),
-        Key::KEY_F12 => KeyKind::Named("f12"),
-        Key::KEY_F13 => KeyKind::Named("f13"),
-        Key::KEY_F14 => KeyKind::Named("f14"),
-        Key::KEY_F15 => KeyKind::Named("f15"),
-        Key::KEY_F16 => KeyKind::Named("f16"),
-        Key::KEY_F17 => KeyKind::Named("f17"),
-        Key::KEY_F18 => KeyKind::Named("f18"),
-        Key::KEY_F19 => KeyKind::Named("f19"),
-        Key::KEY_F20 => KeyKind::Named("f20"),
-        Key::KEY_F21 => KeyKind::Named("f21"),
-        Key::KEY_F22 => KeyKind::Named("f22"),
-        Key::KEY_F23 => KeyKind::Named("f23"),
-        Key::KEY_F24 => KeyKind::Named("f24"),
+        Key::KEY_ENTER => KeyKind::Key(CanonicalKey::Enter),
+        Key::KEY_TAB => KeyKind::Key(CanonicalKey::Tab),
+        Key::KEY_ESC => KeyKind::Key(CanonicalKey::Escape),
+        Key::KEY_BACKSPACE => KeyKind::Key(CanonicalKey::Backspace),
+        Key::KEY_INSERT => KeyKind::Key(CanonicalKey::Insert),
+        Key::KEY_DELETE => KeyKind::Key(CanonicalKey::Delete),
+        Key::KEY_LEFT => KeyKind::Key(CanonicalKey::ArrowLeft),
+        Key::KEY_RIGHT => KeyKind::Key(CanonicalKey::ArrowRight),
+        Key::KEY_UP => KeyKind::Key(CanonicalKey::ArrowUp),
+        Key::KEY_DOWN => KeyKind::Key(CanonicalKey::ArrowDown),
+        Key::KEY_PAGEUP => KeyKind::Key(CanonicalKey::PageUp),
+        Key::KEY_PAGEDOWN => KeyKind::Key(CanonicalKey::PageDown),
+        Key::KEY_HOME => KeyKind::Key(CanonicalKey::Home),
+        Key::KEY_END => KeyKind::Key(CanonicalKey::End),
+        Key::KEY_CAPSLOCK => KeyKind::Key(CanonicalKey::CapsLock),
+        Key::KEY_SCROLLLOCK => KeyKind::Key(CanonicalKey::ScrollLock),
+        Key::KEY_NUMLOCK => KeyKind::Key(CanonicalKey::NumLock),
+        Key::KEY_SYSRQ => KeyKind::Key(CanonicalKey::PrintScreen),
+        Key::KEY_PAUSE => KeyKind::Key(CanonicalKey::Pause),
+        Key::KEY_MENU => KeyKind::Key(CanonicalKey::ContextMenu),
+        Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => KeyKind::Key(CanonicalKey::Shift),
+        Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => KeyKind::Key(CanonicalKey::Control),
+        Key::KEY_LEFTALT => KeyKind::Key(CanonicalKey::Alt),
+        Key::KEY_RIGHTALT => KeyKind::Key(CanonicalKey::AltGraph),
+        Key::KEY_LEFTMETA | Key::KEY_RIGHTMETA => KeyKind::Key(CanonicalKey::Super),
+        Key::KEY_F1 => KeyKind::Key(CanonicalKey::F1),
+        Key::KEY_F2 => KeyKind::Key(CanonicalKey::F2),
+        Key::KEY_F3 => KeyKind::Key(CanonicalKey::F3),
+        Key::KEY_F4 => KeyKind::Key(CanonicalKey::F4),
+        Key::KEY_F5 => KeyKind::Key(CanonicalKey::F5),
+        Key::KEY_F6 => KeyKind::Key(CanonicalKey::F6),
+        Key::KEY_F7 => KeyKind::Key(CanonicalKey::F7),
+        Key::KEY_F8 => KeyKind::Key(CanonicalKey::F8),
+        Key::KEY_F9 => KeyKind::Key(CanonicalKey::F9),
+        Key::KEY_F10 => KeyKind::Key(CanonicalKey::F10),
+        Key::KEY_F11 => KeyKind::Key(CanonicalKey::F11),
+        Key::KEY_F12 => KeyKind::Key(CanonicalKey::F12),
+        Key::KEY_F13 => KeyKind::Key(CanonicalKey::F13),
+        Key::KEY_F14 => KeyKind::Key(CanonicalKey::F14),
+        Key::KEY_F15 => KeyKind::Key(CanonicalKey::F15),
+        Key::KEY_F16 => KeyKind::Key(CanonicalKey::F16),
+        Key::KEY_F17 => KeyKind::Key(CanonicalKey::F17),
+        Key::KEY_F18 => KeyKind::Key(CanonicalKey::F18),
+        Key::KEY_F19 => KeyKind::Key(CanonicalKey::F19),
+        Key::KEY_F20 => KeyKind::Key(CanonicalKey::F20),
+        Key::KEY_F21 => KeyKind::Key(CanonicalKey::F21),
+        Key::KEY_F22 => KeyKind::Key(CanonicalKey::F22),
+        Key::KEY_F23 => KeyKind::Key(CanonicalKey::F23),
+        Key::KEY_F24 => KeyKind::Key(CanonicalKey::F24),
         Key::KEY_MINUS => KeyKind::Character('-'),
         Key::KEY_EQUAL => KeyKind::Character('='),
         Key::KEY_LEFTBRACE => KeyKind::Character('['),
@@ -1364,18 +1365,17 @@ fn evdev_key_to_kind(key: Key) -> Option<KeyKind> {
         Key::KEY_KPMINUS => KeyKind::Character('-'),
         Key::KEY_KPPLUS => KeyKind::Character('+'),
         Key::KEY_KPEQUAL => KeyKind::Character('='),
-        Key::KEY_KPENTER => KeyKind::Named("enter"),
+        Key::KEY_KPENTER => KeyKind::Key(CanonicalKey::Enter),
         _ => return None,
     };
 
     Some(kind)
 }
 
-fn key_kind_to_name(key: KeyKind) -> String {
+fn key_kind_to_canonical_key(key: KeyKind) -> CanonicalKey {
     match key {
-        KeyKind::Character(' ') => "space".to_string(),
-        KeyKind::Character(ch) => ch.to_string(),
-        KeyKind::Named(name) => name.to_string(),
+        KeyKind::Character(ch) => CanonicalKey::from_printable_char(ch).unwrap_or(CanonicalKey::Unknown),
+        KeyKind::Key(key) => key,
     }
 }
 
@@ -1483,7 +1483,7 @@ fn key_to_codepoint(key: KeyKind, mods: Modifiers, caps_lock: bool) -> Option<ch
             ' ' => ' ',
             _ => return None,
         }),
-        KeyKind::Named(_) => None,
+        KeyKind::Key(_) => None,
     }
 }
 

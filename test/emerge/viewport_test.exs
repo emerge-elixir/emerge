@@ -141,6 +141,74 @@ defmodule Emerge.ViewportTest do
     end
   end
 
+  defmodule KeyViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok, %{count: Keyword.get(opts, :count, 0)},
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render(state) do
+      row([spacing(8)], [
+        Input.button(
+          [
+            key(:inc_key),
+            Event.on_key_down(:enter, :increment),
+            Background.color(color(:sky, 500)),
+            Border.rounded(4)
+          ],
+          text("#{state.count}")
+        )
+      ])
+    end
+
+    @impl Viewport
+    def handle_info(:increment, state) do
+      {:noreply, %{state | count: state.count + 1} |> Viewport.rerender()}
+    end
+  end
+
+  defmodule KeyPressViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok, %{count: Keyword.get(opts, :count, 0)},
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render(state) do
+      row([spacing(8)], [
+        Input.button(
+          [
+            key(:press_key),
+            Event.on_key_press(:space, :increment),
+            Background.color(color(:rose, 500)),
+            Border.rounded(4)
+          ],
+          text("#{state.count}")
+        )
+      ])
+    end
+
+    @impl Viewport
+    def handle_info(:increment, state) do
+      {:noreply, %{state | count: state.count + 1} |> Viewport.rerender()}
+    end
+  end
+
   defmodule InputViewport do
     use Emerge
 
@@ -478,6 +546,42 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_skia_event, {id_bin, :change, "hello"}})
 
     assert_receive {:wrapped_payload, "hello"}
+
+    GenServer.stop(pid)
+  end
+
+  test "key listener events route through the viewport mailbox" do
+    {:ok, pid} = KeyViewport.start_link(count: 0)
+
+    state = :sys.get_state(pid)
+    route = Event.key_route_id(:key_down, :enter, [], :exact)
+
+    {id_bin, _events} =
+      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
+        Map.has_key?(events, {:key_down, route})
+      end)
+
+    send(pid, {:emerge_skia_event, {id_bin, :key_down, route}})
+
+    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
+
+    GenServer.stop(pid)
+  end
+
+  test "key press listener events route through the viewport mailbox" do
+    {:ok, pid} = KeyPressViewport.start_link(count: 0)
+
+    state = :sys.get_state(pid)
+    route = Event.key_route_id(:key_press, :space, [], :exact)
+
+    {id_bin, _events} =
+      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
+        Map.has_key?(events, {:key_press, route})
+      end)
+
+    send(pid, {:emerge_skia_event, {id_bin, :key_press, route}})
+
+    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
 
     GenServer.stop(pid)
   end
