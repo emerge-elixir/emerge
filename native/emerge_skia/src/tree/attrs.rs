@@ -6,6 +6,7 @@
 
 use super::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 use super::deserialize::DecodeError;
+use crate::keys::CanonicalKey;
 
 // =============================================================================
 // Attribute Types
@@ -206,6 +207,20 @@ pub struct TextFragment {
     pub ascent: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyBindingMatch {
+    Exact,
+    All,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyBindingSpec {
+    pub route: String,
+    pub key: CanonicalKey,
+    pub mods: u8,
+    pub match_mode: KeyBindingMatch,
+}
+
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
 pub struct Attrs {
@@ -236,6 +251,9 @@ pub struct Attrs {
     pub on_change: Option<bool>,
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
+    pub on_key_down: Option<Vec<KeyBindingSpec>>,
+    pub on_key_up: Option<Vec<KeyBindingSpec>>,
+    pub on_key_press: Option<Vec<KeyBindingSpec>>,
     pub mouse_over: Option<MouseOverAttrs>,
     pub focused: Option<MouseOverAttrs>,
     pub mouse_down: Option<MouseOverAttrs>,
@@ -476,6 +494,9 @@ const TAG_SVG_EXPECTED: u8 = 64;
 const TAG_ANIMATE: u8 = 65;
 const TAG_ANIMATE_ENTER: u8 = 66;
 const TAG_ANIMATE_EXIT: u8 = 67;
+const TAG_ON_KEY_DOWN: u8 = 68;
+const TAG_ON_KEY_UP: u8 = 69;
+const TAG_ON_KEY_PRESS: u8 = 70;
 
 // =============================================================================
 // Decoder
@@ -610,6 +631,9 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
         TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
         TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
+        TAG_ON_KEY_DOWN => attrs.on_key_down = Some(decode_key_bindings(cursor)?),
+        TAG_ON_KEY_UP => attrs.on_key_up = Some(decode_key_bindings(cursor)?),
+        TAG_ON_KEY_PRESS => attrs.on_key_press = Some(decode_key_bindings(cursor)?),
         TAG_MOUSE_OVER => {
             attrs.mouse_over = Some(decode_decorative_style_attrs(cursor, "mouse_over")?)
         }
@@ -787,6 +811,52 @@ fn decode_exit_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, 
     }
 
     Ok(spec)
+}
+
+fn decode_key_bindings(cursor: &mut AttrCursor) -> Result<Vec<KeyBindingSpec>, DecodeError> {
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+    let count = nested.read_u16_be()? as usize;
+    let mut bindings = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let route = nested.read_string_u16()?;
+        let key_name = nested.read_string_u16()?;
+        let Some(key) = CanonicalKey::from_atom_name(&key_name) else {
+            return Err(DecodeError::InvalidStructure(format!(
+                "unknown canonical key: {}",
+                key_name
+            )));
+        };
+
+        let mods = nested.read_u8()?;
+        let match_mode = match nested.read_u8()? {
+            0 => KeyBindingMatch::Exact,
+            1 => KeyBindingMatch::All,
+            other => {
+                return Err(DecodeError::InvalidStructure(format!(
+                    "unknown key modifier match tag: {}",
+                    other
+                )));
+            }
+        };
+
+        bindings.push(KeyBindingSpec {
+            route,
+            key,
+            mods,
+            match_mode,
+        });
+    }
+
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(format!(
+            "key binding payload has {} trailing bytes",
+            nested.remaining(),
+        )));
+    }
+
+    Ok(bindings)
 }
 
 fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
@@ -1490,10 +1560,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("mouse_over supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("mouse_over supports decorative attrs only"));
     }
 
     #[test]
@@ -1546,10 +1615,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("focused supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("focused supports decorative attrs only"));
     }
 
     #[test]
@@ -1629,7 +1697,7 @@ mod tests {
         data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
         data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
         data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
-        // color: named "red" -> variant=2, len=3, "red"
+                                                        // color: named "red" -> variant=2, len=3, "red"
         data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
         data.push(0); // inset=false
 

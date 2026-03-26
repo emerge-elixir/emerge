@@ -42,7 +42,7 @@ defmodule Emerge do
   @callback handle_input(term(), state()) ::
               {:noreply, state()} | {:stop, term(), state()}
 
-  @callback wrap_payload(term(), term(), atom()) :: term()
+  @callback wrap_payload(term(), term(), term()) :: term()
 
   @optional_callbacks handle_info: 2, handle_input: 2, wrap_payload: 3
 
@@ -88,8 +88,8 @@ defmodule Emerge do
     RuntimeViewport.rerender(state)
   end
 
-  @spec default_wrap_payload(term(), term(), atom()) :: term()
-  def default_wrap_payload(message, payload, event_type) when is_atom(event_type) do
+  @spec default_wrap_payload(term(), term(), term()) :: term()
+  def default_wrap_payload(message, payload, event_type) do
     RuntimeViewport.default_wrap_payload(message, payload, event_type)
   end
 end

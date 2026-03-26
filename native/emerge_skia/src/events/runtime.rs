@@ -32,8 +32,8 @@ use crate::{
 
 use super::{
     CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom,
-    click_atom, focus_atom, mouse_down_atom, mouse_enter_atom, mouse_leave_atom, mouse_move_atom,
-    mouse_up_atom, press_atom,
+    click_atom, focus_atom, key_down_atom, key_press_atom, key_up_atom, mouse_down_atom,
+    mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
     registry_builder::{
         self, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
         RuntimeChange, RuntimeOverlayState,
@@ -548,6 +548,11 @@ impl DirectEventRuntime {
                     emit_press_pointer,
                 });
             }
+            RuntimeChange::StartKeyPressTracker { tracker } => {
+                if !self.runtime_overlay.key_presses.contains(&tracker) {
+                    self.runtime_overlay.key_presses.push(tracker);
+                }
+            }
             RuntimeChange::StartDragTracker {
                 element_id,
                 matcher_kind,
@@ -590,6 +595,14 @@ impl DirectEventRuntime {
             }
             RuntimeChange::ClearClickPressTracker => {
                 self.runtime_overlay.click_press = None;
+            }
+            RuntimeChange::ClearKeyPressTrackersForKey { key } => {
+                self.runtime_overlay
+                    .key_presses
+                    .retain(|tracker| tracker.key != key);
+            }
+            RuntimeChange::ClearKeyPressTrackers => {
+                self.runtime_overlay.key_presses.clear();
             }
             RuntimeChange::StartScrollbarDrag { tracker } => {
                 self.runtime_overlay.scrollbar = Some(tracker);
@@ -634,6 +647,10 @@ impl DirectEventRuntime {
         {
             self.runtime_overlay.click_press = None;
         }
+
+        self.runtime_overlay
+            .key_presses
+            .retain(|tracker| registry_builder::base_has_key_press_source(&self.base_registry, tracker));
 
         match self.runtime_overlay.drag {
             registry_builder::DragTrackerState::Inactive => {}
@@ -738,6 +755,9 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
     match kind {
         ElementEventKind::Click => click_atom(),
         ElementEventKind::Press => press_atom(),
+        ElementEventKind::KeyDown => key_down_atom(),
+        ElementEventKind::KeyUp => key_up_atom(),
+        ElementEventKind::KeyPress => key_press_atom(),
         ElementEventKind::MouseDown => mouse_down_atom(),
         ElementEventKind::MouseUp => mouse_up_atom(),
         ElementEventKind::MouseEnter => mouse_enter_atom(),
@@ -1140,6 +1160,7 @@ mod tests {
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::events::{CursorIcon, RegistryRebuildPayload};
+    use crate::keys::CanonicalKey;
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
@@ -1713,7 +1734,7 @@ mod tests {
 
         runtime.handle_input_event(
             InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: crate::input::ACTION_PRESS,
                 mods: 0,
             },
@@ -2315,7 +2336,7 @@ mod tests {
 
         runtime.handle_input_event(
             InputEvent::Key {
-                key: "backspace".to_string(),
+                key: CanonicalKey::Backspace,
                 action: crate::input::ACTION_PRESS,
                 mods: 0,
             },

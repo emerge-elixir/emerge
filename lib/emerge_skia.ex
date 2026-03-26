@@ -500,7 +500,10 @@ defmodule EmergeSkia do
   - `{id_bin, event_type, payload}`
 
   where `id_bin` is an opaque element id and `event_type` is an atom such as
-  `:press`, `:click`, or `:change`.
+  `:press`, `:click`, `:change`, `:key_down`, `:key_up`, or `:key_press`.
+
+  Routed `:key_down`, `:key_up`, and `:key_press` payloads currently carry an
+  opaque binding route id used by higher-level runtimes.
 
   Higher-level runtimes should route element events with
   `Emerge.Engine.lookup_event/3` or `Emerge.Engine.dispatch_event/3`/`4`.
@@ -509,7 +512,7 @@ defmodule EmergeSkia do
   - `button` is an atom like `:left`, `:right`, `:middle`
   - `action` is 0 for release, 1 for press
   - `mods` is a list of modifier atoms like `[:shift, :ctrl]`
-  - `key` is an atom like `:escape`, `:enter`, or a character atom like `:a`
+  - `key` is a canonical atom like `:escape`, `:enter`, `:a`, `:digit_1`, or `:arrow_left`
 
   ## Example
 

@@ -5,6 +5,7 @@ defmodule Emerge.UI.Internal.Validation do
   alias Emerge.Engine.AttrValidation
   alias Emerge.Engine.Element
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
+  alias Emerge.UI.Event
   alias EmergeSkia.VideoTarget
 
   @state_style_key_set AttrSchema.state_style_key_set()
@@ -61,6 +62,9 @@ defmodule Emerge.UI.Internal.Validation do
                       :on_change,
                       :on_focus,
                       :on_blur,
+                      :on_key_down,
+                      :on_key_up,
+                      :on_key_press,
                       :above,
                       :below,
                       :on_left,
@@ -190,6 +194,12 @@ defmodule Emerge.UI.Internal.Validation do
     Map.put(acc, :box_shadow, existing ++ List.wrap(value))
   end
 
+  defp put_attr(acc, key, value, _warn_overrides)
+       when key in [:on_key_down, :on_key_up, :on_key_press] do
+    existing = Map.get(acc, key, [])
+    Map.put(acc, key, existing ++ List.wrap(value))
+  end
+
   defp put_attr(acc, key, value, warn_overrides) do
     if warn_overrides do
       maybe_warn_override(acc, key, value)
@@ -233,6 +243,9 @@ defmodule Emerge.UI.Internal.Validation do
 
       key in [:animate, :animate_enter, :animate_exit] ->
         {key, AttrValidation.normalize_animation!(key, value)}
+
+      key in [:on_key_down, :on_key_up, :on_key_press] ->
+        {key, Event.normalize_key_listener_bindings!(key, value)}
 
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
         validate_public_attr_value!(attrs_owner, key, value)

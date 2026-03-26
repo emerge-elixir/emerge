@@ -142,6 +142,42 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == %{on_focus: true, on_blur: true}
   end
 
+  test "encode/decode key binding listeners" do
+    {:on_key_down, key_down} = Event.on_key_down([key: :enter, mods: [:ctrl], match: :all], :save)
+    {:on_key_up, key_up} = Event.on_key_up(:escape, :cancel)
+    {:on_key_press, key_press} = Event.on_key_press(:space, :cycle)
+
+    attrs = %{on_key_down: [key_down], on_key_up: [key_up], on_key_press: [key_press]}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{
+             on_key_down: [
+               %{
+                 key: :enter,
+                 mods: [:ctrl],
+                 match: :all,
+                 route: Event.key_route_id(:key_down, :enter, [:ctrl], :all)
+               }
+             ],
+             on_key_up: [
+               %{
+                 key: :escape,
+                 mods: [],
+                 match: :exact,
+                 route: Event.key_route_id(:key_up, :escape, [], :exact)
+               }
+             ],
+             on_key_press: [
+               %{
+                 key: :space,
+                 mods: [],
+                 match: :exact,
+                 route: Event.key_route_id(:key_press, :space, [], :exact)
+               }
+             ]
+           }
+  end
+
   test "encode/decode mouse_over decorative attrs" do
     attrs = %{
       mouse_over: %{

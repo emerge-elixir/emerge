@@ -9,6 +9,8 @@
 // Event processing lives in events.rs
 use rustler::{Atom, Encoder, Env, Term};
 
+use crate::keys::CanonicalKey;
+
 // ============================================================================
 // Input Event
 // ============================================================================
@@ -34,7 +36,11 @@ pub enum InputEvent {
     CursorScrollLines { dx: f32, dy: f32, x: f32, y: f32 },
 
     /// Keyboard key pressed/released
-    Key { key: String, action: u8, mods: u8 },
+    Key {
+        key: CanonicalKey,
+        action: u8,
+        mods: u8,
+    },
 
     /// Text input commit (may contain multiple chars)
     TextCommit { text: String, mods: u8 },
@@ -252,7 +258,7 @@ impl Encoder for InputEvent {
                 action,
                 mods,
             } => {
-                let key_atom = Atom::from_str(env, key_name)
+                let key_atom = Atom::from_str(env, key_name.atom_name())
                     .unwrap_or_else(|_| Atom::from_str(env, "unknown").expect("unknown"));
                 let mods = InputEvent::mods_to_terms(env, *mods);
                 (key(), (key_atom, *action, mods)).encode(env)

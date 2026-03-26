@@ -696,6 +696,31 @@ defmodule Emerge.UITest do
     assert Event.on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
   end
 
+  test "key event helpers return normalized bindings" do
+    assert {:on_key_down, binding} = Event.on_key_down(:enter, :submitted)
+    assert binding.key == :enter
+    assert binding.mods == []
+    assert binding.match == :exact
+    assert binding.payload == {self(), :submitted}
+    assert binding.route == Event.key_route_id(:key_down, :enter, [], :exact)
+
+    assert {:on_key_up, up_binding} =
+             Event.on_key_up([key: :digit_1, mods: [:ctrl], match: :all], :released)
+
+    assert up_binding.key == :digit_1
+    assert up_binding.mods == [:ctrl]
+    assert up_binding.match == :all
+    assert up_binding.payload == {self(), :released}
+    assert up_binding.route == Event.key_route_id(:key_up, :digit_1, [:ctrl], :all)
+
+    assert {:on_key_press, press_binding} = Event.on_key_press(:space, :cycled)
+    assert press_binding.key == :space
+    assert press_binding.mods == []
+    assert press_binding.match == :exact
+    assert press_binding.payload == {self(), :cycled}
+    assert press_binding.route == Event.key_route_id(:key_press, :space, [], :exact)
+  end
+
   test "Input.text creates a text_input element" do
     element =
       Emerge.UI.Input.text(
@@ -739,6 +764,24 @@ defmodule Emerge.UITest do
     [label] = element.children
     assert label.type == :text
     assert label.attrs.content == "Save"
+  end
+
+  test "Input.button accumulates multiple key listeners" do
+    element =
+      Emerge.UI.Input.button(
+        [
+          key(:save_btn),
+          Event.on_key_down(:enter, :submit),
+          Event.on_key_down([key: :space, match: :all], :submit_with_mods),
+          Event.on_key_up(:escape, :cancel),
+          Event.on_key_press(:space, :cycle)
+        ],
+        text("Save")
+      )
+
+    assert [%{key: :enter}, %{key: :space}] = element.attrs.on_key_down
+    assert [%{key: :escape}] = element.attrs.on_key_up
+    assert [%{key: :space}] = element.attrs.on_key_press
   end
 
   test "event helpers wrap local messages with self" do
