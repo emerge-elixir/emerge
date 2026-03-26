@@ -63,6 +63,9 @@ use scrollbar::ScrollbarNode;
 pub enum ElementEventKind {
     Click,
     Press,
+    KeyDown,
+    KeyUp,
+    KeyPress,
     MouseDown,
     MouseUp,
     MouseEnter,
@@ -650,6 +653,9 @@ rustler::atoms! {
     emerge_skia_log,
     click,
     press,
+    key_down,
+    key_up,
+    key_press,
     change,
     focus,
     blur,
@@ -669,6 +675,18 @@ pub(crate) fn click_atom() -> Atom {
 
 pub(crate) fn press_atom() -> Atom {
     press()
+}
+
+pub(crate) fn key_down_atom() -> Atom {
+    key_down()
+}
+
+pub(crate) fn key_up_atom() -> Atom {
+    key_up()
+}
+
+pub(crate) fn key_press_atom() -> Atom {
+    key_press()
 }
 
 pub(crate) fn change_atom() -> Atom {

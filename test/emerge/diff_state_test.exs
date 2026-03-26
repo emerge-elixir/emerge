@@ -272,6 +272,47 @@ defmodule Emerge.Engine.DiffStateTest do
     assert pid == self()
   end
 
+  test "key listeners are registered in event registry" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          key(:save),
+          Event.on_key_down(:enter, {self(), :pressed}),
+          Event.on_key_up([key: :escape, mods: [:ctrl]], {self(), :cancelled}),
+          Event.on_key_press(:space, {self(), :cycled})
+        ],
+        Emerge.UI.text("Save")
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {press_pid, :pressed}} =
+             Emerge.Engine.lookup_event(
+               state,
+               id_bin,
+               {:key_down, Event.key_route_id(:key_down, :enter, [], :exact)}
+             )
+
+    assert {:ok, {cancel_pid, :cancelled}} =
+             Emerge.Engine.lookup_event(
+               state,
+               id_bin,
+               {:key_up, Event.key_route_id(:key_up, :escape, [:ctrl], :exact)}
+             )
+
+    assert {:ok, {cycle_pid, :cycled}} =
+             Emerge.Engine.lookup_event(
+               state,
+               id_bin,
+               {:key_press, Event.key_route_id(:key_press, :space, [], :exact)}
+             )
+
+    assert press_pid == self()
+    assert cancel_pid == self()
+    assert cycle_pid == self()
+  end
+
   test "text input registers click and mouse handlers alongside on_change" do
     layout =
       Emerge.UI.Input.text(
@@ -349,6 +390,39 @@ defmodule Emerge.Engine.DiffStateTest do
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :press)
     assert_receive :pressed
+  end
+
+  test "dispatch_event routes key events" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          key(:save),
+          Event.on_key_down(:enter, {self(), :pressed}),
+          Event.on_key_press(:space, {self(), :cycled})
+        ],
+        Emerge.UI.text("Save")
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok ==
+             Emerge.Engine.dispatch_event(
+               state,
+               id_bin,
+               {:key_down, Event.key_route_id(:key_down, :enter, [], :exact)}
+             )
+
+    assert_receive :pressed
+
+    assert :ok ==
+             Emerge.Engine.dispatch_event(
+               state,
+               id_bin,
+               {:key_press, Event.key_route_id(:key_press, :space, [], :exact)}
+             )
+
+    assert_receive :cycled
   end
 
   defp content_id_map(%Emerge.Engine.Element{children: children}) do

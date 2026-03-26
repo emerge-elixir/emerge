@@ -2,6 +2,7 @@ use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 use wayland_client::protocol::wl_keyboard;
 
 use crate::input::{MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT};
+use crate::keys::CanonicalKey;
 
 pub(super) struct KeyboardInputState {
     pub(super) keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -50,59 +51,78 @@ pub(super) fn normalize_commit_text(text: &str) -> Option<String> {
     }
 }
 
-pub(super) fn key_name_from_keysym(keysym: Keysym) -> String {
+pub(super) fn key_from_keysym(keysym: Keysym) -> CanonicalKey {
     match keysym {
-        Keysym::Escape => "escape".to_string(),
-        Keysym::BackSpace => "backspace".to_string(),
+        Keysym::Escape => CanonicalKey::Escape,
+        Keysym::BackSpace => CanonicalKey::Backspace,
         Keysym::Tab
         | Keysym::ISO_Left_Tab
         | Keysym::KP_Tab
         | Keysym::BackTab
-        | Keysym::KP_BackTab => "tab".to_string(),
-        Keysym::Return | Keysym::KP_Enter => "enter".to_string(),
-        Keysym::space | Keysym::KP_Space => "space".to_string(),
-        Keysym::Delete | Keysym::KP_Delete => "delete".to_string(),
-        Keysym::Insert | Keysym::KP_Insert => "insert".to_string(),
-        Keysym::Home | Keysym::KP_Home => "home".to_string(),
-        Keysym::End | Keysym::KP_End => "end".to_string(),
-        Keysym::Page_Up | Keysym::KP_Page_Up => "page_up".to_string(),
-        Keysym::Page_Down | Keysym::KP_Page_Down => "page_down".to_string(),
-        Keysym::Up | Keysym::KP_Up => "up".to_string(),
-        Keysym::Down | Keysym::KP_Down => "down".to_string(),
-        Keysym::Left | Keysym::KP_Left => "left".to_string(),
-        Keysym::Right | Keysym::KP_Right => "right".to_string(),
-        Keysym::F1 => "f1".to_string(),
-        Keysym::F2 => "f2".to_string(),
-        Keysym::F3 => "f3".to_string(),
-        Keysym::F4 => "f4".to_string(),
-        Keysym::F5 => "f5".to_string(),
-        Keysym::F6 => "f6".to_string(),
-        Keysym::F7 => "f7".to_string(),
-        Keysym::F8 => "f8".to_string(),
-        Keysym::F9 => "f9".to_string(),
-        Keysym::F10 => "f10".to_string(),
-        Keysym::F11 => "f11".to_string(),
-        Keysym::F12 => "f12".to_string(),
-        Keysym::Shift_L | Keysym::Shift_R => "shift".to_string(),
-        Keysym::Control_L | Keysym::Control_R => "control".to_string(),
-        Keysym::Alt_L | Keysym::Alt_R => "alt".to_string(),
+        | Keysym::KP_BackTab => CanonicalKey::Tab,
+        Keysym::Return | Keysym::KP_Enter => CanonicalKey::Enter,
+        Keysym::space | Keysym::KP_Space => CanonicalKey::Space,
+        Keysym::Delete | Keysym::KP_Delete => CanonicalKey::Delete,
+        Keysym::Insert | Keysym::KP_Insert => CanonicalKey::Insert,
+        Keysym::Home | Keysym::KP_Home => CanonicalKey::Home,
+        Keysym::End | Keysym::KP_End => CanonicalKey::End,
+        Keysym::Page_Up | Keysym::KP_Page_Up => CanonicalKey::PageUp,
+        Keysym::Page_Down | Keysym::KP_Page_Down => CanonicalKey::PageDown,
+        Keysym::Up | Keysym::KP_Up => CanonicalKey::ArrowUp,
+        Keysym::Down | Keysym::KP_Down => CanonicalKey::ArrowDown,
+        Keysym::Left | Keysym::KP_Left => CanonicalKey::ArrowLeft,
+        Keysym::Right | Keysym::KP_Right => CanonicalKey::ArrowRight,
+        Keysym::F1 => CanonicalKey::F1,
+        Keysym::F2 => CanonicalKey::F2,
+        Keysym::F3 => CanonicalKey::F3,
+        Keysym::F4 => CanonicalKey::F4,
+        Keysym::F5 => CanonicalKey::F5,
+        Keysym::F6 => CanonicalKey::F6,
+        Keysym::F7 => CanonicalKey::F7,
+        Keysym::F8 => CanonicalKey::F8,
+        Keysym::F9 => CanonicalKey::F9,
+        Keysym::F10 => CanonicalKey::F10,
+        Keysym::F11 => CanonicalKey::F11,
+        Keysym::F12 => CanonicalKey::F12,
+        Keysym::F13 => CanonicalKey::F13,
+        Keysym::F14 => CanonicalKey::F14,
+        Keysym::F15 => CanonicalKey::F15,
+        Keysym::F16 => CanonicalKey::F16,
+        Keysym::F17 => CanonicalKey::F17,
+        Keysym::F18 => CanonicalKey::F18,
+        Keysym::F19 => CanonicalKey::F19,
+        Keysym::F20 => CanonicalKey::F20,
+        Keysym::F21 => CanonicalKey::F21,
+        Keysym::F22 => CanonicalKey::F22,
+        Keysym::F23 => CanonicalKey::F23,
+        Keysym::F24 => CanonicalKey::F24,
+        Keysym::Shift_L | Keysym::Shift_R => CanonicalKey::Shift,
+        Keysym::Control_L | Keysym::Control_R => CanonicalKey::Control,
+        Keysym::Alt_L => CanonicalKey::Alt,
+        Keysym::Alt_R => CanonicalKey::AltGraph,
         Keysym::Super_L
         | Keysym::Super_R
         | Keysym::Meta_L
         | Keysym::Meta_R
         | Keysym::Hyper_L
-        | Keysym::Hyper_R => "super".to_string(),
-        Keysym::Caps_Lock => "caps_lock".to_string(),
-        Keysym::Num_Lock => "num_lock".to_string(),
-        Keysym::Scroll_Lock => "scroll_lock".to_string(),
-        Keysym::Print => "print_screen".to_string(),
-        Keysym::Pause => "pause".to_string(),
+        | Keysym::Hyper_R => CanonicalKey::Super,
+        Keysym::Caps_Lock => CanonicalKey::CapsLock,
+        Keysym::Num_Lock => CanonicalKey::NumLock,
+        Keysym::Scroll_Lock => CanonicalKey::ScrollLock,
+        Keysym::Print => CanonicalKey::PrintScreen,
+        Keysym::Pause => CanonicalKey::Pause,
+        Keysym::Menu => CanonicalKey::ContextMenu,
         _ => keysym
             .key_char()
             .filter(|ch| !ch.is_control())
-            .map(|ch| ch.to_string())
-            .or_else(|| keysym.name().map(|name| name.to_ascii_lowercase()))
-            .unwrap_or_else(|| "unknown".to_string()),
+            .and_then(CanonicalKey::from_printable_char)
+            .or_else(|| {
+                keysym
+                    .name()
+                    .map(|name| name.to_ascii_lowercase())
+                    .and_then(|name| CanonicalKey::from_atom_name(&name))
+            })
+            .unwrap_or(CanonicalKey::Unknown),
     }
 }
 
@@ -128,18 +148,18 @@ mod tests {
     }
 
     #[test]
-    fn key_name_from_keysym_matches_expected_named_keys() {
-        assert_eq!(key_name_from_keysym(Keysym::Escape), "escape");
-        assert_eq!(key_name_from_keysym(Keysym::BackSpace), "backspace");
-        assert_eq!(key_name_from_keysym(Keysym::Page_Down), "page_down");
-        assert_eq!(key_name_from_keysym(Keysym::Super_L), "super");
-        assert_eq!(key_name_from_keysym(Keysym::Print), "print_screen");
+    fn key_from_keysym_matches_expected_named_keys() {
+        assert_eq!(key_from_keysym(Keysym::Escape), CanonicalKey::Escape);
+        assert_eq!(key_from_keysym(Keysym::BackSpace), CanonicalKey::Backspace);
+        assert_eq!(key_from_keysym(Keysym::Page_Down), CanonicalKey::PageDown);
+        assert_eq!(key_from_keysym(Keysym::Super_L), CanonicalKey::Super);
+        assert_eq!(key_from_keysym(Keysym::Print), CanonicalKey::PrintScreen);
     }
 
     #[test]
-    fn key_name_from_keysym_falls_back_to_printable_character() {
-        assert_eq!(key_name_from_keysym(Keysym::a), "a");
-        assert_eq!(key_name_from_keysym(Keysym::A), "A");
+    fn key_from_keysym_normalizes_printable_characters() {
+        assert_eq!(key_from_keysym(Keysym::a), CanonicalKey::A);
+        assert_eq!(key_from_keysym(Keysym::A), CanonicalKey::A);
     }
 
     #[test]

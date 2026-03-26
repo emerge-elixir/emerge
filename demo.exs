@@ -170,6 +170,18 @@ Process.put(:demo_button_focused, false)
 Process.put(:demo_button_press_count, 0)
 Process.put(:demo_button_focus_count, 0)
 Process.put(:demo_button_blur_count, 0)
+Process.put(:demo_key_listener_focused, false)
+Process.put(:demo_key_listener_focus_count, 0)
+Process.put(:demo_key_listener_blur_count, 0)
+Process.put(:demo_key_listener_key_down_count, 0)
+Process.put(:demo_key_listener_key_up_count, 0)
+Process.put(:demo_key_listener_key_press_count, 0)
+Process.put(:demo_key_listener_enter_count, 0)
+Process.put(:demo_key_listener_ctrl_digit_count, 0)
+Process.put(:demo_key_listener_arrow_left_count, 0)
+Process.put(:demo_key_listener_escape_count, 0)
+Process.put(:demo_key_listener_space_press_count, 0)
+Process.put(:demo_key_listener_last_action, "Nothing yet")
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -239,6 +251,18 @@ defmodule Demo do
     "Click: element #{inspect(:erlang.binary_to_term(id_bin))}"
   end
 
+  def format_event({id_bin, :key_down, route}) when is_binary(id_bin) and is_binary(route) do
+    "Key down: #{format_key_route(route)} on #{inspect(:erlang.binary_to_term(id_bin))}"
+  end
+
+  def format_event({id_bin, :key_up, route}) when is_binary(id_bin) and is_binary(route) do
+    "Key up: #{format_key_route(route)} on #{inspect(:erlang.binary_to_term(id_bin))}"
+  end
+
+  def format_event({id_bin, :key_press, route}) when is_binary(id_bin) and is_binary(route) do
+    "Key press: #{format_key_route(route)} on #{inspect(:erlang.binary_to_term(id_bin))}"
+  end
+
   def format_event({id_bin, event}) when is_binary(id_bin) and is_atom(event) do
     label =
       event
@@ -258,6 +282,52 @@ defmodule Demo do
     |> Atom.to_string()
     |> String.replace("_", " ")
     |> String.capitalize()
+  end
+
+  defp format_key_route(route) when is_binary(route) do
+    case String.split(route, ":", parts: 4) do
+      [_action, key_name, match, mods_mask] ->
+        mods =
+          case Integer.parse(mods_mask) do
+            {mask, ""} -> decode_key_route_modifiers(mask)
+            _ -> []
+          end
+
+        combo = format_key_combo(key_name, mods)
+
+        if match == "exact", do: combo, else: "#{combo} (#{match})"
+
+      _ ->
+        route
+    end
+  end
+
+  defp decode_key_route_modifiers(mask) when is_integer(mask) do
+    [
+      Bitwise.band(mask, 0x01) != 0 && :shift,
+      Bitwise.band(mask, 0x02) != 0 && :ctrl,
+      Bitwise.band(mask, 0x04) != 0 && :alt,
+      Bitwise.band(mask, 0x08) != 0 && :meta
+    ]
+    |> Enum.reject(&(&1 == false))
+  end
+
+  defp format_key_combo(key_name, mods) when is_binary(key_name) and is_list(mods) do
+    (Enum.map(mods, &format_key_modifier/1) ++ [format_key_name(key_name)])
+    |> Enum.join("+")
+  end
+
+  defp format_key_modifier(:shift), do: "Shift"
+  defp format_key_modifier(:ctrl), do: "Ctrl"
+  defp format_key_modifier(:alt), do: "Alt"
+  defp format_key_modifier(:meta), do: "Meta"
+
+  defp format_key_name("digit_" <> digit), do: digit
+
+  defp format_key_name(key_name) when is_binary(key_name) do
+    key_name
+    |> String.split("_")
+    |> Enum.map_join(" ", &String.capitalize/1)
   end
 
   def build_tree(
@@ -781,6 +851,18 @@ defmodule Demo do
     button_press_count = Process.get(:demo_button_press_count, 0)
     button_focus_count = Process.get(:demo_button_focus_count, 0)
     button_blur_count = Process.get(:demo_button_blur_count, 0)
+    key_listener_focused = Process.get(:demo_key_listener_focused, false)
+    key_listener_focus_count = Process.get(:demo_key_listener_focus_count, 0)
+    key_listener_blur_count = Process.get(:demo_key_listener_blur_count, 0)
+    key_listener_key_down_count = Process.get(:demo_key_listener_key_down_count, 0)
+    key_listener_key_up_count = Process.get(:demo_key_listener_key_up_count, 0)
+    key_listener_key_press_count = Process.get(:demo_key_listener_key_press_count, 0)
+    key_listener_enter_count = Process.get(:demo_key_listener_enter_count, 0)
+    key_listener_ctrl_digit_count = Process.get(:demo_key_listener_ctrl_digit_count, 0)
+    key_listener_arrow_left_count = Process.get(:demo_key_listener_arrow_left_count, 0)
+    key_listener_escape_count = Process.get(:demo_key_listener_escape_count, 0)
+    key_listener_space_press_count = Process.get(:demo_key_listener_space_press_count, 0)
+    key_listener_last_action = Process.get(:demo_key_listener_last_action, "Nothing yet")
 
     {status_label, status_bg, status_text, input_border_color, input_border_width} =
       if focused do
@@ -816,6 +898,21 @@ defmodule Demo do
 
     {button_state_label, button_state_bg, button_state_text} =
       if button_focused do
+        {
+          "Focused",
+          color_rgb(70, 96, 82),
+          color_rgb(224, 244, 236)
+        }
+      else
+        {
+          "Blurred",
+          color_rgb(72, 74, 102),
+          color_rgb(220, 224, 240)
+        }
+      end
+
+    {key_listener_state_label, key_listener_state_bg, key_listener_state_text} =
+      if key_listener_focused do
         {
           "Focused",
           color_rgb(70, 96, 82),
@@ -1064,6 +1161,218 @@ defmodule Demo do
           el(
             [Font.size(10), Font.color(@dim_text)],
             text("Try Tab/Shift+Tab to focus this button, then press Enter to trigger on_press.")
+          )
+        ])
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color(color_rgb(46, 50, 72)),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          el(
+            [Font.size(12), Font.color(color_rgb(225, 230, 244))],
+            text("Focused key listeners")
+          ),
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "Click or Tab onto the card, then try on_key_down(:enter), on_key_down([key: :digit_1, mods: [:ctrl], match: :all]), on_key_down(:arrow_left), on_key_up(:escape), and on_key_press(:space)."
+            )
+          ),
+          el(
+            [
+              width(fill()),
+              padding(14),
+              spacing(8),
+              Background.color(color_rgb(56, 60, 88)),
+              Border.rounded(10),
+              Border.width(1),
+              Border.color(color_rgb(112, 122, 164)),
+              Event.on_focus({self(), {:demo_event, :keyboard_listener, :focus}}),
+              Event.on_blur({self(), {:demo_event, :keyboard_listener, :blur}}),
+              Event.on_key_down(
+                :enter,
+                {self(), {:demo_event, :keyboard_listener, {:key_down, :enter}}}
+              ),
+              Event.on_key_down(
+                [key: :digit_1, mods: [:ctrl], match: :all],
+                {self(), {:demo_event, :keyboard_listener, {:key_down, :ctrl_digit_1}}}
+              ),
+              Event.on_key_down(
+                :arrow_left,
+                {self(), {:demo_event, :keyboard_listener, {:key_down, :arrow_left}}}
+              ),
+              Event.on_key_up(
+                :escape,
+                {self(), {:demo_event, :keyboard_listener, {:key_up, :escape}}}
+              ),
+              Event.on_key_press(
+                :space,
+                {self(), {:demo_event, :keyboard_listener, {:key_press, :space}}}
+              ),
+              Interactive.mouse_over([
+                Background.color(color_rgb(62, 68, 98)),
+                Border.color(color_rgb(138, 148, 190))
+              ]),
+              Interactive.focused([
+                Background.color(color_rgb(66, 74, 106)),
+                Border.color(color_rgb(176, 196, 244)),
+                Border.glow(color_rgba(132, 158, 232, 110 / 255), 2)
+              ])
+            ],
+            column([spacing(8)], [
+              el([Font.size(14), Font.color(:white)], text("Keyboard listener pad")),
+              el(
+                [Font.size(11), Font.color(color_rgb(214, 220, 240))],
+                text("Focused-only routing. No on_press handler here - only direct key events.")
+              ),
+              wrapped_row([width(fill()), spacing_xy(8, 8)], [
+                el(
+                  [
+                    padding_xy(10, 5),
+                    Background.color(color_rgb(78, 86, 124)),
+                    Border.rounded(999)
+                  ],
+                  el([Font.size(10), Font.color(color_rgb(232, 238, 252))], text("Enter -> down"))
+                ),
+                el(
+                  [
+                    padding_xy(10, 5),
+                    Background.color(color_rgb(82, 76, 132)),
+                    Border.rounded(999)
+                  ],
+                  el(
+                    [Font.size(10), Font.color(color_rgb(238, 232, 252))],
+                    text("Ctrl+1 -> down (all)")
+                  )
+                ),
+                el(
+                  [
+                    padding_xy(10, 5),
+                    Background.color(color_rgb(74, 92, 122)),
+                    Border.rounded(999)
+                  ],
+                  el(
+                    [Font.size(10), Font.color(color_rgb(226, 240, 250))],
+                    text("Arrow Left -> down")
+                  )
+                ),
+                el(
+                  [
+                    padding_xy(10, 5),
+                    Background.color(color_rgb(98, 76, 112)),
+                    Border.rounded(999)
+                  ],
+                  el([Font.size(10), Font.color(color_rgb(244, 226, 246))], text("Escape -> up"))
+                ),
+                el(
+                  [
+                    padding_xy(10, 5),
+                    Background.color(color_rgb(108, 86, 120)),
+                    Border.rounded(999)
+                  ],
+                  el(
+                    [Font.size(10), Font.color(color_rgb(248, 234, 246))],
+                    text("Space -> press")
+                  )
+                )
+              ]),
+              el(
+                [Font.size(10), Font.color(color_rgb(196, 204, 228))],
+                text(
+                  "Tip: click once to focus, then hold Ctrl while pressing 1 to hit the modifier matcher. Space completes on key release here, so the press counter updates after the key comes back up."
+                )
+              )
+            ])
+          ),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            el(
+              [padding_xy(10, 5), Background.color(key_listener_state_bg), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(key_listener_state_text)],
+                text("State: #{key_listener_state_label}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(64, 74, 106)), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(color_rgb(205, 216, 246))],
+                text("focus: #{key_listener_focus_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(78, 68, 100)), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(color_rgb(228, 212, 246))],
+                text("blur: #{key_listener_blur_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(70, 84, 114)), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(color_rgb(220, 232, 248))],
+                text("down: #{key_listener_key_down_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(96, 76, 116)), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(color_rgb(244, 228, 246))],
+                text("up: #{key_listener_key_up_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(112, 82, 120)), Border.rounded(999)],
+              el(
+                [Font.size(11), Font.color(color_rgb(248, 236, 246))],
+                text("press: #{key_listener_key_press_count}")
+              )
+            )
+          ]),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(76, 88, 134)), Border.rounded(999)],
+              el(
+                [Font.size(10), Font.color(color_rgb(234, 240, 252))],
+                text("Enter: #{key_listener_enter_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(86, 78, 138)), Border.rounded(999)],
+              el(
+                [Font.size(10), Font.color(color_rgb(240, 234, 252))],
+                text("Ctrl+1: #{key_listener_ctrl_digit_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(72, 96, 128)), Border.rounded(999)],
+              el(
+                [Font.size(10), Font.color(color_rgb(228, 242, 250))],
+                text("Arrow Left: #{key_listener_arrow_left_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(102, 76, 120)), Border.rounded(999)],
+              el(
+                [Font.size(10), Font.color(color_rgb(246, 230, 248))],
+                text("Escape up: #{key_listener_escape_count}")
+              )
+            ),
+            el(
+              [padding_xy(10, 5), Background.color(color_rgb(114, 84, 126)), Border.rounded(999)],
+              el(
+                [Font.size(10), Font.color(color_rgb(248, 236, 248))],
+                text("Space press: #{key_listener_space_press_count}")
+              )
+            )
+          ]),
+          el(
+            [Font.size(11), Font.color(color_rgb(230, 234, 246))],
+            text("Last action: #{key_listener_last_action}")
           )
         ])
       )
@@ -3851,6 +4160,29 @@ defmodule Demo do
               {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
           end
 
+        {id_bin, event_type, route}
+        when is_binary(id_bin) and event_type in [:key_down, :key_up, :key_press] and
+               is_binary(route) ->
+          event_ref = {event_type, route}
+
+          case Emerge.Engine.lookup_event(state, id_bin, event_ref) do
+            {:ok, {pid, msg}} when pid == self() ->
+              {next_state, _changed} =
+                process_event(
+                  msg,
+                  state,
+                  {mouse_pos, event_log, size, scale, current_page, last_move_label,
+                   unstable_items}
+                )
+
+              next_state
+
+            _ ->
+              Emerge.Engine.dispatch_event(state, id_bin, event_ref)
+
+              {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+          end
+
         {id_bin, event_type, payload} when is_binary(id_bin) and is_atom(event_type) ->
           case Emerge.Engine.lookup_event(state, id_bin, event_type) do
             {:ok, {pid, msg}} when pid == self() ->
@@ -3916,6 +4248,9 @@ defmodule Demo do
       case event do
         {:cursor_pos, _} -> event_log
         {_, :mouse_move} -> event_log
+        {_, :key_down, _} -> event_log
+        {_, :key_up, _} -> event_log
+        {_, :key_press, _} -> event_log
         _ -> [format_event(event) | event_log]
       end
       |> Enum.take(20)
@@ -4100,6 +4435,132 @@ defmodule Demo do
 
     new_log = Enum.take(["Button blur (#{count})" | event_log], 20)
     changed = previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :keyboard_listener, :focus},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_key_listener_focused, false)
+    count = Process.get(:demo_key_listener_focus_count, 0) + 1
+
+    Process.put(:demo_key_listener_focused, true)
+    Process.put(:demo_key_listener_focus_count, count)
+
+    new_log = Enum.take(["Keyboard pad focus (#{count})" | event_log], 20)
+    changed = !previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :keyboard_listener, :blur},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_key_listener_focused, false)
+    count = Process.get(:demo_key_listener_blur_count, 0) + 1
+
+    Process.put(:demo_key_listener_focused, false)
+    Process.put(:demo_key_listener_blur_count, count)
+
+    new_log = Enum.take(["Keyboard pad blur (#{count})" | event_log], 20)
+    changed = previous or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :keyboard_listener, {:key_down, binding}},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    count = Process.get(:demo_key_listener_key_down_count, 0) + 1
+    Process.put(:demo_key_listener_key_down_count, count)
+
+    {entry, changed_binding} =
+      case binding do
+        :enter ->
+          next = Process.get(:demo_key_listener_enter_count, 0) + 1
+          Process.put(:demo_key_listener_enter_count, next)
+          {"Keyboard key down: Enter (#{next})", true}
+
+        :ctrl_digit_1 ->
+          next = Process.get(:demo_key_listener_ctrl_digit_count, 0) + 1
+          Process.put(:demo_key_listener_ctrl_digit_count, next)
+          {"Keyboard key down: Ctrl+1 (#{next})", true}
+
+        :arrow_left ->
+          next = Process.get(:demo_key_listener_arrow_left_count, 0) + 1
+          Process.put(:demo_key_listener_arrow_left_count, next)
+          {"Keyboard key down: Arrow Left (#{next})", true}
+
+        other ->
+          {"Keyboard key down: #{inspect(other)}", false}
+      end
+
+    Process.put(:demo_key_listener_last_action, entry)
+
+    new_log = Enum.take([entry | event_log], 20)
+
+    changed = changed_binding or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :keyboard_listener, {:key_up, binding}},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    count = Process.get(:demo_key_listener_key_up_count, 0) + 1
+    Process.put(:demo_key_listener_key_up_count, count)
+
+    entry =
+      case binding do
+        :escape ->
+          next = Process.get(:demo_key_listener_escape_count, 0) + 1
+          Process.put(:demo_key_listener_escape_count, next)
+          "Keyboard key up: Escape (#{next})"
+
+        other ->
+          "Keyboard key up: #{inspect(other)}"
+      end
+
+    Process.put(:demo_key_listener_last_action, entry)
+
+    new_log = Enum.take([entry | event_log], 20)
+    changed = new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :keyboard_listener, {:key_press, binding}},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    count = Process.get(:demo_key_listener_key_press_count, 0) + 1
+    Process.put(:demo_key_listener_key_press_count, count)
+
+    entry =
+      case binding do
+        :space ->
+          next = Process.get(:demo_key_listener_space_press_count, 0) + 1
+          Process.put(:demo_key_listener_space_press_count, next)
+          "Keyboard key press: Space (#{next})"
+
+        other ->
+          "Keyboard key press: #{inspect(other)}"
+      end
+
+    Process.put(:demo_key_listener_last_action, entry)
+
+    new_log = Enum.take([entry | event_log], 20)
+    changed = new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end

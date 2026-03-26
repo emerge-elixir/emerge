@@ -43,22 +43,23 @@ use std::collections::HashSet;
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
 use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
+use crate::keys::CanonicalKey;
+use crate::tree::attrs::{KeyBindingMatch, KeyBindingSpec};
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
+use crate::tree::geometry::{clamp_radii, point_hits_shape, CornerRadii, Rect, ShapeBounds};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    scrollbar::{scrollbar_node_from_metrics, ScrollbarHitArea, ScrollbarNode},
+    text_ops, CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
     TextInputEditRequest, TextInputPreeditRequest, TextInputState,
-    scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
-    text_ops,
 };
 
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
@@ -328,6 +329,23 @@ struct FocusEntry {
     self_reveal_scrolls: Vec<FocusRevealScroll>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyPressFollowup {
+    ElixirEvent {
+        element_id: ElementId,
+        route: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyPressTracker {
+    pub source_element_id: Option<ElementId>,
+    pub key: CanonicalKey,
+    pub mods: u8,
+    pub match_mode: KeyBindingMatch,
+    pub followups: Vec<KeyPressFollowup>,
+}
+
 #[derive(Default)]
 pub(crate) struct RegistryBuildAcc {
     registry: Registry,
@@ -395,6 +413,7 @@ pub struct TextDragTracker {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeOverlayState {
     pub click_press: Option<ClickPressTracker>,
+    pub key_presses: Vec<KeyPressTracker>,
     pub drag: DragTrackerState,
     pub scrollbar: Option<ScrollbarDragTracker>,
     pub text_drag: Option<TextDragTracker>,
@@ -412,6 +431,10 @@ fn emit_runtime_overlay_listeners(
     out.emit_opt(runtime_drag_active_release_clear_listener(
         base,
         &runtime.drag,
+    ));
+    out.emit_all(runtime_key_press_release_listeners(
+        base,
+        &runtime.key_presses,
     ));
     out.emit_opt(
         runtime
@@ -438,6 +461,9 @@ fn emit_runtime_overlay_listeners(
         &runtime.drag,
     ));
     out.emit_opt(runtime_drag_window_blur_clear_listener(base, &runtime.drag));
+    out.emit_opt(runtime_key_press_window_blur_clear_listener(
+        &runtime.key_presses,
+    ));
     out.emit_opt(
         runtime
             .click_press
@@ -801,6 +827,50 @@ fn runtime_click_press_window_leave_clear_listener(
     })
 }
 
+fn runtime_key_press_release_listeners(
+    base: &Registry,
+    trackers: &[KeyPressTracker],
+) -> Vec<Listener> {
+    trackers
+        .iter()
+        .filter(|tracker| base_has_key_press_source(base, tracker))
+        .fold(
+            Vec::<(CanonicalKey, Vec<KeyPressTracker>)>::new(),
+            |mut acc, tracker| {
+                if let Some((_, grouped)) = acc.iter_mut().find(|(key, _)| *key == tracker.key) {
+                    grouped.push(tracker.clone());
+                } else {
+                    acc.push((tracker.key, vec![tracker.clone()]));
+                }
+
+                acc
+            },
+        )
+        .into_iter()
+        .map(|(key, trackers)| Listener {
+            element_id: trackers
+                .iter()
+                .find_map(|tracker| tracker.source_element_id.clone()),
+            matcher: ListenerMatcher::KeyReleaseTracked { key },
+            compute: ListenerCompute::KeyPressReleaseFollowupToBase { key, trackers },
+        })
+        .collect()
+}
+
+fn runtime_key_press_window_blur_clear_listener(trackers: &[KeyPressTracker]) -> Option<Listener> {
+    (!trackers.is_empty()).then_some(Listener {
+        element_id: trackers
+            .iter()
+            .find_map(|tracker| tracker.source_element_id.clone()),
+        matcher: ListenerMatcher::WindowBlurred,
+        compute: ListenerCompute::DispatchBaseThenStatic {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearKeyPressTrackers,
+            )],
+        },
+    })
+}
+
 fn runtime_text_drag_release_clear_listener(
     base: &Registry,
     tracker: &TextDragTracker,
@@ -1085,6 +1155,20 @@ pub enum ListenerMatcher {
     KeyBackspacePress,
     /// Match Delete key press.
     KeyDeletePress,
+    /// Match a focused user key-down binding.
+    KeyDownBinding {
+        key: CanonicalKey,
+        mods: u8,
+        match_mode: KeyBindingMatch,
+    },
+    /// Match a focused user key-up binding.
+    KeyUpBinding {
+        key: CanonicalKey,
+        mods: u8,
+        match_mode: KeyBindingMatch,
+    },
+    /// Match a key release for a tracked key regardless of modifiers.
+    KeyReleaseTracked { key: CanonicalKey },
     /// Match text commit events when Ctrl/Meta are not held.
     TextCommitNoCtrlMeta,
     /// Match text preedit events.
@@ -1135,6 +1219,9 @@ pub enum ListenerMatcherKind {
     KeyVPressCtrlOrMeta,
     KeyBackspacePress,
     KeyDeletePress,
+    KeyDownBinding,
+    KeyUpBinding,
+    KeyReleaseTracked,
     TextCommitNoCtrlMeta,
     TextPreeditAny,
     TextPreeditClear,
@@ -1204,6 +1291,9 @@ impl ListenerMatcher {
             ListenerMatcher::KeyVPressCtrlOrMeta => ListenerMatcherKind::KeyVPressCtrlOrMeta,
             ListenerMatcher::KeyBackspacePress => ListenerMatcherKind::KeyBackspacePress,
             ListenerMatcher::KeyDeletePress => ListenerMatcherKind::KeyDeletePress,
+            ListenerMatcher::KeyDownBinding { .. } => ListenerMatcherKind::KeyDownBinding,
+            ListenerMatcher::KeyUpBinding { .. } => ListenerMatcherKind::KeyUpBinding,
+            ListenerMatcher::KeyReleaseTracked { .. } => ListenerMatcherKind::KeyReleaseTracked,
             ListenerMatcher::TextCommitNoCtrlMeta => ListenerMatcherKind::TextCommitNoCtrlMeta,
             ListenerMatcher::TextPreeditAny => ListenerMatcherKind::TextPreeditAny,
             ListenerMatcher::TextPreeditClear => ListenerMatcherKind::TextPreeditClear,
@@ -1319,63 +1409,63 @@ impl ListenerMatcher {
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("enter")
+                        && *key == CanonicalKey::Enter
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("left")
+                        && *key == CanonicalKey::ArrowLeft
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyRightPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("right")
+                        && *key == CanonicalKey::ArrowRight
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyHomePressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("home")
+                        && *key == CanonicalKey::Home
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyEndPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("end")
+                        && *key == CanonicalKey::End
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyUpPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("up")
+                        && *key == CanonicalKey::ArrowUp
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyDownPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("down")
+                        && *key == CanonicalKey::ArrowDown
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("tab")
+                        && *key == CanonicalKey::Tab
                         && (*mods & (MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
             ListenerMatcher::KeyShiftTabPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("tab")
+                        && *key == CanonicalKey::Tab
                         && (*mods & MOD_SHIFT) != 0
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
@@ -1383,39 +1473,75 @@ impl ListenerMatcher {
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("a")
+                        && *key == CanonicalKey::A
                         && (*mods & (MOD_CTRL | MOD_META)) != 0
             ),
             ListenerMatcher::KeyCPressCtrlOrMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("c")
+                        && *key == CanonicalKey::C
                         && (*mods & (MOD_CTRL | MOD_META)) != 0
             ),
             ListenerMatcher::KeyXPressCtrlOrMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("x")
+                        && *key == CanonicalKey::X
                         && (*mods & (MOD_CTRL | MOD_META)) != 0
             ),
             ListenerMatcher::KeyVPressCtrlOrMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
                     if *action == ACTION_PRESS
-                        && key.eq_ignore_ascii_case("v")
+                        && *key == CanonicalKey::V
                         && (*mods & (MOD_CTRL | MOD_META)) != 0
             ),
             ListenerMatcher::KeyBackspacePress => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, .. })
-                    if *action == ACTION_PRESS && key.eq_ignore_ascii_case("backspace")
+                    if *action == ACTION_PRESS && *key == CanonicalKey::Backspace
             ),
             ListenerMatcher::KeyDeletePress => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, .. })
-                    if *action == ACTION_PRESS && key.eq_ignore_ascii_case("delete")
+                    if *action == ACTION_PRESS && *key == CanonicalKey::Delete
+            ),
+            ListenerMatcher::KeyDownBinding {
+                key,
+                mods,
+                match_mode,
+            } => matches!(
+                input.raw(),
+                Some(InputEvent::Key {
+                    key: input_key,
+                    action,
+                    mods: input_mods,
+                }) if *action == ACTION_PRESS
+                    && *input_key == *key
+                    && key_modifiers_match(*input_mods, *mods, *match_mode)
+            ),
+            ListenerMatcher::KeyUpBinding {
+                key,
+                mods,
+                match_mode,
+            } => matches!(
+                input.raw(),
+                Some(InputEvent::Key {
+                    key: input_key,
+                    action,
+                    mods: input_mods,
+                }) if *action == ACTION_RELEASE
+                    && *input_key == *key
+                    && key_modifiers_match(*input_mods, *mods, *match_mode)
+            ),
+            ListenerMatcher::KeyReleaseTracked { key } => matches!(
+                input.raw(),
+                Some(InputEvent::Key {
+                    key: input_key,
+                    action,
+                    ..
+                }) if *action == ACTION_RELEASE && *input_key == *key
             ),
             ListenerMatcher::TextCommitNoCtrlMeta => matches!(
                 input.raw(),
@@ -1447,6 +1573,51 @@ impl ListenerMatcher {
             },
         }
     }
+}
+
+fn key_modifiers_match(actual: u8, required: u8, match_mode: KeyBindingMatch) -> bool {
+    match match_mode {
+        KeyBindingMatch::Exact => actual == required,
+        KeyBindingMatch::All => actual & required == required,
+    }
+}
+
+fn key_press_followup_actions(tracker: &KeyPressTracker) -> Vec<ListenerAction> {
+    tracker
+        .followups
+        .iter()
+        .map(|followup| match followup {
+            KeyPressFollowup::ElixirEvent { element_id, route } => {
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id: element_id.clone(),
+                    kind: ElementEventKind::KeyPress,
+                    payload: Some(route.clone()),
+                })
+            }
+        })
+        .collect()
+}
+
+fn listener_compute_contains_key_press_tracker(
+    compute: &ListenerCompute,
+    tracker: &KeyPressTracker,
+) -> bool {
+    let actions = match compute {
+        ListenerCompute::Static { actions }
+        | ListenerCompute::DispatchBaseThenStatic { actions } => Some(actions.as_slice()),
+        _ => None,
+    };
+
+    actions
+        .into_iter()
+        .flatten()
+        .any(|action| matches!(action, ListenerAction::RuntimeChange(RuntimeChange::StartKeyPressTracker { tracker: existing }) if existing == tracker))
+}
+
+pub(crate) fn base_has_key_press_source(base: &Registry, tracker: &KeyPressTracker) -> bool {
+    base.view().any_precedence(|listener| {
+        listener_compute_contains_key_press_tracker(&listener.compute, tracker)
+    })
 }
 
 /// Final listener sinks.
@@ -1513,6 +1684,8 @@ pub enum RuntimeChange {
         emit_click: bool,
         emit_press_pointer: bool,
     },
+    /// Begin completed key-press followup tracking.
+    StartKeyPressTracker { tracker: KeyPressTracker },
     /// Begin drag threshold tracking.
     StartDragTracker {
         element_id: ElementId,
@@ -1538,6 +1711,10 @@ pub enum RuntimeChange {
     UpdateDragTrackerPointer { last_x: f32, last_y: f32 },
     /// Drop click/press release followup tracking.
     ClearClickPressTracker,
+    /// Drop completed key-press tracking for one key.
+    ClearKeyPressTrackersForKey { key: CanonicalKey },
+    /// Drop all completed key-press tracking.
+    ClearKeyPressTrackers,
     /// Begin scrollbar thumb-drag tracking.
     StartScrollbarDrag { tracker: ScrollbarDragTracker },
     /// Update current scrollbar drag scroll position.
@@ -1558,12 +1735,15 @@ impl RuntimeChange {
         matches!(
             self,
             RuntimeChange::StartClickPressTracker { .. }
+                | RuntimeChange::StartKeyPressTracker { .. }
                 | RuntimeChange::StartDragTracker { .. }
                 | RuntimeChange::PromoteDragTracker { .. }
                 | RuntimeChange::StartTextDragTracker { .. }
                 | RuntimeChange::ClearDragTracker
                 | RuntimeChange::UpdateDragTrackerPointer { .. }
                 | RuntimeChange::ClearClickPressTracker
+                | RuntimeChange::ClearKeyPressTrackersForKey { .. }
+                | RuntimeChange::ClearKeyPressTrackers
                 | RuntimeChange::StartScrollbarDrag { .. }
                 | RuntimeChange::UpdateScrollbarDragCurrentScroll { .. }
                 | RuntimeChange::ClearScrollbarDrag
@@ -1590,6 +1770,8 @@ pub struct ElixirEvent {
 pub enum ListenerCompute {
     /// Fixed action list independent of input payload.
     Static { actions: Vec<ListenerAction> },
+    /// Dispatch base listeners, then append fixed actions.
+    DispatchBaseThenStatic { actions: Vec<ListenerAction> },
     /// Fixed actions plus left-press runtime bootstrap from matching input.
     StaticWithLeftPressRuntimeAugment {
         actions: Vec<ListenerAction>,
@@ -1609,7 +1791,12 @@ pub enum ListenerCompute {
         emit_click: bool,
         emit_press_pointer: bool,
     },
-    /// Promote drag threshold tracking when current drag delta can activate scrolling.
+    /// Redispatch base key-up listeners, optionally emit completed key-press actions, then clear tracking.
+    KeyPressReleaseFollowupToBase {
+        key: CanonicalKey,
+        trackers: Vec<KeyPressTracker>,
+    },
+    /// Promote drag threshold tracking using cursor-move payload.
     PromoteDragTrackerFromCursorPos {
         element_id: ElementId,
         matcher_kind: ListenerMatcherKind,
@@ -1696,6 +1883,11 @@ impl ListenerCompute {
     ) -> Vec<ListenerAction> {
         let actions = match self {
             ListenerCompute::Static { actions } => actions.clone(),
+            ListenerCompute::DispatchBaseThenStatic { actions } => ctx
+                .dispatch_base(input)
+                .into_iter()
+                .chain(actions.iter().cloned())
+                .collect(),
             ListenerCompute::StaticWithLeftPressRuntimeAugment {
                 actions,
                 pointer_drag,
@@ -1780,6 +1972,27 @@ impl ListenerCompute {
                         ])
                         .collect()
                 }
+                _ => Vec::new(),
+            },
+            ListenerCompute::KeyPressReleaseFollowupToBase { key, trackers } => match input.raw() {
+                Some(InputEvent::Key {
+                    key: input_key,
+                    action,
+                    mods,
+                }) if *action == ACTION_RELEASE && *input_key == *key => ctx
+                    .dispatch_base(input)
+                    .into_iter()
+                    .chain(trackers.iter().flat_map(|tracker| {
+                        if key_modifiers_match(*mods, tracker.mods, tracker.match_mode) {
+                            key_press_followup_actions(tracker)
+                        } else {
+                            Vec::new()
+                        }
+                    }))
+                    .chain([ListenerAction::RuntimeChange(
+                        RuntimeChange::ClearKeyPressTrackersForKey { key: *key },
+                    )])
+                    .collect(),
                 _ => Vec::new(),
             },
             ListenerCompute::PromoteDragTrackerFromCursorPos {
@@ -3478,6 +3691,9 @@ fn is_focusable(element: &Element) -> bool {
         || element.attrs.on_press.unwrap_or(false)
         || element.attrs.on_focus.unwrap_or(false)
         || element.attrs.on_blur.unwrap_or(false)
+        || element.attrs.on_key_down.is_some()
+        || element.attrs.on_key_up.is_some()
+        || element.attrs.on_key_press.is_some()
 }
 
 fn padding_sides(element: &Element) -> (f32, f32, f32, f32) {
@@ -3614,6 +3830,7 @@ fn emit_element_listeners_with_focus_meta(
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
+    emit_key_binding_listeners_for_element(element, out);
     out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
     if state.is_some_and(|state| state.front_nearby_root) {
         emit_front_nearby_blockers_for_element(element, state, out);
@@ -3952,14 +4169,18 @@ pub(crate) fn accumulate_subtree_rebuild(
 pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuildPayload {
     let focus_state = focus_build_state_from_entries(&acc.focus_entries);
     let mut low_registry = Registry::default();
+    let mut high_registry = Registry::default();
 
     low_registry.in_precedence_order(|out| {
         emit_window_listeners(out);
-        emit_focus_cycle_listeners_for_state(&focus_state, out);
         out.emit_opt(focused_window_blur_listener(&focus_state));
     });
 
+    high_registry
+        .in_precedence_order(|out| emit_focus_cycle_listeners_for_state(&focus_state, out));
+
     low_registry.extend_storage_from(&acc.registry);
+    low_registry.extend_storage_from(&high_registry);
 
     RegistryRebuildPayload {
         base_registry: low_registry,
@@ -4114,6 +4335,150 @@ fn emit_key_scroll_listeners_for_element(element: &Element, out: &mut Precedence
                 key_scroll_listener(Some(element.id.clone()), matcher, &element.id, dx, dy)
             }),
     );
+}
+
+fn emit_key_binding_listeners_for_element(element: &Element, out: &mut PrecedenceEmitter<'_>) {
+    if !element.attrs.focused_active.unwrap_or(false) {
+        return;
+    }
+
+    let mut slots = Vec::new();
+
+    element
+        .attrs
+        .on_key_down
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .for_each(|binding| {
+            push_user_key_slot_action(
+                &mut slots,
+                UserKeySlotPhase::Down,
+                binding,
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id: element.id.clone(),
+                    kind: ElementEventKind::KeyDown,
+                    payload: Some(binding.route.clone()),
+                }),
+            );
+        });
+
+    element
+        .attrs
+        .on_key_press
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .for_each(|binding| {
+            push_user_key_slot_action(
+                &mut slots,
+                UserKeySlotPhase::Down,
+                binding,
+                ListenerAction::RuntimeChange(RuntimeChange::StartKeyPressTracker {
+                    tracker: key_press_tracker_for_binding(element, binding),
+                }),
+            );
+        });
+
+    element
+        .attrs
+        .on_key_up
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .for_each(|binding| {
+            push_user_key_slot_action(
+                &mut slots,
+                UserKeySlotPhase::Up,
+                binding,
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id: element.id.clone(),
+                    kind: ElementEventKind::KeyUp,
+                    payload: Some(binding.route.clone()),
+                }),
+            );
+        });
+
+    out.emit_all(
+        slots
+            .into_iter()
+            .map(|slot| user_key_slot_listener(element, slot)),
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserKeySlotPhase {
+    Down,
+    Up,
+}
+
+#[derive(Clone, Debug)]
+struct UserKeySlot {
+    phase: UserKeySlotPhase,
+    key: CanonicalKey,
+    mods: u8,
+    match_mode: KeyBindingMatch,
+    actions: Vec<ListenerAction>,
+}
+
+fn push_user_key_slot_action(
+    slots: &mut Vec<UserKeySlot>,
+    phase: UserKeySlotPhase,
+    binding: &KeyBindingSpec,
+    action: ListenerAction,
+) {
+    if let Some(slot) = slots.iter_mut().find(|slot| {
+        slot.phase == phase
+            && slot.key == binding.key
+            && slot.mods == binding.mods
+            && slot.match_mode == binding.match_mode
+    }) {
+        slot.actions.push(action);
+    } else {
+        slots.push(UserKeySlot {
+            phase,
+            key: binding.key,
+            mods: binding.mods,
+            match_mode: binding.match_mode,
+            actions: vec![action],
+        });
+    }
+}
+
+fn key_press_tracker_for_binding(element: &Element, binding: &KeyBindingSpec) -> KeyPressTracker {
+    KeyPressTracker {
+        source_element_id: Some(element.id.clone()),
+        key: binding.key,
+        mods: binding.mods,
+        match_mode: binding.match_mode,
+        followups: vec![KeyPressFollowup::ElixirEvent {
+            element_id: element.id.clone(),
+            route: binding.route.clone(),
+        }],
+    }
+}
+
+fn user_key_slot_listener(element: &Element, slot: UserKeySlot) -> Listener {
+    let matcher = match slot.phase {
+        UserKeySlotPhase::Down => ListenerMatcher::KeyDownBinding {
+            key: slot.key,
+            mods: slot.mods,
+            match_mode: slot.match_mode,
+        },
+        UserKeySlotPhase::Up => ListenerMatcher::KeyUpBinding {
+            key: slot.key,
+            mods: slot.mods,
+            match_mode: slot.match_mode,
+        },
+    };
+
+    Listener {
+        element_id: Some(element.id.clone()),
+        matcher,
+        compute: ListenerCompute::Static {
+            actions: slot.actions,
+        },
+    }
 }
 
 fn slot_scrollbar_thumb_press_y(
@@ -5009,33 +5374,37 @@ mod tests {
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
     use crate::events::test_support::{
-        AnimatedNearbyHitCase, SampledRegistrySource, assert_registry_probe_matrix,
+        assert_registry_probe_matrix, AnimatedNearbyHitCase, SampledRegistrySource,
     };
     use crate::input::{
-        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
+    use crate::keys::CanonicalKey;
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
     use crate::tree::attrs::TextAlign;
-    use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs, ScrollbarHoverAxis};
+    use crate::tree::attrs::{
+        AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
+        ScrollbarHoverAxis,
+    };
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
-    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
+    use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
     use crate::tree::layout::{
-        Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
+        layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
     use std::time::{Duration, Instant};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, Listener, ListenerAction,
-        ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
+        compose_combined_registry, listeners_for_element, registry_for_elements,
+        runtime_listeners_for_overlay, window_listeners, ClickPressTracker, DragTrackerState,
+        ElixirEvent, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction, ListenerCompute,
+        ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
         NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
-        ScrollbarDragTracker, ScrollbarHitArea, TextDragTracker, compose_combined_registry,
-        listeners_for_element, registry_for_elements, runtime_listeners_for_overlay,
-        window_listeners,
+        ScrollbarDragTracker, ScrollbarHitArea, TextDragTracker,
     };
     use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
@@ -6691,6 +7060,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![30]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -6724,11 +7094,9 @@ mod tests {
                 ListenerMatcher::CursorButtonLeftReleaseAnywhere
             )
         }));
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) })
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) }));
     }
 
     #[test]
@@ -6745,6 +7113,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: None,
             text_drag: None,
@@ -6796,6 +7165,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: None,
             text_drag: None,
@@ -6838,6 +7208,7 @@ mod tests {
                 emit_click: false,
                 emit_press_pointer: true,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: None,
             text_drag: None,
@@ -6888,6 +7259,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Active {
                 element_id: ElementId::from_term_bytes(vec![29]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -6919,11 +7291,9 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker)
         ));
-        assert!(
-            actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -6940,6 +7310,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -7112,7 +7483,7 @@ mod tests {
         });
 
         let actions = key_listener.compute_actions(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: 0,
         });
@@ -7139,6 +7510,228 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyEnterPressNoCtrlAltMeta
         )));
+    }
+
+    #[test]
+    fn listeners_for_element_focused_key_bindings_emit_key_events() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![KeyBindingSpec {
+            route: "key_down:enter:exact:0".to_string(),
+            key: CanonicalKey::Enter,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        attrs.on_key_up = Some(vec![KeyBindingSpec {
+            route: "key_up:escape:exact:2".to_string(),
+            key: CanonicalKey::Escape,
+            mods: MOD_CTRL,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = with_interaction(make_element(37, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+
+        let key_down_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyDownBinding {
+                    key: CanonicalKey::Enter,
+                    mods: 0,
+                    match_mode: KeyBindingMatch::Exact,
+                }
+            )
+        });
+
+        let key_down_actions = key_down_listener.compute_actions(&InputEvent::Key {
+            key: CanonicalKey::Enter,
+            action: ACTION_PRESS,
+            mods: 0,
+        });
+
+        assert!(matches!(
+            key_down_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::KeyDown,
+                payload,
+            })] if *element_id == ElementId::from_term_bytes(vec![37])
+                && payload.as_deref() == Some("key_down:enter:exact:0")
+        ));
+
+        let key_up_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyUpBinding {
+                    key: CanonicalKey::Escape,
+                    mods: MOD_CTRL,
+                    match_mode: KeyBindingMatch::Exact,
+                }
+            )
+        });
+
+        let key_up_actions = key_up_listener.compute_actions(&InputEvent::Key {
+            key: CanonicalKey::Escape,
+            action: ACTION_RELEASE,
+            mods: MOD_CTRL,
+        });
+
+        assert!(matches!(
+            key_up_actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::KeyUp,
+                payload,
+            })] if *element_id == ElementId::from_term_bytes(vec![37])
+                && payload.as_deref() == Some("key_up:escape:exact:2")
+        ));
+    }
+
+    #[test]
+    fn listeners_for_element_unfocused_key_bindings_are_omitted() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(false);
+        attrs.on_key_down = Some(vec![KeyBindingSpec {
+            route: "key_down:enter:exact:0".to_string(),
+            key: CanonicalKey::Enter,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = with_interaction(make_element(38, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        assert!(listeners.iter().all(|listener| {
+            !matches!(listener.matcher, ListenerMatcher::KeyDownBinding { .. })
+        }));
+    }
+
+    #[test]
+    fn listeners_for_element_key_down_and_key_press_share_one_slot() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![KeyBindingSpec {
+            route: "key_down:space:exact:0".to_string(),
+            key: CanonicalKey::Space,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        attrs.on_key_press = Some(vec![KeyBindingSpec {
+            route: "key_press:space:exact:0".to_string(),
+            key: CanonicalKey::Space,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = with_interaction(make_element(39, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        let listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyDownBinding {
+                    key: CanonicalKey::Space,
+                    mods: 0,
+                    match_mode: KeyBindingMatch::Exact,
+                }
+            )
+        });
+
+        let actions = listener.compute_actions(&InputEvent::Key {
+            key: CanonicalKey::Space,
+            action: ACTION_PRESS,
+            mods: 0,
+        });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id,
+                    kind: ElementEventKind::KeyDown,
+                    payload,
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::StartKeyPressTracker { tracker }),
+            ] if *element_id == ElementId::from_term_bytes(vec![39])
+                && payload.as_deref() == Some("key_down:space:exact:0")
+                && tracker.key == CanonicalKey::Space
+                && tracker.source_element_id == Some(ElementId::from_term_bytes(vec![39]))
+                && matches!(
+                    tracker.followups.as_slice(),
+                    [KeyPressFollowup::ElixirEvent { route, .. }]
+                        if route == "key_press:space:exact:0"
+                )
+        ));
+    }
+
+    #[test]
+    fn key_press_release_followup_redispatches_key_up_before_key_press() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(true);
+        attrs.on_key_up = Some(vec![KeyBindingSpec {
+            route: "key_up:space:exact:0".to_string(),
+            key: CanonicalKey::Space,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        attrs.on_key_press = Some(vec![KeyBindingSpec {
+            route: "key_press:space:exact:0".to_string(),
+            key: CanonicalKey::Space,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = with_interaction(make_element(40, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: vec![KeyPressTracker {
+                source_element_id: Some(ElementId::from_term_bytes(vec![40])),
+                key: CanonicalKey::Space,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+                followups: vec![KeyPressFollowup::ElixirEvent {
+                    element_id: ElementId::from_term_bytes(vec![40]),
+                    route: "key_press:space:exact:0".to_string(),
+                }],
+            }],
+            drag: DragTrackerState::Inactive,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::Key {
+                key: CanonicalKey::Space,
+                action: ACTION_RELEASE,
+                mods: 0,
+            },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    kind: ElementEventKind::KeyUp,
+                    payload: key_up_route,
+                    ..
+                }),
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    kind: ElementEventKind::KeyPress,
+                    payload: key_press_route,
+                    ..
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearKeyPressTrackersForKey { key }),
+            ] if key_up_route.as_deref() == Some("key_up:space:exact:0")
+                && key_press_route.as_deref() == Some("key_press:space:exact:0")
+                && *key == CanonicalKey::Space
+        ));
     }
 
     #[test]
@@ -7191,7 +7784,7 @@ mod tests {
         let forward_actions = first_matching_actions_with_ctx(
             &registry,
             &InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: 0,
             },
@@ -7204,7 +7797,7 @@ mod tests {
         let reverse_actions = first_matching_actions_with_ctx(
             &registry,
             &InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT,
             },
@@ -7252,7 +7845,7 @@ mod tests {
         let forward_actions = first_matching_actions_with_ctx(
             &registry,
             &InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: 0,
             },
@@ -7262,7 +7855,7 @@ mod tests {
         let reverse_actions = first_matching_actions_with_ctx(
             &registry,
             &InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT,
             },
@@ -7292,28 +7885,28 @@ mod tests {
         let matcher = ListenerMatcher::KeyEnterPressNoCtrlAltMeta;
 
         assert!(matcher.matches(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: 0,
         }));
         assert!(matcher.matches(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: crate::input::MOD_SHIFT,
         }));
 
         assert!(!matcher.matches(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: MOD_CTRL,
         }));
         assert!(!matcher.matches(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: MOD_ALT,
         }));
         assert!(!matcher.matches(&InputEvent::Key {
-            key: "enter".to_string(),
+            key: CanonicalKey::Enter,
             action: ACTION_PRESS,
             mods: MOD_META,
         }));
@@ -7323,14 +7916,14 @@ mod tests {
     fn tab_matchers_enforce_expected_modifier_behavior() {
         assert!(
             ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta.matches(&InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: 0,
             })
         );
         assert!(
             !ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta.matches(&InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT,
             })
@@ -7338,14 +7931,14 @@ mod tests {
 
         assert!(
             ListenerMatcher::KeyShiftTabPressNoCtrlAltMeta.matches(&InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT,
             })
         );
         assert!(
             !ListenerMatcher::KeyShiftTabPressNoCtrlAltMeta.matches(&InputEvent::Key {
-                key: "tab".to_string(),
+                key: CanonicalKey::Tab,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT | MOD_CTRL,
             })
@@ -7356,21 +7949,21 @@ mod tests {
     fn key_x_and_v_matchers_require_ctrl_or_meta() {
         assert!(
             ListenerMatcher::KeyXPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "x".to_string(),
+                key: CanonicalKey::X,
                 action: ACTION_PRESS,
                 mods: MOD_CTRL,
             })
         );
         assert!(
             ListenerMatcher::KeyXPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "X".to_string(),
+                key: CanonicalKey::X,
                 action: ACTION_PRESS,
                 mods: MOD_META | MOD_ALT,
             })
         );
         assert!(
             !ListenerMatcher::KeyXPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "x".to_string(),
+                key: CanonicalKey::X,
                 action: ACTION_PRESS,
                 mods: 0,
             })
@@ -7378,21 +7971,21 @@ mod tests {
 
         assert!(
             ListenerMatcher::KeyVPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "v".to_string(),
+                key: CanonicalKey::V,
                 action: ACTION_PRESS,
                 mods: MOD_CTRL,
             })
         );
         assert!(
             ListenerMatcher::KeyVPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "V".to_string(),
+                key: CanonicalKey::V,
                 action: ACTION_PRESS,
                 mods: MOD_META,
             })
         );
         assert!(
             !ListenerMatcher::KeyVPressCtrlOrMeta.matches(&InputEvent::Key {
-                key: "v".to_string(),
+                key: CanonicalKey::V,
                 action: ACTION_PRESS,
                 mods: 0,
             })
@@ -7456,26 +8049,26 @@ mod tests {
     fn key_backspace_and_delete_matchers_match_expected_keys_only() {
         assert!(
             ListenerMatcher::KeyBackspacePress.matches(&InputEvent::Key {
-                key: "backspace".to_string(),
+                key: CanonicalKey::Backspace,
                 action: ACTION_PRESS,
                 mods: 0,
             })
         );
         assert!(
             !ListenerMatcher::KeyBackspacePress.matches(&InputEvent::Key {
-                key: "delete".to_string(),
+                key: CanonicalKey::Delete,
                 action: ACTION_PRESS,
                 mods: 0,
             })
         );
 
         assert!(ListenerMatcher::KeyDeletePress.matches(&InputEvent::Key {
-            key: "delete".to_string(),
+            key: CanonicalKey::Delete,
             action: ACTION_PRESS,
             mods: 0,
         }));
         assert!(!ListenerMatcher::KeyDeletePress.matches(&InputEvent::Key {
-            key: "backspace".to_string(),
+            key: CanonicalKey::Backspace,
             action: ACTION_PRESS,
             mods: 0,
         }));
@@ -7491,31 +8084,21 @@ mod tests {
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta
@@ -7528,32 +8111,21 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyHomePressNoCtrlAltMeta
         )));
-        assert!(
-            listeners.iter().any(|listener| matches!(
-                listener.matcher,
-                ListenerMatcher::KeyEndPressNoCtrlAltMeta
-            ))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyEndPressNoCtrlAltMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear)));
 
         let commit_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
@@ -7603,7 +8175,7 @@ mod tests {
         };
         let cut_actions = cut_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "x".to_string(),
+                key: CanonicalKey::X,
                 action: ACTION_PRESS,
                 mods: MOD_CTRL,
             },
@@ -7647,7 +8219,7 @@ mod tests {
         };
         let paste_actions = paste_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "v".to_string(),
+                key: CanonicalKey::V,
                 action: ACTION_PRESS,
                 mods: MOD_META,
             },
@@ -7685,7 +8257,7 @@ mod tests {
         };
         let left_actions = left_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "left".to_string(),
+                key: CanonicalKey::ArrowLeft,
                 action: ACTION_PRESS,
                 mods: MOD_SHIFT,
             },
@@ -7723,7 +8295,7 @@ mod tests {
         };
         let select_all_actions = select_all_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "a".to_string(),
+                key: CanonicalKey::A,
                 action: ACTION_PRESS,
                 mods: MOD_CTRL,
             },
@@ -7761,7 +8333,7 @@ mod tests {
         };
         let copy_actions = copy_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "c".to_string(),
+                key: CanonicalKey::C,
                 action: ACTION_PRESS,
                 mods: MOD_META,
             },
@@ -7846,11 +8418,9 @@ mod tests {
         );
 
         assert_eq!(commit_actions.len(), 3);
-        assert!(
-            commit_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(commit_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
@@ -7870,17 +8440,15 @@ mod tests {
         };
         let cut_actions = cut_listener.compute_actions_with_ctx(
             &InputEvent::Key {
-                key: "x".to_string(),
+                key: CanonicalKey::X,
                 action: ACTION_PRESS,
                 mods: MOD_CTRL,
             },
             &mut ctx,
         );
-        assert!(
-            cut_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(cut_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -8032,6 +8600,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
@@ -8088,6 +8657,7 @@ mod tests {
         let base = registry_for_elements(&[]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
@@ -8162,7 +8732,7 @@ mod tests {
         assert_eq!(key_listeners.len(), 3);
         assert!(key_listeners.iter().any(|listener| matches!(
             listener.compute_actions(&InputEvent::Key {
-                key: "left".to_string(),
+                key: CanonicalKey::ArrowLeft,
                 action: ACTION_PRESS,
                 mods: 0,
             })
@@ -8174,7 +8744,7 @@ mod tests {
         )));
         assert!(key_listeners.iter().any(|listener| matches!(
             listener.compute_actions(&InputEvent::Key {
-                key: "right".to_string(),
+                key: CanonicalKey::ArrowRight,
                 action: ACTION_PRESS,
                 mods: 0,
             })
@@ -8186,7 +8756,7 @@ mod tests {
         )));
         assert!(key_listeners.iter().any(|listener| matches!(
             listener.compute_actions(&InputEvent::Key {
-                key: "down".to_string(),
+                key: CanonicalKey::ArrowDown,
                 action: ACTION_PRESS,
                 mods: 0,
             })
@@ -8660,6 +9230,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            key_presses: Vec::new(),
             drag: DragTrackerState::Active {
                 element_id: ElementId::from_term_bytes(vec![48]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -8696,6 +9267,7 @@ mod tests {
     fn runtime_listeners_for_overlay_scrollbar_drag_emit_move_and_clear_followups() {
         let runtime = RuntimeOverlayState {
             click_press: None,
+            key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             scrollbar: Some(ScrollbarDragTracker {
                 element_id: ElementId::from_term_bytes(vec![49]),
@@ -8711,11 +9283,9 @@ mod tests {
             text_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::CursorButtonLeftReleaseAnywhere
@@ -8750,7 +9320,7 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)
         });
         let actions = backspace_listener.compute_actions(&InputEvent::Key {
-            key: "backspace".to_string(),
+            key: CanonicalKey::Backspace,
             action: ACTION_PRESS,
             mods: 0,
         });
@@ -8800,12 +9370,10 @@ mod tests {
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
-        assert!(
-            registry
-                .view()
-                .iter_precedence()
-                .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred))
-        );
+        assert!(registry
+            .view()
+            .iter_precedence()
+            .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred)));
     }
 
     #[test]
