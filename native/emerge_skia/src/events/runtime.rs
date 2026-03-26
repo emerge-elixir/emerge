@@ -1764,6 +1764,72 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_on_press_without_scroll_match_stays_press_only_until_release() {
+        let element_id = ElementId::from_term_bytes(vec![44]);
+
+        let mut attrs = Attrs::default();
+        attrs.on_press = Some(true);
+        attrs.focused_active = Some(true);
+        let element = with_interaction(make_element(44, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: Some(element_id.clone()),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 25.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 25.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(
+            msgs.iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry)),
+            "pointer press release should still emit press and request rebuild"
+        );
+        assert!(matches!(
+            runtime.runtime_overlay.drag,
+            registry_builder::DragTrackerState::Inactive
+        ));
+        assert!(runtime.runtime_overlay.click_press.is_none());
+    }
+
+    #[test]
     fn direct_runtime_scrollable_only_element_drag_scrolls_after_threshold() {
         let mut attrs = Attrs::default();
         attrs.scrollbar_x = Some(true);

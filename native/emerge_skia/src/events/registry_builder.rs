@@ -697,6 +697,8 @@ fn runtime_drag_candidate_threshold_listener(
         compute: ListenerCompute::PromoteDragTrackerFromCursorPos {
             element_id: element_id.clone(),
             matcher_kind,
+            origin_x,
+            origin_y,
         },
     })
 }
@@ -1607,10 +1609,12 @@ pub enum ListenerCompute {
         emit_click: bool,
         emit_press_pointer: bool,
     },
-    /// Promote drag threshold tracking using cursor-move payload.
+    /// Promote drag threshold tracking when current drag delta can activate scrolling.
     PromoteDragTrackerFromCursorPos {
         element_id: ElementId,
         matcher_kind: ListenerMatcherKind,
+        origin_x: f32,
+        origin_y: f32,
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
@@ -1781,16 +1785,29 @@ impl ListenerCompute {
             ListenerCompute::PromoteDragTrackerFromCursorPos {
                 element_id,
                 matcher_kind,
+                origin_x,
+                origin_y,
             } => match input {
-                ListenerInput::Raw(InputEvent::CursorPos { x, y }) => vec![
-                    ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
-                        element_id: element_id.clone(),
-                        matcher_kind: *matcher_kind,
-                        last_x: *x,
-                        last_y: *y,
-                    }),
-                    ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-                ],
+                ListenerInput::Raw(InputEvent::CursorPos { x, y }) => {
+                    let dx = *x - *origin_x;
+                    let dy = *y - *origin_y;
+
+                    if drag_scroll_can_activate_from_delta(dx, dy, *x, *y, ctx) {
+                        vec![
+                            ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
+                                element_id: element_id.clone(),
+                                matcher_kind: *matcher_kind,
+                                last_x: *x,
+                                last_y: *y,
+                            }),
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                        ]
+                    } else {
+                        vec![ListenerAction::RuntimeChange(
+                            RuntimeChange::ClearDragTracker,
+                        )]
+                    }
+                }
                 _ => Vec::new(),
             },
             ListenerCompute::RedispatchScrollInput => match input.raw() {
@@ -2151,6 +2168,18 @@ fn redispatch_scroll_components_from_input<C: ListenerComputeCtx>(
         .into_iter()
         .flat_map(|component| ctx.dispatch_base(&component))
         .collect()
+}
+
+fn drag_scroll_can_activate_from_delta<C: ListenerComputeCtx>(
+    dx: f32,
+    dy: f32,
+    x: f32,
+    y: f32,
+    ctx: &mut C,
+) -> bool {
+    split_scroll_delta_components(dx, dy, x, y)
+        .into_iter()
+        .any(|component| !ctx.dispatch_base(&component).is_empty())
 }
 
 fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
@@ -6898,7 +6927,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_drag_candidate_threshold_promotes_drag_before_click_release() {
+    fn compose_combined_registry_drag_candidate_threshold_without_scroll_match_clears_drag_only() {
         let mut attrs = Attrs::default();
         attrs.on_click = Some(true);
         let element = with_interaction(make_element(31, attrs), true);
@@ -6921,9 +6950,64 @@ mod tests {
             text_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
 
-        let actions =
-            first_matching_actions(&combined, &InputEvent::CursorPos { x: 25.0, y: 10.0 });
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 25.0, y: 10.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::RuntimeChange(
+                RuntimeChange::ClearDragTracker
+            )]
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_promotes_drag_when_scroll_matches() {
+        let mut attrs = Attrs::default();
+        attrs.on_click = Some(true);
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(10.0);
+        attrs.scroll_x_max = Some(100.0);
+        let element = with_interaction(make_element(31, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: Some(ClickPressTracker {
+                element_id: ElementId::from_term_bytes(vec![31]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                emit_click: true,
+                emit_press_pointer: false,
+            }),
+            drag: DragTrackerState::Candidate {
+                element_id: ElementId::from_term_bytes(vec![31]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+            },
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 25.0, y: 10.0 },
+            &mut ctx,
+        );
 
         assert!(matches!(
             actions.as_slice(),
