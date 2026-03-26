@@ -34,11 +34,10 @@ impl NativeLogRelay {
 
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     pub fn log(&self, level: NativeLogLevel, source: &'static str, message: impl Into<String>) {
-        let target = self
+        let target = *self
             .target
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if let Some(pid) = target {
             send_log_event(pid, level, source, &message.into());

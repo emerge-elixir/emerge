@@ -45,20 +45,19 @@ defmodule EmergeSkia.TreeRenderer do
         state = Emerge.Engine.diff_state_new()
         {full_bin, _state, _assigned} = Emerge.Engine.encode_full(state, tree)
 
-        case Native.render_tree_to_pixels_nif(
-               full_bin,
-               raster_opts.width,
-               raster_opts.height,
-               raster_opts.scale,
-               [asset_config.priv_dir],
-               asset_config.runtime_enabled,
-               asset_config.runtime_allowlist,
-               asset_config.runtime_follow_symlinks,
-               asset_config.runtime_max_file_size,
-               asset_config.runtime_extensions,
-               raster_opts.asset_mode,
-               raster_opts.asset_timeout_ms
-             ) do
+        case Native.render_tree_to_pixels_nif(full_bin, %{
+               width: raster_opts.width,
+               height: raster_opts.height,
+               scale: raster_opts.scale,
+               sources: [asset_config.priv_dir],
+               runtime_enabled: asset_config.runtime_enabled,
+               allowlist: asset_config.runtime_allowlist,
+               follow_symlinks: asset_config.runtime_follow_symlinks,
+               max_file_size: asset_config.runtime_max_file_size,
+               extensions: asset_config.runtime_extensions,
+               asset_mode: raster_opts.asset_mode,
+               asset_timeout_ms: raster_opts.asset_timeout_ms
+             }) do
           pixels when is_binary(pixels) ->
             pixels
 

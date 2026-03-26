@@ -192,9 +192,7 @@ impl TextInputState {
         let next_cursor = cursor.unwrap_or(self.cursor).min(len);
 
         let mut next_anchor = selection_anchor.map(|anchor| anchor.min(len));
-        if !focused {
-            next_anchor = None;
-        } else if next_anchor == Some(next_cursor) {
+        if !focused || next_anchor == Some(next_cursor) {
             next_anchor = None;
         }
 
@@ -486,22 +484,12 @@ pub enum TextInputPreeditRequest {
 /// - `text_inputs` for focused text editing reconciliation
 /// - `scrollbars` for active scrollbar drag reconciliation
 /// - `focused_id` for focus reconciliation
+#[derive(Default)]
 pub struct RegistryRebuildPayload {
     pub base_registry: registry_builder::Registry,
     pub text_inputs: HashMap<ElementId, TextInputState>,
     pub scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     pub focused_id: Option<ElementId>,
-}
-
-impl Default for RegistryRebuildPayload {
-    fn default() -> Self {
-        Self {
-            base_registry: registry_builder::Registry::default(),
-            text_inputs: HashMap::new(),
-            scrollbars: HashMap::new(),
-            focused_id: None,
-        }
-    }
 }
 
 fn text_input_state(

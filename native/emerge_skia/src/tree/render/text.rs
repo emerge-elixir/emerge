@@ -8,6 +8,17 @@ use crate::tree::layout::{font_info_with_inheritance, FontContext};
 
 pub(super) const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 
+#[derive(Clone, Copy)]
+pub(super) struct TextRunStyle<'a> {
+    pub(super) font_size: f32,
+    pub(super) color: u32,
+    pub(super) family: &'a str,
+    pub(super) weight: u16,
+    pub(super) italic: bool,
+    pub(super) letter_spacing: f32,
+    pub(super) word_spacing: f32,
+}
+
 pub(super) fn render_text_items(
     frame: Frame,
     attrs: &Attrs,
@@ -45,6 +56,15 @@ pub(super) fn render_text_items(
         .or(inherited.font_word_spacing)
         .unwrap_or(0.0);
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+    let style = TextRunStyle {
+        font_size,
+        color,
+        family: &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    };
     let insets = content_insets(attrs);
     let inset_left = insets.left;
     let inset_top = insets.top;
@@ -71,18 +91,7 @@ pub(super) fn render_text_items(
     };
     let baseline_y = frame.y + inset_top + ascent;
 
-    let mut items = text_run_items(
-        text_x,
-        baseline_y,
-        content,
-        font_size,
-        color,
-        &family,
-        weight,
-        italic,
-        letter_spacing,
-        word_spacing,
-    );
+    let mut items = text_run_items(text_x, baseline_y, content, style);
     items.extend(text_decoration_items(TextDecorationSpec {
         x: text_x,
         baseline_y,
@@ -134,6 +143,15 @@ pub(super) fn render_text_input_items(
         .or(inherited.font_word_spacing)
         .unwrap_or(0.0);
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+    let style = TextRunStyle {
+        font_size,
+        color,
+        family: &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    };
     let insets = content_insets(attrs);
     let inset_left = insets.left;
     let inset_top = insets.top;
@@ -159,12 +177,12 @@ pub(super) fn render_text_input_items(
 
     let text_width = measure_text_width_with_font(
         &displayed_text,
-        font_size,
-        &family,
-        weight,
-        italic,
-        letter_spacing,
-        word_spacing,
+        style.font_size,
+        style.family,
+        style.weight,
+        style.italic,
+        style.letter_spacing,
+        style.word_spacing,
     );
     let content_width = frame.width - inset_left - inset_right;
     let text_align = attrs
@@ -197,26 +215,10 @@ pub(super) fn render_text_input_items(
             let displayed_start = map_committed_to_displayed(sel_start);
             let displayed_end = map_committed_to_displayed(sel_end);
 
-            let start_offset = text_offset_for_char_index(
-                &displayed_text,
-                displayed_start as usize,
-                font_size,
-                &family,
-                weight,
-                italic,
-                letter_spacing,
-                word_spacing,
-            );
-            let end_offset = text_offset_for_char_index(
-                &displayed_text,
-                displayed_end as usize,
-                font_size,
-                &family,
-                weight,
-                italic,
-                letter_spacing,
-                word_spacing,
-            );
+            let start_offset =
+                text_offset_for_char_index(&displayed_text, displayed_start as usize, style);
+            let end_offset =
+                text_offset_for_char_index(&displayed_text, displayed_end as usize, style);
 
             let selection_width = (end_offset - start_offset).max(0.0);
             if selection_width > 0.0 {
@@ -233,18 +235,7 @@ pub(super) fn render_text_input_items(
         }
     }
 
-    items.extend(text_run_items(
-        text_x,
-        baseline_y,
-        &displayed_text,
-        font_size,
-        color,
-        &family,
-        weight,
-        italic,
-        letter_spacing,
-        word_spacing,
-    ));
+    items.extend(text_run_items(text_x, baseline_y, &displayed_text, style));
 
     items.extend(text_decoration_items(TextDecorationSpec {
         x: text_x,
@@ -257,24 +248,16 @@ pub(super) fn render_text_input_items(
     }));
 
     if let Some(preedit_text) = preedit {
-        let preedit_start_offset = text_offset_for_char_index(
-            &displayed_text,
-            base_cursor as usize,
-            font_size,
-            &family,
-            weight,
-            italic,
-            letter_spacing,
-            word_spacing,
-        );
+        let preedit_start_offset =
+            text_offset_for_char_index(&displayed_text, base_cursor as usize, style);
         let preedit_width = measure_text_width_with_font(
             preedit_text,
-            font_size,
-            &family,
-            weight,
-            italic,
-            letter_spacing,
-            word_spacing,
+            style.font_size,
+            style.family,
+            style.weight,
+            style.italic,
+            style.letter_spacing,
+            style.word_spacing,
         );
 
         items.extend(text_decoration_items(TextDecorationSpec {
@@ -301,16 +284,8 @@ pub(super) fn render_text_input_items(
             base_cursor.min(displayed_char_count)
         };
 
-        let caret_offset = text_offset_for_char_index(
-            &displayed_text,
-            caret_char_index as usize,
-            font_size,
-            &family,
-            weight,
-            italic,
-            letter_spacing,
-            word_spacing,
-        );
+        let caret_offset =
+            text_offset_for_char_index(&displayed_text, caret_char_index as usize, style);
         let caret_x = text_x + caret_offset;
         let caret_top = baseline_y - ascent;
         let caret_height = (ascent + descent).max(font_size * 0.9);
@@ -334,13 +309,7 @@ pub(super) fn text_run_items(
     x: f32,
     baseline_y: f32,
     text: &str,
-    font_size: f32,
-    color: u32,
-    family: &str,
-    weight: u16,
-    italic: bool,
-    letter_spacing: f32,
-    word_spacing: f32,
+    style: TextRunStyle<'_>,
 ) -> Vec<RenderNode> {
     if text.is_empty() {
         return Vec::new();
@@ -348,21 +317,22 @@ pub(super) fn text_run_items(
 
     let mut items = Vec::new();
 
-    if letter_spacing == 0.0 && word_spacing == 0.0 {
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
         items.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
             x,
             baseline_y,
             text.to_string(),
-            font_size,
-            color,
-            family.to_string(),
-            weight,
-            italic,
+            style.font_size,
+            style.color,
+            style.family.to_string(),
+            style.weight,
+            style.italic,
         )));
         return items;
     }
 
-    let measure_font = make_font_with_style(family, weight, italic, font_size);
+    let measure_font =
+        make_font_with_style(style.family, style.weight, style.italic, style.font_size);
     let mut cursor_x = x;
     let mut chars = text.chars().peekable();
 
@@ -372,20 +342,20 @@ pub(super) fn text_run_items(
             cursor_x,
             baseline_y,
             glyph.clone(),
-            font_size,
-            color,
-            family.to_string(),
-            weight,
-            italic,
+            style.font_size,
+            style.color,
+            style.family.to_string(),
+            style.weight,
+            style.italic,
         )));
 
         let (glyph_width, _bounds) = measure_font.measure_str(&glyph, None);
         cursor_x += glyph_width;
 
         if chars.peek().is_some() {
-            cursor_x += letter_spacing;
+            cursor_x += style.letter_spacing;
             if ch.is_whitespace() {
-                cursor_x += word_spacing;
+                cursor_x += style.word_spacing;
             }
         }
     }
@@ -491,12 +461,7 @@ pub(super) fn measure_text_width_with_font(
 pub(super) fn text_offset_for_char_index(
     text: &str,
     char_index: usize,
-    font_size: f32,
-    family: &str,
-    weight: u16,
-    italic: bool,
-    letter_spacing: f32,
-    word_spacing: f32,
+    style: TextRunStyle<'_>,
 ) -> f32 {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
@@ -508,7 +473,7 @@ pub(super) fn text_offset_for_char_index(
         return 0.0;
     }
 
-    let font = make_font_with_style(family, weight, italic, font_size);
+    let font = make_font_with_style(style.family, style.weight, style.italic, style.font_size);
     let mut total = 0.0;
 
     for (idx, ch) in chars.iter().enumerate() {
@@ -521,9 +486,9 @@ pub(super) fn text_offset_for_char_index(
         total += glyph_width;
 
         if idx + 1 < chars.len() {
-            total += letter_spacing;
+            total += style.letter_spacing;
             if ch.is_whitespace() {
-                total += word_spacing;
+                total += style.word_spacing;
             }
         }
     }

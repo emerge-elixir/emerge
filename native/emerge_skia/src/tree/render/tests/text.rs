@@ -1,5 +1,5 @@
 use super::super::text::{
-    measure_text_width_with_font, text_metrics_with_font, text_offset_for_char_index,
+    measure_text_width_with_font, text_metrics_with_font, text_offset_for_char_index, TextRunStyle,
     TEXT_SELECTION_COLOR,
 };
 use super::common::*;
@@ -218,16 +218,39 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
         .expect("caret area should be present");
 
     let displayed = "quxyick";
-    let expected_caret_offset =
-        text_offset_for_char_index(displayed, 3, 16.0, "default", 400, false, 0.0, 0.0);
+    let expected_caret_offset = text_offset_for_char_index(
+        displayed,
+        3,
+        TextRunStyle {
+            font_size: 16.0,
+            color: 0,
+            family: "default",
+            weight: 400,
+            italic: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+        },
+    );
     let expected_caret_x = 10.0 + expected_caret_offset;
     assert!((caret_x - expected_caret_x).abs() < 0.2);
 
     let (ascent, _descent) = text_metrics_with_font(16.0, "default", 400, false);
     let baseline_y = 20.0 + ascent;
 
-    let preedit_x =
-        10.0 + text_offset_for_char_index(displayed, 2, 16.0, "default", 400, false, 0.0, 0.0);
+    let preedit_x = 10.0
+        + text_offset_for_char_index(
+            displayed,
+            2,
+            TextRunStyle {
+                font_size: 16.0,
+                color: 0,
+                family: "default",
+                weight: 400,
+                italic: false,
+                letter_spacing: 0.0,
+                word_spacing: 0.0,
+            },
+        );
     let preedit_width = measure_text_width_with_font("xy", 16.0, "default", 400, false, 0.0, 0.0);
     let underline_y = baseline_y + 16.0_f32 * 0.08 - (16.0_f32 * 0.06).max(1.0) / 2.0;
 

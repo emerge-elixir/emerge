@@ -180,33 +180,10 @@ defmodule EmergeSkia.Native do
   """
   @spec render_tree_to_pixels_nif(
           binary(),
-          pos_integer(),
-          pos_integer(),
-          float(),
-          [String.t()],
-          boolean(),
-          [String.t()],
-          boolean(),
-          non_neg_integer(),
-          [String.t()],
-          String.t(),
-          pos_integer()
+          map()
         ) :: binary() | {:ok, binary()} | {:error, String.t()}
-  def render_tree_to_pixels_nif(
-        _data,
-        _width,
-        _height,
-        _scale,
-        _sources,
-        _runtime_enabled,
-        _allowlist,
-        _follow_symlinks,
-        _max_file_size,
-        _extensions,
-        _asset_mode,
-        _asset_timeout_ms
-      ),
-      do: :erlang.nif_error(:nif_not_loaded)
+  def render_tree_to_pixels_nif(_data, _opts),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
   # Input Handling

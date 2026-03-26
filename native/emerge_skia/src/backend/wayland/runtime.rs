@@ -79,31 +79,51 @@ struct WaylandWake {
     tx: calloop::channel::Sender<WakeAction>,
 }
 
+struct WaylandAppRuntime {
+    running_flag: Arc<AtomicBool>,
+    tree_tx: CrossbeamSender<TreeMsg>,
+    event_tx: crossbeam_channel::Sender<EventMsg>,
+    render_rx: Receiver<RenderMsg>,
+    cursor_icon_rx: Receiver<CursorIcon>,
+    video_registry: Arc<VideoRegistry>,
+}
+
+pub(crate) struct WaylandRunArgs {
+    pub config: WaylandConfig,
+    pub running_flag: Arc<AtomicBool>,
+    pub tree_tx: CrossbeamSender<TreeMsg>,
+    pub event_tx: crossbeam_channel::Sender<EventMsg>,
+    pub render_rx: Receiver<RenderMsg>,
+    pub cursor_icon_rx: Receiver<CursorIcon>,
+    pub video_registry: Arc<VideoRegistry>,
+    pub proxy_tx: Sender<WindowBackendStartupResult>,
+}
+
 enum WaylandVideoImportState {
     PendingGlInit,
-    Ready(VideoImportContext),
+    Ready(Box<VideoImportContext>),
     Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WaylandVideoSyncAction {
-    HoldPendingFrames,
-    ImportPendingFrames,
-    DropPendingFrames,
+    Hold,
+    Import,
+    Drop,
 }
 
 impl WaylandVideoImportState {
     fn sync_action(&self) -> WaylandVideoSyncAction {
         match self {
-            Self::PendingGlInit => WaylandVideoSyncAction::HoldPendingFrames,
-            Self::Ready(_) => WaylandVideoSyncAction::ImportPendingFrames,
-            Self::Unavailable => WaylandVideoSyncAction::DropPendingFrames,
+            Self::PendingGlInit => WaylandVideoSyncAction::Hold,
+            Self::Ready(_) => WaylandVideoSyncAction::Import,
+            Self::Unavailable => WaylandVideoSyncAction::Drop,
         }
     }
 
     fn context(&self) -> Option<&VideoImportContext> {
         match self {
-            Self::Ready(ctx) => Some(ctx),
+            Self::Ready(ctx) => Some(ctx.as_ref()),
             Self::PendingGlInit | Self::Unavailable => None,
         }
     }
@@ -161,12 +181,7 @@ impl WaylandApp {
         conn: &Connection,
         globals: &wayland_client::globals::GlobalList,
         qh: QueueHandle<Self>,
-        running_flag: Arc<AtomicBool>,
-        tree_tx: CrossbeamSender<TreeMsg>,
-        event_tx: crossbeam_channel::Sender<EventMsg>,
-        render_rx: Receiver<RenderMsg>,
-        cursor_icon_rx: Receiver<CursorIcon>,
-        video_registry: Arc<VideoRegistry>,
+        runtime: WaylandAppRuntime,
         config: &WaylandConfig,
     ) -> Result<Self, String> {
         let compositor_state = CompositorState::bind(globals, &qh)
@@ -183,6 +198,15 @@ impl WaylandApp {
         let protocols = ProtocolHandles::new(globals, &qh, compositor_state, &window);
 
         window.commit();
+
+        let WaylandAppRuntime {
+            running_flag,
+            tree_tx,
+            event_tx,
+            render_rx,
+            cursor_icon_rx,
+            video_registry,
+        } = runtime;
 
         let mut app = Self {
             registry_state: RegistryState::new(globals),
@@ -283,14 +307,14 @@ impl WaylandApp {
                     ime_text_state,
                     ..
                 } => {
-                    self.render_state.scene = scene;
+                    self.render_state.scene = *scene;
                     self.render_state.render_version = version;
                     self.render_state.animate = animate;
 
                     if self.text_input.update_render_state(
                         ime_enabled,
                         ime_cursor_area,
-                        ime_text_state,
+                        *ime_text_state,
                     ) {
                         self.text_input.sync(&self.window, &self.geometry);
                     }
@@ -379,8 +403,8 @@ impl WaylandApp {
         let mut video_needs_cleanup = false;
 
         match sync_action {
-            WaylandVideoSyncAction::HoldPendingFrames => {}
-            WaylandVideoSyncAction::ImportPendingFrames => {
+            WaylandVideoSyncAction::Hold => {}
+            WaylandVideoSyncAction::Import => {
                 match env
                     .renderer
                     .sync_video_frames(video_registry, video_import_ctx)
@@ -389,7 +413,7 @@ impl WaylandApp {
                     Err(err) => eprintln!("video sync failed: {err}"),
                 }
             }
-            WaylandVideoSyncAction::DropPendingFrames => {
+            WaylandVideoSyncAction::Drop => {
                 if let Err(err) = video_registry.drain_pending_to_release() {
                     eprintln!("video sync failed: {err}");
                 }
@@ -426,7 +450,7 @@ impl WaylandApp {
         }
 
         self.video_import = match VideoImportContext::new_current() {
-            Ok(ctx) => WaylandVideoImportState::Ready(ctx),
+            Ok(ctx) => WaylandVideoImportState::Ready(Box::new(ctx)),
             Err(err) => {
                 eprintln!("prime video import unavailable: {err}");
                 WaylandVideoImportState::Unavailable
@@ -862,16 +886,18 @@ fn fail_startup(
     let _ = event_tx.send(EventMsg::Stop);
 }
 
-pub(crate) fn run(
-    config: WaylandConfig,
-    running_flag: Arc<AtomicBool>,
-    tree_tx: CrossbeamSender<TreeMsg>,
-    event_tx: crossbeam_channel::Sender<EventMsg>,
-    render_rx: Receiver<RenderMsg>,
-    cursor_icon_rx: Receiver<CursorIcon>,
-    video_registry: Arc<VideoRegistry>,
-    proxy_tx: Sender<WindowBackendStartupResult>,
-) {
+pub(crate) fn run(args: WaylandRunArgs) {
+    let WaylandRunArgs {
+        config,
+        running_flag,
+        tree_tx,
+        event_tx,
+        render_rx,
+        cursor_icon_rx,
+        video_registry,
+        proxy_tx,
+    } = args;
+
     let conn = match Connection::connect_to_env() {
         Ok(conn) => conn,
         Err(err) => {
@@ -952,12 +978,14 @@ pub(crate) fn run(
         &conn,
         &globals,
         qh,
-        Arc::clone(&running_flag),
-        tree_tx,
-        event_tx.clone(),
-        render_rx,
-        cursor_icon_rx,
-        video_registry,
+        WaylandAppRuntime {
+            running_flag: Arc::clone(&running_flag),
+            tree_tx,
+            event_tx: event_tx.clone(),
+            render_rx,
+            cursor_icon_rx,
+            video_registry,
+        },
         &config,
     ) {
         Ok(app) => app,
@@ -996,11 +1024,11 @@ mod tests {
     fn wayland_video_import_states_map_to_expected_sync_actions() {
         assert_eq!(
             WaylandVideoImportState::PendingGlInit.sync_action(),
-            WaylandVideoSyncAction::HoldPendingFrames
+            WaylandVideoSyncAction::Hold
         );
         assert_eq!(
             WaylandVideoImportState::Unavailable.sync_action(),
-            WaylandVideoSyncAction::DropPendingFrames
+            WaylandVideoSyncAction::Drop
         );
     }
 

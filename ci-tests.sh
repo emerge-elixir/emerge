@@ -7,6 +7,7 @@ mode="${1:-all}"
 run_quality() {
   mix format --check-formatted
   mix credo --strict
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
 }
 
 run_tests() {

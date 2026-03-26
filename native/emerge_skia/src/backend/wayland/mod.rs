@@ -9,4 +9,4 @@ mod protocols;
 mod runtime;
 mod text_input;
 
-pub(crate) use runtime::run;
+pub(crate) use runtime::{WaylandRunArgs, run};

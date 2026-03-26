@@ -85,7 +85,7 @@ pub enum EventMsg {
 #[derive(Debug)]
 pub enum RenderMsg {
     Scene {
-        scene: RenderScene,
+        scene: Box<RenderScene>,
         version: u64,
         animate: bool,
         #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
@@ -93,7 +93,7 @@ pub enum RenderMsg {
         #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
         #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
-        ime_text_state: Option<TextInputState>,
+        ime_text_state: Box<Option<TextInputState>>,
     },
     Stop,
 }
