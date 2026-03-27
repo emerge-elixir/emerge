@@ -141,9 +141,31 @@ defmodule Emerge.UI.Event do
           required(:route) => binary()
         }
 
+  @type virtual_key_tap ::
+          {:text, binary()}
+          | {:key, key_name(), [key_modifier()]}
+          | {:text_and_key, binary(), key_name(), [key_modifier()]}
+
+  @type virtual_key_hold :: nil | :repeat | {:event, payload()}
+
+  @type virtual_key_spec :: %{
+          required(:tap) => virtual_key_tap(),
+          optional(:hold) => virtual_key_hold(),
+          optional(:hold_ms) => non_neg_integer(),
+          optional(:repeat_ms) => pos_integer()
+        }
+
+  @type virtual_key_descriptor :: %{
+          required(:tap) => virtual_key_tap(),
+          required(:hold) => :none | :repeat | :event,
+          required(:hold_ms) => non_neg_integer(),
+          required(:repeat_ms) => pos_integer()
+        }
+
   @type key_down_attr :: {:on_key_down, key_binding()}
   @type key_up_attr :: {:on_key_up, key_binding()}
   @type key_press_attr :: {:on_key_press, key_binding()}
+  @type virtual_key_attr :: {:virtual_key, virtual_key_spec()}
 
   @type t ::
           click_attr()
@@ -163,8 +185,11 @@ defmodule Emerge.UI.Event do
           | key_down_attr()
           | key_up_attr()
           | key_press_attr()
+          | virtual_key_attr()
 
   @key_modifiers [:shift, :ctrl, :alt, :meta]
+  @default_virtual_key_hold_ms 350
+  @default_virtual_key_repeat_ms 40
 
   @key_names [
     :a,
@@ -366,6 +391,12 @@ defmodule Emerge.UI.Event do
 
   def on_key_press(matcher, message), do: on_key_press(matcher, {self(), message})
 
+  @doc "Register soft-key behavior for a plain tree element"
+  @spec virtual_key(virtual_key_spec() | keyword()) :: virtual_key_attr()
+  def virtual_key(spec) do
+    {:virtual_key, normalize_virtual_key!(spec)}
+  end
+
   @doc false
   @spec normalize_key_listener_bindings!(:on_key_down | :on_key_up | :on_key_press, term()) ::
           [key_binding()]
@@ -382,6 +413,57 @@ defmodule Emerge.UI.Event do
         raise ArgumentError,
               "#{inspect(attr)} expects a key binding map or list of key binding maps, got: #{inspect(other)}"
     end
+  end
+
+  @doc false
+  @spec normalize_virtual_key!(virtual_key_spec() | keyword()) :: virtual_key_spec()
+  def normalize_virtual_key!(value) do
+    spec = normalize_virtual_key_spec_map!(value)
+    ensure_only_keys!(:virtual_key, spec, [:tap, :hold, :hold_ms, :repeat_ms])
+
+    tap =
+      case Map.fetch(spec, :tap) do
+        {:ok, tap} -> normalize_virtual_key_tap!(tap)
+        :error -> missing_virtual_key_tap!()
+      end
+
+    hold =
+      spec
+      |> Map.get(:hold, nil)
+      |> normalize_virtual_key_hold!()
+
+    hold_ms =
+      normalize_virtual_key_hold_ms!(Map.get(spec, :hold_ms, @default_virtual_key_hold_ms))
+
+    repeat_ms =
+      normalize_virtual_key_repeat_ms!(Map.get(spec, :repeat_ms, @default_virtual_key_repeat_ms))
+
+    %{tap: tap, hold: hold, hold_ms: hold_ms, repeat_ms: repeat_ms}
+  end
+
+  @doc false
+  @spec virtual_key_descriptor(virtual_key_spec()) :: virtual_key_descriptor()
+  def virtual_key_descriptor(spec) do
+    spec = normalize_virtual_key_spec_map!(spec)
+    ensure_only_keys!(:virtual_key, spec, [:tap, :hold, :hold_ms, :repeat_ms])
+
+    tap =
+      spec
+      |> Map.fetch!(:tap)
+      |> normalize_virtual_key_tap!()
+
+    hold =
+      spec
+      |> Map.get(:hold, nil)
+      |> normalize_virtual_key_hold_descriptor!()
+
+    hold_ms =
+      normalize_virtual_key_hold_ms!(Map.get(spec, :hold_ms, @default_virtual_key_hold_ms))
+
+    repeat_ms =
+      normalize_virtual_key_repeat_ms!(Map.get(spec, :repeat_ms, @default_virtual_key_repeat_ms))
+
+    %{tap: tap, hold: hold, hold_ms: hold_ms, repeat_ms: repeat_ms}
   end
 
   @doc false
@@ -406,6 +488,80 @@ defmodule Emerge.UI.Event do
           key_binding_descriptor()
   def key_binding_descriptor(%{key: key, mods: mods, match: match, route: route}) do
     %{key: key, mods: mods, match: match, route: route}
+  end
+
+  defp normalize_virtual_key_spec_map!(value) when is_map(value), do: value
+
+  defp normalize_virtual_key_spec_map!(value) when is_list(value) do
+    if Keyword.keyword?(value) do
+      Map.new(value)
+    else
+      raise ArgumentError,
+            "virtual_key expects a map or keyword spec, got: #{inspect(value)}"
+    end
+  end
+
+  defp normalize_virtual_key_spec_map!(value) do
+    raise ArgumentError,
+          "virtual_key expects a map or keyword spec, got: #{inspect(value)}"
+  end
+
+  defp normalize_virtual_key_tap!({:text, text}) when is_binary(text), do: {:text, text}
+
+  defp normalize_virtual_key_tap!({:key, key, mods}) do
+    {:key, normalize_key_name!(key, :virtual_key), normalize_key_modifiers!(mods, :virtual_key)}
+  end
+
+  defp normalize_virtual_key_tap!({:text_and_key, text, key, mods}) when is_binary(text) do
+    {:text_and_key, text, normalize_key_name!(key, :virtual_key),
+     normalize_key_modifiers!(mods, :virtual_key)}
+  end
+
+  defp normalize_virtual_key_tap!(other) do
+    raise ArgumentError,
+          "virtual_key expects :tap to be {:text, binary}, {:key, key, mods}, or {:text_and_key, text, key, mods}, got: #{inspect(other)}"
+  end
+
+  defp normalize_virtual_key_hold!(nil), do: nil
+  defp normalize_virtual_key_hold!(:repeat), do: :repeat
+
+  defp normalize_virtual_key_hold!({:event, payload}) do
+    {:event, normalize_event_payload!(payload, :virtual_key)}
+  end
+
+  defp normalize_virtual_key_hold!(other) do
+    raise ArgumentError,
+          "virtual_key expects :hold to be nil, :repeat, or {:event, {pid, message}}, got: #{inspect(other)}"
+  end
+
+  defp normalize_virtual_key_hold_descriptor!(nil), do: :none
+  defp normalize_virtual_key_hold_descriptor!(:none), do: :none
+  defp normalize_virtual_key_hold_descriptor!(:repeat), do: :repeat
+
+  defp normalize_virtual_key_hold_descriptor!({:event, payload}) do
+    _ = normalize_event_payload!(payload, :virtual_key)
+    :event
+  end
+
+  defp normalize_virtual_key_hold_descriptor!(:event), do: :event
+
+  defp normalize_virtual_key_hold_descriptor!(other) do
+    raise ArgumentError,
+          "virtual_key expects :hold to be nil, :none, :repeat, :event, or {:event, {pid, message}}, got: #{inspect(other)}"
+  end
+
+  defp normalize_virtual_key_hold_ms!(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_virtual_key_hold_ms!(value) do
+    raise ArgumentError,
+          "virtual_key expects :hold_ms to be a non-negative integer, got: #{inspect(value)}"
+  end
+
+  defp normalize_virtual_key_repeat_ms!(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_virtual_key_repeat_ms!(value) do
+    raise ArgumentError,
+          "virtual_key expects :repeat_ms to be a positive integer, got: #{inspect(value)}"
   end
 
   defp build_key_binding!(event_type, matcher, payload) do
@@ -553,5 +709,9 @@ defmodule Emerge.UI.Event do
   defp missing_key_matcher_key!(event_type) do
     raise ArgumentError,
           "#{inspect(event_type)} keyword matcher expects a :key entry"
+  end
+
+  defp missing_virtual_key_tap! do
+    raise ArgumentError, "virtual_key expects a :tap entry"
   end
 end

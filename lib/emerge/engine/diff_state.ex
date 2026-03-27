@@ -112,6 +112,7 @@ defmodule Emerge.Engine.DiffState do
     |> register_event(element, :on_change, :change)
     |> register_event(element, :on_focus, :focus)
     |> register_event(element, :on_blur, :blur)
+    |> register_virtual_key_hold_event(element)
     |> register_key_events(element, :on_key_down, :key_down)
     |> register_key_events(element, :on_key_up, :key_up)
     |> register_key_events(element, :on_key_press, :key_press)
@@ -164,4 +165,18 @@ defmodule Emerge.Engine.DiffState do
   end
 
   defp register_key_event(acc, _element, _event_type, _binding), do: acc
+
+  defp register_virtual_key_hold_event(acc, element) do
+    case Map.get(element.attrs, :virtual_key) do
+      %{hold: {:event, {pid, msg}}} when is_pid(pid) ->
+        id_bin = :erlang.term_to_binary(element.id)
+
+        Map.update(acc, id_bin, %{virtual_key_hold: {pid, msg}}, fn events ->
+          Map.put(events, :virtual_key_hold, {pid, msg})
+        end)
+
+      _ ->
+        acc
+    end
+  end
 end

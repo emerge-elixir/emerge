@@ -73,7 +73,8 @@ defmodule Emerge.Engine.AttrCodec do
     on_swipe_up: 71,
     on_swipe_down: 72,
     on_swipe_left: 73,
-    on_swipe_right: 74
+    on_swipe_right: 74,
+    virtual_key: 75
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -174,6 +175,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:on_key_down, value), do: encode_key_bindings(value)
   defp encode_value(:on_key_up, value), do: encode_key_bindings(value)
   defp encode_value(:on_key_press, value), do: encode_key_bindings(value)
+  defp encode_value(:virtual_key, value), do: encode_virtual_key(value)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -240,6 +242,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:on_key_down, rest), do: decode_key_bindings(rest)
   defp decode_value(:on_key_up, rest), do: decode_key_bindings(rest)
   defp decode_value(:on_key_press, rest), do: decode_key_bindings(rest)
+  defp decode_value(:virtual_key, rest), do: decode_virtual_key(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)
@@ -359,6 +362,82 @@ defmodule Emerge.Engine.AttrCodec do
     }
 
     decode_key_bindings_payload(rest, [binding | acc], count - 1)
+  end
+
+  defp encode_virtual_key(value) do
+    %{tap: tap, hold: hold, hold_ms: hold_ms, repeat_ms: repeat_ms} =
+      Event.virtual_key_descriptor(value)
+
+    payload =
+      [
+        <<encode_virtual_key_tap_tag(tap)::unsigned-8,
+          encode_virtual_key_hold_tag(hold)::unsigned-8, hold_ms::unsigned-32,
+          repeat_ms::unsigned-32>>,
+        encode_virtual_key_tap_payload(tap)
+      ]
+      |> IO.iodata_to_binary()
+
+    <<byte_size(payload)::unsigned-32, payload::binary>>
+  end
+
+  defp decode_virtual_key(<<len::unsigned-32, rest::binary>>) do
+    <<payload::binary-size(len), rest::binary>> = rest
+    {value, <<>>} = decode_virtual_key_payload(payload)
+    {value, rest}
+  end
+
+  defp decode_virtual_key_payload(
+         <<tap_tag::unsigned-8, hold_tag::unsigned-8, hold_ms::unsigned-32,
+           repeat_ms::unsigned-32, rest::binary>>
+       ) do
+    {tap, rest} = decode_virtual_key_tap(tap_tag, rest)
+
+    {%{
+       tap: tap,
+       hold: decode_virtual_key_hold_tag(hold_tag),
+       hold_ms: hold_ms,
+       repeat_ms: repeat_ms
+     }, rest}
+  end
+
+  defp encode_virtual_key_tap_tag({:text, _text}), do: 0
+  defp encode_virtual_key_tap_tag({:key, _key, _mods}), do: 1
+  defp encode_virtual_key_tap_tag({:text_and_key, _text, _key, _mods}), do: 2
+
+  defp encode_virtual_key_hold_tag(:none), do: 0
+  defp encode_virtual_key_hold_tag(:repeat), do: 1
+  defp encode_virtual_key_hold_tag(:event), do: 2
+
+  defp decode_virtual_key_hold_tag(0), do: :none
+  defp decode_virtual_key_hold_tag(1), do: :repeat
+  defp decode_virtual_key_hold_tag(2), do: :event
+
+  defp encode_virtual_key_tap_payload({:text, text}), do: encode_string(text)
+
+  defp encode_virtual_key_tap_payload({:key, key, mods}) do
+    [encode_atom(key), <<encode_key_modifiers(mods)::unsigned-8>>]
+  end
+
+  defp encode_virtual_key_tap_payload({:text_and_key, text, key, mods}) do
+    [encode_string(text), encode_atom(key), <<encode_key_modifiers(mods)::unsigned-8>>]
+  end
+
+  defp decode_virtual_key_tap(0, rest) do
+    {text, rest} = decode_string(rest)
+    {{:text, text}, rest}
+  end
+
+  defp decode_virtual_key_tap(1, rest) do
+    {key, rest} = decode_atom(rest)
+    <<mods_mask::unsigned-8, rest::binary>> = rest
+    {{:key, key, decode_key_modifiers(mods_mask)}, rest}
+  end
+
+  defp decode_virtual_key_tap(2, rest) do
+    {text, rest} = decode_string(rest)
+    {key, rest} = decode_atom(rest)
+    <<mods_mask::unsigned-8, rest::binary>> = rest
+    {{:text_and_key, text, key, decode_key_modifiers(mods_mask)}, rest}
   end
 
   defp encode_bool(true), do: <<1>>

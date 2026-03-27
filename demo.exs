@@ -187,6 +187,10 @@ Process.put(:demo_swipe_up_count, 0)
 Process.put(:demo_swipe_down_count, 0)
 Process.put(:demo_swipe_left_count, 0)
 Process.put(:demo_swipe_right_count, 0)
+Process.put(:demo_soft_shift, false)
+Process.put(:demo_soft_popup, nil)
+Process.put(:demo_soft_hold_count, 0)
+Process.put(:demo_soft_last_action, "Tap the text input, then use the soft keys below.")
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -1380,8 +1384,289 @@ defmodule Demo do
             text("Last action: #{key_listener_last_action}")
           )
         ])
+      ),
+      soft_keyboard_showcase_card()
+    ])
+  end
+
+  defp soft_keyboard_showcase_card() do
+    shift_active = Process.get(:demo_soft_shift, false)
+    popup = Process.get(:demo_soft_popup, nil)
+    hold_count = Process.get(:demo_soft_hold_count, 0)
+
+    last_action =
+      Process.get(:demo_soft_last_action, "Tap the text input, then use the soft keys below.")
+
+    popup_label =
+      case popup do
+        nil -> "none"
+        :a -> if(shift_active, do: "A popup", else: "a popup")
+        :e -> if(shift_active, do: "E popup", else: "e popup")
+        other -> inspect(other)
+      end
+
+    column([width(fill()), spacing(16)], [
+      section_title("Virtual keyboard"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Each key below is a plain Emerge tree node using Event.virtual_key/1. Focus the text input for letters, or focus the key listener pad to watch Enter and arrows hit on_key_* handlers. Hold A or E to open alternates, and hold Backspace or arrows to repeat."
+        )
+      ),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color(color_rgb(46, 50, 72)),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            soft_status_chip(
+              "Target",
+              soft_keyboard_target_label(),
+              color_rgb(70, 82, 112),
+              color_rgb(226, 234, 248)
+            ),
+            soft_status_chip(
+              "Shift",
+              if(shift_active, do: "On", else: "Off"),
+              if(shift_active, do: color_rgb(88, 118, 78), else: color_rgb(76, 74, 102)),
+              if(shift_active,
+                do: color_rgb(230, 246, 228),
+                else: color_rgb(224, 228, 242)
+              )
+            ),
+            soft_status_chip(
+              "Popup",
+              popup_label,
+              color_rgb(92, 76, 116),
+              color_rgb(244, 232, 248)
+            ),
+            soft_status_chip(
+              "Hold events",
+              Integer.to_string(hold_count),
+              color_rgb(74, 90, 124),
+              color_rgb(230, 238, 250)
+            )
+          ]),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            soft_shift_toggle_key(shift_active),
+            soft_letter_key(:a, "a", "A", :a, shift_active, popup: popup),
+            soft_letter_key(:e, "e", "E", :e, shift_active, popup: popup),
+            soft_letter_key(:i, "i", "I", :i, shift_active),
+            soft_letter_key(:o, "o", "O", :o, shift_active),
+            soft_letter_key(:u, "u", "U", :u, shift_active),
+            soft_special_key_button(
+              "Backspace",
+              [tap: {:key, :backspace, []}, hold: :repeat],
+              id: :backspace,
+              width: px(124),
+              background: color_rgb(88, 68, 84),
+              hover_background: color_rgb(104, 82, 98),
+              border_color: color_rgb(168, 126, 152)
+            )
+          ]),
+          wrapped_row([width(fill()), spacing_xy(8, 8)], [
+            soft_special_key_button(
+              "Left",
+              [tap: {:key, :arrow_left, []}, hold: :repeat],
+              id: :arrow_left,
+              width: px(92),
+              background: color_rgb(62, 84, 108),
+              hover_background: color_rgb(76, 98, 124),
+              border_color: color_rgb(138, 170, 204)
+            ),
+            soft_special_key_button(
+              "Space",
+              [tap: {:text_and_key, " ", :space, []}],
+              id: :space,
+              width: px(220),
+              background: color_rgb(64, 72, 110),
+              hover_background: color_rgb(78, 86, 126),
+              border_color: color_rgb(138, 150, 206)
+            ),
+            soft_special_key_button(
+              "Right",
+              [tap: {:key, :arrow_right, []}, hold: :repeat],
+              id: :arrow_right,
+              width: px(92),
+              background: color_rgb(62, 84, 108),
+              hover_background: color_rgb(76, 98, 124),
+              border_color: color_rgb(138, 170, 204)
+            ),
+            soft_special_key_button(
+              "Enter",
+              [tap: {:key, :enter, []}],
+              id: :enter,
+              width: px(110),
+              background: color_rgb(72, 92, 78),
+              hover_background: color_rgb(86, 108, 92),
+              border_color: color_rgb(156, 196, 164)
+            )
+          ]),
+          el(
+            [Font.size(11), Font.color(color_rgb(230, 234, 246))],
+            text("Soft keyboard status: #{last_action}")
+          ),
+          el(
+            [Font.size(10), Font.color(@dim_text)],
+            text(
+              "Try this flow: focus the text field, tap Shift, tap A, hold E for alternates, then tap an accented popup key. Focus the keyboard listener pad to route Enter and arrows into on_key_* counters instead."
+            )
+          )
+        ])
       )
     ])
+  end
+
+  defp soft_keyboard_target_label() do
+    cond do
+      Process.get(:demo_input_focused, false) -> "Text input"
+      Process.get(:demo_key_listener_focused, false) -> "Keyboard listener pad"
+      Process.get(:demo_button_focused, false) -> "Run action button"
+      true -> "Nothing focused"
+    end
+  end
+
+  defp soft_status_chip(label, value, bg_color, text_color) do
+    el(
+      [padding_xy(10, 5), Background.color(bg_color), Border.rounded(999)],
+      el([Font.size(11), Font.color(text_color)], text("#{label}: #{value}"))
+    )
+  end
+
+  defp soft_shift_toggle_key(active?) do
+    bg = if active?, do: color_rgb(92, 118, 76), else: color_rgb(64, 68, 98)
+    hover_bg = if active?, do: color_rgb(106, 132, 88), else: color_rgb(76, 82, 112)
+    border_color = if active?, do: color_rgb(168, 204, 144), else: color_rgb(132, 140, 188)
+    label = if active?, do: "Shift On", else: "Shift"
+
+    el(
+      [
+        key(:soft_shift_toggle),
+        width(px(96)),
+        padding_xy(12, 10),
+        Background.color(bg),
+        Border.rounded(10),
+        Border.width(1),
+        Border.color(border_color),
+        Font.size(12),
+        Font.color(:white),
+        Event.on_click({self(), {:demo_event, :soft_keyboard, :toggle_shift}}),
+        Interactive.mouse_over([
+          Background.color(hover_bg),
+          Border.color(color_rgb(196, 208, 238))
+        ]),
+        Interactive.mouse_down([
+          Background.color(color_rgb(58, 62, 90)),
+          Transform.move_y(1)
+        ])
+      ],
+      text(label)
+    )
+  end
+
+  defp soft_letter_key(letter, lower, upper, key_name, shift_active, opts \\ []) do
+    popup_key = Keyword.get(opts, :popup)
+
+    popup_content =
+      if popup_key == letter, do: soft_alternate_popup(letter, shift_active), else: nil
+
+    spec =
+      [
+        tap:
+          if(shift_active,
+            do: {:text_and_key, upper, key_name, [:shift]},
+            else: {:text_and_key, lower, key_name, []}
+          )
+      ] ++
+        if letter in [:a, :e] do
+          [hold: {:event, {self(), {:demo_event, :soft_keyboard, {:show_alternates, letter}}}}]
+        else
+          []
+        end
+
+    soft_special_key_button(
+      if(shift_active, do: upper, else: lower),
+      spec,
+      id: {:letter, letter},
+      width: px(56),
+      popup: popup_content,
+      background: color_rgb(68, 74, 108),
+      hover_background: color_rgb(82, 88, 126),
+      border_color: color_rgb(142, 152, 206)
+    )
+  end
+
+  defp soft_special_key_button(label, spec, opts) do
+    background = Keyword.get(opts, :background, color_rgb(68, 74, 108))
+    hover_background = Keyword.get(opts, :hover_background, color_rgb(82, 88, 126))
+    border_color = Keyword.get(opts, :border_color, color_rgb(142, 152, 206))
+    popup = Keyword.get(opts, :popup)
+
+    attrs = [
+      key({:soft_key, Keyword.fetch!(opts, :id)}),
+      width(Keyword.get(opts, :width, px(64))),
+      padding_xy(12, 10),
+      Background.color(background),
+      Border.rounded(10),
+      Border.width(1),
+      Border.color(border_color),
+      Font.size(12),
+      Font.color(:white),
+      Event.virtual_key(spec),
+      Interactive.mouse_over([
+        Background.color(hover_background),
+        Border.color(color_rgb(196, 208, 238))
+      ]),
+      Interactive.mouse_down([
+        Background.color(color_rgb(58, 62, 90)),
+        Transform.move_y(1)
+      ])
+    ]
+
+    attrs = if popup, do: [Nearby.above(popup) | attrs], else: attrs
+
+    el(attrs, text(label))
+  end
+
+  defp soft_alternate_popup(:a, shift_active) do
+    labels = if shift_active, do: ["Á", "À", "Ä"], else: ["á", "à", "ä"]
+    soft_alternate_popup_panel(:a, labels)
+  end
+
+  defp soft_alternate_popup(:e, shift_active) do
+    labels = if shift_active, do: ["É", "È", "Ê"], else: ["é", "è", "ê"]
+    soft_alternate_popup_panel(:e, labels)
+  end
+
+  defp soft_alternate_popup_panel(owner, labels) do
+    el(
+      [
+        key({:soft_popup, owner}),
+        padding(8),
+        Background.color(color_rgb(38, 42, 64)),
+        Border.rounded(12),
+        Border.width(1),
+        Border.color(color_rgb(154, 168, 224))
+      ],
+      row(
+        [spacing(6)],
+        Enum.map(labels, fn label ->
+          soft_special_key_button(
+            label,
+            [tap: {:text, label}],
+            id: {:popup_key, owner, label},
+            width: px(48),
+            background: color_rgb(82, 72, 118),
+            hover_background: color_rgb(98, 84, 134),
+            border_color: color_rgb(188, 170, 236)
+          )
+        end)
+      )
+    )
   end
 
   defp page_layout() do
@@ -4469,15 +4754,65 @@ defmodule Demo do
   end
 
   defp process_event(
+         {:demo_event, :soft_keyboard, :toggle_shift},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       ) do
+    previous = Process.get(:demo_soft_shift, false)
+    popup = Process.get(:demo_soft_popup, nil)
+    shift_active = !previous
+
+    Process.put(:demo_soft_shift, shift_active)
+    Process.put(:demo_soft_popup, nil)
+
+    entry = if shift_active, do: "Soft keyboard: shift on", else: "Soft keyboard: shift off"
+    Process.put(:demo_soft_last_action, entry)
+
+    new_log = Enum.take([entry | event_log], 20)
+    changed = previous != shift_active or popup != nil or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :soft_keyboard, {:show_alternates, key}},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       )
+       when key in [:a, :e] do
+    previous_popup = Process.get(:demo_soft_popup, nil)
+    hold_count = Process.get(:demo_soft_hold_count, 0) + 1
+
+    Process.put(:demo_soft_popup, key)
+    Process.put(:demo_soft_hold_count, hold_count)
+
+    entry =
+      "Soft keyboard hold: #{String.upcase(Atom.to_string(key))} alternates (#{hold_count})"
+
+    Process.put(:demo_soft_last_action, entry)
+
+    new_log = Enum.take([entry | event_log], 20)
+    changed = previous_popup != key or new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
          {:demo_event, :input_changed, value},
          _state,
          {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
        )
        when is_binary(value) do
     previous = Process.get(:demo_input_value, "")
+    previous_popup = Process.get(:demo_soft_popup, nil)
     Process.put(:demo_input_value, value)
     Process.put(:demo_input_preedit, nil)
     Process.put(:demo_input_preedit_cursor, nil)
+    Process.put(:demo_soft_popup, nil)
+
+    if previous_popup != nil do
+      Process.put(:demo_soft_last_action, "Soft keyboard: alternate committed")
+    end
 
     changed_value = value != previous
 
@@ -4491,7 +4826,7 @@ defmodule Demo do
         event_log
       end
 
-    changed = changed_value or new_log != event_log
+    changed = changed_value or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4503,12 +4838,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_input_focused, false)
     count = Process.get(:demo_input_focus_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_input_focused, true)
     Process.put(:demo_input_focus_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Input focus (#{count})" | event_log], 20)
-    changed = !previous or new_log != event_log
+    changed = !previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4520,12 +4857,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_input_focused, false)
     count = Process.get(:demo_input_blur_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_input_focused, false)
     Process.put(:demo_input_blur_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Input blur (#{count})" | event_log], 20)
-    changed = previous or new_log != event_log
+    changed = previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4551,12 +4890,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_button_focused, false)
     count = Process.get(:demo_button_focus_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_button_focused, true)
     Process.put(:demo_button_focus_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Button focus (#{count})" | event_log], 20)
-    changed = !previous or new_log != event_log
+    changed = !previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4568,12 +4909,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_button_focused, false)
     count = Process.get(:demo_button_blur_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_button_focused, false)
     Process.put(:demo_button_blur_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Button blur (#{count})" | event_log], 20)
-    changed = previous or new_log != event_log
+    changed = previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4585,12 +4928,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_key_listener_focused, false)
     count = Process.get(:demo_key_listener_focus_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_key_listener_focused, true)
     Process.put(:demo_key_listener_focus_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Keyboard pad focus (#{count})" | event_log], 20)
-    changed = !previous or new_log != event_log
+    changed = !previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
@@ -4602,12 +4947,14 @@ defmodule Demo do
        ) do
     previous = Process.get(:demo_key_listener_focused, false)
     count = Process.get(:demo_key_listener_blur_count, 0) + 1
+    previous_popup = Process.get(:demo_soft_popup, nil)
 
     Process.put(:demo_key_listener_focused, false)
     Process.put(:demo_key_listener_blur_count, count)
+    Process.put(:demo_soft_popup, nil)
 
     new_log = Enum.take(["Keyboard pad blur (#{count})" | event_log], 20)
-    changed = previous or new_log != event_log
+    changed = previous or previous_popup != nil or new_log != event_log
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end
