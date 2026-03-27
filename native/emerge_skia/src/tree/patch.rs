@@ -655,6 +655,7 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.on_change = None;
     attrs.on_focus = None;
     attrs.on_blur = None;
+    attrs.virtual_key = None;
 
     attrs.mouse_over = None;
     attrs.focused = None;

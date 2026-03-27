@@ -69,6 +69,7 @@ defmodule Emerge.UI.Internal.Validation do
                       :on_key_down,
                       :on_key_up,
                       :on_key_press,
+                      :virtual_key,
                       :above,
                       :below,
                       :on_left,
@@ -97,7 +98,8 @@ defmodule Emerge.UI.Internal.Validation do
     warn_overrides = Keyword.get(opts, :warn_overrides, true)
     extra_public_attr_keys = MapSet.new(Keyword.get(opts, :extra_public_attr_keys, []))
 
-    Enum.reduce(attrs, %{}, fn attr, acc ->
+    attrs
+    |> Enum.reduce(%{}, fn attr, acc ->
       {key, value} = validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys)
 
       case key do
@@ -108,6 +110,7 @@ defmodule Emerge.UI.Internal.Validation do
           put_attr(acc, key, value, warn_overrides)
       end
     end)
+    |> validate_attr_conflicts!(attrs_owner)
   end
 
   @spec parse_state_style_attrs(attrs_list(), state_style_key()) :: attrs_map()
@@ -251,6 +254,9 @@ defmodule Emerge.UI.Internal.Validation do
       key in [:on_key_down, :on_key_up, :on_key_press] ->
         {key, Event.normalize_key_listener_bindings!(key, value)}
 
+      key == :virtual_key ->
+        {key, Event.normalize_virtual_key!(value)}
+
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
         validate_public_attr_value!(attrs_owner, key, value)
         {key, value}
@@ -270,6 +276,7 @@ defmodule Emerge.UI.Internal.Validation do
   defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
   defp validate_public_attr_value!(_attrs_owner, :animate_enter, _value), do: :ok
   defp validate_public_attr_value!(_attrs_owner, :animate_exit, _value), do: :ok
+  defp validate_public_attr_value!(_attrs_owner, :virtual_key, _value), do: :ok
 
   defp validate_public_attr_value!(attrs_owner, :width, value),
     do: validate_length!(attrs_owner, :width, value)
@@ -516,5 +523,15 @@ defmodule Emerge.UI.Internal.Validation do
   defp validate_event_payload!(attrs_owner, key, value) do
     raise ArgumentError,
           "#{attrs_owner} expects #{inspect(key)} to be a {pid, message} tuple, got: #{inspect(value)}"
+  end
+
+  defp validate_attr_conflicts!(attrs, attrs_owner) do
+    if Map.has_key?(attrs, :virtual_key) and
+         (Map.has_key?(attrs, :on_click) or Map.has_key?(attrs, :on_press)) do
+      raise ArgumentError,
+            "#{attrs_owner} does not allow :virtual_key together with :on_click or :on_press"
+    end
+
+    attrs
   end
 end

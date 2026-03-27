@@ -465,6 +465,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_key_down: attrs.on_key_down.clone(),
         on_key_up: attrs.on_key_up.clone(),
         on_key_press: attrs.on_key_press.clone(),
+        virtual_key: attrs.virtual_key.clone(),
         mouse_over: attrs
             .mouse_over
             .as_ref()

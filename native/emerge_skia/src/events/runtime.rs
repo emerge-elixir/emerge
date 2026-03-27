@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use rustler::LocalPid;
 
 use crate::{
@@ -41,6 +41,7 @@ use super::{
     CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom,
     click_atom, focus_atom, key_down_atom, key_press_atom, key_up_atom, mouse_down_atom,
     mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
+    virtual_key_hold_atom,
     registry_builder::{
         self, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
         RuntimeChange, RuntimeOverlayState,
@@ -83,6 +84,7 @@ enum DispatchMode {
 struct PendingDispatchEffects {
     tree_msgs: Vec<TreeMsg>,
     runtime_changes: Vec<RuntimeChange>,
+    synthetic_inputs: Vec<Vec<InputEvent>>,
     elixir_event_requires_rebuild: bool,
     requested_cursor: Option<CursorIcon>,
 }
@@ -97,6 +99,7 @@ impl PendingDispatchEffects {
         match action {
             ListenerAction::TreeMsg(msg) => self.tree_msgs.push(msg),
             ListenerAction::RuntimeChange(change) => self.runtime_changes.push(change),
+            ListenerAction::SyntheticInput(events) => self.synthetic_inputs.push(events),
             ListenerAction::SetCursor(icon) => self.requested_cursor = Some(icon),
             ListenerAction::ElixirEvent(event) => {
                 if dispatch_mode == DispatchMode::CursorRevalidate
@@ -126,11 +129,18 @@ impl PendingDispatchEffects {
         runtime: &mut DirectEventRuntime,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
-        _dispatch_mode: DispatchMode,
+        dispatch_mode: DispatchMode,
     ) {
         runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
         if let Some(icon) = self.requested_cursor {
             runtime.apply_cursor_request(icon);
+        }
+
+        #[cfg(not(feature = "hover-trace"))]
+        let _ = dispatch_mode;
+
+        for events in self.synthetic_inputs {
+            runtime.inject_synthetic_inputs(events, tree_tx, log_render);
         }
 
         if self.elixir_event_requires_rebuild && self.tree_msgs.is_empty() {
@@ -265,6 +275,7 @@ struct DirectEventRuntime {
     last_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
     current_cursor_icon: CursorIcon,
+    virtual_key_deadline: Option<Instant>,
 }
 
 impl DirectEventRuntime {
@@ -300,6 +311,7 @@ impl DirectEventRuntime {
             last_cursor_pos: None,
             cursor_in_window: false,
             current_cursor_icon: CursorIcon::Default,
+            virtual_key_deadline: None,
         }
     }
 
@@ -334,6 +346,17 @@ impl DirectEventRuntime {
         }
 
         self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
+    }
+
+    fn inject_synthetic_inputs(
+        &mut self,
+        events: Vec<InputEvent>,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) {
+        for event in events {
+            self.handle_input_event(event, tree_tx, log_render);
+        }
     }
 
     fn handle_registry_update(
@@ -412,6 +435,73 @@ impl DirectEventRuntime {
         );
     }
 
+    fn next_event_timeout(&self) -> Option<Duration> {
+        self.virtual_key_deadline.map(|deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(60))
+        })
+    }
+
+    fn handle_virtual_key_timer(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+        let Some(tracker) = self.runtime_overlay.virtual_key.clone() else {
+            self.virtual_key_deadline = None;
+            return;
+        };
+
+        match tracker.phase {
+            registry_builder::VirtualKeyPhase::Armed => match tracker.hold {
+                crate::tree::attrs::VirtualKeyHoldMode::None => {
+                    self.virtual_key_deadline = None;
+                }
+                crate::tree::attrs::VirtualKeyHoldMode::Event => {
+                    self.runtime_overlay.virtual_key = None;
+                    self.virtual_key_deadline = None;
+                    self.recompose_overlay_registry();
+                    self.apply_listener_actions(
+                        vec![ListenerAction::ElixirEvent(registry_builder::ElixirEvent {
+                            element_id: tracker.element_id,
+                            kind: ElementEventKind::VirtualKeyHold,
+                            payload: None,
+                        })],
+                        tree_tx,
+                        log_render,
+                        DispatchMode::Normal,
+                    );
+                }
+                crate::tree::attrs::VirtualKeyHoldMode::Repeat => {
+                    if let Some(active) = self.runtime_overlay.virtual_key.as_mut() {
+                        active.phase = registry_builder::VirtualKeyPhase::Repeating;
+                    }
+
+                    self.virtual_key_deadline = Some(
+                        Instant::now()
+                            + Duration::from_millis(u64::from(tracker.repeat_ms)),
+                    );
+                    self.recompose_overlay_registry();
+                    self.inject_synthetic_inputs(
+                        registry_builder::synthetic_input_sequence_for_virtual_key_tap(&tracker.tap),
+                        tree_tx,
+                        log_render,
+                    );
+                }
+            },
+            registry_builder::VirtualKeyPhase::Repeating => {
+                self.virtual_key_deadline = Some(
+                    Instant::now() + Duration::from_millis(u64::from(tracker.repeat_ms)),
+                );
+                self.inject_synthetic_inputs(
+                    registry_builder::synthetic_input_sequence_for_virtual_key_tap(&tracker.tap),
+                    tree_tx,
+                    log_render,
+                );
+            }
+            registry_builder::VirtualKeyPhase::Cancelled => {
+                self.virtual_key_deadline = None;
+            }
+        }
+    }
+
     fn record_pointer_snapshot(&mut self, event: &InputEvent) {
         match event {
             InputEvent::CursorPos { x, y }
@@ -451,10 +541,12 @@ impl DirectEventRuntime {
 
     fn has_active_pointer_overlay(&self) -> bool {
         self.runtime_overlay.click_press.is_some()
+            || self.runtime_overlay.virtual_key.is_some()
             || !matches!(
                 self.runtime_overlay.drag,
                 registry_builder::DragTrackerState::Inactive
             )
+            || self.runtime_overlay.swipe.is_some()
             || self.runtime_overlay.scrollbar.is_some()
             || self.runtime_overlay.text_drag.is_some()
     }
@@ -568,6 +660,16 @@ impl DirectEventRuntime {
                     emit_press_pointer,
                 });
             }
+            RuntimeChange::StartVirtualKeyTracker { tracker } => {
+                self.virtual_key_deadline = match tracker.hold {
+                    crate::tree::attrs::VirtualKeyHoldMode::Repeat
+                    | crate::tree::attrs::VirtualKeyHoldMode::Event => Some(
+                        Instant::now() + Duration::from_millis(u64::from(tracker.hold_ms)),
+                    ),
+                    crate::tree::attrs::VirtualKeyHoldMode::None => None,
+                };
+                self.runtime_overlay.virtual_key = Some(tracker);
+            }
             RuntimeChange::StartKeyPressTracker { tracker } => {
                 if !self.runtime_overlay.key_presses.contains(&tracker) {
                     self.runtime_overlay.key_presses.push(tracker);
@@ -625,6 +727,16 @@ impl DirectEventRuntime {
             }
             RuntimeChange::ClearSwipeTracker => {
                 self.runtime_overlay.swipe = None;
+            }
+            RuntimeChange::CancelVirtualKeyTracker => {
+                if let Some(ref mut tracker) = self.runtime_overlay.virtual_key {
+                    tracker.phase = registry_builder::VirtualKeyPhase::Cancelled;
+                }
+                self.virtual_key_deadline = None;
+            }
+            RuntimeChange::ClearVirtualKeyTracker => {
+                self.runtime_overlay.virtual_key = None;
+                self.virtual_key_deadline = None;
             }
             RuntimeChange::ClearKeyPressTrackersForKey { key } => {
                 self.runtime_overlay
@@ -707,6 +819,10 @@ impl DirectEventRuntime {
             )
         {
             self.runtime_overlay.click_press = None;
+        }
+
+        if self.runtime_overlay.virtual_key.is_none() {
+            self.virtual_key_deadline = None;
         }
 
         self.runtime_overlay.key_presses.retain(|tracker| {
@@ -829,6 +945,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
         ElementEventKind::KeyDown => key_down_atom(),
         ElementEventKind::KeyUp => key_up_atom(),
         ElementEventKind::KeyPress => key_press_atom(),
+        ElementEventKind::VirtualKeyHold => virtual_key_hold_atom(),
         ElementEventKind::MouseDown => mouse_down_atom(),
         ElementEventKind::MouseUp => mouse_up_atom(),
         ElementEventKind::MouseEnter => mouse_enter_atom(),
@@ -1272,11 +1389,23 @@ pub(crate) fn spawn_event_actor(
 
         loop {
             let message = match pending_message.take() {
-                Some(message) => message,
-                None => match event_rx.recv() {
-                    Ok(message) => message,
-                    Err(_) => return,
+                Some(message) => Some(message),
+                None => match runtime.next_event_timeout() {
+                    Some(timeout) => match event_rx.recv_timeout(timeout) {
+                        Ok(message) => Some(message),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    },
+                    None => match event_rx.recv() {
+                        Ok(message) => Some(message),
+                        Err(_) => return,
+                    },
                 },
+            };
+
+            let Some(message) = message else {
+                runtime.handle_virtual_key_timer(&tree_tx, log_render);
+                continue;
             };
 
             match message {
@@ -1334,12 +1463,16 @@ mod tests {
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::events::{CursorIcon, RegistryRebuildPayload};
+    use crate::input::{ACTION_PRESS, ACTION_RELEASE};
     use crate::keys::CanonicalKey;
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
     use crate::tree::attrs::TextAlign;
-    use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
+    use crate::tree::attrs::{
+        AlignX, AlignY, Attrs, Length, MouseOverAttrs, VirtualKeyHoldMode, VirtualKeySpec,
+        VirtualKeyTapAction,
+    };
     use crate::tree::element::ElementId;
     use crate::tree::element::{
         Element, ElementKind, ElementTree, Frame, NearbySlot, TextInputContentOrigin,
@@ -2501,6 +2634,184 @@ mod tests {
             .expect("session updated after commit");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_virtual_key_release_commits_text_to_focused_input() {
+        let mut text_attrs = Attrs::default();
+        text_attrs.content = Some("ab".to_string());
+        text_attrs.text_input_focused = Some(true);
+        text_attrs.text_input_cursor = Some(2);
+        let text_input = with_interaction(make_element(80, ElementKind::TextInput, text_attrs));
+
+        let mut key_attrs = Attrs::default();
+        key_attrs.virtual_key = Some(VirtualKeySpec {
+            tap: VirtualKeyTapAction::Text("c".to_string()),
+            hold: VirtualKeyHoldMode::None,
+            hold_ms: 350,
+            repeat_ms: 40,
+        });
+        let soft_key = with_interaction_rect(make_element(81, ElementKind::El, key_attrs), 0.0, 50.0, 100.0, 40.0);
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![80]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![80])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 60.0,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+        assert!(runtime.runtime_overlay.virtual_key.is_some());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 60.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        assert!(runtime.runtime_overlay.virtual_key.is_none());
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == ElementId::from_term_bytes(vec![80]) && content == "abc"
+        )));
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![80]))
+            .expect("session updated after virtual key tap");
+        assert_eq!(session.content, "abc");
+        assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_virtual_key_repeat_stops_after_slide_off_until_repress() {
+        let mut text_attrs = Attrs::default();
+        text_attrs.content = Some("ab".to_string());
+        text_attrs.text_input_focused = Some(true);
+        text_attrs.text_input_cursor = Some(2);
+        let text_input = with_interaction(make_element(82, ElementKind::TextInput, text_attrs));
+
+        let mut key_attrs = Attrs::default();
+        key_attrs.virtual_key = Some(VirtualKeySpec {
+            tap: VirtualKeyTapAction::Text("x".to_string()),
+            hold: VirtualKeyHoldMode::Repeat,
+            hold_ms: 350,
+            repeat_ms: 40,
+        });
+        let soft_key = with_interaction_rect(make_element(83, ElementKind::El, key_attrs), 0.0, 50.0, 100.0, 40.0);
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input.clone(), soft_key.clone()]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![82]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![82])),
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 60.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(matches!(
+            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            Some(registry_builder::VirtualKeyPhase::Armed)
+        ));
+
+        runtime.handle_virtual_key_timer(&tree_tx, false);
+
+        assert!(matches!(
+            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            Some(registry_builder::VirtualKeyPhase::Repeating)
+        ));
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == ElementId::from_term_bytes(vec![82]) && content == "abx"
+        )));
+
+        let repeat_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![82]),
+                make_text_input_state_with_origin("abx", TextInputContentOrigin::Event, 3, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![82])),
+        };
+        runtime.handle_registry_update(repeat_rebuild, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 140.0, y: 60.0 }, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 60.0 }, &tree_tx, false);
+
+        assert!(matches!(
+            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            Some(registry_builder::VirtualKeyPhase::Cancelled)
+        ));
+        assert!(runtime.virtual_key_deadline.is_none());
+
+        runtime.handle_virtual_key_timer(&tree_tx, false);
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == ElementId::from_term_bytes(vec![82]) && content == "abxx"
+        )));
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![82]))
+            .expect("session retained after repeat cancel");
+        assert_eq!(session.content, "abx");
     }
 
     #[test]

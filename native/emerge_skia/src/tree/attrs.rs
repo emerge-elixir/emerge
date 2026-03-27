@@ -221,6 +221,35 @@ pub struct KeyBindingSpec {
     pub match_mode: KeyBindingMatch,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VirtualKeyTapAction {
+    Text(String),
+    Key {
+        key: CanonicalKey,
+        mods: u8,
+    },
+    TextAndKey {
+        text: String,
+        key: CanonicalKey,
+        mods: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VirtualKeyHoldMode {
+    None,
+    Repeat,
+    Event,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirtualKeySpec {
+    pub tap: VirtualKeyTapAction,
+    pub hold: VirtualKeyHoldMode,
+    pub hold_ms: u32,
+    pub repeat_ms: u32,
+}
+
 /// All decoded attributes for an element.
 #[derive(Clone, Debug, Default)]
 pub struct Attrs {
@@ -258,6 +287,7 @@ pub struct Attrs {
     pub on_key_down: Option<Vec<KeyBindingSpec>>,
     pub on_key_up: Option<Vec<KeyBindingSpec>>,
     pub on_key_press: Option<Vec<KeyBindingSpec>>,
+    pub virtual_key: Option<VirtualKeySpec>,
     pub mouse_over: Option<MouseOverAttrs>,
     pub focused: Option<MouseOverAttrs>,
     pub mouse_down: Option<MouseOverAttrs>,
@@ -505,6 +535,7 @@ const TAG_ON_SWIPE_UP: u8 = 71;
 const TAG_ON_SWIPE_DOWN: u8 = 72;
 const TAG_ON_SWIPE_LEFT: u8 = 73;
 const TAG_ON_SWIPE_RIGHT: u8 = 74;
+const TAG_VIRTUAL_KEY: u8 = 75;
 
 // =============================================================================
 // Decoder
@@ -646,6 +677,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_KEY_DOWN => attrs.on_key_down = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_UP => attrs.on_key_up = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_PRESS => attrs.on_key_press = Some(decode_key_bindings(cursor)?),
+        TAG_VIRTUAL_KEY => attrs.virtual_key = Some(decode_virtual_key(cursor)?),
         TAG_MOUSE_OVER => {
             attrs.mouse_over = Some(decode_decorative_style_attrs(cursor, "mouse_over")?)
         }
@@ -869,6 +901,82 @@ fn decode_key_bindings(cursor: &mut AttrCursor) -> Result<Vec<KeyBindingSpec>, D
     }
 
     Ok(bindings)
+}
+
+fn decode_virtual_key(cursor: &mut AttrCursor) -> Result<VirtualKeySpec, DecodeError> {
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+
+    let tap_tag = nested.read_u8()?;
+    let hold_tag = nested.read_u8()?;
+    let hold_ms = nested.read_u32_be()?;
+    let repeat_ms = nested.read_u32_be()?;
+
+    let tap = match tap_tag {
+        0 => VirtualKeyTapAction::Text(nested.read_string_u16()?),
+        1 => {
+            let key_name = nested.read_string_u16()?;
+            let Some(key) = CanonicalKey::from_atom_name(&key_name) else {
+                return Err(DecodeError::InvalidStructure(format!(
+                    "unknown virtual key canonical key: {}",
+                    key_name
+                )));
+            };
+
+            VirtualKeyTapAction::Key {
+                key,
+                mods: nested.read_u8()?,
+            }
+        }
+        2 => {
+            let text = nested.read_string_u16()?;
+            let key_name = nested.read_string_u16()?;
+            let Some(key) = CanonicalKey::from_atom_name(&key_name) else {
+                return Err(DecodeError::InvalidStructure(format!(
+                    "unknown virtual key canonical key: {}",
+                    key_name
+                )));
+            };
+
+            VirtualKeyTapAction::TextAndKey {
+                text,
+                key,
+                mods: nested.read_u8()?,
+            }
+        }
+        other => {
+            return Err(DecodeError::InvalidStructure(format!(
+                "unknown virtual key tap tag: {}",
+                other
+            )));
+        }
+    };
+
+    let hold = match hold_tag {
+        0 => VirtualKeyHoldMode::None,
+        1 => VirtualKeyHoldMode::Repeat,
+        2 => VirtualKeyHoldMode::Event,
+        other => {
+            return Err(DecodeError::InvalidStructure(format!(
+                "unknown virtual key hold tag: {}",
+                other
+            )));
+        }
+    };
+
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(format!(
+            "virtual key payload has {} trailing bytes",
+            nested.remaining(),
+        )));
+    }
+
+    Ok(VirtualKeySpec {
+        tap,
+        hold,
+        hold_ms,
+        repeat_ms,
+    })
 }
 
 fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
@@ -1654,6 +1762,50 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_focus, Some(true));
         assert_eq!(attrs.on_blur, Some(true));
+    }
+
+    #[test]
+    fn test_decode_virtual_key_text_and_key_with_hold_event() {
+        let mut payload = vec![2, 2];
+        payload.extend_from_slice(&280_u32.to_be_bytes());
+        payload.extend_from_slice(&55_u32.to_be_bytes());
+        payload.extend_from_slice(&[0, 1, b'A']);
+        payload.extend_from_slice(&[0, 1, b'a']);
+        payload.push(0x01);
+
+        let mut data = vec![0, 1, TAG_VIRTUAL_KEY];
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.virtual_key,
+            Some(VirtualKeySpec {
+                tap: VirtualKeyTapAction::TextAndKey {
+                    text: "A".to_string(),
+                    key: CanonicalKey::A,
+                    mods: 0x01,
+                },
+                hold: VirtualKeyHoldMode::Event,
+                hold_ms: 280,
+                repeat_ms: 55,
+            })
+        );
+    }
+
+    #[test]
+    fn test_decode_virtual_key_rejects_unknown_hold_tag() {
+        let mut payload = vec![0, 9];
+        payload.extend_from_slice(&350_u32.to_be_bytes());
+        payload.extend_from_slice(&40_u32.to_be_bytes());
+        payload.extend_from_slice(&[0, 1, b'a']);
+
+        let mut data = vec![0, 1, TAG_VIRTUAL_KEY];
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let err = decode_attrs(&data).unwrap_err();
+        assert!(err.to_string().contains("unknown virtual key hold tag: 9"));
     }
 
     #[test]
