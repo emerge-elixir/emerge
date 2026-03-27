@@ -47,6 +47,7 @@ use super::{
     },
     scrollbar::ScrollbarNode,
     send_element_event, send_element_event_with_string_payload, send_input_event,
+    swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
 };
 
 const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
@@ -577,12 +578,14 @@ impl DirectEventRuntime {
                 matcher_kind,
                 origin_x,
                 origin_y,
+                swipe_handlers,
             } => {
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Candidate {
                     element_id,
                     matcher_kind,
                     origin_x,
                     origin_y,
+                    swipe_handlers,
                 };
             }
             RuntimeChange::PromoteDragTracker {
@@ -590,12 +593,14 @@ impl DirectEventRuntime {
                 matcher_kind,
                 last_x,
                 last_y,
+                locked_axis,
             } => {
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Active {
                     element_id,
                     matcher_kind,
                     last_x,
                     last_y,
+                    locked_axis,
                 };
             }
             RuntimeChange::ClearDragTracker => {
@@ -614,6 +619,12 @@ impl DirectEventRuntime {
             }
             RuntimeChange::ClearClickPressTracker => {
                 self.runtime_overlay.click_press = None;
+            }
+            RuntimeChange::StartSwipeTracker { tracker } => {
+                self.runtime_overlay.swipe = Some(tracker);
+            }
+            RuntimeChange::ClearSwipeTracker => {
+                self.runtime_overlay.swipe = None;
             }
             RuntimeChange::ClearKeyPressTrackersForKey { key } => {
                 self.runtime_overlay
@@ -720,6 +731,12 @@ impl DirectEventRuntime {
             }
         }
 
+        if let Some(swipe) = self.runtime_overlay.swipe.as_ref()
+            && !base_has_source_listener(&self.base_registry, &swipe.element_id, swipe.matcher_kind)
+        {
+            self.runtime_overlay.swipe = None;
+        }
+
         if let Some(text_drag) = self.runtime_overlay.text_drag.as_ref()
             && !text_inputs.contains_key(&text_drag.element_id)
         {
@@ -805,6 +822,10 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
     match kind {
         ElementEventKind::Click => click_atom(),
         ElementEventKind::Press => press_atom(),
+        ElementEventKind::SwipeUp => swipe_up_atom(),
+        ElementEventKind::SwipeDown => swipe_down_atom(),
+        ElementEventKind::SwipeLeft => swipe_left_atom(),
+        ElementEventKind::SwipeRight => swipe_right_atom(),
         ElementEventKind::KeyDown => key_down_atom(),
         ElementEventKind::KeyUp => key_up_atom(),
         ElementEventKind::KeyPress => key_press_atom(),

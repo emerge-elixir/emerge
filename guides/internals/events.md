@@ -289,6 +289,17 @@ flow:
 
 `on_press` also has focused keyboard `Enter` support.
 
+Pointer swipe listeners (`on_swipe_up`, `on_swipe_down`, `on_swipe_left`,
+`on_swipe_right`) reuse the same press-origin drag threshold flow:
+
+- left press starts a drag tracker candidate
+- once movement clears the deadzone, runtime waits for a dominant axis intent
+- if vertical or horizontal intent is clear, scroll gets first claim on that axis only
+- if no scroll listener matches the locked axis, runtime promotes to swipe tracking instead
+- active drag-scroll and swipe tracking both stay axis-locked until release
+- swipe direction is decided on release from final net displacement along the locked axis
+- short locked-axis displacement does not emit a swipe event
+
 Focused elements can also register direct keyboard listeners:
 
 - `on_key_down`
@@ -563,6 +574,10 @@ Current emitted element events are:
 
 - `:click`
 - `:press`
+- `:swipe_up`
+- `:swipe_down`
+- `:swipe_left`
+- `:swipe_right`
 - `:mouse_down`
 - `:mouse_up`
 - `:mouse_enter`

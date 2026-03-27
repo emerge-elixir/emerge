@@ -248,6 +248,10 @@ pub struct Attrs {
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
     pub on_press: Option<bool>,
+    pub on_swipe_up: Option<bool>,
+    pub on_swipe_down: Option<bool>,
+    pub on_swipe_left: Option<bool>,
+    pub on_swipe_right: Option<bool>,
     pub on_change: Option<bool>,
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
@@ -497,6 +501,10 @@ const TAG_ANIMATE_EXIT: u8 = 67;
 const TAG_ON_KEY_DOWN: u8 = 68;
 const TAG_ON_KEY_UP: u8 = 69;
 const TAG_ON_KEY_PRESS: u8 = 70;
+const TAG_ON_SWIPE_UP: u8 = 71;
+const TAG_ON_SWIPE_DOWN: u8 = 72;
+const TAG_ON_SWIPE_LEFT: u8 = 73;
+const TAG_ON_SWIPE_RIGHT: u8 = 74;
 
 // =============================================================================
 // Decoder
@@ -628,6 +636,10 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_MOUSE_LEAVE => attrs.on_mouse_leave = Some(cursor.read_bool()?),
         TAG_ON_MOUSE_MOVE => attrs.on_mouse_move = Some(cursor.read_bool()?),
         TAG_ON_PRESS => attrs.on_press = Some(cursor.read_bool()?),
+        TAG_ON_SWIPE_UP => attrs.on_swipe_up = Some(cursor.read_bool()?),
+        TAG_ON_SWIPE_DOWN => attrs.on_swipe_down = Some(cursor.read_bool()?),
+        TAG_ON_SWIPE_LEFT => attrs.on_swipe_left = Some(cursor.read_bool()?),
+        TAG_ON_SWIPE_RIGHT => attrs.on_swipe_right = Some(cursor.read_bool()?),
         TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
         TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
         TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
@@ -1560,10 +1572,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("mouse_over supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("mouse_over supports decorative attrs only"));
     }
 
     #[test]
@@ -1616,10 +1627,9 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("focused supports decorative attrs only")
-        );
+        assert!(err
+            .to_string()
+            .contains("focused supports decorative attrs only"));
     }
 
     #[test]
@@ -1651,6 +1661,16 @@ mod tests {
         let data = [0, 1, 61, 1];
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_press, Some(true));
+    }
+
+    #[test]
+    fn test_decode_swipe_events() {
+        let data = [0, 4, 71, 1, 72, 1, 73, 1, 74, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.on_swipe_up, Some(true));
+        assert_eq!(attrs.on_swipe_down, Some(true));
+        assert_eq!(attrs.on_swipe_left, Some(true));
+        assert_eq!(attrs.on_swipe_right, Some(true));
     }
 
     #[test]
@@ -1699,7 +1719,7 @@ mod tests {
         data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
         data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
         data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
-        // color: named "red" -> variant=2, len=3, "red"
+                                                        // color: named "red" -> variant=2, len=3, "red"
         data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
         data.push(0); // inset=false
 

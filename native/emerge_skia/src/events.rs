@@ -63,6 +63,10 @@ use scrollbar::ScrollbarNode;
 pub enum ElementEventKind {
     Click,
     Press,
+    SwipeUp,
+    SwipeDown,
+    SwipeLeft,
+    SwipeRight,
     KeyDown,
     KeyUp,
     KeyPress,
@@ -643,6 +647,10 @@ rustler::atoms! {
     emerge_skia_log,
     click,
     press,
+    swipe_up,
+    swipe_down,
+    swipe_left,
+    swipe_right,
     key_down,
     key_up,
     key_press,
@@ -665,6 +673,22 @@ pub(crate) fn click_atom() -> Atom {
 
 pub(crate) fn press_atom() -> Atom {
     press()
+}
+
+pub(crate) fn swipe_up_atom() -> Atom {
+    swipe_up()
+}
+
+pub(crate) fn swipe_down_atom() -> Atom {
+    swipe_down()
+}
+
+pub(crate) fn swipe_left_atom() -> Atom {
+    swipe_left()
+}
+
+pub(crate) fn swipe_right_atom() -> Atom {
+    swipe_right()
 }
 
 pub(crate) fn key_down_atom() -> Atom {

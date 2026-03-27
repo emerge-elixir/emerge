@@ -4,6 +4,10 @@ defmodule Emerge.UI.Event do
   @type payload :: {pid(), term()}
   @type click_attr :: {:on_click, payload()}
   @type press_attr :: {:on_press, payload()}
+  @type swipe_up_attr :: {:on_swipe_up, payload()}
+  @type swipe_down_attr :: {:on_swipe_down, payload()}
+  @type swipe_left_attr :: {:on_swipe_left, payload()}
+  @type swipe_right_attr :: {:on_swipe_right, payload()}
   @type mouse_down_attr :: {:on_mouse_down, payload()}
   @type mouse_up_attr :: {:on_mouse_up, payload()}
   @type mouse_enter_attr :: {:on_mouse_enter, payload()}
@@ -144,6 +148,10 @@ defmodule Emerge.UI.Event do
   @type t ::
           click_attr()
           | press_attr()
+          | swipe_up_attr()
+          | swipe_down_attr()
+          | swipe_left_attr()
+          | swipe_right_attr()
           | mouse_down_attr()
           | mouse_up_attr()
           | mouse_enter_attr()
@@ -273,6 +281,26 @@ defmodule Emerge.UI.Event do
   @spec on_press(payload() | term()) :: press_attr()
   def on_press({pid, _msg} = payload) when is_pid(pid), do: {:on_press, payload}
   def on_press(message), do: on_press({self(), message})
+
+  @doc "Register a swipe-up handler payload for this element"
+  @spec on_swipe_up(payload() | term()) :: swipe_up_attr()
+  def on_swipe_up({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_up, payload}
+  def on_swipe_up(message), do: on_swipe_up({self(), message})
+
+  @doc "Register a swipe-down handler payload for this element"
+  @spec on_swipe_down(payload() | term()) :: swipe_down_attr()
+  def on_swipe_down({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_down, payload}
+  def on_swipe_down(message), do: on_swipe_down({self(), message})
+
+  @doc "Register a swipe-left handler payload for this element"
+  @spec on_swipe_left(payload() | term()) :: swipe_left_attr()
+  def on_swipe_left({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_left, payload}
+  def on_swipe_left(message), do: on_swipe_left({self(), message})
+
+  @doc "Register a swipe-right handler payload for this element"
+  @spec on_swipe_right(payload() | term()) :: swipe_right_attr()
+  def on_swipe_right({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_right, payload}
+  def on_swipe_right(message), do: on_swipe_right({self(), message})
 
   @doc "Register a mouse down handler payload for this element"
   @spec on_mouse_down(payload() | term()) :: mouse_down_attr()

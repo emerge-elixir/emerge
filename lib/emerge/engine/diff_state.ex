@@ -100,6 +100,10 @@ defmodule Emerge.Engine.DiffState do
     acc
     |> register_event(element, :on_click, :click)
     |> register_event(element, :on_press, :press)
+    |> register_event(element, :on_swipe_up, :swipe_up)
+    |> register_event(element, :on_swipe_down, :swipe_down)
+    |> register_event(element, :on_swipe_left, :swipe_left)
+    |> register_event(element, :on_swipe_right, :swipe_right)
     |> register_event(element, :on_mouse_down, :mouse_down)
     |> register_event(element, :on_mouse_up, :mouse_up)
     |> register_event(element, :on_mouse_enter, :mouse_enter)

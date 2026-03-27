@@ -182,6 +182,11 @@ Process.put(:demo_key_listener_arrow_left_count, 0)
 Process.put(:demo_key_listener_escape_count, 0)
 Process.put(:demo_key_listener_space_press_count, 0)
 Process.put(:demo_key_listener_last_action, "Nothing yet")
+Process.put(:demo_swipe_last_direction, "None")
+Process.put(:demo_swipe_up_count, 0)
+Process.put(:demo_swipe_down_count, 0)
+Process.put(:demo_swipe_left_count, 0)
+Process.put(:demo_swipe_right_count, 0)
 
 clock_loop = fn loop ->
   send(demo_pid, {:clock_tick, clock_now.()})
@@ -1553,6 +1558,11 @@ defmodule Demo do
 
   defp page_events(last_move_label) do
     move_label = last_move_label || "None"
+    swipe_last = Process.get(:demo_swipe_last_direction, "None")
+    swipe_up_count = Process.get(:demo_swipe_up_count, 0)
+    swipe_down_count = Process.get(:demo_swipe_down_count, 0)
+    swipe_left_count = Process.get(:demo_swipe_left_count, 0)
+    swipe_right_count = Process.get(:demo_swipe_right_count, 0)
 
     column([width(fill()), spacing(16)], [
       section_title("Mouse Events"),
@@ -1572,6 +1582,20 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text("Last move target: #{move_label}")
+      ),
+      section_title("Swipe Gestures"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Press, drag past the deadzone, and release. The final net displacement on release chooses the swipe direction."
+        )
+      ),
+      swipe_showcase_panel(
+        swipe_last,
+        swipe_up_count,
+        swipe_down_count,
+        swipe_left_count,
+        swipe_right_count
       ),
       section_title("Transformed Hit Testing"),
       el(
@@ -1642,6 +1666,121 @@ defmodule Demo do
         )
       ])
     ])
+  end
+
+  defp swipe_showcase_panel(last_swipe, up_count, down_count, left_count, right_count) do
+    column([width(fill()), spacing(10)], [
+      wrapped_row([width(fill()), spacing_xy(8, 8)], [
+        swipe_stat_pill(
+          "Last",
+          last_swipe,
+          color_rgb(76, 72, 118),
+          color_rgb(242, 236, 252)
+        ),
+        swipe_stat_pill("Up", up_count, color_rgb(72, 96, 132), color_rgb(232, 242, 252)),
+        swipe_stat_pill(
+          "Down",
+          down_count,
+          color_rgb(84, 78, 130),
+          color_rgb(240, 236, 252)
+        ),
+        swipe_stat_pill(
+          "Left",
+          left_count,
+          color_rgb(72, 106, 110),
+          color_rgb(228, 246, 246)
+        ),
+        swipe_stat_pill(
+          "Right",
+          right_count,
+          color_rgb(104, 84, 124),
+          color_rgb(246, 236, 248)
+        )
+      ]),
+      el(
+        [
+          width(fill()),
+          padding(14),
+          spacing(10),
+          Background.color(color_rgb(46, 50, 72)),
+          Border.rounded(10)
+        ],
+        column([spacing(10)], [
+          el(
+            [Font.size(11), Font.color(@dim_text)],
+            text(
+              "This pad is intentionally not scrollable, so drag falls through to swipe. Scroll containers still win first."
+            )
+          ),
+          el(
+            [
+              width(fill()),
+              height(px(240)),
+              padding(14),
+              Background.color(color_rgb(62, 66, 96)),
+              Border.rounded(14),
+              Border.width(1),
+              Border.color(color_rgb(118, 128, 178)),
+              Event.on_swipe_up({self(), {:demo_event, :swipe_showcase, :up}}),
+              Event.on_swipe_down({self(), {:demo_event, :swipe_showcase, :down}}),
+              Event.on_swipe_left({self(), {:demo_event, :swipe_showcase, :left}}),
+              Event.on_swipe_right({self(), {:demo_event, :swipe_showcase, :right}}),
+              Interactive.mouse_over([
+                Background.color(color_rgb(70, 76, 108)),
+                Border.color(color_rgb(160, 178, 236)),
+                Border.glow(color_rgba(132, 158, 232, 84 / 255), 2)
+              ]),
+              Interactive.mouse_down([
+                Background.color(color_rgb(56, 62, 88)),
+                Border.color(color_rgb(226, 192, 132)),
+                Transform.move_y(1)
+              ])
+            ],
+            column([width(fill()), height(fill()), space_evenly()], [
+              el(
+                [center_x(), Font.size(10), Font.color(color_rgb(214, 226, 246))],
+                text("Swipe up")
+              ),
+              row([width(fill()), space_evenly()], [
+                el([Font.size(10), Font.color(color_rgb(214, 226, 246))], text("Swipe left")),
+                column([center_x(), center_y(), spacing(6)], [
+                  el([Font.size(18), Font.color(:white)], text("Swipe Pad")),
+                  el(
+                    [Font.size(11), Font.color(color_rgb(216, 222, 242))],
+                    text("Release decides direction")
+                  ),
+                  el(
+                    [Font.size(10), Font.color(color_rgb(198, 206, 232))],
+                    text("Quick drag + release")
+                  )
+                ]),
+                el(
+                  [Font.size(10), Font.color(color_rgb(214, 226, 246))],
+                  text("Swipe right")
+                )
+              ]),
+              el(
+                [center_x(), Font.size(10), Font.color(color_rgb(214, 226, 246))],
+                text("Swipe down")
+              )
+            ])
+          ),
+          el(
+            [Font.size(10), Font.color(@dim_text)],
+            text(
+              "Counters update after release. Short drags and balanced diagonals are ignored so the demo does not misfire on casual movement."
+            )
+          )
+        ])
+      )
+    ])
+  end
+
+  defp swipe_stat_pill(label, value, bg, fg) do
+    el(
+      [padding_xy(10, 5), Background.color(bg), Border.rounded(999)],
+      el([Font.size(11), Font.color(fg)], text("#{label}: #{value}"))
+    )
   end
 
   defp page_hover() do
@@ -4561,6 +4700,33 @@ defmodule Demo do
 
     new_log = Enum.take([entry | event_log], 20)
     changed = new_log != event_log
+
+    {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
+  end
+
+  defp process_event(
+         {:demo_event, :swipe_showcase, direction},
+         _state,
+         {mouse_pos, event_log, size, scale, current_page, last_move_label, unstable_items}
+       )
+       when direction in [:up, :down, :left, :right] do
+    {count_key, label} =
+      case direction do
+        :up -> {:demo_swipe_up_count, "Up"}
+        :down -> {:demo_swipe_down_count, "Down"}
+        :left -> {:demo_swipe_left_count, "Left"}
+        :right -> {:demo_swipe_right_count, "Right"}
+      end
+
+    count = Process.get(count_key, 0) + 1
+    previous_last = Process.get(:demo_swipe_last_direction, "None")
+
+    Process.put(count_key, count)
+    Process.put(:demo_swipe_last_direction, label)
+
+    entry = "Swipe #{label} (#{count})"
+    new_log = Enum.take([entry | event_log], 20)
+    changed = new_log != event_log or previous_last != label
 
     {{mouse_pos, new_log, size, scale, current_page, last_move_label, unstable_items}, changed}
   end

@@ -500,7 +500,8 @@ defmodule EmergeSkia do
   - `{id_bin, event_type, payload}`
 
   where `id_bin` is an opaque element id and `event_type` is an atom such as
-  `:press`, `:click`, `:change`, `:key_down`, `:key_up`, or `:key_press`.
+  `:press`, `:click`, `:swipe_up`, `:swipe_down`, `:swipe_left`,
+  `:swipe_right`, `:change`, `:key_down`, `:key_up`, or `:key_press`.
 
   Routed `:key_down`, `:key_up`, and `:key_press` payloads currently carry an
   opaque binding route id used by higher-level runtimes.

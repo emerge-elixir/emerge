@@ -16,7 +16,8 @@ defmodule Emerge do
   Viewport state is a plain map. Emerge keeps its runtime metadata under the
   reserved `:__emerge__` key.
 
-  Element event helpers such as `Event.on_press/1` and `Event.on_click/1`
+  Element event helpers such as `Event.on_press/1`, `Event.on_click/1`, and
+  `Event.on_swipe_right/1`
   deliver regular process messages and are usually handled in `handle_info/2`.
   Implement `handle_input/2` when you want to react to raw input events coming
   from the renderer.
