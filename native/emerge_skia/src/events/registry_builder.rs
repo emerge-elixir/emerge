@@ -47,7 +47,9 @@ use crate::input::{
     SCROLL_LINE_PIXELS,
 };
 use crate::keys::CanonicalKey;
-use crate::tree::attrs::{KeyBindingMatch, KeyBindingSpec};
+use crate::tree::attrs::{
+    KeyBindingMatch, KeyBindingSpec, VirtualKeyHoldMode, VirtualKeyTapAction,
+};
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
 };
@@ -229,6 +231,24 @@ pub struct ClickPressTracker {
     pub matcher_kind: ListenerMatcherKind,
     pub emit_click: bool,
     pub emit_press_pointer: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VirtualKeyPhase {
+    Armed,
+    Repeating,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VirtualKeyTracker {
+    pub element_id: ElementId,
+    pub region: PointerRegion,
+    pub tap: VirtualKeyTapAction,
+    pub hold: VirtualKeyHoldMode,
+    pub hold_ms: u32,
+    pub repeat_ms: u32,
+    pub phase: VirtualKeyPhase,
 }
 
 /// Pointer-sensitive region backed by element interaction geometry.
@@ -459,6 +479,7 @@ pub struct SwipeTracker {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeOverlayState {
     pub click_press: Option<ClickPressTracker>,
+    pub virtual_key: Option<VirtualKeyTracker>,
     pub key_presses: Vec<KeyPressTracker>,
     pub drag: DragTrackerState,
     pub swipe: Option<SwipeTracker>,
@@ -479,6 +500,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
+    out.emit_opt(
+        runtime
+            .virtual_key
+            .as_ref()
+            .map(runtime_virtual_key_release_listener),
+    );
     out.emit_all(runtime_key_press_release_listeners(
         base,
         &runtime.key_presses,
@@ -501,9 +528,21 @@ fn emit_runtime_overlay_listeners(
     ));
     out.emit_opt(
         runtime
+            .virtual_key
+            .as_ref()
+            .map(runtime_virtual_key_release_anywhere_clear_listener),
+    );
+    out.emit_opt(
+        runtime
             .click_press
             .as_ref()
             .and_then(|tracker| runtime_click_press_release_anywhere_clear_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
+            .virtual_key
+            .as_ref()
+            .and_then(runtime_virtual_key_leave_cancel_listener),
     );
     out.emit_opt(runtime_drag_active_scroll_move_listener(
         base,
@@ -514,6 +553,12 @@ fn emit_runtime_overlay_listeners(
         &runtime.drag,
     ));
     out.emit_opt(runtime_drag_window_blur_clear_listener(base, &runtime.drag));
+    out.emit_opt(
+        runtime
+            .virtual_key
+            .as_ref()
+            .map(runtime_virtual_key_window_blur_clear_listener),
+    );
     out.emit_opt(runtime_key_press_window_blur_clear_listener(
         &runtime.key_presses,
     ));
@@ -553,6 +598,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
+    out.emit_opt(
+        runtime
+            .virtual_key
+            .as_ref()
+            .map(runtime_virtual_key_window_leave_clear_listener),
+    );
     out.emit_opt(
         runtime
             .swipe
@@ -949,6 +1000,121 @@ fn runtime_click_press_window_leave_clear_listener(
             ],
         },
     })
+}
+
+pub(crate) fn synthetic_input_sequence_for_virtual_key_tap(
+    tap: &VirtualKeyTapAction,
+) -> Vec<InputEvent> {
+    match tap {
+        VirtualKeyTapAction::Text(text) => vec![InputEvent::TextCommit {
+            text: text.clone(),
+            mods: 0,
+        }],
+        VirtualKeyTapAction::Key { key, mods } => vec![
+            InputEvent::Key {
+                key: *key,
+                action: ACTION_PRESS,
+                mods: *mods,
+            },
+            InputEvent::Key {
+                key: *key,
+                action: ACTION_RELEASE,
+                mods: *mods,
+            },
+        ],
+        VirtualKeyTapAction::TextAndKey { text, key, mods } => vec![
+            InputEvent::Key {
+                key: *key,
+                action: ACTION_PRESS,
+                mods: *mods,
+            },
+            InputEvent::TextCommit {
+                text: text.clone(),
+                mods: *mods,
+            },
+            InputEvent::Key {
+                key: *key,
+                action: ACTION_RELEASE,
+                mods: *mods,
+            },
+        ],
+    }
+}
+
+fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener {
+    let mut actions = Vec::new();
+
+    if tracker.phase == VirtualKeyPhase::Armed {
+        actions.push(ListenerAction::SyntheticInput(
+            synthetic_input_sequence_for_virtual_key_tap(&tracker.tap),
+        ));
+    }
+
+    actions.push(ListenerAction::RuntimeChange(
+        RuntimeChange::ClearVirtualKeyTracker,
+    ));
+
+    Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::CursorButtonLeftReleaseInside {
+            region: tracker.region.clone(),
+        },
+        compute: ListenerCompute::DispatchBaseThenStatic { actions },
+    }
+}
+
+fn runtime_virtual_key_release_anywhere_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+    Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearVirtualKeyTracker,
+            )],
+        },
+    }
+}
+
+fn runtime_virtual_key_leave_cancel_listener(tracker: &VirtualKeyTracker) -> Option<Listener> {
+    matches!(
+        tracker.phase,
+        VirtualKeyPhase::Armed | VirtualKeyPhase::Repeating
+    )
+    .then(|| Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::CursorLocationLeaveBoundary {
+            region: tracker.region.clone(),
+        },
+        compute: ListenerCompute::DispatchBaseThenStatic {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::CancelVirtualKeyTracker,
+            )],
+        },
+    })
+}
+
+fn runtime_virtual_key_window_blur_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+    Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::WindowBlurred,
+        compute: ListenerCompute::DispatchBaseThenStatic {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearVirtualKeyTracker,
+            )],
+        },
+    }
+}
+
+fn runtime_virtual_key_window_leave_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+    Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::WindowCursorLeft,
+        compute: ListenerCompute::DispatchBaseThenStatic {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearVirtualKeyTracker,
+            )],
+        },
+    }
 }
 
 fn runtime_key_press_release_listeners(
@@ -1754,6 +1920,8 @@ pub enum ListenerAction {
     TreeMsg(TreeMsg),
     /// Event-runtime transient mutation.
     RuntimeChange(RuntimeChange),
+    /// Synthetic raw input re-injected through the normal runtime pipeline.
+    SyntheticInput(Vec<InputEvent>),
     /// Request a cursor icon update from the event runtime.
     SetCursor(CursorIcon),
     /// Event forwarded to Elixir-side consumers.
@@ -1809,6 +1977,8 @@ pub enum RuntimeChange {
         emit_click: bool,
         emit_press_pointer: bool,
     },
+    /// Begin virtual-key press tracking.
+    StartVirtualKeyTracker { tracker: VirtualKeyTracker },
     /// Begin completed key-press followup tracking.
     StartKeyPressTracker { tracker: KeyPressTracker },
     /// Begin drag threshold tracking.
@@ -1842,6 +2012,10 @@ pub enum RuntimeChange {
     StartSwipeTracker { tracker: SwipeTracker },
     /// Drop swipe followup tracking.
     ClearSwipeTracker,
+    /// Cancel the active virtual-key gesture until release.
+    CancelVirtualKeyTracker,
+    /// Drop virtual-key tracking entirely.
+    ClearVirtualKeyTracker,
     /// Drop completed key-press tracking for one key.
     ClearKeyPressTrackersForKey { key: CanonicalKey },
     /// Drop all completed key-press tracking.
@@ -1871,6 +2045,7 @@ impl RuntimeChange {
         matches!(
             self,
             RuntimeChange::StartClickPressTracker { .. }
+                | RuntimeChange::StartVirtualKeyTracker { .. }
                 | RuntimeChange::StartKeyPressTracker { .. }
                 | RuntimeChange::StartDragTracker { .. }
                 | RuntimeChange::PromoteDragTracker { .. }
@@ -1880,6 +2055,8 @@ impl RuntimeChange {
                 | RuntimeChange::ClearClickPressTracker
                 | RuntimeChange::StartSwipeTracker { .. }
                 | RuntimeChange::ClearSwipeTracker
+                | RuntimeChange::CancelVirtualKeyTracker
+                | RuntimeChange::ClearVirtualKeyTracker
                 | RuntimeChange::ClearKeyPressTrackersForKey { .. }
                 | RuntimeChange::ClearKeyPressTrackers
                 | RuntimeChange::StartScrollbarDrag { .. }
@@ -3913,6 +4090,7 @@ fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
     } else if element.attrs.on_click.unwrap_or(false)
         || element.attrs.on_press.unwrap_or(false)
         || has_swipe_listener(element)
+        || element.attrs.virtual_key.is_some()
     {
         Some(CursorIcon::Pointer)
     } else {
@@ -3955,13 +4133,14 @@ fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bo
 }
 
 fn is_focusable(element: &Element) -> bool {
-    element.kind == ElementKind::TextInput
-        || element.attrs.on_press.unwrap_or(false)
-        || element.attrs.on_focus.unwrap_or(false)
-        || element.attrs.on_blur.unwrap_or(false)
-        || element.attrs.on_key_down.is_some()
-        || element.attrs.on_key_up.is_some()
-        || element.attrs.on_key_press.is_some()
+    element.attrs.virtual_key.is_none()
+        && (element.kind == ElementKind::TextInput
+            || element.attrs.on_press.unwrap_or(false)
+            || element.attrs.on_focus.unwrap_or(false)
+            || element.attrs.on_blur.unwrap_or(false)
+            || element.attrs.on_key_down.is_some()
+            || element.attrs.on_key_up.is_some()
+            || element.attrs.on_key_press.is_some())
 }
 
 fn padding_sides(element: &Element) -> (f32, f32, f32, f32) {
@@ -4848,11 +5027,14 @@ fn slot_primary_left_press(
     focus_meta: Option<&ElementFocusMeta>,
 ) -> Option<Listener> {
     let region = pointer_region_for_element(state?)?;
-    let matcher = ListenerMatcher::CursorButtonLeftPressInside { region };
+    let matcher = ListenerMatcher::CursorButtonLeftPressInside {
+        region: region.clone(),
+    };
     let matcher_kind = matcher.kind();
     let actions: Vec<_> = mouse_events::left_press_actions(element)
         .into_iter()
         .chain(mouse_down_style::left_press_actions(element))
+        .chain(virtual_key::left_press_actions(element, &region))
         .chain(
             focus_meta
                 .filter(|focus_meta| is_focusable(element) && !focus_meta.is_currently_focused)
@@ -5532,6 +5714,37 @@ mod mouse_down_style {
 }
 
 /// Click/press tracker bootstrap contributors (`on_click`, pointer `on_press`, swipe, drag-scrollable containers).
+mod virtual_key {
+    use super::*;
+
+    pub(super) fn left_press_actions(
+        element: &Element,
+        region: &PointerRegion,
+    ) -> Vec<ListenerAction> {
+        element
+            .attrs
+            .virtual_key
+            .as_ref()
+            .map(|spec| {
+                vec![ListenerAction::RuntimeChange(
+                    RuntimeChange::StartVirtualKeyTracker {
+                        tracker: VirtualKeyTracker {
+                            element_id: element.id.clone(),
+                            region: region.clone(),
+                            tap: spec.tap.clone(),
+                            hold: spec.hold,
+                            hold_ms: spec.hold_ms,
+                            repeat_ms: spec.repeat_ms,
+                            phase: VirtualKeyPhase::Armed,
+                        },
+                    },
+                )]
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Click/press tracker bootstrap contributors (`on_click`, pointer `on_press`, swipe, drag-scrollable containers).
 mod click_press_tracker {
     use super::*;
 
@@ -5660,7 +5873,7 @@ mod tests {
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{
         AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
-        ScrollbarHoverAxis,
+        ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
     use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
@@ -5678,7 +5891,7 @@ mod tests {
         ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
         NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
         ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
-        TextDragTracker,
+        TextDragTracker, VirtualKeyPhase, VirtualKeyTracker,
     };
     use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
@@ -7338,6 +7551,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![30]),
@@ -7393,6 +7607,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,
@@ -7446,6 +7661,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,
@@ -7490,6 +7706,7 @@ mod tests {
                 emit_click: false,
                 emit_press_pointer: true,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,
@@ -7542,6 +7759,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
                 element_id: ElementId::from_term_bytes(vec![29]),
@@ -7595,6 +7813,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![31]),
@@ -7645,6 +7864,7 @@ mod tests {
                 emit_click: true,
                 emit_press_pointer: false,
             }),
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![31]),
@@ -7746,6 +7966,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![72]),
@@ -7798,6 +8019,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![75]),
@@ -7884,6 +8106,7 @@ mod tests {
         let base = registry_for_elements(&[parent, child]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![77]),
@@ -7964,6 +8187,7 @@ mod tests {
         let base = registry_for_elements(&[parent, child]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
                 element_id: ElementId::from_term_bytes(vec![79]),
@@ -8019,6 +8243,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
@@ -8080,6 +8305,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
@@ -8137,6 +8363,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
@@ -8297,6 +8524,122 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyEnterPressNoCtrlAltMeta
         )));
+    }
+
+    #[test]
+    fn listeners_for_element_virtual_key_starts_tracker_and_never_focuses() {
+        let mut attrs = Attrs::default();
+        attrs.on_focus = Some(true);
+        attrs.virtual_key = Some(VirtualKeySpec {
+            tap: VirtualKeyTapAction::Text("a".to_string()),
+            hold: VirtualKeyHoldMode::None,
+            hold_ms: 350,
+            repeat_ms: 40,
+        });
+        let element = with_interaction(make_element(73, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::RuntimeChange(RuntimeChange::StartVirtualKeyTracker { tracker })]
+                if tracker.element_id == ElementId::from_term_bytes(vec![73])
+                    && tracker.phase == VirtualKeyPhase::Armed
+        ));
+
+        let move_actions = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        })
+        .compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        assert_eq!(actions_without_cursor(&move_actions).len(), 0);
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Pointer]);
+    }
+
+    #[test]
+    fn runtime_listeners_for_overlay_virtual_key_release_dispatches_synthetic_input() {
+        let base = registry_for_elements(&[]);
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            virtual_key: Some(VirtualKeyTracker {
+                element_id: ElementId::from_term_bytes(vec![74]),
+                region: PointerRegion {
+                    visible: true,
+                    local_shape: ShapeBounds {
+                        rect: Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 100.0,
+                            height: 40.0,
+                        },
+                        radii: None,
+                    },
+                    screen_to_local: Some(Affine2::identity()),
+                    screen_bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 40.0,
+                    },
+                    clip_chain: Vec::new(),
+                },
+                tap: VirtualKeyTapAction::Text("a".to_string()),
+                hold: VirtualKeyHoldMode::None,
+                hold_ms: 350,
+                repeat_ms: 40,
+                phase: VirtualKeyPhase::Armed,
+            }),
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Inactive,
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+
+        let listeners = runtime_listeners_for_overlay(&base, &runtime);
+        assert!(listeners.iter().any(|listener| matches!(
+            listener.matcher,
+            ListenerMatcher::CursorButtonLeftReleaseInside { .. }
+        )));
+        assert!(listeners.iter().any(|listener| matches!(
+            listener.matcher,
+            ListenerMatcher::CursorLocationLeaveBoundary { .. }
+        )));
+
+        let release_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftReleaseInside { .. }
+            )
+        });
+        let actions = release_listener.compute_actions(&InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_RELEASE,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::SyntheticInput(events),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearVirtualKeyTracker),
+            ] if matches!(events.as_slice(), [InputEvent::TextCommit { text, mods }] if text == "a" && *mods == 0)
+        ));
     }
 
     #[test]
@@ -8470,6 +8813,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: vec![KeyPressTracker {
                 source_element_id: Some(ElementId::from_term_bytes(vec![40])),
                 key: CanonicalKey::Space,
@@ -9409,6 +9753,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,
@@ -9467,6 +9812,7 @@ mod tests {
         let base = registry_for_elements(&[]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,
@@ -10047,6 +10393,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
                 element_id: ElementId::from_term_bytes(vec![48]),
@@ -10106,6 +10453,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
                 element_id: ElementId::from_term_bytes(vec![81]),
@@ -10142,6 +10490,7 @@ mod tests {
     fn runtime_listeners_for_overlay_scrollbar_drag_emit_move_and_clear_followups() {
         let runtime = RuntimeOverlayState {
             click_press: None,
+            virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: None,

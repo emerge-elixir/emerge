@@ -196,6 +196,23 @@ defmodule Emerge.Engine.AttrCodecTest do
            }
   end
 
+  test "encode/decode virtual key descriptor" do
+    attrs = %{
+      virtual_key:
+        Event.virtual_key(
+          tap: {:text_and_key, "A", :a, [:shift]},
+          hold: {:event, {self(), :show_alternates}},
+          hold_ms: 280,
+          repeat_ms: 55
+        )
+        |> elem(1)
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
   test "encode/decode mouse_over decorative attrs" do
     attrs = %{
       mouse_over: %{
@@ -576,7 +593,10 @@ defmodule Emerge.Engine.AttrCodecTest do
     attrs
     |> Emerge.Engine.Tree.strip_runtime_attrs()
     |> Emerge.Engine.Tree.strip_nearby_attrs()
-    |> Enum.map(fn {key, value} -> {key, normalize_value(value)} end)
+    |> Enum.map(fn
+      {:virtual_key, value} -> {:virtual_key, Event.virtual_key_descriptor(value)}
+      {key, value} -> {key, normalize_value(value)}
+    end)
     |> Map.new()
   end
 

@@ -335,6 +335,25 @@ defmodule Emerge.Engine.DiffStateTest do
     assert cycle_pid == self()
   end
 
+  test "virtual key hold event is registered in event registry" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          key(:soft_a),
+          Event.virtual_key(tap: {:text, "a"}, hold: {:event, {self(), :show_alternates}})
+        ],
+        Emerge.UI.text("A")
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {pid, :show_alternates}} =
+             Emerge.Engine.lookup_event(state, id_bin, :virtual_key_hold)
+
+    assert pid == self()
+  end
+
   test "text input registers click and mouse handlers alongside on_change" do
     layout =
       Emerge.UI.Input.text(
@@ -445,6 +464,23 @@ defmodule Emerge.Engine.DiffStateTest do
              )
 
     assert_receive :cycled
+  end
+
+  test "dispatch_event routes virtual key hold events" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          key(:soft_a),
+          Event.virtual_key(tap: {:text, "a"}, hold: {:event, {self(), :show_alternates}})
+        ],
+        Emerge.UI.text("A")
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :virtual_key_hold)
+    assert_receive :show_alternates
   end
 
   defp content_id_map(%Emerge.Engine.Element{children: children}) do

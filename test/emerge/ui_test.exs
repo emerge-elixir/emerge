@@ -730,6 +730,51 @@ defmodule Emerge.UITest do
     assert press_binding.route == Event.key_route_id(:key_press, :space, [], :exact)
   end
 
+  test "virtual_key helper returns normalized spec" do
+    assert {:virtual_key, spec} =
+             Event.virtual_key(
+               tap: {:text_and_key, "A", :a, [:shift]},
+               hold: {:event, {self(), :show_alternates}},
+               hold_ms: 280,
+               repeat_ms: 55
+             )
+
+    assert spec == %{
+             tap: {:text_and_key, "A", :a, [:shift]},
+             hold: {:event, {self(), :show_alternates}},
+             hold_ms: 280,
+             repeat_ms: 55
+           }
+  end
+
+  test "virtual_key helper applies defaults" do
+    assert {:virtual_key, spec} = Event.virtual_key(tap: {:key, :enter, []})
+
+    assert spec == %{
+             tap: {:key, :enter, []},
+             hold: nil,
+             hold_ms: 350,
+             repeat_ms: 40
+           }
+  end
+
+  test "virtual_key rejects on_click and on_press conflicts" do
+    assert_raise ArgumentError,
+                 ~r/does not allow :virtual_key together with :on_click or :on_press/,
+                 fn ->
+                   Input.button(
+                     [Event.virtual_key(tap: {:text, "a"}), Event.on_press(:pressed)],
+                     text("A")
+                   )
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/does not allow :virtual_key together with :on_click or :on_press/,
+                 fn ->
+                   el([Event.virtual_key(tap: {:text, "a"}), Event.on_click(:clicked)], text("A"))
+                 end
+  end
+
   test "Input.text creates a text_input element" do
     element =
       Emerge.UI.Input.text(

@@ -70,6 +70,7 @@ pub enum ElementEventKind {
     KeyDown,
     KeyUp,
     KeyPress,
+    VirtualKeyHold,
     MouseDown,
     MouseUp,
     MouseEnter,
@@ -654,6 +655,7 @@ rustler::atoms! {
     key_down,
     key_up,
     key_press,
+    virtual_key_hold,
     change,
     focus,
     blur,
@@ -701,6 +703,10 @@ pub(crate) fn key_up_atom() -> Atom {
 
 pub(crate) fn key_press_atom() -> Atom {
     key_press()
+}
+
+pub(crate) fn virtual_key_hold_atom() -> Atom {
+    virtual_key_hold()
 }
 
 pub(crate) fn change_atom() -> Atom {
