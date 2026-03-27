@@ -1964,16 +1964,6 @@ mod tests {
         out
     }
 
-    #[cfg(feature = "wayland")]
-    fn test_window_backend() -> BackendKind {
-        BackendKind::Wayland
-    }
-
-    #[cfg(all(not(feature = "wayland"), feature = "drm"))]
-    fn test_window_backend() -> BackendKind {
-        BackendKind::Drm
-    }
-
     #[test]
     fn shutdown_renderer_runtime_stops_and_joins_threads() {
         let running_flag = Arc::new(AtomicBool::new(true));
