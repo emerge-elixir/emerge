@@ -108,6 +108,24 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == %{on_press: true}
   end
 
+  test "encode/decode swipe event presence" do
+    attrs = %{
+      on_swipe_up: {self(), :up},
+      on_swipe_down: {self(), :down},
+      on_swipe_left: {self(), :left},
+      on_swipe_right: {self(), :right}
+    }
+
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == %{
+             on_swipe_up: true,
+             on_swipe_down: true,
+             on_swipe_left: true,
+             on_swipe_right: true
+           }
+  end
+
   test "encode/decode mouse event presence" do
     attrs = %{
       on_mouse_down: {self(), :down},

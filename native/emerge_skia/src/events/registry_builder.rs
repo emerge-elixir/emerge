@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
 use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
 use crate::keys::CanonicalKey;
@@ -51,19 +51,20 @@ use crate::tree::attrs::{KeyBindingMatch, KeyBindingSpec};
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
+use crate::tree::geometry::{clamp_radii, point_hits_shape, CornerRadii, Rect, ShapeBounds};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    scrollbar::{scrollbar_node_from_metrics, ScrollbarHitArea, ScrollbarNode},
+    text_ops, CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
     TextInputEditRequest, TextInputPreeditRequest, TextInputState,
-    scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
-    text_ops,
 };
 
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
+const GESTURE_AXIS_DOMINANCE_RATIO: f32 = 1.25;
+const GESTURE_AXIS_MIN_LEAD: f32 = 6.0;
 
 /// Listener registry consumed by the event actor.
 ///
@@ -358,6 +359,33 @@ pub(crate) struct ScrollContext {
     max_y: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SwipeHandlers {
+    pub up: bool,
+    pub down: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+impl SwipeHandlers {
+    fn any(self) -> bool {
+        self.up || self.down || self.left || self.right
+    }
+
+    fn any_for_axis(self, axis: GestureAxis) -> bool {
+        match axis {
+            GestureAxis::Horizontal => self.left || self.right,
+            GestureAxis::Vertical => self.up || self.down,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureAxis {
+    Horizontal,
+    Vertical,
+}
+
 /// Drag tracker lifecycle state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum DragTrackerState {
@@ -368,12 +396,14 @@ pub enum DragTrackerState {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        swipe_handlers: SwipeHandlers,
     },
     Active {
         element_id: ElementId,
         matcher_kind: ListenerMatcherKind,
         last_x: f32,
         last_y: f32,
+        locked_axis: GestureAxis,
     },
 }
 
@@ -411,6 +441,16 @@ pub struct TextDragTracker {
     pub matcher_kind: ListenerMatcherKind,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwipeTracker {
+    pub element_id: ElementId,
+    pub matcher_kind: ListenerMatcherKind,
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub locked_axis: GestureAxis,
+    pub handlers: SwipeHandlers,
+}
+
 /// Transient runtime interaction state used to rebuild overlay listeners.
 ///
 /// This state does not come from the retained tree. It is produced by in-flight
@@ -421,6 +461,7 @@ pub struct RuntimeOverlayState {
     pub click_press: Option<ClickPressTracker>,
     pub key_presses: Vec<KeyPressTracker>,
     pub drag: DragTrackerState,
+    pub swipe: Option<SwipeTracker>,
     pub scrollbar: Option<ScrollbarDragTracker>,
     pub text_drag: Option<TextDragTracker>,
 }
@@ -442,6 +483,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.key_presses,
     ));
+    out.emit_opt(
+        runtime
+            .swipe
+            .as_ref()
+            .and_then(|tracker| runtime_swipe_release_listener(base, tracker)),
+    );
     out.emit_opt(
         runtime
             .click_press
@@ -472,6 +519,12 @@ fn emit_runtime_overlay_listeners(
     ));
     out.emit_opt(
         runtime
+            .swipe
+            .as_ref()
+            .and_then(|tracker| runtime_swipe_window_blur_clear_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
             .click_press
             .as_ref()
             .and_then(|tracker| runtime_click_press_window_blur_clear_listener(base, tracker)),
@@ -500,6 +553,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
+    out.emit_opt(
+        runtime
+            .swipe
+            .as_ref()
+            .and_then(|tracker| runtime_swipe_window_leave_clear_listener(base, tracker)),
+    );
     out.emit_opt(
         runtime
             .click_press
@@ -660,13 +719,14 @@ fn runtime_drag_active_scroll_move_listener(
     base: &Registry,
     drag: &DragTrackerState,
 ) -> Option<Listener> {
-    let (element_id, matcher_kind, last_x, last_y) = match drag {
+    let (element_id, matcher_kind, last_x, last_y, locked_axis) = match drag {
         DragTrackerState::Active {
             element_id,
             matcher_kind,
             last_x,
             last_y,
-        } => (element_id, *matcher_kind, *last_x, *last_y),
+            locked_axis,
+        } => (element_id, *matcher_kind, *last_x, *last_y, *locked_axis),
         DragTrackerState::Inactive | DragTrackerState::Candidate { .. } => return None,
     };
 
@@ -674,7 +734,11 @@ fn runtime_drag_active_scroll_move_listener(
     Some(Listener {
         element_id: Some(element_id.clone()),
         matcher: ListenerMatcher::CursorPosAnywhere,
-        compute: ListenerCompute::RedispatchScrollFromCursorMove { last_x, last_y },
+        compute: ListenerCompute::RedispatchScrollFromCursorMove {
+            last_x,
+            last_y,
+            locked_axis,
+        },
     })
 }
 
@@ -707,13 +771,20 @@ fn runtime_drag_candidate_threshold_listener(
     base: &Registry,
     drag: &DragTrackerState,
 ) -> Option<Listener> {
-    let (element_id, matcher_kind, origin_x, origin_y) = match drag {
+    let (element_id, matcher_kind, origin_x, origin_y, swipe_handlers) = match drag {
         DragTrackerState::Candidate {
             element_id,
             matcher_kind,
             origin_x,
             origin_y,
-        } => (element_id, *matcher_kind, *origin_x, *origin_y),
+            swipe_handlers,
+        } => (
+            element_id,
+            *matcher_kind,
+            *origin_x,
+            *origin_y,
+            *swipe_handlers,
+        ),
         DragTrackerState::Inactive | DragTrackerState::Active { .. } => return None,
     };
 
@@ -731,6 +802,7 @@ fn runtime_drag_candidate_threshold_listener(
             matcher_kind,
             origin_x,
             origin_y,
+            swipe_handlers,
         },
     })
 }
@@ -775,6 +847,52 @@ fn runtime_click_press_release_listener(
             element_id: tracker.element_id.clone(),
             emit_click: tracker.emit_click,
             emit_press_pointer: tracker.emit_press_pointer,
+        },
+    })
+}
+
+fn runtime_swipe_release_listener(base: &Registry, tracker: &SwipeTracker) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
+        compute: ListenerCompute::SwipeReleaseFollowupToBase {
+            tracker: tracker.clone(),
+        },
+    })
+}
+
+fn runtime_swipe_window_blur_clear_listener(
+    base: &Registry,
+    tracker: &SwipeTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::WindowBlurred,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSwipeTracker,
+            )],
+        },
+    })
+}
+
+fn runtime_swipe_window_leave_clear_listener(
+    base: &Registry,
+    tracker: &SwipeTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id.clone()),
+        matcher: ListenerMatcher::WindowCursorLeft,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSwipeTracker,
+            )],
         },
     })
 }
@@ -949,6 +1067,7 @@ fn runtime_text_drag_window_leave_clear_listener(
 pub(crate) struct PointerDragBootstrap {
     element_id: ElementId,
     matcher_kind: ListenerMatcherKind,
+    swipe_handlers: SwipeHandlers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1698,6 +1817,7 @@ pub enum RuntimeChange {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        swipe_handlers: SwipeHandlers,
     },
     /// Promote drag threshold tracking to an active drag followup.
     PromoteDragTracker {
@@ -1705,6 +1825,7 @@ pub enum RuntimeChange {
         matcher_kind: ListenerMatcherKind,
         last_x: f32,
         last_y: f32,
+        locked_axis: GestureAxis,
     },
     /// Begin text-selection drag tracking.
     StartTextDragTracker {
@@ -1717,6 +1838,10 @@ pub enum RuntimeChange {
     UpdateDragTrackerPointer { last_x: f32, last_y: f32 },
     /// Drop click/press release followup tracking.
     ClearClickPressTracker,
+    /// Begin swipe followup tracking.
+    StartSwipeTracker { tracker: SwipeTracker },
+    /// Drop swipe followup tracking.
+    ClearSwipeTracker,
     /// Drop completed key-press tracking for one key.
     ClearKeyPressTrackersForKey { key: CanonicalKey },
     /// Drop all completed key-press tracking.
@@ -1753,6 +1878,8 @@ impl RuntimeChange {
                 | RuntimeChange::ClearDragTracker
                 | RuntimeChange::UpdateDragTrackerPointer { .. }
                 | RuntimeChange::ClearClickPressTracker
+                | RuntimeChange::StartSwipeTracker { .. }
+                | RuntimeChange::ClearSwipeTracker
                 | RuntimeChange::ClearKeyPressTrackersForKey { .. }
                 | RuntimeChange::ClearKeyPressTrackers
                 | RuntimeChange::StartScrollbarDrag { .. }
@@ -1802,6 +1929,8 @@ pub enum ListenerCompute {
         emit_click: bool,
         emit_press_pointer: bool,
     },
+    /// Redispatch base release listeners, then emit a completed swipe gesture.
+    SwipeReleaseFollowupToBase { tracker: SwipeTracker },
     /// Redispatch base key-up listeners, optionally emit completed key-press actions, then clear tracking.
     KeyPressReleaseFollowupToBase {
         key: CanonicalKey,
@@ -1813,6 +1942,7 @@ pub enum ListenerCompute {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        swipe_handlers: SwipeHandlers,
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
@@ -1831,8 +1961,12 @@ pub enum ListenerCompute {
         dx: f32,
         dy: f32,
     },
-    /// Redispatch drag movement as a synthetic scroll input and update pointer position.
-    RedispatchScrollFromCursorMove { last_x: f32, last_y: f32 },
+    /// Redispatch drag movement as a synthetic axis-locked scroll input and update pointer position.
+    RedispatchScrollFromCursorMove {
+        last_x: f32,
+        last_y: f32,
+        locked_axis: GestureAxis,
+    },
     /// Start scrollbar drag tracking from a thumb or track press.
     ScrollbarPressToRuntime {
         element_id: ElementId,
@@ -1913,6 +2047,7 @@ impl ListenerCompute {
                             matcher_kind: pointer_drag.matcher_kind,
                             origin_x: *x,
                             origin_y: *y,
+                            swipe_handlers: pointer_drag.swipe_handlers,
                         })
                     }))
                     .chain(text_cursor_element_id.as_ref().map(|element_id| {
@@ -1977,6 +2112,29 @@ impl ListenerCompute {
                 }
                 _ => Vec::new(),
             },
+            ListenerCompute::SwipeReleaseFollowupToBase { tracker } => match input.raw() {
+                Some(InputEvent::CursorButton {
+                    button,
+                    action,
+                    x,
+                    y,
+                    ..
+                }) if button == "left" && *action == ACTION_RELEASE => ctx
+                    .dispatch_base(input)
+                    .into_iter()
+                    .chain(swipe_event_from_release(tracker, *x, *y).map(|kind| {
+                        ListenerAction::ElixirEvent(ElixirEvent {
+                            element_id: tracker.element_id.clone(),
+                            kind,
+                            payload: None,
+                        })
+                    }))
+                    .chain([ListenerAction::RuntimeChange(
+                        RuntimeChange::ClearSwipeTracker,
+                    )])
+                    .collect(),
+                _ => Vec::new(),
+            },
             ListenerCompute::KeyPressReleaseFollowupToBase { key, trackers } => match input.raw() {
                 Some(InputEvent::Key {
                     key: input_key,
@@ -2003,20 +2161,41 @@ impl ListenerCompute {
                 matcher_kind,
                 origin_x,
                 origin_y,
+                swipe_handlers,
             } => match input {
                 ListenerInput::Raw(InputEvent::CursorPos { x, y }) => {
                     let dx = *x - *origin_x;
                     let dy = *y - *origin_y;
 
-                    if drag_scroll_can_activate_from_delta(dx, dy, *x, *y, ctx) {
+                    let Some(locked_axis) = gesture_axis_intent_from_delta(dx, dy) else {
+                        return Vec::new();
+                    };
+
+                    if drag_scroll_can_activate_on_axis(locked_axis, dx, dy, *x, *y, ctx) {
                         vec![
                             ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
                                 element_id: element_id.clone(),
                                 matcher_kind: *matcher_kind,
                                 last_x: *x,
                                 last_y: *y,
+                                locked_axis,
                             }),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                        ]
+                    } else if swipe_handlers.any_for_axis(locked_axis) {
+                        vec![
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                            ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker {
+                                tracker: SwipeTracker {
+                                    element_id: element_id.clone(),
+                                    matcher_kind: *matcher_kind,
+                                    origin_x: *origin_x,
+                                    origin_y: *origin_y,
+                                    locked_axis,
+                                    handlers: *swipe_handlers,
+                                },
+                            }),
                         ]
                     } else {
                         vec![ListenerAction::RuntimeChange(
@@ -2057,9 +2236,14 @@ impl ListenerCompute {
                     dy: *dy,
                 })]
             }
-            ListenerCompute::RedispatchScrollFromCursorMove { last_x, last_y } => match input.raw()
-            {
-                Some(input) => drag_scroll_actions_from_input(input, *last_x, *last_y, ctx),
+            ListenerCompute::RedispatchScrollFromCursorMove {
+                last_x,
+                last_y,
+                locked_axis,
+            } => match input.raw() {
+                Some(input) => {
+                    drag_scroll_actions_from_input(input, *last_x, *last_y, *locked_axis, ctx)
+                }
                 None => Vec::new(),
             },
             ListenerCompute::ScrollbarPressToRuntime { element_id, spec } => match input.raw() {
@@ -2353,6 +2537,37 @@ fn split_scroll_components(input: &InputEvent) -> Vec<ListenerInput> {
     }
 }
 
+fn scroll_component_for_axis(
+    axis: GestureAxis,
+    dx: f32,
+    dy: f32,
+    x: f32,
+    y: f32,
+) -> Option<ListenerInput> {
+    match axis {
+        GestureAxis::Horizontal => scroll_component(
+            if dx < 0.0 {
+                ScrollDirection::XNeg
+            } else {
+                ScrollDirection::XPos
+            },
+            dx,
+            x,
+            y,
+        ),
+        GestureAxis::Vertical => scroll_component(
+            if dy < 0.0 {
+                ScrollDirection::YNeg
+            } else {
+                ScrollDirection::YPos
+            },
+            dy,
+            x,
+            y,
+        ),
+    }
+}
+
 fn redispatch_scroll_components_from_input<C: ListenerComputeCtx>(
     input: &InputEvent,
     ctx: &mut C,
@@ -2363,16 +2578,30 @@ fn redispatch_scroll_components_from_input<C: ListenerComputeCtx>(
         .collect()
 }
 
-fn drag_scroll_can_activate_from_delta<C: ListenerComputeCtx>(
+fn redispatch_scroll_component_for_axis<C: ListenerComputeCtx>(
+    axis: GestureAxis,
+    dx: f32,
+    dy: f32,
+    x: f32,
+    y: f32,
+    ctx: &mut C,
+) -> Vec<ListenerAction> {
+    scroll_component_for_axis(axis, dx, dy, x, y)
+        .into_iter()
+        .flat_map(|component| ctx.dispatch_base(&component))
+        .collect()
+}
+
+fn drag_scroll_can_activate_on_axis<C: ListenerComputeCtx>(
+    axis: GestureAxis,
     dx: f32,
     dy: f32,
     x: f32,
     y: f32,
     ctx: &mut C,
 ) -> bool {
-    split_scroll_delta_components(dx, dy, x, y)
-        .into_iter()
-        .any(|component| !ctx.dispatch_base(&component).is_empty())
+    scroll_component_for_axis(axis, dx, dy, x, y)
+        .is_some_and(|component| !ctx.dispatch_base(&component).is_empty())
 }
 
 fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
@@ -2557,6 +2786,7 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
     input: &InputEvent,
     last_x: f32,
     last_y: f32,
+    locked_axis: GestureAxis,
     ctx: &mut C,
 ) -> Vec<ListenerAction> {
     let InputEvent::CursorPos { x, y } = input else {
@@ -2568,15 +2798,7 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
 
     let moved = dx != 0.0 || dy != 0.0;
     let actions = if moved {
-        redispatch_scroll_components_from_input(
-            &InputEvent::CursorScroll {
-                dx,
-                dy,
-                x: *x,
-                y: *y,
-            },
-            ctx,
-        )
+        redispatch_scroll_component_for_axis(locked_axis, dx, dy, *x, *y, ctx)
     } else {
         Vec::new()
     };
@@ -2590,6 +2812,52 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
             },
         )))
         .collect()
+}
+
+fn gesture_axis_intent_from_delta(dx: f32, dy: f32) -> Option<GestureAxis> {
+    let abs_x = dx.abs();
+    let abs_y = dy.abs();
+
+    if abs_x >= abs_y * GESTURE_AXIS_DOMINANCE_RATIO && abs_x - abs_y >= GESTURE_AXIS_MIN_LEAD {
+        Some(GestureAxis::Horizontal)
+    } else if abs_y >= abs_x * GESTURE_AXIS_DOMINANCE_RATIO
+        && abs_y - abs_x >= GESTURE_AXIS_MIN_LEAD
+    {
+        Some(GestureAxis::Vertical)
+    } else {
+        None
+    }
+}
+
+fn swipe_event_from_release(tracker: &SwipeTracker, x: f32, y: f32) -> Option<ElementEventKind> {
+    let delta = match tracker.locked_axis {
+        GestureAxis::Horizontal => x - tracker.origin_x,
+        GestureAxis::Vertical => y - tracker.origin_y,
+    };
+
+    if delta.abs() < RUNTIME_DRAG_DEADZONE {
+        None
+    } else {
+        match tracker.locked_axis {
+            GestureAxis::Horizontal => {
+                if delta > 0.0 {
+                    tracker
+                        .handlers
+                        .right
+                        .then_some(ElementEventKind::SwipeRight)
+                } else {
+                    tracker.handlers.left.then_some(ElementEventKind::SwipeLeft)
+                }
+            }
+            GestureAxis::Vertical => {
+                if delta > 0.0 {
+                    tracker.handlers.down.then_some(ElementEventKind::SwipeDown)
+                } else {
+                    tracker.handlers.up.then_some(ElementEventKind::SwipeUp)
+                }
+            }
+        }
+    }
 }
 
 fn resolve_listener_actions<C: ListenerComputeCtx>(
@@ -3642,11 +3910,28 @@ fn text_input_emit_change(element: &Element) -> Option<bool> {
 fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
     if element.kind == ElementKind::TextInput {
         Some(CursorIcon::Text)
-    } else if element.attrs.on_click.unwrap_or(false) || element.attrs.on_press.unwrap_or(false) {
+    } else if element.attrs.on_click.unwrap_or(false)
+        || element.attrs.on_press.unwrap_or(false)
+        || has_swipe_listener(element)
+    {
         Some(CursorIcon::Pointer)
     } else {
         None
     }
+}
+
+fn swipe_handlers_for_element(element: &Element) -> SwipeHandlers {
+    let attrs = &element.attrs;
+    SwipeHandlers {
+        up: attrs.on_swipe_up.unwrap_or(false),
+        down: attrs.on_swipe_down.unwrap_or(false),
+        left: attrs.on_swipe_left.unwrap_or(false),
+        right: attrs.on_swipe_right.unwrap_or(false),
+    }
+}
+
+fn has_swipe_listener(element: &Element) -> bool {
+    swipe_handlers_for_element(element).any()
 }
 
 fn tracks_hover_inside(element: &Element) -> bool {
@@ -4199,7 +4484,7 @@ fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
 /// - `on_mouse_down`, `on_mouse_up`, `on_mouse_move`
 /// - hover enter/leave style transitions (`mouse_over` + `mouse_over_active`)
 /// - mouse-down style transitions (`mouse_down` + `mouse_down_active`)
-/// - pointer tracker bootstrap for `on_click` and pointer `on_press`
+/// - pointer tracker bootstrap for `on_click`, pointer `on_press`, and pointer swipe listeners
 /// - focused Enter-key `on_press` listeners
 /// - concrete pointer focus transitions (`FocusTo`)
 /// - focused text-input edit listeners with `on_change`-gated change emission
@@ -5246,7 +5531,7 @@ mod mouse_down_style {
     }
 }
 
-/// Click/press tracker bootstrap contributors (`on_click`, pointer `on_press`, drag-scrollable containers).
+/// Click/press tracker bootstrap contributors (`on_click`, pointer `on_press`, swipe, drag-scrollable containers).
 mod click_press_tracker {
     use super::*;
 
@@ -5280,12 +5565,15 @@ mod click_press_tracker {
         matcher_kind: ListenerMatcherKind,
     ) -> Option<PointerDragBootstrap> {
         let attrs = &element.attrs;
+        let swipe_handlers = swipe_handlers_for_element(element);
         (attrs.on_click.unwrap_or(false)
             || attrs.on_press.unwrap_or(false)
+            || swipe_handlers.any()
             || !scroll_wheel::scroll_directions_for_element(element).is_empty())
         .then(|| PointerDragBootstrap {
             element_id: element.id.clone(),
             matcher_kind,
+            swipe_handlers,
         })
     }
 }
@@ -5359,10 +5647,10 @@ mod tests {
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
     use crate::events::test_support::{
-        AnimatedNearbyHitCase, SampledRegistrySource, assert_registry_probe_matrix,
+        assert_registry_probe_matrix, AnimatedNearbyHitCase, SampledRegistrySource,
     };
     use crate::input::{
-        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
     use crate::keys::CanonicalKey;
@@ -5375,21 +5663,22 @@ mod tests {
         ScrollbarHoverAxis,
     };
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
-    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
+    use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
     use crate::tree::layout::{
-        Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
+        layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
     use std::time::{Duration, Instant};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, KeyPressFollowup, KeyPressTracker,
-        Listener, ListenerAction, ListenerCompute, ListenerComputeCtx, ListenerInput,
-        ListenerMatcher, ListenerMatcherKind, NoopListenerComputeCtx, PointerRegion, RuntimeChange,
-        RuntimeOverlayState, ScrollDirection, ScrollbarDragTracker, ScrollbarHitArea,
-        ScrollbarPressSpec, TextDragTracker, compose_combined_registry, listeners_for_element,
-        registry_for_elements, runtime_listeners_for_overlay, window_listeners,
+        compose_combined_registry, listeners_for_element, registry_for_elements,
+        runtime_listeners_for_overlay, window_listeners, ClickPressTracker, DragTrackerState,
+        ElixirEvent, GestureAxis, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction,
+        ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
+        NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
+        ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
+        TextDragTracker,
     };
     use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
@@ -6270,6 +6559,7 @@ mod tests {
                 matcher_kind,
                 origin_x,
                 origin_y,
+                ..
             }) if *element_id == ElementId::from_term_bytes(vec![11])
                 && matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && origin_x == 10.0
@@ -6977,6 +7267,7 @@ mod tests {
                 matcher_kind: kind,
                 origin_x,
                 origin_y,
+                ..
             }) if *element_id == ElementId::from_term_bytes(vec![7])
                 && kind == matcher_kind
                 && origin_x == 10.0
@@ -7025,6 +7316,7 @@ mod tests {
                 matcher_kind: kind,
                 origin_x,
                 origin_y,
+                ..
             })] if element_id == &ElementId::from_term_bytes(vec![70])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
@@ -7052,7 +7344,9 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
+                swipe_handlers: SwipeHandlers::default(),
             },
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7080,11 +7374,9 @@ mod tests {
                 ListenerMatcher::CursorButtonLeftReleaseAnywhere
             )
         }));
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) })
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) }));
     }
 
     #[test]
@@ -7103,6 +7395,7 @@ mod tests {
             }),
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7155,6 +7448,7 @@ mod tests {
             }),
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7198,6 +7492,7 @@ mod tests {
             }),
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7253,7 +7548,9 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 last_x: 10.0,
                 last_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
             },
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7279,11 +7576,9 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker)
         ));
-        assert!(
-            actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -7306,7 +7601,9 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
+                swipe_handlers: SwipeHandlers::default(),
             },
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7354,7 +7651,9 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
+                swipe_handlers: SwipeHandlers::default(),
             },
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -7377,11 +7676,507 @@ mod tests {
                 ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
                     element_id,
                     matcher_kind,
+                    locked_axis,
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
             ] if *element_id == ElementId::from_term_bytes(vec![31])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
+                && *locked_axis == GestureAxis::Horizontal
+        ));
+    }
+
+    #[test]
+    fn listeners_for_element_on_swipe_starts_drag_tracker_without_click_press_tracker() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        let element = with_interaction(make_element(71, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        let press_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
+
+        let matcher_kind = press_listener.matcher.kind();
+        let actions = press_listener.compute_actions(&InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::RuntimeChange(RuntimeChange::StartDragTracker {
+                element_id,
+                matcher_kind: kind,
+                origin_x,
+                origin_y,
+                swipe_handlers,
+            })] if element_id == &ElementId::from_term_bytes(vec![71])
+                && *kind == matcher_kind
+                && *origin_x == 10.0
+                && *origin_y == 10.0
+                && !swipe_handlers.up
+                && !swipe_handlers.down
+                && !swipe_handlers.left
+                && swipe_handlers.right
+        ));
+        assert_eq!(
+            cursor_actions(
+                &listener_matching(&listeners, |listener| {
+                    matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+                })
+                .compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 })
+            ),
+            vec![CursorIcon::Pointer]
+        );
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_starts_swipe_when_enabled() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        let element = with_interaction(make_element(72, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: ElementId::from_term_bytes(vec![72]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                swipe_handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 25.0, y: 10.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
+            ] if tracker.element_id == ElementId::from_term_bytes(vec![72])
+                && tracker.matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
+                && (tracker.origin_x - 10.0).abs() < f32::EPSILON
+                && (tracker.origin_y - 10.0).abs() < f32::EPSILON
+                && tracker.locked_axis == GestureAxis::Horizontal
+                && tracker.handlers.right
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_waits_for_clear_axis_intent() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        let element = with_interaction(make_element(75, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: ElementId::from_term_bytes(vec![75]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                swipe_handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let ambiguous = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 28.0, y: 24.0 },
+            &mut ctx,
+        );
+
+        assert!(ambiguous.is_empty());
+
+        let resolved = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 34.0, y: 16.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            resolved.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
+            ] if tracker.element_id == ElementId::from_term_bytes(vec![75])
+                && tracker.locked_axis == GestureAxis::Horizontal
+                && tracker.handlers.right
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll(
+    ) {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(10.0);
+        parent_attrs.scroll_y_max = Some(100.0);
+        let mut parent = with_frame(
+            with_interaction(make_element(76, parent_attrs), true),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 180.0,
+                content_width: 180.0,
+                content_height: 360.0,
+            },
+        );
+        parent.children = vec![ElementId::from_term_bytes(vec![77])];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.on_swipe_left = Some(true);
+        child_attrs.on_swipe_right = Some(true);
+        let child = with_frame(
+            with_interaction(make_element(77, child_attrs), true),
+            Frame {
+                x: 20.0,
+                y: 20.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 100.0,
+            },
+        );
+
+        let base = registry_for_elements(&[parent, child]);
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: ElementId::from_term_bytes(vec![77]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 40.0,
+                origin_y: 40.0,
+                swipe_handlers: SwipeHandlers {
+                    left: true,
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 62.0, y: 48.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
+            ] if tracker.element_id == ElementId::from_term_bytes(vec![77])
+                && tracker.locked_axis == GestureAxis::Horizontal
+                && tracker.handlers.left
+                && tracker.handlers.right
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe(
+    ) {
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.scrollbar_y = Some(true);
+        parent_attrs.scroll_y = Some(10.0);
+        parent_attrs.scroll_y_max = Some(100.0);
+        let mut parent = with_frame(
+            with_interaction(make_element(78, parent_attrs), true),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 180.0,
+                content_width: 180.0,
+                content_height: 360.0,
+            },
+        );
+        parent.children = vec![ElementId::from_term_bytes(vec![79])];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.on_swipe_left = Some(true);
+        child_attrs.on_swipe_right = Some(true);
+        let child = with_frame(
+            with_interaction(make_element(79, child_attrs), true),
+            Frame {
+                x: 20.0,
+                y: 20.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 100.0,
+            },
+        );
+
+        let base = registry_for_elements(&[parent, child]);
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: ElementId::from_term_bytes(vec![79]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 40.0,
+                origin_y: 40.0,
+                swipe_handlers: SwipeHandlers {
+                    left: true,
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 48.0, y: 64.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
+                    element_id,
+                    matcher_kind,
+                    locked_axis,
+                    ..
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+            ] if *element_id == ElementId::from_term_bytes(vec![79])
+                && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
+                && *locked_axis == GestureAxis::Vertical
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_swipe_release_emits_direction_and_base_mouse_up() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        attrs.on_mouse_up = Some(true);
+        let element = with_interaction(make_element(73, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Inactive,
+            swipe: Some(SwipeTracker {
+                element_id: ElementId::from_term_bytes(vec![73]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
+                handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            }),
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 35.0,
+                y: 10.0,
+            },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    kind: ElementEventKind::MouseUp,
+                    ..
+                }),
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id,
+                    kind: ElementEventKind::SwipeRight,
+                    payload: None,
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
+            ] if *element_id == ElementId::from_term_bytes(vec![73])
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_swipe_release_uses_locked_axis_even_with_large_off_axis_delta() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        let element = with_interaction(make_element(74, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Inactive,
+            swipe: Some(SwipeTracker {
+                element_id: ElementId::from_term_bytes(vec![74]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
+                handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            }),
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 30.0,
+                y: 48.0,
+            },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::ElixirEvent(ElixirEvent {
+                    element_id,
+                    kind: ElementEventKind::SwipeRight,
+                    payload: None,
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
+            ] if *element_id == ElementId::from_term_bytes(vec![74])
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_swipe_release_ignores_short_locked_axis_displacement() {
+        let mut attrs = Attrs::default();
+        attrs.on_swipe_right = Some(true);
+        let element = with_interaction(make_element(80, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Inactive,
+            swipe: Some(SwipeTracker {
+                element_id: ElementId::from_term_bytes(vec![80]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
+                handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+            }),
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 18.0,
+                y: 40.0,
+            },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSwipeTracker
+            )]
         ));
     }
 
@@ -7444,6 +8239,7 @@ mod tests {
                 matcher_kind: kind,
                 origin_x,
                 origin_y,
+                ..
             }) if *element_id == ElementId::from_term_bytes(vec![8])
                 && kind == matcher_kind
                 && origin_x == 10.0
@@ -7685,6 +8481,7 @@ mod tests {
                 }],
             }],
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -8075,31 +8872,21 @@ mod tests {
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta
@@ -8112,32 +8899,21 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyHomePressNoCtrlAltMeta
         )));
-        assert!(
-            listeners.iter().any(|listener| matches!(
-                listener.matcher,
-                ListenerMatcher::KeyEndPressNoCtrlAltMeta
-            ))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyEndPressNoCtrlAltMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear)));
 
         let commit_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
@@ -8451,11 +9227,9 @@ mod tests {
         );
 
         assert_eq!(commit_actions.len(), 3);
-        assert!(
-            commit_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(commit_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
@@ -8481,11 +9255,9 @@ mod tests {
             },
             &mut ctx,
         );
-        assert!(
-            cut_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(cut_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -8639,6 +9411,7 @@ mod tests {
             click_press: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
                 element_id: ElementId::from_term_bytes(vec![33]),
@@ -8696,6 +9469,7 @@ mod tests {
             click_press: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
                 element_id: ElementId::from_term_bytes(vec![34]),
@@ -9279,7 +10053,9 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 last_x: 10.0,
                 last_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
             },
+            swipe: None,
             scrollbar: None,
             text_drag: None,
         };
@@ -9297,7 +10073,10 @@ mod tests {
             actions.as_slice(),
             [
                 ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, dx, dy }),
-                ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer { last_x, last_y }),
+                ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
+                    last_x,
+                    last_y,
+                }),
             ] if *element_id == ElementId::from_term_bytes(vec![48])
                 && (*dx - 14.0).abs() < f32::EPSILON
                 && dy.abs() < f32::EPSILON
@@ -9307,11 +10086,65 @@ mod tests {
     }
 
     #[test]
+    fn compose_combined_registry_drag_active_scroll_move_ignores_off_axis_delta_after_lock() {
+        let mut attrs = Attrs::default();
+        attrs.on_click = Some(true);
+        attrs.scrollbar_x = Some(true);
+        attrs.scroll_x = Some(10.0);
+        attrs.scroll_x_max = Some(100.0);
+        let element = with_frame(
+            with_interaction(make_element(81, attrs), true),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+                content_width: 220.0,
+                content_height: 40.0,
+            },
+        );
+        let base = registry_for_elements(&[element]);
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Active {
+                element_id: ElementId::from_term_bytes(vec![81]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                last_x: 10.0,
+                last_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            ..Default::default()
+        };
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 10.0, y: 24.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
+                last_x,
+                last_y,
+            })] if (*last_x - 10.0).abs() < f32::EPSILON && (*last_y - 24.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
     fn runtime_listeners_for_overlay_scrollbar_drag_emit_move_and_clear_followups() {
         let runtime = RuntimeOverlayState {
             click_press: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
+            swipe: None,
             scrollbar: Some(ScrollbarDragTracker {
                 element_id: ElementId::from_term_bytes(vec![49]),
                 axis: ScrollbarAxis::Y,
@@ -9326,11 +10159,9 @@ mod tests {
             text_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::CursorButtonLeftReleaseAnywhere
@@ -9415,12 +10246,10 @@ mod tests {
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
-        assert!(
-            registry
-                .view()
-                .iter_precedence()
-                .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred))
-        );
+        assert!(registry
+            .view()
+            .iter_precedence()
+            .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred)));
     }
 
     #[test]

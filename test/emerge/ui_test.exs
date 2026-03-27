@@ -691,6 +691,15 @@ defmodule Emerge.UITest do
     assert Event.on_press({self(), :pressed}) == {:on_press, {self(), :pressed}}
   end
 
+  test "swipe event helpers return attr tuples" do
+    assert Event.on_swipe_up({self(), :swiped_up}) == {:on_swipe_up, {self(), :swiped_up}}
+    assert Event.on_swipe_down({self(), :swiped_down}) == {:on_swipe_down, {self(), :swiped_down}}
+    assert Event.on_swipe_left({self(), :swiped_left}) == {:on_swipe_left, {self(), :swiped_left}}
+
+    assert Event.on_swipe_right({self(), :swiped_right}) ==
+             {:on_swipe_right, {self(), :swiped_right}}
+  end
+
   test "focus event helpers return attr tuples" do
     assert Event.on_focus({self(), :focused}) == {:on_focus, {self(), :focused}}
     assert Event.on_blur({self(), :blurred}) == {:on_blur, {self(), :blurred}}
@@ -786,6 +795,7 @@ defmodule Emerge.UITest do
 
   test "event helpers wrap local messages with self" do
     assert Event.on_press(:save_pressed) == {:on_press, {self(), :save_pressed}}
+    assert Event.on_swipe_left(:swiped_left) == {:on_swipe_left, {self(), :swiped_left}}
     assert Event.on_change(:changed) == {:on_change, {self(), :changed}}
     assert Event.on_click(:clicked) == {:on_click, {self(), :clicked}}
   end
@@ -793,6 +803,7 @@ defmodule Emerge.UITest do
   test "event helpers preserve explicit pid payloads" do
     pid = self()
     assert Event.on_press({pid, :save_pressed}) == {:on_press, {pid, :save_pressed}}
+    assert Event.on_swipe_right({pid, :swiped_right}) == {:on_swipe_right, {pid, :swiped_right}}
     assert Event.on_change({pid, :changed}) == {:on_change, {pid, :changed}}
   end
 

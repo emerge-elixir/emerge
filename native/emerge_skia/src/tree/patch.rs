@@ -8,12 +8,12 @@
 //!   - 4: remove - id_len(4) + id
 //!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{AnimationSpec, scale_animation_spec};
+use super::animation::{scale_animation_spec, AnimationSpec};
 use super::attrs::{
-    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
-    preserve_runtime_scroll_attrs,
+    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
+    Attrs,
 };
-use super::deserialize::{DecodeError, decode_tree};
+use super::deserialize::{decode_tree, DecodeError};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMounts, NearbySlot,
     NodeResidency, TextInputContentOrigin,
@@ -648,6 +648,10 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.on_mouse_leave = None;
     attrs.on_mouse_move = None;
     attrs.on_press = None;
+    attrs.on_swipe_up = None;
+    attrs.on_swipe_down = None;
+    attrs.on_swipe_left = None;
+    attrs.on_swipe_right = None;
     attrs.on_change = None;
     attrs.on_focus = None;
     attrs.on_blur = None;

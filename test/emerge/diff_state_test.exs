@@ -272,6 +272,28 @@ defmodule Emerge.Engine.DiffStateTest do
     assert pid == self()
   end
 
+  test "swipe handlers are registered in event registry" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          key(:save),
+          Event.on_swipe_up({self(), :swiped_up}),
+          Event.on_swipe_down({self(), :swiped_down}),
+          Event.on_swipe_left({self(), :swiped_left}),
+          Event.on_swipe_right({self(), :swiped_right})
+        ],
+        Emerge.UI.text("Save")
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {_, :swiped_up}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_up)
+    assert {:ok, {_, :swiped_down}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_down)
+    assert {:ok, {_, :swiped_left}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_left)
+    assert {:ok, {_, :swiped_right}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_right)
+  end
+
   test "key listeners are registered in event registry" do
     layout =
       Emerge.UI.Input.button(
