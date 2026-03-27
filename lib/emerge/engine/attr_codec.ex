@@ -69,7 +69,11 @@ defmodule Emerge.Engine.AttrCodec do
     animate_exit: 67,
     on_key_down: 68,
     on_key_up: 69,
-    on_key_press: 70
+    on_key_press: 70,
+    on_swipe_up: 71,
+    on_swipe_down: 72,
+    on_swipe_left: 73,
+    on_swipe_right: 74
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -140,6 +144,10 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:scroll_y, value), do: encode_f64(value)
   defp encode_value(:on_click, _value), do: encode_bool(true)
   defp encode_value(:on_press, _value), do: encode_bool(true)
+  defp encode_value(:on_swipe_up, _value), do: encode_bool(true)
+  defp encode_value(:on_swipe_down, _value), do: encode_bool(true)
+  defp encode_value(:on_swipe_left, _value), do: encode_bool(true)
+  defp encode_value(:on_swipe_right, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_down, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_up, _value), do: encode_bool(true)
   defp encode_value(:on_mouse_enter, _value), do: encode_bool(true)
@@ -202,6 +210,10 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
   defp decode_value(:on_click, rest), do: decode_bool(rest)
   defp decode_value(:on_press, rest), do: decode_bool(rest)
+  defp decode_value(:on_swipe_up, rest), do: decode_bool(rest)
+  defp decode_value(:on_swipe_down, rest), do: decode_bool(rest)
+  defp decode_value(:on_swipe_left, rest), do: decode_bool(rest)
+  defp decode_value(:on_swipe_right, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_down, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_up, rest), do: decode_bool(rest)
   defp decode_value(:on_mouse_enter, rest), do: decode_bool(rest)

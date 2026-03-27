@@ -228,6 +228,27 @@ defmodule Emerge.Engine.SerializationTest do
            }
   end
 
+  test "input button roundtrip preserves swipe handlers" do
+    layout =
+      Emerge.UI.Input.button(
+        [
+          Event.on_swipe_up({self(), :up}),
+          Event.on_swipe_down({self(), :down}),
+          Event.on_swipe_left({self(), :left}),
+          Event.on_swipe_right({self(), :right})
+        ],
+        Emerge.UI.text("Save")
+      )
+
+    {binary, _tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert decoded.attrs.on_swipe_up == true
+    assert decoded.attrs.on_swipe_down == true
+    assert decoded.attrs.on_swipe_left == true
+    assert decoded.attrs.on_swipe_right == true
+  end
+
   defp strip_runtime(%Emerge.Engine.Element{} = element) do
     %{
       element
