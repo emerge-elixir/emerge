@@ -86,6 +86,7 @@ struct WaylandAppRuntime {
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
+    loop_handle: calloop::LoopHandle<'static, WaylandApp>,
 }
 
 pub(crate) struct WaylandRunArgs {
@@ -137,6 +138,21 @@ fn should_draw_frame(present: &PresentState, env_ready: bool, exit: bool) -> boo
     env_ready && present.can_draw(exit)
 }
 
+fn key_text_commit_event(
+    utf8: Option<&str>,
+    mods: u8,
+    protocol_text_active: bool,
+    ime_preedit_active: bool,
+    allow_protocol_text_active: bool,
+) -> Option<InputEvent> {
+    if ime_preedit_active || (protocol_text_active && !allow_protocol_text_active) {
+        return None;
+    }
+
+    utf8.and_then(normalize_commit_text)
+        .map(|text| InputEvent::TextCommit { text, mods })
+}
+
 impl BackendWake for WaylandWake {
     fn request_stop(&self) {
         let _ = self.tx.send(WakeAction::Stop);
@@ -173,6 +189,7 @@ pub(super) struct WaylandApp {
     cursor_icon_rx: Receiver<CursorIcon>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
     video_registry: Arc<VideoRegistry>,
+    loop_handle: calloop::LoopHandle<'static, WaylandApp>,
     render_state: RenderState,
 }
 
@@ -206,6 +223,7 @@ impl WaylandApp {
             render_rx,
             cursor_icon_rx,
             video_registry,
+            loop_handle,
         } = runtime;
 
         let mut app = Self {
@@ -230,6 +248,7 @@ impl WaylandApp {
             cursor_icon_rx,
             event_tx,
             video_registry,
+            loop_handle,
             render_state: RenderState::default(),
         };
 
@@ -265,22 +284,26 @@ impl WaylandApp {
         let _ = self.event_tx.send(EventMsg::InputEvent(event));
     }
 
-    fn emit_key_press(&self, event: &KeyEvent) {
+    fn emit_key_press(&self, event: &KeyEvent, allow_protocol_text_active_text_commit: bool) {
         self.send_input_event(InputEvent::Key {
             key: key_from_keysym(event.keysym),
             action: crate::input::ACTION_PRESS,
             mods: self.keyboard.current_mods,
         });
 
-        if !self.text_input.protocol_text_active()
-            && !self.keyboard.ime_preedit_active
-            && let Some(text) = event.utf8.as_deref().and_then(normalize_commit_text)
-        {
-            self.send_input_event(InputEvent::TextCommit {
-                text,
-                mods: self.keyboard.current_mods,
-            });
+        if let Some(text_commit) = key_text_commit_event(
+            event.utf8.as_deref(),
+            self.keyboard.current_mods,
+            self.text_input.protocol_text_active(),
+            self.keyboard.ime_preedit_active,
+            allow_protocol_text_active_text_commit,
+        ) {
+            self.send_input_event(text_commit);
         }
+    }
+
+    fn emit_key_repeat(&self, event: &KeyEvent) {
+        self.emit_key_press(event, true);
     }
 
     fn flush_backend_updates(&mut self, conn: &Connection) {
@@ -662,7 +685,16 @@ impl SeatHandler for WaylandApp {
                 Err(err) => eprintln!("failed to create wayland pointer: {err}"),
             }
         } else if capability == Capability::Keyboard && self.keyboard.keyboard.is_none() {
-            match self.input.seat_state.get_keyboard(qh, &seat, None) {
+            let loop_handle = self.loop_handle.clone();
+            match self.input.seat_state.get_keyboard_with_repeat(
+                qh,
+                &seat,
+                None,
+                loop_handle,
+                Box::new(|state, _keyboard, event| {
+                    state.emit_key_repeat(&event);
+                }),
+            ) {
                 Ok(keyboard) => {
                     self.keyboard.keyboard = Some(keyboard);
                     self.text_input.create_for_seat(qh, &seat);
@@ -805,7 +837,7 @@ impl KeyboardHandler for WaylandApp {
         _serial: u32,
         event: KeyEvent,
     ) {
-        self.emit_key_press(&event);
+        self.emit_key_press(&event, false);
     }
 
     fn repeat_key(
@@ -814,9 +846,11 @@ impl KeyboardHandler for WaylandApp {
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        event: KeyEvent,
+        _event: KeyEvent,
     ) {
-        self.emit_key_press(&event);
+        // Repeats are routed through SCTK's repeat callback so we get consistent
+        // behavior across compositors, including those that do not emit
+        // wl_keyboard repeated key events directly.
     }
 
     fn release_key(
@@ -985,6 +1019,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             render_rx,
             cursor_icon_rx,
             video_registry,
+            loop_handle: event_loop.handle(),
         },
         &config,
     ) {
@@ -1016,9 +1051,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
 #[cfg(test)]
 mod tests {
     use super::{
-        PresentState, WaylandVideoImportState, WaylandVideoSyncAction, should_draw_frame,
-        should_reconfigure_surface,
+        PresentState, WaylandVideoImportState, WaylandVideoSyncAction, key_text_commit_event,
+        should_draw_frame, should_reconfigure_surface,
     };
+    use crate::input::{InputEvent, MOD_SHIFT};
 
     #[test]
     fn wayland_video_import_states_map_to_expected_sync_actions() {
@@ -1050,5 +1086,39 @@ mod tests {
         assert!(!should_draw_frame(&present, false, false));
         assert!(should_draw_frame(&present, true, false));
         assert!(!should_draw_frame(&present, true, true));
+    }
+
+    #[test]
+    fn key_text_commit_event_suppresses_press_when_protocol_text_is_active() {
+        let event = key_text_commit_event(Some("a"), 0, true, false, false);
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn key_text_commit_event_allows_repeat_when_protocol_text_is_active() {
+        let event = key_text_commit_event(Some("a"), MOD_SHIFT, true, false, true);
+
+        assert!(matches!(
+            event,
+            Some(InputEvent::TextCommit { text, mods }) if text == "a" && mods == MOD_SHIFT
+        ));
+    }
+
+    #[test]
+    fn key_text_commit_event_blocks_repeat_while_preedit_is_active() {
+        let event = key_text_commit_event(Some("a"), 0, true, true, true);
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn key_text_commit_event_keeps_non_protocol_repeat_behavior() {
+        let event = key_text_commit_event(Some("b"), 0, false, false, true);
+
+        assert!(matches!(
+            event,
+            Some(InputEvent::TextCommit { text, mods }) if text == "b" && mods == 0
+        ));
     }
 }

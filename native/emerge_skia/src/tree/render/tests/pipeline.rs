@@ -1,7 +1,7 @@
 use super::common::*;
 use super::*;
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
-use crate::tree::transform::{element_transform, Affine2};
+use crate::tree::transform::{Affine2, element_transform};
 
 fn build_two_child_tree(
     root_attrs: Attrs,
@@ -1969,9 +1969,11 @@ fn test_border_renders_after_host_clip_pops() {
     };
 
     let child_clip_scopes = clip_scope_chain(&trace, child_draw);
-    assert!(child_clip_scopes
-        .iter()
-        .any(|scope| { clip_scope_shapes(scope).unwrap() == &[expected_host_clip] }));
+    assert!(
+        child_clip_scopes
+            .iter()
+            .any(|scope| { clip_scope_shapes(scope).unwrap() == &[expected_host_clip] })
+    );
     assert!(scope_chain(&trace, border_draw).is_empty());
     assert!(paints_before(child_draw, border_draw));
 }

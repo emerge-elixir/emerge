@@ -40,9 +40,11 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
 
     let draws = observe_tree(&tree);
 
-    assert!(draws
-        .iter()
-        .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _))));
+    assert!(
+        draws
+            .iter()
+            .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _)))
+    );
 }
 
 #[test]

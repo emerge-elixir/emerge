@@ -6,7 +6,7 @@ use crate::tree::attrs::{
     Attrs, Background, BorderRadius, BorderStyle, BorderWidth, ImageFit, ImageSource,
 };
 use crate::tree::element::Frame;
-use crate::tree::geometry::{self_shape as geometry_self_shape, ClipShape, Rect};
+use crate::tree::geometry::{ClipShape, Rect, self_shape as geometry_self_shape};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar;
 
