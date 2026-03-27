@@ -1385,12 +1385,10 @@ fn render_tree_to_pixels_nif<'a>(
     });
 
     match mode {
-        OffscreenAssetMode::Await => {
-            assets::resolve_tree_sources_sync(
-                &tree,
-                Some(Duration::from_millis(opts.asset_timeout_ms)),
-            )?
-        }
+        OffscreenAssetMode::Await => assets::resolve_tree_sources_sync(
+            &tree,
+            Some(Duration::from_millis(opts.asset_timeout_ms)),
+        )?,
         OffscreenAssetMode::Snapshot => assets::snapshot_tree_sources(&tree),
     }
 

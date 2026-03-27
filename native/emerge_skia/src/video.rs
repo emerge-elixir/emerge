@@ -1,22 +1,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 use std::thread;
 
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{Sender, unbounded};
 use glutin_egl_sys::egl;
 use libloading::Library;
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
 use skia_safe::{
-    gpu::{self, gl::TextureInfo, Mipmapped, Protected, SurfaceOrigin},
     AlphaType, ColorType, Image,
+    gpu::{self, Mipmapped, Protected, SurfaceOrigin, gl::TextureInfo},
 };
 
 use crate::backend::wake::BackendWakeHandle;
@@ -1456,11 +1456,13 @@ mod tests {
             .drain_pending_to_release()
             .expect("pending frames should drain");
 
-        assert!(registry
-            .snapshot_pending()
-            .expect("snapshot should succeed")
-            .pending
-            .is_empty());
+        assert!(
+            registry
+                .snapshot_pending()
+                .expect("snapshot should succeed")
+                .pending
+                .is_empty()
+        );
 
         let released = release_rx.try_recv().expect("expected released frame");
         assert_eq!(released.width, 64);
@@ -1487,10 +1489,12 @@ mod tests {
             .expect("empty drain should succeed");
 
         assert!(release_rx.try_recv().is_err());
-        assert!(registry
-            .snapshot_pending()
-            .expect("snapshot should succeed")
-            .pending
-            .is_empty());
+        assert!(
+            registry
+                .snapshot_pending()
+                .expect("snapshot should succeed")
+                .pending
+                .is_empty()
+        );
     }
 }

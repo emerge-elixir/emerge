@@ -1,6 +1,6 @@
 use super::super::text::{
-    measure_text_width_with_font, text_metrics_with_font, text_offset_for_char_index, TextRunStyle,
-    TEXT_SELECTION_COLOR,
+    TEXT_SELECTION_COLOR, TextRunStyle, measure_text_width_with_font, text_metrics_with_font,
+    text_offset_for_char_index,
 };
 use super::common::*;
 use super::*;
@@ -46,9 +46,11 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
         .collect();
 
     assert_eq!(decoration_rects.len(), 2);
-    assert!(decoration_rects
-        .iter()
-        .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
+    assert!(
+        decoration_rects
+            .iter()
+            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
+    );
 }
 
 #[test]
