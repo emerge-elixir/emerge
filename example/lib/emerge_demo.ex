@@ -59,7 +59,7 @@ defmodule EmergeDemo do
                 end,
                 [
                   el(
-                    [Background.color(color(:slate, 700)), center_y(), Font.color(color(:white))],
+                    [padding(10), Background.color(color(:slate, 700)), center_y(), Font.color(color(:white))],
                     text("Count: #{counter.count}")
                   )
                 ],

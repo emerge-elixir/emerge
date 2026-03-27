@@ -1,6 +1,6 @@
 use super::attrs::Attrs;
 use super::element::Frame;
-use super::geometry::{point_hits_clip, ClipShape, Rect};
+use super::geometry::{ClipShape, Rect, point_hits_clip};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {

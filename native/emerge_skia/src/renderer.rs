@@ -650,9 +650,10 @@ impl Renderer {
                 RenderNode::Clip { clips, children } => {
                     Self::render_clip_node(canvas, clips, children, video_state)
                 }
-                RenderNode::Transform { transform, children } => {
-                    Self::render_transform_node(canvas, *transform, children, video_state)
-                }
+                RenderNode::Transform {
+                    transform,
+                    children,
+                } => Self::render_transform_node(canvas, *transform, children, video_state),
                 RenderNode::Alpha { alpha, children } => {
                     Self::render_alpha_node(canvas, *alpha, children, video_state)
                 }
@@ -867,7 +868,18 @@ impl Renderer {
                 canvas.draw_rrect(rrect, &paint);
             }
 
-            DrawPrimitive::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+            DrawPrimitive::InsetShadow(
+                x,
+                y,
+                w,
+                h,
+                offset_x,
+                offset_y,
+                blur,
+                size,
+                radius,
+                color,
+            ) => {
                 let bounds_rect = Rect::from_xywh(*x, *y, *w, *h);
                 let bounds_rrect = if *radius > 0.0 {
                     RRect::new_rect_xy(bounds_rect, *radius, *radius)
@@ -1182,7 +1194,13 @@ fn draw_image_with_fit(
             );
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
-            draw_tiled_image(canvas, image, Rect::from_xywh(x, y, w, h), spec.fit, spec.svg_tint);
+            draw_tiled_image(
+                canvas,
+                image,
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                spec.svg_tint,
+            );
         }
     }
 }

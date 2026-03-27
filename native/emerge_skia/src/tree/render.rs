@@ -67,7 +67,10 @@ impl RenderBuildContext {
     }
 
     fn full_clip_shapes(&self) -> Vec<ClipShape> {
-        self.inherited_host_clips.iter().map(|clip| clip.clip).collect()
+        self.inherited_host_clips
+            .iter()
+            .map(|clip| clip.clip)
+            .collect()
     }
 
     fn shadow_clip_shapes(&self) -> Vec<ClipShape> {
@@ -478,7 +481,9 @@ fn build_paragraph_nodes(
             ));
         }
         RetainedChildMode::InlineEventOnly => {
-            if traversal.collect_events && let Some(acc) = outputs.event_acc_mut() {
+            if traversal.collect_events
+                && let Some(acc) = outputs.event_acc_mut()
+            {
                 registry_builder::accumulate_subtree_rebuild(
                     tree,
                     child.id,
@@ -580,7 +585,10 @@ fn wrap_with_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderN
     }]
 }
 
-fn wrap_with_transform(nodes: Vec<RenderNode>, transform: crate::tree::transform::Affine2) -> Vec<RenderNode> {
+fn wrap_with_transform(
+    nodes: Vec<RenderNode>,
+    transform: crate::tree::transform::Affine2,
+) -> Vec<RenderNode> {
     if nodes.is_empty() {
         return nodes;
     }
