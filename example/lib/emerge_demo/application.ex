@@ -16,12 +16,7 @@ defmodule EmergeDemo.Application do
 
   defp base_children do
     [
-      %{
-        id: EmergeDemo.State,
-        start: {EmergeDemo.State, :start_link, [[name: EmergeDemo.State]]},
-        type: :worker,
-        restart: :permanent
-      },
+      EmergeDemo.TodoApp.child_spec([]),
       EmergeDemo
     ]
   end

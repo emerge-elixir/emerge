@@ -1,12 +1,14 @@
-# Emerge Counter Example
+# Emerge TodoMVC Example
 
-This example shows a minimal app tree with:
+This example is a fuller `Emerge` + `Solve` application built around a TodoMVC-style UI.
 
-- a `Solve` app process (`EmergeDemo.State`)
+It demonstrates:
+
+- a `Solve` app process (`EmergeDemo.TodoApp`)
 - an `Emerge` viewport process (`EmergeDemo`)
-
-The viewport renders a counter UI and dispatches button events through
-`Solve.Lookup` event refs.
+- collection controllers for per-todo editor state
+- focus styling and `focus_on_mount()` for inline editing
+- a realistic tree split across view and controller modules
 
 ## Run
 
@@ -17,7 +19,8 @@ mix run --no-halt
 
 ## Configuration
 
-The example is zero-config.
+The example is zero-config by default.
 
 - renderer backend defaults to Wayland
-- window title defaults to `Emerge Demo`
+- window title defaults to `Emerge TodoMVC`
+- dev mode enables the `Emerge` code reloader for files under `example/lib`
