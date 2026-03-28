@@ -12,7 +12,12 @@ It demonstrates:
 
 ## Run
 
+This example uses `Solve` as a path dependency (`../solve` from the main `emerge`
+repo), so from the `emerge` repo root run:
+
 ```bash
+git clone git@github.com:emerge-elixir/solve.git ../solve
+cd example
 mix deps.get
 iex -S mix
 ```
