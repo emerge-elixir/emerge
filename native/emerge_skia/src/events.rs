@@ -480,6 +480,13 @@ pub enum TextInputPreeditRequest {
 }
 
 #[derive(Clone, Debug)]
+pub struct FocusOnMountTarget {
+    pub element_id: ElementId,
+    pub reveal_scrolls: Vec<registry_builder::FocusRevealScroll>,
+    pub mounted_at_revision: u64,
+}
+
+#[derive(Clone, Debug)]
 /// Tree-to-event rebuild payload installed by the event actor.
 ///
 /// The tree actor produces this during the fused render/rebuild walk. It
@@ -490,12 +497,14 @@ pub enum TextInputPreeditRequest {
 /// - `text_inputs` for focused text editing reconciliation
 /// - `scrollbars` for active scrollbar drag reconciliation
 /// - `focused_id` for focus reconciliation
+/// - `focus_on_mount` for one-shot mount-time focus requests
 #[derive(Default)]
 pub struct RegistryRebuildPayload {
     pub base_registry: registry_builder::Registry,
     pub text_inputs: HashMap<ElementId, TextInputState>,
     pub scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     pub focused_id: Option<ElementId>,
+    pub focus_on_mount: Option<FocusOnMountTarget>,
 }
 
 fn text_input_state(

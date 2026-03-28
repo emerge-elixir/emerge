@@ -59,8 +59,8 @@ use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
-    TextInputEditRequest, TextInputPreeditRequest, TextInputState,
+    CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload,
+    TextInputCommandRequest, TextInputEditRequest, TextInputPreeditRequest, TextInputState,
     scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
     text_ops,
 };
@@ -363,11 +363,22 @@ pub struct KeyPressTracker {
 
 #[derive(Default)]
 pub(crate) struct RegistryBuildAcc {
+    current_revision: u64,
     registry: Registry,
     text_inputs: HashMap<ElementId, TextInputState>,
     scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     focused_id: Option<ElementId>,
     focus_entries: Vec<FocusEntry>,
+    focus_on_mount: Option<FocusOnMountTarget>,
+}
+
+impl RegistryBuildAcc {
+    pub(crate) fn for_tree(tree: &ElementTree) -> Self {
+        Self {
+            current_revision: tree.revision(),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4409,6 +4420,32 @@ fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
     }
 }
 
+fn consider_focus_on_mount_candidate(
+    acc: &mut RegistryBuildAcc,
+    element: &Element,
+    focus_meta: &ElementFocusMeta,
+) {
+    if !element.attrs.focus_on_mount.unwrap_or(false)
+        || acc.current_revision == 0
+        || element.mounted_at_revision != acc.current_revision
+    {
+        return;
+    }
+
+    let should_replace = match acc.focus_on_mount.as_ref() {
+        Some(current) => element.mounted_at_revision > current.mounted_at_revision,
+        None => true,
+    };
+
+    if should_replace {
+        acc.focus_on_mount = Some(FocusOnMountTarget {
+            element_id: element.id.clone(),
+            reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
+            mounted_at_revision: element.mounted_at_revision,
+        });
+    }
+}
+
 fn local_focus_meta_for_element(
     element: &Element,
     state: Option<&ResolvedNodeState>,
@@ -4538,6 +4575,8 @@ pub(crate) fn accumulate_element_rebuild(
             is_currently_focused: focus_meta.is_currently_focused,
             self_reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
         });
+
+        consider_focus_on_mount_candidate(acc, element, focus_meta);
     }
 
     acc.registry.in_precedence_order(|out| {
@@ -4635,6 +4674,7 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
         text_inputs: acc.text_inputs,
         scrollbars: acc.scrollbars,
         focused_id: acc.focused_id,
+        focus_on_mount: acc.focus_on_mount,
     }
 }
 
@@ -4695,7 +4735,7 @@ pub fn registry_for_elements(elements: &[Element]) -> Registry {
     }
     let root_ids = root_ids_for_elements(elements);
     tree.root = root_ids.first().cloned();
-    let mut acc = RegistryBuildAcc::default();
+    let mut acc = RegistryBuildAcc::for_tree(&tree);
 
     for root_id in &root_ids {
         accumulate_subtree_rebuild(
@@ -5876,7 +5916,7 @@ mod tests {
         AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
         ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
-    use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
+    use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot};
     use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
     use crate::tree::layout::{
         Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
@@ -5894,7 +5934,7 @@ mod tests {
         VirtualKeyPhase, VirtualKeyTracker, compose_combined_registry, listeners_for_element,
         registry_for_elements, runtime_listeners_for_overlay, window_listeners,
     };
-    use crate::events::{CursorIcon, ElementEventKind, TextInputState};
+    use crate::events::{CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState};
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -6036,6 +6076,21 @@ mod tests {
     fn with_frame(mut element: Element, frame: Frame) -> Element {
         element.frame = Some(frame);
         element
+    }
+
+    fn rebuild_payload_for_tree(tree: &ElementTree) -> RegistryRebuildPayload {
+        let mut acc = super::RegistryBuildAcc::for_tree(tree);
+        let root_id = tree.root.as_ref().expect("tree should have a root");
+
+        super::accumulate_subtree_rebuild(
+            tree,
+            root_id,
+            &mut acc,
+            &[],
+            crate::tree::scene::SceneContext::default(),
+        );
+
+        super::finalize_registry_rebuild(acc)
     }
 
     fn animated_width_move_registry_at(sample_ms: u64) -> super::Registry {
@@ -8964,6 +9019,189 @@ mod tests {
                 && *previous_tree == ElementId::from_term_bytes(vec![25])
                 && *next == ElementId::from_term_bytes(vec![26])
                 && *next_tree == ElementId::from_term_bytes(vec![26])
+        ));
+    }
+
+    #[test]
+    fn rebuild_payload_focus_on_mount_ignores_existing_node_when_attr_is_added_later() {
+        let root_id = ElementId::from_term_bytes(vec![27]);
+        let field_id = ElementId::from_term_bytes(vec![28]);
+
+        let mut tree = ElementTree::new();
+        tree.set_revision(2);
+
+        let mut root = with_frame(
+            make_element(27, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 80.0,
+                content_width: 160.0,
+                content_height: 80.0,
+            },
+        );
+        root.mounted_at_revision = 1;
+        root.children = vec![field_id.clone()];
+
+        let mut field_attrs = Attrs::default();
+        field_attrs.focus_on_mount = Some(true);
+        let mut field = with_frame(
+            make_text_input_element(28, field_attrs),
+            Frame {
+                x: 12.0,
+                y: 10.0,
+                width: 80.0,
+                height: 24.0,
+                content_width: 80.0,
+                content_height: 24.0,
+            },
+        );
+        field.mounted_at_revision = 1;
+
+        tree.root = Some(root_id);
+        tree.insert(root);
+        tree.insert(field);
+
+        let rebuild = rebuild_payload_for_tree(&tree);
+
+        assert!(
+            rebuild.focus_on_mount.is_none(),
+            "existing retained nodes should not autofocus when the attr is toggled on later"
+        );
+    }
+
+    #[test]
+    fn rebuild_payload_focus_on_mount_prefers_newly_mounted_target() {
+        let root_id = ElementId::from_term_bytes(vec![29]);
+        let existing_id = ElementId::from_term_bytes(vec![30]);
+        let new_id = ElementId::from_term_bytes(vec![31]);
+
+        let mut tree = ElementTree::new();
+        tree.set_revision(2);
+
+        let mut root = with_frame(
+            make_element(29, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 90.0,
+                content_width: 180.0,
+                content_height: 90.0,
+            },
+        );
+        root.mounted_at_revision = 1;
+        root.children = vec![existing_id.clone(), new_id.clone()];
+
+        let mut existing_attrs = Attrs::default();
+        existing_attrs.focus_on_mount = Some(true);
+        let mut existing = with_frame(
+            make_text_input_element(30, existing_attrs),
+            Frame {
+                x: 10.0,
+                y: 10.0,
+                width: 70.0,
+                height: 24.0,
+                content_width: 70.0,
+                content_height: 24.0,
+            },
+        );
+        existing.mounted_at_revision = 1;
+
+        let mut new_attrs = Attrs::default();
+        new_attrs.focus_on_mount = Some(true);
+        let mut new_field = with_frame(
+            make_text_input_element(31, new_attrs),
+            Frame {
+                x: 10.0,
+                y: 44.0,
+                width: 70.0,
+                height: 24.0,
+                content_width: 70.0,
+                content_height: 24.0,
+            },
+        );
+        new_field.mounted_at_revision = 2;
+
+        tree.root = Some(root_id);
+        tree.insert(root);
+        tree.insert(existing);
+        tree.insert(new_field);
+
+        let rebuild = rebuild_payload_for_tree(&tree);
+
+        assert!(matches!(
+            rebuild.focus_on_mount.as_ref(),
+            Some(target)
+                if target.element_id == new_id && target.mounted_at_revision == 2
+        ));
+    }
+
+    #[test]
+    fn rebuild_payload_focus_on_mount_keeps_first_candidate_in_same_revision() {
+        let root_id = ElementId::from_term_bytes(vec![32]);
+        let first_id = ElementId::from_term_bytes(vec![33]);
+        let second_id = ElementId::from_term_bytes(vec![34]);
+
+        let mut tree = ElementTree::new();
+        tree.set_revision(3);
+
+        let mut root = with_frame(
+            make_element(32, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0,
+                content_width: 200.0,
+                content_height: 100.0,
+            },
+        );
+        root.mounted_at_revision = 1;
+        root.children = vec![first_id.clone(), second_id.clone()];
+
+        let mut first_attrs = Attrs::default();
+        first_attrs.focus_on_mount = Some(true);
+        let mut first = with_frame(
+            make_text_input_element(33, first_attrs),
+            Frame {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 24.0,
+                content_width: 80.0,
+                content_height: 24.0,
+            },
+        );
+        first.mounted_at_revision = 3;
+
+        let mut second_attrs = Attrs::default();
+        second_attrs.focus_on_mount = Some(true);
+        let mut second = with_frame(
+            make_text_input_element(34, second_attrs),
+            Frame {
+                x: 10.0,
+                y: 44.0,
+                width: 80.0,
+                height: 24.0,
+                content_width: 80.0,
+                content_height: 24.0,
+            },
+        );
+        second.mounted_at_revision = 3;
+
+        tree.root = Some(root_id);
+        tree.insert(root);
+        tree.insert(first);
+        tree.insert(second);
+
+        let rebuild = rebuild_payload_for_tree(&tree);
+
+        assert!(matches!(
+            rebuild.focus_on_mount.as_ref(),
+            Some(target)
+                if target.element_id == first_id && target.mounted_at_revision == 3
         ));
     }
 

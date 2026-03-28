@@ -284,6 +284,7 @@ pub struct Attrs {
     pub on_change: Option<bool>,
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
+    pub focus_on_mount: Option<bool>,
     pub on_key_down: Option<Vec<KeyBindingSpec>>,
     pub on_key_up: Option<Vec<KeyBindingSpec>>,
     pub on_key_press: Option<Vec<KeyBindingSpec>>,
@@ -536,6 +537,7 @@ const TAG_ON_SWIPE_DOWN: u8 = 72;
 const TAG_ON_SWIPE_LEFT: u8 = 73;
 const TAG_ON_SWIPE_RIGHT: u8 = 74;
 const TAG_VIRTUAL_KEY: u8 = 75;
+const TAG_FOCUS_ON_MOUNT: u8 = 76;
 
 // =============================================================================
 // Decoder
@@ -674,6 +676,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_CHANGE => attrs.on_change = Some(cursor.read_bool()?),
         TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
         TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
+        TAG_FOCUS_ON_MOUNT => attrs.focus_on_mount = Some(cursor.read_bool()?),
         TAG_ON_KEY_DOWN => attrs.on_key_down = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_UP => attrs.on_key_up = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_PRESS => attrs.on_key_press = Some(decode_key_bindings(cursor)?),
@@ -1764,6 +1767,13 @@ mod tests {
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.on_focus, Some(true));
         assert_eq!(attrs.on_blur, Some(true));
+    }
+
+    #[test]
+    fn test_decode_focus_on_mount() {
+        let data = [0, 1, TAG_FOCUS_ON_MOUNT, 1];
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.focus_on_mount, Some(true));
     }
 
     #[test]
