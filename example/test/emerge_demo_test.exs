@@ -7,11 +7,17 @@ defmodule EmergeDemoTest do
     }
 
     assert {:ok, next_state} =
-             EmergeDemo.handle_solve_updated(%{EmergeDemo.State => [:counter]}, state)
+             EmergeDemo.handle_solve_updated(%{EmergeDemo.TodoApp => [:todo_list]}, state)
 
     assert next_state.__emerge__.dirty?
     assert next_state.__emerge__.flush_scheduled?
     assert_receive {:"$gen_cast", {:emerge_viewport, :flush}}
+  end
+
+  test "mount configures TodoMVC renderer defaults" do
+    assert {:ok, %{}, opts} = EmergeDemo.mount([])
+
+    assert opts[:emerge_skia] == [otp_app: :emerge_demo, title: "Emerge TodoMVC"]
   end
 
   test "dev children include the hot reloader" do
