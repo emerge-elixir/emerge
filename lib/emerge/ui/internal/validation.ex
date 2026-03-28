@@ -12,6 +12,7 @@ defmodule Emerge.UI.Internal.Validation do
 
   @public_attr_keys MapSet.new([
                       :key,
+                      :focus_on_mount,
                       :width,
                       :height,
                       :padding,
@@ -300,12 +301,26 @@ defmodule Emerge.UI.Internal.Validation do
   end
 
   defp validate_public_attr_value!(_attrs_owner, key, value)
-       when key in [:space_evenly, :scrollbar_y, :scrollbar_x, :snap_layout, :snap_text_metrics] and
+       when key in [
+              :space_evenly,
+              :scrollbar_y,
+              :scrollbar_x,
+              :snap_layout,
+              :snap_text_metrics,
+              :focus_on_mount
+            ] and
               is_boolean(value),
        do: :ok
 
   defp validate_public_attr_value!(attrs_owner, key, value)
-       when key in [:space_evenly, :scrollbar_y, :scrollbar_x, :snap_layout, :snap_text_metrics] do
+       when key in [
+              :space_evenly,
+              :scrollbar_y,
+              :scrollbar_x,
+              :snap_layout,
+              :snap_text_metrics,
+              :focus_on_mount
+            ] do
     raise ArgumentError,
           "#{attrs_owner} expects #{inspect(key)} to be a boolean, got: #{inspect(value)}"
   end

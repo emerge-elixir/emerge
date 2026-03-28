@@ -462,6 +462,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_change: attrs.on_change,
         on_focus: attrs.on_focus,
         on_blur: attrs.on_blur,
+        focus_on_mount: attrs.focus_on_mount,
         on_key_down: attrs.on_key_down.clone(),
         on_key_up: attrs.on_key_up.clone(),
         on_key_press: attrs.on_key_press.clone(),

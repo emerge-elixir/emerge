@@ -262,6 +262,7 @@ struct DirectEventRuntime {
     runtime_overlay: RuntimeOverlayState,
     overlay_registry: registry_builder::Registry,
     listener_lane: ListenerLaneState,
+    last_focus_on_mount_revision: u64,
     focused_id: Option<ElementId>,
     text_states: HashMap<ElementId, TextInputState>,
     pending_text_patches: HashMap<ElementId, VecDeque<PendingTextPatch>>,
@@ -298,6 +299,7 @@ impl DirectEventRuntime {
             runtime_overlay,
             overlay_registry,
             listener_lane: ListenerLaneState::initially_stale(),
+            last_focus_on_mount_revision: 0,
             focused_id: None,
             text_states: HashMap::new(),
             pending_text_patches: HashMap::new(),
@@ -388,22 +390,47 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
+        let RegistryRebuildPayload {
+            base_registry,
+            text_inputs,
+            scrollbars,
+            focused_id,
+            focus_on_mount,
+        } = rebuild;
+
         self.prune_expired_pending_text_patches();
-        self.base_registry = rebuild.base_registry;
-        self.scrollbar_nodes = rebuild.scrollbars;
+        self.base_registry = base_registry;
+        self.scrollbar_nodes = scrollbars;
 
-        self.reconcile_runtime_overlay(&rebuild.text_inputs);
+        self.reconcile_runtime_overlay(&text_inputs);
         self.recompose_overlay_registry();
-        self.focused_id = rebuild.focused_id;
+        self.focused_id = focused_id;
 
-        if reconcile_text_input_states(
-            &rebuild.text_inputs,
+        let mut changed_tree = reconcile_text_input_states(
+            &text_inputs,
             &mut self.text_states,
             &mut self.pending_text_patches,
             &self.focused_id,
             tree_tx,
             log_render,
-        ) {
+        );
+
+        if let Some(target) = focus_on_mount {
+            if target.mounted_at_revision > self.last_focus_on_mount_revision {
+                self.last_focus_on_mount_revision = target.mounted_at_revision;
+                changed_tree |= apply_focus_to(
+                    Some(target.element_id),
+                    &target.reveal_scrolls,
+                    &mut self.focused_id,
+                    &self.input_target,
+                    &mut self.text_states,
+                    tree_tx,
+                    log_render,
+                );
+            }
+        }
+
+        if changed_tree {
             self.listener_lane.mark_stale();
         }
     }
@@ -1176,7 +1203,6 @@ fn reconcile_text_input_states(
     changed_tree
 }
 
-#[cfg(test)]
 fn apply_focus_to(
     next_focus: Option<ElementId>,
     reveal_scrolls: &[registry_builder::FocusRevealScroll],
@@ -1460,7 +1486,7 @@ mod tests {
     use super::*;
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
-    use crate::events::{CursorIcon, RegistryRebuildPayload};
+    use crate::events::{CursorIcon, FocusOnMountTarget, RegistryRebuildPayload};
     use crate::input::{ACTION_PRESS, ACTION_RELEASE};
     use crate::keys::CanonicalKey;
     use crate::tree::animation::{
@@ -1539,6 +1565,14 @@ mod tests {
         RegistryRebuildPayload {
             focused_id: Some(ElementId::from_term_bytes(vec![id])),
             ..RegistryRebuildPayload::default()
+        }
+    }
+
+    fn focus_on_mount_target(id: u8, mounted_at_revision: u64) -> FocusOnMountTarget {
+        FocusOnMountTarget {
+            element_id: ElementId::from_term_bytes(vec![id]),
+            reveal_scrolls: Vec::new(),
+            mounted_at_revision,
         }
     }
 
@@ -1910,6 +1944,7 @@ mod tests {
             text_inputs: HashMap::from([(input_id.clone(), descriptor.clone())]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -1924,6 +1959,114 @@ mod tests {
     }
 
     #[test]
+    fn install_rebuild_applies_focus_on_mount_once_for_new_target() {
+        let input_id = ElementId::from_term_bytes(vec![9]);
+        let rebuild = RegistryRebuildPayload {
+            text_inputs: HashMap::from([(
+                input_id.clone(),
+                make_text_input_state("hello", 5, None, false),
+            )]),
+            focus_on_mount: Some(focus_on_mount_target(9, 1)),
+            ..RegistryRebuildPayload::default()
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        assert_eq!(runtime.focused_id, Some(input_id.clone()));
+        assert_eq!(runtime.last_focus_on_mount_revision, 1);
+        assert!(
+            runtime
+                .text_states
+                .get(&input_id)
+                .expect("text state should exist")
+                .focused
+        );
+
+        let first_msgs = drain_msgs(&tree_rx);
+        assert!(first_msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == input_id && *active
+        )));
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        assert!(
+            drain_msgs(&tree_rx).is_empty(),
+            "same mount revision should not re-trigger focus_on_mount"
+        );
+    }
+
+    #[test]
+    fn install_rebuild_focus_on_mount_steals_existing_focus() {
+        let previous_id = ElementId::from_term_bytes(vec![10]);
+        let next_id = ElementId::from_term_bytes(vec![11]);
+        let initial_rebuild = RegistryRebuildPayload {
+            text_inputs: HashMap::from([(
+                previous_id.clone(),
+                make_text_input_state("prev", 4, None, true),
+            )]),
+            focused_id: Some(previous_id.clone()),
+            ..RegistryRebuildPayload::default()
+        };
+        let mount_rebuild = RegistryRebuildPayload {
+            text_inputs: HashMap::from([
+                (
+                    previous_id.clone(),
+                    make_text_input_state("prev", 4, None, true),
+                ),
+                (
+                    next_id.clone(),
+                    make_text_input_state("next", 0, None, false),
+                ),
+            ]),
+            focused_id: Some(previous_id.clone()),
+            focus_on_mount: Some(focus_on_mount_target(11, 2)),
+            ..RegistryRebuildPayload::default()
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+
+        runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
+        drain_msgs(&tree_rx);
+
+        runtime.handle_registry_update(mount_rebuild, &tree_tx, false);
+
+        assert_eq!(runtime.focused_id, Some(next_id.clone()));
+        assert_eq!(runtime.last_focus_on_mount_revision, 2);
+        assert!(
+            !runtime
+                .text_states
+                .get(&previous_id)
+                .expect("previous text state should exist")
+                .focused
+        );
+        assert!(
+            runtime
+                .text_states
+                .get(&next_id)
+                .expect("next text state should exist")
+                .focused
+        );
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == previous_id && !*active
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetFocusedActive { element_id, active }
+                if *element_id == next_id && *active
+        )));
+    }
+
+    #[test]
     fn direct_runtime_dispatches_mouse_down_style_activation() {
         let mut attrs = Attrs::default();
         attrs.mouse_down = Some(MouseOverAttrs::default());
@@ -1933,6 +2076,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -1973,6 +2117,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2008,6 +2153,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(element_id.clone()),
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(active_rebuild, &tree_tx, false);
         let _ = drain_msgs(&tree_rx);
@@ -2049,6 +2195,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![30])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2091,6 +2238,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2121,6 +2269,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(element_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2186,6 +2335,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2244,6 +2394,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2297,6 +2448,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2337,6 +2489,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2400,6 +2553,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2503,6 +2657,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2564,6 +2719,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -2596,6 +2752,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![50])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2665,6 +2822,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![80])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2752,6 +2910,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![82])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2812,6 +2971,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![82])),
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(repeat_rebuild, &tree_tx, false);
         let _ = drain_msgs(&tree_rx);
@@ -2860,6 +3020,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![51])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2911,6 +3072,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let rebuild_abc = RegistryRebuildPayload {
@@ -2921,6 +3083,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -2996,6 +3159,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -3061,6 +3225,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -3107,6 +3272,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id.clone()),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(32);
@@ -3155,6 +3321,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, _tree_rx) = bounded(32);
@@ -3187,6 +3354,7 @@ mod tests {
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![54])),
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3230,6 +3398,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3250,6 +3419,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(active_rebuild, &tree_tx, false);
         assert!(!runtime.listener_lane.is_stale());
@@ -3288,6 +3458,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let moved = with_interaction_rect(
@@ -3302,6 +3473,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3347,6 +3519,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3384,6 +3557,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3429,6 +3603,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let mut moved_attrs = Attrs::default();
@@ -3446,6 +3621,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3483,6 +3659,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3511,6 +3688,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(active_rebuild, &tree_tx, false);
         assert!(!runtime.listener_lane.is_stale());
@@ -3528,6 +3706,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         runtime.handle_registry_update(moved_away_rebuild, &tree_tx, false);
@@ -3735,6 +3914,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3758,6 +3938,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(active_rebuild, &tree_tx, false);
 
@@ -3785,6 +3966,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
         runtime.handle_registry_update(inactive_rebuild, &tree_tx, false);
 
@@ -3815,6 +3997,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let moved = with_interaction_rect(
@@ -3829,6 +4012,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3865,6 +4049,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let moved = with_interaction_rect(
@@ -3879,6 +4064,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);
@@ -3911,6 +4097,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         runtime.listener_lane.stale = false;
@@ -3967,6 +4154,7 @@ mod tests {
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
+            focus_on_mount: None,
         };
 
         let (tree_tx, tree_rx) = bounded(64);

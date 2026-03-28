@@ -148,7 +148,7 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
 
     let mut text_input_focused = false;
     let mut text_input_cursor_area = None;
-    let mut rebuild_acc = registry_builder::RegistryBuildAcc::default();
+    let mut rebuild_acc = registry_builder::RegistryBuildAcc::for_tree(tree);
     let render_ctx = RenderBuildContext {
         scene_bounds: scene_bounds_for_root(tree, root),
         ..RenderBuildContext::default()

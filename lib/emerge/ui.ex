@@ -107,6 +107,7 @@ defmodule Emerge.UI do
   @type video_target :: EmergeSkia.VideoTarget.t()
 
   @type key_attr :: {:key, key()}
+  @type focus_on_mount_attr :: {:focus_on_mount, true}
   @type image_fit_attr :: {:image_fit, image_fit_mode()}
 
   @doc """
@@ -311,6 +312,10 @@ defmodule Emerge.UI do
   @doc "Provide a stable key for identity in lists (all siblings must have keys)."
   @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}
+
+  @doc "Focus this element once when it is first mounted into the tree"
+  @spec focus_on_mount() :: focus_on_mount_attr()
+  def focus_on_mount, do: {:focus_on_mount, true}
 
   @doc "Set image fit mode (`:contain` or `:cover`)"
   @spec image_fit(image_fit_mode()) :: image_fit_attr()
