@@ -116,6 +116,7 @@ defmodule Emerge.Engine.SerializationTest do
       Emerge.UI.Input.text(
         [
           width(px(280)),
+          focus_on_mount(),
           Event.on_change({self(), :changed}),
           Event.on_focus({self(), :focused}),
           Event.on_blur({self(), :blurred}),
@@ -139,6 +140,7 @@ defmodule Emerge.Engine.SerializationTest do
     assert tree.type == :text_input
     assert decoded.type == :text_input
     assert decoded.attrs.content == "hello"
+    assert decoded.attrs.focus_on_mount == true
     assert decoded.attrs.on_change == true
     assert decoded.attrs.on_focus == true
     assert decoded.attrs.on_blur == true

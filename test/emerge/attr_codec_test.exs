@@ -555,6 +555,13 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "encode/decode focus_on_mount" do
+    attrs = %{focus_on_mount: true}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
   test "encode/decode background image" do
     attrs = %{background: {:image, "img_bg", :cover}}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()

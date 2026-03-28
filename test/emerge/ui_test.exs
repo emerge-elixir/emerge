@@ -109,6 +109,10 @@ defmodule Emerge.UITest do
     assert Font.word_spacing(4) == {:font_word_spacing, 4}
   end
 
+  test "focus_on_mount helper returns attr" do
+    assert focus_on_mount() == {:focus_on_mount, true}
+  end
+
   test "size helpers return length values" do
     assert fill() == :fill
     assert fill(2) == {:fill, 2}
