@@ -50,6 +50,9 @@ discourage you from that pattern and encourage you to take a look at [Solve](htt
 for state management as by design is no way to create stateful component beyond viewport.
 Solve will also save you from prop drilling.
 
+For a fuller app structure, see the Solve-backed TodoMVC example in `example/`.
+It shows viewport wiring, collection controllers, inline editing, and mount-time focus.
+
 
 ## Rendering organization
 
@@ -234,6 +237,17 @@ mix compile
 mix test
 mix run demo.exs
 ```
+
+The root `demo.exs` script is a renderer feature demo. For a more realistic app built
+with `Emerge` and `Solve`, run the example project instead:
+
+```bash
+cd example
+mix deps.get
+iex -S mix
+```
+
+In dev, the example enables hot-code reloading for files under `example/lib`.
 
 ## Local CI Checks
 
