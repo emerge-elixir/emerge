@@ -8,12 +8,12 @@
 //!   - 4: remove - id_len(4) + id
 //!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{scale_animation_spec, AnimationSpec};
+use super::animation::{AnimationSpec, scale_animation_spec};
 use super::attrs::{
-    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
-    Attrs,
+    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
+    preserve_runtime_scroll_attrs,
 };
-use super::deserialize::{decode_tree, DecodeError};
+use super::deserialize::{DecodeError, decode_tree};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMounts, NearbySlot,
     NodeResidency, TextInputContentOrigin,
