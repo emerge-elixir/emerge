@@ -689,6 +689,73 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
 }
 
 #[test]
+fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
+    let parent_id = ElementId::from_term_bytes(vec![12]);
+    let child_id = ElementId::from_term_bytes(vec![13]);
+
+    let mut parent = Element::with_attrs(
+        parent_id.clone(),
+        ElementKind::El,
+        Vec::new(),
+        Attrs::default(),
+    );
+    parent.children = vec![child_id.clone()];
+    parent.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 50.0,
+        content_width: 100.0,
+        content_height: 50.0,
+    });
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.background = Some(Background::Color(Color::Rgba {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 0,
+    }));
+    child_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 6.0,
+        size: 2.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
+    child.frame = Some(Frame {
+        x: 20.0,
+        y: 15.0,
+        width: 30.0,
+        height: 15.0,
+        content_width: 30.0,
+        content_height: 15.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(parent_id);
+    tree.insert(parent);
+    tree.insert(child);
+
+    let (_output, pixels) = render_tree_to_pixels(100, 50, &tree);
+    let halo = rgba_at(&pixels, 100, 17, 22);
+    let center = rgba_at(&pixels, 100, 35, 22);
+
+    assert!(
+        halo.3 > 0,
+        "shadow halo should remain visible outside the element"
+    );
+    assert_eq!(
+        center.3, 0,
+        "transparent element center should not be filled by the outer shadow"
+    );
+}
+
+#[test]
 fn test_tree_clip_scope_does_not_clip_following_sibling_pixels() {
     let tree = build_two_child_tree(
         Attrs::default(),
