@@ -239,9 +239,11 @@ mix run demo.exs
 ```
 
 The root `demo.exs` script is a renderer feature demo. For a more realistic app built
-with `Emerge` and `Solve`, run the example project instead:
+with `Emerge` and `Solve`, run the example project instead. It uses `Solve` as a path
+dependency, so clone `solve` next to this repo first:
 
 ```bash
+git clone git@github.com:emerge-elixir/solve.git ../solve
 cd example
 mix deps.get
 iex -S mix
