@@ -1680,9 +1680,10 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("mouse_over supports decorative attrs only"));
+        assert!(
+            err.to_string()
+                .contains("mouse_over supports decorative attrs only")
+        );
     }
 
     #[test]
@@ -1735,9 +1736,10 @@ mod tests {
         data.extend_from_slice(&nested);
 
         let err = decode_attrs(&data).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("focused supports decorative attrs only"));
+        assert!(
+            err.to_string()
+                .contains("focused supports decorative attrs only")
+        );
     }
 
     #[test]
@@ -1871,7 +1873,7 @@ mod tests {
         data.extend_from_slice(&3.0_f64.to_be_bytes()); // offset_y
         data.extend_from_slice(&8.0_f64.to_be_bytes()); // blur
         data.extend_from_slice(&4.0_f64.to_be_bytes()); // size
-                                                        // color: named "red" -> variant=2, len=3, "red"
+        // color: named "red" -> variant=2, len=3, "red"
         data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
         data.push(0); // inset=false
 

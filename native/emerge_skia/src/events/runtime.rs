@@ -41,14 +41,13 @@ use super::{
     CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom,
     click_atom, focus_atom, key_down_atom, key_press_atom, key_up_atom, mouse_down_atom,
     mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
-    virtual_key_hold_atom,
     registry_builder::{
         self, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
         RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
-    send_element_event, send_element_event_with_string_payload, send_input_event,
-    swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
+    send_element_event, send_element_event_with_string_payload, send_input_event, swipe_down_atom,
+    swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
 const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
@@ -474,22 +473,21 @@ impl DirectEventRuntime {
                         active.phase = registry_builder::VirtualKeyPhase::Repeating;
                     }
 
-                    self.virtual_key_deadline = Some(
-                        Instant::now()
-                            + Duration::from_millis(u64::from(tracker.repeat_ms)),
-                    );
+                    self.virtual_key_deadline =
+                        Some(Instant::now() + Duration::from_millis(u64::from(tracker.repeat_ms)));
                     self.recompose_overlay_registry();
                     self.inject_synthetic_inputs(
-                        registry_builder::synthetic_input_sequence_for_virtual_key_tap(&tracker.tap),
+                        registry_builder::synthetic_input_sequence_for_virtual_key_tap(
+                            &tracker.tap,
+                        ),
                         tree_tx,
                         log_render,
                     );
                 }
             },
             registry_builder::VirtualKeyPhase::Repeating => {
-                self.virtual_key_deadline = Some(
-                    Instant::now() + Duration::from_millis(u64::from(tracker.repeat_ms)),
-                );
+                self.virtual_key_deadline =
+                    Some(Instant::now() + Duration::from_millis(u64::from(tracker.repeat_ms)));
                 self.inject_synthetic_inputs(
                     registry_builder::synthetic_input_sequence_for_virtual_key_tap(&tracker.tap),
                     tree_tx,
@@ -663,9 +661,9 @@ impl DirectEventRuntime {
             RuntimeChange::StartVirtualKeyTracker { tracker } => {
                 self.virtual_key_deadline = match tracker.hold {
                     crate::tree::attrs::VirtualKeyHoldMode::Repeat
-                    | crate::tree::attrs::VirtualKeyHoldMode::Event => Some(
-                        Instant::now() + Duration::from_millis(u64::from(tracker.hold_ms)),
-                    ),
+                    | crate::tree::attrs::VirtualKeyHoldMode::Event => {
+                        Some(Instant::now() + Duration::from_millis(u64::from(tracker.hold_ms)))
+                    }
                     crate::tree::attrs::VirtualKeyHoldMode::None => None,
                 };
                 self.runtime_overlay.virtual_key = Some(tracker);
@@ -2651,7 +2649,13 @@ mod tests {
             hold_ms: 350,
             repeat_ms: 40,
         });
-        let soft_key = with_interaction_rect(make_element(81, ElementKind::El, key_attrs), 0.0, 50.0, 100.0, 40.0);
+        let soft_key = with_interaction_rect(
+            make_element(81, ElementKind::El, key_attrs),
+            0.0,
+            50.0,
+            100.0,
+            40.0,
+        );
 
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
@@ -2729,10 +2733,19 @@ mod tests {
             hold_ms: 350,
             repeat_ms: 40,
         });
-        let soft_key = with_interaction_rect(make_element(83, ElementKind::El, key_attrs), 0.0, 50.0, 100.0, 40.0);
+        let soft_key = with_interaction_rect(
+            make_element(83, ElementKind::El, key_attrs),
+            0.0,
+            50.0,
+            100.0,
+            40.0,
+        );
 
         let rebuild = RegistryRebuildPayload {
-            base_registry: registry_builder::registry_for_elements(&[text_input.clone(), soft_key.clone()]),
+            base_registry: registry_builder::registry_for_elements(&[
+                text_input.clone(),
+                soft_key.clone(),
+            ]),
             text_inputs: HashMap::from([(
                 ElementId::from_term_bytes(vec![82]),
                 make_text_input_state("ab", 2, None, true),
@@ -2759,14 +2772,22 @@ mod tests {
             false,
         );
         assert!(matches!(
-            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            runtime
+                .runtime_overlay
+                .virtual_key
+                .as_ref()
+                .map(|tracker| tracker.phase),
             Some(registry_builder::VirtualKeyPhase::Armed)
         ));
 
         runtime.handle_virtual_key_timer(&tree_tx, false);
 
         assert!(matches!(
-            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            runtime
+                .runtime_overlay
+                .virtual_key
+                .as_ref()
+                .map(|tracker| tracker.phase),
             Some(registry_builder::VirtualKeyPhase::Repeating)
         ));
 
@@ -2781,7 +2802,13 @@ mod tests {
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 ElementId::from_term_bytes(vec![82]),
-                make_text_input_state_with_origin("abx", TextInputContentOrigin::Event, 3, None, true),
+                make_text_input_state_with_origin(
+                    "abx",
+                    TextInputContentOrigin::Event,
+                    3,
+                    None,
+                    true,
+                ),
             )]),
             scrollbars: HashMap::new(),
             focused_id: Some(ElementId::from_term_bytes(vec![82])),
@@ -2794,7 +2821,11 @@ mod tests {
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 60.0 }, &tree_tx, false);
 
         assert!(matches!(
-            runtime.runtime_overlay.virtual_key.as_ref().map(|tracker| tracker.phase),
+            runtime
+                .runtime_overlay
+                .virtual_key
+                .as_ref()
+                .map(|tracker| tracker.phase),
             Some(registry_builder::VirtualKeyPhase::Cancelled)
         ));
         assert!(runtime.virtual_key_deadline.is_none());
