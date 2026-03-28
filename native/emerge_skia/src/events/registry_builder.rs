@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
 use crate::input::{
-    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
 use crate::keys::CanonicalKey;
@@ -53,15 +53,16 @@ use crate::tree::attrs::{
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{clamp_radii, point_hits_shape, CornerRadii, Rect, ShapeBounds};
+use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    scrollbar::{scrollbar_node_from_metrics, ScrollbarHitArea, ScrollbarNode},
-    text_ops, CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
     TextInputEditRequest, TextInputPreeditRequest, TextInputState,
+    scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
+    text_ops,
 };
 
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
@@ -5860,10 +5861,10 @@ mod tests {
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
     use crate::events::test_support::{
-        assert_registry_probe_matrix, AnimatedNearbyHitCase, SampledRegistrySource,
+        AnimatedNearbyHitCase, SampledRegistrySource, assert_registry_probe_matrix,
     };
     use crate::input::{
-        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
     use crate::keys::CanonicalKey;
@@ -5876,22 +5877,22 @@ mod tests {
         ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
     use crate::tree::element::{Element, ElementId, ElementKind, Frame, NearbySlot};
-    use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
+    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
     use crate::tree::layout::{
-        layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
+        Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
     use std::time::{Duration, Instant};
 
     use super::{
-        compose_combined_registry, listeners_for_element, registry_for_elements,
-        runtime_listeners_for_overlay, window_listeners, ClickPressTracker, DragTrackerState,
-        ElixirEvent, GestureAxis, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction,
-        ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
-        NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
-        ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
-        TextDragTracker, VirtualKeyPhase, VirtualKeyTracker,
+        ClickPressTracker, DragTrackerState, ElixirEvent, GestureAxis, KeyPressFollowup,
+        KeyPressTracker, Listener, ListenerAction, ListenerCompute, ListenerComputeCtx,
+        ListenerInput, ListenerMatcher, ListenerMatcherKind, NoopListenerComputeCtx, PointerRegion,
+        RuntimeChange, RuntimeOverlayState, ScrollDirection, ScrollbarDragTracker,
+        ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker, TextDragTracker,
+        VirtualKeyPhase, VirtualKeyTracker, compose_combined_registry, listeners_for_element,
+        registry_for_elements, runtime_listeners_for_overlay, window_listeners,
     };
     use crate::events::{CursorIcon, ElementEventKind, TextInputState};
 
@@ -7588,9 +7589,11 @@ mod tests {
                 ListenerMatcher::CursorButtonLeftReleaseAnywhere
             )
         }));
-        assert!(listeners
-            .iter()
-            .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) }));
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) })
+        );
     }
 
     #[test]
@@ -7794,9 +7797,11 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker)
         ));
-        assert!(actions
-            .iter()
-            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
+        assert!(
+            actions
+                .iter()
+                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
+        );
     }
 
     #[test]
@@ -8069,8 +8074,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll(
-    ) {
+    fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll()
+     {
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
         parent_attrs.scroll_y = Some(10.0);
@@ -8150,8 +8155,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe(
-    ) {
+    fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe()
+     {
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
         parent_attrs.scroll_y = Some(10.0);
@@ -9216,21 +9221,31 @@ mod tests {
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta))
+        );
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta
@@ -9243,21 +9258,32 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyHomePressNoCtrlAltMeta
         )));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyEndPressNoCtrlAltMeta)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny)));
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear)));
+        assert!(
+            listeners.iter().any(|listener| matches!(
+                listener.matcher,
+                ListenerMatcher::KeyEndPressNoCtrlAltMeta
+            ))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny))
+        );
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear))
+        );
 
         let commit_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
@@ -9571,9 +9597,11 @@ mod tests {
         );
 
         assert_eq!(commit_actions.len(), 3);
-        assert!(commit_actions
-            .iter()
-            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
+        assert!(
+            commit_actions
+                .iter()
+                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
+        );
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
@@ -9599,9 +9627,11 @@ mod tests {
             },
             &mut ctx,
         );
-        assert!(cut_actions
-            .iter()
-            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
+        assert!(
+            cut_actions
+                .iter()
+                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
+        );
     }
 
     #[test]
@@ -10508,9 +10538,11 @@ mod tests {
             text_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
-        assert!(listeners
-            .iter()
-            .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)));
+        assert!(
+            listeners
+                .iter()
+                .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere))
+        );
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::CursorButtonLeftReleaseAnywhere
@@ -10595,10 +10627,12 @@ mod tests {
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
-        assert!(registry
-            .view()
-            .iter_precedence()
-            .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred)));
+        assert!(
+            registry
+                .view()
+                .iter_precedence()
+                .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred))
+        );
     }
 
     #[test]
