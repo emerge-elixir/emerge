@@ -847,12 +847,11 @@ impl Renderer {
                 let shadow_h = *h + *size * 2.0;
                 let shadow_radius = (*radius + *size).max(0.0);
 
-                let rect = Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h);
-                let rrect = if shadow_radius > 0.0 {
-                    RRect::new_rect_xy(rect, shadow_radius, shadow_radius)
-                } else {
-                    RRect::new_rect(rect)
-                };
+                let shadow_rrect = corner_rrect(
+                    Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h),
+                    [shadow_radius; 4],
+                );
+                let bounds_rrect = corner_rrect(Rect::from_xywh(*x, *y, *w, *h), [*radius; 4]);
 
                 let mut paint = Paint::default();
                 paint.set_color(color_from_u32(*color));
@@ -865,7 +864,10 @@ impl Renderer {
                     }
                 }
 
-                canvas.draw_rrect(rrect, &paint);
+                canvas.save();
+                canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Difference, true);
+                canvas.draw_rrect(shadow_rrect, &paint);
+                canvas.restore();
             }
 
             DrawPrimitive::InsetShadow(
@@ -2323,6 +2325,36 @@ mod tests {
         let inset_h = (h - inset * 2.0).max(0.0);
         let inset_r = (radius - inset).max(0.0);
         point_in_rounded_rect(px, py, inset_x, inset_y, inset_w, inset_h, inset_r)
+    }
+
+    #[test]
+    fn test_outer_shadow_on_transparent_rect_keeps_center_transparent() {
+        let pixels = render_single_command_to_pixels(
+            48,
+            48,
+            DrawPrimitive::Shadow(12.0, 12.0, 24.0, 24.0, 0.0, 0.0, 6.0, 2.0, 0.0, 0xC75A5AFF),
+        );
+
+        assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
+        assert!(
+            max_alpha_in_region(&pixels, 48, 7, 20, 10, 27) > 0,
+            "expected shadow halo outside the rect"
+        );
+    }
+
+    #[test]
+    fn test_outer_shadow_on_transparent_rounded_rect_keeps_center_transparent() {
+        let pixels = render_single_command_to_pixels(
+            48,
+            48,
+            DrawPrimitive::Shadow(12.0, 12.0, 24.0, 24.0, 0.0, 0.0, 6.0, 2.0, 8.0, 0xC75A5AFF),
+        );
+
+        assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
+        assert!(
+            max_alpha_in_region(&pixels, 48, 7, 20, 10, 27) > 0,
+            "expected rounded shadow halo outside the rect"
+        );
     }
 
     #[test]
