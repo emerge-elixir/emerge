@@ -14,8 +14,10 @@ It demonstrates:
 
 ```bash
 mix deps.get
-mix run --no-halt
+iex -S mix
 ```
+
+This starts the example in dev mode with hot-code reloading enabled for files under `example/lib`.
 
 ## Configuration
 
