@@ -415,19 +415,19 @@ impl DirectEventRuntime {
             log_render,
         );
 
-        if let Some(target) = focus_on_mount {
-            if target.mounted_at_revision > self.last_focus_on_mount_revision {
-                self.last_focus_on_mount_revision = target.mounted_at_revision;
-                changed_tree |= apply_focus_to(
-                    Some(target.element_id),
-                    &target.reveal_scrolls,
-                    &mut self.focused_id,
-                    &self.input_target,
-                    &mut self.text_states,
-                    tree_tx,
-                    log_render,
-                );
-            }
+        if let Some(target) = focus_on_mount
+            && target.mounted_at_revision > self.last_focus_on_mount_revision
+        {
+            self.last_focus_on_mount_revision = target.mounted_at_revision;
+            changed_tree |= apply_focus_to(
+                Some(target.element_id),
+                &target.reveal_scrolls,
+                &mut self.focused_id,
+                &self.input_target,
+                &mut self.text_states,
+                tree_tx,
+                log_render,
+            );
         }
 
         if changed_tree {
