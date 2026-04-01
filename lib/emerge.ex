@@ -2,8 +2,8 @@ defmodule Emerge do
   @moduledoc """
   Public API for writing viewport modules.
 
-  Use `Emerge` for modules that mount state, render trees, handle input, and
-  request rerenders.
+  Use `Emerge` for modules that mount viewport state or options, define UI with
+  `render/0` or `render/1`, handle input, and request rerenders.
 
   `use Emerge` also brings the common `Emerge.UI` helpers into scope, so
   viewport modules can declare trees directly or call regular Elixir functions
@@ -31,10 +31,11 @@ defmodule Emerge do
   @typedoc "Public tree type built with `Emerge.UI` and rendered by Emerge backends."
   @type tree :: Emerge.Engine.Element.t()
 
-  @typedoc "Viewport state map passed to render and callback functions."
+  @typedoc "Viewport state map passed to render/1 and callback functions."
   @type state :: map()
 
-  @callback mount(keyword()) :: {:ok, state(), keyword()} | {:stop, term()}
+  @callback mount(keyword()) :: {:ok, state(), keyword()} | {:ok, keyword()} | {:stop, term()}
+  @callback render() :: tree()
   @callback render(state()) :: tree()
 
   @callback handle_info(term(), state()) ::
@@ -45,7 +46,7 @@ defmodule Emerge do
 
   @callback wrap_payload(term(), term(), term()) :: term()
 
-  @optional_callbacks handle_info: 2, handle_input: 2, wrap_payload: 3
+  @optional_callbacks render: 0, render: 1, handle_info: 2, handle_input: 2, wrap_payload: 3
 
   defmacro __using__(_opts) do
     quote do

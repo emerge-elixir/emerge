@@ -8,12 +8,11 @@ defmodule EmergeDemo do
 
   @impl Viewport
   def mount(opts) do
-    {:ok, %{},
-     Keyword.merge([emerge_skia: [otp_app: :emerge_demo, title: "Emerge TodoMVC"]], opts)}
+    {:ok, Keyword.merge([emerge_skia: [otp_app: :emerge_demo, title: "Emerge TodoMVC"]], opts)}
   end
 
   @impl Viewport
-  def render(_state) do
+  def render do
     EmergeDemo.View.TodoApp.layout()
   end
 

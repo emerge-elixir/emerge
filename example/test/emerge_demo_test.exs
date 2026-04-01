@@ -15,7 +15,7 @@ defmodule EmergeDemoTest do
   end
 
   test "mount configures TodoMVC renderer defaults" do
-    assert {:ok, %{}, opts} = EmergeDemo.mount([])
+    assert {:ok, opts} = EmergeDemo.mount([])
 
     assert opts[:emerge_skia] == [otp_app: :emerge_demo, title: "Emerge TodoMVC"]
   end

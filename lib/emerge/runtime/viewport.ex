@@ -105,16 +105,13 @@ defmodule Emerge.Runtime.Viewport do
     runtime = runtime!(state)
 
     case apply(runtime.module, :mount, [opts]) do
-      {:ok, mounted_state, mount_opts} when is_list(mount_opts) ->
-        validate_mount_state!(runtime.module, mounted_state)
-        mount_config = Config.parse!(runtime.module, mount_opts)
+      {:ok, mount_opts} when is_list(mount_opts) ->
+        state = mount_viewport(%{}, runtime, mount_opts)
+        {:noreply, state}
 
-        state =
-          mounted_state
-          |> put_runtime(runtime)
-          |> put_mount_config(mount_config)
-          |> register_reload_viewport()
-          |> render_frame(:initial_render)
+      {:ok, mounted_state, mount_opts} when is_list(mount_opts) ->
+        mounted_state = validate_mount_state!(runtime.module, mounted_state)
+        state = mount_viewport(mounted_state, runtime, mount_opts)
 
         {:noreply, state}
 
@@ -123,7 +120,7 @@ defmodule Emerge.Runtime.Viewport do
 
       other ->
         raise ArgumentError,
-              "#{inspect(runtime.module)}.mount/1 must return {:ok, state, opts} or {:stop, reason}, got: #{inspect(other)}"
+              "#{inspect(runtime.module)}.mount/1 must return {:ok, opts}, {:ok, state, opts}, or {:stop, reason}, got: #{inspect(other)}"
     end
   end
 
@@ -481,7 +478,47 @@ defmodule Emerge.Runtime.Viewport do
 
   defp safe_render_tree(state) when is_map(state) do
     runtime = runtime!(state)
-    safe_invoke(fn -> apply(runtime.module, :render, [state]) end)
+    safe_invoke(fn -> invoke_render(runtime.module, state) end)
+  end
+
+  defp mount_viewport(mounted_state, runtime, mount_opts)
+       when is_map(mounted_state) and is_struct(runtime, State) and is_list(mount_opts) do
+    _ = validate_render_callback_shape!(runtime.module)
+    mount_config = Config.parse!(runtime.module, mount_opts)
+
+    mounted_state
+    |> put_runtime(runtime)
+    |> put_mount_config(mount_config)
+    |> register_reload_viewport()
+    |> render_frame(:initial_render)
+  end
+
+  defp invoke_render(module, state) when is_atom(module) and is_map(state) do
+    case validate_render_callback_shape!(module) do
+      0 -> apply(module, :render, [])
+      1 -> apply(module, :render, [state])
+    end
+  end
+
+  defp validate_render_callback_shape!(module) when is_atom(module) do
+    render0? = function_exported?(module, :render, 0)
+    render1? = function_exported?(module, :render, 1)
+
+    case {render0?, render1?} do
+      {true, false} ->
+        0
+
+      {false, true} ->
+        1
+
+      {true, true} ->
+        raise ArgumentError,
+              "#{inspect(module)} must define exactly one of render/0 or render/1, but defines both"
+
+      {false, false} ->
+        raise ArgumentError,
+              "#{inspect(module)} must define exactly one of render/0 or render/1"
+    end
   end
 
   defp log_render_failure(module, phase, failure) when is_atom(module) do
