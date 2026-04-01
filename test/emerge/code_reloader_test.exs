@@ -80,6 +80,22 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     def render(_state), do: el([], text("reload"))
   end
 
+  defmodule ReloadRenderZeroViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       viewport: [
+         renderer_module: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("reload zero"))
+  end
+
   defmodule FakeWatcher do
     use GenServer
 
@@ -168,6 +184,34 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
   test "successful watcher compile rerenders mounted viewports" do
     {:ok, viewport_pid} = ReloadViewport.start_link()
+    renderer = Emerge.renderer(viewport_pid)
+
+    {:ok, reloader_pid} =
+      CodeReloader.start_link(
+        dirs: ["/workspace/emerge/lib"],
+        reloadable_apps: [:emerge],
+        debounce_ms: 10,
+        watcher: FakeWatcher,
+        watcher_opts: [test_pid: self()],
+        compiler: FakeCompiler,
+        compiler_opts: [test_pid: self(), result: :ok],
+        mix_listener: nil
+      )
+
+    assert_receive {:watcher_started, watcher_pid}
+
+    FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
+
+    assert_receive {:compiler_reloaded, [:emerge], _paths}
+
+    assert_eventually(fn -> patch_count(renderer) == 1 end)
+
+    GenServer.stop(reloader_pid)
+    GenServer.stop(viewport_pid)
+  end
+
+  test "successful watcher compile rerenders render/0 viewports" do
+    {:ok, viewport_pid} = ReloadRenderZeroViewport.start_link()
     renderer = Emerge.renderer(viewport_pid)
 
     {:ok, reloader_pid} =
