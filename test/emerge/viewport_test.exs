@@ -106,6 +106,28 @@ defmodule Emerge.ViewportTest do
     def render(_state), do: el([], text("defaults"))
   end
 
+  defmodule OptsOnlyViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok,
+       Keyword.merge(
+         [
+           title: "Opts Only",
+           viewport: [
+             renderer_module: Emerge.ViewportTest.FakeRenderer,
+             renderer_check_interval_ms: nil
+           ]
+         ],
+         opts
+       )}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("opts only"))
+  end
+
   defmodule CounterViewport do
     use Emerge
 
@@ -232,6 +254,28 @@ defmodule Emerge.ViewportTest do
     end
   end
 
+  defmodule RenderZeroViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok, %{rerenders: 0},
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("render zero"))
+
+    @impl Viewport
+    def handle_info(:rerender, state) do
+      {:noreply, %{state | rerenders: state.rerenders + 1} |> Viewport.rerender()}
+    end
+  end
+
   defmodule PayloadViewport do
     use Emerge
 
@@ -302,6 +346,40 @@ defmodule Emerge.ViewportTest do
     end
   end
 
+  defmodule RenderBothViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("render both zero"))
+
+    @impl Viewport
+    def render(_state), do: el([], text("render both one"))
+  end
+
+  defmodule RenderMissingViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+  end
+
   test "mount starts renderer and uploads initial tree" do
     {:ok, pid} = CounterViewport.start_link(count: 3)
 
@@ -328,6 +406,53 @@ defmodule Emerge.ViewportTest do
     assert FakeRenderer.renderer_opts(renderer) == []
 
     GenServer.stop(pid)
+  end
+
+  test "mount accepts {:ok, opts} and uses empty viewport state" do
+    {:ok, pid} = OptsOnlyViewport.start_link()
+
+    renderer = Emerge.renderer(pid)
+    state = :sys.get_state(pid)
+
+    assert Map.drop(state, [:__emerge__]) == %{}
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Opts Only"
+    assert rendered_text(pid) == "opts only"
+
+    GenServer.stop(pid)
+  end
+
+  test "render/0 viewports render and rerender successfully" do
+    {:ok, pid} = RenderZeroViewport.start_link()
+    renderer = Emerge.renderer(pid)
+
+    assert rendered_text(pid) == "render zero"
+
+    send(pid, :rerender)
+
+    assert_eventually(fn ->
+      :sys.get_state(pid).rerenders == 1 and count_renderer_ops(renderer, :patch_tree) == 1
+    end)
+
+    GenServer.stop(pid)
+  end
+
+  test "viewport modules must not define both render/0 and render/1" do
+    {:ok, state, _continue} = Emerge.Runtime.Viewport.init_state(RenderBothViewport, [])
+
+    assert_raise ArgumentError,
+                 ~r/must define exactly one of render\/0 or render\/1, but defines both/,
+                 fn ->
+                   Emerge.Runtime.Viewport.handle_continue_mount([], state)
+                 end
+  end
+
+  test "viewport modules must define one render callback" do
+    {:ok, state, _continue} = Emerge.Runtime.Viewport.init_state(RenderMissingViewport, [])
+
+    assert_raise ArgumentError, ~r/must define exactly one of render\/0 or render\/1/, fn ->
+      Emerge.Runtime.Viewport.handle_continue_mount([], state)
+    end
   end
 
   test "self-targeted element events route through mailbox and rerender" do
