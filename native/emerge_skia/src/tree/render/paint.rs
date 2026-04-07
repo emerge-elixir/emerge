@@ -263,12 +263,9 @@ fn wrap_with_self_clip(nodes: Vec<RenderNode>, frame: Frame, attrs: &Attrs) -> V
 
 fn self_clip_shape(frame: Frame, attrs: &Attrs) -> Option<ClipShape> {
     let shape = geometry_self_shape(frame, attrs);
-    let Some(radii) = shape
+    let radii = shape
         .radii
-        .filter(|radii| radii.tl > 0.0 || radii.tr > 0.0 || radii.br > 0.0 || radii.bl > 0.0)
-    else {
-        return None;
-    };
+        .filter(|radii| radii.tl > 0.0 || radii.tr > 0.0 || radii.br > 0.0 || radii.bl > 0.0)?;
 
     Some(ClipShape {
         rect: shape.rect,
