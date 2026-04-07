@@ -7,7 +7,7 @@ defmodule Emerge.Engine.Serialization do
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Tree.Nearby
 
-  @version 4
+  @version 5
 
   @type_tag %{
     row: 1,
@@ -69,8 +69,8 @@ defmodule Emerge.Engine.Serialization do
         child_ids = Enum.map(children, & &1.id)
         child_count = length(child_ids)
         children_bin = encode_ids(child_ids)
-        {nearby_mask, nearby_ids} = encode_nearby(nearby)
-        nearby_bin = encode_ids(nearby_ids)
+        nearby_count = length(nearby)
+        nearby_bin = encode_nearby(nearby)
         id_bin = :erlang.term_to_binary(id)
 
         <<
@@ -81,7 +81,7 @@ defmodule Emerge.Engine.Serialization do
           attr_bin::binary,
           child_count::unsigned-16,
           children_bin::binary,
-          nearby_mask::unsigned-8,
+          nearby_count::unsigned-16,
           nearby_bin::binary
         >>
       end)
@@ -102,8 +102,8 @@ defmodule Emerge.Engine.Serialization do
     attrs = Emerge.Engine.AttrCodec.decode_attrs(attr_bin)
     <<child_count::unsigned-16, rest::binary>> = rest
     {child_ids, rest} = decode_ids(rest, child_count, [])
-    <<nearby_mask::unsigned-8, rest::binary>> = rest
-    {nearby_ids, rest} = decode_nearby(rest, nearby_mask)
+    <<nearby_count::unsigned-16, rest::binary>> = rest
+    {nearby_ids, rest} = decode_nearby(rest, nearby_count, [])
 
     type = Map.fetch!(@tag_type, type_tag)
 
@@ -120,35 +120,31 @@ defmodule Emerge.Engine.Serialization do
       end)
 
     nearby =
-      Enum.reduce(Nearby.nearby_slots(), %{}, fn slot, acc ->
-        case Map.get(node.nearby_ids, slot) do
-          nil -> acc
-          nearby_id -> Map.put(acc, slot, build_node(nearby_id, node_map))
-        end
+      Enum.map(node.nearby_ids, fn {slot, nearby_id} ->
+        {slot, build_node(nearby_id, node_map)}
       end)
 
     %Element{
       type: node.type,
       id: node.id,
-      attrs: Nearby.merge_nearby_attrs(node.attrs, nearby),
+      attrs: node.attrs,
       children: children,
+      nearby: nearby,
       frame: nil
     }
   end
 
   defp collect_nodes(%Element{} = element) do
-    {attrs, nearby} = Nearby.split_nearby_attrs(element.attrs)
-
     [
       %{
         id: element.id,
         type: element.type,
-        attrs: attrs,
+        attrs: element.attrs,
         children: element.children,
-        nearby: nearby
+        nearby: element.nearby
       }
       | Enum.flat_map(element.children, &collect_nodes/1) ++
-          Enum.flat_map(Nearby.nearby_children(element), fn {_slot, child} ->
+          Enum.flat_map(element.nearby, fn {_slot, child} ->
             collect_nodes(child)
           end)
     ]
@@ -172,26 +168,19 @@ defmodule Emerge.Engine.Serialization do
   end
 
   defp encode_nearby(nearby) do
-    Nearby.nearby_slots()
-    |> Enum.with_index()
-    |> Enum.reduce({0, []}, fn {slot, index}, {mask, ids} ->
-      case Map.get(nearby, slot) do
-        %Element{id: id} -> {Bitwise.bor(mask, Bitwise.bsl(1, index)), ids ++ [id]}
-        _ -> {mask, ids}
-      end
+    nearby
+    |> Enum.map(fn {slot, %Element{id: id}} ->
+      id_bin = :erlang.term_to_binary(id)
+      [<<Nearby.slot_tag(slot)::unsigned-8, byte_size(id_bin)::unsigned-32>>, id_bin]
     end)
+    |> IO.iodata_to_binary()
   end
 
-  defp decode_nearby(rest, mask) do
-    Nearby.nearby_slots()
-    |> Enum.with_index()
-    |> Enum.reduce({%{}, rest}, fn {slot, index}, {nearby, next_rest} ->
-      if Bitwise.band(mask, Bitwise.bsl(1, index)) == 0 do
-        {nearby, next_rest}
-      else
-        {ids, remaining} = decode_ids(next_rest, 1, [])
-        {Map.put(nearby, slot, hd(ids)), remaining}
-      end
-    end)
+  defp decode_nearby(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_nearby(<<slot_tag::unsigned-8, len::unsigned-32, rest::binary>>, count, acc) do
+    <<id_bin::binary-size(len), rest::binary>> = rest
+    id = :erlang.binary_to_term(id_bin)
+    decode_nearby(rest, count - 1, [{Nearby.slot_from_tag!(slot_tag), id} | acc])
   end
 end

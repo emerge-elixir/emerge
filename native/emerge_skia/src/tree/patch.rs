@@ -6,7 +6,8 @@
 //!   - 2: set_children - id_len(4) + id + count(2) + [child_id_len(4) + child_id]...
 //!   - 3: insert_subtree - parent_len(4) + parent_id + index(2) + tree_len(4) + tree_bytes
 //!   - 4: remove - id_len(4) + id
-//!   - 5: insert_nearby_subtree - host_len(4) + host_id + slot(1) + tree_len(4) + tree_bytes
+//!   - 5: set_nearby_mounts - host_len(4) + host_id + count(2) + [slot(1) + id_len(4) + id]...
+//!   - 6: insert_nearby_subtree - host_len(4) + host_id + index(2) + slot(1) + tree_len(4) + tree_bytes
 
 use super::animation::{AnimationSpec, scale_animation_spec};
 use super::attrs::{
@@ -15,8 +16,8 @@ use super::attrs::{
 };
 use super::deserialize::{DecodeError, decode_tree};
 use super::element::{
-    Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMounts, NearbySlot,
-    NodeResidency, TextInputContentOrigin,
+    Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbyMounts,
+    NearbySlot, NodeResidency, TextInputContentOrigin,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -32,6 +33,11 @@ pub enum Patch {
         children: Vec<ElementId>,
     },
 
+    SetNearbyMounts {
+        host_id: ElementId,
+        mounts: Vec<NearbyMount>,
+    },
+
     /// Insert a new subtree.
     InsertSubtree {
         /// Parent ID (None if inserting as new root).
@@ -45,6 +51,7 @@ pub enum Patch {
     /// Insert a nearby-mounted subtree onto a host slot.
     InsertNearbySubtree {
         host_id: ElementId,
+        index: usize,
         slot: NearbySlot,
         subtree: ElementTree,
     },
@@ -62,6 +69,7 @@ enum AttachmentPoint {
     },
     Nearby {
         host_id: ElementId,
+        mount_index: usize,
         slot: NearbySlot,
     },
 }
@@ -132,9 +140,10 @@ fn decode_patch(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
     match tag {
         1 => decode_set_attrs(cursor),
         2 => decode_set_children(cursor),
+        5 => decode_set_nearby_mounts(cursor),
         3 => decode_insert_subtree(cursor),
         4 => decode_remove(cursor),
-        5 => decode_insert_nearby_subtree(cursor),
+        6 => decode_insert_nearby_subtree(cursor),
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown patch tag: {}",
             tag
@@ -164,6 +173,28 @@ fn decode_set_children(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
     }
 
     Ok(Patch::SetChildren { id, children })
+}
+
+fn decode_set_nearby_mounts(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
+    let host_id_bytes = cursor.read_length_prefixed()?;
+    let host_id = ElementId::from_term_bytes(host_id_bytes);
+
+    let count = cursor.read_u16_be()? as usize;
+    let mut mounts = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let slot_tag = cursor.read_u8()?;
+        let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
+            DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
+        })?;
+        let nearby_id_bytes = cursor.read_length_prefixed()?;
+        mounts.push(NearbyMount {
+            slot,
+            id: ElementId::from_term_bytes(nearby_id_bytes),
+        });
+    }
+
+    Ok(Patch::SetNearbyMounts { host_id, mounts })
 }
 
 fn decode_insert_subtree(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
@@ -201,6 +232,7 @@ fn decode_remove(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
 fn decode_insert_nearby_subtree(cursor: &mut Cursor) -> Result<Patch, DecodeError> {
     let host_id_bytes = cursor.read_length_prefixed()?;
     let host_id = ElementId::from_term_bytes(host_id_bytes);
+    let index = cursor.read_u16_be()? as usize;
     let slot_tag = cursor.read_u8()?;
     let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
         DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
@@ -212,6 +244,7 @@ fn decode_insert_nearby_subtree(cursor: &mut Cursor) -> Result<Patch, DecodeErro
 
     Ok(Patch::InsertNearbySubtree {
         host_id,
+        index,
         slot,
         subtree,
     })
@@ -270,6 +303,15 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
                 .get_mut(&id)
                 .ok_or_else(|| "SetChildren: node not found".to_string())?;
             element.children = merged_children;
+            element.paint_children = element.children.clone();
+        }
+
+        Patch::SetNearbyMounts { host_id, mounts } => {
+            let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, mounts);
+            let host = tree
+                .get_mut(&host_id)
+                .ok_or_else(|| "SetNearbyMounts: host not found".to_string())?;
+            host.nearby.set_mounts(merged_mounts);
         }
 
         Patch::InsertSubtree {
@@ -314,6 +356,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
 
         Patch::InsertNearbySubtree {
             host_id,
+            index,
             slot,
             mut subtree,
         } => {
@@ -328,14 +371,23 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
                 tree.nodes.insert(id, element);
             }
 
-            let merged_ids =
-                tree.merge_nearby_slot_with_ghosts(&host_id, slot, Some(subtree_root_id));
+            let mut live_mounts = tree.live_nearby_mounts(&host_id);
+            let insert_index = index.min(live_mounts.len());
+            if !live_mounts.iter().any(|mount| mount.id == subtree_root_id) {
+                live_mounts.insert(
+                    insert_index,
+                    NearbyMount {
+                        slot,
+                        id: subtree_root_id,
+                    },
+                );
+            }
+
+            let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             let host = tree
                 .get_mut(&host_id)
                 .ok_or_else(|| "InsertNearbySubtree: host not found".to_string())?;
-            let slot_ids = host.nearby.ids_mut(slot);
-            slot_ids.clear();
-            slot_ids.extend(merged_ids);
+            host.nearby.set_mounts(merged_mounts);
         }
 
         Patch::Remove { id } => {
@@ -440,8 +492,13 @@ fn maybe_capture_exit_ghost(
             live_index,
             seq: tree.next_ghost_seq(),
         },
-        AttachmentPoint::Nearby { host_id, slot } => GhostAttachment::Nearby {
+        AttachmentPoint::Nearby {
             host_id,
+            mount_index,
+            slot,
+        } => GhostAttachment::Nearby {
+            host_id,
+            mount_index,
             slot,
             seq: tree.next_ghost_seq(),
         },
@@ -490,17 +547,20 @@ fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &ElementId) -> Resul
                 parent.children = merged;
             }
         }
-        GhostAttachment::Nearby { host_id, slot, .. } => {
+        GhostAttachment::Nearby {
+            host_id,
+            mount_index,
+            slot,
+            ..
+        } => {
             if let Some(host) = tree.get_mut(&host_id) {
-                host.nearby.push(slot, ghost_root_id.clone());
+                host.nearby.insert(mount_index, slot, ghost_root_id.clone());
             }
 
-            let live_id = tree.live_nearby_id(&host_id, slot);
-            let merged = tree.merge_nearby_slot_with_ghosts(&host_id, slot, live_id);
+            let live_mounts = tree.live_nearby_mounts(&host_id);
+            let merged = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             if let Some(host) = tree.get_mut(&host_id) {
-                let slot_ids = host.nearby.ids_mut(slot);
-                slot_ids.clear();
-                slot_ids.extend(merged);
+                host.nearby.set_mounts(merged);
             }
         }
     }
@@ -547,17 +607,18 @@ fn locate_attachment(tree: &ElementTree, id: &ElementId) -> Option<AttachmentPoi
             });
         }
 
-        NearbySlot::PAINT_ORDER.into_iter().find_map(|slot| {
-            element
-                .nearby
-                .ids(slot)
-                .iter()
-                .any(|nearby_id| nearby_id == id)
-                .then_some(AttachmentPoint::Nearby {
+        element
+            .nearby
+            .iter()
+            .enumerate()
+            .filter(|(_, mount)| tree.get(&mount.id).is_some_and(Element::is_live))
+            .find_map(|(mount_index, mount)| {
+                (mount.id == *id).then_some(AttachmentPoint::Nearby {
                     host_id: element.id.clone(),
-                    slot,
+                    mount_index,
+                    slot: mount.slot,
                 })
-        })
+            })
     })
 }
 
@@ -566,11 +627,7 @@ fn find_parent_id(tree: &ElementTree, id: &ElementId) -> Option<ElementId> {
         element
             .children
             .iter()
-            .chain(
-                NearbySlot::PAINT_ORDER
-                    .into_iter()
-                    .flat_map(|slot| element.nearby.ids(slot).iter()),
-            )
+            .chain(element.nearby.iter().map(|mount| &mount.id))
             .any(|candidate_id| candidate_id == id)
             .then_some(element.id.clone())
     })
@@ -602,6 +659,11 @@ fn clone_as_ghost(
             .iter()
             .filter_map(|child_id| id_map.get(child_id).cloned())
             .collect(),
+        paint_children: old
+            .paint_children
+            .iter()
+            .filter_map(|child_id| id_map.get(child_id).cloned())
+            .collect(),
         nearby: remap_nearby_mounts(&old.nearby, id_map),
         frame: old.frame,
         measured_frame: old.measured_frame,
@@ -624,18 +686,17 @@ fn remap_nearby_mounts(
     nearby: &NearbyMounts,
     id_map: &HashMap<ElementId, ElementId>,
 ) -> NearbyMounts {
-    let mut remapped = NearbyMounts::default();
-
-    for slot in NearbySlot::PAINT_ORDER {
-        remapped.ids_mut(slot).extend(
-            nearby
-                .ids(slot)
-                .iter()
-                .filter_map(|nearby_id| id_map.get(nearby_id).cloned()),
-        );
+    NearbyMounts {
+        mounts: nearby
+            .iter()
+            .filter_map(|mount| {
+                id_map.get(&mount.id).cloned().map(|id| NearbyMount {
+                    slot: mount.slot,
+                    id,
+                })
+            })
+            .collect(),
     }
-
-    remapped
 }
 
 fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Attrs) {
@@ -709,9 +770,7 @@ pub(crate) fn remove_subtree(tree: &mut ElementTree, id: &ElementId) {
     // (This is O(n) but patches are typically small)
     for element in tree.nodes.values_mut() {
         element.children.retain(|child_id| child_id != id);
-        for slot in NearbySlot::PAINT_ORDER {
-            element.nearby.remove(slot, id);
-        }
+        element.nearby.remove(id);
     }
 }
 
@@ -724,10 +783,8 @@ fn collect_descendants(tree: &ElementTree, id: &ElementId, acc: &mut Vec<Element
             collect_descendants(tree, child_id, acc);
         }
 
-        for slot in NearbySlot::PAINT_ORDER {
-            for nearby_id in element.nearby.ids(slot) {
-                collect_descendants(tree, nearby_id, acc);
-            }
+        for mount in element.nearby.iter() {
+            collect_descendants(tree, &mount.id, acc);
         }
     }
 }
@@ -1350,6 +1407,7 @@ mod tests {
                 },
                 Patch::InsertNearbySubtree {
                     host_id: host_id.clone(),
+                    index: 0,
                     slot: NearbySlot::OnRight,
                     subtree,
                 },
@@ -1358,9 +1416,61 @@ mod tests {
         .unwrap();
 
         let host = tree.get(&host_id).unwrap();
-        let slot_ids = host.nearby.ids(NearbySlot::OnRight);
+        let slot_ids: Vec<_> = host.nearby.ids(NearbySlot::OnRight).cloned().collect();
         assert_eq!(slot_ids.len(), 2);
         assert!(tree.get(&slot_ids[0]).unwrap().is_ghost_root());
         assert_eq!(slot_ids[1], new_nearby_id);
+    }
+
+    #[test]
+    fn test_insert_nearby_subtree_keeps_ghost_before_new_live_nearby_across_slots() {
+        let host_id = ElementId::from_term_bytes(vec![53]);
+        let old_nearby_id = ElementId::from_term_bytes(vec![54]);
+        let new_nearby_id = ElementId::from_term_bytes(vec![55]);
+
+        let mut host = Element::with_attrs(
+            host_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        host.nearby
+            .set(NearbySlot::InFront, Some(old_nearby_id.clone()));
+
+        let mut old_nearby = text_element(54, "old");
+        old_nearby.attrs.animate_exit = Some(exit_alpha_spec());
+        old_nearby.base_attrs.animate_exit = Some(exit_alpha_spec());
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(host_id.clone());
+        tree.insert(host);
+        tree.insert(old_nearby);
+
+        let mut subtree = ElementTree::new();
+        subtree.root = Some(new_nearby_id.clone());
+        subtree.insert(text_element(55, "new"));
+
+        apply_patches(
+            &mut tree,
+            vec![
+                Patch::Remove {
+                    id: old_nearby_id.clone(),
+                },
+                Patch::InsertNearbySubtree {
+                    host_id: host_id.clone(),
+                    index: 0,
+                    slot: NearbySlot::Below,
+                    subtree,
+                },
+            ],
+        )
+        .unwrap();
+
+        let host = tree.get(&host_id).unwrap();
+        assert_eq!(host.nearby.mounts.len(), 2);
+        assert!(tree.get(&host.nearby.mounts[0].id).unwrap().is_ghost_root());
+        assert_eq!(host.nearby.mounts[0].slot, NearbySlot::InFront);
+        assert_eq!(host.nearby.mounts[1].id, new_nearby_id);
+        assert_eq!(host.nearby.mounts[1].slot, NearbySlot::Below);
     }
 }

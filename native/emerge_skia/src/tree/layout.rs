@@ -463,6 +463,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_focus: attrs.on_focus,
         on_blur: attrs.on_blur,
         focus_on_mount: attrs.focus_on_mount,
+        clip_nearby: attrs.clip_nearby,
         on_key_down: attrs.on_key_down.clone(),
         on_key_up: attrs.on_key_up.clone(),
         on_key_press: attrs.on_key_press.clone(),
@@ -784,9 +785,10 @@ fn measure_element<M: TextMeasurer>(
     let (child_ids, nearby_ids): (Vec<ElementId>, Vec<ElementId>) = tree
         .get(id)
         .map(|element| {
-            let nearby_ids = NearbySlot::PAINT_ORDER
-                .into_iter()
-                .flat_map(|slot| element.nearby.ids(slot).iter().cloned())
+            let nearby_ids = element
+                .nearby
+                .iter()
+                .map(|mount| mount.id.clone())
                 .collect();
             (element.children.clone(), nearby_ids)
         })
@@ -1480,8 +1482,75 @@ fn resolve_element<M: TextMeasurer>(
         ElementKind::Paragraph => resolve_paragraph_kind(tree, &params, &element_context, measurer),
     }
 
+    update_paint_children(tree, id, kind);
     update_scroll_state(tree, id);
     resolve_nearby_mounts(tree, id, &element_context, measurer);
+}
+
+fn update_paint_children(tree: &mut ElementTree, id: &ElementId, kind: ElementKind) {
+    let Some(element) = tree.get(id) else {
+        return;
+    };
+
+    let source_children = element.children.clone();
+    let mut ordered: Vec<(usize, ElementId, f32, f32)> = source_children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, child_id)| {
+            tree.get(child_id)
+                .and_then(|child| child.frame)
+                .map(|frame| (index, child_id.clone(), frame.x, frame.y))
+        })
+        .collect();
+
+    match kind {
+        ElementKind::Row => {
+            ordered.sort_by(|left, right| {
+                left.2
+                    .partial_cmp(&right.2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+        }
+        ElementKind::Column | ElementKind::TextColumn => {
+            ordered.sort_by(|left, right| {
+                left.3
+                    .partial_cmp(&right.3)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+        }
+        ElementKind::WrappedRow => {
+            ordered.sort_by(|left, right| {
+                left.3
+                    .partial_cmp(&right.3)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        left.2
+                            .partial_cmp(&right.2)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+        }
+        _ => {}
+    }
+
+    let paint_children = if matches!(
+        kind,
+        ElementKind::Row | ElementKind::Column | ElementKind::TextColumn | ElementKind::WrappedRow
+    ) {
+        ordered
+            .into_iter()
+            .map(|(_, child_id, _, _)| child_id)
+            .collect()
+    } else {
+        source_children
+    };
+
+    if let Some(element) = tree.get_mut(id) {
+        element.paint_children = paint_children;
+    }
 }
 
 /// Resolve final length from attribute, intrinsic, and constraint.
@@ -1515,16 +1584,10 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
     let nearby_roots: Vec<(NearbySlot, ElementId)> = tree
         .get(host_id)
         .map(|element| {
-            NearbySlot::PAINT_ORDER
-                .into_iter()
-                .flat_map(|slot| {
-                    element
-                        .nearby
-                        .ids(slot)
-                        .iter()
-                        .cloned()
-                        .map(move |id| (slot, id))
-                })
+            element
+                .nearby
+                .iter()
+                .map(|mount| (mount.slot, mount.id.clone()))
                 .collect()
         })
         .unwrap_or_default();
@@ -3657,11 +3720,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
         }
 
         let mut child_ids = element.children.clone();
-        child_ids.extend(
-            NearbySlot::PAINT_ORDER
-                .into_iter()
-                .flat_map(|slot| element.nearby.ids(slot).iter().cloned()),
-        );
+        child_ids.extend(element.nearby.iter().map(|mount| mount.id.clone()));
         child_ids
     };
 

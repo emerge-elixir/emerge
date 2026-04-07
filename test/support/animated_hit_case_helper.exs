@@ -378,48 +378,42 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   defp target_id_from_tree(%Element{id: id, attrs: %{on_mouse_move: {_pid, {:probe, :target}}}}),
     do: id
 
-  defp target_id_from_tree(%Element{children: children, attrs: attrs}) do
+  defp target_id_from_tree(%Element{children: children, nearby: nearby}) do
     Enum.find_value(children, &target_id_from_tree/1) ||
-      Enum.find_value([:behind, :above, :on_right, :below, :on_left, :in_front], fn slot ->
-        case Map.get(attrs, slot) do
-          %Element{} = child -> target_id_from_tree(child)
-          _ -> nil
-        end
+      Enum.find_value(nearby, fn {_slot, child} ->
+        target_id_from_tree(child)
       end) ||
       raise "could not find target element in assigned tree"
   end
 
-  defp host_id_from_tree(%Element{id: id, children: children, attrs: attrs}) do
+  defp host_id_from_tree(%Element{id: id, children: children, nearby: nearby}) do
     if match?(
-         %Element{attrs: %{on_mouse_move: {_pid, {:probe, :target}}}},
-         Map.get(attrs, :in_front)
+         {:in_front, %Element{attrs: %{on_mouse_move: {_pid, {:probe, :target}}}}},
+         Enum.find(nearby, fn {slot, _child} -> slot == :in_front end)
        ) do
       id
     else
       Enum.find_value(children, &host_id_from_tree/1) ||
-        Enum.find_value([:behind, :above, :on_right, :below, :on_left, :in_front], fn slot ->
-          case Map.get(attrs, slot) do
-            %Element{} = child -> host_id_from_tree(child)
-            _ -> nil
-          end
+        Enum.find_value(nearby, fn {_slot, child} ->
+          host_id_from_tree(child)
         end) ||
         raise "could not find host slot element in assigned tree"
     end
   end
 
   defp host_id_from_tree(
-         %Element{id: id, attrs: %{in_front: %Element{id: target_id}}},
+         %Element{id: id, nearby: nearby},
          target_id
-       ),
-       do: id
+       ) do
+    if Enum.any?(nearby, fn {slot, %Element{id: id}} -> slot == :in_front and id == target_id end) do
+      id
+    end
+  end
 
-  defp host_id_from_tree(%Element{children: children, attrs: attrs}, target_id) do
+  defp host_id_from_tree(%Element{children: children, nearby: nearby}, target_id) do
     Enum.find_value(children, &host_id_from_tree(&1, target_id)) ||
-      Enum.find_value([:behind, :above, :on_right, :below, :on_left, :in_front], fn slot ->
-        case Map.get(attrs, slot) do
-          %Element{} = child -> host_id_from_tree(child, target_id)
-          _ -> nil
-        end
+      Enum.find_value(nearby, fn {_slot, child} ->
+        host_id_from_tree(child, target_id)
       end) ||
       raise "could not find host slot element for target id in assigned tree"
   end

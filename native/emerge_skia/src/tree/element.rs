@@ -88,23 +88,6 @@ pub enum NearbySlot {
 }
 
 impl NearbySlot {
-    pub const PAINT_ORDER: [Self; 6] = [
-        Self::BehindContent,
-        Self::Above,
-        Self::OnRight,
-        Self::Below,
-        Self::OnLeft,
-        Self::InFront,
-    ];
-
-    pub const OVERLAY_PAINT_ORDER: [Self; 5] = [
-        Self::Above,
-        Self::OnRight,
-        Self::Below,
-        Self::OnLeft,
-        Self::InFront,
-    ];
-
     pub fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             1 => Some(Self::BehindContent),
@@ -114,6 +97,17 @@ impl NearbySlot {
             5 => Some(Self::OnLeft),
             6 => Some(Self::InFront),
             _ => None,
+        }
+    }
+
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::BehindContent => 1,
+            Self::Above => 2,
+            Self::OnRight => 3,
+            Self::Below => 4,
+            Self::OnLeft => 5,
+            Self::InFront => 6,
         }
     }
 
@@ -159,56 +153,58 @@ impl NearbySlot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NearbyMount {
+    pub slot: NearbySlot,
+    pub id: ElementId,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct NearbyMounts {
-    pub behind_content: Vec<ElementId>,
-    pub above: Vec<ElementId>,
-    pub on_right: Vec<ElementId>,
-    pub below: Vec<ElementId>,
-    pub on_left: Vec<ElementId>,
-    pub in_front: Vec<ElementId>,
+    pub mounts: Vec<NearbyMount>,
 }
 
 impl NearbyMounts {
-    pub fn ids(&self, slot: NearbySlot) -> &[ElementId] {
-        match slot {
-            NearbySlot::BehindContent => &self.behind_content,
-            NearbySlot::Above => &self.above,
-            NearbySlot::OnRight => &self.on_right,
-            NearbySlot::Below => &self.below,
-            NearbySlot::OnLeft => &self.on_left,
-            NearbySlot::InFront => &self.in_front,
-        }
+    pub fn iter(&self) -> impl Iterator<Item = &NearbyMount> {
+        self.mounts.iter()
     }
 
-    pub fn ids_mut(&mut self, slot: NearbySlot) -> &mut Vec<ElementId> {
-        match slot {
-            NearbySlot::BehindContent => &mut self.behind_content,
-            NearbySlot::Above => &mut self.above,
-            NearbySlot::OnRight => &mut self.on_right,
-            NearbySlot::Below => &mut self.below,
-            NearbySlot::OnLeft => &mut self.on_left,
-            NearbySlot::InFront => &mut self.in_front,
-        }
-    }
-
-    pub fn set(&mut self, slot: NearbySlot, id: Option<ElementId>) {
-        let ids = self.ids_mut(slot);
-        ids.clear();
-        if let Some(id) = id {
-            ids.push(id);
-        }
+    #[cfg(test)]
+    pub fn ids(&self, slot: NearbySlot) -> impl DoubleEndedIterator<Item = &ElementId> {
+        self.mounts.iter().filter_map(move |mount| {
+            if mount.slot == slot {
+                Some(&mount.id)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn push(&mut self, slot: NearbySlot, id: ElementId) {
-        self.ids_mut(slot).push(id);
+        self.mounts.push(NearbyMount { slot, id });
     }
 
-    pub fn remove(&mut self, slot: NearbySlot, id: &ElementId) -> bool {
-        let ids = self.ids_mut(slot);
-        let len_before = ids.len();
-        ids.retain(|candidate| candidate != id);
-        len_before != ids.len()
+    pub fn insert(&mut self, index: usize, slot: NearbySlot, id: ElementId) {
+        self.mounts
+            .insert(index.min(self.mounts.len()), NearbyMount { slot, id });
+    }
+
+    #[cfg(test)]
+    pub fn set(&mut self, slot: NearbySlot, id: Option<ElementId>) {
+        self.mounts.retain(|mount| mount.slot != slot);
+        if let Some(id) = id {
+            self.mounts.push(NearbyMount { slot, id });
+        }
+    }
+
+    pub fn set_mounts(&mut self, mounts: Vec<NearbyMount>) {
+        self.mounts = mounts;
+    }
+
+    pub fn remove(&mut self, id: &ElementId) -> bool {
+        let len_before = self.mounts.len();
+        self.mounts.retain(|mount| &mount.id != id);
+        len_before != self.mounts.len()
     }
 }
 
@@ -228,6 +224,7 @@ pub enum GhostAttachment {
     },
     Nearby {
         host_id: ElementId,
+        mount_index: usize,
         slot: NearbySlot,
         seq: u64,
     },
@@ -267,6 +264,12 @@ pub struct RetainedChildRef<'a> {
     pub mode: RetainedChildMode,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum RetainedLocalBranchRef<'a> {
+    Nearby(&'a NearbyMount),
+    Child(RetainedChildRef<'a>),
+}
+
 /// A single element in the UI tree.
 #[derive(Clone, Debug)]
 pub struct Element {
@@ -290,6 +293,9 @@ pub struct Element {
 
     /// Child element IDs (order matters).
     pub children: Vec<ElementId>,
+
+    /// Computed post-layout child paint order.
+    pub paint_children: Vec<ElementId>,
 
     /// Host-owned nearby mount roots.
     pub nearby: NearbyMounts,
@@ -328,6 +334,7 @@ impl Element {
             attrs,
             text_input_content_origin: TextInputContentOrigin::TreePatch,
             children: Vec::new(),
+            paint_children: Vec::new(),
             nearby: NearbyMounts::default(),
             frame: None,
             measured_frame: None,
@@ -349,6 +356,26 @@ impl Element {
 
     pub fn is_ghost_root(&self) -> bool {
         self.is_ghost() && self.ghost_attachment.is_some()
+    }
+
+    pub fn paint_child_ids(&self) -> &[ElementId] {
+        if self.paint_children.is_empty() {
+            &self.children
+        } else {
+            &self.paint_children
+        }
+    }
+
+    pub fn local_nearby_mounts(&self) -> impl Iterator<Item = &NearbyMount> {
+        self.nearby
+            .iter()
+            .filter(|mount| mount.slot == NearbySlot::BehindContent)
+    }
+
+    pub fn escape_nearby_mounts(&self) -> impl Iterator<Item = &NearbyMount> {
+        self.nearby
+            .iter()
+            .filter(|mount| mount.slot != NearbySlot::BehindContent)
     }
 
     pub fn for_each_retained_child(
@@ -375,13 +402,25 @@ impl Element {
                 }
             }
         } else {
-            for id in &self.children {
+            for id in self.paint_child_ids() {
                 f(RetainedChildRef {
                     id,
                     mode: RetainedChildMode::Scope,
                 });
             }
         }
+    }
+
+    pub fn for_each_retained_local_branch(
+        &self,
+        tree: &ElementTree,
+        mut f: impl FnMut(RetainedLocalBranchRef<'_>),
+    ) {
+        for mount in self.local_nearby_mounts() {
+            f(RetainedLocalBranchRef::Nearby(mount));
+        }
+
+        self.for_each_retained_child(tree, |child| f(RetainedLocalBranchRef::Child(child)));
     }
 }
 
@@ -597,27 +636,38 @@ impl ElementTree {
         merged
     }
 
-    pub fn merge_nearby_slot_with_ghosts(
+    pub fn live_nearby_mounts(&self, host_id: &ElementId) -> Vec<NearbyMount> {
+        self.get(host_id)
+            .map(|host| {
+                host.nearby
+                    .iter()
+                    .filter(|mount| self.get(&mount.id).is_some_and(Element::is_live))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn merge_live_nearby_with_ghosts(
         &self,
         host_id: &ElementId,
-        slot: NearbySlot,
-        live_id: Option<ElementId>,
-    ) -> Vec<ElementId> {
-        let mut ghosts: Vec<(ElementId, u64)> = self
+        new_live_mounts: Vec<NearbyMount>,
+    ) -> Vec<NearbyMount> {
+        let mut ghosts: Vec<(NearbyMount, usize, u64)> = self
             .get(host_id)
             .map(|host| {
                 host.nearby
-                    .ids(slot)
                     .iter()
-                    .filter_map(|nearby_id| {
-                        let nearby = self.get(nearby_id)?;
+                    .filter_map(|mount| {
+                        let nearby = self.get(&mount.id)?;
                         match nearby.ghost_attachment.as_ref() {
                             Some(GhostAttachment::Nearby {
                                 host_id: ghost_host_id,
-                                slot: ghost_slot,
+                                mount_index,
                                 seq,
-                            }) if ghost_host_id == host_id && *ghost_slot == slot => {
-                                Some((nearby_id.clone(), *seq))
+                                ..
+                            }) if ghost_host_id == host_id => {
+                                Some((mount.clone(), *mount_index, *seq))
                             }
                             _ => None,
                         }
@@ -626,26 +676,28 @@ impl ElementTree {
             })
             .unwrap_or_default();
 
-        ghosts.sort_by_key(|(_, seq)| *seq);
+        ghosts.sort_by_key(|(_, mount_index, seq)| (*mount_index, *seq));
 
-        let mut merged: Vec<ElementId> = ghosts.into_iter().map(|(id, _)| id).collect();
+        let mut merged = Vec::with_capacity(new_live_mounts.len() + ghosts.len());
+        let mut ghost_index = 0;
 
-        if let Some(live_id) = live_id {
-            merged.push(live_id);
+        for live_index in 0..=new_live_mounts.len() {
+            while ghost_index < ghosts.len() {
+                let (ghost_mount, anchor, _) = &ghosts[ghost_index];
+                if (*anchor).min(new_live_mounts.len()) != live_index {
+                    break;
+                }
+
+                merged.push(ghost_mount.clone());
+                ghost_index += 1;
+            }
+
+            if let Some(live_mount) = new_live_mounts.get(live_index) {
+                merged.push(live_mount.clone());
+            }
         }
 
         merged
-    }
-
-    pub fn live_nearby_id(&self, host_id: &ElementId, slot: NearbySlot) -> Option<ElementId> {
-        self.get(host_id).and_then(|host| {
-            host.nearby
-                .ids(slot)
-                .iter()
-                .rev()
-                .find(|nearby_id| self.get(nearby_id).is_some_and(Element::is_live))
-                .cloned()
-        })
     }
 
     /// Apply scroll delta to an element. Returns true if scroll changed.
