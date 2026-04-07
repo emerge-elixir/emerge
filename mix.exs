@@ -2,7 +2,7 @@ defmodule Emerge.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/colibri-cam/emerge"
+  @source_url "https://github.com/elixir-emerge/emerge"
 
   @nerves_rust_target_triple_mapping %{
     "armv6-nerves-linux-gnueabihf" => "arm-unknown-linux-gnueabihf",
@@ -48,9 +48,16 @@ defmodule Emerge.MixProject do
         main: "readme",
         source_url: @source_url,
         source_ref: "v#{@version}",
+        assets: %{
+          "assets" => "assets",
+          "guides/tutorials/assets" => "assets"
+        },
         before_closing_body_tag: &before_closing_body_tag/1,
         extras: [
           "README.md",
+          "guides/tutorials/set_up_viewport.md",
+          "guides/tutorials/describe_ui.md",
+          "guides/tutorials/state_management.md",
           "guides/internals/architecture.md",
           "guides/internals/assets-images.md",
           "guides/internals/feature-roadmap.md",
@@ -59,6 +66,7 @@ defmodule Emerge.MixProject do
           "guides/internals/tree-patching.md"
         ],
         groups_for_extras: [
+          Tutorials: ~r/guides\/tutorials\/.*/,
           Internals: ~r/guides\/internals\/.*/
         ],
         groups_for_modules: [
@@ -126,14 +134,14 @@ defmodule Emerge.MixProject do
   defp package_files do
     [
       "lib",
+      "guides",
       "native/emerge_skia/src",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
-      "priv/demo_fonts",
-      "priv/demo_images",
       "LICENSE",
       "README.md",
+      "assets",
       "mix.exs",
       "mix.lock"
     ] ++ Path.wildcard("checksum-*.exs")

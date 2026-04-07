@@ -559,6 +559,29 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "source reload rerenders render/0 viewports after the module is unloaded" do
+    module = compile_reloadable_render_zero_viewport()
+
+    {:ok, pid} = module.start_link()
+    renderer = Emerge.renderer(pid)
+
+    assert :code.which(module) != :non_existing
+
+    :code.purge(module)
+    :code.delete(module)
+
+    refute function_exported?(module, :render, 0)
+
+    send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
+
+    assert_eventually(fn ->
+      Process.alive?(pid) and count_renderer_ops(renderer, :patch_tree) == 1 and
+        rendered_text(pid) == "reload zero"
+    end)
+
+    GenServer.stop(pid)
+  end
+
   test "initial render failures keep viewport alive without starting the renderer" do
     log =
       capture_log(fn ->
@@ -744,6 +767,51 @@ defmodule Emerge.ViewportTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition was not met")
+
+  defp compile_reloadable_render_zero_viewport do
+    suffix = System.unique_integer([:positive])
+    module = Module.concat(__MODULE__, "ReloadableRenderZeroViewport#{suffix}")
+    beam_dir = Path.join(System.tmp_dir!(), "emerge_viewport_test_#{suffix}")
+    source_path = Path.join(beam_dir, "reloadable_render_zero_viewport.ex")
+
+    source = """
+    defmodule #{inspect(module)} do
+      use Emerge
+
+      @impl Viewport
+      def mount(_opts) do
+        {:ok,
+         emerge_skia: [otp_app: :emerge],
+         viewport: [
+           renderer_module: Emerge.ViewportTest.FakeRenderer,
+           renderer_check_interval_ms: nil
+         ]}
+      end
+
+      @impl Viewport
+      def render, do: el([], text(\"reload zero\"))
+    end
+    """
+
+    File.mkdir_p!(beam_dir)
+    File.write!(source_path, source)
+
+    assert {:ok, [^module], %{compile_warnings: [], runtime_warnings: []}} =
+             Kernel.ParallelCompiler.compile_to_path([source_path], beam_dir,
+               return_diagnostics: true
+             )
+
+    Code.prepend_path(beam_dir)
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+      Code.delete_path(beam_dir)
+      File.rm_rf!(beam_dir)
+    end)
+
+    module
+  end
 
   defp count_renderer_ops(renderer, op_name) do
     renderer

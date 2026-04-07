@@ -352,13 +352,13 @@ defmodule Emerge.Engine.AttrValidation do
   defp validate_animation_repeat!(_owner_name, :once), do: :ok
   defp validate_animation_repeat!(_owner_name, :loop), do: :ok
 
-  defp validate_animation_repeat!(_owner_name, {:times, count})
-       when is_integer(count) and count > 0,
+  defp validate_animation_repeat!(_owner_name, repeat)
+       when is_integer(repeat) and repeat > 0,
        do: :ok
 
   defp validate_animation_repeat!(owner_name, repeat) do
     raise ArgumentError,
-          "#{owner_name} expects :repeat to be :once, :loop, or {:times, positive_integer}, got: #{inspect(repeat)}"
+          "#{owner_name} expects :repeat to be :once, :loop, or a positive integer, got: #{inspect(repeat)}"
   end
 
   defp validate_length_compatibility!(owner_name, key, first, other, index) do

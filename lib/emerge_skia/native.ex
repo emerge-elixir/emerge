@@ -185,6 +185,19 @@ defmodule EmergeSkia.Native do
   def render_tree_to_pixels_nif(_data, _opts),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc """
+  Render a tree to an encoded PNG binary (synchronous, no window).
+
+  The tree is provided as an encoded EMRG binary. Asset policy mirrors
+  `EmergeSkia.start/1`, with an additional offscreen asset mode.
+  """
+  @spec render_tree_to_png_nif(
+          binary(),
+          map()
+        ) :: binary() | {:ok, binary()} | {:error, String.t()}
+  def render_tree_to_png_nif(_data, _opts),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   # ===========================================================================
   # Input Handling
   # ===========================================================================

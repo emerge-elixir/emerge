@@ -19,7 +19,7 @@ use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
 };
-use super::geometry::{ClipShape, Rect, host_clip_shape};
+use super::geometry::{ClipShape, Rect, host_clip_shape, self_shape as geometry_self_shape};
 use super::layout::FontContext;
 use super::scene::{
     ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
@@ -47,15 +47,19 @@ struct HostClipDescriptor {
 struct RenderBuildContext {
     scene_bounds: Rect,
     inherited_host_clips: Vec<HostClipDescriptor>,
+    inherited_self_clips: Vec<ClipShape>,
 }
 
 impl RenderBuildContext {
-    fn with_host_clip(&self, clip: HostClipDescriptor) -> Self {
+    fn with_host_clip(&self, clip: HostClipDescriptor, self_clip: ClipShape) -> Self {
         let mut inherited_host_clips = self.inherited_host_clips.clone();
+        let mut inherited_self_clips = self.inherited_self_clips.clone();
         inherited_host_clips.push(clip);
+        inherited_self_clips.push(self_clip);
         Self {
             scene_bounds: self.scene_bounds,
             inherited_host_clips,
+            inherited_self_clips,
         }
     }
 
@@ -63,6 +67,7 @@ impl RenderBuildContext {
         Self {
             scene_bounds: self.scene_bounds,
             inherited_host_clips: Vec::new(),
+            inherited_self_clips: Vec::new(),
         }
     }
 
@@ -99,6 +104,10 @@ impl RenderBuildContext {
                 }),
             })
             .collect()
+    }
+
+    fn nearest_self_clip(&self) -> Option<ClipShape> {
+        self.inherited_self_clips.last().copied()
     }
 }
 
@@ -222,15 +231,14 @@ fn build_element_nodes(
     let mut sections = Vec::new();
 
     let outer_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, false);
-    sections.extend(wrap_with_clips(
+    sections.extend(wrap_with_shadow_pass(wrap_with_clips(
         wrap_with_transform(outer_shadow_nodes, transform),
         traversal.render_ctx.shadow_clip_shapes(),
-    ));
+    )));
 
-    let mut normal_nodes = Vec::new();
-    normal_nodes.extend(build_background_nodes(render_frame, attrs, radius));
-    normal_nodes.extend(collect_box_shadow_nodes(render_frame, attrs, radius, true));
-    normal_nodes.extend(build_host_content_nodes(
+    let background_nodes = build_background_nodes(render_frame, attrs);
+    let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
+    let host_content_nodes = build_host_content_nodes(
         tree,
         element,
         render_frame,
@@ -243,12 +251,45 @@ fn build_element_nodes(
             render_ctx: traversal.render_ctx,
         },
         scene_state.clone(),
-    ));
-    normal_nodes.extend(collect_border_nodes(render_frame, attrs));
-    sections.extend(wrap_with_clips(
-        wrap_with_transform(normal_nodes, transform),
-        traversal.render_ctx.full_clip_shapes(),
-    ));
+    );
+    let border_nodes = collect_border_nodes(render_frame, attrs);
+    let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
+    let inherited_self_clip = traversal.render_ctx.nearest_self_clip();
+
+    if matches!(element.kind, ElementKind::Image | ElementKind::Video) {
+        let mut decorative_nodes = Vec::new();
+        decorative_nodes.extend(background_nodes);
+        decorative_nodes.extend(inset_shadow_nodes);
+        decorative_nodes.extend(border_nodes);
+
+        let content_clips = if image_video_needs_own_host_clip(attrs) {
+            inherited_host_clips.clone()
+        } else {
+            inherited_self_clip
+                .map(|clip| vec![clip])
+                .unwrap_or_else(|| inherited_host_clips.clone())
+        };
+
+        sections.extend(wrap_with_clips(
+            wrap_with_transform(decorative_nodes, transform),
+            inherited_host_clips.clone(),
+        ));
+        sections.extend(wrap_with_relaxed_clips(
+            wrap_with_transform(host_content_nodes, transform),
+            content_clips,
+        ));
+    } else {
+        let mut normal_nodes = Vec::new();
+        normal_nodes.extend(background_nodes);
+        normal_nodes.extend(inset_shadow_nodes);
+        normal_nodes.extend(host_content_nodes);
+        normal_nodes.extend(border_nodes);
+
+        sections.extend(wrap_with_clips(
+            wrap_with_transform(normal_nodes, transform),
+            inherited_host_clips,
+        ));
+    }
 
     sections.extend(wrap_with_transform(
         build_front_nearby_nodes(
@@ -288,7 +329,14 @@ fn build_host_content_nodes(
         scroll_x: effective_scrollbar_x(attrs),
         scroll_y: effective_scrollbar_y(attrs),
     };
-    let child_render_ctx = traversal.render_ctx.with_host_clip(current_host_clip);
+    let current_self_shape = geometry_self_shape(render_frame, attrs);
+    let child_render_ctx = traversal.render_ctx.with_host_clip(
+        current_host_clip,
+        ClipShape {
+            rect: current_self_shape.rect,
+            radii: current_self_shape.radii,
+        },
+    );
 
     let mut nodes = build_nearby_nodes(
         tree,
@@ -305,7 +353,7 @@ fn build_host_content_nodes(
         scene_state.clone(),
     );
 
-    nodes.extend(wrap_with_clips(
+    nodes.extend(wrap_own_content_nodes(
         build_own_content_nodes(
             element,
             render_frame,
@@ -314,7 +362,9 @@ fn build_host_content_nodes(
             outputs.text_input_focused,
             outputs.text_input_cursor_area,
         ),
-        vec![current_host_clip.clip],
+        attrs,
+        element.kind,
+        current_host_clip.clip,
     ));
 
     if element.kind == ElementKind::Paragraph {
@@ -348,9 +398,9 @@ fn build_host_content_nodes(
         ));
     }
 
-    nodes.extend(wrap_with_clips(
+    nodes.extend(wrap_with_host_clip(
         collect_scrollbar_nodes(scene_state.as_ref(), render_frame, attrs),
-        vec![current_host_clip.clip],
+        current_host_clip.clip,
     ));
 
     nodes
@@ -527,7 +577,7 @@ fn build_paragraph_nodes(
             }
         }
     }
-    nodes.extend(wrap_with_clips(fragment_nodes, vec![current_host_clip]));
+    nodes.extend(wrap_with_host_clip(fragment_nodes, current_host_clip));
 
     nodes
 }
@@ -583,6 +633,61 @@ fn wrap_with_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderN
         clips,
         children: nodes,
     }]
+}
+
+fn wrap_with_relaxed_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    if clips.is_empty() {
+        return nodes;
+    }
+
+    vec![RenderNode::RelaxedClip {
+        clips,
+        children: nodes,
+    }]
+}
+
+fn wrap_with_shadow_pass(nodes: Vec<RenderNode>) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    vec![RenderNode::ShadowPass { children: nodes }]
+}
+
+fn wrap_with_host_clip(nodes: Vec<RenderNode>, host_clip: ClipShape) -> Vec<RenderNode> {
+    wrap_with_clips(nodes, vec![host_clip])
+}
+
+fn wrap_own_content_nodes(
+    nodes: Vec<RenderNode>,
+    attrs: &Attrs,
+    kind: ElementKind,
+    host_clip: ClipShape,
+) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    if matches!(kind, ElementKind::Image | ElementKind::Video) {
+        if !image_video_needs_own_host_clip(attrs) {
+            return nodes;
+        }
+
+        return vec![RenderNode::RelaxedClip {
+            clips: vec![host_clip],
+            children: nodes,
+        }];
+    }
+
+    wrap_with_host_clip(nodes, host_clip)
+}
+
+fn image_video_needs_own_host_clip(attrs: &Attrs) -> bool {
+    attrs.padding.is_some() || attrs.border_width.is_some() || attrs.border_radius.is_some()
 }
 
 fn wrap_with_transform(

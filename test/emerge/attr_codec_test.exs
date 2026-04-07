@@ -301,7 +301,7 @@ defmodule Emerge.Engine.AttrCodecTest do
         ],
         duration: 420,
         curve: :ease_in_out,
-        repeat: :loop
+        repeat: 3
       }
     }
 
@@ -438,6 +438,21 @@ defmodule Emerge.Engine.AttrCodecTest do
         }
       })
     end
+  end
+
+  test "animate encoding rejects tuple repeat counts" do
+    assert_raise ArgumentError,
+                 ~r/expects :repeat to be :once, :loop, or a positive integer/,
+                 fn ->
+                   AttrCodec.encode_attrs(%{
+                     animate: %{
+                       keyframes: [%{alpha: 0.0}, %{alpha: 1.0}],
+                       duration: 180,
+                       curve: :linear,
+                       repeat: {:times, 2}
+                     }
+                   })
+                 end
   end
 
   test "encode/decode direct state style maps normalize single box shadows" do

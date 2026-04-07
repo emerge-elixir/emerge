@@ -1,16 +1,14 @@
 # Set up a viewport
 
-A viewport is an Elixir process that manages your app's native renderer.
+A viewport is an Elixir process that manages a renderer for Emerge.
 
-It sends UI definitions to the renderer, requests rerenders when needed, and routes renderer events back to Elixir.
+Think of it as a gateway to the user. It sends UI definitions to the renderer, requests rerenders when needed, and routes renderer events back to Elixir.
 
-On Wayland, you can think of a viewport as a GUI window. You can start multiple viewports at the same time to open multiple windows.
+On Wayland, one viewport is one GUI window. You can start multiple viewports at the same time to open multiple windows.
 
-With the DRM backend on Nerves, the viewport renders to the first connected display.
+With the DRM backend (mostly used on Nerves), the viewport renders to the first connected display.
 
-## A small counter viewport
-
-This example keeps the counter state inside the viewport so you can see the full event flow in one module.
+## Example
 
 ```elixir
 defmodule MyApp.View.Counter do
@@ -31,14 +29,14 @@ defmodule MyApp.View.Counter do
         padding(12)
       ],
       [
-        button([Event.on_press(:decrement)], text("-")),
+        my_button([Event.on_press(:decrement)], text("-")),
         el([padding(10)], text("Count: #{count}")),
-        button([Event.on_press(:increment)], text("+"))
+        my_button([Event.on_press(:increment)], text("+"))
       ]
     )
   end
 
-  defp button(attrs, content) do
+  defp my_button(attrs, content) do
     Input.button(
       attrs ++ [
         padding(10),
@@ -61,19 +59,22 @@ defmodule MyApp.View.Counter do
 end
 ```
 
-`use Emerge` brings common `Emerge.UI` helpers into scope, so you can call `row/2`, `el/2`, `text/1`, and `Input.button/2` directly.
 
-In this module:
+### Callbacks
 
-- `mount/1` creates the initial viewport state and returns default viewport options
-- `render/1` defines the current UI
+`use Emerge` brings the `Viewport` behaviour and implementation, along with `Emerge.UI` helpers, into scope.
+
+You have to implement the `mount/1` callback and either `render/0` or `render/1`; `handle_info/2` is optional.
+
+- `mount/1` creates the initial viewport state and returns the default viewport options
+- `render/0` or `render/1` returns the UI definition
 - `handle_info/2` receives routed element events and triggers rerenders
 
 If a viewport does not need local state, `mount/1` can return `{:ok, opts}` and `render/0` can be used instead.
 
 ## Start a Wayland window
 
-To run this on Wayland, you need Linux, a Wayland session, and a build that includes the Wayland backend.
+To run this on Wayland, you need Linux with a working Wayland session.
 
 From `iex -S mix`:
 
@@ -81,25 +82,26 @@ From `iex -S mix`:
 {:ok, pid} = MyApp.View.Counter.start_link()
 ```
 
-This starts the viewport process and opens the counter in a window.
+You should now see a window with a counter rendering inside of it.
 
-This is the smallest live viewport setup: no explicit backend, window size, or `otp_app`.
 
-## What defaults did that use?
+## Mount options
 
 `MyApp.View.Counter.start_link()` uses the options returned by `mount/1`, plus renderer defaults for anything you do not set.
 
-In this case:
+### Options
+- `title` comes from `mount/1`. Sets the window title
+- `width` and `height` default to `800x600`. This is just the initial window size; you can resize it.
+- `otp_app` is inferred from the viewport module. It tells Emerge where to resolve logical assets from `priv/`. Set it explicitly when that inference is not enough.
+- `backend` selects how the viewport is presented. If `backend` is omitted, Emerge uses the runtime default backend.
+- `assets` - Asset runtime policy options (optional)
 
-- `title` comes from `mount/1`
-- `otp_app` is inferred from the viewport module
-- `width` defaults to `800`
-- `height` defaults to `600`
 
-If `backend` is omitted, Emerge uses the runtime default backend.
+### Backends
 
-On desktop builds, that is `:wayland`.
-On Nerves builds, that is `:drm`.
+Default backends:
+- `:wayland` for desktop builds
+- `:drm` for Nerves builds
 
 Backend selection also has a compile-time requirement: a backend can start at runtime only if it was compiled into the native code.
 
@@ -117,34 +119,23 @@ config :emerge, compiled_backends: [:wayland, :drm]
 
 If you leave `compiled_backends` unset, desktop builds default to `[:wayland]` and Nerves builds default to `[:drm]`.
 
-## Change the window settings
+### Assets
 
-You can override any default returned by `mount/1` when the viewport starts.
+  `assets` options:
+  - `runtime_paths.enabled` (default: `false`)
+  - `runtime_paths.allowlist` (default: `[]`)
+  - `runtime_paths.follow_symlinks` (default: `false`)
+  - `runtime_paths.max_file_size` (default: `25_000_000`)
+  - `runtime_paths.extensions` (default image/SVG extension allowlist)
+  - `fonts` (default: `[]`)
 
-```elixir
-{:ok, pid} =
-  MyApp.View.Counter.start_link(
-    title: "Counter Large",
-    width: 1024,
-    height: 768,
-    backend: :wayland,
-    otp_app: :my_app
-  )
-```
+  Each `assets.fonts` entry supports:
+  - `family` (required)
+  - `source` (required, logical path under `<otp_app>/priv` or `%Emerge.Assets.Ref{}`)
+  - `weight` (default: `400`)
+  - `italic` (default: `false`)
 
-These options change the viewport itself:
-
-- `title` sets the window title
-- `width` sets the initial width
-- `height` sets the initial height
-- `backend` selects how the viewport is presented
-- `otp_app` tells Emerge where to resolve logical assets from `priv/`
-
-For `use Emerge` viewports, Emerge infers `otp_app` from the module when it can. Set it explicitly when that inference is not enough.
-
-These options do not change the UI defined by `render/1`. They change where and how it is displayed.
-
-## How element events reach the viewport
+## Event handling
 
 The counter attaches `Event.on_press/1` to each button:
 
@@ -157,15 +148,10 @@ Event helpers accept `{pid, event_message}`.
 
 If you pass only a message, Emerge uses `{self(), event_message}` by default.
 
-So this:
-
 ```elixir
+# This is just a shorthand
 Event.on_press(:increment)
-```
-
-is shorthand for:
-
-```elixir
+# for
 Event.on_press({self(), :increment})
 ```
 
@@ -180,8 +166,6 @@ So:
 
 When the target pid is the viewport, the message arrives in `handle_info/2`.
 
-The counter updates here:
-
 ```elixir
 @impl Viewport
 def handle_info(:increment, state) do
@@ -193,6 +177,8 @@ def handle_info(:decrement, state) do
   {:noreply, Viewport.rerender(%{state | count: state.count - 1})}
 end
 ```
+
+`Viewport.rerender` is not a direct call to `render`. It sets a flag in the state for the viewport to rerender.
 
 Payload-carrying element events follow the same routing rule.
 
@@ -212,17 +198,19 @@ and that message is sent to `self()` unless you provide another pid explicitly.
 
 ## Keeping app state in the viewport is an anti-pattern
 
-This tutorial keeps the counter state inside the viewport so you can see the event flow in one module.
+This tutorial keeps the counter state inside the viewport for demonstration purposes.
 
-That works well for a small example, but it does not scale in real applications. Shared state is harder to coordinate, background work turns into manual message passing, and more application logic ends up in the rendering process.
+That works well for a small example and could be enough for small applications, but it does not scale to complex applications.
+Shared state becomes harder to coordinate, background work turns into manual message passing, and more application logic ends up in the rendering process.
 
-In practice, keep application state outside the viewport. Later guides will introduce `Solve` as the primary state management library for Emerge apps.
+It is good practice to keep application state and rendering as separate concerns.
+In the "Manage your state" guide, you will be introduced to `Solve` as a state management solution.
 
 That keeps the viewport focused on rendering and rerendering instead of owning application state and business logic.
 
-## Add the viewport to your application
+## Adding the viewport to your supervision tree
 
-Start a `use Emerge` module under your application supervisor like any other child.
+You can start a viewport module under your application supervisor like any other child.
 
 ```elixir
 defmodule MyApp.Application do
@@ -239,14 +227,6 @@ defmodule MyApp.Application do
 end
 ```
 
-Starting the application also starts the viewport.
-
-For example:
-
-```bash
-iex -S mix
-```
-
 If you want to override viewport defaults at startup, use `child_spec/1`:
 
 ```elixir
@@ -259,20 +239,22 @@ children = [
 ]
 ```
 
-## Enable hot code reload in dev
+## Hot code reloading in development
 
-In `example/`, `Emerge.Runtime.CodeReloader` starts only in `:dev`.
+Emerge comes with a `CodeReloader` that works in a similar fashion to the Phoenix code reloader.
 
 ```elixir
 defmodule MyApp.Application do
   use Application
+
+  @env Mix.env()
 
   @impl true
   def start(_type, _args) do
     Supervisor.start_link(children(), strategy: :one_for_one, name: MyApp.Supervisor)
   end
 
-  def children(env \\ Mix.env())
+  def children(env \\ @env)
   def children(:dev), do: base_children() ++ [hot_reload_child()]
   def children(_other), do: base_children()
 
@@ -324,29 +306,14 @@ With this in place, `iex -S mix` starts the viewport, watches the configured sou
 
 In this example, `Path.expand("..", __DIR__)` points at `lib/`, so changes under `lib/` are picked up automatically.
 
-## Viewport runtime settings
-
-Most of the options so far configure the rendered surface:
-
-- `title`
-- `width`
-- `height`
-- `backend`
-- `drm_card`
-- `otp_app`
+## Viewport-specific options
 
 A viewport can also receive runtime-specific settings under `viewport: [...]`.
 
 Two common runtime settings are:
 
-- `input_mask`
-- `renderer_check_interval_ms`
-
-`renderer_check_interval_ms` controls how often the viewport checks whether the renderer is still alive.
-
-`input_mask` controls which raw renderer inputs are delivered to the viewport. It is a bitmask built with helpers from `EmergeSkia`.
-
-Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, and text input coming directly from the renderer.
+- `renderer_check_interval_ms` controls how often the viewport checks whether the renderer is still alive.
+- `input_mask` sets which raw renderer inputs are delivered to the viewport.
 
 A mount function can include viewport runtime settings like this:
 
@@ -372,11 +339,13 @@ This asks the viewport to receive raw resize input and check renderer liveness e
 
 ## Raw renderer input
 
-Handle raw renderer input in `handle_input/2`.
+Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, and text input coming directly from the renderer.
+
+To handle raw renderer input, implement the `handle_input/2` callback.
 
 `handle_input/2` is separate from `handle_info/2`:
 
-- `handle_info/2` handles routed element events such as `:increment`
+- `handle_info/2` handles processed element events
 - `handle_input/2` handles raw renderer input selected by the input mask
 
 Representative raw input messages include:
@@ -399,11 +368,12 @@ def handle_input({:resized, {width, height, scale}}, state) do
 end
 ```
 
-Use `handle_input/2` when the viewport needs backend-level input or window and display notifications directly.
+Handling raw cursor input can cause a lot of messages, so be aware of how you handle it.
+The most common use case for raw input is listening to resize events if you want to change the UI depending on window size.
 
-## Run the same viewport on DRM
+## Run the same viewport on Nerves (DRM)
 
-To run the same viewport on DRM, you need Linux, a build that includes the DRM backend, and access to a DRM device such as `/dev/dri/card0`.
+To run the same viewport directly render using linux libdrm, you need a build that includes the DRM backend, libdrm on your system, and access to a DRM device such as `/dev/dri/card0`, for nerves_system_rpi5 that will be `/dev/dri/card1`.
 
 Start the counter like this:
 
@@ -415,18 +385,9 @@ Start the counter like this:
   )
 ```
 
-`drm_card` is the additional option.
-
 On DRM, the viewport needs the rendering device explicitly so it knows which display to use.
 
-The viewport module, UI definition, element routing, and rerender flow do not change:
-
-- the same viewport process starts
-- the same `render/1` function defines the UI
-- the same element events route back into Elixir
-- the same rerender flow is used
-
-Only the backend changes.
+The viewport module, UI definition, element routing, and rerender flow do not change.
 
 To always start the application on DRM, pass those options in the child spec:
 
@@ -439,15 +400,13 @@ children = [
 ]
 ```
 
-Other DRM-specific settings are available when needed:
+Other DRM-specific settings:
 
-- `hw_cursor`
-- `drm_cursor`
-- `input_log`
-- `render_log`
+- `hw_cursor` - Enable hardware cursor when available (default: true). If the device has a cursor plane, it will draw the cursor independently from the rest of the UI.
+- `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
+- `input_log` - Log DRM input devices on startup (default: false)
+- `render_log` - Log DRM render/present diagnostics (default: false)
 
-`drm_cursor` is only supported with `backend: :drm`.
-
-## Next
-
-In the next section, you will learn how to define your UI using `Emerge.UI` modules.
+Each `drm_cursor` entry supports:
+- `source` (required, `.png` or `.svg`; logical path under `<otp_app>/priv`, `%Emerge.Assets.Ref{}`, or an absolute runtime path allowed by `assets.runtime_paths`)
+- `hotspot` (required `{x, y}` tuple; integers and floats are allowed)

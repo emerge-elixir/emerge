@@ -9,7 +9,14 @@ pub struct RenderScene {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RenderNode {
+    ShadowPass {
+        children: Vec<RenderNode>,
+    },
     Clip {
+        clips: Vec<ClipShape>,
+        children: Vec<RenderNode>,
+    },
+    RelaxedClip {
         clips: Vec<ClipShape>,
         children: Vec<RenderNode>,
     },
@@ -28,7 +35,6 @@ pub enum RenderNode {
 pub enum DrawPrimitive {
     Rect(f32, f32, f32, f32, u32),
     RoundedRect(f32, f32, f32, f32, f32, u32),
-    RoundedRectCorners(f32, f32, f32, f32, f32, f32, f32, f32, u32),
     Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
     BorderCorners(
         f32,
@@ -59,7 +65,7 @@ pub enum DrawPrimitive {
     Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
     TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
-    Gradient(f32, f32, f32, f32, u32, u32, f32, f32),
+    Gradient(f32, f32, f32, f32, u32, u32, f32),
     Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
     Video(f32, f32, f32, f32, String, ImageFit),
     ImageLoading(f32, f32, f32, f32),

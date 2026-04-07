@@ -501,6 +501,8 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp validate_render_callback_shape!(module) when is_atom(module) do
+    _ = Code.ensure_loaded(module)
+
     render0? = function_exported?(module, :render, 0)
     render1? = function_exported?(module, :render, 1)
 

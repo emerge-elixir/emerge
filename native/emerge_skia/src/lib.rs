@@ -15,6 +15,7 @@ use std::{
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
+use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
 mod actors;
 mod assets;
 mod backend;
@@ -470,7 +471,7 @@ struct DrmCursorOverrideNif {
 }
 
 #[derive(rustler::NifMap)]
-struct RenderTreeToPixelsOptsNif {
+struct RenderTreeOffscreenOptsNif {
     width: u32,
     height: u32,
     scale: f32,
@@ -482,6 +483,12 @@ struct RenderTreeToPixelsOptsNif {
     extensions: Vec<String>,
     asset_mode: String,
     asset_timeout_ms: u64,
+}
+
+struct OffscreenRasterOutput {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
 }
 
 struct TreeActorConfig {
@@ -1370,10 +1377,37 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
 fn render_tree_to_pixels_nif<'a>(
     env: Env<'a>,
     data: Binary,
-    opts: RenderTreeToPixelsOptsNif,
+    opts: RenderTreeOffscreenOptsNif,
 ) -> Result<Binary<'a>, String> {
+    let output = render_tree_offscreen(data.as_slice(), opts)?;
+
+    let mut binary = NewBinary::new(env, output.pixels.len());
+    binary.as_mut_slice().copy_from_slice(&output.pixels);
+
+    Ok(binary.into())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn render_tree_to_png_nif<'a>(
+    env: Env<'a>,
+    data: Binary,
+    opts: RenderTreeOffscreenOptsNif,
+) -> Result<Binary<'a>, String> {
+    let output = render_tree_offscreen(data.as_slice(), opts)?;
+    let encoded = encode_png(&output)?;
+
+    let mut binary = NewBinary::new(env, encoded.len());
+    binary.as_mut_slice().copy_from_slice(&encoded);
+
+    Ok(binary.into())
+}
+
+fn render_tree_offscreen(
+    data: &[u8],
+    opts: RenderTreeOffscreenOptsNif,
+) -> Result<OffscreenRasterOutput, String> {
     let mode = OffscreenAssetMode::parse(&opts.asset_mode)?;
-    let mut tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
+    let mut tree = tree::deserialize::decode_tree(data).map_err(|e| e.to_string())?;
 
     assets::configure(AssetConfig {
         sources: opts.sources,
@@ -1408,10 +1442,32 @@ fn render_tree_to_pixels_nif<'a>(
 
     let frame = backend.render(&state);
 
-    let mut binary = NewBinary::new(env, frame.data.len());
-    binary.as_mut_slice().copy_from_slice(&frame.data);
+    Ok(OffscreenRasterOutput {
+        width: opts.width,
+        height: opts.height,
+        pixels: frame.data,
+    })
+}
 
-    Ok(binary.into())
+fn encode_png(output: &OffscreenRasterOutput) -> Result<Vec<u8>, String> {
+    let info = ImageInfo::new(
+        (output.width as i32, output.height as i32),
+        ColorType::RGBA8888,
+        AlphaType::Premul,
+        None,
+    );
+    let data = Data::new_copy(&output.pixels);
+    let image = images::raster_from_data(&info, data, (output.width * 4) as usize)
+        .ok_or_else(|| "Failed to create raster image from RGBA pixels".to_string())?;
+    let encoded = image
+        .encode(
+            None::<&mut skia_safe::gpu::DirectContext>,
+            EncodedImageFormat::PNG,
+            100,
+        )
+        .ok_or_else(|| "Failed to encode raster output as PNG".to_string())?;
+
+    Ok(encoded.as_bytes().to_vec())
 }
 
 // ============================================================================

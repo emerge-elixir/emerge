@@ -12,7 +12,7 @@ defmodule EmergeDemo do
   end
 
   @impl Viewport
-  def render do
+  def render() do
     EmergeDemo.View.TodoApp.layout()
   end
 
