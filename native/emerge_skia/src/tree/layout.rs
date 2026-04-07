@@ -286,9 +286,10 @@ fn named_color(name: &str) -> u32 {
 fn parse_weight(w: &str) -> u16 {
     match w {
         "bold" => 700,
-        "normal" => 400,
+        "normal" | "regular" => 400,
         "light" => 300,
         "thin" => 100,
+        "extra_light" | "extralight" => 200,
         "medium" => 500,
         "semibold" | "semi_bold" => 600,
         "extrabold" | "extra_bold" => 800,

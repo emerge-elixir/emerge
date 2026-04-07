@@ -96,22 +96,20 @@ defp my_button(attrs, content) do
 end
 ```
 
-## Escaping the layout
+## Escaping the layout with nearby element
 
-Rows and columns are great for normal flow, but some UI needs to stay anchored to
-an element while painting outside that flow. Dropdowns open under a button,
-tooltips sit beside a control, and modals or badges paint in front of existing
-content.
+For creating dropdowns, tooltips, confirmation dialagos, modals or any other
+UX antipatterns you designer has came up with is intutive with nearby elements.
 
-That is what nearby helpers are for. `Nearby.above/1`, `Nearby.below/1`,
-`Nearby.on_left/1`, `Nearby.on_right/1`, and `Nearby.in_front/1` all let content
-escape the normal layout while staying attached to a host element.
+`Nearby.above/1`, `Nearby.below/1`, `Nearby.on_left/1`, `Nearby.on_right/1`, 
+and `Nearby.in_front/1` all let content escape the normal layout while staying
+anchored to a host element.
 
-`Nearby.behind_content/1` is a little different: it is still a nearby helper, but
-it stays in the host slot instead of escaping it. That makes it useful for things
-like placeholders, highlights, and decorative layers behind the host content.
+`Nearby.behind_content/1` is a little different: it lives between background and the
+element content. Use it to create placeholders, highlights or any
+UI tree as adecorative layers behind the host content.
 
-Here is a static dropdown menu rendered below its trigger inside a toolbar:
+Here is a standard dropdown menu rendered attached to an toolbar button:
 
 ```elixir
 def toolbar do
@@ -144,6 +142,7 @@ defp action_button do
       Border.rounded(8),
       Font.color(color(:white)),
       Event.on_press(:open_menu),
+      # Attaches dropdown menu below the button
       Nearby.below(dropdown_menu())
     ],
     text("Actions")
@@ -153,6 +152,10 @@ end
 defp dropdown_menu do
   el(
     [
+      # Aligns the right edge of the element
+      # with the right edge of the button
+      # center_x() would match the centers
+      # and align_left would match the left edges
       align_right(),
       padding(8),
       Background.color(color(:white)),
@@ -185,19 +188,10 @@ end
 
 <img src="assets/describe-ui-escaping-layout-dropdown.png" alt="Dropdown built with Nearby.below" width="360">
 
-`Nearby.below/1` attaches the menu to the button without changing the surrounding
-layout. The toolbar row stays the same size, and the help text below stays where
-the column placed it. The menu is still declared like any other element tree, it
-is just mounted in a nearby slot instead of the normal child flow.
-
 For `above` and `below`, horizontal alignment comes from the nearby root, so
-`align_right()` makes this menu line up with the trigger's right edge. Because
-`dropdown_menu/0` has no fixed width, it shrinks to fit its content and feels more
-like a natural popup than a rigid panel.
+`align_right()` makes this menu line up with the hosts's right edge. Because
 
-The rest of the nearby helpers follow the same idea: `Nearby.above/1` and
-`Nearby.below/1` anchor vertically, `Nearby.on_left/1` and `Nearby.on_right/1`
-anchor horizontally, and `Nearby.in_front/1` paints over the host slot.
-
-In a real app you would usually show a dropdown conditionally from state, but the
-UI shape stays the same.
+The rest of the nearby helpers follow the same idea: 
+- `Nearby.above/1` and `Nearby.below/1` anchor vertically with `align_left()`, `center_x` and `align_right()`
+- `Nearby.on_left/1` and `Nearby.on_right/1` anchor horizontally with `align_top`, `center_y`, and `align_bottom`
+- `Nearby.in_front/1` paints over the host slot and `width(fill())` will make it hosts width, while bigger sizes will make it escape host size.
