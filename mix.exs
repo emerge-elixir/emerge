@@ -2,7 +2,7 @@ defmodule Emerge.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/elixir-emerge/emerge"
+  @source_url "https://github.com/emerge-elixir/emerge"
 
   @nerves_rust_target_triple_mapping %{
     "armv6-nerves-linux-gnueabihf" => "arm-unknown-linux-gnueabihf",
