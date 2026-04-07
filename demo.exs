@@ -2598,7 +2598,7 @@ defmodule Demo do
       el(
         [Font.size(12), Font.color(@dim_text)],
         text(
-          "Nearby roots align from the host slot; in_front uses the host border-box and explicit px sizes can overflow."
+          "Nearby roots align from the host slot, paint in definition order on the same host, and can escape later normal siblings unless clip_nearby() opts back into clipping."
         )
       ),
       el(
@@ -2702,23 +2702,270 @@ defmodule Demo do
       nearby_overflow_card(
         "Escapes host bounds",
         "The overlay spills past the border-box slot and still paints above the host."
-      )
+      ),
+      section_title("Escaping layout"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "This toolbar dropdown is attached to the Actions button, but it still paints above the caption below because the caption stays in normal layout flow."
+        )
+      ),
+      nearby_toolbar_escape_card(),
+      section_title("Sibling precedence"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Escape overlays still follow sibling paint order. The green overlay belongs to the later sibling, so it wins where both overlays overlap."
+        )
+      ),
+      nearby_sibling_precedence_card(),
+      section_title("clip_nearby"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Escape overlays ignore ancestor clipping by default. Add clip_nearby() on a scroll container when you want that container to become a clipping barrier for nearby content inside it."
+        )
+      ),
+      row([width(fill()), spacing(12)], [
+        nearby_clip_card(
+          "Unclipped escape",
+          "The first row mounts an oversized Nearby.above card that can bleed outside the scroll viewport.",
+          false
+        ),
+        nearby_clip_card(
+          "clip_nearby()",
+          "The same scroll container clips that nearby card back to its rounded viewport.",
+          true
+        )
+      ])
     ])
   end
 
-  defp nearby_overflow_card(title, note) do
-    host_attrs = [
-      width(px(126)),
-      height(px(78)),
-      center_x(),
-      center_y(),
-      Background.color(color_rgb(76, 76, 132)),
-      Border.width(2),
-      Border.color(color_rgb(182, 194, 255)),
-      Border.rounded(10),
-      Nearby.in_front(nearby_oversized_front_overlay())
+  defp nearby_toolbar_escape_card do
+    nearby_demo_card(
+      "Dropdown over later siblings",
+      "The caption stays in the column flow. The dropdown escapes that flow and paints over it.",
+      el(
+        [
+          width(fill()),
+          padding(12),
+          Background.color(color_rgba(255, 255, 255, 12 / 255)),
+          Border.rounded(8)
+        ],
+        column([width(fill()), spacing(12)], [
+          row(
+            [
+              width(fill()),
+              padding(12),
+              spacing(12),
+              Background.color(color_rgb(232, 236, 246)),
+              Border.rounded(10)
+            ],
+            [
+              el(
+                [width(fill()), center_y(), Font.size(12), Font.color(color_rgb(79, 96, 120))],
+                text("Selected: 3 items")
+              ),
+              nearby_dropdown_trigger()
+            ]
+          ),
+          el(
+            [Font.size(12), Font.color(@dim_text)],
+            text("This caption still sits in the normal column slot.")
+          )
+        ])
+      )
+    )
+  end
+
+  defp nearby_dropdown_trigger do
+    Input.button(
+      [
+        padding(12),
+        Background.color(color_rgb(53, 71, 102)),
+        Border.rounded(10),
+        Font.color(:white),
+        Nearby.below(nearby_dropdown_menu())
+      ],
+      text("Actions")
+    )
+  end
+
+  defp nearby_dropdown_menu do
+    el(
+      [
+        align_right(),
+        padding(8),
+        Background.color(color_rgba(248, 249, 253, 245 / 255)),
+        Border.rounded(10),
+        Border.width(1),
+        Border.color(color_rgb(214, 221, 236))
+      ],
+      column([spacing(4)], [
+        nearby_dropdown_item("Rename"),
+        nearby_dropdown_item("Duplicate"),
+        nearby_dropdown_item("Delete")
+      ])
+    )
+  end
+
+  defp nearby_dropdown_item(label) do
+    Input.button(
+      [
+        width(fill()),
+        padding(10),
+        Background.color(color_rgb(239, 242, 248)),
+        Border.rounded(6),
+        Font.color(color_rgb(63, 75, 98))
+      ],
+      text(label)
+    )
+  end
+
+  defp nearby_sibling_precedence_card do
+    nearby_demo_card(
+      "Later sibling wins",
+      "Left mounts a red in_front pill, right mounts a green on_left pill. Their overlap is decided by sibling paint order, so the green one ends up on top.",
+      el(
+        [
+          width(fill()),
+          height(px(132)),
+          padding(16),
+          Background.color(color_rgba(255, 255, 255, 12 / 255)),
+          Border.rounded(8)
+        ],
+        row([width(fill()), center_y(), space_evenly()], [
+          el(
+            [
+              width(px(96)),
+              height(px(58)),
+              Background.color(color_rgb(104, 66, 92)),
+              Border.rounded(10),
+              Nearby.in_front(
+                nearby_precedence_overlay(
+                  "Earlier in_front",
+                  color_rgb(220, 92, 120),
+                  [align_right(), center_y()]
+                )
+              )
+            ],
+            el([center_x(), center_y(), Font.size(12), Font.color(:white)], text("Left"))
+          ),
+          el(
+            [
+              width(px(96)),
+              height(px(58)),
+              Background.color(color_rgb(61, 86, 122)),
+              Border.rounded(10),
+              Nearby.on_left(
+                nearby_precedence_overlay(
+                  "Later on_left",
+                  color_rgb(74, 186, 132),
+                  [center_y()]
+                )
+              )
+            ],
+            el([center_x(), center_y(), Font.size(12), Font.color(:white)], text("Right"))
+          )
+        ])
+      )
+    )
+  end
+
+  defp nearby_precedence_overlay(label, bg, extra_attrs) do
+    el(
+      extra_attrs ++
+        [
+          width(px(118)),
+          padding(8),
+          Background.color(bg),
+          Border.rounded(8),
+          Font.size(11),
+          Font.color(:white)
+        ],
+      text(label)
+    )
+  end
+
+  defp nearby_clip_card(title, note, clipped?) do
+    panel_attrs = [
+      width(fill()),
+      height(px(196)),
+      padding(12),
+      spacing(10),
+      scrollbar_y(),
+      Background.color(color_rgba(255, 255, 255, 12 / 255)),
+      Border.rounded(8)
     ]
 
+    panel_attrs = if clipped?, do: [clip_nearby() | panel_attrs], else: panel_attrs
+
+    nearby_demo_card(
+      title,
+      note,
+      el(
+        panel_attrs,
+        column([spacing(10)], [
+          nearby_clip_scroll_item(
+            "Pinned review",
+            "This row mounts an oversized Nearby.above card.",
+            true
+          ),
+          nearby_clip_scroll_item("Payments", "Scrollable list content.", false),
+          nearby_clip_scroll_item("Invoices", "Scrollable list content.", false),
+          nearby_clip_scroll_item("Notes", "Scrollable list content.", false),
+          nearby_clip_scroll_item("Archive", "Scrollable list content.", false)
+        ])
+      )
+    )
+  end
+
+  defp nearby_clip_scroll_item(title, subtitle, show_overlay?) do
+    attrs = [
+      width(fill()),
+      padding(12),
+      Background.color(color_rgb(76, 76, 132)),
+      Border.rounded(10)
+    ]
+
+    attrs =
+      if show_overlay?, do: [Nearby.above(nearby_clip_preview_overlay()) | attrs], else: attrs
+
+    el(
+      attrs,
+      column([spacing(4)], [
+        el([Font.size(12), Font.color(:white)], text(title)),
+        el(
+          [Font.size(10), Font.color(color_rgba(225, 230, 245, 220 / 255))],
+          text(subtitle)
+        )
+      ])
+    )
+  end
+
+  defp nearby_clip_preview_overlay do
+    el(
+      [
+        width(px(168)),
+        align_right(),
+        Transform.move_y(-8),
+        padding(10),
+        Background.color(color_rgba(235, 96, 140, 210 / 255)),
+        Border.rounded(10),
+        Font.size(10),
+        Font.color(:white)
+      ],
+      column([spacing(4)], [
+        text("Nearby.above 168px wide"),
+        el(
+          [Font.size(10), Font.color(color_rgba(255, 255, 255, 220 / 255))],
+          text("Only the clipped panel keeps it inside the rounded viewport.")
+        )
+      ])
+    )
+  end
+
+  defp nearby_demo_card(title, note, body) do
     column(
       [
         width(fill()),
@@ -2730,19 +2977,37 @@ defmodule Demo do
       [
         el([Font.size(13), Font.color(@light_text)], text(title)),
         el([Font.size(11), Font.color(@dim_text)], text(note)),
+        body
+      ]
+    )
+  end
+
+  defp nearby_overflow_card(title, note) do
+    nearby_demo_card(
+      title,
+      note,
+      el(
+        [
+          width(fill()),
+          height(px(180)),
+          Background.color(color_rgba(255, 255, 255, 12 / 255)),
+          Border.rounded(8)
+        ],
         el(
           [
-            width(fill()),
-            height(px(180)),
-            Background.color(color_rgba(255, 255, 255, 12 / 255)),
-            Border.rounded(8)
+            width(px(126)),
+            height(px(78)),
+            center_x(),
+            center_y(),
+            Background.color(color_rgb(76, 76, 132)),
+            Border.width(2),
+            Border.color(color_rgb(182, 194, 255)),
+            Border.rounded(10),
+            Nearby.in_front(nearby_oversized_front_overlay())
           ],
-          el(
-            host_attrs,
-            el([center_x(), center_y(), Font.size(13), Font.color(:white)], text("Host"))
-          )
+          el([center_x(), center_y(), Font.size(13), Font.color(:white)], text("Host"))
         )
-      ]
+      )
     )
   end
 
