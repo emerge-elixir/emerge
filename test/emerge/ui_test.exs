@@ -109,6 +109,49 @@ defmodule Emerge.UITest do
     assert Font.word_spacing(4) == {:font_word_spacing, 4}
   end
 
+  test "font weight helpers return canonical attrs" do
+    assert Font.thin() == {:font_weight, :thin}
+    assert Font.extra_light() == {:font_weight, :extra_light}
+    assert Font.light() == {:font_weight, :light}
+    assert Font.regular() == {:font_weight, :regular}
+    assert Font.normal() == {:font_weight, :regular}
+    assert Font.medium() == {:font_weight, :medium}
+    assert Font.semi_bold() == {:font_weight, :semi_bold}
+    assert Font.bold() == {:font_weight, :bold}
+    assert Font.extra_bold() == {:font_weight, :extra_bold}
+    assert Font.black() == {:font_weight, :black}
+  end
+
+  test "font weight/1 maps the full numeric range" do
+    assert Font.weight(100) == {:font_weight, :thin}
+    assert Font.weight(200) == {:font_weight, :extra_light}
+    assert Font.weight(300) == {:font_weight, :light}
+    assert Font.weight(400) == {:font_weight, :regular}
+    assert Font.weight(500) == {:font_weight, :medium}
+    assert Font.weight(600) == {:font_weight, :semi_bold}
+    assert Font.weight(700) == {:font_weight, :bold}
+    assert Font.weight(800) == {:font_weight, :extra_bold}
+    assert Font.weight(900) == {:font_weight, :black}
+  end
+
+  test "font weight/1 rejects unsupported values" do
+    assert_raise ArgumentError, ~r/Font.weight\/1 expects one of/, fn ->
+      Font.weight(0)
+    end
+
+    assert_raise ArgumentError, ~r/Font.weight\/1 expects one of/, fn ->
+      Font.weight(150)
+    end
+
+    assert_raise ArgumentError, ~r/Font.weight\/1 expects one of/, fn ->
+      Font.weight(950)
+    end
+
+    assert_raise ArgumentError, ~r/Font.weight\/1 expects one of/, fn ->
+      Font.weight(:bold)
+    end
+  end
+
   test "focus_on_mount helper returns attr" do
     assert focus_on_mount() == {:focus_on_mount, true}
   end
