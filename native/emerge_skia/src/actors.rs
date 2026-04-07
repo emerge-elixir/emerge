@@ -76,7 +76,13 @@ pub enum TreeMsg {
 
 pub enum EventMsg {
     InputEvent(InputEvent),
-    RegistryUpdate { rebuild: RegistryRebuildPayload },
+    PresentTiming {
+        presented_at: Instant,
+        predicted_next_present_at: Instant,
+    },
+    RegistryUpdate {
+        rebuild: RegistryRebuildPayload,
+    },
     SetInputMask(u32),
     SetInputTarget(Option<LocalPid>),
     Stop,
