@@ -1,57 +1,61 @@
 # Emerge
 
-GPU accelerated GUI framework.
 
-Write GUIs directly from Elixir using declarative API
-inspired by [Elm-UI](https://package.elm-lang.org/packages/mdgriffith/elm-ui/1.1.8/) library.
-
-It makes writing layouts simple, fun and easy to modify as layout and style are centralized.
-UI is tree of elements where each element has attributes and children.
-`row(attrs, children)`
+Write native GUI directly from Elixir using declarative API.
 
 ## Quick example
 
-
 ```elixir
-defmodule MyApp.Counter do
+defmodule MyApp.View.Counter do
   use Emerge
+  use Solve.Lookup
 
   @impl Viewport
-  def mount(opts) do
-    state = %{count: 0}
-    {:ok, state, Keyword.merge([title: "Counter"], opts)}
-  end
+  def mount(opts), do: {:ok, Keyword.merge([title: "Counter"], opts)}
 
   @impl Viewport
-  def render(state) do
-    row([spacing(12), padding(12)], [
-      el([Font.color(color(:white))], text("Count: #{state.count}")),
-      Input.button(
-        [
-          padding(10),
-          Background.color(color(:sky, 500)),
-          Border.rounded(8),
-          Event.on_press(:increment)
-        ],
-        text("+")
-      )
-    ])
+  def render() do
+    counter = solve(MyApp.State, :counter)
+
+    row(
+      [
+        Background.color(color(:slate, 800)),
+        Font.color(color(:white)),
+        spacing(12),
+        padding(12)
+      ],
+      [
+        my_button([Event.on_press(event(counter, :increment))], text("+")),
+        el([padding(10)], text("Count: #{counter.count}")),
+        my_button([Event.on_press(event(counter, :decrement))], text("-"))
+      ]
+    )
   end
 
-  @impl Viewport
-  def handle_info(:increment, state) do
-    {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
+  # Reusable "component" is just plain elixir function
+  def my_button(attrs, content) do
+    Input.button(
+      attrs ++ [
+        padding(10),
+        Background.color(color(:sky, 500)),
+        Border.rounded(8)
+      ],
+      content
+    )
   end
+
+  @impl Solve.Lookup
+  def handle_solve_updated(_updated, state), do: {:ok, Viewport.rerender(state)}
 end
 ```
 
-This example uses internal state similar to LiveView but I would strongly
-discourage you from that pattern and encourage you to take a look at [Solve](https://github.com/emerge-elixir/solve)
-for state management as by design is no way to create stateful component beyond viewport.
-Solve will also save you from prop drilling.
+<img src="assets/counter-basic.png" alt="Rendered counter example" width="272">
 
-For a fuller app structure, see the Solve-backed TodoMVC example in `example/`.
-It shows viewport wiring, collection controllers, inline editing, and mount-time focus.
+Emerge is designed with [Solve](https://github.com/emerge-elixir/solve) in mind as state managment solution,
+it does not depend on it so you can roll your own solution easily.
+
+For a fuller app example, see [TodoMVC example](https://github.com/emerge-elixir/emerge/tree/main/example)
+
 
 
 ## Rendering organization
@@ -65,7 +69,14 @@ defmodule MyApp.UI do
   use Emerge.UI
 
   def dashboard(user) do
-    column([padding(20), spacing(16)], [
+    column([
+      width(fill()),
+      padding(20),
+      spacing(16),
+      Background.color(color(:slate, 900)),
+      Border.rounded(12),
+      Font.color(color(:white))
+    ], [
       header(user),
       stats(user),
       actions()
@@ -114,36 +125,7 @@ defmodule MyApp.UI do
 end
 ```
 
-
-### Layout elements
-
-Each container element takes 2 arguments: a list of attributes and its child or children.
-
-The basic building block is `el/2`, which always accepts exactly one child element.
-Use `el([], none())` for an empty element.
-
-`text/1` is a standalone content element. It does not wrap by default.
-Use `paragraph/2` and `text_column/2` for wrapped text flows.
-
-If you want an element to have multiple children, use `row/2`, `column/2`, `wrapped_row/2`,
-`paragraph/2`, or `text_column/2`.
-
-### Layout sizing
-
-Element can be declared to fixed size by using `width(px)` and `height(px)`
-attributes where px is number.
-
-Sizing can also be relative to elements peer element:
-- `shrink` attribute will shrink an element to fit it's contents it is also a default.
-- `fill` Fill the available space. The available space will be split evenly between elements that have width fill.
-- `fill(n)` Fill available space by ratio. `fill()` is equivalent to `fill(1)`
-- `min(px(50), fill())` / `max(px(300), shrink())` Clamp a length while still composing with `fill()` or `shrink()`
-
-### Spacing
-
-Spacing in Emerge is achieved by using `padding` and `spacing`.
-
-Padding is the distance between the outer edge and the content, and spacing is the space between children.
+<img src="assets/dashboard-functions.png" alt="Rendered dashboard example" width="760">
 
 ### Features
 
@@ -301,6 +283,8 @@ defmodule MyApp.UI do
   end
 end
 ```
+
+<img src="assets/assets-image-and-background.png" alt="Rendered image asset example" width="320">
 
 Background image fit helpers:
 

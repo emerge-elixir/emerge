@@ -12,6 +12,13 @@ defmodule EmergeSkiaTest do
     {r, g, b, a}
   end
 
+  defp png_dimensions(png) do
+    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, "IHDR", width::32, height::32, _::binary>> =
+      png
+
+    {width, height}
+  end
+
   test "render_to_pixels returns RGBA binary" do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
 
@@ -20,6 +27,27 @@ defmodule EmergeSkiaTest do
 
     # 10x10 pixels, 4 bytes each = 400 bytes
     assert byte_size(pixels) == 400
+  end
+
+  test "render_to_pixels leaves uncovered pixels transparent by default" do
+    tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
+
+    pixels =
+      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+
+    assert rgba_at(pixels, 10, 1, 1) == {255, 0, 0, 255}
+    assert rgba_at(pixels, 10, 9, 9) == {0, 0, 0, 0}
+  end
+
+  test "render_to_png returns encoded PNG binary" do
+    tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
+
+    png =
+      EmergeSkia.render_to_png(tree, otp_app: :emerge, width: 10, height: 10)
+
+    assert <<137, 80, 78, 71, 13, 10, 26, 10, _::binary>> = png
+    assert png_dimensions(png) == {10, 10}
+    assert byte_size(png) > 50
   end
 
   test "render_to_pixels supports snapshot placeholders" do

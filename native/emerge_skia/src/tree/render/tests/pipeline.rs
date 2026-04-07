@@ -33,6 +33,54 @@ fn build_two_child_tree(
     tree
 }
 
+fn build_nested_child_tree(
+    mut root_attrs: Attrs,
+    root_frame: Frame,
+    mut parent_attrs: Attrs,
+    parent_frame: Frame,
+    mut child_attrs: Attrs,
+    child_frame: Frame,
+) -> ElementTree {
+    if root_attrs.background.is_none() {
+        root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    }
+
+    if parent_attrs.background.is_none() {
+        parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    }
+
+    if child_attrs.background.is_none() {
+        child_attrs.background = Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        }));
+    }
+
+    let root_id = ElementId::from_term_bytes(vec![210]);
+    let parent_id = ElementId::from_term_bytes(vec![211]);
+    let child_id = ElementId::from_term_bytes(vec![212]);
+
+    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![parent_id.clone()];
+    root.frame = Some(root_frame);
+
+    let mut parent =
+        Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![child_id.clone()];
+    parent.frame = Some(parent_frame);
+
+    let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
+    child.frame = Some(child_frame);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(root_id);
+    tree.insert(root);
+    tree.insert(parent);
+    tree.insert(child);
+    tree
+}
+
 #[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
     let root_id = ElementId::from_term_bytes(vec![40]);
@@ -1556,7 +1604,69 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
 }
 
 #[test]
+fn test_outer_shadow_bleeds_into_parent_padding() {
+    let mut parent_attrs = Attrs::default();
+    parent_attrs.padding = Some(Padding::Uniform(10.0));
+    parent_attrs.background = Some(Background::Color(Color::Rgba {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    }));
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    }));
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        size: 4.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let tree = build_tree_with_child_frame(
+        parent_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 60.0,
+            height: 30.0,
+            content_width: 60.0,
+            content_height: 30.0,
+        },
+        child_attrs,
+        Frame {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 10.0,
+            content_width: 20.0,
+            content_height: 10.0,
+        },
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(60, 30, &tree);
+    let padding_shadow = rgba_at(&pixels, 60, 8, 14);
+    let outside = rgba_at(&pixels, 60, 4, 14);
+
+    assert!(
+        padding_shadow.3 > 0,
+        "outer shadow should remain visible in the parent's padding"
+    );
+    assert_eq!(
+        outside.3, 0,
+        "pixels outside the outer shadow halo should stay transparent"
+    );
+}
+
+#[test]
 fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
+    let root_attrs = Attrs::default();
     let mut parent_attrs = Attrs::default();
     parent_attrs.scrollbar_y = Some(true);
     let mut child_attrs = Attrs::default();
@@ -1569,20 +1679,29 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
         inset: false,
     }]);
 
-    let tree = build_tree_with_child_frame(
-        parent_attrs,
+    let tree = build_nested_child_tree(
+        root_attrs,
         Frame {
             x: 0.0,
             y: 0.0,
-            width: 100.0,
-            height: 50.0,
-            content_width: 100.0,
-            content_height: 50.0,
+            width: 200.0,
+            height: 120.0,
+            content_width: 200.0,
+            content_height: 120.0,
+        },
+        parent_attrs,
+        Frame {
+            x: 40.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
+            content_width: 80.0,
+            content_height: 60.0,
         },
         child_attrs,
         Frame {
-            x: 10.0,
-            y: 12.0,
+            x: 50.0,
+            y: 30.0,
             width: 30.0,
             height: 15.0,
             content_width: 30.0,
@@ -1599,22 +1718,149 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     let body = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
         )
     });
 
-    let shadow_clip_scopes = clip_scope_chain(&trace, shadow);
-    let body_clip_scopes = clip_scope_chain(&trace, body);
-    assert_eq!(shadow_clip_scopes.len(), 1);
-    assert_eq!(body_clip_scopes.len(), 1);
+    let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
+    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
     assert_eq!(
-        clip_scope_shapes(shadow_clip_scopes[0]).unwrap(),
-        clip_scope_shapes(body_clip_scopes[0]).unwrap()
+        clip_scope_shapes(shadow_clip_scope).unwrap(),
+        &[ClipShape {
+            rect: Rect {
+                x: 0.0,
+                y: 20.0,
+                width: 200.0,
+                height: 60.0,
+            },
+            radii: None,
+        }]
+    );
+    assert_eq!(
+        clip_scope_shapes(body_clip_scope).unwrap(),
+        &[
+            ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+                radii: None,
+            },
+            ClipShape {
+                rect: Rect {
+                    x: 40.0,
+                    y: 20.0,
+                    width: 80.0,
+                    height: 60.0,
+                },
+                radii: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
+    let root_attrs = Attrs::default();
+    let mut parent_attrs = Attrs::default();
+    parent_attrs.scrollbar_x = Some(true);
+    let mut child_attrs = Attrs::default();
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 2.0,
+        offset_y: 2.0,
+        blur: 8.0,
+        size: 4.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let tree = build_nested_child_tree(
+        root_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 120.0,
+            content_width: 200.0,
+            content_height: 120.0,
+        },
+        parent_attrs,
+        Frame {
+            x: 40.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
+            content_width: 80.0,
+            content_height: 60.0,
+        },
+        child_attrs,
+        Frame {
+            x: 50.0,
+            y: 30.0,
+            width: 30.0,
+            height: 15.0,
+            content_width: 30.0,
+            content_height: 15.0,
+        },
+    );
+
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
+
+    let shadow = only_draw(&draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    let body = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
+        )
+    });
+
+    let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
+    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
+    assert_eq!(
+        clip_scope_shapes(shadow_clip_scope).unwrap(),
+        &[ClipShape {
+            rect: Rect {
+                x: 40.0,
+                y: 0.0,
+                width: 80.0,
+                height: 120.0,
+            },
+            radii: None,
+        }]
+    );
+    assert_eq!(
+        clip_scope_shapes(body_clip_scope).unwrap(),
+        &[
+            ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+                radii: None,
+            },
+            ClipShape {
+                rect: Rect {
+                    x: 40.0,
+                    y: 20.0,
+                    width: 80.0,
+                    height: 60.0,
+                },
+                radii: None,
+            },
+        ]
     );
 }
 
 #[test]
 fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
+    let root_attrs = Attrs::default();
     let mut parent_attrs = Attrs::default();
     parent_attrs.scrollbar_x = Some(true);
     parent_attrs.scrollbar_y = Some(true);
@@ -1629,20 +1875,29 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         inset: false,
     }]);
 
-    let tree = build_tree_with_child_frame(
-        parent_attrs,
+    let tree = build_nested_child_tree(
+        root_attrs,
         Frame {
             x: 0.0,
             y: 0.0,
-            width: 100.0,
-            height: 50.0,
-            content_width: 100.0,
-            content_height: 50.0,
+            width: 200.0,
+            height: 120.0,
+            content_width: 200.0,
+            content_height: 120.0,
+        },
+        parent_attrs,
+        Frame {
+            x: 40.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
+            content_width: 80.0,
+            content_height: 60.0,
         },
         child_attrs,
         Frame {
-            x: 10.0,
-            y: 12.0,
+            x: 50.0,
+            y: 30.0,
             width: 30.0,
             height: 15.0,
             content_width: 30.0,
@@ -1659,15 +1914,15 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     let body = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
         )
     });
     let expected_clip = ClipShape {
         rect: Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 50.0,
+            x: 40.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
         },
         radii: Some(CornerRadii {
             tl: 8.0,
@@ -1677,17 +1932,26 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
         }),
     };
 
-    let shadow_clip_scopes = clip_scope_chain(&trace, shadow);
-    let body_clip_scopes = clip_scope_chain(&trace, body);
-    assert_eq!(shadow_clip_scopes.len(), 1);
-    assert_eq!(body_clip_scopes.len(), 1);
+    let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
+    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
     assert_eq!(
-        clip_scope_shapes(shadow_clip_scopes[0]).unwrap(),
+        clip_scope_shapes(shadow_clip_scope).unwrap(),
         &[expected_clip]
     );
     assert_eq!(
-        clip_scope_shapes(body_clip_scopes[0]).unwrap(),
-        &[expected_clip]
+        clip_scope_shapes(body_clip_scope).unwrap(),
+        &[
+            ClipShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+                radii: None,
+            },
+            expected_clip,
+        ]
     );
 }
 
@@ -2046,17 +2310,23 @@ fn test_border_renders_after_host_clip_pops() {
 }
 
 #[test]
-fn test_render_skips_host_clip_when_nothing_uses_it() {
+fn test_render_uses_only_background_self_clip_when_nothing_else_is_clipped() {
     let mut attrs = Attrs::default();
     attrs.border_radius = Some(BorderRadius::Uniform(8.0));
 
     let tree = build_tree_with_attrs(attrs);
-    let draws = observe_tree(&tree);
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
+    let background = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+        )
+    });
 
-    assert!(
-        draws.iter().all(|draw| draw.clips.is_empty()),
-        "plain hosts without clipped content should not emit host clips"
-    );
+    assert_eq!(trace.scopes.len(), 1);
+    assert_eq!(clip_scope_chain(&trace, background).len(), 1);
+    assert_eq!(background.clips.len(), 1);
 }
 
 #[test]

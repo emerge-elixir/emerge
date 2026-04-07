@@ -326,13 +326,15 @@ defmodule Emerge.Engine.AttrCodec do
 
   defp encode_animation_repeat(:once), do: <<0>>
   defp encode_animation_repeat(:loop), do: <<1>>
-  defp encode_animation_repeat({:times, count}), do: <<2, count::unsigned-32>>
+
+  defp encode_animation_repeat(count) when is_integer(count) and count > 0,
+    do: <<2, count::unsigned-32>>
 
   defp decode_animation_repeat(<<0, rest::binary>>), do: {:once, rest}
   defp decode_animation_repeat(<<1, rest::binary>>), do: {:loop, rest}
 
   defp decode_animation_repeat(<<2, count::unsigned-32, rest::binary>>),
-    do: {{:times, count}, rest}
+    do: {count, rest}
 
   defp encode_key_bindings(bindings) when is_list(bindings) do
     payload = [<<length(bindings)::unsigned-16>> | Enum.map(bindings, &encode_key_binding/1)]

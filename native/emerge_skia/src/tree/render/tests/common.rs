@@ -271,7 +271,10 @@ fn trace_nodes(
 ) {
     for node in nodes {
         match node {
-            RenderNode::Clip { clips, children } => {
+            RenderNode::ShadowPass { children } => {
+                trace_nodes(children, context, state, scopes, draws);
+            }
+            RenderNode::Clip { clips, children } | RenderNode::RelaxedClip { clips, children } => {
                 let scope_id = state.next_scope_id;
                 state.next_scope_id += 1;
 
@@ -293,7 +296,22 @@ fn trace_nodes(
                         transform_at_application: context.cumulative_transform,
                     });
                 }
-                trace_nodes(children, &next_context, state, scopes, draws);
+                for child in children {
+                    match child {
+                        RenderNode::ShadowPass { children } => {
+                            trace_nodes(children, context, state, scopes, draws);
+                        }
+                        _ => {
+                            trace_nodes(
+                                std::slice::from_ref(child),
+                                &next_context,
+                                state,
+                                scopes,
+                                draws,
+                            );
+                        }
+                    }
+                }
             }
             RenderNode::Transform {
                 transform,
@@ -398,6 +416,17 @@ pub(super) fn build_text_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementT
     tree
 }
 
+pub(super) fn build_image_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
+    let id = ElementId::from_term_bytes(vec![4]);
+    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    element.frame = Some(frame);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(id);
+    tree.insert(element);
+    tree
+}
+
 pub(super) fn build_text_input_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
     let id = ElementId::from_term_bytes(vec![3]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
@@ -436,6 +465,39 @@ pub(super) fn build_tree_with_child_frame(
     parent.frame = Some(parent_frame);
 
     let mut child = Element::with_attrs(child_id.clone(), ElementKind::El, Vec::new(), child_attrs);
+    child.frame = Some(child_frame);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(parent_id);
+    tree.insert(parent);
+    tree.insert(child);
+    tree
+}
+
+pub(super) fn build_tree_with_image_child_frame(
+    mut parent_attrs: Attrs,
+    parent_frame: Frame,
+    child_attrs: Attrs,
+    child_frame: Frame,
+) -> ElementTree {
+    if parent_attrs.background.is_none() {
+        parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    }
+
+    let parent_id = ElementId::from_term_bytes(vec![6]);
+    let child_id = ElementId::from_term_bytes(vec![7]);
+
+    let mut parent =
+        Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![child_id.clone()];
+    parent.frame = Some(parent_frame);
+
+    let mut child = Element::with_attrs(
+        child_id.clone(),
+        ElementKind::Image,
+        Vec::new(),
+        child_attrs,
+    );
     child.frame = Some(child_frame);
 
     let mut tree = ElementTree::new();
