@@ -127,6 +127,7 @@ defmodule Emerge.UI do
 
   @type key_attr :: {:key, key()}
   @type focus_on_mount_attr :: {:focus_on_mount, true}
+  @type clip_nearby_attr :: {:clip_nearby, true}
   @type image_fit_attr :: {:image_fit, image_fit_mode()}
 
   @doc """
@@ -170,8 +171,8 @@ defmodule Emerge.UI do
   """
   @spec el(attrs(), child()) :: t()
   def el(attrs, child) do
-    {attrs, child} = Builder.prepare_single_child!("el/2", attrs, child)
-    Builder.build_element(attrs, :el, [child])
+    {attrs, nearby, child} = Builder.prepare_single_child!("el/2", attrs, child)
+    Builder.build_element(attrs, nearby, :el, [child])
   end
 
   @doc """
@@ -187,8 +188,8 @@ defmodule Emerge.UI do
   """
   @spec row(attrs(), children()) :: t()
   def row(attrs, children) do
-    {attrs, children} = Builder.prepare_children!("row/2", attrs, children)
-    Builder.build_element(attrs, :row, children)
+    {attrs, nearby, children} = Builder.prepare_children!("row/2", attrs, children)
+    Builder.build_element(attrs, nearby, :row, children)
   end
 
   @doc """
@@ -204,8 +205,8 @@ defmodule Emerge.UI do
   """
   @spec wrapped_row(attrs(), children()) :: t()
   def wrapped_row(attrs, children) do
-    {attrs, children} = Builder.prepare_children!("wrapped_row/2", attrs, children)
-    Builder.build_element(attrs, :wrapped_row, children)
+    {attrs, nearby, children} = Builder.prepare_children!("wrapped_row/2", attrs, children)
+    Builder.build_element(attrs, nearby, :wrapped_row, children)
   end
 
   @doc """
@@ -220,8 +221,8 @@ defmodule Emerge.UI do
   """
   @spec column(attrs(), children()) :: t()
   def column(attrs, children) do
-    {attrs, children} = Builder.prepare_children!("column/2", attrs, children)
-    Builder.build_element(attrs, :column, children)
+    {attrs, nearby, children} = Builder.prepare_children!("column/2", attrs, children)
+    Builder.build_element(attrs, nearby, :column, children)
   end
 
   @doc """
@@ -236,12 +237,12 @@ defmodule Emerge.UI do
   """
   @spec text_column(attrs(), children()) :: t()
   def text_column(attrs, children) do
-    {attrs, children} = Builder.prepare_children!("text_column/2", attrs, children)
+    {attrs, nearby, children} = Builder.prepare_children!("text_column/2", attrs, children)
 
     attrs
     |> Map.put_new(:width, Size.fill())
     |> Map.put_new(:height, Size.content())
-    |> Builder.build_element(:text_column, children)
+    |> Builder.build_element(nearby, :text_column, children)
   end
 
   @doc """
@@ -252,8 +253,8 @@ defmodule Emerge.UI do
   """
   @spec paragraph(attrs(), children()) :: t()
   def paragraph(attrs, children) do
-    {attrs, children} = Builder.prepare_children!("paragraph/2", attrs, children)
-    Builder.build_element(attrs, :paragraph, children)
+    {attrs, nearby, children} = Builder.prepare_children!("paragraph/2", attrs, children)
+    Builder.build_element(attrs, nearby, :paragraph, children)
   end
 
   @doc """
@@ -280,12 +281,12 @@ defmodule Emerge.UI do
   """
   @spec image(attrs(), image_source()) :: t()
   def image(attrs, source) do
-    attrs = Builder.prepare_attrs!("image/2", attrs)
+    {attrs, nearby} = Builder.prepare_attrs!("image/2", attrs)
     source = Validation.validate_image_source!("image/2", source)
 
     attrs
     |> Map.put(:image_src, source)
-    |> Builder.build_element(:image, [])
+    |> Builder.build_element(nearby, :image, [])
   end
 
   @doc """
@@ -296,13 +297,15 @@ defmodule Emerge.UI do
   """
   @spec svg(attrs(), image_source()) :: t()
   def svg(attrs, source) do
-    attrs = Builder.prepare_attrs!("svg/2", attrs, extra_public_attr_keys: [:svg_color])
+    {attrs, nearby} =
+      Builder.prepare_attrs!("svg/2", attrs, extra_public_attr_keys: [:svg_color])
+
     source = Validation.validate_image_source!("svg/2", source)
 
     attrs
     |> Map.put(:image_src, source)
     |> Map.put(:svg_expected, true)
-    |> Builder.build_element(:image, [])
+    |> Builder.build_element(nearby, :image, [])
   end
 
   @doc """
@@ -310,14 +313,14 @@ defmodule Emerge.UI do
   """
   @spec video(attrs(), video_target()) :: t()
   def video(attrs, target) do
-    attrs = Builder.prepare_attrs!("video/2", attrs)
+    {attrs, nearby} = Builder.prepare_attrs!("video/2", attrs)
     target = Validation.validate_video_target!("video/2", target)
 
     attrs
     |> Map.put_new(:image_fit, :contain)
     |> Map.put(:video_target, target.id)
     |> Map.put(:image_size, {target.width, target.height})
-    |> Builder.build_element(:video, [])
+    |> Builder.build_element(nearby, :video, [])
   end
 
   @doc """
@@ -325,7 +328,7 @@ defmodule Emerge.UI do
   """
   @spec none() :: t()
   def none do
-    %Element{type: :none, attrs: %{}, children: []}
+    %Element{type: :none, attrs: %{}, children: [], nearby: []}
   end
 
   @doc "Provide a stable key for identity in lists (all siblings must have keys)."
@@ -335,6 +338,10 @@ defmodule Emerge.UI do
   @doc "Focus this element once when it is first mounted into the tree"
   @spec focus_on_mount() :: focus_on_mount_attr()
   def focus_on_mount, do: {:focus_on_mount, true}
+
+  @doc "Clip nearby escape overlays attached under this host"
+  @spec clip_nearby() :: clip_nearby_attr()
+  def clip_nearby, do: {:clip_nearby, true}
 
   @doc "Set image fit mode (`:contain` or `:cover`)"
   @spec image_fit(image_fit_mode()) :: image_fit_attr()

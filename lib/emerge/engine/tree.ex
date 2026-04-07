@@ -62,7 +62,7 @@ defmodule Emerge.Engine.Tree do
   end
 
   @doc """
-  Return the fixed nearby mount order used across traversal and encoding.
+  Return the fixed nearby slot tag order used across encoding.
   """
   def nearby_slots do
     Nearby.nearby_slots()
@@ -72,7 +72,7 @@ defmodule Emerge.Engine.Tree do
   Split nearby mount attrs from ordinary attrs.
   """
   def split_nearby_attrs(attrs) when is_map(attrs) do
-    Nearby.split_nearby_attrs(attrs)
+    {attrs, []}
   end
 
   @doc """
@@ -85,8 +85,8 @@ defmodule Emerge.Engine.Tree do
   @doc """
   Merge nearby mounts back into an attrs map.
   """
-  def merge_nearby_attrs(attrs, nearby) when is_map(attrs) and is_map(nearby) do
-    Nearby.merge_nearby_attrs(attrs, nearby)
+  def merge_nearby_attrs(attrs, nearby) when is_map(attrs) and is_list(nearby) do
+    attrs
   end
 
   @doc """
@@ -96,8 +96,8 @@ defmodule Emerge.Engine.Tree do
     Nearby.nearby_children(element)
   end
 
-  def nearby_children(attrs) when is_map(attrs) do
-    Nearby.nearby_children(attrs)
+  def nearby_children(nearby) when is_list(nearby) do
+    Nearby.nearby_children(nearby)
   end
 
   @doc """

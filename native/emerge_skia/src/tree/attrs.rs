@@ -285,6 +285,7 @@ pub struct Attrs {
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
     pub focus_on_mount: Option<bool>,
+    pub clip_nearby: Option<bool>,
     pub on_key_down: Option<Vec<KeyBindingSpec>>,
     pub on_key_up: Option<Vec<KeyBindingSpec>>,
     pub on_key_press: Option<Vec<KeyBindingSpec>>,
@@ -538,6 +539,7 @@ const TAG_ON_SWIPE_LEFT: u8 = 73;
 const TAG_ON_SWIPE_RIGHT: u8 = 74;
 const TAG_VIRTUAL_KEY: u8 = 75;
 const TAG_FOCUS_ON_MOUNT: u8 = 76;
+const TAG_CLIP_NEARBY: u8 = 77;
 
 // =============================================================================
 // Decoder
@@ -677,6 +679,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_ON_FOCUS => attrs.on_focus = Some(cursor.read_bool()?),
         TAG_ON_BLUR => attrs.on_blur = Some(cursor.read_bool()?),
         TAG_FOCUS_ON_MOUNT => attrs.focus_on_mount = Some(cursor.read_bool()?),
+        TAG_CLIP_NEARBY => attrs.clip_nearby = Some(cursor.read_bool()?),
         TAG_ON_KEY_DOWN => attrs.on_key_down = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_UP => attrs.on_key_up = Some(decode_key_bindings(cursor)?),
         TAG_ON_KEY_PRESS => attrs.on_key_press = Some(decode_key_bindings(cursor)?),

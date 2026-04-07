@@ -51,21 +51,25 @@ defmodule Emerge.Engine.Reconcile do
       patches = [{:remove, old.id}, {:insert_subtree, parent_id, index, assigned}]
       {new_vnode, patches, assigned, seen}
     else
-      {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
-
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
 
       {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
-        reconcile_nearby(old.nearby, nearby_elements, id, seen)
+        reconcile_nearby(old.nearby, element.nearby, id, seen)
 
-      assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
-      assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
+      assigned = %{
+        element
+        | id: id,
+          children: child_elements,
+          attrs: element.attrs,
+          nearby: nearby_assigned
+      }
 
       patches =
         []
-        |> maybe_set_attrs(old, attrs, id)
+        |> maybe_set_attrs(old, element.attrs, id)
         |> maybe_set_children(old, child_vnodes)
+        |> maybe_set_nearby_mounts(old, nearby_vnodes)
         |> Kernel.++(child_patches)
         |> Kernel.++(nearby_patches)
 
@@ -73,7 +77,7 @@ defmodule Emerge.Engine.Reconcile do
         id: id,
         kind: element.type,
         key: key,
-        attrs: attrs,
+        attrs: element.attrs,
         children: child_vnodes,
         nearby: nearby_vnodes
       }
@@ -205,66 +209,170 @@ defmodule Emerge.Engine.Reconcile do
   end
 
   defp reconcile_nearby(old_nearby, new_nearby, host_id, seen) do
-    Enum.reduce(Nearby.nearby_slots(), {%{}, %{}, [], seen}, fn slot,
-                                                                {vnodes, elements, patches, seen} ->
-      case {Map.get(old_nearby, slot), Map.get(new_nearby, slot)} do
-        {nil, nil} ->
-          {vnodes, elements, patches, seen}
-
-        {%VNode{} = old_vnode, nil} ->
-          {vnodes, elements, patches ++ [{:remove, old_vnode.id}], seen}
-
-        {nil, %Element{} = element} ->
-          {vnode, assigned, seen} = build_nearby_vnode(element, host_id, slot, seen)
-
-          {
-            Map.put(vnodes, slot, vnode),
-            Map.put(elements, slot, assigned),
-            patches ++ [{:insert_nearby_subtree, host_id, slot, assigned}],
-            seen
-          }
-
-        {%VNode{} = old_vnode, %Element{} = element} ->
-          {vnode, slot_patches, assigned, seen} =
-            reconcile_nearby_node(old_vnode, element, host_id, slot, seen)
-
-          {
-            Map.put(vnodes, slot, vnode),
-            Map.put(elements, slot, assigned),
-            patches ++ slot_patches,
-            seen
-          }
-      end
-    end)
+    if keyed_nearby?(new_nearby) do
+      reconcile_nearby_keyed(old_nearby, new_nearby, host_id, seen)
+    else
+      reconcile_nearby_indexed(old_nearby, new_nearby, host_id, seen)
+    end
   end
 
-  defp reconcile_nearby_node(%VNode{} = old, %Element{} = element, host_id, slot, seen) do
-    parent_id = {:nearby, host_id, slot}
+  defp reconcile_nearby_keyed(old_nearby, new_nearby, host_id, seen) do
+    old_by_key =
+      old_nearby
+      |> Enum.filter(fn {_slot, vnode} -> vnode.key end)
+      |> Map.new(fn {_slot, vnode} -> {vnode.key, vnode} end)
+
+    {nearby_vnodes, nearby_elements, patches, used_old_ids, seen} =
+      Enum.with_index(new_nearby)
+      |> Enum.reduce({[], [], [], MapSet.new(), seen}, fn {{slot, element}, index},
+                                                          {vnodes, elements, patches,
+                                                           used_old_ids, seen} ->
+        key = element_key(element)
+
+        case match_keyed_nearby(old_by_key, old_nearby, key, index, element.type) do
+          {:ok, %VNode{} = old_vnode} when old_vnode.kind == element.type ->
+            {vnode, mount_patches, assigned, seen} =
+              reconcile_nearby_node(old_vnode, element, host_id, index, seen)
+
+            {
+              [{slot, vnode} | vnodes],
+              [{slot, assigned} | elements],
+              patches ++ mount_patches,
+              MapSet.put(used_old_ids, old_vnode.id),
+              seen
+            }
+
+          _ ->
+            {vnode, assigned, seen} = build_nearby_vnode(element, host_id, index, seen)
+            insert = {:insert_nearby_subtree, host_id, index, slot, assigned}
+
+            {
+              [{slot, vnode} | vnodes],
+              [{slot, assigned} | elements],
+              patches ++ [insert],
+              used_old_ids,
+              seen
+            }
+        end
+      end)
+
+    removed =
+      old_nearby
+      |> Enum.map(fn {_slot, vnode} -> vnode end)
+      |> Enum.reject(fn vnode -> MapSet.member?(used_old_ids, vnode.id) end)
+      |> Enum.map(&{:remove, &1.id})
+
+    {Enum.reverse(nearby_vnodes), Enum.reverse(nearby_elements), removed ++ patches, seen}
+  end
+
+  defp match_keyed_nearby(_old_by_key, old_nearby, nil, index, kind) do
+    case Enum.at(old_nearby, index) do
+      {_slot, %VNode{kind: ^kind, key: nil} = vnode} -> {:ok, vnode}
+      _ -> :error
+    end
+  end
+
+  defp match_keyed_nearby(old_by_key, _old_nearby, key, _index, _kind) do
+    Map.fetch(old_by_key, key)
+  end
+
+  defp keyed_nearby?(nearby) do
+    key_count = Enum.count(nearby, fn {_slot, element} -> has_key?(element) end)
+    total_count = length(nearby)
+
+    cond do
+      key_count == 0 ->
+        false
+
+      key_count == total_count ->
+        true
+
+      true ->
+        raise ArgumentError, "All nearby mounts on a host must have key when any key is provided"
+    end
+  end
+
+  defp reconcile_nearby_indexed(old_nearby, new_nearby, host_id, seen) do
+    {nearby_vnodes, nearby_elements, patches, seen} =
+      new_nearby
+      |> Enum.with_index()
+      |> Enum.reduce({[], [], [], seen}, fn {{slot, element}, index},
+                                            {vnodes, elements, patches, seen} ->
+        case Enum.at(old_nearby, index) do
+          {_old_slot, %VNode{kind: kind} = old_vnode} when kind == element.type ->
+            {vnode, mount_patches, assigned, seen} =
+              reconcile_nearby_node(old_vnode, element, host_id, index, seen)
+
+            {
+              [{slot, vnode} | vnodes],
+              [{slot, assigned} | elements],
+              patches ++ mount_patches,
+              seen
+            }
+
+          {_old_slot, %VNode{} = old_vnode} ->
+            {vnode, assigned, seen} = build_nearby_vnode(element, host_id, index, seen)
+            insert = {:insert_nearby_subtree, host_id, index, slot, assigned}
+
+            {
+              [{slot, vnode} | vnodes],
+              [{slot, assigned} | elements],
+              patches ++ [{:remove, old_vnode.id}, insert],
+              seen
+            }
+
+          nil ->
+            {vnode, assigned, seen} = build_nearby_vnode(element, host_id, index, seen)
+            insert = {:insert_nearby_subtree, host_id, index, slot, assigned}
+
+            {
+              [{slot, vnode} | vnodes],
+              [{slot, assigned} | elements],
+              patches ++ [insert],
+              seen
+            }
+        end
+      end)
+
+    removed =
+      old_nearby
+      |> Enum.drop(length(new_nearby))
+      |> Enum.map(fn {_slot, vnode} -> {:remove, vnode.id} end)
+
+    {Enum.reverse(nearby_vnodes), Enum.reverse(nearby_elements), removed ++ patches, seen}
+  end
+
+  defp reconcile_nearby_node(%VNode{} = old, %Element{} = element, host_id, index, seen) do
+    parent_id = {:nearby, host_id}
     key = element_key(element)
     seen = ensure_unique_key!(seen, key)
-    local_identity = local_identity(key, 0)
+    local_identity = local_identity(key, index)
     id = make_id(parent_id, element.type, local_identity)
 
     if old.kind != element.type or old.id != id do
-      {vnode, assigned, seen} = build_vnode(element, parent_id, 0, seen)
-      patches = [{:remove, old.id}, {:insert_nearby_subtree, host_id, slot, assigned}]
+      {vnode, assigned, seen} = build_vnode(element, parent_id, index, seen)
+      patches = [{:remove, old.id}]
       {vnode, patches, assigned, seen}
     else
-      {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
-
       {child_vnodes, child_elements, child_patches, seen} =
         reconcile_children(old.children, element.children, id, seen)
 
       {nearby_vnodes, nearby_assigned, nearby_patches, seen} =
-        reconcile_nearby(old.nearby, nearby_elements, id, seen)
+        reconcile_nearby(old.nearby, element.nearby, id, seen)
 
-      assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
-      assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
+      assigned = %{
+        element
+        | id: id,
+          children: child_elements,
+          attrs: element.attrs,
+          nearby: nearby_assigned
+      }
 
       patches =
         []
-        |> maybe_set_attrs(old, attrs, id)
+        |> maybe_set_attrs(old, element.attrs, id)
         |> maybe_set_children(old, child_vnodes)
+        |> maybe_set_nearby_mounts(old, nearby_vnodes)
         |> Kernel.++(child_patches)
         |> Kernel.++(nearby_patches)
 
@@ -272,7 +380,7 @@ defmodule Emerge.Engine.Reconcile do
         id: id,
         kind: element.type,
         key: key,
-        attrs: attrs,
+        attrs: element.attrs,
         children: child_vnodes,
         nearby: nearby_vnodes
       }
@@ -288,7 +396,6 @@ defmodule Emerge.Engine.Reconcile do
     id = make_id(parent_id, element.type, local_identity)
 
     _ = keyed_children?(element.children)
-    {attrs, nearby_elements} = Nearby.split_nearby_attrs(element.attrs)
 
     {child_vnodes, child_elements, seen} =
       element.children
@@ -301,16 +408,21 @@ defmodule Emerge.Engine.Reconcile do
     child_vnodes = Enum.reverse(child_vnodes)
     child_elements = Enum.reverse(child_elements)
 
-    {nearby_vnodes, nearby_assigned, seen} = build_nearby_vnodes(nearby_elements, id, seen)
+    {nearby_vnodes, nearby_assigned, seen} = build_nearby_vnodes(element.nearby, id, seen)
 
-    assigned_attrs = Nearby.merge_nearby_attrs(attrs, nearby_assigned)
-    assigned = %{element | id: id, children: child_elements, attrs: assigned_attrs}
+    assigned = %{
+      element
+      | id: id,
+        children: child_elements,
+        attrs: element.attrs,
+        nearby: nearby_assigned
+    }
 
     vnode = %VNode{
       id: id,
       kind: element.type,
       key: key,
-      attrs: attrs,
+      attrs: element.attrs,
       children: child_vnodes,
       nearby: nearby_vnodes
     }
@@ -319,25 +431,23 @@ defmodule Emerge.Engine.Reconcile do
   end
 
   defp build_nearby_vnodes(nearby_elements, host_id, seen) do
-    Enum.reduce(Nearby.nearby_slots(), {%{}, %{}, seen}, fn slot, {vnodes, elements, seen} ->
-      case Map.get(nearby_elements, slot) do
-        %Element{} = element ->
-          {vnode, assigned, seen} = build_nearby_vnode(element, host_id, slot, seen)
+    Enum.with_index(nearby_elements)
+    |> Enum.reduce({[], [], seen}, fn {{slot, element}, index}, {vnodes, elements, seen} ->
+      {vnode, assigned, seen} = build_nearby_vnode(element, host_id, index, seen)
 
-          {
-            Map.put(vnodes, slot, vnode),
-            Map.put(elements, slot, assigned),
-            seen
-          }
-
-        _ ->
-          {vnodes, elements, seen}
-      end
+      {
+        [{slot, vnode} | vnodes],
+        [{slot, assigned} | elements],
+        seen
+      }
+    end)
+    |> then(fn {vnodes, elements, seen} ->
+      {Enum.reverse(vnodes), Enum.reverse(elements), seen}
     end)
   end
 
-  defp build_nearby_vnode(%Element{} = element, host_id, slot, seen) do
-    build_vnode(element, {:nearby, host_id, slot}, 0, seen)
+  defp build_nearby_vnode(%Element{} = element, host_id, index, seen) do
+    build_vnode(element, {:nearby, host_id}, index, seen)
   end
 
   defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, new_attrs, id) do
@@ -371,6 +481,32 @@ defmodule Emerge.Engine.Reconcile do
       true ->
         patches
     end
+  end
+
+  defp maybe_set_nearby_mounts(patches, %VNode{id: id, nearby: old_nearby}, new_nearby) do
+    old_refs = mount_refs(old_nearby)
+    new_refs = mount_refs(new_nearby)
+
+    inserted_ids = Nearby.mount_ids_from_refs(new_refs) -- Nearby.mount_ids_from_refs(old_refs)
+    removed_ids = Nearby.mount_ids_from_refs(old_refs) -- Nearby.mount_ids_from_refs(new_refs)
+
+    old_remaining = Enum.reject(old_refs, fn {_slot, mount_id} -> mount_id in removed_ids end)
+    new_remaining = Enum.reject(new_refs, fn {_slot, mount_id} -> mount_id in inserted_ids end)
+
+    cond do
+      old_refs == new_refs ->
+        patches
+
+      old_remaining != new_remaining ->
+        [{:set_nearby_mounts, id, new_refs} | patches]
+
+      true ->
+        patches
+    end
+  end
+
+  defp mount_refs(nearby) do
+    Enum.map(nearby, fn {slot, vnode} -> {slot, vnode.id} end)
   end
 
   defp element_key(%Element{id: id}) when not is_nil(id), do: id

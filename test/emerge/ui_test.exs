@@ -113,6 +113,24 @@ defmodule Emerge.UITest do
     assert focus_on_mount() == {:focus_on_mount, true}
   end
 
+  test "clip_nearby helper returns attr" do
+    assert clip_nearby() == {:clip_nearby, true}
+  end
+
+  test "nearby mounts preserve attr-list definition order" do
+    element =
+      el(
+        [
+          Nearby.in_front(text("Front")),
+          Nearby.above(text("Above")),
+          Nearby.on_left(text("Left"))
+        ],
+        text("Host")
+      )
+
+    assert Enum.map(element.nearby, &elem(&1, 0)) == [:in_front, :above, :on_left]
+  end
+
   test "size helpers return length values" do
     assert fill() == :fill
     assert fill(2) == {:fill, 2}
