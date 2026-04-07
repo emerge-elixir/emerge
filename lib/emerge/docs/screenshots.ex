@@ -3,6 +3,8 @@ defmodule Emerge.Docs.Screenshots do
 
   use Emerge.UI
 
+  alias Emerge.Docs.Examples
+
   @project_root Path.expand("../../..", __DIR__)
 
   def specs do
@@ -42,7 +44,7 @@ defmodule Emerge.Docs.Screenshots do
         ],
         build: &describe_ui_escaping_layout_dropdown/0
       }
-    ]
+    ] ++ Examples.screenshot_specs()
   end
 
   def render_png(spec) do

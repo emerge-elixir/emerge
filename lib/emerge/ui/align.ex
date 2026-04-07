@@ -1,4 +1,10 @@
 defmodule Emerge.UI.Align do
+  require Emerge.Docs.Examples
+
+  alias Emerge.Docs.Examples
+
+  Examples.external_resources(~w(ui-align-el ui-align-row ui-align-column))
+
   @moduledoc """
   Alignment helpers for positioning inside layout parents.
 
@@ -20,14 +26,20 @@ defmodule Emerge.UI.Align do
   Putting `center_x/0`, `align_right/0`, `center_y/0`, or `align_bottom/0` on
   the `el` controls how its child content is positioned inside that `el`.
 
-      el([width(200), height(100), center_x(), center_y()], child)
+  This example centers a pill inside a larger container:
+
+  #{Examples.code_block!("ui-align-el")}
+
+  #{Examples.image_tag!("ui-align-el", "Rendered el alignment example")}
 
   A child can override inherited alignment with its own alignment helper:
 
-      el(
-        [width(200), height(100), center_x()],
-        el([align_right()], text("Child"))
-      )
+  ```elixir
+  el(
+    [width(px(200)), height(px(100)), center_x()],
+    el([align_right()], text("Child"))
+  )
+  ```
 
   ## `row`
 
@@ -43,11 +55,11 @@ defmodule Emerge.UI.Align do
   If you put an alignment helper on the `row` itself, it positions that `row`
   inside its parent. It is not inherited by the row's children.
 
-      row([width(300), height(60)], [
-        el([align_left(), center_y()], text("Left")),
-        el([center_x(), center_y()], text("Center")),
-        el([align_right(), center_y()], text("Right"))
-      ])
+  This row shows left, center, and right grouping across the main axis.
+
+  #{Examples.code_block!("ui-align-row")}
+
+  #{Examples.image_tag!("ui-align-row", "Rendered row alignment example")}
 
   ## `column`
 
@@ -63,11 +75,11 @@ defmodule Emerge.UI.Align do
   If you put an alignment helper on the `column` itself, it positions that
   `column` inside its parent. It is not inherited by the column's children.
 
-      column([width(200), height(240)], [
-        el([align_top(), center_x()], text("Top")),
-        el([center_y(), center_x()], text("Middle")),
-        el([align_bottom(), center_x()], text("Bottom"))
-      ])
+  This column shows top, center, and bottom grouping down the main axis.
+
+  #{Examples.code_block!("ui-align-column")}
+
+  #{Examples.image_tag!("ui-align-column", "Rendered column alignment example")}
 
   In scrollable columns, `align_bottom/0` stays part of the column's content
   flow instead of pinning to the visible bottom edge.

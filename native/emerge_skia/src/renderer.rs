@@ -874,7 +874,7 @@ impl Renderer {
 
             DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
-                let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                let rrect = corner_rrect(rect, [*radius; 4]);
                 let mut paint = Paint::default();
                 paint.set_color(color_from_u32(*fill));
                 paint.set_anti_alias(true);
@@ -1997,24 +1997,13 @@ fn resolve_inset_pair(start: f32, end: f32, total: f32) -> (f32, f32) {
 fn corner_rrect(rect: Rect, corners: [f32; 4]) -> RRect {
     let max_rx = rect.width().max(0.0) * 0.5;
     let max_ry = rect.height().max(0.0) * 0.5;
+    let clamp = |corner: f32| corner.max(0.0).min(max_rx).min(max_ry);
 
     let radii = [
-        Point::new(
-            corners[0].max(0.0).min(max_rx),
-            corners[0].max(0.0).min(max_ry),
-        ),
-        Point::new(
-            corners[1].max(0.0).min(max_rx),
-            corners[1].max(0.0).min(max_ry),
-        ),
-        Point::new(
-            corners[2].max(0.0).min(max_rx),
-            corners[2].max(0.0).min(max_ry),
-        ),
-        Point::new(
-            corners[3].max(0.0).min(max_rx),
-            corners[3].max(0.0).min(max_ry),
-        ),
+        Point::new(clamp(corners[0]), clamp(corners[0])),
+        Point::new(clamp(corners[1]), clamp(corners[1])),
+        Point::new(clamp(corners[2]), clamp(corners[2])),
+        Point::new(clamp(corners[3]), clamp(corners[3])),
     ];
 
     if radii.iter().all(|p| p.x <= 0.0 && p.y <= 0.0) {

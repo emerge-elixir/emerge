@@ -1675,6 +1675,94 @@ fn test_render_gradient_with_per_corner_radius_clips_corner_pixels() {
 }
 
 #[test]
+fn test_render_uniform_pill_border_matches_clamped_rounded_clip() {
+    let outer_x: f32 = 8.0;
+    let outer_y: f32 = 12.0;
+    let outer_w: f32 = 104.0;
+    let outer_h: f32 = 36.0;
+    let border: f32 = 1.0;
+    let expected_radius = (outer_w * 0.5).min(outer_h * 0.5);
+
+    let mut attrs = Attrs::default();
+    attrs.background = Some(Background::Color(Color::Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    }));
+    attrs.border_width = Some(BorderWidth::Uniform(border as f64));
+    attrs.border_color = Some(Color::Rgb {
+        r: 214,
+        g: 220,
+        b: 236,
+    });
+    attrs.border_radius = Some(BorderRadius::Uniform(999.0));
+
+    let tree = build_tree_with_frame(
+        attrs,
+        Frame {
+            x: outer_x,
+            y: outer_y,
+            width: outer_w,
+            height: outer_h,
+            content_width: outer_w,
+            content_height: outer_h,
+        },
+    );
+    let (_output, pixels) = render_tree_to_pixels(120, 60, &tree);
+
+    let outside_corner_samples = [(12, 13), (107, 13), (12, 46), (107, 46)];
+    for (x, y) in outside_corner_samples {
+        let px = x as f32 + 0.5;
+        let py = y as f32 + 0.5;
+        assert!(
+            !point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, expected_radius),
+            "sample ({}, {}) should sit outside the clamped pill shape",
+            x,
+            y,
+        );
+
+        assert!(
+            rgba_at(&pixels, 120, x, y).3 <= 8,
+            "expected rounded(999) border to stay inside the clamped pill clip at ({}, {})",
+            x,
+            y,
+        );
+    }
+
+    let border_samples = [(20, 13), (99, 13), (20, 46), (99, 46)];
+    for (x, y) in border_samples {
+        let px = x as f32 + 0.5;
+        let py = y as f32 + 0.5;
+        assert!(
+            point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, expected_radius)
+                && !point_in_inset_rounded_rect(
+                    px,
+                    py,
+                    outer_x,
+                    outer_y,
+                    outer_w,
+                    outer_h,
+                    expected_radius,
+                    border,
+                ),
+            "sample ({}, {}) should land inside the visible border band",
+            x,
+            y,
+        );
+
+        assert!(
+            rgba_at(&pixels, 120, x, y).3 >= 96,
+            "expected visible border coverage at ({}, {})",
+            x,
+            y,
+        );
+    }
+
+    let fill = rgba_at(&pixels, 120, 60, 30);
+    assert!(fill.3 >= 240, "expected opaque fill at pill center");
+}
+
+#[test]
 fn test_render_border_edges_asymmetric_widths() {
     // Regression: thick top/bottom, thin sides should emit correct per-edge widths
     let mut attrs = Attrs::default();

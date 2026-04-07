@@ -1,4 +1,10 @@
 defmodule Emerge.UI.Border do
+  require Emerge.Docs.Examples
+
+  alias Emerge.Docs.Examples
+
+  Examples.external_resources(~w(ui-border-radius-width ui-border-shadows))
+
   @moduledoc """
   Border styling attributes.
 
@@ -39,22 +45,21 @@ defmodule Emerge.UI.Border do
 
   `inner_shadow/1` renders inside the element and does not bleed outside it.
 
-  ## Example
+  ## Examples
 
-      use Emerge.UI
+  Rounded corners shape the element even before a visible border is added.
+  Adding width and color then paints the border on that same outline.
 
-      el(
-        [
-          padding(10),
-          Border.width(5),
-          Border.rounded(8),
-          Border.color(:blue)
-        ],
-        text("Inset by 15px, corners rounded by 8px")
-      )
+  #{Examples.code_block!("ui-border-radius-width")}
 
-  In this example, content is inset by `15px` on each side and the element uses
-  `8px` rounded corners.
+  #{Examples.image_tag!("ui-border-radius-width", "Rendered border radius and width example")}
+
+  Shadows are easiest to understand side by side: outer shadow bleeds outward,
+  glow is a zero-offset shadow, and inner shadow stays inside the element.
+
+  #{Examples.code_block!("ui-border-shadows")}
+
+  #{Examples.image_tag!("ui-border-shadows", "Rendered border shadow comparison")}
   """
 
   @type color_value :: Emerge.UI.Color.color() | Emerge.UI.Color.t()

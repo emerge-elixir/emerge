@@ -1,6 +1,177 @@
 defmodule Emerge.UI.Event do
-  @moduledoc "Event handler helpers for interactive elements."
+  @moduledoc """
+  Event handler helpers for interactive elements.
 
+  Event helpers attach process messages to elements. When the event fires,
+  Emerge sends the stored message to the target process.
+
+  All helpers accept either:
+
+  - a bare `message`
+  - a `{pid, message}` tuple
+
+  Passing only a `message` is shorthand for `{self(), message}`. In a viewport
+  `render/0` or `render/1`, that usually means the viewport process, so the
+  message arrives in `handle_info/2`.
+
+  ## Payload Routing
+
+  Some element events include a payload. Today the main public example is
+  `on_change/1` for text-input value changes.
+
+  When a payload-bearing event is delivered through a viewport, the payload is
+  wrapped into the stored message using the viewport's `wrap_payload/3`
+  callback. The default behavior is:
+
+  - non-tuple message: `{message, payload}`
+  - tuple message: append the payload to the tuple
+
+  For example:
+
+  This field sends the new value back to the viewport whenever the text changes.
+
+  ```elixir
+  def render(state) do
+    Input.text(
+      [key(:search), Event.on_change(:search_changed)],
+      state.query
+    )
+  end
+
+  def handle_info({:search_changed, value}, state) do
+    {:noreply, %{state | query: value} |> Viewport.rerender()}
+  end
+  ```
+
+  If you want more structure in the delivered message, store a tuple message:
+
+  This is useful when several fields share the same `handle_info/2` path and you
+  want the message to identify which field changed.
+
+  ```elixir
+  Input.text([Event.on_change({self(), {:search_changed, :field}})], state.query)
+
+  def handle_info({:search_changed, :field, value}, state) do
+    {:noreply, %{state | query: value} |> Viewport.rerender()}
+  end
+  ```
+
+  ## Pointer Events
+
+  Use `on_press/1` for normal button-like activation. It is the most practical
+  default for actions such as save, submit, open, and delete.
+
+  Use `on_click/1` when you specifically want pointer click behavior.
+
+  Swipe helpers emit once a pointer gesture resolves to that direction.
+
+  `on_mouse_down/1` and `on_mouse_up/1` are left-button only.
+
+  `on_mouse_enter/1`, `on_mouse_leave/1`, and `on_mouse_move/1` do not include
+  cursor coordinates in the delivered message.
+
+  Events do not bubble to parent elements. Attach the handler to the element
+  that should react.
+
+  If you only want visual hover, focus, or pressed styling, use
+  `Emerge.UI.Interactive` instead of event handlers.
+
+  ## Input And Focus
+
+  `on_change/1` is intended for text inputs.
+
+  Text editing still works without `on_change/1`; the handler only controls
+  whether a change message is emitted.
+
+  `on_focus/1` and `on_blur/1` work on focusable elements, not only text inputs.
+
+  ## Keyboard Events
+
+  Focused elements can listen for keyboard input with:
+
+  - `on_key_down/2`
+  - `on_key_up/2`
+  - `on_key_press/2`
+
+  Keyboard matchers can be written as either:
+
+  - a key atom such as `:enter`
+  - a keyword matcher such as `[key: :digit_1, mods: [:ctrl], match: :all]`
+
+  Supported modifier atoms are `:shift`, `:ctrl`, `:alt`, and `:meta`.
+
+  Match modes are:
+
+  - `:exact` - the modifier set must match exactly
+  - `:all` - the listed modifiers must be present, but extra modifiers are ok
+
+  `on_key_press/2` is for completed key gestures. It fires on release after a
+  matching press.
+
+  You can attach multiple keyboard listeners to one element by listing
+  `on_key_down/2`, `on_key_up/2`, or `on_key_press/2` more than once.
+
+  ## Virtual Keys
+
+  `virtual_key/1` is for on-screen keyboard keys and similar soft-key controls.
+
+  A virtual key spec must include `:tap`, which can be one of:
+
+  - `{:text, binary}`
+  - `{:key, key, mods}`
+  - `{:text_and_key, text, key, mods}`
+
+  Optional hold behavior is:
+
+  - `nil` - no hold behavior
+  - `:repeat` - repeat the tap action while held
+  - `{:event, payload}` - emit a separate hold event
+
+  Defaults:
+
+  - `hold_ms: 350`
+  - `repeat_ms: 40`
+
+  `virtual_key/1` cannot be combined with `on_click/1` or `on_press/1` on the
+  same element.
+
+  ## Examples
+
+  In this example, the first button sends `:save`, the second reacts to focused
+  `Enter`, and the third acts like a soft keyboard key.
+
+  ```elixir
+  def render(_state) do
+    column([spacing(16)], [
+      Input.button(
+        [
+          Event.on_press(:save),
+          Background.color(color(:sky, 500)),
+          Border.rounded(8),
+          Font.color(color(:white)),
+          padding(12)
+        ],
+        text("Save")
+      ),
+      Input.button(
+        [Event.on_key_down(:enter, :submit)],
+        text("Submit")
+      ),
+      Input.button(
+        [Event.virtual_key(tap: {:text_and_key, "A", :a, [:shift]})],
+        text("A")
+      )
+    ])
+  end
+  ```
+  """
+
+  @typedoc """
+  Destination process and message sent when the event fires.
+
+  Most helpers also accept a bare `message`, which is shorthand for
+  `{self(), message}`.
+  """
   @type payload :: {pid(), term()}
   @type click_attr :: {:on_click, payload()}
   @type press_attr :: {:on_press, payload()}
@@ -17,9 +188,18 @@ defmodule Emerge.UI.Event do
   @type focus_attr :: {:on_focus, payload()}
   @type blur_attr :: {:on_blur, payload()}
 
+  @typedoc "Modifier keys accepted by keyboard matchers."
   @type key_modifier :: :shift | :ctrl | :alt | :meta
+
+  @typedoc """
+  How modifier matching is interpreted for keyboard listeners.
+
+  - `:exact` requires the active modifiers to match exactly.
+  - `:all` requires the listed modifiers to be present, but allows extras.
+  """
   @type key_match_mode :: :exact | :all
 
+  @typedoc "Canonical key atoms accepted by keyboard event helpers."
   @type key_name ::
           :a
           | :b
@@ -122,10 +302,22 @@ defmodule Emerge.UI.Event do
           | :f24
           | :unknown
 
+  @typedoc """
+  Keyboard matcher accepted by `on_key_down/2`, `on_key_up/2`, and
+  `on_key_press/2`.
+
+  Use either a key atom like `:enter` or a keyword matcher like
+  `[key: :digit_1, mods: [:ctrl], match: :all]`.
+  """
   @type key_matcher ::
           key_name()
           | [key: key_name(), mods: [key_modifier()], match: key_match_mode()]
 
+  @typedoc """
+  Normalized keyboard binding stored on an element.
+
+  `route` is derived automatically from the key, modifiers, and match mode.
+  """
   @type key_binding :: %{
           required(:key) => key_name(),
           required(:mods) => [key_modifier()],
@@ -134,6 +326,7 @@ defmodule Emerge.UI.Event do
           required(:route) => binary()
         }
 
+  @typedoc "Public descriptor form of a normalized keyboard binding."
   @type key_binding_descriptor :: %{
           required(:key) => key_name(),
           required(:mods) => [key_modifier()],
@@ -141,13 +334,28 @@ defmodule Emerge.UI.Event do
           required(:route) => binary()
         }
 
+  @typedoc "Tap behavior for `virtual_key/1`."
   @type virtual_key_tap ::
           {:text, binary()}
           | {:key, key_name(), [key_modifier()]}
           | {:text_and_key, binary(), key_name(), [key_modifier()]}
 
+  @typedoc "Optional hold behavior for `virtual_key/1`."
   @type virtual_key_hold :: nil | :repeat | {:event, payload()}
 
+  @typedoc """
+  User-facing virtual key spec.
+
+  Required key:
+
+  - `:tap`
+
+  Optional keys:
+
+  - `:hold`
+  - `:hold_ms`
+  - `:repeat_ms`
+  """
   @type virtual_key_spec :: %{
           required(:tap) => virtual_key_tap(),
           optional(:hold) => virtual_key_hold(),
@@ -155,6 +363,7 @@ defmodule Emerge.UI.Event do
           optional(:repeat_ms) => pos_integer()
         }
 
+  @typedoc "Normalized descriptor form of a virtual key spec."
   @type virtual_key_descriptor :: %{
           required(:tap) => virtual_key_tap(),
           required(:hold) => :none | :repeat | :event,
@@ -297,77 +506,159 @@ defmodule Emerge.UI.Event do
   @key_name_set MapSet.new(@key_names)
   @modifier_mask %{shift: 0x01, ctrl: 0x02, alt: 0x04, meta: 0x08}
 
-  @doc "Register a click handler payload for this element"
+  @doc """
+  Register a pointer click payload for this element.
+
+  Use this when you specifically want click behavior from the pointer.
+
+  For normal button-like activation, prefer `on_press/1`.
+  """
   @spec on_click(payload() | term()) :: click_attr()
   def on_click({pid, _msg} = payload) when is_pid(pid), do: {:on_click, payload}
   def on_click(message), do: on_click({self(), message})
 
-  @doc "Register a press handler payload for this element"
+  @doc """
+  Register a press payload for this element.
+
+  This is the recommended default for buttons and other action controls.
+  `on_press/1` also works with focused `Enter`, so it is usually a better choice
+  than `on_click/1` for standard activation.
+
+  ## Examples
+
+  This is a conventional action button: pressing it sends `:save` to the target
+  process while the surrounding attrs provide the visual styling.
+
+  ```elixir
+  Input.button(
+    [
+      Event.on_press(:save),
+      Background.color(color(:sky, 500)),
+      Border.rounded(8),
+      Font.color(color(:white)),
+      padding(12)
+    ],
+    text("Save")
+  )
+  ```
+  """
   @spec on_press(payload() | term()) :: press_attr()
   def on_press({pid, _msg} = payload) when is_pid(pid), do: {:on_press, payload}
   def on_press(message), do: on_press({self(), message})
 
-  @doc "Register a swipe-up handler payload for this element"
+  @doc "Register a swipe-up payload for this element. Fires when the gesture resolves upward."
   @spec on_swipe_up(payload() | term()) :: swipe_up_attr()
   def on_swipe_up({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_up, payload}
   def on_swipe_up(message), do: on_swipe_up({self(), message})
 
-  @doc "Register a swipe-down handler payload for this element"
+  @doc "Register a swipe-down payload for this element. Fires when the gesture resolves downward."
   @spec on_swipe_down(payload() | term()) :: swipe_down_attr()
   def on_swipe_down({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_down, payload}
   def on_swipe_down(message), do: on_swipe_down({self(), message})
 
-  @doc "Register a swipe-left handler payload for this element"
+  @doc "Register a swipe-left payload for this element. Fires when the gesture resolves leftward."
   @spec on_swipe_left(payload() | term()) :: swipe_left_attr()
   def on_swipe_left({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_left, payload}
   def on_swipe_left(message), do: on_swipe_left({self(), message})
 
-  @doc "Register a swipe-right handler payload for this element"
+  @doc "Register a swipe-right payload for this element. Fires when the gesture resolves rightward."
   @spec on_swipe_right(payload() | term()) :: swipe_right_attr()
   def on_swipe_right({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_right, payload}
   def on_swipe_right(message), do: on_swipe_right({self(), message})
 
-  @doc "Register a mouse down handler payload for this element"
+  @doc "Register a mouse-down payload for this element. Left mouse button only."
   @spec on_mouse_down(payload() | term()) :: mouse_down_attr()
   def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
   def on_mouse_down(message), do: on_mouse_down({self(), message})
 
-  @doc "Register a mouse up handler payload for this element"
+  @doc "Register a mouse-up payload for this element. Left mouse button only."
   @spec on_mouse_up(payload() | term()) :: mouse_up_attr()
   def on_mouse_up({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_up, payload}
   def on_mouse_up(message), do: on_mouse_up({self(), message})
 
-  @doc "Register a mouse enter handler payload for this element"
+  @doc "Register a mouse-enter payload for this element. Delivered without cursor coordinates."
   @spec on_mouse_enter(payload() | term()) :: mouse_enter_attr()
   def on_mouse_enter({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_enter, payload}
   def on_mouse_enter(message), do: on_mouse_enter({self(), message})
 
-  @doc "Register a mouse leave handler payload for this element"
+  @doc "Register a mouse-leave payload for this element. Delivered without cursor coordinates."
   @spec on_mouse_leave(payload() | term()) :: mouse_leave_attr()
   def on_mouse_leave({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_leave, payload}
   def on_mouse_leave(message), do: on_mouse_leave({self(), message})
 
-  @doc "Register a mouse move handler payload for this element"
+  @doc "Register a mouse-move payload for this element. Delivered without cursor coordinates."
   @spec on_mouse_move(payload() | term()) :: mouse_move_attr()
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
   def on_mouse_move(message), do: on_mouse_move({self(), message})
 
-  @doc "Register a change handler payload for this input element"
+  @doc """
+  Register a value-change payload for a text input.
+
+  `on_change/1` is typically used with `Emerge.UI.Input.text/2`.
+
+  Text editing still works without this handler; `on_change/1` only controls
+  whether a message is emitted when the value changes.
+
+  When delivered through a viewport, the changed value is wrapped into the
+  stored message using `wrap_payload/3`.
+
+  ## Examples
+
+  This example keeps the input value in viewport state and updates that state
+  whenever the field changes.
+
+  ```elixir
+  def render(state) do
+    Input.text(
+      [
+        key(:search),
+        Event.on_change(:search_changed)
+      ],
+      state.query
+    )
+  end
+
+  def handle_info({:search_changed, value}, state) do
+    {:noreply, %{state | query: value} |> Viewport.rerender()}
+  end
+  ```
+  """
   @spec on_change(payload() | term()) :: change_attr()
   def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
   def on_change(message), do: on_change({self(), message})
 
-  @doc "Register a focus handler payload for this input element"
+  @doc "Register a focus payload for a focusable element."
   @spec on_focus(payload() | term()) :: focus_attr()
   def on_focus({pid, _msg} = payload) when is_pid(pid), do: {:on_focus, payload}
   def on_focus(message), do: on_focus({self(), message})
 
-  @doc "Register a blur handler payload for this input element"
+  @doc "Register a blur payload for a focusable element."
   @spec on_blur(payload() | term()) :: blur_attr()
   def on_blur({pid, _msg} = payload) when is_pid(pid), do: {:on_blur, payload}
   def on_blur(message), do: on_blur({self(), message})
 
-  @doc "Register a focused key-down handler for this element"
+  @doc """
+  Register a focused key-down payload for this element.
+
+  `matcher` can be a key atom like `:enter` or a keyword matcher such as
+  `[key: :digit_1, mods: [:ctrl], match: :all]`.
+
+  `:match` defaults to `:exact`.
+
+  ## Example
+
+  This lets one focused button respond both to `Ctrl+1` and to plain `Enter`.
+
+  ```elixir
+  Input.button(
+    [
+      Event.on_key_down([key: :digit_1, mods: [:ctrl], match: :all], :select_tab_1),
+      Event.on_key_down(:enter, :submit)
+    ],
+    text("Save")
+  )
+  ```
+  """
   @spec on_key_down(key_matcher(), payload() | term()) :: key_down_attr()
   def on_key_down(matcher, {pid, _msg} = payload) when is_pid(pid) do
     {:on_key_down, build_key_binding!(:key_down, matcher, payload)}
@@ -375,7 +666,11 @@ defmodule Emerge.UI.Event do
 
   def on_key_down(matcher, message), do: on_key_down(matcher, {self(), message})
 
-  @doc "Register a focused key-up handler for this element"
+  @doc """
+  Register a focused key-up payload for this element.
+
+  Key-up handlers use the same matcher forms as `on_key_down/2`.
+  """
   @spec on_key_up(key_matcher(), payload() | term()) :: key_up_attr()
   def on_key_up(matcher, {pid, _msg} = payload) when is_pid(pid) do
     {:on_key_up, build_key_binding!(:key_up, matcher, payload)}
@@ -383,7 +678,12 @@ defmodule Emerge.UI.Event do
 
   def on_key_up(matcher, message), do: on_key_up(matcher, {self(), message})
 
-  @doc "Register a focused completed key-press handler for this element"
+  @doc """
+  Register a focused completed key-press payload for this element.
+
+  `on_key_press/2` is for completed key gestures and fires on release after a
+  matching press.
+  """
   @spec on_key_press(key_matcher(), payload() | term()) :: key_press_attr()
   def on_key_press(matcher, {pid, _msg} = payload) when is_pid(pid) do
     {:on_key_press, build_key_binding!(:key_press, matcher, payload)}
@@ -391,7 +691,36 @@ defmodule Emerge.UI.Event do
 
   def on_key_press(matcher, message), do: on_key_press(matcher, {self(), message})
 
-  @doc "Register soft-key behavior for a plain tree element"
+  @doc """
+  Register virtual-key behavior for an element.
+
+  This is useful for on-screen keyboards and similar soft-key controls.
+
+  The spec must include `:tap`. Optional keys are `:hold`, `:hold_ms`, and
+  `:repeat_ms`.
+
+  `virtual_key/1` cannot be combined with `on_click/1` or `on_press/1` on the
+  same element.
+
+  ## Example
+
+  This virtual key inserts an uppercase `A` on tap and sends a separate
+  `:show_alternates` event when the key is held.
+
+  ```elixir
+  Input.button(
+    [
+      width(px(56)),
+      height(px(56)),
+      Event.virtual_key(
+        tap: {:text_and_key, "A", :a, [:shift]},
+        hold: {:event, {self(), :show_alternates}}
+      )
+    ],
+    text("A")
+  )
+  ```
+  """
   @spec virtual_key(virtual_key_spec() | keyword()) :: virtual_key_attr()
   def virtual_key(spec) do
     {:virtual_key, normalize_virtual_key!(spec)}

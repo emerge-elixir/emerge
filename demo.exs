@@ -461,6 +461,7 @@ defmodule Demo do
       [
         width(fill()),
         height(fill()),
+        clip_nearby(),
         padding(16),
         scrollbar_y(),
         Background.color(color_rgb(35, 35, 55)),
@@ -3497,6 +3498,14 @@ defmodule Demo do
         text("Style, radius, and width permutations for solid/dashed/dotted borders")
       ),
       border_showcase_grid(border_style_cards()),
+      section_title("Pill Radius Clamp"),
+      el(
+        [Font.size(12), Font.color(@dim_text)],
+        text(
+          "Border.rounded(999) clamps to the element height, so pill fills, borders, and clips stay aligned even when the chip gets much wider than it is tall."
+        )
+      ),
+      pill_radius_showcase_card(),
       section_title("Per-Edge Border Width"),
       el(
         [Font.size(12), Font.color(@dim_text)],
@@ -3859,6 +3868,73 @@ defmodule Demo do
 
   defp border_showcase_grid(cards) do
     wrapped_row([width(fill()), spacing_xy(12, 12)], Enum.map(cards, &border_showcase_card/1))
+  end
+
+  defp pill_radius_showcase_card do
+    el(
+      [
+        width(fill()),
+        padding(14),
+        spacing(12),
+        Background.color(color_rgb(50, 54, 76)),
+        Border.rounded(12)
+      ],
+      column([spacing(10)], [
+        el([Font.size(13), Font.color(:white)], text("Large radius behaves like a true pill")),
+        el(
+          [Font.size(11), Font.color(@dim_text)],
+          text(
+            "The same rounded(999) attr forms a circle on square badges and pills on wider labels."
+          )
+        ),
+        wrapped_row([width(fill()), spacing_xy(10, 10)], [
+          pill_radius_circle("42", color_rgb(232, 242, 255), color_rgb(52, 92, 168)),
+          pill_radius_chip("Stable", color_rgb(232, 248, 239), color_rgb(11, 126, 84)),
+          pill_radius_chip("Release branch", color_rgb(248, 249, 253), color_rgb(67, 81, 109)),
+          pill_radius_chip(
+            "Design review pending",
+            color_rgb(244, 239, 255),
+            color_rgb(111, 77, 189)
+          ),
+          pill_radius_chip(
+            "Retrying asset import",
+            color_rgb(255, 243, 229),
+            color_rgb(176, 105, 28)
+          )
+        ])
+      ])
+    )
+  end
+
+  defp pill_radius_circle(label, bg, text_color) do
+    el(
+      [
+        width(px(44)),
+        height(px(44)),
+        center_x(),
+        center_y(),
+        Background.color(bg),
+        Border.rounded(999),
+        Border.width(1),
+        Border.color(color_rgb(214, 220, 236)),
+        Font.color(text_color)
+      ],
+      text(label)
+    )
+  end
+
+  defp pill_radius_chip(label, bg, text_color) do
+    el(
+      [
+        padding_xy(14, 8),
+        Background.color(bg),
+        Border.rounded(999),
+        Border.width(1),
+        Border.color(color_rgb(214, 220, 236)),
+        Font.color(text_color)
+      ],
+      text(label)
+    )
   end
 
   defp border_showcase_card(card) do
