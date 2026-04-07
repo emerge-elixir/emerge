@@ -243,21 +243,6 @@ fn build_element_subtree(
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
 
     let element_context = inherited.merge_with_attrs(attrs);
-    let overlay_render_ctx = traversal.render_ctx.with_host_clip(
-        HostClipDescriptor {
-            clip: scene_state
-                .as_ref()
-                .map(|state| state.host_clip)
-                .unwrap_or_else(|| host_clip_shape(render_frame, attrs)),
-            scroll_x: effective_scrollbar_x(attrs),
-            scroll_y: effective_scrollbar_y(attrs),
-        },
-        ClipShape {
-            rect: geometry_self_shape(render_frame, attrs).rect,
-            radii: geometry_self_shape(render_frame, attrs).radii,
-        },
-        attrs.clip_nearby.unwrap_or(false),
-    );
     let mut local = Vec::new();
 
     let outer_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, false);
@@ -278,7 +263,6 @@ fn build_element_subtree(
             scene_ctx: traversal.scene_ctx.clone(),
             render_ctx: traversal.render_ctx,
         },
-        &overlay_render_ctx,
         scene_state.clone(),
     );
     let border_nodes = collect_border_nodes(render_frame, attrs);
@@ -335,7 +319,6 @@ fn build_host_content_subtree(
     element_context: &FontContext,
     outputs: &mut RenderOutputs<'_>,
     traversal: RenderTraversal<'_>,
-    overlay_render_ctx: &RenderBuildContext,
     scene_state: Option<ResolvedNodeState>,
 ) -> RenderSubtree {
     let attrs = &element.attrs;
@@ -461,7 +444,7 @@ fn build_host_content_subtree(
             &mut outputs.reborrow(),
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
-                render_ctx: &overlay_render_ctx.without_host_clips(),
+                render_ctx: &child_render_ctx.without_host_clips(),
             },
             scene_state.clone(),
         ));
