@@ -65,6 +65,12 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.0"
+          otp-version: "28.3"
+
       - name: Extract project version
         shell: bash
         run: echo "PROJECT_VERSION=$(mix emerge.version)" >> "$GITHUB_ENV"

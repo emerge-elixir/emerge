@@ -1,4 +1,4 @@
-name: Private Hex Release
+name: Hex Release
 
 on:
   workflow_dispatch:
@@ -8,21 +8,46 @@ on:
         required: true
         default: main
       organization:
-        description: Hex organization to publish to
-        required: true
+        description: Hex organization to publish to (optional; falls back to HEX_ORGANIZATION variable)
+        required: false
+        default: ""
+  workflow_run:
+    workflows: ["Build Precompiled NIFs"]
+    types: [completed]
 
 jobs:
   publish:
-    name: Publish private Hex package
+    name: Publish Hex package
     runs-on: ubuntu-24.04
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     permissions:
       contents: read
 
     steps:
-      - name: Checkout source code
+      - name: Checkout source code (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+
+      - name: Checkout source code (after precompiled build)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Resolve Hex organization
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.organization }}" ]; then
+            echo "HEX_ORGANIZATION=${{ inputs.organization }}" >> "$GITHUB_ENV"
+          elif [ -n "${{ vars.HEX_ORGANIZATION }}" ]; then
+            echo "HEX_ORGANIZATION=${{ vars.HEX_ORGANIZATION }}" >> "$GITHUB_ENV"
+          fi
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
@@ -30,21 +55,44 @@ jobs:
           elixir-version: "1.19.0"
           otp-version: "28.3"
 
-      - name: Install Hex
-        run: mix local.hex --force
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libwayland-dev \
+            libxkbcommon-dev
 
       - name: Install dependencies
         run: mix deps.get
 
       - name: Generate precompiled checksum file
         env:
-          EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN }}
+          EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN || github.token }}
         run: mix rustler_precompiled.download EmergeSkia.Native --all --print
 
       - name: Verify Hex package contents
+        env:
+          EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN || github.token }}
         run: mix hex.build --unpack
 
-      - name: Publish to private Hex organization
+      - name: Publish package and docs to Hex
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: mix hex.publish --organization "${{ inputs.organization }}" --yes
+          EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN || github.token }}
+        shell: bash
+        run: |
+          if [ -n "$HEX_ORGANIZATION" ]; then
+            mix hex.publish --organization "$HEX_ORGANIZATION" --yes
+          else
+            mix hex.publish --yes
+          fi
