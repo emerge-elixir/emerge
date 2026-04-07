@@ -13,6 +13,7 @@ defmodule Emerge.UI.Internal.Validation do
   @public_attr_keys MapSet.new([
                       :key,
                       :focus_on_mount,
+                      :clip_nearby,
                       :width,
                       :height,
                       :padding,
@@ -96,22 +97,35 @@ defmodule Emerge.UI.Internal.Validation do
   @spec parse_attrs(attrs_list(), attrs_owner()) :: attrs_map()
   @spec parse_attrs(attrs_list(), attrs_owner(), attrs_options()) :: attrs_map()
   def parse_attrs(attrs, attrs_owner, opts \\ []) do
+    {attrs, _nearby} = parse_attrs_with_nearby(attrs, attrs_owner, opts)
+    attrs
+  end
+
+  @spec parse_attrs_with_nearby(attrs_list(), attrs_owner()) ::
+          {attrs_map(), [{atom(), Element.t()}]}
+  @spec parse_attrs_with_nearby(attrs_list(), attrs_owner(), attrs_options()) ::
+          {attrs_map(), [{atom(), Element.t()}]}
+  def parse_attrs_with_nearby(attrs, attrs_owner, opts \\ []) do
     warn_overrides = Keyword.get(opts, :warn_overrides, true)
     extra_public_attr_keys = MapSet.new(Keyword.get(opts, :extra_public_attr_keys, []))
 
-    attrs
-    |> Enum.reduce(%{}, fn attr, acc ->
-      {key, value} = validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys)
+    {attrs, nearby} =
+      Enum.reduce(attrs, {%{}, []}, fn attr, {acc, nearby} ->
+        {key, value} = validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys)
 
-      case key do
-        :box_shadow ->
-          put_attr(acc, key, value, false)
+        case key do
+          :box_shadow ->
+            {put_attr(acc, key, value, false), nearby}
 
-        _ ->
-          put_attr(acc, key, value, warn_overrides)
-      end
-    end)
-    |> validate_attr_conflicts!(attrs_owner)
+          key when key in [:above, :below, :on_left, :on_right, :in_front, :behind] ->
+            {acc, nearby ++ [{key, value}]}
+
+          _ ->
+            {put_attr(acc, key, value, warn_overrides), nearby}
+        end
+      end)
+
+    {validate_attr_conflicts!(attrs, attrs_owner), nearby}
   end
 
   @spec parse_state_style_attrs(attrs_list(), state_style_key()) :: attrs_map()
@@ -307,7 +321,8 @@ defmodule Emerge.UI.Internal.Validation do
               :scrollbar_x,
               :snap_layout,
               :snap_text_metrics,
-              :focus_on_mount
+              :focus_on_mount,
+              :clip_nearby
             ] and
               is_boolean(value),
        do: :ok
@@ -319,7 +334,8 @@ defmodule Emerge.UI.Internal.Validation do
               :scrollbar_x,
               :snap_layout,
               :snap_text_metrics,
-              :focus_on_mount
+              :focus_on_mount,
+              :clip_nearby
             ] do
     raise ArgumentError,
           "#{attrs_owner} expects #{inspect(key)} to be a boolean, got: #{inspect(value)}"

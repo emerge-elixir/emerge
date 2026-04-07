@@ -51,7 +51,7 @@ use crate::tree::attrs::{
     KeyBindingMatch, KeyBindingSpec, VirtualKeyHoldMode, VirtualKeyTapAction,
 };
 use crate::tree::element::{
-    Element, ElementId, ElementKind, ElementTree, NearbySlot, RetainedChildMode, RetainedPaintPhase,
+    Element, ElementId, ElementKind, ElementTree, RetainedChildMode, RetainedPaintPhase,
 };
 use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
 use crate::tree::scene::ResolvedNodeState;
@@ -389,6 +389,13 @@ pub(crate) struct ScrollContext {
     scroll_y: f32,
     max_x: f32,
     max_y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct DeferredSubtree {
+    element_id: ElementId,
+    scroll_contexts: Vec<ScrollContext>,
+    scene_ctx: crate::tree::scene::SceneContext,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -4586,25 +4593,27 @@ pub(crate) fn accumulate_element_rebuild(
     next_scroll_contexts
 }
 
-pub(crate) fn accumulate_subtree_rebuild(
+fn accumulate_subtree_rebuild_local(
     tree: &ElementTree,
     element_id: &ElementId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
     scene_ctx: crate::tree::scene::SceneContext,
-) {
+) -> Vec<DeferredSubtree> {
     let Some(element) = tree.get(element_id) else {
-        return;
+        return Vec::new();
     };
 
     let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
     let next_scroll_contexts =
         accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts);
 
-    for behind_id in element.nearby.ids(NearbySlot::BehindContent) {
-        accumulate_subtree_rebuild(
+    let mut deferred = Vec::new();
+
+    for mount in element.local_nearby_mounts() {
+        deferred.extend(accumulate_subtree_rebuild_local(
             tree,
-            behind_id,
+            &mount.id,
             acc,
             scroll_contexts,
             state
@@ -4613,7 +4622,7 @@ pub(crate) fn accumulate_subtree_rebuild(
                     crate::tree::scene::child_context(resolved, RetainedPaintPhase::BehindContent)
                 })
                 .unwrap_or_default(),
-        );
+        ));
     }
 
     let child_scene_ctx = state
@@ -4622,35 +4631,78 @@ pub(crate) fn accumulate_subtree_rebuild(
         .unwrap_or_default();
     element.for_each_retained_child(tree, |child| match child.mode {
         RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
-            accumulate_subtree_rebuild(
+            deferred.extend(accumulate_subtree_rebuild_local(
                 tree,
                 child.id,
                 acc,
                 &next_scroll_contexts,
                 child_scene_ctx.clone(),
-            );
+            ));
         }
     });
 
-    for slot in NearbySlot::OVERLAY_PAINT_ORDER {
-        for overlay_id in element.nearby.ids(slot) {
-            accumulate_subtree_rebuild(
-                tree,
-                overlay_id,
-                acc,
-                scroll_contexts,
-                state
-                    .clone()
-                    .map(|resolved| {
-                        crate::tree::scene::child_context(
-                            resolved,
-                            RetainedPaintPhase::Overlay(slot),
-                        )
-                    })
-                    .unwrap_or_default(),
-            );
-        }
+    for mount in element.escape_nearby_mounts() {
+        deferred.push(DeferredSubtree {
+            element_id: mount.id.clone(),
+            scroll_contexts: scroll_contexts.to_vec(),
+            scene_ctx: state
+                .clone()
+                .map(|resolved| {
+                    crate::tree::scene::child_context(
+                        resolved,
+                        RetainedPaintPhase::Overlay(mount.slot),
+                    )
+                })
+                .unwrap_or_default(),
+        });
     }
+
+    deferred
+}
+
+fn drain_deferred_subtrees(
+    tree: &ElementTree,
+    acc: &mut RegistryBuildAcc,
+    deferred: Vec<DeferredSubtree>,
+) {
+    for subtree in deferred {
+        let child_deferred = accumulate_subtree_rebuild_local(
+            tree,
+            &subtree.element_id,
+            acc,
+            &subtree.scroll_contexts,
+            subtree.scene_ctx,
+        );
+        drain_deferred_subtrees(tree, acc, child_deferred);
+    }
+}
+
+pub(crate) fn accumulate_subtree_rebuild(
+    tree: &ElementTree,
+    element_id: &ElementId,
+    acc: &mut RegistryBuildAcc,
+    scroll_contexts: &[ScrollContext],
+    scene_ctx: crate::tree::scene::SceneContext,
+) {
+    let deferred =
+        accumulate_subtree_rebuild_local(tree, element_id, acc, scroll_contexts, scene_ctx);
+    drain_deferred_subtrees(tree, acc, deferred);
+}
+
+pub(crate) fn build_registry_rebuild(tree: &ElementTree) -> RegistryRebuildPayload {
+    let mut acc = RegistryBuildAcc::for_tree(tree);
+
+    if let Some(root) = tree.root.as_ref() {
+        accumulate_subtree_rebuild(
+            tree,
+            root,
+            &mut acc,
+            &[],
+            crate::tree::scene::SceneContext::default(),
+        );
+    }
+
+    finalize_registry_rebuild(acc)
 }
 
 pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuildPayload {
@@ -4683,11 +4735,11 @@ fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
     let child_ids: HashSet<ElementId> = elements
         .iter()
         .flat_map(|element| {
-            element.children.iter().cloned().chain(
-                NearbySlot::PAINT_ORDER
-                    .into_iter()
-                    .flat_map(|slot| element.nearby.ids(slot).iter().cloned()),
-            )
+            element
+                .children
+                .iter()
+                .cloned()
+                .chain(element.nearby.iter().map(|mount| mount.id.clone()))
         })
         .collect();
 
@@ -7079,6 +7131,313 @@ mod tests {
                 if *element_id == ElementId::from_term_bytes(vec![85])
                     && *kind == ElementEventKind::MouseDown
         ));
+    }
+
+    #[test]
+    fn registry_for_elements_clip_nearby_clips_escape_overlay_interaction() {
+        let mut host_attrs = Attrs::default();
+        host_attrs.clip_nearby = Some(true);
+        let mut host = with_interaction_rect(
+            make_element(86, host_attrs),
+            true,
+            Rect {
+                x: 50.0,
+                y: 50.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+        host.nearby.set(
+            NearbySlot::Above,
+            Some(ElementId::from_term_bytes(vec![87])),
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_down = Some(true);
+        let overlay = with_interaction_rect(
+            make_element(87, overlay_attrs),
+            true,
+            Rect {
+                x: 50.0,
+                y: 20.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[host, overlay]);
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 60.0,
+                y: 30.0,
+            },
+        );
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn registry_for_elements_earlier_child_escape_beats_later_normal_sibling() {
+        let host_id = ElementId::from_term_bytes(vec![141]);
+        let later_id = ElementId::from_term_bytes(vec![142]);
+        let overlay_id = ElementId::from_term_bytes(vec![143]);
+
+        let mut root = with_frame(
+            make_element(140, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 220.0,
+                height: 120.0,
+                content_width: 220.0,
+                content_height: 120.0,
+            },
+        );
+        root.children = vec![host_id.clone(), later_id.clone()];
+
+        let mut host = with_interaction_rect(
+            make_element(141, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+            },
+        );
+        host.nearby.set(NearbySlot::Below, Some(overlay_id.clone()));
+
+        let mut later_attrs = Attrs::default();
+        later_attrs.on_mouse_down = Some(true);
+        let later = with_interaction_rect(
+            make_element(142, later_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 48.0,
+                width: 220.0,
+                height: 40.0,
+            },
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_mouse_down = Some(true);
+        let overlay = with_interaction_rect(
+            make_element(143, overlay_attrs),
+            true,
+            Rect {
+                x: 100.0,
+                y: 48.0,
+                width: 60.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[root, host, later, overlay]);
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 110.0,
+                y: 60.0,
+            },
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == overlay_id && *kind == ElementEventKind::MouseDown
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_ancestor_in_front_beats_descendant_below() {
+        let parent_id = ElementId::from_term_bytes(vec![145]);
+        let ancestor_overlay_id = ElementId::from_term_bytes(vec![146]);
+        let descendant_overlay_id = ElementId::from_term_bytes(vec![147]);
+
+        let mut root = with_frame(
+            make_element(144, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 220.0,
+                height: 120.0,
+                content_width: 220.0,
+                content_height: 120.0,
+            },
+        );
+        root.children = vec![parent_id.clone()];
+        root.nearby
+            .set(NearbySlot::InFront, Some(ancestor_overlay_id.clone()));
+
+        let mut parent = with_interaction_rect(
+            make_element(145, Attrs::default()),
+            true,
+            Rect {
+                x: 60.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+            },
+        );
+        parent
+            .nearby
+            .set(NearbySlot::Below, Some(descendant_overlay_id.clone()));
+
+        let mut ancestor_overlay_attrs = Attrs::default();
+        ancestor_overlay_attrs.on_mouse_down = Some(true);
+        let ancestor_overlay = with_interaction_rect(
+            make_element(146, ancestor_overlay_attrs),
+            true,
+            Rect {
+                x: 80.0,
+                y: 48.0,
+                width: 60.0,
+                height: 40.0,
+            },
+        );
+
+        let mut descendant_overlay_attrs = Attrs::default();
+        descendant_overlay_attrs.on_mouse_down = Some(true);
+        let descendant_overlay = with_interaction_rect(
+            make_element(147, descendant_overlay_attrs),
+            true,
+            Rect {
+                x: 80.0,
+                y: 48.0,
+                width: 60.0,
+                height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[root, parent, ancestor_overlay, descendant_overlay]);
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 90.0,
+                y: 60.0,
+            },
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == ancestor_overlay_id && *kind == ElementEventKind::MouseDown
+        ));
+    }
+
+    #[test]
+    fn registry_for_elements_focus_order_follows_paint_order_with_escape_overlay() {
+        let root_id = ElementId::from_term_bytes(vec![149]);
+        let host_id = ElementId::from_term_bytes(vec![150]);
+        let sibling_id = ElementId::from_term_bytes(vec![151]);
+        let overlay_id = ElementId::from_term_bytes(vec![152]);
+
+        let mut root = with_frame(
+            make_element(149, Attrs::default()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 220.0,
+                height: 120.0,
+                content_width: 220.0,
+                content_height: 120.0,
+            },
+        );
+        root.children = vec![host_id.clone(), sibling_id.clone()];
+
+        let mut host_attrs = Attrs::default();
+        host_attrs.on_focus = Some(true);
+        host_attrs.focused_active = Some(true);
+        let mut host = with_interaction_rect(
+            make_element(150, host_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+            },
+        );
+        host.nearby.set(NearbySlot::Below, Some(overlay_id.clone()));
+
+        let mut sibling_attrs = Attrs::default();
+        sibling_attrs.on_focus = Some(true);
+        let sibling = with_interaction_rect(
+            make_element(151, sibling_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 48.0,
+                width: 120.0,
+                height: 40.0,
+            },
+        );
+
+        let mut overlay_attrs = Attrs::default();
+        overlay_attrs.on_focus = Some(true);
+        let overlay = with_interaction_rect(
+            make_element(152, overlay_attrs),
+            true,
+            Rect {
+                x: 100.0,
+                y: 48.0,
+                width: 60.0,
+                height: 40.0,
+            },
+        );
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(root_id);
+        tree.insert(root);
+        tree.insert(host);
+        tree.insert(sibling);
+        tree.insert(overlay);
+
+        let mut acc = super::RegistryBuildAcc::for_tree(&tree);
+        super::accumulate_subtree_rebuild(
+            &tree,
+            tree.root.as_ref().expect("tree should have a root"),
+            &mut acc,
+            &[],
+            crate::tree::scene::SceneContext::default(),
+        );
+
+        let focus_ids: Vec<_> = acc
+            .focus_entries
+            .iter()
+            .map(|entry| entry.element_id.clone())
+            .collect();
+        assert_eq!(
+            focus_ids,
+            vec![host_id.clone(), sibling_id.clone(), overlay_id.clone()]
+        );
+
+        let focus_state = super::focus_build_state_from_entries(&acc.focus_entries);
+        assert_eq!(
+            focus_state
+                .by_id
+                .get(&host_id)
+                .and_then(|meta| meta.tab_next.clone()),
+            Some(sibling_id.clone())
+        );
+        assert_eq!(
+            focus_state
+                .by_id
+                .get(&sibling_id)
+                .and_then(|meta| meta.tab_next.clone()),
+            Some(overlay_id.clone())
+        );
     }
 
     #[test]

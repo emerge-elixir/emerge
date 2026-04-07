@@ -1321,6 +1321,502 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
 }
 
 #[test]
+fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
+    let mut attrs = Attrs::default();
+    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+
+    let mut tree = build_tree_with_frame(
+        attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 40.0,
+            content_width: 80.0,
+            content_height: 40.0,
+        },
+    );
+    let host_id = tree.root.clone().unwrap();
+    mount_nearby(
+        &mut tree,
+        &host_id,
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+            content_width: 20.0,
+            content_height: 20.0,
+        },
+        62,
+    );
+    mount_nearby(
+        &mut tree,
+        &host_id,
+        NearbySlot::Above,
+        ElementKind::El,
+        solid_fill_attrs((0, 255, 0)),
+        Frame {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+            content_width: 20.0,
+            content_height: 20.0,
+        },
+        63,
+    );
+
+    let trace = trace_tree(&tree);
+    let draws = &trace.draws;
+
+    let first = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0xFF0000FF)
+        )
+    });
+    let second = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0x00FF00FF)
+        )
+    });
+
+    assert!(paints_before(first, second));
+}
+
+#[test]
+fn test_render_clip_nearby_clips_escape_overlay() {
+    let parent_attrs = Attrs::default();
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.clip_nearby = Some(true);
+
+    let mut tree = build_tree_with_child_frame(
+        parent_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+            content_width: 200.0,
+            content_height: 200.0,
+        },
+        child_attrs,
+        Frame {
+            x: 50.0,
+            y: 50.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 50.0,
+        },
+    );
+    let child_id = ElementId::from_term_bytes(vec![5]);
+    mount_nearby(
+        &mut tree,
+        &child_id,
+        NearbySlot::Above,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 60.0,
+            y: 30.0,
+            width: 20.0,
+            height: 30.0,
+            content_width: 20.0,
+            content_height: 30.0,
+        },
+        64,
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(200, 200, &tree);
+
+    assert_eq!(rgba_at(&pixels, 200, 65, 35), (0, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 200, 65, 55), (255, 0, 0, 255));
+}
+
+#[test]
+fn test_render_earlier_child_escape_paints_after_later_normal_sibling() {
+    let mut tree = build_two_child_tree(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 140.0,
+            content_width: 220.0,
+            content_height: 140.0,
+        },
+        solid_fill_attrs((30, 30, 30)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 40.0,
+            content_width: 120.0,
+            content_height: 40.0,
+        },
+        solid_fill_attrs((0, 0, 255)),
+        Frame {
+            x: 0.0,
+            y: 48.0,
+            width: 220.0,
+            height: 40.0,
+            content_width: 220.0,
+            content_height: 40.0,
+        },
+    );
+
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![201]),
+        NearbySlot::Below,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 100.0,
+            y: 48.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        65,
+    );
+
+    let trace = trace_tree(&tree);
+    let blue = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 48.0, 220.0, 40.0, 0x0000FFFF)
+        )
+    });
+    let red = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(100.0, 48.0, 60.0, 40.0, 0xFF0000FF)
+        )
+    });
+
+    assert!(paints_before(blue, red));
+
+    let (_output, pixels) = render_tree_to_pixels(220, 140, &tree);
+    assert_eq!(rgba_at(&pixels, 220, 110, 60), (255, 0, 0, 255));
+}
+
+#[test]
+fn test_render_ancestor_in_front_beats_descendant_below() {
+    let mut tree = build_nested_child_tree(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 140.0,
+            content_width: 220.0,
+            content_height: 140.0,
+        },
+        solid_fill_attrs((20, 20, 20)),
+        Frame {
+            x: 60.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        },
+        solid_fill_attrs((10, 10, 10)),
+        Frame {
+            x: 60.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+            content_width: 40.0,
+            content_height: 20.0,
+        },
+    );
+
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![210]),
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((0, 255, 0)),
+        Frame {
+            x: 80.0,
+            y: 48.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        66,
+    );
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![211]),
+        NearbySlot::Below,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 80.0,
+            y: 48.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        67,
+    );
+
+    let trace = trace_tree(&tree);
+    let red = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(80.0, 48.0, 60.0, 40.0, 0xFF0000FF)
+        )
+    });
+    let green = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(80.0, 48.0, 60.0, 40.0, 0x00FF00FF)
+        )
+    });
+
+    assert!(paints_before(red, green));
+}
+
+#[test]
+fn test_render_later_sibling_escape_beats_earlier_sibling_escape() {
+    let mut tree = build_two_child_tree(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 100.0,
+            content_width: 220.0,
+            content_height: 100.0,
+        },
+        solid_fill_attrs((30, 30, 30)),
+        Frame {
+            x: 0.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        },
+        solid_fill_attrs((30, 30, 30)),
+        Frame {
+            x: 120.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        },
+    );
+
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![201]),
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 80.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        68,
+    );
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![202]),
+        NearbySlot::OnLeft,
+        ElementKind::El,
+        solid_fill_attrs((0, 255, 0)),
+        Frame {
+            x: 80.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        69,
+    );
+
+    let trace = trace_tree(&tree);
+    let red = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(80.0, 20.0, 60.0, 40.0, 0xFF0000FF)
+        )
+    });
+    let green = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(80.0, 20.0, 60.0, 40.0, 0x00FF00FF)
+        )
+    });
+
+    assert!(paints_before(red, green));
+}
+
+#[test]
+fn test_render_transforms_do_not_change_escape_z_order() {
+    let mut tree = build_two_child_tree(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 100.0,
+            content_width: 220.0,
+            content_height: 100.0,
+        },
+        solid_fill_attrs((30, 30, 30)),
+        Frame {
+            x: 0.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        },
+        solid_fill_attrs((30, 30, 30)),
+        Frame {
+            x: 120.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            content_width: 100.0,
+            content_height: 40.0,
+        },
+    );
+
+    let mut moved_red = solid_fill_attrs((255, 0, 0));
+    moved_red.move_x = Some(60.0);
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![201]),
+        NearbySlot::InFront,
+        ElementKind::El,
+        moved_red,
+        Frame {
+            x: 20.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        70,
+    );
+    mount_nearby(
+        &mut tree,
+        &ElementId::from_term_bytes(vec![202]),
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((0, 255, 0)),
+        Frame {
+            x: 80.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+            content_width: 60.0,
+            content_height: 40.0,
+        },
+        71,
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(220, 100, &tree);
+    assert_eq!(rgba_at(&pixels, 220, 100, 40), (0, 255, 0, 255));
+}
+
+#[test]
+fn test_render_nested_escape_submenu_paints_after_parent_menu() {
+    let mut tree = build_tree_with_frame(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 260.0,
+            height: 160.0,
+            content_width: 260.0,
+            content_height: 160.0,
+        },
+    );
+    let host_id = tree.root.clone().unwrap();
+    let menu_id = ElementId::from_term_bytes(vec![72]);
+    let submenu_id = ElementId::from_term_bytes(vec![73]);
+
+    let mut menu = Element::with_attrs(
+        menu_id.clone(),
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((255, 255, 255)),
+    );
+    menu.frame = Some(Frame {
+        x: 80.0,
+        y: 40.0,
+        width: 80.0,
+        height: 60.0,
+        content_width: 80.0,
+        content_height: 60.0,
+    });
+    menu.nearby.push(NearbySlot::OnRight, submenu_id.clone());
+
+    let mut submenu = Element::with_attrs(
+        submenu_id.clone(),
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((255, 255, 0)),
+    );
+    submenu.frame = Some(Frame {
+        x: 130.0,
+        y: 50.0,
+        width: 60.0,
+        height: 40.0,
+        content_width: 60.0,
+        content_height: 40.0,
+    });
+
+    tree.insert(menu);
+    tree.insert(submenu);
+    tree.get_mut(&host_id)
+        .expect("host should exist")
+        .nearby
+        .push(NearbySlot::Below, menu_id);
+
+    let trace = trace_tree(&tree);
+    let menu_draw = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(80.0, 40.0, 80.0, 60.0, 0xFFFFFFFF)
+        )
+    });
+    let submenu_draw = only_draw(&trace.draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(130.0, 50.0, 60.0, 40.0, 0xFFFF00FF)
+        )
+    });
+
+    assert!(paints_before(menu_draw, submenu_draw));
+}
+
+#[test]
 fn test_render_in_front_fill_uses_parent_border_box_slot() {
     let mut attrs = Attrs::default();
     attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));

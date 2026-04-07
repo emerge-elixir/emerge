@@ -8,6 +8,78 @@ struct ExactAssetsIds {
     svg_card_ids: Vec<ElementId>,
 }
 
+#[test]
+fn test_row_paint_children_follow_layout_order_not_source_order() {
+    let row_id = ElementId::from_term_bytes(b"paint_row".to_vec());
+    let right_id = ElementId::from_term_bytes(b"paint_right".to_vec());
+    let center_id = ElementId::from_term_bytes(b"paint_center".to_vec());
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.width = Some(Length::Px(200.0));
+    row_attrs.height = Some(Length::Px(40.0));
+    let mut row = make_element("paint_row", ElementKind::Row, row_attrs);
+    row.children = vec![right_id.clone(), center_id.clone()];
+
+    let mut right_attrs = Attrs::default();
+    right_attrs.width = Some(Length::Px(20.0));
+    right_attrs.height = Some(Length::Px(20.0));
+    right_attrs.align_x = Some(AlignX::Right);
+    let right = Element::with_attrs(right_id.clone(), ElementKind::El, Vec::new(), right_attrs);
+
+    let mut center_attrs = Attrs::default();
+    center_attrs.width = Some(Length::Px(20.0));
+    center_attrs.height = Some(Length::Px(20.0));
+    center_attrs.align_x = Some(AlignX::Center);
+    let center = Element::with_attrs(center_id.clone(), ElementKind::El, Vec::new(), center_attrs);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(right);
+    tree.insert(center);
+
+    layout_tree_default(&mut tree, Constraint::new(200.0, 40.0), 1.0);
+
+    let row = tree.get(&row_id).expect("row should exist after layout");
+    assert_eq!(row.paint_children, vec![center_id, right_id]);
+}
+
+#[test]
+fn test_wrapped_row_paint_children_follow_line_then_x_order() {
+    let row_id = ElementId::from_term_bytes(b"wrapped_paint_row".to_vec());
+    let first_id = ElementId::from_term_bytes(b"wrapped_first".to_vec());
+    let second_id = ElementId::from_term_bytes(b"wrapped_second".to_vec());
+    let third_id = ElementId::from_term_bytes(b"wrapped_third".to_vec());
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.width = Some(Length::Px(150.0));
+    row_attrs.height = Some(Length::Content);
+    row_attrs.spacing = Some(10.0);
+    let mut row = make_element("wrapped_paint_row", ElementKind::WrappedRow, row_attrs);
+    row.children = vec![first_id.clone(), second_id.clone(), third_id.clone()];
+
+    let child = |id: ElementId| {
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Px(70.0));
+        attrs.height = Some(Length::Px(20.0));
+        Element::with_attrs(id, ElementKind::El, Vec::new(), attrs)
+    };
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(child(first_id.clone()));
+    tree.insert(child(second_id.clone()));
+    tree.insert(child(third_id.clone()));
+
+    layout_tree_default(&mut tree, Constraint::new(150.0, 200.0), 1.0);
+
+    let row = tree
+        .get(&row_id)
+        .expect("wrapped row should exist after layout");
+    assert_eq!(row.paint_children, vec![first_id, second_id, third_id]);
+}
+
 fn insert_text_node(tree: &mut ElementTree, id: &str, content: &str, font_size: f64) -> ElementId {
     let mut attrs = text_attrs(content);
     attrs.font_size = Some(font_size);

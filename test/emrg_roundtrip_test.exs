@@ -8,7 +8,8 @@ defmodule EmergeSkia.EmrgRoundtripTest do
       type: element.type,
       id: element.id,
       attrs: normalize_attrs(element.attrs),
-      children: Enum.map(element.children, &normalize_tree/1)
+      children: Enum.map(element.children, &normalize_tree/1),
+      nearby: Enum.map(element.nearby, fn {slot, nearby} -> {slot, normalize_tree(nearby)} end)
     }
   end
 
@@ -284,6 +285,7 @@ defmodule EmergeSkia.EmrgRoundtripTest do
         [
           width({:px, 100.0}),
           height({:px, 50.0}),
+          clip_nearby(),
           Nearby.above(nearby_el),
           Nearby.below(nearby_el),
           Nearby.on_left(nearby_el),

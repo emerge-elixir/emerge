@@ -8,8 +8,9 @@
 //!   - attr_len (4 bytes BE) + attr_bytes (typed attribute block)
 //!   - child_count (2 bytes BE)
 //!   - For each child: child_id_len (4 bytes BE) + child_id_bytes
-//!   - nearby_mask (1 byte)
-//!   - For each mounted nearby slot in fixed order: id_len (4 bytes BE) + id_bytes
+//!   - nearby_count (2 bytes BE)
+//!   - For each mounted nearby root in definition order:
+//!     slot_tag (1 byte) + id_len (4 bytes BE) + id_bytes
 //!
 //! Attribute block format:
 //!   - attr_count (2 bytes BE)
@@ -19,7 +20,7 @@ use super::attrs::{Attrs, decode_attrs};
 use super::element::{Element, ElementId, ElementKind, ElementTree, NearbyMounts, NearbySlot};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const LEGACY_VERSION: u8 = 3;
 
 /// Error type for deserialization failures.
@@ -181,14 +182,14 @@ fn decode_node(cursor: &mut Cursor, version: u8) -> Result<RawNode, DecodeError>
 
     let mut nearby = NearbyMounts::default();
     if version >= VERSION {
-        let nearby_mask = cursor.read_u8()?;
-        for (index, slot) in NearbySlot::PAINT_ORDER.into_iter().enumerate() {
-            if nearby_mask & (1 << index) == 0 {
-                continue;
-            }
-
+        let nearby_count = cursor.read_u16_be()? as usize;
+        for _ in 0..nearby_count {
+            let slot_tag = cursor.read_u8()?;
+            let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
+                DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
+            })?;
             let nearby_id_bytes = cursor.read_length_prefixed()?;
-            nearby.set(slot, Some(ElementId::from_term_bytes(nearby_id_bytes)));
+            nearby.push(slot, ElementId::from_term_bytes(nearby_id_bytes));
         }
     }
 
@@ -261,7 +262,7 @@ mod tests {
 
         // child_count = 0
         data.extend_from_slice(&0u16.to_be_bytes());
-        data.push(0);
+        data.extend_from_slice(&0u16.to_be_bytes());
 
         let tree = decode_tree(&data).unwrap();
         assert_eq!(tree.len(), 1);
@@ -296,7 +297,7 @@ mod tests {
 
         // child_count = 0
         data.extend_from_slice(&0u16.to_be_bytes());
-        data.push(0);
+        data.extend_from_slice(&0u16.to_be_bytes());
 
         let tree = decode_tree(&data).unwrap();
         let root_id = tree.root.as_ref().unwrap();

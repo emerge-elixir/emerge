@@ -17,10 +17,12 @@ pub struct SceneContext {
     pub scroll_dx: f32,
     pub scroll_dy: f32,
     pub visible_clip: Option<ClipShape>,
+    pub nearby_visible_clip: Option<ClipShape>,
     pub front_nearby_subtree: bool,
     pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
     pub interaction_clips: Vec<InteractionClip>,
+    pub nearby_interaction_clips: Vec<InteractionClip>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,15 +33,18 @@ pub struct ResolvedNodeState {
     pub host_clip: ClipShape,
     pub visible: bool,
     pub child_visible_clip: ClipShape,
+    pub nearby_visible_clip: Option<ClipShape>,
     pub scrollbar_x: Option<ScrollbarMetrics>,
     pub scrollbar_y: Option<ScrollbarMetrics>,
     pub local_scroll_x: f32,
     pub local_scroll_y: f32,
+    pub clip_nearby: bool,
     pub front_nearby_subtree: bool,
     pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
     pub interaction_inverse: Option<Affine2>,
     pub interaction_clips: Vec<InteractionClip>,
+    pub nearby_interaction_clips: Vec<InteractionClip>,
 }
 
 impl ResolvedNodeState {
@@ -61,8 +66,9 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         ..frame
     };
     let self_shape = scene.self_shape.offset(ctx.scroll_dx, ctx.scroll_dy);
+    let clip_nearby = element.attrs.clip_nearby.unwrap_or(false);
     let inherited_clip = if ctx.front_nearby_subtree {
-        None
+        ctx.nearby_visible_clip
     } else {
         ctx.visible_clip
     };
@@ -72,6 +78,14 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     let child_visible_clip = inherited_clip
         .map(|clip| super::geometry::intersect_clip(Some(clip), host_clip))
         .unwrap_or(host_clip);
+    let nearby_visible_clip = if clip_nearby {
+        Some(super::geometry::intersect_clip(
+            ctx.nearby_visible_clip,
+            host_clip,
+        ))
+    } else {
+        ctx.nearby_visible_clip
+    };
 
     let scrollbar_x = scene
         .scrollbar_x
@@ -90,15 +104,18 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         host_clip,
         visible,
         child_visible_clip,
+        nearby_visible_clip,
         scrollbar_x,
         scrollbar_y,
         local_scroll_x: element.attrs.scroll_x.unwrap_or(0.0) as f32,
         local_scroll_y: element.attrs.scroll_y.unwrap_or(0.0) as f32,
+        clip_nearby,
         front_nearby_subtree: ctx.front_nearby_subtree,
         front_nearby_root: ctx.front_nearby_root,
         interaction_transform,
         interaction_inverse,
         interaction_clips: ctx.interaction_clips,
+        nearby_interaction_clips: ctx.nearby_interaction_clips,
     })
 }
 
@@ -114,9 +131,17 @@ fn local_scene_geometry(frame: Frame, attrs: &super::attrs::Attrs) -> LocalScene
 pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> SceneContext {
     let (scroll_dx, scroll_dy) = state.accumulated_scroll();
     let mut interaction_clips = state.interaction_clips.clone();
+    let mut nearby_interaction_clips = state.nearby_interaction_clips.clone();
 
     if !matches!(phase, RetainedPaintPhase::Overlay(_)) {
         interaction_clips.push(InteractionClip::new(
+            state.host_clip,
+            state.interaction_transform,
+        ));
+    }
+
+    if state.clip_nearby {
+        nearby_interaction_clips.push(InteractionClip::new(
             state.host_clip,
             state.interaction_transform,
         ));
@@ -127,28 +152,34 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dx: scroll_dx + state.local_scroll_x,
             scroll_dy: scroll_dy + state.local_scroll_y,
             visible_clip: Some(state.child_visible_clip),
+            nearby_visible_clip: state.nearby_visible_clip,
             front_nearby_subtree: state.front_nearby_subtree,
             front_nearby_root: false,
             interaction_transform: state.interaction_transform,
             interaction_clips,
+            nearby_interaction_clips,
         },
         RetainedPaintPhase::BehindContent => SceneContext {
             scroll_dx,
             scroll_dy,
             visible_clip: Some(state.child_visible_clip),
+            nearby_visible_clip: state.nearby_visible_clip,
             front_nearby_subtree: state.front_nearby_subtree,
             front_nearby_root: false,
             interaction_transform: state.interaction_transform,
             interaction_clips,
+            nearby_interaction_clips,
         },
         RetainedPaintPhase::Overlay(_) => SceneContext {
             scroll_dx,
             scroll_dy,
-            visible_clip: None,
+            visible_clip: state.nearby_visible_clip,
+            nearby_visible_clip: state.nearby_visible_clip,
             front_nearby_subtree: true,
             front_nearby_root: true,
             interaction_transform: state.interaction_transform,
-            interaction_clips: Vec::new(),
+            interaction_clips: nearby_interaction_clips.clone(),
+            nearby_interaction_clips,
         },
     }
 }

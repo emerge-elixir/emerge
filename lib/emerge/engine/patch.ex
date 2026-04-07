@@ -12,8 +12,9 @@ defmodule Emerge.Engine.Patch do
   @type patch ::
           {:set_attrs, term(), map()}
           | {:set_children, term(), [term()]}
+          | {:set_nearby_mounts, term(), [{nearby_slot(), term()}]}
           | {:insert_subtree, term() | nil, non_neg_integer(), Element.t()}
-          | {:insert_nearby_subtree, term(), nearby_slot(), Element.t()}
+          | {:insert_nearby_subtree, term(), non_neg_integer(), nearby_slot(), Element.t()}
           | {:remove, term()}
 
   @doc """
@@ -60,7 +61,14 @@ defmodule Emerge.Engine.Patch do
             []
           end
 
-        attrs_patch ++ children_patch
+        nearby_patch =
+          if mount_refs(old.nearby) != mount_refs(new.nearby) do
+            [{:set_nearby_mounts, id, mount_refs(new.nearby)}]
+          else
+            []
+          end
+
+        attrs_patch ++ children_patch ++ nearby_patch
       end)
 
     removed ++ inserts ++ updates
@@ -109,6 +117,21 @@ defmodule Emerge.Engine.Patch do
       children_bin::binary>>
   end
 
+  defp encode_patch({:set_nearby_mounts, host_id, mounts}) do
+    host_bin = :erlang.term_to_binary(host_id)
+
+    mounts_bin =
+      mounts
+      |> Enum.map(fn {slot, mount_id} ->
+        id_bin = :erlang.term_to_binary(mount_id)
+        [<<Nearby.slot_tag(slot)::unsigned-8, byte_size(id_bin)::unsigned-32>>, id_bin]
+      end)
+      |> IO.iodata_to_binary()
+
+    <<5, byte_size(host_bin)::unsigned-32, host_bin::binary, length(mounts)::unsigned-16,
+      mounts_bin::binary>>
+  end
+
   defp encode_patch({:insert_subtree, parent_id, index, subtree}) do
     subtree_bin = Emerge.Engine.Serialization.encode_tree(subtree)
     parent_bin = :erlang.term_to_binary(parent_id)
@@ -122,12 +145,13 @@ defmodule Emerge.Engine.Patch do
     <<4, byte_size(id_bin)::unsigned-32, id_bin::binary>>
   end
 
-  defp encode_patch({:insert_nearby_subtree, host_id, slot, subtree}) do
+  defp encode_patch({:insert_nearby_subtree, host_id, index, slot, subtree}) do
     subtree_bin = Emerge.Engine.Serialization.encode_tree(subtree)
     host_bin = :erlang.term_to_binary(host_id)
 
-    <<5, byte_size(host_bin)::unsigned-32, host_bin::binary, nearby_slot_tag(slot)::unsigned-8,
-      byte_size(subtree_bin)::unsigned-32, subtree_bin::binary>>
+    <<6, byte_size(host_bin)::unsigned-32, host_bin::binary, index::unsigned-16,
+      Nearby.slot_tag(slot)::unsigned-8, byte_size(subtree_bin)::unsigned-32,
+      subtree_bin::binary>>
   end
 
   defp decode_patches(<<>>, acc), do: acc
@@ -149,6 +173,14 @@ defmodule Emerge.Engine.Patch do
     decode_patches(rest, [{:set_children, id, children} | acc])
   end
 
+  defp decode_patches(<<5, host_len::unsigned-32, rest::binary>>, acc) do
+    <<host_bin::binary-size(host_len), rest::binary>> = rest
+    host_id = :erlang.binary_to_term(host_bin)
+    <<count::unsigned-16, rest::binary>> = rest
+    {mounts, rest} = decode_nearby_mounts(rest, count, [])
+    decode_patches(rest, [{:set_nearby_mounts, host_id, mounts} | acc])
+  end
+
   defp decode_patches(<<3, parent_len::unsigned-32, rest::binary>>, acc) do
     <<parent_bin::binary-size(parent_len), rest::binary>> = rest
     parent_id = :erlang.binary_to_term(parent_bin)
@@ -164,14 +196,14 @@ defmodule Emerge.Engine.Patch do
     decode_patches(rest, [{:remove, id} | acc])
   end
 
-  defp decode_patches(<<5, host_len::unsigned-32, rest::binary>>, acc) do
+  defp decode_patches(<<6, host_len::unsigned-32, rest::binary>>, acc) do
     <<host_bin::binary-size(host_len), rest::binary>> = rest
     host_id = :erlang.binary_to_term(host_bin)
-    <<slot_tag::unsigned-8, len::unsigned-32, rest::binary>> = rest
+    <<index::unsigned-16, slot_tag::unsigned-8, len::unsigned-32, rest::binary>> = rest
     <<subtree_bin::binary-size(len), rest::binary>> = rest
     subtree = Emerge.Engine.Serialization.decode(subtree_bin)
-    slot = nearby_slot_from_tag!(slot_tag)
-    decode_patches(rest, [{:insert_nearby_subtree, host_id, slot, subtree} | acc])
+    slot = Nearby.slot_from_tag!(slot_tag)
+    decode_patches(rest, [{:insert_nearby_subtree, host_id, index, slot, subtree} | acc])
   end
 
   defp decode_patches(_other, _acc) do
@@ -186,9 +218,16 @@ defmodule Emerge.Engine.Patch do
     decode_child_ids(rest, count - 1, [id | acc])
   end
 
+  defp decode_nearby_mounts(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_nearby_mounts(<<slot_tag::unsigned-8, len::unsigned-32, rest::binary>>, count, acc) do
+    <<id_bin::binary-size(len), rest::binary>> = rest
+    id = :erlang.binary_to_term(id_bin)
+    decode_nearby_mounts(rest, count - 1, [{Nearby.slot_from_tag!(slot_tag), id} | acc])
+  end
+
   defp comparable_attrs(attrs) do
     attrs
-    |> Nearby.strip_nearby_attrs()
     |> TreeAttrs.strip_runtime_attrs()
   end
 
@@ -209,8 +248,9 @@ defmodule Emerge.Engine.Patch do
         collect_index(child, {:child, element.id, index}, next_acc)
       end)
 
-    Enum.reduce(Nearby.nearby_children(element), acc, fn {slot, child}, next_acc ->
-      collect_index(child, {:nearby, element.id, slot}, next_acc)
+    Enum.with_index(element.nearby)
+    |> Enum.reduce(acc, fn {{slot, child}, index}, next_acc ->
+      collect_index(child, {:nearby, element.id, index, slot}, next_acc)
     end)
   end
 
@@ -218,7 +258,7 @@ defmodule Emerge.Engine.Patch do
     case Map.fetch!(mounts, id) do
       :root -> true
       {:child, parent_id, _index} -> not MapSet.member?(added_ids, parent_id)
-      {:nearby, host_id, _slot} -> not MapSet.member?(added_ids, host_id)
+      {:nearby, host_id, _index, _slot} -> not MapSet.member?(added_ids, host_id)
     end
   end
 
@@ -228,7 +268,7 @@ defmodule Emerge.Engine.Patch do
     case Map.fetch!(mounts, id) do
       :root -> {:insert_subtree, nil, 0, node}
       {:child, parent_id, index} -> {:insert_subtree, parent_id, index, node}
-      {:nearby, host_id, slot} -> {:insert_nearby_subtree, host_id, slot, node}
+      {:nearby, host_id, index, slot} -> {:insert_nearby_subtree, host_id, index, slot, node}
     end
   end
 
@@ -236,21 +276,7 @@ defmodule Emerge.Engine.Patch do
     Enum.map(children, & &1.id)
   end
 
-  defp nearby_slot_tag(:behind), do: 1
-  defp nearby_slot_tag(:above), do: 2
-  defp nearby_slot_tag(:on_right), do: 3
-  defp nearby_slot_tag(:below), do: 4
-  defp nearby_slot_tag(:on_left), do: 5
-  defp nearby_slot_tag(:in_front), do: 6
-
-  defp nearby_slot_from_tag!(1), do: :behind
-  defp nearby_slot_from_tag!(2), do: :above
-  defp nearby_slot_from_tag!(3), do: :on_right
-  defp nearby_slot_from_tag!(4), do: :below
-  defp nearby_slot_from_tag!(5), do: :on_left
-  defp nearby_slot_from_tag!(6), do: :in_front
-
-  defp nearby_slot_from_tag!(tag) do
-    raise ArgumentError, "invalid nearby slot tag: #{inspect(tag)}"
+  defp mount_refs(nearby) do
+    Enum.map(nearby, fn {slot, %Element{id: id}} -> {slot, id} end)
   end
 end

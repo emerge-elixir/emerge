@@ -75,7 +75,8 @@ defmodule Emerge.Engine.AttrCodec do
     on_swipe_left: 73,
     on_swipe_right: 74,
     virtual_key: 75,
-    focus_on_mount: 76
+    focus_on_mount: 76,
+    clip_nearby: 77
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -178,6 +179,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:on_key_press, value), do: encode_key_bindings(value)
   defp encode_value(:virtual_key, value), do: encode_virtual_key(value)
   defp encode_value(:focus_on_mount, _value), do: encode_bool(true)
+  defp encode_value(:clip_nearby, _value), do: encode_bool(true)
   defp encode_value(:on_change, _value), do: encode_bool(true)
   defp encode_value(:on_focus, _value), do: encode_bool(true)
   defp encode_value(:on_blur, _value), do: encode_bool(true)
@@ -246,6 +248,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:on_key_press, rest), do: decode_key_bindings(rest)
   defp decode_value(:virtual_key, rest), do: decode_virtual_key(rest)
   defp decode_value(:focus_on_mount, rest), do: decode_bool(rest)
+  defp decode_value(:clip_nearby, rest), do: decode_bool(rest)
   defp decode_value(:on_change, rest), do: decode_bool(rest)
   defp decode_value(:on_focus, rest), do: decode_bool(rest)
   defp decode_value(:on_blur, rest), do: decode_bool(rest)

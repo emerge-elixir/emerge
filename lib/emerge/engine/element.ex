@@ -28,6 +28,7 @@ defmodule Emerge.Engine.Element do
           id: term() | nil,
           attrs: map(),
           children: [t()],
+          nearby: [{atom(), t()}],
           frame: frame() | nil
         }
 
@@ -36,6 +37,7 @@ defmodule Emerge.Engine.Element do
     :id,
     attrs: %{},
     children: [],
+    nearby: [],
     frame: nil
   ]
 end

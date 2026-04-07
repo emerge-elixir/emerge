@@ -523,7 +523,7 @@ pub(super) fn mount_nearby(
     tree.get_mut(host_id)
         .expect("host should exist")
         .nearby
-        .set(slot, Some(nearby_id));
+        .push(slot, nearby_id);
 }
 
 pub(super) fn solid_fill_attrs(rgb: (u8, u8, u8)) -> Attrs {

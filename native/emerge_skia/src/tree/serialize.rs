@@ -1,11 +1,11 @@
 //! Serialization of the EMRG binary format.
 //!
-//! Produces EMRG v4 from an ElementTree.
+//! Produces EMRG v5 from an ElementTree.
 
 use super::element::{Element, ElementId, ElementKind, ElementTree, NearbySlot};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 
 pub fn encode_tree(tree: &ElementTree) -> Vec<u8> {
     let Some(root_id) = tree.root.as_ref() else {
@@ -65,25 +65,16 @@ fn encode_children(out: &mut Vec<u8>, children: &[ElementId]) {
 }
 
 fn encode_nearby(out: &mut Vec<u8>, tree: &ElementTree, element: &Element) {
-    let mut mask = 0u8;
-    let mut ids = Vec::new();
+    let live_mounts: Vec<_> = element
+        .nearby
+        .iter()
+        .filter(|mount| tree.get(&mount.id).is_some_and(Element::is_live))
+        .collect();
 
-    for (index, slot) in NearbySlot::PAINT_ORDER.into_iter().enumerate() {
-        if let Some(id) = element
-            .nearby
-            .ids(slot)
-            .iter()
-            .rev()
-            .find(|nearby_id| tree.get(nearby_id).is_some_and(Element::is_live))
-        {
-            mask |= 1 << index;
-            ids.push(id);
-        }
-    }
-
-    out.push(mask);
-    for id in ids {
-        encode_id(out, id);
+    out.extend_from_slice(&(live_mounts.len() as u16).to_be_bytes());
+    for mount in live_mounts {
+        out.push(NearbySlot::tag(mount.slot));
+        encode_id(out, &mount.id);
     }
 }
 
@@ -126,15 +117,9 @@ fn collect_nodes_inner<'a>(tree: &'a ElementTree, id: &ElementId, out: &mut Vec<
         }
     }
 
-    for slot in NearbySlot::PAINT_ORDER {
-        if let Some(nearby_id) = element
-            .nearby
-            .ids(slot)
-            .iter()
-            .rev()
-            .find(|nearby_id| tree.get(nearby_id).is_some_and(Element::is_live))
-        {
-            collect_nodes_inner(tree, nearby_id, out);
+    for mount in element.nearby.iter() {
+        if tree.get(&mount.id).is_some_and(Element::is_live) {
+            collect_nodes_inner(tree, &mount.id, out);
         }
     }
 }

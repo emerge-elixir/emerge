@@ -9,8 +9,8 @@ defmodule Emerge.Engine.VNode do
           key: term() | nil,
           attrs: map(),
           children: [t()],
-          nearby: %{optional(atom()) => t()}
+          nearby: [{atom(), t()}]
         }
 
-  defstruct [:id, :kind, :key, :attrs, children: [], nearby: %{}]
+  defstruct [:id, :kind, :key, :attrs, children: [], nearby: []]
 end
