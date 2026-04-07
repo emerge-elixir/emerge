@@ -354,6 +354,49 @@ defmodule EmergeSkia do
   end
 
   @doc """
+  Render a tree to an encoded PNG binary (synchronous, no window).
+
+  This is useful for generating screenshots and documentation assets.
+  Each call creates a fresh CPU surface, runs layout, renders the tree, and
+  returns PNG file bytes.
+
+  ## Options
+
+  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
+  - `width` - Output width in pixels (**required**)
+  - `height` - Output height in pixels (**required**)
+  - `scale` - Layout scale factor (default: `1.0`)
+  - `assets` - Asset runtime policy options (same shape as `start/1`)
+  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
+  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
+
+  Returns a binary containing the full encoded PNG file.
+
+  ## Example
+
+      import Emerge.UI
+      import Emerge.UI.Color
+      import Emerge.UI.Size
+
+      png =
+        EmergeSkia.render_to_png(
+          el(
+            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
+            none()
+          ),
+          otp_app: :my_app,
+          width: 100,
+          height: 100
+        )
+
+      File.write!("preview.png", png)
+  """
+  @spec render_to_png(Emerge.tree(), keyword()) :: binary()
+  def render_to_png(tree, opts) when is_list(opts) do
+    TreeRenderer.render_to_png(tree, opts, @default_asset_timeout_ms)
+  end
+
+  @doc """
   Convert RGB values to a color integer.
 
   ## Examples

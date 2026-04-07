@@ -27,7 +27,7 @@ use skia_safe::{
 
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::tree::attrs::{BorderStyle, ImageFit};
-use crate::tree::geometry::{ClipShape, CornerRadii};
+use crate::tree::geometry::{ClipShape, CornerRadii, clamp_radii};
 use crate::tree::transform::Affine2;
 use crate::video::{RendererVideoState, VideoSyncResult};
 
@@ -42,11 +42,13 @@ pub struct RenderState {
     pub animate: bool,
 }
 
+const RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET: f32 = 1.0;
+
 impl Default for RenderState {
     fn default() -> Self {
         Self {
             scene: RenderScene::default(),
-            clear_color: Color::WHITE,
+            clear_color: Color::TRANSPARENT,
             render_version: 0,
             animate: false,
         }
@@ -487,6 +489,32 @@ pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), Str
     Ok((width, height))
 }
 
+#[cfg(test)]
+pub fn insert_test_raster_asset_rgba(
+    id: &str,
+    width: u32,
+    height: u32,
+    rgba_pixels: &[u8],
+) -> Result<(), String> {
+    let image = raster_image_from_rgba(width, height, rgba_pixels)
+        .ok_or_else(|| "failed to create raster image from RGBA pixels".to_string())?;
+
+    clear_rendered_vector_variants(id);
+
+    let cache = get_asset_cache();
+    let mut cache = cache.lock().map_err(|_| "asset cache lock poisoned")?;
+    cache.insert(
+        id.to_string(),
+        Arc::new(CachedAsset {
+            kind: CachedAssetKind::Raster(image),
+            width,
+            height,
+        }),
+    );
+
+    Ok(())
+}
+
 fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option<Image> {
     let info = skia_safe::ImageInfo::new(
         (width as i32, height as i32),
@@ -633,7 +661,7 @@ impl Renderer {
         let canvas = self.surface.canvas();
         canvas.clear(state.clear_color);
 
-        Self::render_nodes(canvas, &state.scene.nodes, &self.video_state);
+        Self::render_nodes(canvas, &state.scene.nodes, &self.video_state, 0.0);
 
         if let Some(gr) = self.gr_context.as_mut() {
             gr.flush_and_submit();
@@ -644,27 +672,94 @@ impl Renderer {
         canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
         video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
     ) {
         for node in nodes {
             match node {
-                RenderNode::Clip { clips, children } => {
-                    Self::render_clip_node(canvas, clips, children, video_state)
+                RenderNode::ShadowPass { children } => {
+                    Self::render_nodes(canvas, children, video_state, image_bleed_device_outset)
+                }
+                RenderNode::Clip { clips, children } => Self::render_clip_node(
+                    canvas,
+                    clips,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                ),
+                RenderNode::RelaxedClip { clips, children } => {
+                    Self::render_relaxed_clip_node(canvas, clips, children, video_state)
                 }
                 RenderNode::Transform {
                     transform,
                     children,
-                } => Self::render_transform_node(canvas, *transform, children, video_state),
-                RenderNode::Alpha { alpha, children } => {
-                    Self::render_alpha_node(canvas, *alpha, children, video_state)
-                }
-                RenderNode::Primitive(primitive) => {
-                    Self::render_primitive(canvas, primitive, video_state)
-                }
+                } => Self::render_transform_node(
+                    canvas,
+                    *transform,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                ),
+                RenderNode::Alpha { alpha, children } => Self::render_alpha_node(
+                    canvas,
+                    *alpha,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                ),
+                RenderNode::Primitive(primitive) => Self::render_primitive(
+                    canvas,
+                    primitive,
+                    video_state,
+                    image_bleed_device_outset,
+                ),
             }
         }
     }
 
     fn render_clip_node(
+        canvas: &skia_safe::Canvas,
+        clips: &[ClipShape],
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if clips.is_empty() {
+            Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
+            return;
+        }
+
+        canvas.save();
+        for clip in clips {
+            apply_clip_shape(canvas, clip);
+        }
+        for child in children {
+            match child {
+                RenderNode::ShadowPass { children } => {
+                    canvas.restore();
+                    Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
+                    canvas.save();
+                    for clip in clips {
+                        apply_clip_shape(canvas, clip);
+                    }
+                }
+                _ => {
+                    Self::render_nodes(
+                        canvas,
+                        std::slice::from_ref(child),
+                        video_state,
+                        image_bleed_device_outset,
+                    );
+                }
+            }
+        }
+        canvas.restore();
+    }
+
+    fn render_relaxed_clip_node(
         canvas: &skia_safe::Canvas,
         clips: &[ClipShape],
         children: &[RenderNode],
@@ -675,15 +770,44 @@ impl Renderer {
         }
 
         if clips.is_empty() {
-            Self::render_nodes(canvas, children, video_state);
+            Self::render_nodes(
+                canvas,
+                children,
+                video_state,
+                RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+            );
             return;
         }
 
         canvas.save();
         for clip in clips {
-            apply_clip_shape(canvas, clip);
+            apply_relaxed_clip_shape(canvas, clip);
         }
-        Self::render_nodes(canvas, children, video_state);
+        for child in children {
+            match child {
+                RenderNode::ShadowPass { children } => {
+                    canvas.restore();
+                    Self::render_nodes(
+                        canvas,
+                        children,
+                        video_state,
+                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+                    );
+                    canvas.save();
+                    for clip in clips {
+                        apply_relaxed_clip_shape(canvas, clip);
+                    }
+                }
+                _ => {
+                    Self::render_nodes(
+                        canvas,
+                        std::slice::from_ref(child),
+                        video_state,
+                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+                    );
+                }
+            }
+        }
         canvas.restore();
     }
 
@@ -692,20 +816,21 @@ impl Renderer {
         transform: Affine2,
         children: &[RenderNode],
         video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
     ) {
         if children.is_empty() {
             return;
         }
 
         if transform.is_identity() {
-            Self::render_nodes(canvas, children, video_state);
+            Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
             return;
         }
 
         canvas.save();
         let matrix = matrix_from_affine2(transform);
         canvas.concat(&matrix);
-        Self::render_nodes(canvas, children, video_state);
+        Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
         canvas.restore();
     }
 
@@ -714,20 +839,21 @@ impl Renderer {
         alpha: f32,
         children: &[RenderNode],
         video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
     ) {
         if children.is_empty() {
             return;
         }
 
         if alpha >= 1.0 {
-            Self::render_nodes(canvas, children, video_state);
+            Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
             return;
         }
 
         let clamped = alpha.clamp(0.0, 1.0);
         let alpha_u8 = (clamped * 255.0).round() as u8;
         canvas.save_layer_alpha(None, alpha_u8.into());
-        Self::render_nodes(canvas, children, video_state);
+        Self::render_nodes(canvas, children, video_state, image_bleed_device_outset);
         canvas.restore();
     }
 
@@ -735,6 +861,7 @@ impl Renderer {
         canvas: &skia_safe::Canvas,
         primitive: &DrawPrimitive,
         video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
     ) {
         match primitive {
             DrawPrimitive::Rect(x, y, w, h, fill) => {
@@ -748,21 +875,6 @@ impl Renderer {
             DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
                 let rrect = RRect::new_rect_xy(rect, *radius, *radius);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*fill));
-                paint.set_anti_alias(true);
-                canvas.draw_rrect(rrect, &paint);
-            }
-
-            DrawPrimitive::RoundedRectCorners(x, y, w, h, tl, tr, br, bl, fill) => {
-                let rect = Rect::from_xywh(*x, *y, *w, *h);
-                let radii = [
-                    Point::new(*tl, *tl),
-                    Point::new(*tr, *tr),
-                    Point::new(*br, *br),
-                    Point::new(*bl, *bl),
-                ];
-                let rrect = RRect::new_rect_radii(rect, &radii);
                 let mut paint = Paint::default();
                 paint.set_color(color_from_u32(*fill));
                 paint.set_anti_alias(true);
@@ -941,7 +1053,7 @@ impl Renderer {
                 canvas.draw_str(text, (*x, *y), &font, &paint);
             }
 
-            DrawPrimitive::Gradient(x, y, w, h, from, to, angle, radius) => {
+            DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
 
                 let radians = angle.to_radians();
@@ -967,12 +1079,7 @@ impl Renderer {
                     let mut paint = Paint::default();
                     paint.set_shader(shader);
                     paint.set_anti_alias(true);
-                    if *radius > 0.0 {
-                        let rrect = RRect::new_rect_xy(rect, *radius, *radius);
-                        canvas.draw_rrect(rrect, &paint);
-                    } else {
-                        canvas.draw_rect(rect, &paint);
-                    }
+                    canvas.draw_rect(rect, &paint);
                 }
             }
 
@@ -990,6 +1097,7 @@ impl Renderer {
                         fit: *fit,
                         svg_tint: *svg_tint,
                     },
+                    image_bleed_device_outset,
                 );
             }
 
@@ -1011,16 +1119,27 @@ impl Renderer {
                             fit: *fit,
                             svg_tint: None,
                         },
+                        image_bleed_device_outset,
                     );
                 }
             }
 
             DrawPrimitive::ImageLoading(x, y, w, h) => {
-                draw_image_loading(canvas, *x, *y, *w, *h);
+                let rect = maybe_expand_draw_rect(
+                    canvas,
+                    Rect::from_xywh(*x, *y, *w, *h),
+                    image_bleed_device_outset,
+                );
+                draw_image_loading(canvas, rect.x(), rect.y(), rect.width(), rect.height());
             }
 
             DrawPrimitive::ImageFailed(x, y, w, h) => {
-                draw_image_failed(canvas, *x, *y, *w, *h);
+                let rect = maybe_expand_draw_rect(
+                    canvas,
+                    Rect::from_xywh(*x, *y, *w, *h),
+                    image_bleed_device_outset,
+                );
+                draw_image_failed(canvas, rect.x(), rect.y(), rect.width(), rect.height());
             }
         }
     }
@@ -1115,6 +1234,84 @@ fn apply_clip_shape(canvas: &skia_safe::Canvas, clip: &ClipShape) {
     }
 }
 
+fn apply_relaxed_clip_shape(canvas: &skia_safe::Canvas, clip: &ClipShape) {
+    apply_clip_shape(canvas, &relax_clip_shape_to_device(canvas, *clip));
+}
+
+fn relax_clip_shape_to_device(canvas: &skia_safe::Canvas, clip: ClipShape) -> ClipShape {
+    let rect = Rect::from_xywh(clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height);
+    let expanded = outset_rect_in_device_space(canvas, rect, 0.5);
+    let (outset_x, outset_y) = rect_outset_amount(rect, expanded);
+    let outset = outset_x.max(outset_y);
+
+    let expanded_rect = crate::tree::geometry::Rect {
+        x: expanded.left(),
+        y: expanded.top(),
+        width: expanded.width(),
+        height: expanded.height(),
+    };
+
+    let radii = clip.radii.map(|radii| {
+        clamp_radii(
+            expanded_rect,
+            CornerRadii {
+                tl: radii.tl + outset,
+                tr: radii.tr + outset,
+                br: radii.br + outset,
+                bl: radii.bl + outset,
+            },
+        )
+    });
+
+    ClipShape {
+        rect: expanded_rect,
+        radii,
+    }
+}
+
+fn outset_rect_in_device_space(canvas: &skia_safe::Canvas, rect: Rect, device_outset: f32) -> Rect {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return rect;
+    }
+
+    let matrix = canvas.local_to_device_as_3x3();
+    let (device_rect, _) = matrix.map_rect(rect);
+    if !device_rect.left().is_finite()
+        || !device_rect.top().is_finite()
+        || !device_rect.right().is_finite()
+        || !device_rect.bottom().is_finite()
+    {
+        return rect;
+    }
+
+    let expanded_device = Rect::from_ltrb(
+        device_rect.left() - device_outset,
+        device_rect.top() - device_outset,
+        device_rect.right() + device_outset,
+        device_rect.bottom() + device_outset,
+    );
+
+    let Some(inv) = matrix.invert() else {
+        return rect;
+    };
+
+    let (mapped_back, _) = inv.map_rect(expanded_device);
+    if !mapped_back.left().is_finite()
+        || !mapped_back.top().is_finite()
+        || !mapped_back.right().is_finite()
+        || !mapped_back.bottom().is_finite()
+    {
+        return rect;
+    }
+
+    Rect::from_ltrb(
+        mapped_back.left().min(rect.left()),
+        mapped_back.top().min(rect.top()),
+        mapped_back.right().max(rect.right()),
+        mapped_back.bottom().max(rect.bottom()),
+    )
+}
+
 fn create_gl_surface(
     dimensions: (i32, i32),
     fb_info: FramebufferInfo,
@@ -1136,7 +1333,11 @@ fn create_gl_surface(
     .expect("Could not create Skia surface")
 }
 
-fn draw_cached_asset_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_>) {
+fn draw_cached_asset_with_fit(
+    canvas: &skia_safe::Canvas,
+    spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
+) {
     let RectSpec { w, h, .. } = spec.rect;
 
     if w <= 0.0 || h <= 0.0 {
@@ -1148,9 +1349,14 @@ fn draw_cached_asset_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_
     };
 
     match &cached.kind {
-        CachedAssetKind::Raster(image) => {
-            draw_image_with_fit(canvas, image, cached.width, cached.height, spec)
-        }
+        CachedAssetKind::Raster(image) => draw_image_with_fit(
+            canvas,
+            image,
+            cached.width,
+            cached.height,
+            spec,
+            image_bleed_device_outset,
+        ),
         CachedAssetKind::Vector(tree) => draw_vector_asset_with_fit(
             canvas,
             spec.image_id,
@@ -1158,6 +1364,7 @@ fn draw_cached_asset_with_fit(canvas: &skia_safe::Canvas, spec: ImageDrawSpec<'_
             cached.width,
             cached.height,
             spec,
+            image_bleed_device_outset,
         ),
     }
 }
@@ -1168,6 +1375,7 @@ fn draw_image_with_fit(
     image_width: u32,
     image_height: u32,
     spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
 ) {
     let RectSpec { x, y, w, h } = spec.rect;
 
@@ -1184,7 +1392,13 @@ fn draw_image_with_fit(
             let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
 
             let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
-            let dst_rect = Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h);
+            let dst_rect = maybe_expand_fit_dst_rect(
+                canvas,
+                Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h),
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                image_bleed_device_outset,
+            );
             draw_image_rect_with_optional_template_tint(
                 canvas,
                 image,
@@ -1266,6 +1480,80 @@ fn draw_image_rect_with_optional_template_tint(
     }
 }
 
+fn maybe_expand_fit_dst_rect(
+    canvas: &skia_safe::Canvas,
+    dst_rect: Rect,
+    container_rect: Rect,
+    fit: ImageFit,
+    image_bleed_device_outset: f32,
+) -> Rect {
+    if image_bleed_device_outset <= 0.0 {
+        return dst_rect;
+    }
+
+    match fit {
+        ImageFit::Cover => {
+            maybe_expand_draw_rect_axes(canvas, dst_rect, image_bleed_device_outset, true, true)
+        }
+        ImageFit::Contain => {
+            let epsilon = 0.01;
+            let expand_x = (dst_rect.left() - container_rect.left()).abs() <= epsilon
+                && (dst_rect.right() - container_rect.right()).abs() <= epsilon;
+            let expand_y = (dst_rect.top() - container_rect.top()).abs() <= epsilon
+                && (dst_rect.bottom() - container_rect.bottom()).abs() <= epsilon;
+
+            maybe_expand_draw_rect_axes(
+                canvas,
+                dst_rect,
+                image_bleed_device_outset,
+                expand_x,
+                expand_y,
+            )
+        }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => dst_rect,
+    }
+}
+
+fn maybe_expand_draw_rect(
+    canvas: &skia_safe::Canvas,
+    rect: Rect,
+    image_bleed_device_outset: f32,
+) -> Rect {
+    maybe_expand_draw_rect_axes(canvas, rect, image_bleed_device_outset, true, true)
+}
+
+fn maybe_expand_draw_rect_axes(
+    canvas: &skia_safe::Canvas,
+    rect: Rect,
+    image_bleed_device_outset: f32,
+    expand_x: bool,
+    expand_y: bool,
+) -> Rect {
+    if image_bleed_device_outset <= 0.0 || (!expand_x && !expand_y) {
+        return rect;
+    }
+
+    let expanded = outset_rect_in_device_space(canvas, rect, image_bleed_device_outset);
+    Rect::from_ltrb(
+        if expand_x {
+            expanded.left()
+        } else {
+            rect.left()
+        },
+        if expand_y { expanded.top() } else { rect.top() },
+        if expand_x {
+            expanded.right()
+        } else {
+            rect.right()
+        },
+        if expand_y {
+            expanded.bottom()
+        } else {
+            rect.bottom()
+        },
+    )
+}
+
 fn draw_with_template_tint<F>(canvas: &skia_safe::Canvas, bounds: Rect, tint: u32, draw: F)
 where
     F: FnOnce(&skia_safe::Canvas),
@@ -1303,6 +1591,7 @@ fn draw_vector_asset_with_fit(
     asset_width: u32,
     asset_height: u32,
     spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
 ) {
     let RectSpec { x, y, w, h } = spec.rect;
 
@@ -1316,8 +1605,16 @@ fn draw_vector_asset_with_fit(
                 return;
             };
 
-            let raster_width = draw_w.ceil().max(1.0) as u32;
-            let raster_height = draw_h.ceil().max(1.0) as u32;
+            let dst_rect = maybe_expand_fit_dst_rect(
+                canvas,
+                Rect::from_xywh(draw_x, draw_y, draw_w, draw_h),
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                image_bleed_device_outset,
+            );
+
+            let raster_width = dst_rect.width().ceil().max(1.0) as u32;
+            let raster_height = dst_rect.height().ceil().max(1.0) as u32;
             let Some(image) =
                 get_or_rasterize_vector_variant(asset_id, tree, raster_width, raster_height)
             else {
@@ -1332,10 +1629,10 @@ fn draw_vector_asset_with_fit(
             draw_image_fill_rect_tinted(
                 canvas,
                 &image,
-                draw_x,
-                draw_y,
-                draw_w,
-                draw_h,
+                dst_rect.x(),
+                dst_rect.y(),
+                dst_rect.width(),
+                dst_rect.height(),
                 spec.svg_tint,
             );
             canvas.restore();
@@ -1523,7 +1820,6 @@ fn snap_outset_rect_to_device(canvas: &skia_safe::Canvas, rect: Rect) -> Rect {
     )
 }
 
-#[cfg(test)]
 fn rect_outset_amount(original: Rect, expanded: Rect) -> (f32, f32) {
     let outset_x = (original.left() - expanded.left())
         .max(expanded.right() - original.right())
@@ -3077,6 +3373,7 @@ mod tests {
                         fit: ImageFit::Cover,
                         svg_tint: None,
                     },
+                    0.0,
                 );
                 canvas.restore();
 

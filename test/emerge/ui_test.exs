@@ -256,7 +256,7 @@ defmodule Emerge.UITest do
             ],
             420,
             :ease_in_out,
-            {:times, 3}
+            3
           )
         ],
         text("hi")
@@ -269,7 +269,7 @@ defmodule Emerge.UITest do
              ],
              duration: 420,
              curve: :ease_in_out,
-             repeat: {:times, 3}
+             repeat: 3
            }
   end
 
@@ -368,6 +368,42 @@ defmodule Emerge.UITest do
         text("bad")
       )
     end
+  end
+
+  test "animate rejects tuple repeat counts" do
+    assert_raise ArgumentError,
+                 ~r/expects :repeat to be :once, :loop, or a positive integer/,
+                 fn ->
+                   el(
+                     [
+                       Animation.animate(
+                         [[Transform.alpha(0.0)], [Transform.alpha(1.0)]],
+                         200,
+                         :linear,
+                         {:times, 3}
+                       )
+                     ],
+                     text("bad")
+                   )
+                 end
+  end
+
+  test "animate rejects zero repeat count" do
+    assert_raise ArgumentError,
+                 ~r/expects :repeat to be :once, :loop, or a positive integer/,
+                 fn ->
+                   el(
+                     [
+                       Animation.animate(
+                         [[Transform.alpha(0.0)], [Transform.alpha(1.0)]],
+                         200,
+                         :linear,
+                         0
+                       )
+                     ],
+                     text("bad")
+                   )
+                 end
   end
 
   test "viewport root rejects animate_exit" do

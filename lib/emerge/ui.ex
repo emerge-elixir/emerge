@@ -1,6 +1,23 @@
 defmodule Emerge.UI do
   @moduledoc """
-  Helpers for declaring UI trees.
+  Declerative UI API.
+
+  # Basic elements
+
+  `none/0` When you want to render exactly nothing
+
+  The basic building block is `el/2`, which accepts attributes and exactly one child element.
+  Use `el([], none())` for an empty element.
+
+  `text/1` creates some plain text, does not wrap by default.
+  Checkout `paragraph/2` and `text_column/2` for wrapped text flows.
+
+  # Rows and Columns
+
+  When you want more than one child on an element,
+  you need to be specific about how they will be laid out.
+
+  Layout children in `row/2`, `wrapped_row/2` or `column/2` 
 
   The root `Emerge.UI` module contains the core element constructors:
 
@@ -15,6 +32,8 @@ defmodule Emerge.UI do
   - `svg/2`
   - `video/2`
   - `none/0`
+
+  And attributes:
   - `key/1`
   - `image_fit/1`
 

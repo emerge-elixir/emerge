@@ -50,6 +50,14 @@ defmodule EmergeSkia.Options do
   end
 
   @doc false
+  def normalize_render_to_png_keyword_opts!(opts) do
+    normalize_keyword_list!(
+      opts,
+      "EmergeSkia.render_to_png/2 expects a keyword list, for example: EmergeSkia.render_to_png(tree, otp_app: :my_app, width: 800, height: 600)"
+    )
+  end
+
+  @doc false
   def normalize_raster_opts!(opts, default_asset_timeout_ms) do
     %{
       width: opts |> Keyword.fetch!(:width) |> normalize_positive_integer!(":width"),

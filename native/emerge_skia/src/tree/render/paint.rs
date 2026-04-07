@@ -66,20 +66,13 @@ pub(super) fn collect_box_shadow_nodes(
         .collect()
 }
 
-pub(super) fn build_background_nodes(
-    frame: Frame,
-    attrs: &Attrs,
-    radius: Option<&BorderRadius>,
-) -> Vec<RenderNode> {
+pub(super) fn build_background_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
     let Some(background) = &attrs.background else {
         return Vec::new();
     };
 
-    match background {
-        Background::Color(color) => {
-            let fill = color_to_u32(color);
-            collect_background_rect_nodes(frame, radius, fill)
-        }
+    let nodes = match background {
+        Background::Color(color) => collect_background_rect_nodes(frame, color_to_u32(color)),
         Background::Gradient { from, to, angle } => {
             vec![RenderNode::Primitive(DrawPrimitive::Gradient(
                 frame.x,
@@ -89,32 +82,16 @@ pub(super) fn build_background_nodes(
                 color_to_u32(from),
                 color_to_u32(to),
                 *angle as f32,
-                border_radius_uniform(radius),
             ))]
         }
         Background::Image { source, fit } => {
-            let image_node =
-                paint_node_for_image_source(Rect::from_frame(frame), source, *fit, None, false);
-            let Some(image_node) = image_node else {
-                return Vec::new();
-            };
-
-            let shape = geometry_self_shape(frame, attrs);
-            let clip = ClipShape {
-                rect: shape.rect,
-                radii: shape.radii,
-            };
-
-            if shape.radii.is_some() {
-                vec![RenderNode::Clip {
-                    clips: vec![clip],
-                    children: vec![image_node],
-                }]
-            } else {
-                vec![image_node]
-            }
+            paint_node_for_image_source(Rect::from_frame(frame), source, *fit, None, false)
+                .into_iter()
+                .collect()
         }
-    }
+    };
+
+    wrap_with_self_clip(nodes, frame, attrs)
 }
 
 pub(super) fn render_image_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
@@ -259,41 +236,44 @@ pub(super) fn collect_scrollbar_nodes(
     nodes
 }
 
-pub(super) fn collect_background_rect_nodes(
-    frame: Frame,
-    radius: Option<&BorderRadius>,
-    fill: u32,
-) -> Vec<RenderNode> {
-    let primitive = match radius {
-        Some(BorderRadius::Uniform(value)) if *value > 0.0 => Some(DrawPrimitive::RoundedRect(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-            *value as f32,
-            fill,
-        )),
-        Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawPrimitive::RoundedRectCorners(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-            *tl as f32,
-            *tr as f32,
-            *br as f32,
-            *bl as f32,
-            fill,
-        )),
-        _ => Some(DrawPrimitive::Rect(
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-            fill,
-        )),
+pub(super) fn collect_background_rect_nodes(frame: Frame, fill: u32) -> Vec<RenderNode> {
+    vec![RenderNode::Primitive(DrawPrimitive::Rect(
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        fill,
+    ))]
+}
+
+fn wrap_with_self_clip(nodes: Vec<RenderNode>, frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    let Some(clip) = self_clip_shape(frame, attrs) else {
+        return nodes;
     };
 
-    primitive.into_iter().map(RenderNode::Primitive).collect()
+    vec![RenderNode::Clip {
+        clips: vec![clip],
+        children: nodes,
+    }]
+}
+
+fn self_clip_shape(frame: Frame, attrs: &Attrs) -> Option<ClipShape> {
+    let shape = geometry_self_shape(frame, attrs);
+    let Some(radii) = shape
+        .radii
+        .filter(|radii| radii.tl > 0.0 || radii.tr > 0.0 || radii.br > 0.0 || radii.bl > 0.0)
+    else {
+        return None;
+    };
+
+    Some(ClipShape {
+        rect: shape.rect,
+        radii: Some(radii),
+    })
 }
 
 pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode> {
