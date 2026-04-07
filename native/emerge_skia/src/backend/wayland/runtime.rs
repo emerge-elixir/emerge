@@ -455,6 +455,8 @@ impl WaylandApp {
         let presented_at = std::time::Instant::now();
         let predicted_next_present_at = self.present.observe_present(presented_at);
 
+        self.send_present_timing(presented_at, predicted_next_present_at);
+
         if self.render_state.animate {
             self.send_animation_pulse(presented_at, predicted_next_present_at);
         }
@@ -543,6 +545,21 @@ impl WaylandApp {
                 let _ = self.tree_tx.send(msg);
             }
             Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+
+    fn send_present_timing(
+        &self,
+        presented_at: std::time::Instant,
+        predicted_next_present_at: std::time::Instant,
+    ) {
+        let msg = EventMsg::PresentTiming {
+            presented_at,
+            predicted_next_present_at,
+        };
+
+        match self.event_tx.try_send(msg) {
+            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
         }
     }
 }

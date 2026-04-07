@@ -819,6 +819,21 @@ fn send_animation_pulse(
     }
 }
 
+fn send_present_timing(
+    event_tx: &Sender<EventMsg>,
+    presented_at: Instant,
+    predicted_next_present_at: Instant,
+) {
+    let msg = EventMsg::PresentTiming {
+        presented_at,
+        predicted_next_present_at,
+    };
+
+    match event_tx.try_send(msg) {
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
 fn should_defer_cursor_only_commit(
     submit_primary: bool,
     submit_cursor: bool,
@@ -1930,10 +1945,16 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
+                                        let presented_at = Instant::now();
+                                        let predicted_next_present_at =
+                                            present_state.observe_present(presented_at);
+                                        send_present_timing(
+                                            &event_tx,
+                                            presented_at,
+                                            predicted_next_present_at,
+                                        );
+
                                         if submitted.emit_animation_pulse {
-                                            let presented_at = Instant::now();
-                                            let predicted_next_present_at =
-                                                present_state.observe_present(presented_at);
                                             if !send_animation_pulse(
                                                 &tree_tx,
                                                 presented_at,
