@@ -179,6 +179,7 @@ struct RuntimeListenerComputeCtx<'a> {
     base_registry: &'a registry_builder::Registry,
     overlay_registry: &'a registry_builder::Registry,
     focused_id: Option<&'a ElementId>,
+    hovered_id: Option<&'a ElementId>,
     text_states: &'a HashMap<ElementId, TextInputState>,
     clipboard: &'a mut ClipboardManager,
 }
@@ -186,6 +187,10 @@ struct RuntimeListenerComputeCtx<'a> {
 impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
     fn focused_id(&self) -> Option<&ElementId> {
         self.focused_id
+    }
+
+    fn hover_owner(&self) -> Option<&ElementId> {
+        self.hovered_id
     }
 
     fn text_input_state(&self, element_id: &ElementId) -> Option<TextInputState> {
@@ -207,6 +212,31 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
     ) -> Vec<ListenerAction> {
         registry_builder::LayeredRegistryView::new(self.overlay_registry, self.base_registry)
             .first_match(input, skip_matchers, self)
+    }
+
+    fn base_first_match_listener(
+        &self,
+        input: &ListenerInput,
+        skip_matchers: &[ListenerMatcherKind],
+    ) -> Option<registry_builder::Listener> {
+        self.base_registry
+            .view()
+            .matching_listener(input, skip_matchers)
+            .cloned()
+    }
+
+    fn base_source_listener(
+        &self,
+        element_id: &ElementId,
+        matcher_kind: ListenerMatcherKind,
+    ) -> Option<registry_builder::Listener> {
+        self.base_registry
+            .view()
+            .find_precedence(|listener| {
+                listener.element_id.as_ref() == Some(element_id)
+                    && listener.matcher.kind() == matcher_kind
+            })
+            .cloned()
     }
 }
 
@@ -274,6 +304,7 @@ struct DirectEventRuntime {
     backend_wake: BackendWakeHandle,
     last_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
+    hovered_id: Option<ElementId>,
     current_cursor_icon: CursorIcon,
     virtual_key_deadline: Option<Instant>,
 }
@@ -311,6 +342,7 @@ impl DirectEventRuntime {
             backend_wake,
             last_cursor_pos: None,
             cursor_in_window: false,
+            hovered_id: None,
             current_cursor_icon: CursorIcon::Default,
             virtual_key_deadline: None,
         }
@@ -607,6 +639,7 @@ impl DirectEventRuntime {
                 base_registry: &self.base_registry,
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
+                hovered_id: self.hovered_id.as_ref(),
                 text_states: &self.text_states,
                 clipboard: &mut self.clipboard,
             };
@@ -803,6 +836,9 @@ impl DirectEventRuntime {
             } => {
                 self.enqueue_pending_text_patch(element_id, content);
             }
+            RuntimeChange::SetHoverOwner { element_id } => {
+                self.hovered_id = element_id;
+            }
         }
     }
 
@@ -898,6 +934,14 @@ impl DirectEventRuntime {
                 self.runtime_overlay.scrollbar = None;
             }
         }
+
+        self.hovered_id = self
+            .base_registry
+            .view()
+            .find_precedence(|listener| {
+                listener.matcher.kind() == ListenerMatcherKind::HoverLeaveCurrentOwner
+            })
+            .and_then(|listener| listener.element_id.clone());
     }
 }
 
@@ -3436,6 +3480,176 @@ mod tests {
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == ElementId::from_term_bytes(vec![52]) && !*active
         )));
+    }
+
+    #[test]
+    fn direct_runtime_parent_hover_activates_through_mouse_move_child() {
+        let parent_id = ElementId::from_term_bytes(vec![62]);
+        let child_id = ElementId::from_term_bytes(vec![63]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.mouse_over = Some(MouseOverAttrs::default());
+        parent_attrs.mouse_over_active = Some(false);
+        let mut parent = with_interaction(make_element(62, ElementKind::El, parent_attrs));
+        parent.children = vec![child_id.clone()];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.on_mouse_move = Some(true);
+        let child = with_interaction(make_element(63, ElementKind::El, child_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(runtime.listener_lane.is_stale());
+        assert_eq!(runtime.hovered_id, Some(parent_id.clone()));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == parent_id && *active
+        )));
+        assert!(msgs.iter().all(|msg| {
+            !matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id, .. } if *element_id == child_id
+            )
+        }));
+    }
+
+    #[test]
+    fn direct_runtime_child_hover_beats_parent_hover() {
+        let parent_id = ElementId::from_term_bytes(vec![64]);
+        let child_id = ElementId::from_term_bytes(vec![65]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.mouse_over = Some(MouseOverAttrs::default());
+        parent_attrs.mouse_over_active = Some(false);
+        let mut parent = with_interaction(make_element(64, ElementKind::El, parent_attrs));
+        parent.children = vec![child_id.clone()];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.mouse_over = Some(MouseOverAttrs::default());
+        child_attrs.mouse_over_active = Some(false);
+        let child = with_interaction(make_element(65, ElementKind::El, child_attrs));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(runtime.listener_lane.is_stale());
+        assert_eq!(runtime.hovered_id, Some(child_id.clone()));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == child_id && *active
+        )));
+        assert!(msgs.iter().all(|msg| {
+            !matches!(
+                msg,
+                TreeMsg::SetMouseOverActive { element_id, .. } if *element_id == parent_id
+            )
+        }));
+    }
+
+    #[test]
+    fn direct_runtime_hover_handoff_switches_from_parent_to_child() {
+        let parent_id = ElementId::from_term_bytes(vec![66]);
+        let child_id = ElementId::from_term_bytes(vec![67]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.mouse_over = Some(MouseOverAttrs::default());
+        parent_attrs.mouse_over_active = Some(false);
+        let mut parent = with_interaction(make_element(66, ElementKind::El, parent_attrs.clone()));
+        parent.children = vec![child_id.clone()];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.mouse_over = Some(MouseOverAttrs::default());
+        child_attrs.mouse_over_active = Some(false);
+        let child = with_interaction_rect(
+            make_element(67, ElementKind::El, child_attrs.clone()),
+            40.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
+        let initial_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent.clone(), child.clone()]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        assert_eq!(runtime.hovered_id, Some(parent_id.clone()));
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == parent_id && *active
+        )));
+
+        let mut active_parent_attrs = parent_attrs;
+        active_parent_attrs.mouse_over_active = Some(true);
+        let mut active_parent = with_interaction(make_element(66, ElementKind::El, active_parent_attrs));
+        active_parent.children = vec![child_id.clone()];
+        let active_child = with_interaction_rect(
+            make_element(67, ElementKind::El, child_attrs),
+            40.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+        let active_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[active_parent, active_child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 50.0, y: 10.0 }, &tree_tx, false);
+
+        let hover_msgs: Vec<_> = drain_msgs(&tree_rx)
+            .into_iter()
+            .filter_map(|msg| match msg {
+                TreeMsg::SetMouseOverActive { element_id, active } => Some((element_id, active)),
+                _ => None,
+            })
+            .collect();
+        assert!(runtime.listener_lane.is_stale());
+        assert_eq!(runtime.hovered_id, Some(child_id.clone()));
+        assert_eq!(
+            hover_msgs,
+            vec![(parent_id, false), (child_id, true)]
+        );
     }
 
     #[test]

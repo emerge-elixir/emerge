@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
 use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+    InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
     SCROLL_LINE_PIXELS,
 };
 use crate::keys::CanonicalKey;
@@ -53,16 +53,15 @@ use crate::tree::attrs::{
 use crate::tree::element::{
     Element, ElementId, ElementKind, ElementTree, RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
+use crate::tree::geometry::{clamp_radii, point_hits_shape, CornerRadii, Rect, ShapeBounds};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 
 use super::{
-    CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload,
+    scrollbar::{scrollbar_node_from_metrics, ScrollbarHitArea, ScrollbarNode},
+    text_ops, CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload,
     TextInputCommandRequest, TextInputEditRequest, TextInputPreeditRequest, TextInputState,
-    scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
-    text_ops,
 };
 
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
@@ -172,19 +171,27 @@ impl<'a> RegistryView<'a> {
         self.iter_precedence().find(|listener| predicate(listener))
     }
 
+    pub fn matching_listener(
+        &self,
+        input: &ListenerInput,
+        skip_matchers: &[ListenerMatcherKind],
+    ) -> Option<&'a Listener> {
+        self.find_precedence(|listener| {
+            !skip_matchers.contains(&listener.matcher.kind())
+                && listener.matcher.matches_input(input)
+        })
+    }
+
     pub fn first_match<C: ListenerComputeCtx>(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
         ctx: &mut C,
     ) -> Vec<ListenerAction> {
-        self.find_precedence(|listener| {
-            !skip_matchers.contains(&listener.matcher.kind())
-                && listener.matcher.matches_input(input)
-        })
-        .cloned()
-        .map(|listener| listener.compute_listener_input_with_ctx(input, ctx))
-        .unwrap_or_default()
+        self.matching_listener(input, skip_matchers)
+            .cloned()
+            .map(|listener| listener.compute_listener_input_with_ctx(input, ctx))
+            .unwrap_or_default()
     }
 }
 
@@ -205,12 +212,11 @@ impl<'a> LayeredRegistryView<'a> {
         Self { higher, lower }
     }
 
-    pub fn first_match<C: ListenerComputeCtx>(
+    pub fn matching_listener(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
-        ctx: &mut C,
-    ) -> Vec<ListenerAction> {
+    ) -> Option<&'a Listener> {
         self.higher
             .view()
             .iter_precedence()
@@ -219,6 +225,15 @@ impl<'a> LayeredRegistryView<'a> {
                 !skip_matchers.contains(&listener.matcher.kind())
                     && listener.matcher.matches_input(input)
             })
+    }
+
+    pub fn first_match<C: ListenerComputeCtx>(
+        &self,
+        input: &ListenerInput,
+        skip_matchers: &[ListenerMatcherKind],
+        ctx: &mut C,
+    ) -> Vec<ListenerAction> {
+        self.matching_listener(input, skip_matchers)
             .cloned()
             .map(|listener| listener.compute_listener_input_with_ctx(input, ctx))
             .unwrap_or_default()
@@ -1285,6 +1300,10 @@ pub trait ListenerComputeCtx {
         None
     }
 
+    fn hover_owner(&self) -> Option<&ElementId> {
+        None
+    }
+
     fn text_input_state(&self, _element_id: &ElementId) -> Option<TextInputState> {
         None
     }
@@ -1303,6 +1322,22 @@ pub trait ListenerComputeCtx {
         _skip_matchers: &[ListenerMatcherKind],
     ) -> Vec<ListenerAction> {
         Vec::new()
+    }
+
+    fn base_first_match_listener(
+        &self,
+        _input: &ListenerInput,
+        _skip_matchers: &[ListenerMatcherKind],
+    ) -> Option<Listener> {
+        None
+    }
+
+    fn base_source_listener(
+        &self,
+        _element_id: &ElementId,
+        _matcher_kind: ListenerMatcherKind,
+    ) -> Option<Listener> {
+        None
     }
 }
 
@@ -1336,6 +1371,10 @@ pub enum ListenerInput {
         x: f32,
         y: f32,
         window_left: bool,
+    },
+    PointerEnter {
+        x: f32,
+        y: f32,
     },
     ScrollDirection {
         direction: ScrollDirection,
@@ -1418,6 +1457,8 @@ pub enum ListenerMatcher {
     CursorButtonLeftReleaseAnywhere,
     /// Match cursor position updates inside `region`.
     CursorPosInside { region: PointerRegion },
+    /// Match semantic pointer-enter dispatch inside `region`.
+    PointerEnterInside { region: PointerRegion },
     /// Match any cursor position update regardless of pointer position.
     CursorPosAnywhere,
     /// Match cursor movement once distance from `origin` exceeds `threshold`.
@@ -1497,6 +1538,8 @@ pub enum ListenerMatcher {
     WindowResized,
     /// Match leaving `region` via cursor or left-button location changes, or window-leave.
     CursorLocationLeaveBoundary { region: PointerRegion },
+    /// Source-only hover leave listener for the current hover owner.
+    HoverLeaveCurrentOwner,
 }
 
 /// Stable matcher identity for source lookup.
@@ -1509,6 +1552,7 @@ pub enum ListenerMatcherKind {
     CursorButtonLeftReleaseAnywhere,
     CursorButtonMiddlePressInside,
     CursorPosInside,
+    PointerEnterInside,
     CursorPosAnywhere,
     CursorPosDistanceFromPointExceeded,
     CursorScrollAny,
@@ -1540,6 +1584,7 @@ pub enum ListenerMatcherKind {
     WindowCursorLeft,
     WindowResized,
     CursorLocationLeaveBoundary,
+    HoverLeaveCurrentOwner,
 }
 
 impl ListenerMatcher {
@@ -1559,6 +1604,7 @@ impl ListenerMatcher {
                 ListenerMatcherKind::CursorButtonMiddlePressInside
             }
             ListenerMatcher::CursorPosInside { .. } => ListenerMatcherKind::CursorPosInside,
+            ListenerMatcher::PointerEnterInside { .. } => ListenerMatcherKind::PointerEnterInside,
             ListenerMatcher::CursorPosAnywhere => ListenerMatcherKind::CursorPosAnywhere,
             ListenerMatcher::CursorPosDistanceFromPointExceeded { .. } => {
                 ListenerMatcherKind::CursorPosDistanceFromPointExceeded
@@ -1616,6 +1662,7 @@ impl ListenerMatcher {
             ListenerMatcher::CursorLocationLeaveBoundary { .. } => {
                 ListenerMatcherKind::CursorLocationLeaveBoundary
             }
+            ListenerMatcher::HoverLeaveCurrentOwner => ListenerMatcherKind::HoverLeaveCurrentOwner,
         }
     }
 
@@ -1674,6 +1721,10 @@ impl ListenerMatcher {
             ListenerMatcher::CursorPosInside { region } => matches!(
                 input.raw(),
                 Some(InputEvent::CursorPos { x, y }) if region.contains(*x, *y)
+            ),
+            ListenerMatcher::PointerEnterInside { region } => matches!(
+                input,
+                ListenerInput::PointerEnter { x, y } if region.contains(*x, *y)
             ),
             ListenerMatcher::CursorPosAnywhere => {
                 matches!(input.raw(), Some(InputEvent::CursorPos { .. }))
@@ -1881,6 +1932,7 @@ impl ListenerMatcher {
                 }
                 _ => false,
             },
+            ListenerMatcher::HoverLeaveCurrentOwner => false,
         }
     }
 }
@@ -2057,6 +2109,8 @@ pub enum RuntimeChange {
         element_id: ElementId,
         content: String,
     },
+    /// Update the runtime's current hover owner.
+    SetHoverOwner { element_id: Option<ElementId> },
 }
 
 impl RuntimeChange {
@@ -2142,7 +2196,7 @@ pub enum ListenerCompute {
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
-    /// Split one raw pointer lifecycle input into synthetic leave/raw passes.
+    /// Split one raw pointer lifecycle input into synthetic leave/raw/enter passes.
     RedispatchPointerLifecycle,
     /// Build one `TreeMsg::ScrollRequest` from a directional scroll input.
     ScrollTreeMsgFromCursorScrollDirection {
@@ -2806,29 +2860,58 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
 ) -> Vec<ListenerAction> {
     let skip = [ListenerMatcherKind::RawPointerLifecycle];
 
-    fn dispatch_sequence<C: ListenerComputeCtx, I: IntoIterator<Item = ListenerInput>>(
+    fn dispatch_sequence<C: ListenerComputeCtx>(
         ctx: &mut C,
         skip: &[ListenerMatcherKind],
-        inputs: I,
+        leave_input: ListenerInput,
+        raw_input: ListenerInput,
+        enter_input: Option<ListenerInput>,
     ) -> Vec<ListenerAction> {
-        inputs.into_iter().fold(Vec::new(), |mut out, input| {
-            out.extend(ctx.dispatch_effective_skip(&input, skip));
-            out
-        })
+        let current_hover_id = ctx.hover_owner().cloned();
+        let next_hover_listener = enter_input
+            .as_ref()
+            .and_then(|input| ctx.base_first_match_listener(input, &[]));
+        let next_hover_id = next_hover_listener
+            .as_ref()
+            .and_then(|listener| listener.element_id.clone());
+        let hover_owner_changed = current_hover_id != next_hover_id;
+
+        let mut out = ctx.dispatch_effective_skip(&leave_input, skip);
+
+        if hover_owner_changed
+            && let Some(current_hover_id) = current_hover_id.as_ref()
+            && let Some(listener) =
+                ctx.base_source_listener(current_hover_id, ListenerMatcherKind::HoverLeaveCurrentOwner)
+        {
+            out.extend(listener.compute_listener_input_with_ctx(&leave_input, ctx));
+        }
+
+        out.extend(ctx.dispatch_effective_skip(&raw_input, skip));
+
+        if hover_owner_changed {
+            if let (Some(enter_input), Some(listener)) = (enter_input.as_ref(), next_hover_listener) {
+                out.extend(listener.compute_listener_input_with_ctx(enter_input, ctx));
+            }
+
+            out.push(ListenerAction::RuntimeChange(RuntimeChange::SetHoverOwner {
+                element_id: next_hover_id,
+            }));
+        }
+
+        out
     }
 
     match input {
         InputEvent::CursorPos { x, y } => dispatch_sequence(
             ctx,
             &skip,
-            [
-                ListenerInput::PointerLeave {
-                    x: *x,
-                    y: *y,
-                    window_left: false,
-                },
-                ListenerInput::Raw(input.clone()),
-            ],
+            ListenerInput::PointerLeave {
+                x: *x,
+                y: *y,
+                window_left: false,
+            },
+            ListenerInput::Raw(input.clone()),
+            Some(ListenerInput::PointerEnter { x: *x, y: *y }),
         ),
         InputEvent::CursorButton {
             button,
@@ -2839,26 +2922,24 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
         } if button == "left" && *action == ACTION_RELEASE => dispatch_sequence(
             ctx,
             &skip,
-            [
-                ListenerInput::PointerLeave {
-                    x: *x,
-                    y: *y,
-                    window_left: false,
-                },
-                ListenerInput::Raw(input.clone()),
-            ],
+            ListenerInput::PointerLeave {
+                x: *x,
+                y: *y,
+                window_left: false,
+            },
+            ListenerInput::Raw(input.clone()),
+            Some(ListenerInput::PointerEnter { x: *x, y: *y }),
         ),
         InputEvent::CursorEntered { entered } if !*entered => dispatch_sequence(
             ctx,
             &skip,
-            [
-                ListenerInput::PointerLeave {
-                    x: 0.0,
-                    y: 0.0,
-                    window_left: true,
-                },
-                ListenerInput::Raw(input.clone()),
-            ],
+            ListenerInput::PointerLeave {
+                x: 0.0,
+                y: 0.0,
+                window_left: true,
+            },
+            ListenerInput::Raw(input.clone()),
+            None,
         ),
         _ => Vec::new(),
     }
@@ -4308,8 +4389,10 @@ fn emit_cursor_state_listeners(
     state: Option<&ResolvedNodeState>,
     out: &mut PrecedenceEmitter<'_>,
 ) {
+    out.emit_opt(slot_hover_pointer_enter(element, state));
     out.emit_opt(slot_cursor_pos_inside(element, state));
     out.emit_opt(slot_cursor_pos_outside(element, state));
+    out.emit_opt(slot_hover_leave_owner(element, state));
 }
 
 fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut PrecedenceEmitter<'_>) {
@@ -5261,7 +5344,7 @@ fn slot_mouse_down_release_anywhere(
 /// Build the inside-cursor listener.
 ///
 /// Emits all element behavior that depends on the cursor currently being inside
-/// the element, including move, enter, hover activation, and scrollbar hover.
+/// the element, including move, cursor ownership, and scrollbar hover.
 fn slot_cursor_pos_inside(
     element: &Element,
     state: Option<&ResolvedNodeState>,
@@ -5273,14 +5356,10 @@ fn slot_cursor_pos_inside(
     let cursor_icon = cursor_icon_for_element(element).or_else(|| {
         owns_steady_cursor_inside(element, has_scrollbar_hover).then_some(CursorIcon::Default)
     });
-    let actions: Vec<ListenerAction> = [
-        mouse_events::cursor_pos_actions(element),
-        hover::inside_actions(element),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(cursor_icon.map(ListenerAction::SetCursor))
-    .collect();
+    let actions: Vec<ListenerAction> = mouse_events::cursor_pos_actions(element)
+        .into_iter()
+        .chain(cursor_icon.map(ListenerAction::SetCursor))
+        .collect();
 
     (!actions.is_empty() || has_scrollbar_hover).then_some(Listener {
         element_id: Some(element.id.clone()),
@@ -5289,6 +5368,21 @@ fn slot_cursor_pos_inside(
             actions,
             scrollbar_hover,
         },
+    })
+}
+
+fn slot_hover_pointer_enter(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let state = state?;
+    let region = pointer_region_for_element(state)?;
+    let actions = hover::inside_actions(element);
+
+    tracks_hover_inside(element).then_some(Listener {
+        element_id: Some(element.id.clone()),
+        matcher: ListenerMatcher::PointerEnterInside { region },
+        compute: ListenerCompute::Static { actions },
     })
 }
 
@@ -5471,20 +5565,14 @@ fn slot_text_delete_surrounding(
 /// Build the outside-cursor listener.
 ///
 /// Aggregates behavior that depends on the cursor being outside the element,
-/// including hover leave, mouse-down clear, and scrollbar hover clear.
+/// including mouse-down clear and scrollbar hover clear.
 fn slot_cursor_pos_outside(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
     let state = state?;
     let region = pointer_region_for_element(state)?;
-    let actions: Vec<ListenerAction> = [
-        hover::leave_actions(element),
-        mouse_down_style::leave_actions(element),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let actions = mouse_down_style::leave_actions(element);
     let scrollbar_hover = active_scrollbar_hover_compute_for_element(element, Some(state));
 
     (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
@@ -5494,6 +5582,19 @@ fn slot_cursor_pos_outside(
             actions,
             scrollbar_hover,
         },
+    })
+}
+
+fn slot_hover_leave_owner(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    let actions = hover::leave_actions(element);
+
+    (!actions.is_empty()).then_some(Listener {
+        element_id: Some(element.id.clone()),
+        matcher: ListenerMatcher::HoverLeaveCurrentOwner,
+        compute: ListenerCompute::Static { actions },
     })
 }
 
@@ -5953,10 +6054,10 @@ mod tests {
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
     use crate::events::test_support::{
-        AnimatedNearbyHitCase, SampledRegistrySource, assert_registry_probe_matrix,
+        assert_registry_probe_matrix, AnimatedNearbyHitCase, SampledRegistrySource,
     };
     use crate::input::{
-        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        InputEvent, ACTION_PRESS, ACTION_RELEASE, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
         SCROLL_LINE_PIXELS,
     };
     use crate::keys::CanonicalKey;
@@ -5969,22 +6070,22 @@ mod tests {
         ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
     use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot};
-    use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
+    use crate::tree::geometry::{clamp_radii, ClipShape, CornerRadii, Rect, ShapeBounds};
     use crate::tree::layout::{
-        Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
+        layout_and_refresh_default_with_animation, layout_tree_default_with_animation, Constraint,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
     use std::time::{Duration, Instant};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, GestureAxis, KeyPressFollowup,
-        KeyPressTracker, Listener, ListenerAction, ListenerCompute, ListenerComputeCtx,
-        ListenerInput, ListenerMatcher, ListenerMatcherKind, NoopListenerComputeCtx, PointerRegion,
-        RuntimeChange, RuntimeOverlayState, ScrollDirection, ScrollbarDragTracker,
-        ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker, TextDragTracker,
-        VirtualKeyPhase, VirtualKeyTracker, compose_combined_registry, listeners_for_element,
-        registry_for_elements, runtime_listeners_for_overlay, window_listeners,
+        compose_combined_registry, listeners_for_element, registry_for_elements,
+        runtime_listeners_for_overlay, window_listeners, ClickPressTracker, DragTrackerState,
+        ElixirEvent, GestureAxis, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction,
+        ListenerCompute, ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
+        NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
+        ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
+        TextDragTracker, VirtualKeyPhase, VirtualKeyTracker,
     };
     use crate::events::{CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState};
 
@@ -6260,6 +6361,7 @@ mod tests {
     #[derive(Default)]
     struct TestComputeCtx {
         focused_id: Option<ElementId>,
+        hovered_id: Option<ElementId>,
         text_inputs: HashMap<ElementId, TextInputState>,
         clipboard: HashMap<ClipboardTarget, Option<String>>,
         base_registry: Option<super::Registry>,
@@ -6269,6 +6371,10 @@ mod tests {
     impl ListenerComputeCtx for TestComputeCtx {
         fn focused_id(&self) -> Option<&ElementId> {
             self.focused_id.as_ref()
+        }
+
+        fn hover_owner(&self) -> Option<&ElementId> {
+            self.hovered_id.as_ref()
         }
 
         fn text_input_state(&self, element_id: &ElementId) -> Option<TextInputState> {
@@ -6295,6 +6401,33 @@ mod tests {
                 return Vec::new();
             };
             registry.view().first_match(input, skip_matchers, self)
+        }
+
+        fn base_first_match_listener(
+            &self,
+            input: &ListenerInput,
+            skip_matchers: &[ListenerMatcherKind],
+        ) -> Option<Listener> {
+            self.base_registry
+                .as_ref()?
+                .view()
+                .matching_listener(input, skip_matchers)
+                .cloned()
+        }
+
+        fn base_source_listener(
+            &self,
+            element_id: &ElementId,
+            matcher_kind: ListenerMatcherKind,
+        ) -> Option<Listener> {
+            self.base_registry
+                .as_ref()?
+                .view()
+                .find_precedence(|listener| {
+                    listener.element_id.as_ref() == Some(element_id)
+                        && listener.matcher.kind() == matcher_kind
+                })
+                .cloned()
         }
     }
 
@@ -6517,26 +6650,34 @@ mod tests {
         let element = with_interaction(make_element(3, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 1);
-        assert!(matches!(
-            listeners[0].matcher,
-            ListenerMatcher::CursorPosInside { .. }
-        ));
+        assert_eq!(listeners.len(), 2);
+        let enter_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::PointerEnterInside { .. })
+        });
+        let inside_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        });
 
-        let actions = listeners[0].compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
-        assert_eq!(actions_without_cursor(&actions).len(), 2);
+        let actions = enter_listener.compute_listener_input_actions(&ListenerInput::PointerEnter {
+            x: 10.0,
+            y: 10.0,
+        });
+        assert_eq!(actions.len(), 2);
         assert!(matches!(
-            actions_without_cursor(&actions)[0],
+            actions[0],
             ListenerAction::ElixirEvent(ElixirEvent {
                 kind: ElementEventKind::MouseEnter,
                 ..
             })
         ));
         assert!(matches!(
-            actions_without_cursor(&actions)[1],
+            actions[1],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive { active: true, .. })
         ));
-        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
+
+        let raw_actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(actions_without_cursor(&raw_actions).is_empty());
+        assert_eq!(cursor_actions(&raw_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -6548,12 +6689,9 @@ mod tests {
         let element = with_interaction(make_element(4, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 2);
+        assert_eq!(listeners.len(), 3);
         let leave_listener = listener_matching(&listeners, |listener| {
-            matches!(
-                listener.matcher,
-                ListenerMatcher::CursorLocationLeaveBoundary { .. }
-            )
+            matches!(listener.matcher, ListenerMatcher::HoverLeaveCurrentOwner)
         });
 
         let actions = leave_listener.compute_listener_input_actions(&ListenerInput::PointerLeave {
@@ -6585,31 +6723,34 @@ mod tests {
 
         let listeners = listeners_for_element(&element);
         let enter_listener = listener_matching(&listeners, |listener| {
-            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+            matches!(listener.matcher, ListenerMatcher::PointerEnterInside { .. })
         });
-        let actions = enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        let actions = enter_listener.compute_listener_input_actions(&ListenerInput::PointerEnter {
+            x: 10.0,
+            y: 10.0,
+        });
 
-        assert_eq!(actions_without_cursor(&actions).len(), 2);
+        assert_eq!(actions.len(), 2);
         assert!(matches!(
-            actions_without_cursor(&actions)[0],
+            actions[0],
             ListenerAction::ElixirEvent(ElixirEvent {
                 kind: ElementEventKind::MouseEnter,
                 ..
             })
         ));
         assert!(matches!(
-            actions_without_cursor(&actions)[1],
+            actions[1],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
             }) if *element_id == ElementId::from_term_bytes(vec![22]) && active
         ));
-        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
 
-        let release_actions =
-            enter_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
-        assert_eq!(actions_without_cursor(&release_actions).len(), 2);
-        assert_eq!(cursor_actions(&release_actions), vec![CursorIcon::Default]);
+        let release_actions = enter_listener.compute_listener_input_actions(&ListenerInput::PointerEnter {
+            x: 10.0,
+            y: 10.0,
+        });
+        assert_eq!(release_actions.len(), 2);
     }
 
     #[test]
@@ -6620,21 +6761,30 @@ mod tests {
         let element = with_interaction(make_element(24, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        let inside_listener = listener_matching(&listeners, |listener| {
-            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        let enter_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::PointerEnterInside { .. })
         });
 
-        let actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        let actions = enter_listener.compute_listener_input_actions(&ListenerInput::PointerEnter {
+            x: 10.0,
+            y: 10.0,
+        });
 
-        assert_eq!(actions_without_cursor(&actions).len(), 1);
+        assert_eq!(actions.len(), 1);
         assert!(matches!(
-            actions_without_cursor(&actions)[0],
+            actions[0],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
             }) if *element_id == ElementId::from_term_bytes(vec![24]) && active
         ));
-        assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
+
+        let inside_listener = listener_matching(&listeners, |listener| {
+            matches!(listener.matcher, ListenerMatcher::CursorPosInside { .. })
+        });
+        let raw_actions = inside_listener.compute_actions(&InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(actions_without_cursor(&raw_actions).is_empty());
+        assert_eq!(cursor_actions(&raw_actions), vec![CursorIcon::Default]);
     }
 
     #[test]
@@ -6663,10 +6813,7 @@ mod tests {
 
         let listeners = listeners_for_element(&element);
         let leave_listener = listener_matching(&listeners, |listener| {
-            matches!(
-                listener.matcher,
-                ListenerMatcher::CursorLocationLeaveBoundary { .. }
-            )
+            matches!(listener.matcher, ListenerMatcher::HoverLeaveCurrentOwner)
         });
         let actions = leave_listener.compute_listener_input_actions(&ListenerInput::PointerLeave {
             x: 0.0,
@@ -8003,11 +8150,9 @@ mod tests {
                 ListenerMatcher::CursorButtonLeftReleaseAnywhere
             )
         }));
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) })
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| { matches!(listener.matcher, ListenerMatcher::WindowCursorLeft) }));
     }
 
     #[test]
@@ -8211,11 +8356,9 @@ mod tests {
             actions[1],
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker)
         ));
-        assert!(
-            actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -8488,8 +8631,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll()
-     {
+    fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll(
+    ) {
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
         parent_attrs.scroll_y = Some(10.0);
@@ -8569,8 +8712,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe()
-     {
+    fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe(
+    ) {
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
         parent_attrs.scroll_y = Some(10.0);
@@ -9818,31 +9961,21 @@ mod tests {
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyBackspacePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyDeletePress)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::KeyLeftPressNoCtrlAltMeta
@@ -9855,32 +9988,21 @@ mod tests {
             listener.matcher,
             ListenerMatcher::KeyHomePressNoCtrlAltMeta
         )));
-        assert!(
-            listeners.iter().any(|listener| matches!(
-                listener.matcher,
-                ListenerMatcher::KeyEndPressNoCtrlAltMeta
-            ))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny))
-        );
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyEndPressNoCtrlAltMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditAny)));
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::TextPreeditClear)));
 
         let commit_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
@@ -10194,11 +10316,9 @@ mod tests {
         );
 
         assert_eq!(commit_actions.len(), 3);
-        assert!(
-            commit_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(commit_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
@@ -10224,11 +10344,9 @@ mod tests {
             },
             &mut ctx,
         );
-        assert!(
-            cut_actions
-                .iter()
-                .all(|action| !matches!(action, ListenerAction::ElixirEvent(_)))
-        );
+        assert!(cut_actions
+            .iter()
+            .all(|action| !matches!(action, ListenerAction::ElixirEvent(_))));
     }
 
     #[test]
@@ -11135,11 +11253,9 @@ mod tests {
             text_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
-        assert!(
-            listeners
-                .iter()
-                .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere))
-        );
+        assert!(listeners
+            .iter()
+            .any(|listener| matches!(listener.matcher, ListenerMatcher::CursorPosAnywhere)));
         assert!(listeners.iter().any(|listener| matches!(
             listener.matcher,
             ListenerMatcher::CursorButtonLeftReleaseAnywhere
@@ -11224,12 +11340,10 @@ mod tests {
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
-        assert!(
-            registry
-                .view()
-                .iter_precedence()
-                .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred))
-        );
+        assert!(registry
+            .view()
+            .iter_precedence()
+            .all(|listener| !matches!(listener.matcher, ListenerMatcher::WindowBlurred)));
     }
 
     #[test]
