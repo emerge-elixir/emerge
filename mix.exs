@@ -106,6 +106,7 @@ defmodule Emerge.MixProject do
 
   defp aliases do
     [
+      docs: ["docs.screenshots", "docs"],
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
       "quality.fast": ["format --check-formatted", "credo --strict"]
     ]
@@ -141,10 +142,17 @@ defmodule Emerge.MixProject do
       "native/emerge_skia/Cross.toml",
       "LICENSE",
       "README.md",
-      "assets",
       "mix.exs",
       "mix.lock"
-    ] ++ Path.wildcard("checksum-*.exs")
+    ] ++ package_assets() ++ Path.wildcard("checksum-*.exs")
+  end
+
+  defp package_assets do
+    [
+      "assets/counter-basic.png",
+      "assets/dashboard-functions.png",
+      "assets/assets-image-and-background.png"
+    ]
   end
 
   defp rustler_opts do
