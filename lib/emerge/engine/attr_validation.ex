@@ -9,15 +9,19 @@ defmodule Emerge.Engine.AttrValidation do
 
   def normalize_state_style!(style_key, attrs) when is_list(attrs) do
     Enum.reduce(attrs, %{}, fn attr, acc ->
-      {key, value} = normalize_state_style_attr!(style_key, attr)
-      put_decorative_attr(acc, key, value)
+      case normalize_state_style_attr!(style_key, attr) do
+        :skip -> acc
+        {key, value} -> put_decorative_attr(acc, key, value)
+      end
     end)
   end
 
   def normalize_state_style!(style_key, attrs) when is_map(attrs) do
     Enum.reduce(attrs, %{}, fn {key, value}, acc ->
-      {key, value} = normalize_state_style_attr!(style_key, {key, value})
-      put_decorative_attr(acc, key, value)
+      case normalize_state_style_attr!(style_key, {key, value}) do
+        :skip -> acc
+        {key, value} -> put_decorative_attr(acc, key, value)
+      end
     end)
   end
 
@@ -125,13 +129,15 @@ defmodule Emerge.Engine.AttrValidation do
     normalize_box_shadow!(attrs_owner, value)
   end
 
+  defp normalize_state_style_attr!(_style_key, nil), do: :skip
+
   defp normalize_state_style_attr!(style_key, {key, value}) when is_atom(key) do
     cond do
       MapSet.member?(@state_style_key_set, key) ->
         raise ArgumentError, "#{style_key} does not support nested #{key}"
 
       MapSet.member?(@decorative_state_key_set, key) ->
-        {key, normalize_decorative_value!(style_key, key, value)}
+        skip_nil_or(value, fn -> {key, normalize_decorative_value!(style_key, key, value)} end)
 
       true ->
         raise ArgumentError,
@@ -193,15 +199,19 @@ defmodule Emerge.Engine.AttrValidation do
 
   defp normalize_animation_keyframe!(owner_name, attrs, index) when is_list(attrs) do
     Enum.reduce(attrs, %{}, fn attr, acc ->
-      {key, value} = normalize_animation_attr!("#{owner_name} keyframe #{index}", attr)
-      put_animation_attr(acc, key, value)
+      case normalize_animation_attr!("#{owner_name} keyframe #{index}", attr) do
+        :skip -> acc
+        {key, value} -> put_animation_attr(acc, key, value)
+      end
     end)
   end
 
   defp normalize_animation_keyframe!(owner_name, attrs, index) when is_map(attrs) do
     Enum.reduce(attrs, %{}, fn {key, value}, acc ->
-      {key, value} = normalize_animation_attr!("#{owner_name} keyframe #{index}", {key, value})
-      put_animation_attr(acc, key, value)
+      case normalize_animation_attr!("#{owner_name} keyframe #{index}", {key, value}) do
+        :skip -> acc
+        {key, value} -> put_animation_attr(acc, key, value)
+      end
     end)
   end
 
@@ -210,47 +220,51 @@ defmodule Emerge.Engine.AttrValidation do
           "#{owner_name} keyframe #{index} must be a list/map of animatable attrs, got: #{inspect(other)}"
   end
 
+  defp normalize_animation_attr!(_attrs_owner, nil), do: :skip
+
   defp normalize_animation_attr!(attrs_owner, {key, value}) when is_atom(key) do
     if !MapSet.member?(@animatable_key_set, key) do
       raise ArgumentError,
             "#{attrs_owner} only supports animatable attributes; got #{inspect(key)}. Allowed: #{AttrSchema.animatable_keys_message()}"
     end
 
-    normalized =
-      case key do
-        :width ->
-          validate_length!(attrs_owner, :width, value)
-          value
+    skip_nil_or(value, fn ->
+      normalized =
+        case key do
+          :width ->
+            validate_length!(attrs_owner, :width, value)
+            value
 
-        :height ->
-          validate_length!(attrs_owner, :height, value)
-          value
+          :height ->
+            validate_length!(attrs_owner, :height, value)
+            value
 
-        :padding ->
-          validate_padding!(attrs_owner, value)
-          normalize_padding(value)
+          :padding ->
+            validate_padding!(attrs_owner, value)
+            normalize_padding(value)
 
-        :spacing ->
-          validate_number_attr!(attrs_owner, :spacing, value)
-          value
+          :spacing ->
+            validate_number_attr!(attrs_owner, :spacing, value)
+            value
 
-        :spacing_xy ->
-          validate_spacing_xy!(attrs_owner, value)
-          value
+          :spacing_xy ->
+            validate_spacing_xy!(attrs_owner, value)
+            value
 
-        :border_radius ->
-          validate_radius!(attrs_owner, :border_radius, value)
-          value
+          :border_radius ->
+            validate_radius!(attrs_owner, :border_radius, value)
+            value
 
-        :border_width ->
-          validate_border_width!(attrs_owner, value)
-          value
+          :border_width ->
+            validate_border_width!(attrs_owner, value)
+            value
 
-        _ ->
-          normalize_decorative_value!(attrs_owner, key, value)
-      end
+          _ ->
+            normalize_decorative_value!(attrs_owner, key, value)
+        end
 
-    {key, normalized}
+      {key, normalized}
+    end)
   end
 
   defp normalize_animation_attr!(attrs_owner, other) do
@@ -264,6 +278,9 @@ defmodule Emerge.Engine.AttrValidation do
   end
 
   defp put_animation_attr(acc, key, value), do: Map.put(acc, key, value)
+
+  defp skip_nil_or(nil, _fun), do: :skip
+  defp skip_nil_or(_value, fun), do: fun.()
 
   defp validate_animation_compatibility!(owner_name, :width, first, other, index),
     do: validate_length_compatibility!(owner_name, :width, first, other, index)

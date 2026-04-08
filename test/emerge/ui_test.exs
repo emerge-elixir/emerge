@@ -301,6 +301,22 @@ defmodule Emerge.UITest do
            ]
   end
 
+  test "interaction styles ignore nil attrs" do
+    element =
+      el(
+        [
+          Interactive.mouse_over([nil, {:font_color, nil}, Font.underline()]),
+          Interactive.focused([nil, Transform.alpha(0.9)]),
+          Interactive.mouse_down([{:background, nil}, Transform.move_y(-1)])
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.mouse_over == %{font_underline: true}
+    assert element.attrs.focused == %{alpha: 0.9}
+    assert element.attrs.mouse_down == %{move_y: -1}
+  end
+
   test "animate stores normalized animation specs" do
     element =
       el(
@@ -331,6 +347,33 @@ defmodule Emerge.UITest do
              duration: 420,
              curve: :ease_in_out,
              repeat: 3
+           }
+  end
+
+  test "animate keyframes ignore nil attrs" do
+    element =
+      el(
+        [
+          Animation.animate(
+            [
+              [nil, width(px(100)), {:move_x, nil}],
+              %{width: px(140), move_x: nil}
+            ],
+            200,
+            :linear
+          )
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.animate == %{
+             keyframes: [
+               %{width: {:px, 100}},
+               %{width: {:px, 140}}
+             ],
+             duration: 200,
+             curve: :linear,
+             repeat: :once
            }
   end
 
@@ -629,6 +672,24 @@ defmodule Emerge.UITest do
   test "unknown attrs are rejected" do
     assert_raise ArgumentError, ~r/el\/2 does not support attribute :unknown_attr/, fn ->
       el([{:unknown_attr, 1}], text("Hello"))
+    end
+  end
+
+  test "nil attrs are ignored in top-level attr lists" do
+    element =
+      el(
+        [nil, {:background, nil}, Background.color(:red), {:below, nil}, Font.color(:white)],
+        text("Hello")
+      )
+
+    assert element.attrs.background == :red
+    assert element.attrs.font_color == :white
+    assert element.nearby == []
+  end
+
+  test "unknown attrs with nil values are still rejected" do
+    assert_raise ArgumentError, ~r/el\/2 does not support attribute :unknown_attr/, fn ->
+      el([{:unknown_attr, nil}], text("Hello"))
     end
   end
 
