@@ -1,9 +1,9 @@
-defmodule EmergeDemo.TodoApp do
+defmodule EmergeDemo.Todo.App do
   @moduledoc """
   Solve implementation of TodoMVC example app
   """
 
-  alias EmergeDemo.TodoApp
+  alias EmergeDemo.Todo
 
   use Solve
 
@@ -19,10 +19,10 @@ defmodule EmergeDemo.TodoApp do
   @impl Solve
   def controllers do
     [
-      controller!(name: :todo_list, module: TodoApp.TodoList),
+      controller!(name: :todo_list, module: Todo.TodoList),
       controller!(
         name: :create_todo,
-        module: TodoApp.CreateTodo,
+        module: Todo.CreateTodo,
         params: fn _ -> true end,
         callbacks: %{
           submit: fn title -> dispatch(:todo_list, :create_todo, title) end
@@ -30,13 +30,13 @@ defmodule EmergeDemo.TodoApp do
       ),
       controller!(
         name: :filter,
-        module: TodoApp.Filter,
+        module: Todo.Filter,
         dependencies: [:todo_list],
         params: fn %{dependencies: %{todo_list: todo_list}} -> not is_nil(todo_list) end
       ),
       controller!(
         name: :todo_editor,
-        module: TodoApp.TodoEditor,
+        module: Todo.TodoEditor,
         variant: :collection,
         dependencies: [:todo_list],
         params: fn %{dependencies: %{todo_list: todo_list}} -> not is_nil(todo_list) end,

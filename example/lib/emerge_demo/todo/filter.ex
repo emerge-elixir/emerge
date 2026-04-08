@@ -1,4 +1,4 @@
-defmodule EmergeDemo.TodoApp.Filter do
+defmodule EmergeDemo.Todo.Filter do
   @moduledoc false
 
   use Solve.Controller, events: [:set]

@@ -1,8 +1,8 @@
-defmodule EmergeDemo.View.TodoApp do
+defmodule EmergeDemo.TodoApp.View do
   use Emerge.UI
   use Solve.Lookup, :helpers
 
-  alias EmergeDemo.TodoApp
+  alias EmergeDemo.Todo
 
   @page_bg color_rgb(245, 245, 245)
   @card_bg color_rgb(255, 255, 255)
@@ -77,7 +77,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   def toggle_all() do
-    todo_list = solve(TodoApp, :todo_list)
+    todo_list = solve(Todo.App, :todo_list)
 
     if todo_list do
       font_color = if(todo_list.all_completed?, do: color_rgb(72, 72, 72), else: @toggle_off)
@@ -106,7 +106,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   def create_todo_input() do
-    create_todo = solve(TodoApp, :create_todo)
+    create_todo = solve(Todo.App, :create_todo)
 
     el(
       [width(fill()), height(fill())] ++ create_todo_placeholder_attrs(create_todo),
@@ -152,7 +152,7 @@ defmodule EmergeDemo.View.TodoApp do
   defp create_todo_placeholder_attrs(_create_todo), do: []
 
   def todo_list() do
-    filter = solve(TodoApp, :filter)
+    filter = solve(Todo.App, :filter)
 
     column(
       [width(fill()), Border.width_each(1, 0, 0, 0), Border.color(@line)],
@@ -161,7 +161,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp todo_row(todo_id) do
-    todo_editor = solve(TodoApp, {:todo_editor, todo_id})
+    todo_editor = solve(Todo.App, {:todo_editor, todo_id})
 
     if todo_editor.editing? do
       editing_row(todo_editor)
@@ -171,7 +171,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp regular_row(todo_id) do
-    todo = solve(TodoApp, :todo_list).todos[todo_id]
+    todo = solve(Todo.App, :todo_list).todos[todo_id]
 
     row(
       [
@@ -188,7 +188,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp destroy_button(todo_id) do
-    todo_list = solve(TodoApp, :todo_list)
+    todo_list = solve(Todo.App, :todo_list)
 
     row(
       [padding_each(0, 8, 0, 0), center_y()],
@@ -247,7 +247,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp toggle_button(todo) do
-    todo_list = solve(TodoApp, :todo_list)
+    todo_list = solve(Todo.App, :todo_list)
 
     Input.button(
       [
@@ -288,7 +288,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp title_button(todo) do
-    todo_editor = solve(TodoApp, {:todo_editor, todo.id})
+    todo_editor = solve(Todo.App, {:todo_editor, todo.id})
 
     Input.button(
       [
@@ -339,7 +339,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   def controls() do
-    todo_list = solve(TodoApp, :todo_list)
+    todo_list = solve(Todo.App, :todo_list)
 
     row(
       [
@@ -356,7 +356,7 @@ defmodule EmergeDemo.View.TodoApp do
   end
 
   defp filters() do
-    filter = solve(TodoApp, :filter)
+    filter = solve(Todo.App, :filter)
 
     row(
       [center_x(), spacing(6)],
@@ -388,7 +388,7 @@ defmodule EmergeDemo.View.TodoApp do
         ]),
         Interactive.mouse_down([Transform.move_y(1)])
       ],
-      text(TodoApp.Filter.label(filter_name))
+      text(Todo.Filter.label(filter_name))
     )
   end
 

@@ -1,4 +1,4 @@
-defmodule EmergeDemo.TodoApp.CreateTodo do
+defmodule EmergeDemo.Todo.CreateTodo do
   @moduledoc false
 
   use Solve.Controller, events: [:set_title, :submit]
