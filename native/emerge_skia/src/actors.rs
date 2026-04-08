@@ -76,6 +76,7 @@ pub enum TreeMsg {
 
 pub enum EventMsg {
     InputEvent(InputEvent),
+    Closed,
     PresentTiming {
         presented_at: Instant,
         predicted_next_present_at: Instant,

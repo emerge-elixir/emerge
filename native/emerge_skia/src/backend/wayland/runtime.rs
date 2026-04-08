@@ -616,6 +616,7 @@ impl CompositorHandler for WaylandApp {
 
 impl WindowHandler for WaylandApp {
     fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &Window) {
+        let _ = self.event_tx.send(EventMsg::Closed);
         self.running_flag.store(false, Ordering::Relaxed);
         self.exit = true;
     }
