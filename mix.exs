@@ -90,7 +90,7 @@ defmodule Emerge.MixProject do
 
   defp package do
     [
-      description: "GPU accelerated GUI framework.",
+      description: "Write native GUI directly from Elixir using declarative API.",
       files: package_files(),
       licenses: ["Apache-2.0"],
       links: %{

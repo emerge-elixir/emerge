@@ -19,8 +19,8 @@ defmodule Emerge.Docs.Screenshots do
       },
       %{
         id: "dashboard-functions",
-        width: 760,
-        height: 204,
+        width: 560,
+        height: 160,
         density: 2,
         destinations: [asset_path("assets/dashboard-functions.png")],
         build: &dashboard_functions/0
@@ -74,15 +74,13 @@ defmodule Emerge.Docs.Screenshots do
       [
         width(fill()),
         padding(20),
-        spacing(16),
+        spacing(12),
         Background.color(color(:slate, 900)),
-        Border.rounded(12),
-        Font.color(color(:white))
+        Border.rounded(12)
       ],
       [
-        dashboard_header(%{name: "Jane"}),
-        dashboard_stats(%{project_count: 12, task_count: 34}),
-        dashboard_actions()
+        el([Font.size(22), Font.color(color(:white))], text("Overview")),
+        row([spacing(12)], Enum.map(dashboard_summary_stats(), &dashboard_stat_card/1))
       ]
     )
   end
@@ -112,29 +110,12 @@ defmodule Emerge.Docs.Screenshots do
     ])
   end
 
-  defp dashboard_header(user) do
-    el([Font.size(24), Font.color(color(:white))], text("Welcome #{user.name}"))
-  end
-
-  defp dashboard_stats(user) do
-    row([spacing(12)], [
-      stat_card("Projects", Integer.to_string(user.project_count)),
-      stat_card("Tasks", Integer.to_string(user.task_count))
-    ])
-  end
-
-  defp dashboard_actions do
-    row([spacing(12)], [
-      Input.button(
-        [
-          padding(10),
-          Background.color(color(:sky, 500)),
-          Border.rounded(8),
-          Event.on_press(:save)
-        ],
-        text("Save")
-      )
-    ])
+  defp dashboard_summary_stats do
+    [
+      {"Open", "12"},
+      {"Closed", "34"},
+      {"Owners", "5"}
+    ]
   end
 
   defp dropdown_trigger do
@@ -195,7 +176,7 @@ defmodule Emerge.Docs.Screenshots do
     )
   end
 
-  defp stat_card(label, value) do
+  defp dashboard_stat_card({label, value}) do
     el(
       [
         width(fill()),
@@ -205,7 +186,7 @@ defmodule Emerge.Docs.Screenshots do
       ],
       column([spacing(4)], [
         el([Font.color(color(:slate, 300))], text(label)),
-        el([Font.size(18), Font.color(color(:white))], text(value))
+        el([Font.size(20), Font.color(color(:white))], text(value))
       ])
     )
   end

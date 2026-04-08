@@ -1,6 +1,6 @@
 defmodule EmergeDemo do
   @moduledoc """
-  Desktop TodoMVC built with `Emerge` and `Solve`.
+  Desktop example shell built with `Emerge` and `Solve`.
   """
 
   use Emerge
@@ -8,12 +8,12 @@ defmodule EmergeDemo do
 
   @impl Viewport
   def mount(opts) do
-    {:ok, Keyword.merge([emerge_skia: [otp_app: :emerge_demo, title: "Emerge TodoMVC"]], opts)}
+    {:ok, Keyword.merge([emerge_skia: [otp_app: :emerge_demo, title: "Emerge Example"]], opts)}
   end
 
   @impl Viewport
   def render() do
-    EmergeDemo.TodoApp.View.layout()
+    EmergeDemo.AppSelector.View.layout()
   end
 
   @impl Solve.Lookup
