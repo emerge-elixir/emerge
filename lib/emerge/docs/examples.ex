@@ -5,6 +5,15 @@ defmodule Emerge.Docs.Examples do
   @examples_root Path.join(__DIR__, "examples")
 
   @examples [
+    %{
+      id: "assets-image-and-background",
+      file: "assets-image-and-background.exs",
+      width: 320,
+      height: 420
+    },
+    %{id: "ui-assets-svg-example", file: "ui-assets-svg-example.exs", width: 320, height: 170},
+    %{id: "ui-root-tree", file: "ui-root-tree.exs", width: 380, height: 150},
+    %{id: "ui-root-layouts", file: "ui-root-layouts.exs", width: 420, height: 360},
     %{id: "ui-background-overview", file: "ui-background-overview.exs", width: 340, height: 400},
     %{id: "ui-align-el", file: "ui-align-el.exs", width: 320, height: 160},
     %{id: "ui-align-row", file: "ui-align-row.exs", width: 360, height: 88},

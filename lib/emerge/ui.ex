@@ -1,92 +1,130 @@
 defmodule Emerge.UI do
+  require Emerge.Docs.Examples
+
+  alias Emerge.Docs.Examples
+
+  Examples.external_resources(~w(ui-root-tree ui-root-layouts))
+
   @moduledoc """
-  Declerative UI API.
+  Declarative UI tree API.
 
-  # Basic elements
+  `Emerge.UI` is the root DSL for building the element tree returned from
+  `render/0` or `render/1`.
 
-  `none/0` When you want to render exactly nothing
+  These examples assume `use Emerge.UI`.
 
-  The basic building block is `el/2`, which accepts attributes and exactly one child element.
-  Use `el([], none())` for an empty element.
-
-  `text/1` creates some plain text, does not wrap by default.
-  Checkout `paragraph/2` and `text_column/2` for wrapped text flows.
-
-  # Rows and Columns
-
-  When you want more than one child on an element,
-  you need to be specific about how they will be laid out.
-
-  Layout children in `row/2`, `wrapped_row/2` or `column/2` 
-
-  The root `Emerge.UI` module contains the core element constructors:
-
-  - `el/2`
-  - `row/2`
-  - `wrapped_row/2`
-  - `column/2`
-  - `text_column/2`
-  - `paragraph/2`
-  - `text/1`
-  - `image/2`
-  - `svg/2`
-  - `video/2`
-  - `none/0`
-
-  And attributes:
-  - `key/1`
-  - `image_fit/1`
+  ## Tree Model
 
   UI is expressed as a tree of elements.
 
-  Each element contains:
+  Each element has:
 
-  - a type such as `:el`, `:row`, `:column`, or `:text`
-  - attributes stored in a map
-  - children, which are themselves elements
+  - a constructor such as `el/2`, `row/2`, `column/2`, or `text/1`
+  - attrs that configure layout, styling, behavior, or media
+  - zero or more child elements
 
-  Container constructors such as `row/2` and `column/2` build parent elements
-  with child elements underneath them. Leaf elements such as `text/1` have no
-  children.
+  `el/2` accepts exactly one child. Layout containers such as `row/2`,
+  `wrapped_row/2`, `column/2`, `text_column/2`, and `paragraph/2` accept child
+  lists. Leaf elements such as `text/1`, `image/2`, `svg/2`, `video/2`, and
+  `none/0` have no children.
 
-  `use Emerge.UI` brings the most common helpers into scope:
+  ## Core Constructors
 
-  - imports `Emerge.UI`
-  - imports `Emerge.UI.Color`
-  - imports `Emerge.UI.Size`
-  - imports `Emerge.UI.Space`
-  - imports `Emerge.UI.Scroll`
-  - imports `Emerge.UI.Align`
+  The root module provides the core element constructors:
+
+  - `el/2` for a single framed or aligned child
+  - `row/2` for a horizontal line of children
+  - `wrapped_row/2` for horizontal flow that wraps onto new lines
+  - `column/2` for vertical stacks
+  - `text_column/2` and `paragraph/2` for wrapped text flows
+  - `text/1`, `image/2`, `svg/2`, `video/2`, and `none/0` for content leaves
+
+  This small tree uses `column/2` as the root, `el/2` for framed content, and
+  `row/2` for a horizontal action area.
+
+  #{Examples.code_block!("ui-root-tree")}
+
+  #{Examples.image_tag!("ui-root-tree", "Rendered basic Emerge.UI tree example")}
+
+  ## Choosing A Layout
+
+  Choose the container that matches the child flow:
+
+  - `el/2` when there is exactly one child
+  - `row/2` when children stay on one horizontal line
+  - `wrapped_row/2` when horizontal content should wrap onto additional lines
+  - `column/2` when children stack vertically
+  - `text_column/2` and `paragraph/2` when the content is prose rather than
+    generic layout blocks
+
+  This comparison shows the difference between `row/2`, `wrapped_row/2`, and
+  `column/2`.
+
+  #{Examples.code_block!("ui-root-layouts")}
+
+  #{Examples.image_tag!("ui-root-layouts", "Rendered Emerge.UI layout comparison")}
+
+  ## use Emerge.UI
+
+  `use Emerge.UI` imports:
+
+  - `Emerge.UI`
+  - `Emerge.UI.Color`
+  - `Emerge.UI.Size`
+  - `Emerge.UI.Space`
+  - `Emerge.UI.Scroll`
+  - `Emerge.UI.Align`
 
   It also aliases the grouped helper modules:
 
+  - `Animation`
   - `Background`
   - `Border`
+  - `Event`
   - `Font`
   - `Input`
-  - `Svg`
-  - `Event`
   - `Interactive`
-  - `Transform`
-  - `Animation`
   - `Nearby`
+  - `Svg`
+  - `Transform`
+
+  Using `use Emerge` for a viewport also calls `use Emerge.UI`.
+
+  ## Top-Level Attrs
+
+  The root module also defines a small set of attrs that are not grouped into
+  submodules:
+
+  - `key/1` for stable sibling identity
+  - `focus_on_mount/0` to focus an element on first mount
+  - `clip_nearby/0` to clip nearby escapes under the host
+  - `image_fit/1` for `image/2` and `video/2`
+
+  ```elixir
+  Input.text([key(:search), focus_on_mount()], state.query)
+
+  image([width(px(160)), height(px(96)), image_fit(:cover)], "images/hero.jpg")
+  ```
+
+  ## Submodules
 
   The rest of the API is organized by concern:
 
   - `Emerge.UI.Color` for named and explicit colors
   - `Emerge.UI.Size` for width, height, and length helpers
   - `Emerge.UI.Space` for padding and spacing
-  - `Emerge.UI.Scroll` for scroll-related attributes
+  - `Emerge.UI.Scroll` for scroll-related attrs
   - `Emerge.UI.Align` for alignment helpers
-  - `Emerge.UI.Event` for event handlers
-  - `Emerge.UI.Interactive` for interaction-driven background, border, font, SVG, and transform styling
-  - `Emerge.UI.Transform` for movement, rotation, scale, and alpha
-  - `Emerge.UI.Animation` for declarative animations
-  - `Emerge.UI.Nearby` for overlays and nearby positioning
-  - `Emerge.UI.Background`, `Emerge.UI.Border`, `Emerge.UI.Font`, `Emerge.UI.Input`, and `Emerge.UI.Svg` for styling helpers and element helpers
+  - `Emerge.UI.Background`, `Emerge.UI.Border`, and `Emerge.UI.Font` for
+    decorative styling
+  - `Emerge.UI.Input`, `Emerge.UI.Event`, and `Emerge.UI.Interactive` for
+    inputs, event handlers, and interaction styling
+  - `Emerge.UI.Transform` and `Emerge.UI.Animation` for paint-time movement and
+    animation
+  - `Emerge.UI.Nearby` for overlays and attached nearby elements
+  - `Emerge.UI.Svg` for SVG-specific styling helpers
 
-  As rendering grows, it is natural to extract parts into smaller regular Elixir
-  functions. Those functions only need to return `Emerge.tree()`.
+  As trees grow, extract regular Elixir functions that return `Emerge.UI.t()`.
   """
 
   alias Emerge.Engine.Element
@@ -131,7 +169,12 @@ defmodule Emerge.UI do
   @type image_fit_attr :: {:image_fit, image_fit_mode()}
 
   @doc """
-  Imports the root element DSL and the most common UI helper modules.
+  Import the root element DSL and the most common UI helper modules.
+
+  This imports the core constructors from `Emerge.UI` and the frequently used
+  helpers from `Color`, `Size`, `Space`, `Scroll`, and `Align`. It also aliases
+  the grouped styling and behavior modules such as `Background`, `Border`,
+  `Font`, `Input`, `Event`, and `Nearby`.
   """
   @spec __using__(term()) :: Macro.t()
   defmacro __using__(_opts) do
@@ -161,13 +204,27 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A container element. The fundamental building block.
+  Build a single-child container.
 
-  Font styles (size, color) are passed down to text children.
+  `el/2` is the fundamental framing element. Use it when you need one child and
+  want to apply styling, alignment, nearby elements, or sizing around that
+  child.
+
+  Font attrs applied to an `el/2` are inherited by text descendants.
 
   ## Example
 
-      el([padding(10), Font.size(20), Font.color(:white)], text("Hello"))
+  ```elixir
+  el(
+    [
+      padding(12),
+      Background.color(color(:slate, 900)),
+      Border.rounded(12),
+      Font.color(color(:slate, 50))
+    ],
+    text("Hello")
+  )
+  ```
   """
   @spec el(attrs(), child()) :: t()
   def el(attrs, child) do
@@ -176,15 +233,20 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A row lays out children horizontally.
+  Lay out children horizontally in one line.
+
+  Use `row/2` when the children should stay on the same horizontal track. Add
+  `spacing/1` or `space_evenly/0` from `Emerge.UI.Space` to control the gaps.
 
   ## Example
 
-      row([spacing(20)], [
-        el([], text("A")),
-        el([], text("B")),
-        el([], text("C"))
-      ])
+  ```elixir
+  row([spacing(20)], [
+    el([], text("A")),
+    el([], text("B")),
+    el([], text("C"))
+  ])
+  ```
   """
   @spec row(attrs(), children()) :: t()
   def row(attrs, children) do
@@ -193,15 +255,20 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A wrapped row lays out children horizontally and wraps onto new lines.
+  Lay out children horizontally and wrap onto new lines as needed.
+
+  Use `wrapped_row/2` for chips, tags, and other horizontal content that should
+  continue onto additional lines when it no longer fits the available width.
 
   ## Example
 
-      wrapped_row([spacing(12)], [
-        el([], text("One")),
-        el([], text("Two")),
-        el([], text("Three"))
-      ])
+  ```elixir
+  wrapped_row([spacing_xy(12, 12)], [
+    el([], text("One")),
+    el([], text("Two")),
+    el([], text("Three"))
+  ])
+  ```
   """
   @spec wrapped_row(attrs(), children()) :: t()
   def wrapped_row(attrs, children) do
@@ -210,14 +277,19 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A column lays out children vertically.
+  Lay out children vertically.
+
+  Use `column/2` for stacks of content where each child sits below the previous
+  one.
 
   ## Example
 
-      column([spacing(10)], [
-        text("Line 1"),
-        text("Line 2")
-      ])
+  ```elixir
+  column([spacing(10)], [
+    text("Line 1"),
+    text("Line 2")
+  ])
+  ```
   """
   @spec column(attrs(), children()) :: t()
   def column(attrs, children) do
@@ -234,6 +306,15 @@ defmodule Emerge.UI do
   - `height(content())`
 
   You can override these by passing explicit width/height attributes.
+
+  ## Example
+
+  ```elixir
+  text_column([spacing(12)], [
+    paragraph([], [text("First paragraph of copy.")]),
+    paragraph([], [text("Second paragraph of copy.")])
+  ])
+  ```
   """
   @spec text_column(attrs(), children()) :: t()
   def text_column(attrs, children) do
@@ -250,6 +331,16 @@ defmodule Emerge.UI do
 
   Children should be `text/1` elements or `el/2`-wrapped text elements.
   Words flow left-to-right and wrap at the container width.
+
+  ## Example
+
+  ```elixir
+  paragraph([width(px(220))], [
+    text("A paragraph wraps "),
+    el([Font.semi_bold()], text("inline")),
+    text(" text children.")
+  ])
+  ```
   """
   @spec paragraph(attrs(), children()) :: t()
   def paragraph(attrs, children) do
@@ -258,11 +349,17 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A text element.
+  Build a text leaf element.
 
   It can live on its own as a content leaf, but it does not wrap by default.
 
   Use `paragraph/2` or `text_column/2` for wrapped text flows.
+
+  ## Example
+
+  ```elixir
+  text("Status: ready")
+  ```
   """
   @spec text(String.t()) :: t()
   def text(content) when is_binary(content) do
@@ -278,6 +375,17 @@ defmodule Emerge.UI do
 
   `source` can be a verified `~m"..."` reference, logical asset path,
   runtime file path, or `{:id, image_id}`.
+
+  Use `image_fit/1` to choose between `:contain` and `:cover`.
+
+  ## Example
+
+  ```elixir
+  image(
+    [width(px(160)), height(px(96)), image_fit(:cover)],
+    "images/hero.jpg"
+  )
+  ```
   """
   @spec image(attrs(), image_source()) :: t()
   def image(attrs, source) do
@@ -294,6 +402,12 @@ defmodule Emerge.UI do
 
   Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
   template tinting to all visible pixels.
+
+  ## Example
+
+  ```elixir
+  svg([width(px(24)), height(px(24))], "icons/check.svg")
+  ```
   """
   @spec svg(attrs(), image_source()) :: t()
   def svg(attrs, source) do
@@ -310,6 +424,9 @@ defmodule Emerge.UI do
 
   @doc """
   A video element backed by a renderer-owned video target.
+
+  `video/2` behaves like an image element whose pixels are provided by an owned
+  target instead of a file source.
   """
   @spec video(attrs(), video_target()) :: t()
   def video(attrs, target) do
@@ -324,26 +441,47 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  An empty element that takes up no space.
+  Build an empty element that takes up no space.
+
+  Use `none/0` for conditional branches that should render nothing.
   """
   @spec none() :: t()
   def none do
     %Element{type: :none, attrs: %{}, children: [], nearby: []}
   end
 
-  @doc "Provide a stable key for identity in lists (all siblings must have keys)."
+  @doc """
+  Provide a stable sibling key for identity in lists.
+
+  Use `key/1` when sibling order can change and an element should retain its
+  identity across inserts, removals, or moves.
+  """
   @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}
 
-  @doc "Focus this element once when it is first mounted into the tree"
+  @doc """
+  Focus this element once when it is first mounted into the tree.
+
+  The focus request is tied to first mount, not to every rerender.
+  """
   @spec focus_on_mount() :: focus_on_mount_attr()
   def focus_on_mount, do: {:focus_on_mount, true}
 
-  @doc "Clip nearby escape overlays attached under this host"
+  @doc """
+  Clip nearby escape overlays attached under this host.
+
+  Use this on hosts or scroll containers when nearby content should be clipped
+  to the host bounds instead of escaping freely.
+  """
   @spec clip_nearby() :: clip_nearby_attr()
   def clip_nearby, do: {:clip_nearby, true}
 
-  @doc "Set image fit mode (`:contain` or `:cover`)"
+  @doc """
+  Set image fit mode for `image/2` and `video/2`.
+
+  - `:contain` keeps the full source visible inside the element bounds
+  - `:cover` fills the bounds and crops if necessary
+  """
   @spec image_fit(image_fit_mode()) :: image_fit_attr()
   def image_fit(mode) when mode in [:contain, :cover], do: {:image_fit, mode}
 end
