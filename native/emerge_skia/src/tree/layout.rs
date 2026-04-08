@@ -3031,9 +3031,11 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
         return 0.0;
     }
 
-    // Build lines by wrapping (attrs are pre-scaled)
-    let mut lines: Vec<Vec<(ElementId, f32, f32)>> = Vec::new(); // (id, width, height)
-    let mut current_line: Vec<(ElementId, f32, f32)> = Vec::new();
+    // Build lines by wrapping (attrs are pre-scaled).
+    // Width determines line membership; actual heights are measured after each child
+    // is resolved against its final line width.
+    let mut lines: Vec<Vec<(ElementId, f32)>> = Vec::new(); // (id, width)
+    let mut current_line: Vec<(ElementId, f32)> = Vec::new();
     let mut current_line_width = 0.0;
 
     for child_id in child_ids {
@@ -3044,17 +3046,11 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             continue;
         };
         let intrinsic_width = child_measured_width(tree, child_id);
-        let intrinsic_height = child_measured_height(tree, child_id);
         let child_width = if get_fill_weight(child.attrs.width.as_ref()) > 0.0 {
             resolve_length(child.attrs.width.as_ref(), intrinsic_width, content.width)
         } else {
             resolve_length(child.attrs.width.as_ref(), intrinsic_width, intrinsic_width)
         };
-        let child_height = resolve_length(
-            child.attrs.height.as_ref(),
-            intrinsic_height,
-            intrinsic_height,
-        );
 
         // Check if we need to wrap
         let would_exceed = !current_line.is_empty()
@@ -3069,7 +3065,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             current_line_width += options.spacing_x;
         }
         current_line_width += child_width;
-        current_line.push((child_id.clone(), child_width, child_height));
+        current_line.push((child_id.clone(), child_width));
     }
 
     if !current_line.is_empty() {
@@ -3081,21 +3077,31 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     let num_lines = lines.len();
 
     for line in lines {
-        let line_height = line.iter().map(|(_, _, h)| *h).fold(0.0_f32, f32::max);
         let mut current_x = content.x;
+        let mut line_height = 0.0_f32;
+        let mut line_children: Vec<(ElementId, AlignY)> = Vec::with_capacity(line.len());
 
-        for (child_id, child_width, _) in &line {
-            let child_constraint = Constraint::new(*child_width, line_height);
-            resolve_element(
+        for (child_id, child_width) in &line {
+            let align_y = child_align_y(tree, child_id);
+            let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                child_constraint,
-                current_x,
-                current_y,
-                inherited,
+                ChildPlacement {
+                    constraint: Constraint::new(*child_width, content.height),
+                    x: current_x,
+                    y: current_y,
+                    inherited,
+                },
                 measurer,
             );
+
+            line_height = line_height.max(frame.map(|snapshot| snapshot.content_height).unwrap_or(0.0));
+            line_children.push((child_id.clone(), align_y));
             current_x += child_width + options.spacing_x;
+        }
+
+        for (child_id, align_y) in &line_children {
+            apply_vertical_alignment(tree, child_id, current_y, line_height, *align_y);
         }
 
         current_y += line_height + options.spacing_y;
