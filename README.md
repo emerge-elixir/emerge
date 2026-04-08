@@ -249,88 +249,22 @@ You can also run individual groups:
 ./ci-tests.sh dialyzer
 ```
 
-## Image Assets
+## Assets
 
-EmergeSkia resolves image **sources** asynchronously in the Rust pipeline after
-`EmergeSkia.upload_tree/2` and `EmergeSkia.patch_tree/3`.
+Emerge supports:
 
-`image/2` and `Background.image/2` support raster formats plus self-contained SVGs.
-SVG text uses system font matching; relative subresources and external SVG fonts are not loaded.
+- `image/2`
+- `svg/2`
+- `Background.image/2`
+- startup-configured font assets
 
-Supported source forms:
+Use `~m` for compile-time verified static paths, and configure fonts or runtime
+path policy through `EmergeSkia.start/1`.
 
-- `~m"images/logo.png"` (compile-time verified static path)
-- `"images/logo.png"` (logical static path, resolved from `<otp_app>/priv/images/logo.png`)
-- `{:path, "/absolute/or/runtime/path.png"}` (runtime filesystem path)
-- `{:id, "img_<sha256>"}` (already-loaded image ID)
+See:
 
-Use the `~m` sigil by importing `Emerge.Assets.Path`:
-
-```elixir
-defmodule MyApp.UI do
-  use Emerge.Assets.Path, otp_app: :my_app
-  use Emerge.UI
-
-  def view do
-    column([spacing(16)], [
-      image([width(px(120)), height(px(120))], ~m"images/logo.png"),
-      el([
-        width(px(320)),
-        height(px(180)),
-        Background.image(~m"images/hero.jpg", fit: :cover)
-      ], none())
-    ])
-  end
-end
-```
-
-<img src="assets/assets-image-and-background.png" alt="Rendered image asset example" width="320">
-
-Background image fit helpers:
-
-- `Background.image/2` defaults to `fit: :cover`
-- `Background.uncropped/1` uses `:contain`
-- `Background.tiled/1`, `Background.tiled_x/1`, `Background.tiled_y/1` use repeat modes
-
-## Asset Startup Options
-
-Configure assets when starting the renderer. `otp_app` is required:
-
-```elixir
-{:ok, renderer} =
-  EmergeSkia.start(
-    otp_app: :my_app,
-    title: "My App",
-    assets: [
-      fonts: [
-        [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
-        [family: "my-font", source: "fonts/MyFont-Bold.ttf", weight: 700],
-        [family: "my-font", source: "fonts/MyFont-Italic.ttf", weight: 400, italic: true]
-      ],
-      runtime_paths: [
-        enabled: false,
-        allowlist: [],
-        follow_symlinks: false,
-        max_file_size: 25_000_000,
-        extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
-      ]
-    ]
-  )
-```
-
-Logical paths are always resolved from the provided app's `priv` directory.
-
-Font assets are loaded at startup from logical `priv` paths and registered by
-`family` + `weight` + `italic`.
-
-Runtime behavior:
-
-- image loading is async in Rust and does not block rendering
-- unresolved sources show a loading placeholder
-- failed sources show an `asset_failed` placeholder
-
-Runtime path ingestion is disabled by default for Nerves-friendly security.
-Enable `runtime_paths.enabled` only when needed, with an explicit allowlist.
+- [Use assets](guides/tutorials/use_assets.md)
+- `EmergeSkia.start/1`
 
 ## Documentation
 

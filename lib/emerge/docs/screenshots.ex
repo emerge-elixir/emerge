@@ -26,14 +26,6 @@ defmodule Emerge.Docs.Screenshots do
         build: &dashboard_functions/0
       },
       %{
-        id: "assets-image-and-background",
-        width: 320,
-        height: 316,
-        density: 2,
-        destinations: [asset_path("assets/assets-image-and-background.png")],
-        build: &assets_image_and_background/0
-      },
-      %{
         id: "describe-ui-escaping-layout-dropdown",
         width: 360,
         height: 250,
@@ -93,20 +85,6 @@ defmodule Emerge.Docs.Screenshots do
         dashboard_actions()
       ]
     )
-  end
-
-  defp assets_image_and_background do
-    column([spacing(16)], [
-      image([width(px(120)), height(px(120))], "demo_images/static.jpg"),
-      el(
-        [
-          width(px(320)),
-          height(px(180)),
-          Background.image("demo_images/fallback.jpg", fit: :cover)
-        ],
-        none()
-      )
-    ])
   end
 
   defp describe_ui_escaping_layout_dropdown do

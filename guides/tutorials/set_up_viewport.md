@@ -121,19 +121,13 @@ If you leave `compiled_backends` unset, desktop builds default to `[:wayland]` a
 
 ### Assets
 
-  `assets` options:
-  - `runtime_paths.enabled` (default: `false`)
-  - `runtime_paths.allowlist` (default: `[]`)
-  - `runtime_paths.follow_symlinks` (default: `false`)
-  - `runtime_paths.max_file_size` (default: `25_000_000`)
-  - `runtime_paths.extensions` (default image/SVG extension allowlist)
-  - `fonts` (default: `[]`)
+`otp_app` tells Emerge where to resolve logical assets from `priv/`.
 
-  Each `assets.fonts` entry supports:
-  - `family` (required)
-  - `source` (required, logical path under `<otp_app>/priv` or `%Emerge.Assets.Ref{}`)
-  - `weight` (default: `400`)
-  - `italic` (default: `false`)
+Renderer asset configuration also lives under the `assets:` start option. That
+includes custom fonts and runtime path policy.
+
+This tutorial keeps viewport setup focused on starting the renderer. The next
+tutorial covers image, SVG, background, and font assets in detail.
 
 ## Event handling
 

@@ -44,40 +44,7 @@ defmodule Emerge.MixProject do
       aliases: aliases(),
       dialyzer: [plt_add_apps: [:mix]],
       name: "Emerge",
-      docs: [
-        main: "readme",
-        source_url: @source_url,
-        source_ref: "v#{@version}",
-        assets: %{
-          "assets" => "assets",
-          "guides/tutorials/assets" => "assets"
-        },
-        before_closing_body_tag: &before_closing_body_tag/1,
-        extras: [
-          "README.md",
-          "guides/tutorials/set_up_viewport.md",
-          "guides/tutorials/describe_ui.md",
-          "guides/tutorials/state_management.md",
-          "guides/internals/architecture.md",
-          "guides/internals/assets-images.md",
-          "guides/internals/feature-roadmap.md",
-          "guides/internals/emrg-format.md",
-          "guides/internals/events.md",
-          "guides/internals/tree-patching.md"
-        ],
-        groups_for_extras: [
-          Tutorials: ~r/guides\/tutorials\/.*/,
-          Internals: ~r/guides\/internals\/.*/
-        ],
-        groups_for_modules: [
-          "Public API": [Emerge],
-          UI: ~r/^Emerge\.UI(\.|$)/,
-          Assets: ~r/^Emerge\.Assets(\.|$)/,
-          Runtime: ~r/^Emerge\.Runtime\./,
-          Rendering: ~r/^EmergeSkia(\.|$)/,
-          Engine: ~r/^Emerge\.Engine(\.|$)/
-        ]
-      ]
+      docs: docs_config()
     ]
   end
 
@@ -135,7 +102,7 @@ defmodule Emerge.MixProject do
   defp package_files do
     [
       "lib",
-      "guides",
+      "guides/tutorials",
       "native/emerge_skia/src",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
@@ -153,6 +120,67 @@ defmodule Emerge.MixProject do
       "assets/dashboard-functions.png",
       "assets/assets-image-and-background.png"
     ]
+    |> Kernel.++(Path.wildcard("assets/ui-*.png"))
+    |> Enum.uniq()
+  end
+
+  defp docs_config do
+    [
+      main: "readme",
+      source_url: @source_url,
+      source_ref: "v#{@version}",
+      assets: %{
+        "assets" => "assets",
+        "guides/tutorials/assets" => "assets"
+      },
+      before_closing_body_tag: &before_closing_body_tag/1,
+      extras: docs_extras(),
+      groups_for_extras: docs_groups_for_extras(),
+      groups_for_modules: [
+        "Public API": [Emerge],
+        UI: ~r/^Emerge\.UI(\.|$)/,
+        Assets: ~r/^Emerge\.Assets(\.|$)/,
+        Runtime: ~r/^Emerge\.Runtime\./,
+        Rendering: ~r/^EmergeSkia(\.|$)/,
+        Engine: ~r/^Emerge\.Engine(\.|$)/
+      ]
+    ]
+  end
+
+  defp docs_extras do
+    public_docs_extras() ++ optional_internal_docs_extras()
+  end
+
+  defp public_docs_extras do
+    [
+      "README.md",
+      "guides/tutorials/set_up_viewport.md",
+      "guides/tutorials/describe_ui.md",
+      "guides/tutorials/use_assets.md",
+      "guides/tutorials/state_management.md"
+    ]
+    |> Enum.filter(&File.exists?/1)
+  end
+
+  defp optional_internal_docs_extras do
+    [
+      "guides/internals/architecture.md",
+      "guides/internals/assets-images.md",
+      "guides/internals/feature-roadmap.md",
+      "guides/internals/emrg-format.md",
+      "guides/internals/events.md",
+      "guides/internals/tree-patching.md"
+    ]
+    |> Enum.filter(&File.exists?/1)
+  end
+
+  defp docs_groups_for_extras do
+    [Tutorials: ~r/guides\/tutorials\/.*/] ++
+      if optional_internal_docs_extras() == [] do
+        []
+      else
+        [Internals: ~r/guides\/internals\/.*/]
+      end
   end
 
   defp rustler_opts do
