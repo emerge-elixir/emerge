@@ -13,7 +13,7 @@ defmodule EmergeDemo do
 
   @impl Viewport
   def render() do
-    EmergeDemo.View.TodoApp.layout()
+    EmergeDemo.TodoApp.View.layout()
   end
 
   @impl Solve.Lookup

@@ -16,7 +16,7 @@ defmodule EmergeDemo.Application do
 
   defp base_children do
     [
-      EmergeDemo.TodoApp.child_spec([]),
+      EmergeDemo.Todo.App.child_spec([]),
       EmergeDemo
     ]
   end

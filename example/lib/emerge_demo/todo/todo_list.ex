@@ -1,4 +1,4 @@
-defmodule EmergeDemo.TodoApp.TodoList do
+defmodule EmergeDemo.Todo.TodoList do
   @moduledoc false
 
   use Solve.Controller,
