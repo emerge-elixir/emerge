@@ -323,6 +323,33 @@ defmodule Emerge.ViewportTest do
     def render(_state), do: el([], text("alive"))
   end
 
+  defmodule CloseAwareViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok, %{closed?: false, test_pid: Keyword.fetch!(opts, :test_pid)},
+       emerge_skia: [otp_app: :emerge],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render(_state), do: el([], text("close aware"))
+
+    @impl Viewport
+    def handle_input(event, state)
+
+    def handle_input(:closed, state) do
+      send(state.test_pid, :close_requested)
+      {:noreply, %{state | closed?: true}}
+    end
+
+    def handle_input(event, state), do: super(event, state)
+  end
+
   defmodule RecoveringViewport do
     use Emerge
 
@@ -743,6 +770,27 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_viewport, :check_renderer})
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+  end
+
+  test "default handle_input stops viewport when close is received" do
+    {:ok, pid} = LivenessViewport.start_link()
+
+    ref = Process.monitor(pid)
+    send(pid, {:emerge_skia_event, :closed})
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+  end
+
+  test "viewport can override close handling through handle_input" do
+    {:ok, pid} = CloseAwareViewport.start_link(test_pid: self())
+
+    send(pid, {:emerge_skia_event, :closed})
+
+    assert_receive :close_requested
+    assert Process.alive?(pid)
+    assert :sys.get_state(pid).closed?
+
+    GenServer.stop(pid)
   end
 
   test "stopping viewport stops renderer" do
