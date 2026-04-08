@@ -1,4 +1,4 @@
-defmodule EmergeDemo.TodoApp.TodoEditor do
+defmodule EmergeDemo.Todo.TodoEditor do
   @moduledoc false
 
   use Solve.Controller,
