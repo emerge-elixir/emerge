@@ -638,6 +638,13 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     });
 }
 
+pub(crate) fn send_closed_event(pid: LocalPid) {
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |inner_env| {
+        (emerge_skia_event(), closed()).encode(inner_env)
+    });
+}
+
 #[cfg_attr(not(feature = "drm"), allow(dead_code))]
 pub(crate) fn send_log_event(pid: LocalPid, level: NativeLogLevel, source: &str, message: &str) {
     let mut env = OwnedEnv::new();
@@ -673,6 +680,7 @@ rustler::atoms! {
     mouse_enter,
     mouse_leave,
     mouse_move,
+    closed,
     info,
     warning,
     error,

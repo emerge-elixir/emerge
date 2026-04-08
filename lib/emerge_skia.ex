@@ -52,6 +52,10 @@ defmodule EmergeSkia do
   - `0x00FF00FF` = Green (fully opaque)
   - `0x0000FFFF` = Blue (fully opaque)
   - `0x00000080` = Black at 50% opacity
+
+  When you register an input target with `set_input_target/2`, Wayland close
+  requests are delivered as `:closed`. This lifecycle message bypasses the
+  input mask so higher-level runtimes can shut down promptly.
   """
 
   alias EmergeSkia.Assets
@@ -501,6 +505,9 @@ defmodule EmergeSkia do
   @doc """
   Set the input event mask to filter which events are sent.
 
+  `:closed` lifecycle notifications are always delivered to the input target and
+  are not filtered by this mask.
+
   ## Example
 
       # Only capture mouse button and key events
@@ -532,6 +539,13 @@ defmodule EmergeSkia do
   - `{:cursor_entered, entered}`
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
+
+  On Wayland, lifecycle event payloads include:
+
+  - `:closed`
+
+  `:closed` bypasses the input mask so close requests are still delivered when
+  other raw input categories are disabled.
 
   On DRM, raw `{:cursor_pos, {x, y}}` delivery is latest-wins under load so
   pointer motion does not stall rendering. Button, scroll, key, and text events

@@ -333,14 +333,14 @@ This asks the viewport to receive raw resize input and check renderer liveness e
 
 ## Raw renderer input
 
-Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, and text input coming directly from the renderer.
+Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, text input, and window close requests coming directly from the renderer.
 
 To handle raw renderer input, implement the `handle_input/2` callback.
 
 `handle_input/2` is separate from `handle_info/2`:
 
 - `handle_info/2` handles processed element events
-- `handle_input/2` handles raw renderer input selected by the input mask
+- `handle_input/2` handles raw renderer input selected by the input mask, plus the `:closed` lifecycle message
 
 Representative raw input messages include:
 
@@ -351,6 +351,7 @@ Representative raw input messages include:
 - `{:key, {key, action, mods}}`
 - `{:codepoint, {char, mods}}`
 - `{:text_commit, {text, mods}}`
+- `:closed`
 
 A viewport can handle them directly:
 
@@ -360,10 +361,26 @@ def handle_input({:resized, {width, height, scale}}, state) do
   IO.inspect({width, height, scale}, label: "resized")
   {:noreply, state}
 end
+
+def handle_input(event, state), do: super(event, state)
 ```
 
 Handling raw cursor input can cause a lot of messages, so be aware of how you handle it.
 The most common use case for raw input is listening to resize events if you want to change the UI depending on window size.
+
+`use Emerge` stops the viewport by default when it receives `:closed`. That message bypasses the input mask so close requests are still delivered even when you only listen to a narrow set of raw input events.
+
+If you want custom close behavior, handle `:closed` explicitly:
+
+```elixir
+@impl Viewport
+def handle_input(:closed, state) do
+  # Notify other processes or persist state here before stopping.
+  {:stop, :normal, state}
+end
+
+def handle_input(event, state), do: super(event, state)
+```
 
 ## Run the same viewport on Nerves (DRM)
 

@@ -19,8 +19,12 @@ defmodule Emerge do
   Element event helpers such as `Event.on_press/1`, `Event.on_click/1`, and
   `Event.on_swipe_right/1`
   deliver regular process messages and are usually handled in `handle_info/2`.
-  Implement `handle_input/2` when you want to react to raw input events coming
-  from the renderer.
+  Implement `handle_input/2` when you want to react to raw input events and
+  lifecycle notifications coming from the renderer.
+
+  `use Emerge` stops the viewport by default when `handle_input/2` receives
+  `:closed`. If you override `handle_input/2`, match `:closed` yourself or
+  delegate unmatched events to `super/2` to keep that behavior.
 
   For retained-tree diffing, encoding, and event routing helpers, see
   `Emerge.Engine`.
@@ -64,6 +68,9 @@ defmodule Emerge do
       end
 
       @impl Emerge
+      def handle_input(event, state)
+
+      def handle_input(:closed, state), do: {:stop, :normal, state}
       def handle_input(_event, state), do: {:noreply, state}
 
       @impl Emerge

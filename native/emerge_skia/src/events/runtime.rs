@@ -46,8 +46,9 @@ use super::{
         RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
-    send_element_event, send_element_event_with_string_payload, send_input_event, swipe_down_atom,
-    swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
+    send_closed_event, send_element_event, send_element_event_with_string_payload,
+    send_input_event, swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
+    virtual_key_hold_atom,
 };
 
 const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
@@ -1847,6 +1848,12 @@ fn forward_observer_input(
     }
 }
 
+fn forward_close_event(target: &Option<LocalPid>) {
+    if let Some(pid) = target.as_ref() {
+        send_closed_event(*pid);
+    }
+}
+
 pub(crate) fn spawn_event_actor(
     event_rx: Receiver<EventMsg>,
     tree_tx: Sender<TreeMsg>,
@@ -1891,6 +1898,7 @@ pub(crate) fn spawn_event_actor(
                         runtime.handle_input_event(event, &tree_tx, log_render);
                     }
                 }
+                EventMsg::Closed => forward_close_event(&runtime.input_target),
                 EventMsg::RegistryUpdate { rebuild } => {
                     let rebuild = if runtime.should_preserve_registry_transitions() {
                         rebuild
