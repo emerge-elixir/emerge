@@ -4,8 +4,8 @@ defmodule Emerge.UI.Animation do
 
   ## Basics
 
-  Animation keyframes are written with ordinary Emerge attrs. In practice,
-  keyframes are usually attr lists such as
+  Animation keyframes are written with ordinary Emerge attrs. When written
+  inline, keyframes are attr lists such as
   `[Transform.move_x(-40), Transform.alpha(0.0)]`. Maps are also accepted when
   building specs programmatically.
 

@@ -10,8 +10,8 @@ defmodule Emerge.UI.Event do
   - a bare `message`
   - a `{pid, message}` tuple
 
-  Passing only a `message` is shorthand for `{self(), message}`. In a viewport
-  `render/0` or `render/1`, that usually means the viewport process, so the
+  Passing only a `message` is shorthand for `{self(), message}`. Inside a
+  viewport `render/0` or `render/1` callback, that means the viewport process, so the
   message arrives in `handle_info/2`.
 
   ## Payload Routing
@@ -58,8 +58,8 @@ defmodule Emerge.UI.Event do
 
   ## Pointer Events
 
-  Use `on_press/1` for normal button-like activation. It is the most practical
-  default for actions such as save, submit, open, and delete.
+  Prefer `on_press/1` for normal button-like activation. It is the default for
+  actions such as save, submit, open, and delete.
 
   Use `on_click/1` when you specifically want pointer click behavior.
 
@@ -521,8 +521,8 @@ defmodule Emerge.UI.Event do
   Register a press payload for this element.
 
   This is the recommended default for buttons and other action controls.
-  `on_press/1` also works with focused `Enter`, so it is usually a better choice
-  than `on_click/1` for standard activation.
+  For standard activation, prefer `on_press/1` over `on_click/1` because it
+  also works with focused `Enter`.
 
   ## Examples
 
@@ -594,7 +594,7 @@ defmodule Emerge.UI.Event do
   @doc """
   Register a value-change payload for a text input.
 
-  `on_change/1` is typically used with `Emerge.UI.Input.text/2`.
+  Use `on_change/1` with `Emerge.UI.Input.text/2`.
 
   Text editing still works without this handler; `on_change/1` only controls
   whether a message is emitted when the value changes.

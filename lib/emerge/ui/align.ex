@@ -13,9 +13,9 @@ defmodule Emerge.UI.Align do
   Alignment happens inside the parent's content area. Padding and border are
   applied before alignment, so these helpers work within the remaining space.
 
-  Alignment is most visible when the parent has extra space on that axis.
+  Alignment is visible when the parent has extra space on that axis.
 
-  Alignment helpers usually position the element they are attached to inside its
+  Alignment helpers position the element they are attached to inside its
   parent. `el` is the main exception: child content inherits alignment from the
   `el`.
 

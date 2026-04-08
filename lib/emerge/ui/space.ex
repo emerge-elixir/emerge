@@ -32,8 +32,8 @@ defmodule Emerge.UI.Space do
   ## Child Gaps
 
   Spacing lives between siblings, not around the outside of a container. In
-  Emerge there are no margins, so container padding usually creates the outer
-  gutter while spacing separates the items inside it.
+  Emerge there are no margins, so container padding creates the outer gutter
+  while spacing separates the items inside it.
 
   `spacing/1` applies the same gap everywhere the layout kind consumes spacing.
   `spacing_xy/2` lets layouts consume horizontal and vertical gaps separately.

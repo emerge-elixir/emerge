@@ -25,8 +25,8 @@ defmodule Emerge.UI.Size do
   - `shrink()` for sizing to content
   - `content()` as an alias for `shrink()`
 
-  `fill()` is most noticeable inside layouts that distribute space between
-  siblings, such as `row/2` and `column/2`.
+  `fill()` is visible inside layouts that distribute space between siblings,
+  such as `row/2` and `column/2`.
 
   `fill(2)` does not mean 2 pixels. It means "take 2 shares of the remaining
   space". If a sibling uses `fill(1)`, the `fill(2)` element gets twice as much
@@ -132,8 +132,8 @@ defmodule Emerge.UI.Size do
   @doc """
   Apply a length to the element height.
 
-  Height commonly uses `px(...)`, `fill()`, or `shrink()` depending on whether
-  the element should be fixed, expand, or follow its content.
+  Height uses `px(...)`, `fill()`, or `shrink()` depending on whether the
+  element should be fixed, expand, or follow its content.
 
   ## Example
 
@@ -219,8 +219,8 @@ defmodule Emerge.UI.Size do
 
   Use this when the element should be only as large as its child content.
 
-  `shrink/0` and `content/0` return the same value. `shrink/0` is often the
-  clearer name in layout code.
+  `shrink/0` and `content/0` return the same value. `shrink/0` is the clearer
+  name in layout code.
 
   ## Example
 
