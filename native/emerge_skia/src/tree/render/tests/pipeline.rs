@@ -927,6 +927,82 @@ fn test_tree_transform_scope_does_not_affect_following_sibling_pixels() {
 }
 
 #[test]
+fn test_render_translated_full_width_row_moves_host_frame_and_children_together() {
+    let root_id = ElementId::from_term_bytes(vec![220]);
+    let row_id = ElementId::from_term_bytes(vec![221]);
+    let child_id = ElementId::from_term_bytes(vec![222]);
+
+    let mut root = Element::with_attrs(
+        root_id.clone(),
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((0, 0, 0)),
+    );
+    root.children = vec![row_id.clone()];
+    root.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 320.0,
+        height: 100.0,
+        content_width: 320.0,
+        content_height: 100.0,
+    });
+
+    let mut row_attrs = solid_fill_attrs((255, 255, 255));
+    row_attrs.move_x = Some(30.0);
+    row_attrs.border_width = Some(BorderWidth::Sides {
+        top: 0.0,
+        right: 0.0,
+        bottom: 4.0,
+        left: 0.0,
+    });
+    row_attrs.border_color = Some(Color::Rgb { r: 0, g: 0, b: 255 });
+
+    let mut row = Element::with_attrs(row_id.clone(), ElementKind::Row, Vec::new(), row_attrs);
+    row.children = vec![child_id.clone()];
+    row.frame = Some(Frame {
+        x: 20.0,
+        y: 30.0,
+        width: 220.0,
+        height: 40.0,
+        content_width: 220.0,
+        content_height: 40.0,
+    });
+
+    let mut child = Element::with_attrs(
+        child_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((255, 0, 0)),
+    );
+    child.frame = Some(Frame {
+        x: 28.0,
+        y: 42.0,
+        width: 16.0,
+        height: 16.0,
+        content_width: 16.0,
+        content_height: 16.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(root_id);
+    tree.insert(root);
+    tree.insert(row);
+    tree.insert(child);
+
+    let (_output, pixels) = render_tree_to_pixels(320, 100, &tree);
+
+    assert_eq!(rgba_at(&pixels, 320, 30, 50), (0, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 320, 260, 50), (255, 255, 255, 255));
+
+    assert_eq!(rgba_at(&pixels, 320, 30, 68), (0, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 320, 260, 68), (0, 0, 255, 255));
+
+    assert_eq!(rgba_at(&pixels, 320, 34, 50), (0, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 320, 64, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn test_render_skips_transform_when_default() {
     let attrs = Attrs::default();
     let tree = build_tree_with_attrs(attrs);
