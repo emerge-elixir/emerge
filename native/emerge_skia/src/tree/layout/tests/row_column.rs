@@ -1699,6 +1699,168 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
 }
 
 #[test]
+fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph() {
+    fn build_line_spacing_card(id: &str, text_id: &str) -> (Element, Element, Element, Element) {
+        let mut column = make_element(id, ElementKind::Column, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Maximum(320.0, Box::new(Length::Fill)));
+            a.spacing = Some(6.0);
+            a
+        });
+
+        let label = make_element(
+            &format!("{id}_label"),
+            ElementKind::Text,
+            text_attrs("spacing(8)"),
+        );
+
+        let mut box_el = make_element(&format!("{id}_box"), ElementKind::El, {
+            let mut a = Attrs::default();
+            a.width = Some(Length::Fill);
+            a.padding = Some(Padding::Uniform(10.0));
+            a
+        });
+
+        let mut paragraph = make_element(&format!("{id}_paragraph"), ElementKind::Paragraph, {
+            let mut a = Attrs::default();
+            a.spacing = Some(8.0);
+            a.font_size = Some(13.0);
+            a
+        });
+
+        let text = make_element(text_id, ElementKind::Text, text_attrs("Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content."));
+
+        let label_id = label.id.clone();
+        let box_id = box_el.id.clone();
+        let paragraph_id = paragraph.id.clone();
+        let text_child_id = text.id.clone();
+
+        paragraph.children = vec![text_child_id];
+        box_el.children = vec![paragraph_id];
+        column.children = vec![label_id, box_id];
+
+        (column, label, box_el, paragraph)
+    }
+
+    let mut isolated_tree = ElementTree::new();
+    let (isolated_card, isolated_label, isolated_box, isolated_paragraph) =
+        build_line_spacing_card("isolated_card", "isolated_text");
+    let isolated_text = make_element(
+        "isolated_text",
+        ElementKind::Text,
+        text_attrs(
+            "Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content.",
+        ),
+    );
+
+    let isolated_card_id = isolated_card.id.clone();
+
+    isolated_tree.root = Some(isolated_card_id.clone());
+    isolated_tree.insert(isolated_card);
+    isolated_tree.insert(isolated_label);
+    isolated_tree.insert(isolated_box);
+    isolated_tree.insert(isolated_paragraph);
+    isolated_tree.insert(isolated_text);
+
+    layout_tree(
+        &mut isolated_tree,
+        Constraint::new(1200.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let expected_card_height = isolated_tree
+        .get(&isolated_card_id)
+        .unwrap()
+        .frame
+        .unwrap()
+        .height;
+
+    let mut tree = ElementTree::new();
+
+    let mut column = make_element("root_column", ElementKind::Column, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(1200.0));
+        a.spacing = Some(20.0);
+        a
+    });
+
+    let mut wrapped_row = make_element("wrapped_row", ElementKind::WrappedRow, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Fill);
+        a.spacing_x = Some(16.0);
+        a.spacing_y = Some(16.0);
+        a
+    });
+
+    let (card_a, label_a, box_a, paragraph_a) = build_line_spacing_card("card_a", "text_a");
+    let text_a = make_element(
+        "text_a",
+        ElementKind::Text,
+        text_attrs(
+            "Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content.",
+        ),
+    );
+
+    let (card_b, label_b, box_b, paragraph_b) = build_line_spacing_card("card_b", "text_b");
+    let text_b = make_element(
+        "text_b",
+        ElementKind::Text,
+        text_attrs(
+            "Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content.",
+        ),
+    );
+
+    let below = make_element("below", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Fill);
+        a.height = Some(Length::Px(24.0));
+        a
+    });
+
+    let root_id = column.id.clone();
+    let row_id = wrapped_row.id.clone();
+    let card_a_id = card_a.id.clone();
+    let card_b_id = card_b.id.clone();
+    let below_id = below.id.clone();
+
+    wrapped_row.children = vec![card_a_id.clone(), card_b_id.clone()];
+    column.children = vec![row_id.clone(), below_id.clone()];
+
+    tree.root = Some(root_id);
+    tree.insert(column);
+    tree.insert(wrapped_row);
+    tree.insert(card_a);
+    tree.insert(label_a);
+    tree.insert(box_a);
+    tree.insert(paragraph_a);
+    tree.insert(text_a);
+    tree.insert(card_b);
+    tree.insert(label_b);
+    tree.insert(box_b);
+    tree.insert(paragraph_b);
+    tree.insert(text_b);
+    tree.insert(below);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(1200.0, 800.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let card_a_frame = tree.get(&card_a_id).unwrap().frame.unwrap();
+    let card_b_frame = tree.get(&card_b_id).unwrap().frame.unwrap();
+    let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+
+    assert_eq!(card_a_frame.height, expected_card_height);
+    assert_eq!(card_b_frame.height, expected_card_height);
+    assert_eq!(row_frame.height, expected_card_height);
+    assert_eq!(below_frame.y, expected_card_height + 20.0);
+}
+
+#[test]
 fn test_row_weighted_fill_subtracts_decorated_fixed_outer_width() {
     let mut tree = ElementTree::new();
 
