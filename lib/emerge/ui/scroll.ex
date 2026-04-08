@@ -21,9 +21,9 @@ defmodule Emerge.UI.Scroll do
   - you can enable both axes on the same element
   - scrollbars only appear when content actually overflows
 
-  In practice, scrolling is most useful on containers that already have a size
-  constraint, such as a fixed `height(px(...))`, a fixed `width(px(...))`, or a
-  parent that gives the element bounded `fill()` space.
+  Use scrolling on containers that already have a size constraint, such as a
+  fixed `height(px(...))`, a fixed `width(px(...))`, or a parent that gives the
+  element bounded `fill()` space.
 
   Style the container normally with helpers such as `Background.color/1`,
   `Border.rounded/1`, `padding/1`, and `spacing/1`.
@@ -66,8 +66,8 @@ defmodule Emerge.UI.Scroll do
   @doc """
   Enable vertical scrolling when the child content is taller than the container.
 
-  This is commonly used on fixed-height or fill-height panels whose child is a
-  long `column/2`.
+  Use this on fixed-height or fill-height panels whose child is a long
+  `column/2`.
 
   ## Example
 
@@ -97,8 +97,7 @@ defmodule Emerge.UI.Scroll do
   @doc """
   Enable horizontal scrolling when the child content is wider than the container.
 
-  This is commonly used on fixed-height containers whose child is a wide
-  `row/2`.
+  Use this on fixed-height containers whose child is a wide `row/2`.
 
   ## Example
 

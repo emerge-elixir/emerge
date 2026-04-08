@@ -142,7 +142,7 @@ defmodule Emerge.UI.Interactive do
   @doc """
   Apply decorative styling while the element is focused.
 
-  This is commonly used for focus rings on buttons and inputs.
+  Use this for focus rings on buttons and inputs.
 
   ## Example
 
@@ -173,8 +173,8 @@ defmodule Emerge.UI.Interactive do
   @doc """
   Apply decorative styling while the left mouse button is pressed on the element.
 
-  This is commonly used for pressed feedback such as a 1px downward movement or
-  a small opacity change.
+  Use this for pressed feedback such as a 1px downward movement or a small
+  opacity change.
 
   ## Example
 
