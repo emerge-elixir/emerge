@@ -35,9 +35,9 @@ defmodule Emerge.UI.Nearby do
   Nearby alignment comes from the nearby root element itself.
 
   - `above/1` and `below/1` use horizontal alignment from the nearby root,
-    usually `align_left()`, `center_x()`, or `align_right()`
+    for example `align_left()`, `center_x()`, or `align_right()`
   - `on_left/1` and `on_right/1` use vertical alignment from the nearby root,
-    usually `align_top()`, `center_y()`, or `align_bottom()`
+    for example `align_top()`, `center_y()`, or `align_bottom()`
   - `in_front/1` and `behind_content/1` use both axes
 
   ## Clipping
