@@ -1,8 +1,8 @@
 # Emerge
 
-[![Hex.pm](https://img.shields.io/hexpm/v/emerge.svg)](https://hex.pm/packages/emerge)
-[![HexDocs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/emerge)
-[![CI](https://github.com/emerge-elixir/emerge/actions/workflows/ci.yml/badge.svg)](https://github.com/emerge-elixir/emerge/actions/workflows/ci.yml)
+[![Hex](https://img.shields.io/badge/Hex-emerge-6E4AFF)](https://hex.pm/packages/emerge)
+[![HexDocs](https://img.shields.io/badge/HexDocs-emerge-4B9BE0)](https://hexdocs.pm/emerge)
+[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/emerge-elixir/emerge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/emerge-elixir/emerge.svg)](https://github.com/emerge-elixir/emerge/blob/main/LICENSE)
 
 Write native GUI directly from Elixir using declarative API.
