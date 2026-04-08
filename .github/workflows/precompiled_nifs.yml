@@ -63,7 +63,7 @@ jobs:
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
@@ -102,7 +102,7 @@ jobs:
           cargo-args: ${{ matrix.job.cargo_args }}
 
       - name: Artifact upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.build-crate.outputs.file-name }}
           path: ${{ steps.build-crate.outputs.file-path }}
