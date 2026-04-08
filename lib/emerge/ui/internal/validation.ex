@@ -111,17 +111,21 @@ defmodule Emerge.UI.Internal.Validation do
 
     {attrs, nearby} =
       Enum.reduce(attrs, {%{}, []}, fn attr, {acc, nearby} ->
-        {key, value} = validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys)
+        case validate_attr_entry!(attrs_owner, attr, extra_public_attr_keys) do
+          :skip ->
+            {acc, nearby}
 
-        case key do
-          :box_shadow ->
-            {put_attr(acc, key, value, false), nearby}
+          {key, value} ->
+            case key do
+              :box_shadow ->
+                {put_attr(acc, key, value, false), nearby}
 
-          key when key in [:above, :below, :on_left, :on_right, :in_front, :behind] ->
-            {acc, nearby ++ [{key, value}]}
+              key when key in [:above, :below, :on_left, :on_right, :in_front, :behind] ->
+                {acc, nearby ++ [{key, value}]}
 
-          _ ->
-            {put_attr(acc, key, value, warn_overrides), nearby}
+              _ ->
+                {put_attr(acc, key, value, warn_overrides), nearby}
+            end
         end
       end)
 
@@ -250,6 +254,8 @@ defmodule Emerge.UI.Internal.Validation do
     end
   end
 
+  defp validate_attr_entry!(_attrs_owner, nil, _extra_public_attr_keys), do: :skip
+
   defp validate_attr_entry!(attrs_owner, {key, value}, extra_public_attr_keys)
        when is_atom(key) do
     cond do
@@ -261,20 +267,22 @@ defmodule Emerge.UI.Internal.Validation do
               "#{attrs_owner} does not allow internal attribute #{inspect(key)} in public attrs"
 
       MapSet.member?(@state_style_key_set, key) ->
-        {key, AttrValidation.normalize_state_style!(key, value)}
+        skip_nil_or(value, fn -> {key, AttrValidation.normalize_state_style!(key, value)} end)
 
       key in [:animate, :animate_enter, :animate_exit] ->
-        {key, AttrValidation.normalize_animation!(key, value)}
+        skip_nil_or(value, fn -> {key, AttrValidation.normalize_animation!(key, value)} end)
 
       key in [:on_key_down, :on_key_up, :on_key_press] ->
-        {key, Event.normalize_key_listener_bindings!(key, value)}
+        skip_nil_or(value, fn -> {key, Event.normalize_key_listener_bindings!(key, value)} end)
 
       key == :virtual_key ->
-        {key, Event.normalize_virtual_key!(value)}
+        skip_nil_or(value, fn -> {key, Event.normalize_virtual_key!(value)} end)
 
       MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
-        validate_public_attr_value!(attrs_owner, key, value)
-        {key, value}
+        skip_nil_or(value, fn ->
+          validate_public_attr_value!(attrs_owner, key, value)
+          {key, value}
+        end)
 
       true ->
         raise ArgumentError,
@@ -286,6 +294,9 @@ defmodule Emerge.UI.Internal.Validation do
     raise ArgumentError,
           "#{attrs_owner} expects attributes to be {key, value} tuples, got: #{inspect(other)}"
   end
+
+  defp skip_nil_or(nil, _fun), do: :skip
+  defp skip_nil_or(_value, fun), do: fun.()
 
   defp validate_public_attr_value!(_attrs_owner, :key, _value), do: :ok
   defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
