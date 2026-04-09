@@ -137,8 +137,8 @@ tutorial covers image, SVG, background, and font assets in detail.
 The counter attaches `Event.on_press/1` to each button:
 
 ```elixir
-button([Event.on_press(:increment)], text("+"))
-button([Event.on_press(:decrement)], text("-"))
+Input.button([Event.on_press(:increment)], text("+"))
+Input.button([Event.on_press(:decrement)], text("-"))
 ```
 
 Event helpers accept `{pid, event_message}`.
