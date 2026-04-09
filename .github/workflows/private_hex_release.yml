@@ -7,10 +7,6 @@ on:
         description: Git ref to publish (tag or branch)
         required: true
         default: main
-      organization:
-        description: Hex organization to publish to (optional; leave blank for the public Hex repo)
-        required: false
-        default: ""
   workflow_run:
     workflows: ["Build Precompiled NIFs"]
     types: [completed]
@@ -39,13 +35,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Resolve Hex organization
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.organization }}" ]; then
-            echo "HEX_ORGANIZATION=${{ inputs.organization }}" >> "$GITHUB_ENV"
-          fi
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
@@ -87,8 +76,5 @@ jobs:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         shell: bash
         run: |
-          if [ -n "$HEX_ORGANIZATION" ]; then
-            mix hex.publish --organization "$HEX_ORGANIZATION" --yes
-          else
-            mix hex.publish --yes
-          fi
+          unset HEX_ORGANIZATION
+          mix hex.publish --yes
