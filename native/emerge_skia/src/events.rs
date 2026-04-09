@@ -440,7 +440,7 @@ impl TextInputState {
                 letter_spacing: self.letter_spacing,
                 word_spacing: self.word_spacing,
             },
-            |ch| font.measure_str(&ch.to_string(), None).0,
+            |ch| font.measure_str(ch.to_string(), None).0,
         )
     }
 

@@ -380,7 +380,7 @@ pub(super) fn render_multiline_text_input_items(
             word_spacing,
         },
         |ch| {
-            let (glyph_width, _bounds) = font.measure_str(&ch.to_string(), None);
+            let (glyph_width, _bounds) = font.measure_str(ch.to_string(), None);
             glyph_width
         },
     );
