@@ -1,0 +1,26 @@
+Emerge is licensed under the Apache License, Version 2.0. This distribution
+also includes package/runtime-relevant third-party non-code assets.
+
+Bundled third-party assets in packaged/runtime paths:
+
+1. Inter default fonts
+   - Paths: `native/emerge_skia/src/fonts/Inter-Regular.ttf`,
+     `native/emerge_skia/src/fonts/Inter-Bold.ttf`,
+     `native/emerge_skia/src/fonts/Inter-Italic.ttf`,
+     `native/emerge_skia/src/fonts/Inter-BoldItalic.ttf`
+   - Copyright (c) 2016 The Inter Project Authors
+   - License: SIL Open Font License 1.1
+   - Full license text: `native/emerge_skia/src/fonts/OFL.txt`
+   - Source note: `native/emerge_skia/src/fonts/SOURCES.md`
+
+2. Mocu DRM cursor SVGs
+   - Path: `native/emerge_skia/src/backend/drm/cursors/mocu_black_right/`
+   - Source: `mocu-xcursor` by Sebastian Meyer
+   - License: CC0 1.0 Universal
+   - Full license text:
+     `native/emerge_skia/src/backend/drm/cursors/mocu_black_right/LICENSE-CC0.txt`
+   - Source note:
+     `native/emerge_skia/src/backend/drm/cursors/mocu_black_right/SOURCES.md`
+
+For a fuller repo-wide inventory, including repo-only Emerge docs/test assets,
+see `THIRD_PARTY_ASSETS.md`.
