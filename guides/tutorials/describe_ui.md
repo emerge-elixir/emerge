@@ -189,9 +189,11 @@ end
 <img src="assets/describe-ui-escaping-layout-dropdown.png" alt="Dropdown built with Nearby.below" width="360">
 
 For `above` and `below`, horizontal alignment comes from the nearby root, so
-`align_right()` makes this menu line up with the hosts's right edge. Because
+`align_right()` makes this menu line up with the host's right edge.
+`center_x()` would align the centers, and `align_left()` would match the left
+edges.
 
-The rest of the nearby helpers follow the same idea: 
-- `Nearby.above/1` and `Nearby.below/1` anchor vertically with `align_left()`, `center_x` and `align_right()`
-- `Nearby.on_left/1` and `Nearby.on_right/1` anchor horizontally with `align_top`, `center_y`, and `align_bottom`
-- `Nearby.in_front/1` paints over the host slot and `width(fill())` will make it hosts width, while bigger sizes will make it escape host size.
+The rest of the nearby helpers follow the same idea:
+- `Nearby.above/1` and `Nearby.below/1` anchor vertically with `align_left()`, `center_x()`, and `align_right()`
+- `Nearby.on_left/1` and `Nearby.on_right/1` anchor horizontally with `align_top()`, `center_y()`, and `align_bottom()`
+- `Nearby.in_front/1` paints over the host slot, and `width(fill())` makes it the host's width, while bigger sizes let it escape the host size
