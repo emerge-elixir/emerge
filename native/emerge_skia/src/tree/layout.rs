@@ -273,13 +273,17 @@ fn measure_text_width_with_spacing<M: TextMeasurer>(
     total
 }
 
+struct TextFontSpec<'a> {
+    font_size: f32,
+    family: &'a str,
+    weight: u16,
+    italic: bool,
+}
+
 fn multiline_text_layout<M: TextMeasurer>(
     measurer: &M,
     text: &str,
-    font_size: f32,
-    family: &str,
-    weight: u16,
-    italic: bool,
+    font: TextFontSpec<'_>,
     spacing: (f32, f32),
     wrap_width: Option<f32>,
 ) -> crate::tree::text_layout::TextLayout {
@@ -287,15 +291,21 @@ fn multiline_text_layout<M: TextMeasurer>(
     layout_text_lines(
         text,
         wrap_width,
-        measurer.font_metrics(font_size, family, weight, italic),
+        measurer.font_metrics(font.font_size, font.family, font.weight, font.italic),
         TextLayoutStyle {
-            font_size,
+            font_size: font.font_size,
             letter_spacing,
             word_spacing,
         },
         |ch| {
             measurer
-                .measure_with_font(&ch.to_string(), font_size, family, weight, italic)
+                .measure_with_font(
+                    &ch.to_string(),
+                    font.font_size,
+                    font.family,
+                    font.weight,
+                    font.italic,
+                )
                 .0
         },
     )
@@ -934,10 +944,12 @@ fn measure_element<M: TextMeasurer>(
             let layout = multiline_text_layout(
                 measurer,
                 content,
-                font_size,
-                &family,
-                weight,
-                italic,
+                TextFontSpec {
+                    font_size,
+                    family: &family,
+                    weight,
+                    italic,
+                },
                 (letter_spacing, word_spacing),
                 None,
             );
@@ -1491,10 +1503,12 @@ fn resolve_multiline_kind<M: TextMeasurer>(
     let layout = multiline_text_layout(
         measurer,
         content,
-        font_size,
-        &family,
-        weight,
-        italic,
+        TextFontSpec {
+            font_size,
+            family: &family,
+            weight,
+            italic,
+        },
         (letter_spacing, word_spacing),
         Some(params.content.width.max(0.0)),
     );
