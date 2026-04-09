@@ -126,6 +126,11 @@ defmodule EmergeSkia.BuildConfigTest do
              "https://github.com/acme/emerge/releases/download/v#{Mix.Project.config()[:version]}/demo.tar.gz"
   end
 
+  test "checksum_only_mode? respects the checksum generation env var" do
+    assert BuildConfig.checksum_only_mode?(%{BuildConfig.checksum_only_env_key() => "true"})
+    refute BuildConfig.checksum_only_mode?(%{})
+  end
+
   test "force_precompiled_build? forces builds when checksum is missing" do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: "/tmp/emerge-missing-checksum",
