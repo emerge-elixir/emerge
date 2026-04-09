@@ -3,6 +3,7 @@ defmodule EmergeSkia.BuildConfig do
 
   @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
+  @checksum_only_env_key "EMERGE_SKIA_CHECKSUM_ONLY"
   @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
   @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
@@ -115,6 +116,9 @@ defmodule EmergeSkia.BuildConfig do
   def force_precompiled_build_env_key, do: @force_precompiled_build_env_key
 
   @doc false
+  def checksum_only_env_key, do: @checksum_only_env_key
+
+  @doc false
   def precompiled_targets, do: @precompiled_targets
 
   @doc false
@@ -125,6 +129,11 @@ defmodule EmergeSkia.BuildConfig do
 
   @doc false
   def precompiled_source_url_env_key, do: @precompiled_source_url_env_key
+
+  @doc false
+  def checksum_only_mode?(env \\ System.get_env()) when is_map(env) do
+    Map.get(env, @checksum_only_env_key) in ["1", "true"]
+  end
 
   @doc false
   def default_compiled_backends(env) when is_map(env) do
