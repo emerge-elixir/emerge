@@ -121,10 +121,10 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 #### Input Elements
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Input.button | ❌ | |
+| Input.button | ✅ | |
 | Input.checkbox | ❌ | |
-| Input.text | ❌ | |
-| Input.multiline | ❌ | |
+| Input.text | ✅ | Single-line controlled text input |
+| Input.multiline | ✅ | Wrapped multiline input with auto-grow and multiline editing |
 | Input.slider | ❌ | |
 | Input.radio | ❌ | |
 

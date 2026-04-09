@@ -594,13 +594,15 @@ defmodule Emerge.UI.Event do
   @doc """
   Register a value-change payload for a text input.
 
-  Use `on_change/1` with `Emerge.UI.Input.text/2`.
+  Use `on_change/1` with `Emerge.UI.Input.text/2` or
+  `Emerge.UI.Input.multiline/2`.
 
   Text editing still works without this handler; `on_change/1` only controls
   whether a message is emitted when the value changes.
 
   When delivered through a viewport, the changed value is wrapped into the
-  stored message using `wrap_payload/3`.
+  stored message using `wrap_payload/3`. Multiline values use the same payload
+  shape; newline characters remain part of the emitted binary.
 
   ## Examples
 
@@ -663,6 +665,10 @@ defmodule Emerge.UI.Event do
   elements, a matching `on_key_down/2` suppresses the input's default keydown
   behavior for that keydown. This lets apps override built-in editing such as
   character insertion or multiline `Enter` handling.
+
+  For example, `on_key_down(:enter, :submit)` on a focused
+  `Emerge.UI.Input.multiline/2` intercepts `Enter` before the default newline is
+  inserted.
   """
   @spec on_key_down(key_matcher(), payload() | term()) :: key_down_attr()
   def on_key_down(matcher, {pid, _msg} = payload) when is_pid(pid) do
@@ -728,7 +734,8 @@ defmodule Emerge.UI.Event do
 
   `{:text_and_key, text, key, mods}` participates in the same text-input
   keydown suppression rules as a physical key press. `{:text, text}` does not,
-  because it inserts text without a preceding keydown.
+  because it inserts text without a preceding keydown. See `on_key_down/2` for
+  the suppression behavior on focused `Input.text/2` and `Input.multiline/2`.
   """
   @spec virtual_key(virtual_key_spec() | keyword()) :: virtual_key_attr()
   def virtual_key(spec) do
