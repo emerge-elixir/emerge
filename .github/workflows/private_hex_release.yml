@@ -77,7 +77,9 @@ jobs:
 
       - name: Generate precompiled checksum file
         env:
+          EMERGE_SKIA_CHECKSUM_ONLY: "true"
           EMERGE_SKIA_GITHUB_TOKEN: ${{ secrets.EMERGE_SKIA_GITHUB_TOKEN || github.token }}
+          MIX_ENV: prod
         run: mix rustler_precompiled.download EmergeSkia.Native --all --print
 
       - name: Verify Hex package contents

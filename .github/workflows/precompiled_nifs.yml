@@ -73,7 +73,25 @@ jobs:
 
       - name: Extract project version
         shell: bash
-        run: echo "PROJECT_VERSION=$(mix emerge.version)" >> "$GITHUB_ENV"
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            project_version="${GITHUB_REF_NAME#v}"
+          else
+            project_version="$(mix emerge.version)"
+            project_version="${project_version##*$'\n'}"
+          fi
+
+          if [[ -z "$project_version" ]]; then
+            echo "Failed to resolve project version" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
+            exit 1
+          fi
+
+          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
       - name: Install Linux build dependencies
         if: ${{ matrix.job.system_packages != '' }}
