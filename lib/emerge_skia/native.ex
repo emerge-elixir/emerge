@@ -73,9 +73,11 @@ defmodule EmergeSkia.Native do
               required(:hotspot_y) => float()
             }
           ],
+          required(:scroll_line_pixels) => float(),
           required(:hw_cursor) => boolean(),
           required(:input_log) => boolean(),
-          required(:render_log) => boolean()
+          required(:render_log) => boolean(),
+          required(:close_signal_log) => boolean()
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
 

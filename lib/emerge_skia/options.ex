@@ -35,9 +35,14 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:drm_retry_interval_ms, 250)
         |> normalize_non_negative_integer!(":drm_retry_interval_ms"),
+      scroll_line_pixels:
+        opts
+        |> Keyword.get(:scroll_line_pixels, 30.0)
+        |> normalize_positive_number!(":scroll_line_pixels"),
       hw_cursor: Keyword.get(opts, :hw_cursor, true),
       input_log: Keyword.get(opts, :input_log, false),
-      render_log: Keyword.get(opts, :render_log, false)
+      render_log: Keyword.get(opts, :render_log, false),
+      close_signal_log: Keyword.get(opts, :close_signal_log, false)
     }
   end
 

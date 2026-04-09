@@ -196,10 +196,14 @@ impl Default for InputHandler {
 
 impl InputEvent {
     pub fn normalize_scroll(self) -> InputEvent {
+        self.normalize_scroll_with_line_pixels(SCROLL_LINE_PIXELS)
+    }
+
+    pub fn normalize_scroll_with_line_pixels(self, scroll_line_pixels: f32) -> InputEvent {
         match self {
             InputEvent::CursorScrollLines { dx, dy, x, y } => InputEvent::CursorScroll {
-                dx: dx * SCROLL_LINE_PIXELS,
-                dy: dy * SCROLL_LINE_PIXELS,
+                dx: dx * scroll_line_pixels,
+                dy: dy * scroll_line_pixels,
                 x,
                 y,
             },
@@ -222,6 +226,51 @@ impl InputEvent {
             terms.push(meta().encode(env));
         }
         terms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputEvent;
+
+    #[test]
+    fn normalize_scroll_with_line_pixels_scales_discrete_wheel_steps() {
+        let event = InputEvent::CursorScrollLines {
+            dx: 2.0,
+            dy: -3.0,
+            x: 10.0,
+            y: 20.0,
+        }
+        .normalize_scroll_with_line_pixels(45.0);
+
+        assert!(matches!(
+            event,
+            InputEvent::CursorScroll { dx, dy, x, y }
+                if (dx - 90.0).abs() < f32::EPSILON
+                    && (dy + 135.0).abs() < f32::EPSILON
+                    && (x - 10.0).abs() < f32::EPSILON
+                    && (y - 20.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn normalize_scroll_with_line_pixels_leaves_absolute_scroll_unchanged() {
+        let event = InputEvent::CursorScroll {
+            dx: 4.5,
+            dy: -7.25,
+            x: 3.0,
+            y: 5.0,
+        }
+        .normalize_scroll_with_line_pixels(45.0);
+
+        assert!(matches!(
+            event,
+            InputEvent::CursorScroll { dx, dy, x, y }
+                if (dx - 4.5).abs() < f32::EPSILON
+                    && (dy + 7.25).abs() < f32::EPSILON
+                    && (x - 3.0).abs() < f32::EPSILON
+                    && (y - 5.0).abs() < f32::EPSILON
+        ));
     }
 }
 

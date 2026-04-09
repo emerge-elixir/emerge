@@ -563,11 +563,10 @@ impl Drop for Renderer {
         let _ = std::mem::take(&mut self.video_state);
 
         if let Some(gr_context) = self.gr_context.as_mut() {
-            gr_context
-                .flush_and_submit()
-                .perform_deferred_cleanup(std::time::Duration::ZERO, None)
-                .free_gpu_resources()
-                .flush_and_submit();
+            gr_context.flush_and_submit();
+            gr_context.perform_deferred_cleanup(std::time::Duration::ZERO, None);
+            gr_context.free_gpu_resources();
+            gr_context.flush_and_submit();
         }
 
         #[cfg(not(test))]

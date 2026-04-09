@@ -39,6 +39,17 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   @impl true
+  def handle_info({:emerge_skia_close, reason}, state) do
+    Logger.info("Emerge viewport window closed for #{inspect(runtime!(state).module)}")
+
+    maybe_log_close_signal(state, fn ->
+      "close: viewport received native close reason=#{inspect(reason)}"
+    end)
+
+    handle_close_requested(reason, state)
+  end
+
+  @impl true
   def handle_info({:emerge_skia_event, event}, state) do
     handle_skia_event(event, state)
   end
@@ -192,6 +203,25 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   @doc false
+  @spec handle_close_requested(term(), t()) :: {:noreply, t()} | {:stop, term(), t()}
+  def handle_close_requested(reason, state) when is_map(state) do
+    maybe_log_close_signal(state, fn ->
+      "close: handle_close begin module=#{inspect(runtime!(state).module)} reason=#{inspect(reason)}"
+    end)
+
+    result =
+      state
+      |> runtime!()
+      |> then(&apply(&1.module, :handle_close, [reason, state]))
+
+    maybe_log_close_signal(state, fn ->
+      "close: handle_close returned #{inspect(result)}"
+    end)
+
+    apply_callback_result(result, state, :handle_close)
+  end
+
+  @doc false
   @spec terminate_viewport(term(), t()) :: :ok
   def terminate_viewport(_reason, state) when is_map(state) do
     case Map.get(state, @runtime_key) do
@@ -199,8 +229,17 @@ defmodule Emerge.Runtime.Viewport do
         :ok
 
       %State{} = runtime ->
+        maybe_log_close_signal(state, fn ->
+          "close: terminate_viewport stopping renderer module=#{inspect(runtime.module)}"
+        end)
+
         _ = ReloadGroup.leave(self())
         _ = safe_stop_renderer(runtime.renderer_module, runtime.renderer)
+
+        maybe_log_close_signal(state, fn ->
+          "close: terminate_viewport renderer stop returned module=#{inspect(runtime.module)}"
+        end)
+
         :ok
 
       _ ->
@@ -557,6 +596,17 @@ defmodule Emerge.Runtime.Viewport do
     renderer_module.stop(renderer)
   catch
     _kind, _reason -> :ok
+  end
+
+  defp maybe_log_close_signal(state, message_fun)
+       when is_map(state) and is_function(message_fun, 0) do
+    runtime = runtime!(state)
+
+    if Keyword.get(runtime.skia_opts, :close_signal_log, false) do
+      Logger.info(message_fun.())
+    end
+
+    :ok
   end
 
   defp expect_state_map!(module, :mount, state) when is_atom(module) do

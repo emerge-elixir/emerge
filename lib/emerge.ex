@@ -19,12 +19,11 @@ defmodule Emerge do
   Element event helpers such as `Event.on_press/1`, `Event.on_click/1`, and
   `Event.on_swipe_right/1`
   deliver regular process messages and are usually handled in `handle_info/2`.
-  Implement `handle_input/2` when you want to react to raw input events and
-  lifecycle notifications coming from the renderer.
+  Implement `handle_input/2` when you want to react to raw input events coming
+  from the renderer.
 
-  `use Emerge` stops the viewport by default when `handle_input/2` receives
-  `:closed`. If you override `handle_input/2`, match `:closed` yourself or
-  delegate unmatched events to `super/2` to keep that behavior.
+  `use Emerge` stops the viewport by default when Wayland sends a close request.
+  Override `handle_close/2` to customize that behavior.
 
   For retained-tree diffing, encoding, and event routing helpers, see
   `Emerge.Engine`.
@@ -48,9 +47,17 @@ defmodule Emerge do
   @callback handle_input(term(), state()) ::
               {:noreply, state()} | {:stop, term(), state()}
 
+  @callback handle_close(term(), state()) ::
+              {:noreply, state()} | {:stop, term(), state()}
+
   @callback wrap_payload(term(), term(), term()) :: term()
 
-  @optional_callbacks render: 0, render: 1, handle_info: 2, handle_input: 2, wrap_payload: 3
+  @optional_callbacks render: 0,
+                      render: 1,
+                      handle_info: 2,
+                      handle_input: 2,
+                      handle_close: 2,
+                      wrap_payload: 3
 
   defmacro __using__(_opts) do
     quote do
@@ -70,15 +77,17 @@ defmodule Emerge do
       @impl Emerge
       def handle_input(event, state)
 
-      def handle_input(:closed, state), do: {:stop, :normal, state}
       def handle_input(_event, state), do: {:noreply, state}
+
+      @impl Emerge
+      def handle_close(_reason, state), do: {:stop, :normal, state}
 
       @impl Emerge
       def wrap_payload(message, payload, event_type) do
         Emerge.default_wrap_payload(message, payload, event_type)
       end
 
-      defoverridable handle_input: 2, wrap_payload: 3
+      defoverridable handle_input: 2, handle_close: 2, wrap_payload: 3
     end
   end
 

@@ -113,14 +113,59 @@ struct RendererResource {
     stop_flag: Arc<AtomicBool>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
+    input_target: Arc<InputTargetRelay>,
     render_tx: RenderSender,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
     prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
+    close_signal_log: bool,
     log_render: bool,
     log_input: bool,
     handles: Mutex<Option<RendererHandles>>,
+}
+
+#[derive(Default)]
+pub(crate) struct InputTargetRelay {
+    target: Mutex<Option<LocalPid>>,
+}
+
+impl InputTargetRelay {
+    fn new(target: Option<LocalPid>) -> Self {
+        Self {
+            target: Mutex::new(target),
+        }
+    }
+
+    fn set_target(&self, target: Option<LocalPid>) {
+        let mut guard = self
+            .target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = target;
+    }
+
+    fn send_close_requested(&self, close_signal_log: bool) {
+        let target = *self
+            .target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        log_close_signal(
+            close_signal_log,
+            "wayland_close",
+            format!("relay target_present={}", target.is_some()),
+        );
+
+        if let Some(pid) = target {
+            events::send_close_message(pid);
+            log_close_signal(
+                close_signal_log,
+                "wayland_close",
+                "relay send_close_message done",
+            );
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -165,15 +210,23 @@ struct RendererHandles {
     event_handle: Option<thread::JoinHandle<()>>,
 }
 
-struct ShutdownRuntimeContext<'a> {
-    running_flag: &'a Arc<AtomicBool>,
-    backend_wake: &'a BackendWakeHandle,
-    stop_flag: &'a Arc<AtomicBool>,
-    tree_tx: &'a Sender<TreeMsg>,
-    event_tx: &'a Sender<EventMsg>,
-    render_tx: &'a RenderSender,
+struct ShutdownRuntimeContext {
+    running_flag: Arc<AtomicBool>,
+    backend_wake: BackendWakeHandle,
+    stop_flag: Arc<AtomicBool>,
+    tree_tx: Sender<TreeMsg>,
+    event_tx: Sender<EventMsg>,
+    render_tx: RenderSender,
+    close_signal_log: bool,
     log_render: bool,
     log_input: bool,
+}
+
+fn log_close_signal(enabled: bool, source: &'static str, message: impl Into<String>) {
+    if enabled {
+        let message = message.into();
+        eprintln!("EmergeSkia native[{source}] {message}");
+    }
 }
 
 struct TestHarnessResource {
@@ -241,23 +294,27 @@ impl RendererResource {
             return;
         };
 
-        shutdown_renderer_runtime(
-            ShutdownRuntimeContext {
-                running_flag: &self.running_flag,
-                backend_wake: &self.backend_wake,
-                stop_flag: &self.stop_flag,
-                tree_tx: &self.tree_tx,
-                event_tx: &self.event_tx,
-                render_tx: &self.render_tx,
-                log_render: self.log_render,
-                log_input: self.log_input,
-            },
-            handles,
-        );
+        let ctx = ShutdownRuntimeContext {
+            running_flag: Arc::clone(&self.running_flag),
+            backend_wake: self.backend_wake.clone(),
+            stop_flag: Arc::clone(&self.stop_flag),
+            tree_tx: self.tree_tx.clone(),
+            event_tx: self.event_tx.clone(),
+            render_tx: self.render_tx.clone(),
+            close_signal_log: self.close_signal_log,
+            log_render: self.log_render,
+            log_input: self.log_input,
+        };
+
+        if self.running_flag.load(Ordering::Relaxed) {
+            shutdown_renderer_runtime(ctx, handles);
+        } else {
+            thread::spawn(move || shutdown_renderer_runtime(ctx, handles));
+        }
     }
 }
 
-fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext<'_>, mut handles: RendererHandles) {
+fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererHandles) {
     let ShutdownRuntimeContext {
         running_flag,
         backend_wake,
@@ -265,15 +322,17 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext<'_>, mut handles: Rende
         tree_tx,
         event_tx,
         render_tx,
+        close_signal_log,
         log_render,
         log_input,
     } = ctx;
 
     assets::stop();
+    log_close_signal(close_signal_log, "nif_close", "shutdown begin");
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
-    send_tree(tree_tx, TreeMsg::Stop, log_render);
-    send_event(event_tx, EventMsg::Stop, log_input);
+    send_tree(&tree_tx, TreeMsg::Stop, log_render);
+    send_event(&event_tx, EventMsg::Stop, log_input);
     render_tx.send_latest(RenderMsg::Stop);
 
     backend_wake.request_stop();
@@ -294,6 +353,7 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext<'_>, mut handles: Rende
         let _ = handle.join();
     }
 
+    log_close_signal(close_signal_log, "nif_close", "shutdown end");
     clear_global_caches();
     trim_process_allocator();
 }
@@ -332,6 +392,28 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
             }
             crate::debug_trace::hover_trace!("event_channel", "event channel full, blocking send");
             let _ = event_tx.send(msg);
+        }
+        Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn send_registry_update(
+    event_tx: &Sender<EventMsg>,
+    rebuild: events::RegistryRebuildPayload,
+    log_input: bool,
+) {
+    // Registry rebuilds are snapshot state. Dropping one under backpressure is
+    // preferable to blocking the tree actor and deadlocking against the event actor.
+    match event_tx.try_send(EventMsg::RegistryUpdate { rebuild }) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            if log_input {
+                eprintln!("event channel full, dropping registry update");
+            }
+            crate::debug_trace::hover_trace!(
+                "event_channel",
+                "event channel full, dropping registry update"
+            );
         }
         Err(TrySendError::Disconnected(_)) => {}
     }
@@ -416,6 +498,7 @@ struct StartConfig {
     title: String,
     width: u32,
     height: u32,
+    scroll_line_pixels: f32,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     asset_config: AssetConfig,
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
@@ -431,6 +514,7 @@ struct StartConfig {
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     drm_input_log: bool,
     render_log: bool,
+    close_signal_log: bool,
 }
 
 #[cfg_attr(not(feature = "drm"), allow(dead_code))]
@@ -447,6 +531,7 @@ struct StartOptsNif {
     title: String,
     width: u32,
     height: u32,
+    scroll_line_pixels: f32,
     drm_card: Option<String>,
     asset_sources: Vec<String>,
     asset_runtime_enabled: bool,
@@ -460,6 +545,7 @@ struct StartOptsNif {
     hw_cursor: bool,
     input_log: bool,
     render_log: bool,
+    close_signal_log: bool,
 }
 
 #[derive(rustler::NifMap)]
@@ -733,7 +819,7 @@ fn spawn_tree_actor_with_initial_tree(
                 RefreshDecision::Skip => continue,
                 RefreshDecision::UseCachedRebuild => {
                     if let Some(rebuild) = cached_rebuild.clone() {
-                        send_event(&event_tx, EventMsg::RegistryUpdate { rebuild }, log_input);
+                        send_registry_update(&event_tx, rebuild, log_input);
                     }
                     continue;
                 }
@@ -766,13 +852,7 @@ fn spawn_tree_actor_with_initial_tree(
                         )
                     };
                     cached_rebuild = Some(output.event_rebuild.clone());
-                    send_event(
-                        &event_tx,
-                        EventMsg::RegistryUpdate {
-                            rebuild: output.event_rebuild,
-                        },
-                        log_input,
-                    );
+                    send_registry_update(&event_tx, output.event_rebuild, log_input);
 
                     let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
                     render_sender.send_latest(RenderMsg::Scene {
@@ -815,6 +895,7 @@ fn start_with_config(
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
+    let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
 
     #[cfg(feature = "drm")]
@@ -822,6 +903,7 @@ fn start_with_config(
     #[cfg(not(feature = "drm"))]
     let log_input = false;
     let log_render = config.render_log;
+    let close_signal_log = config.close_signal_log;
     set_render_log_enabled(log_render);
 
     let (tree_tx, tree_rx) = bounded(512);
@@ -864,6 +946,7 @@ fn start_with_config(
             let running_flag_clone = Arc::clone(&running_flag);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
+            let input_target_clone = Arc::clone(&input_target);
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -877,6 +960,8 @@ fn start_with_config(
                     running_flag: running_flag_clone,
                     tree_tx: tree_tx_clone,
                     event_tx: event_tx_clone,
+                    input_target: input_target_clone,
+                    close_signal_log,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
                     video_registry: video_registry_clone,
@@ -889,12 +974,13 @@ fn start_with_config(
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
-                            running_flag: &running_flag,
-                            backend_wake: &backend_wake,
-                            stop_flag: &stop_flag,
-                            tree_tx: &tree_tx,
-                            event_tx: &event_tx,
-                            render_tx: &render_sender,
+                            running_flag: Arc::clone(&running_flag),
+                            backend_wake: backend_wake.clone(),
+                            stop_flag: Arc::clone(&stop_flag),
+                            tree_tx: tree_tx.clone(),
+                            event_tx: event_tx.clone(),
+                            render_tx: render_sender.clone(),
+                            close_signal_log,
                             log_render,
                             log_input,
                         },
@@ -906,12 +992,13 @@ fn start_with_config(
                 Err(_) => {
                     shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
-                            running_flag: &running_flag,
-                            backend_wake: &backend_wake,
-                            stop_flag: &stop_flag,
-                            tree_tx: &tree_tx,
-                            event_tx: &event_tx,
-                            render_tx: &render_sender,
+                            running_flag: Arc::clone(&running_flag),
+                            backend_wake: backend_wake.clone(),
+                            stop_flag: Arc::clone(&stop_flag),
+                            tree_tx: tree_tx.clone(),
+                            event_tx: event_tx.clone(),
+                            render_tx: render_sender.clone(),
+                            close_signal_log,
                             log_render,
                             log_input,
                         },
@@ -1028,12 +1115,13 @@ fn start_with_config(
                 Ok(Err(reason)) => {
                     shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
-                            running_flag: &running_flag,
-                            backend_wake: &backend_wake,
-                            stop_flag: &stop_flag,
-                            tree_tx: &tree_tx,
-                            event_tx: &event_tx,
-                            render_tx: &render_sender,
+                            running_flag: Arc::clone(&running_flag),
+                            backend_wake: backend_wake.clone(),
+                            stop_flag: Arc::clone(&stop_flag),
+                            tree_tx: tree_tx.clone(),
+                            event_tx: event_tx.clone(),
+                            render_tx: render_sender.clone(),
+                            close_signal_log,
                             log_render,
                             log_input,
                         },
@@ -1045,12 +1133,13 @@ fn start_with_config(
                 Err(_) => {
                     shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
-                            running_flag: &running_flag,
-                            backend_wake: &backend_wake,
-                            stop_flag: &stop_flag,
-                            tree_tx: &tree_tx,
-                            event_tx: &event_tx,
-                            render_tx: &render_sender,
+                            running_flag: Arc::clone(&running_flag),
+                            backend_wake: backend_wake.clone(),
+                            stop_flag: Arc::clone(&stop_flag),
+                            tree_tx: tree_tx.clone(),
+                            event_tx: event_tx.clone(),
+                            render_tx: render_sender.clone(),
+                            close_signal_log,
                             log_render,
                             log_input,
                         },
@@ -1085,6 +1174,7 @@ fn start_with_config(
         tree_tx.clone(),
         Some(backend_cursor_tx),
         backend_wake.clone(),
+        config.scroll_line_pixels,
         log_render,
         system_clipboard,
     ));
@@ -1107,11 +1197,13 @@ fn start_with_config(
         stop_flag,
         tree_tx,
         event_tx,
+        input_target,
         render_tx: render_sender,
         video_registry,
         video_wake,
         prime_video_supported,
         native_log,
+        close_signal_log,
         log_render,
         log_input,
         handles: Mutex::new(Some(handles)),
@@ -1135,6 +1227,7 @@ fn start(
                 title,
                 width,
                 height,
+                scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 asset_config: AssetConfig::default(),
                 drm_card: None,
                 drm_startup_retries: 40,
@@ -1143,6 +1236,7 @@ fn start(
                 drm_cursor_overrides: Vec::new(),
                 drm_input_log: false,
                 render_log: false,
+                close_signal_log: false,
             },
             Some(env.pid()),
         )
@@ -1179,6 +1273,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             title: opts.title,
             width: opts.width,
             height: opts.height,
+            scroll_line_pixels: opts.scroll_line_pixels,
             asset_config,
             drm_card: opts.drm_card,
             drm_startup_retries: opts.drm_startup_retries,
@@ -1187,6 +1282,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_cursor_overrides,
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
+            close_signal_log: opts.close_signal_log,
         },
         Some(env.pid()),
     )
@@ -1354,6 +1450,7 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 /// `{:emerge_skia_event, event}` messages.
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
+    renderer.input_target.set_target(pid);
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1651,6 +1748,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         tree_tx.clone(),
         None,
         BackendWakeHandle::noop(),
+        input::SCROLL_LINE_PIXELS,
         false,
         false,
     );
@@ -1884,6 +1982,7 @@ mod tests {
                 tree_tx.clone(),
                 None,
                 BackendWakeHandle::noop(),
+                input::SCROLL_LINE_PIXELS,
                 false,
                 false,
             );
@@ -1978,6 +2077,7 @@ mod tests {
                 tree_tx,
                 None,
                 BackendWakeHandle::noop(),
+                input::SCROLL_LINE_PIXELS,
                 false,
                 false,
             );
@@ -2085,12 +2185,13 @@ mod tests {
 
         shutdown_renderer_runtime(
             ShutdownRuntimeContext {
-                running_flag: &running_flag,
-                backend_wake: &backend_wake,
-                stop_flag: &stop_flag,
-                tree_tx: &tree_tx,
-                event_tx: &event_tx,
-                render_tx: &render_sender,
+                running_flag: Arc::clone(&running_flag),
+                backend_wake: backend_wake.clone(),
+                stop_flag: Arc::clone(&stop_flag),
+                tree_tx: tree_tx.clone(),
+                event_tx: event_tx.clone(),
+                render_tx: render_sender.clone(),
+                close_signal_log: false,
                 log_render: false,
                 log_input: false,
             },
@@ -2108,6 +2209,32 @@ mod tests {
         assert!(event_stopped.load(Ordering::Relaxed));
         assert!(backend_stopped.load(Ordering::Relaxed));
         assert!(input_stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn send_registry_update_does_not_block_when_event_channel_is_full() {
+        let (event_tx, event_rx) = bounded(1);
+        event_tx.send(EventMsg::Stop).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            send_registry_update(&event_tx, RegistryRebuildPayload::default(), false);
+            let _ = done_tx.send(());
+        });
+
+        let completed = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+
+        if completed {
+            assert!(matches!(event_rx.try_recv(), Ok(EventMsg::Stop)));
+        }
+
+        drop(event_rx);
+        let _ = handle.join();
+
+        assert!(
+            completed,
+            "registry update send should not block when event channel is full"
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ use crate::{
     actors::{EventMsg, TreeMsg},
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
-    input::{InputEvent, InputHandler},
+    input::{InputEvent, InputHandler, SCROLL_LINE_PIXELS},
     tree::{
         element::{ElementId, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
@@ -46,9 +46,8 @@ use super::{
         RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
-    send_closed_event, send_element_event, send_element_event_with_string_payload,
-    send_input_event, swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
-    virtual_key_hold_atom,
+    send_element_event, send_element_event_with_string_payload, send_input_event, swipe_down_atom,
+    swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
 const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
@@ -398,6 +397,7 @@ struct DirectEventRuntime {
     drag_motion: Option<DragMotionState>,
     inertial_scroll: Option<InertialScrollState>,
     suppress_drag_release_inertia: bool,
+    scroll_line_pixels: f32,
 }
 
 impl DirectEventRuntime {
@@ -440,7 +440,12 @@ impl DirectEventRuntime {
             drag_motion: None,
             inertial_scroll: None,
             suppress_drag_release_inertia: false,
+            scroll_line_pixels: SCROLL_LINE_PIXELS,
         }
+    }
+
+    fn set_scroll_line_pixels(&mut self, scroll_line_pixels: f32) {
+        self.scroll_line_pixels = scroll_line_pixels;
     }
 
     fn set_input_mask(&mut self, mask: u32) {
@@ -709,7 +714,7 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
-        let event = event.normalize_scroll();
+        let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
         self.record_pointer_snapshot(&event);
         self.cancel_inertial_scroll_for_input(&event);
         crate::debug_trace::hover_trace!(
@@ -1848,17 +1853,12 @@ fn forward_observer_input(
     }
 }
 
-fn forward_close_event(target: &Option<LocalPid>) {
-    if let Some(pid) = target.as_ref() {
-        send_closed_event(*pid);
-    }
-}
-
 pub(crate) fn spawn_event_actor(
     event_rx: Receiver<EventMsg>,
     tree_tx: Sender<TreeMsg>,
     backend_cursor_tx: Option<Sender<CursorIcon>>,
     backend_wake: BackendWakeHandle,
+    scroll_line_pixels: f32,
     log_render: bool,
     system_clipboard: bool,
 ) -> thread::JoinHandle<()> {
@@ -1868,6 +1868,7 @@ pub(crate) fn spawn_event_actor(
             backend_cursor_tx,
             backend_wake,
         );
+        runtime.set_scroll_line_pixels(scroll_line_pixels);
         let mut pending_message: Option<EventMsg> = None;
 
         loop {
@@ -1898,7 +1899,6 @@ pub(crate) fn spawn_event_actor(
                         runtime.handle_input_event(event, &tree_tx, log_render);
                     }
                 }
-                EventMsg::Closed => forward_close_event(&runtime.input_target),
                 EventMsg::RegistryUpdate { rebuild } => {
                     let rebuild = if runtime.should_preserve_registry_transitions() {
                         rebuild
