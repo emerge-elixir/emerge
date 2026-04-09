@@ -13,21 +13,21 @@ use self::paint::{
     collect_scrollbar_nodes, render_image_nodes, render_video_nodes,
 };
 use self::text::{
-    render_multiline_text_input_items, render_text_input_items, render_text_items,
-    text_decoration_items, TextDecorationSpec,
+    TextDecorationSpec, render_multiline_text_input_items, render_text_input_items,
+    render_text_items, text_decoration_items,
 };
-use super::attrs::{effective_scrollbar_x, effective_scrollbar_y, Attrs};
+use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
     RetainedLocalBranchRef,
 };
-use super::geometry::{host_clip_shape, self_shape as geometry_self_shape, ClipShape, Rect};
+use super::geometry::{ClipShape, Rect, host_clip_shape, self_shape as geometry_self_shape};
 use super::layout::FontContext;
 use super::scene::{
-    child_context as next_scene_context, resolve_node_state, ResolvedNodeState, SceneContext,
+    ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
 };
 use super::transform::element_transform;
-use crate::events::{registry_builder, RegistryRebuildPayload};
+use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 

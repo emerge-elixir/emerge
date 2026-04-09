@@ -16,7 +16,7 @@ column(
           Background.color(color(:slate, 800)),
           Border.rounded(12)
         ],
-        image([width(px(120)), height(px(120)), Border.rounded(10)], "demo_images/static.jpg")
+        image([width(px(120)), height(px(120)), Border.rounded(10)], "sample_assets/static.jpg")
       )
     ]),
     column([spacing(8)], [
@@ -26,7 +26,7 @@ column(
           width(px(288)),
           height(px(160)),
           padding(12),
-          Background.image("demo_images/fallback.jpg", fit: :cover),
+          Background.image("sample_assets/fallback.jpg", fit: :cover),
           Border.rounded(12)
         ],
         column([height(fill()), spacing(8)], [

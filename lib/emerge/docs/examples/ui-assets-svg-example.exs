@@ -16,7 +16,7 @@ row(
         Border.rounded(12)
       ],
       column([center_x(), spacing(8)], [
-        svg([width(px(48)), height(px(48))], "demo_images/template_cloud.svg"),
+        svg([width(px(48)), height(px(48))], "sample_assets/template_cloud.svg"),
         el([Font.color(color(:slate, 50)), Font.size(13)], text("Original SVG"))
       ])
     ),
@@ -30,7 +30,7 @@ row(
       column([center_x(), spacing(8)], [
         svg(
           [width(px(48)), height(px(48)), Svg.color(color(:sky, 500))],
-          "demo_images/template_cloud.svg"
+          "sample_assets/template_cloud.svg"
         ),
         el([Font.color(color(:slate, 50)), Font.size(13)], text("Svg.color/1"))
       ])

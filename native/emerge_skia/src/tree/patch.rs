@@ -9,12 +9,12 @@
 //!   - 5: set_nearby_mounts - host_len(4) + host_id + count(2) + [slot(1) + id_len(4) + id]...
 //!   - 6: insert_nearby_subtree - host_len(4) + host_id + index(2) + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{scale_animation_spec, AnimationSpec};
+use super::animation::{AnimationSpec, scale_animation_spec};
 use super::attrs::{
-    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
-    Attrs,
+    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
+    preserve_runtime_scroll_attrs,
 };
-use super::deserialize::{decode_tree, DecodeError};
+use super::deserialize::{DecodeError, decode_tree};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbyMounts,
     NearbySlot, NodeResidency, TextInputContentOrigin,
