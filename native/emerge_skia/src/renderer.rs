@@ -201,6 +201,44 @@ pub fn make_font_with_style(family: &str, weight: u16, italic: bool, size: f32) 
     font
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextVisualMetrics {
+    pub(crate) advance: f32,
+    pub(crate) left_overhang: f32,
+    pub(crate) visual_width: f32,
+}
+
+pub(crate) fn measure_text_visual_metrics_with_font(font: &Font, text: &str) -> TextVisualMetrics {
+    if text.is_empty() {
+        return TextVisualMetrics {
+            advance: 0.0,
+            left_overhang: 0.0,
+            visual_width: 0.0,
+        };
+    }
+
+    let (advance, bounds) = font.measure_str(text, None);
+    let left_overhang = (-bounds.left()).max(0.0);
+    let right_overhang = (bounds.right() - advance).max(0.0);
+
+    TextVisualMetrics {
+        advance,
+        left_overhang,
+        visual_width: (advance + left_overhang + right_overhang).max(0.0),
+    }
+}
+
+pub(crate) fn measure_text_visual_metrics(
+    family: &str,
+    weight: u16,
+    italic: bool,
+    size: f32,
+    text: &str,
+) -> TextVisualMetrics {
+    let font = make_font_with_style(family, weight, italic, size);
+    measure_text_visual_metrics_with_font(&font, text)
+}
+
 fn configure_text_font(font: &mut Font) {
     font.set_subpixel(true);
     font.set_linear_metrics(true);
@@ -2552,6 +2590,20 @@ mod tests {
         assert!(!font.is_baseline_snap());
         assert_eq!(font.edging(), FontEdging::AntiAlias);
         assert_eq!(font.hinting(), FontHinting::Slight);
+    }
+
+    #[test]
+    fn test_measure_text_visual_metrics_account_for_synthetic_overhang() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../priv/test_assets/Lobster-Regular.ttf");
+        let data = std::fs::read(&font_path).expect("lobster font asset should exist");
+
+        load_font("lobster-test", 400, false, &data).expect("lobster font should load");
+
+        let metrics =
+            measure_text_visual_metrics("lobster-test", 700, true, 22.0, "Asset Fonts 123");
+
+        assert!(metrics.visual_width > metrics.advance);
     }
 
     fn point_in_rounded_rect(

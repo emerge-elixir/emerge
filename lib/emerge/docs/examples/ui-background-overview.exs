@@ -29,7 +29,7 @@ column(
       [
         width(px(320)),
         height(px(180)),
-        Background.image("demo_images/static.jpg"),
+        Background.image("sample_assets/static.jpg"),
         Border.rounded(16)
       ],
       none()

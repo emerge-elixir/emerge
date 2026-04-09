@@ -9,7 +9,7 @@ mix deps.get                    # Install Elixir dependencies
 mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
 mix test                        # Run tests
 mix docs                        # Generate ExDoc documentation
-mix run demo.exs                # Run the demo (requires a Wayland display)
+cd example && iex -S mix        # Run the example app (requires Wayland)
 ./ci-tests.sh                   # Run the full CI check suite locally
 
 # Rust-specific (from native/emerge_skia/)

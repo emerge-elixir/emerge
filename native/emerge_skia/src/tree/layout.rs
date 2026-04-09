@@ -293,7 +293,11 @@ fn multiline_text_layout<M: TextMeasurer>(
             letter_spacing,
             word_spacing,
         },
-        |ch| measurer.measure_with_font(&ch.to_string(), font_size, family, weight, italic).0,
+        |ch| {
+            measurer
+                .measure_with_font(&ch.to_string(), font_size, family, weight, italic)
+                .0
+        },
     )
 }
 
@@ -1502,7 +1506,13 @@ fn resolve_multiline_kind<M: TextMeasurer>(
         expand_frame_height_to_content(tree, params.id, layout.total_height, params.insets);
         set_frame_content_width(tree, params.id, layout.max_width, params.insets);
     } else {
-        set_frame_content_size(tree, params.id, layout.max_width, layout.total_height, params.insets);
+        set_frame_content_size(
+            tree,
+            params.id,
+            layout.max_width,
+            layout.total_height,
+            params.insets,
+        );
     }
 }
 
@@ -1605,7 +1615,9 @@ fn resolve_element<M: TextMeasurer>(
     };
 
     match kind {
-        ElementKind::Text | ElementKind::TextInput | ElementKind::Image
+        ElementKind::Text
+        | ElementKind::TextInput
+        | ElementKind::Image
         | ElementKind::Video
         | ElementKind::None => {}
         ElementKind::El => resolve_el_kind(tree, &params, &element_context, measurer),

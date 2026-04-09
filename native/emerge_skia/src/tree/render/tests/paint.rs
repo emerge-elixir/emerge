@@ -6,7 +6,7 @@ use resvg::usvg;
 
 const DEMO_STATIC_JPEG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../priv/demo_images/static.jpg"
+    "/../../priv/sample_assets/static.jpg"
 ));
 
 fn insert_test_svg_asset(id: &str, svg: &str) {

@@ -2518,9 +2518,7 @@ impl ListenerCompute {
             },
             ListenerCompute::TextInputKeyEditToRuntime { element_id, kind } => ctx
                 .text_input_state(element_id)
-                .and_then(|snapshot| {
-                    text_key_edit_request(&snapshot, *kind, input.raw()?)
-                })
+                .and_then(|snapshot| text_key_edit_request(&snapshot, *kind, input.raw()?))
                 .map(|request| {
                     vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
                         element_id: element_id.clone(),
@@ -2554,7 +2552,9 @@ impl ListenerCompute {
                 {
                     match ctx.text_input_state(element_id) {
                         None => Vec::new(),
-                        Some(snapshot) if ctx.take_text_commit_suppression(element_id) => Vec::new(),
+                        Some(snapshot) if ctx.take_text_commit_suppression(element_id) => {
+                            Vec::new()
+                        }
                         Some(snapshot) => {
                             let filtered = sanitize_text_input_text(text, snapshot.multiline);
                             if filtered.is_empty() {
@@ -3658,7 +3658,11 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         Some(snapshot) => snapshot,
                         None => return Vec::new(),
                     };
-                    if !move_snapshot_cursor(snapshot, snapshot.move_home_target(), extend_selection) {
+                    if !move_snapshot_cursor(
+                        snapshot,
+                        snapshot.move_home_target(),
+                        extend_selection,
+                    ) {
                         None
                     } else {
                         Some((
@@ -3678,7 +3682,8 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         Some(snapshot) => snapshot,
                         None => return Vec::new(),
                     };
-                    if !move_snapshot_cursor(snapshot, snapshot.move_end_target(), extend_selection) {
+                    if !move_snapshot_cursor(snapshot, snapshot.move_end_target(), extend_selection)
+                    {
                         None
                     } else {
                         Some((
@@ -5396,11 +5401,17 @@ fn slot_primary_left_press(
         ))
         .collect();
     let pointer_drag = click_press_tracker::left_press_drag_bootstrap(element, matcher_kind);
-    let text_cursor_element_id = element.kind.is_text_input_family().then_some(element.id.clone());
-    let text_drag = element.kind.is_text_input_family().then_some(TextDragTracker {
-        element_id: element.id.clone(),
-        matcher_kind,
-    });
+    let text_cursor_element_id = element
+        .kind
+        .is_text_input_family()
+        .then_some(element.id.clone());
+    let text_drag = element
+        .kind
+        .is_text_input_family()
+        .then_some(TextDragTracker {
+            element_id: element.id.clone(),
+            matcher_kind,
+        });
 
     (!actions.is_empty()
         || pointer_drag.is_some()
@@ -5497,16 +5508,25 @@ fn slot_multiline_enter_press(
     element: &Element,
     _state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    if element.kind != ElementKind::Multiline || !element.attrs.text_input_focused.unwrap_or(false) {
+    if element.kind != ElementKind::Multiline || !element.attrs.text_input_focused.unwrap_or(false)
+    {
         return None;
     }
 
     Some(Listener {
         element_id: Some(element.id.clone()),
         matcher: ListenerMatcher::KeyEnterPressNoCtrlAltMeta,
-        compute: ListenerCompute::TextInputEditToRuntimeMaybe {
-            element_id: element.id.clone(),
-            request: TextInputEditRequest::Insert("\n".to_string()),
+        compute: ListenerCompute::Static {
+            actions: vec![
+                ListenerAction::Semantic(SemanticAction::TextInputEdit {
+                    element_id: element.id.clone(),
+                    request: TextInputEditRequest::Insert("\n".to_string()),
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ArmTextCommitSuppression {
+                    element_id: element.id.clone(),
+                    key: CanonicalKey::Enter,
+                }),
+            ],
         },
     })
 }

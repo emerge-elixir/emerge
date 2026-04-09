@@ -3638,6 +3638,66 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_multiline_enter_suppresses_following_text_commit_newline() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(153, ElementKind::Multiline, attrs));
+        let mut state = make_text_input_state("ab", 2, None, true);
+        state.multiline = true;
+        let element_id = ElementId::from_term_bytes(vec![153]);
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(element_id.clone(), state)]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(element_id.clone()),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::Enter,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "\n".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let session = runtime
+            .text_states
+            .get(&element_id)
+            .expect("multiline session preserved after text commit");
+        assert_eq!(session.content, "ab\n");
+        assert_eq!(session.cursor, 3);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id: msg_id, content }
+                if *msg_id == element_id && content == "ab\n\n"
+        )));
+    }
+
+    #[test]
     fn direct_runtime_multiline_key_down_binding_suppresses_enter_default() {
         let mut attrs = Attrs::default();
         attrs.content = Some("ab".to_string());

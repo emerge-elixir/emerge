@@ -459,7 +459,9 @@ impl TextInputState {
         let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
         match self.text_align {
             TextAlign::Left => self.frame_x + self.inset_left,
-            TextAlign::Center => self.frame_x + self.inset_left + (content_width - line_width) / 2.0,
+            TextAlign::Center => {
+                self.frame_x + self.inset_left + (content_width - line_width) / 2.0
+            }
             TextAlign::Right => self.frame_x + self.frame_width - self.inset_right - line_width,
         }
     }

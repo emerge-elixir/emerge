@@ -1,11 +1,11 @@
 use super::box_model::content_insets;
-use super::color::{color_to_u32, DEFAULT_TEXT_COLOR};
+use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
 use crate::render_scene::{DrawPrimitive, RenderNode};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics};
 use crate::tree::attrs::{Attrs, TextAlign};
 use crate::tree::element::Frame;
-use crate::tree::layout::{font_info_with_inheritance, FontContext};
-use crate::tree::text_layout::{layout_text_lines, TextLayoutStyle};
+use crate::tree::layout::{FontContext, font_info_with_inheritance};
+use crate::tree::text_layout::{TextLayoutStyle, layout_text_lines};
 
 pub(super) const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 
