@@ -518,7 +518,8 @@ Window blur clears focus through a window-level blur listener.
 
 ## Text Input State
 
-Text input state is modeled with unified `TextInputState`.
+Text input state is modeled with unified `TextInputState` for both single-line
+and multiline inputs.
 
 It contains both live editing state and layout metadata used for caret
 hit-testing:
@@ -538,6 +539,10 @@ hit-testing:
 - `on_change` only gates emitted `:change` element events
 - typed insertion, backspace, delete, cut, paste, and selection replacement are
   handled in Rust
+- multiline inputs insert newline on `Enter` by default and support wrapped
+  caret movement and hit-testing
+- matching `on_key_down` handlers can suppress default keydown-derived editing
+  before the following text commit is applied
 - focused cursor, selection, and preedit state are preserved across rebuilds
 - focused runtime edit state remains the source of truth across rebuilds
 - rebuild metadata refreshes geometry and style data used by later editing and
@@ -546,8 +551,10 @@ hit-testing:
 ### Selection And Clipboard
 
 - selection is tracked by cursor + selection anchor
-- mouse drag selects text in focused single-line inputs
+- mouse drag selects text in focused text inputs
 - `Shift` with arrows/home/end extends selection
+- multiline inputs also support `ArrowUp` / `ArrowDown` movement and line-based
+  `Home` / `End`
 - Linux PRIMARY selection is tracked separately
 - middle mouse button pastes from PRIMARY
 - copy/cut/update of PRIMARY selection happens in Rust runtime
