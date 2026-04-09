@@ -2552,7 +2552,7 @@ impl ListenerCompute {
                 {
                     match ctx.text_input_state(element_id) {
                         None => Vec::new(),
-                        Some(snapshot) if ctx.take_text_commit_suppression(element_id) => {
+                        Some(_) if ctx.take_text_commit_suppression(element_id) => {
                             Vec::new()
                         }
                         Some(snapshot) => {
