@@ -302,7 +302,8 @@ defmodule EmergeSkia.BuildConfig do
         {url,
          [
            {"Authorization", "Bearer #{token}"},
-           {"Accept", "application/octet-stream"}
+           {"Accept", "application/octet-stream"},
+           {"User-Agent", "emerge-skia-precompiled"}
          ]}
 
       _ ->
@@ -319,7 +320,8 @@ defmodule EmergeSkia.BuildConfig do
         [
           {"Authorization", "Bearer #{token}"},
           {"Accept", "application/octet-stream"},
-          {"X-GitHub-Api-Version", "2022-11-28"}
+          {"X-GitHub-Api-Version", "2022-11-28"},
+          {"User-Agent", "emerge-skia-precompiled"}
         ]}}
     else
       _ -> :error

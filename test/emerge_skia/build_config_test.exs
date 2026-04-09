@@ -117,6 +117,7 @@ defmodule EmergeSkia.BuildConfigTest do
     assert {url, headers} = BuildConfig.precompiled_tar_gz_url("demo.tar.gz", env)
     assert url =~ "/releases/download/v#{Mix.Project.config()[:version]}/demo.tar.gz"
     assert {"Authorization", "Bearer secret-token"} in headers
+    assert {"User-Agent", "emerge-skia-precompiled"} in headers
   end
 
   test "precompiled_tar_gz_url falls back to plain release urls without a token" do
