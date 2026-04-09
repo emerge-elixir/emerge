@@ -9,12 +9,12 @@
 //!   - 5: set_nearby_mounts - host_len(4) + host_id + count(2) + [slot(1) + id_len(4) + id]...
 //!   - 6: insert_nearby_subtree - host_len(4) + host_id + index(2) + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{AnimationSpec, scale_animation_spec};
+use super::animation::{scale_animation_spec, AnimationSpec};
 use super::attrs::{
-    Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y,
-    preserve_runtime_scroll_attrs,
+    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
+    Attrs,
 };
-use super::deserialize::{DecodeError, decode_tree};
+use super::deserialize::{decode_tree, DecodeError};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbyMounts,
     NearbySlot, NodeResidency, TextInputContentOrigin,
@@ -287,7 +287,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
             element.attrs_raw = attrs_raw.clone();
             let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
             let content_is_from_patch =
-                element.kind == ElementKind::TextInput && decoded.content.is_some();
+                element.kind.is_text_input_family() && decoded.content.is_some();
             element.base_attrs = decoded.clone();
             let mut merged = decoded;
             preserve_runtime_scroll_attrs(&element.attrs, &mut merged);
@@ -741,7 +741,7 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.text_input_preedit = None;
     attrs.text_input_preedit_cursor = None;
 
-    let ghost_kind = if kind == ElementKind::TextInput {
+    let ghost_kind = if kind.is_text_input_family() {
         ElementKind::Text
     } else {
         kind

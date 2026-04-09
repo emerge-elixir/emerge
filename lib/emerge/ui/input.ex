@@ -5,6 +5,7 @@ defmodule Emerge.UI.Input do
   `Emerge.UI.Input` provides the two main interactive element constructors:
 
   - `text/2` for editable single-line text input
+  - `multiline/2` for auto-growing multiline text input
   - `button/2` for button-like interaction around any single child element
 
   These helpers provide input behavior, not default visuals. Style them with the
@@ -13,8 +14,17 @@ defmodule Emerge.UI.Input do
 
   ## Text Input
 
-  `text/2` builds a single-line text input element. The second argument is the
-  current string value.
+  `text/2` builds a single-line text input element. `multiline/2` builds a
+  multiline text input that defaults to a one-line minimum height and grows with
+  its content when height is omitted.
+
+  For both text-input helpers, a matching `Emerge.UI.Event.on_key_down/2`
+  handler suppresses the default keydown behavior for that input. For example,
+  `on_key_down(:a, ...)` suppresses inserting `"a"`, and
+  `on_key_down(:enter, ...)` can suppress the default newline insertion in
+  `multiline/2`.
+
+  The second argument is the current string value.
 
   Pair it with `Emerge.UI.Event.on_change/1` when you want to receive updated
   values, and with `Emerge.UI.Event.on_focus/1` or `Emerge.UI.Event.on_blur/1`
@@ -82,6 +92,9 @@ defmodule Emerge.UI.Input do
   Use `Emerge.UI.Event.on_change/1` to receive updated values and treat the
   second argument as the source of truth for the currently rendered content.
 
+  A matching `Emerge.UI.Event.on_key_down/2` suppresses the default single-line
+  edit behavior for that keydown.
+
   ## Example
 
   This field keeps its rendered value in `state.query` and emits messages for
@@ -113,6 +126,32 @@ defmodule Emerge.UI.Input do
     attrs
     |> Map.put(:content, value)
     |> Builder.build_element(nearby, :text_input, [])
+  end
+
+  @doc """
+  Build a multiline text input.
+
+  `value` is the current content shown in the field. The element has no
+  children.
+
+  `Input.multiline/2` defaults to a minimum height of one text line. When no
+  explicit `height(...)` attr is present, it grows vertically to fit its
+  wrapped content.
+
+  Like `Input.text/2`, pair it with `Emerge.UI.Event.on_change/1` and treat the
+  second argument as the source of truth for the currently rendered content.
+
+  A matching `Emerge.UI.Event.on_key_down/2` suppresses the default multiline
+  edit behavior for that keydown, including the normal `Enter` newline.
+  """
+  @spec multiline(Emerge.UI.attrs(), String.t()) :: t()
+  def multiline(attrs, value) do
+    {attrs, nearby} = Builder.prepare_attrs!("Input.multiline/2", attrs)
+    value = Validation.validate_binary_string!("Input.multiline/2", value)
+
+    attrs
+    |> Map.put(:content, value)
+    |> Builder.build_element(nearby, :multiline, [])
   end
 
   @doc """

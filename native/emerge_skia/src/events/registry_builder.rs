@@ -1275,6 +1275,8 @@ pub(crate) struct PointerDragBootstrap {
 pub(crate) enum TextInputKeyEditKind {
     Left,
     Right,
+    Up,
+    Down,
     Home,
     End,
 }
@@ -1311,6 +1313,10 @@ pub trait ListenerComputeCtx {
 
     fn clipboard_text(&mut self, _target: ClipboardTarget) -> Option<String> {
         None
+    }
+
+    fn take_text_commit_suppression(&mut self, _element_id: &ElementId) -> bool {
+        false
     }
 
     fn dispatch_base(&mut self, _input: &ListenerInput) -> Vec<ListenerAction> {
@@ -2105,6 +2111,11 @@ pub enum RuntimeChange {
         element_id: ElementId,
         state: TextInputState,
     },
+    /// Suppress the next keydown-derived text commit for one text input.
+    ArmTextCommitSuppression {
+        element_id: ElementId,
+        key: CanonicalKey,
+    },
     /// Track an expected content value coming back from an Elixir tree patch.
     ExpectTextInputPatchValue {
         element_id: ElementId,
@@ -2508,13 +2519,7 @@ impl ListenerCompute {
             ListenerCompute::TextInputKeyEditToRuntime { element_id, kind } => ctx
                 .text_input_state(element_id)
                 .and_then(|snapshot| {
-                    text_key_edit_request(
-                        &snapshot.content,
-                        snapshot.cursor,
-                        snapshot.selection_anchor,
-                        *kind,
-                        input.raw()?,
-                    )
+                    text_key_edit_request(&snapshot, *kind, input.raw()?)
                 })
                 .map(|request| {
                     vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
@@ -2547,14 +2552,20 @@ impl ListenerCompute {
                 ListenerInput::Raw(InputEvent::TextCommit { text, mods })
                     if (*mods & (MOD_CTRL | MOD_META)) == 0 =>
                 {
-                    let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
-                    if filtered.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
-                            element_id: element_id.clone(),
-                            request: TextInputEditRequest::Insert(filtered),
-                        })]
+                    match ctx.text_input_state(element_id) {
+                        None => Vec::new(),
+                        Some(snapshot) if ctx.take_text_commit_suppression(element_id) => Vec::new(),
+                        Some(snapshot) => {
+                            let filtered = sanitize_text_input_text(text, snapshot.multiline);
+                            if filtered.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
+                                    element_id: element_id.clone(),
+                                    request: TextInputEditRequest::Insert(filtered),
+                                })]
+                            }
+                        }
                     }
                 }
                 _ => Vec::new(),
@@ -2630,9 +2641,7 @@ fn text_cursor_action_from_input(
 }
 
 fn text_key_edit_request(
-    content: &str,
-    cursor: u32,
-    selection_anchor: Option<u32>,
+    snapshot: &TextInputState,
     kind: TextInputKeyEditKind,
     input: &InputEvent,
 ) -> Option<TextInputEditRequest> {
@@ -2641,39 +2650,49 @@ fn text_key_edit_request(
     };
 
     let extend_selection = *mods & MOD_SHIFT != 0;
-    let content_len = text_ops::text_char_len(content);
-    let has_selection = selection_anchor.is_some_and(|anchor| anchor != cursor);
+    let content_len = text_ops::text_char_len(&snapshot.content);
+    let has_selection = snapshot
+        .selection_anchor
+        .is_some_and(|anchor| anchor != snapshot.cursor);
 
     match kind {
         TextInputKeyEditKind::Left => {
             let can_move = if extend_selection {
-                cursor > 0
+                snapshot.cursor > 0
             } else {
-                cursor > 0 || has_selection
+                snapshot.cursor > 0 || has_selection
             };
             can_move.then_some(TextInputEditRequest::MoveLeft { extend_selection })
         }
         TextInputKeyEditKind::Right => {
             let can_move = if extend_selection {
-                cursor < content_len
+                snapshot.cursor < content_len
             } else {
-                cursor < content_len || has_selection
+                snapshot.cursor < content_len || has_selection
             };
             can_move.then_some(TextInputEditRequest::MoveRight { extend_selection })
         }
+        TextInputKeyEditKind::Up => (snapshot.multiline
+            && snapshot.move_vertical_target(-1) != snapshot.cursor)
+            .then_some(TextInputEditRequest::MoveUp { extend_selection }),
+        TextInputKeyEditKind::Down => (snapshot.multiline
+            && snapshot.move_vertical_target(1) != snapshot.cursor)
+            .then_some(TextInputEditRequest::MoveDown { extend_selection }),
         TextInputKeyEditKind::Home => {
+            let target = snapshot.move_home_target();
             let can_move = if extend_selection {
-                cursor > 0
+                target != snapshot.cursor
             } else {
-                cursor > 0 || has_selection
+                target != snapshot.cursor || has_selection
             };
             can_move.then_some(TextInputEditRequest::MoveHome { extend_selection })
         }
         TextInputKeyEditKind::End => {
+            let target = snapshot.move_end_target();
             let can_move = if extend_selection {
-                cursor < content_len
+                target != snapshot.cursor
             } else {
-                cursor < content_len || has_selection
+                target != snapshot.cursor || has_selection
             };
             can_move.then_some(TextInputEditRequest::MoveEnd { extend_selection })
         }
@@ -3545,14 +3564,13 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         let Some(pasted) = self.clipboard_text(target) else {
             return Vec::new();
         };
-        let pasted = sanitize_single_line_text(&pasted);
-        if pasted.is_empty() {
-            return Vec::new();
-        }
-
         let Some(snapshot) = self.snapshot(&element_id) else {
             return Vec::new();
         };
+        let pasted = sanitize_text_input_text(&pasted, snapshot.multiline);
+        if pasted.is_empty() {
+            return Vec::new();
+        }
         let Some((next_content, next_cursor)) = text_ops::apply_insert(
             &snapshot.content,
             snapshot.cursor,
@@ -3640,7 +3658,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         Some(snapshot) => snapshot,
                         None => return Vec::new(),
                     };
-                    if !move_snapshot_cursor(snapshot, 0, extend_selection) {
+                    if !move_snapshot_cursor(snapshot, snapshot.move_home_target(), extend_selection) {
                         None
                     } else {
                         Some((
@@ -3660,8 +3678,49 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         Some(snapshot) => snapshot,
                         None => return Vec::new(),
                     };
-                    let len = text_ops::text_char_len(&snapshot.content);
-                    if !move_snapshot_cursor(snapshot, len, extend_selection) {
+                    if !move_snapshot_cursor(snapshot, snapshot.move_end_target(), extend_selection) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveUp { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let next_cursor = snapshot.move_vertical_target(-1);
+                    if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveDown { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let next_cursor = snapshot.move_vertical_target(1);
+                    if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
                         None
                     } else {
                         Some((
@@ -3943,6 +4002,30 @@ fn sanitize_single_line_text(text: &str) -> String {
         .collect()
 }
 
+fn sanitize_multiline_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter_map(|ch| {
+            if ch == '\t' {
+                Some(' ')
+            } else if ch == '\n' || !ch.is_control() {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn sanitize_text_input_text(text: &str, multiline: bool) -> String {
+    if multiline {
+        sanitize_multiline_text(text)
+    } else {
+        sanitize_single_line_text(text)
+    }
+}
+
 fn cursor_from_click_point(snapshot: &TextInputState, x: f32, y: f32) -> u32 {
     snapshot.cursor_from_click_point(x, y)
 }
@@ -4117,12 +4200,15 @@ const ELEMENT_LISTENER_SLOTS: &[ElementSlotBuilder] = &[
     slot_key_delete_press,
     slot_key_left_press,
     slot_key_right_press,
+    slot_key_up_press,
+    slot_key_down_press,
     slot_key_home_press,
     slot_key_end_press,
     slot_key_select_all_press,
     slot_key_copy_press,
     slot_key_cut_press,
     slot_key_paste_press,
+    slot_multiline_enter_press,
     slot_key_enter_press,
     slot_mouse_down_window_blur_clear,
 ];
@@ -4174,7 +4260,7 @@ fn live_scrollbar_nodes_for_element(
 }
 
 fn focused_text_input_id(element: &Element) -> Option<ElementId> {
-    if element.kind != ElementKind::TextInput {
+    if !element.kind.is_text_input_family() {
         return None;
     }
 
@@ -4187,14 +4273,18 @@ fn focused_text_input_id(element: &Element) -> Option<ElementId> {
 }
 
 fn text_input_emit_change(element: &Element) -> Option<bool> {
-    (element.kind == ElementKind::TextInput).then_some(element.attrs.on_change.unwrap_or(false))
+    element
+        .kind
+        .is_text_input_family()
+        .then_some(element.attrs.on_change.unwrap_or(false))
 }
 
 fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
-    if element.kind == ElementKind::TextInput {
+    if element.kind.is_text_input_family() {
         Some(CursorIcon::Text)
     } else if element.attrs.on_click.unwrap_or(false)
         || element.attrs.on_press.unwrap_or(false)
+        || element.attrs.on_mouse_down.unwrap_or(false)
         || has_swipe_listener(element)
         || element.attrs.virtual_key.is_some()
     {
@@ -4240,7 +4330,7 @@ fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bo
 
 fn is_focusable(element: &Element) -> bool {
     element.attrs.virtual_key.is_none()
-        && (element.kind == ElementKind::TextInput
+        && (element.kind.is_text_input_family()
             || element.attrs.on_press.unwrap_or(false)
             || element.attrs.on_focus.unwrap_or(false)
             || element.attrs.on_blur.unwrap_or(false)
@@ -4374,6 +4464,9 @@ fn emit_element_listeners_with_focus_meta(
 ) {
     // Reordering these emissions changes per-element precedence. This function
     // is the element-side precedence table in code form.
+    if element.kind.is_text_input_family() {
+        emit_key_binding_listeners_for_element(element, out);
+    }
     out.emit_all(
         ELEMENT_LISTENER_SLOTS
             .iter()
@@ -4383,7 +4476,9 @@ fn emit_element_listeners_with_focus_meta(
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
-    emit_key_binding_listeners_for_element(element, out);
+    if !element.kind.is_text_input_family() {
+        emit_key_binding_listeners_for_element(element, out);
+    }
     out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
     if state.is_some_and(|state| state.front_nearby_root) {
         emit_front_nearby_blockers_for_element(element, state, out);
@@ -4656,7 +4751,7 @@ pub(crate) fn accumulate_element_rebuild(
             );
         }
 
-        if element.kind == ElementKind::TextInput {
+        if element.kind.is_text_input_family() {
             let previous = acc.text_inputs.insert(
                 element.id.clone(),
                 super::text_input_state(element, adjusted_rect, state.interaction_inverse),
@@ -4990,6 +5085,18 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                     payload: Some(binding.route.clone()),
                 }),
             );
+
+            if binding_arms_text_commit_suppression(element, binding) {
+                push_user_key_slot_action(
+                    &mut slots,
+                    UserKeySlotPhase::Down,
+                    binding,
+                    ListenerAction::RuntimeChange(RuntimeChange::ArmTextCommitSuppression {
+                        element_id: element.id.clone(),
+                        key: binding.key,
+                    }),
+                );
+            }
         });
 
     element
@@ -5110,6 +5217,67 @@ fn user_key_slot_listener(element: &Element, slot: UserKeySlot) -> Listener {
     }
 }
 
+fn binding_arms_text_commit_suppression(element: &Element, binding: &KeyBindingSpec) -> bool {
+    if !element.kind.is_text_input_family() || (binding.mods & (MOD_CTRL | MOD_META)) != 0 {
+        return false;
+    }
+
+    matches!(
+        binding.key,
+        CanonicalKey::A
+            | CanonicalKey::B
+            | CanonicalKey::C
+            | CanonicalKey::D
+            | CanonicalKey::E
+            | CanonicalKey::F
+            | CanonicalKey::G
+            | CanonicalKey::H
+            | CanonicalKey::I
+            | CanonicalKey::J
+            | CanonicalKey::K
+            | CanonicalKey::L
+            | CanonicalKey::M
+            | CanonicalKey::N
+            | CanonicalKey::O
+            | CanonicalKey::P
+            | CanonicalKey::Q
+            | CanonicalKey::R
+            | CanonicalKey::S
+            | CanonicalKey::T
+            | CanonicalKey::U
+            | CanonicalKey::V
+            | CanonicalKey::W
+            | CanonicalKey::X
+            | CanonicalKey::Y
+            | CanonicalKey::Z
+            | CanonicalKey::Digit0
+            | CanonicalKey::Digit1
+            | CanonicalKey::Digit2
+            | CanonicalKey::Digit3
+            | CanonicalKey::Digit4
+            | CanonicalKey::Digit5
+            | CanonicalKey::Digit6
+            | CanonicalKey::Digit7
+            | CanonicalKey::Digit8
+            | CanonicalKey::Digit9
+            | CanonicalKey::Minus
+            | CanonicalKey::Equal
+            | CanonicalKey::Plus
+            | CanonicalKey::Asterisk
+            | CanonicalKey::LeftBracket
+            | CanonicalKey::RightBracket
+            | CanonicalKey::Backslash
+            | CanonicalKey::Semicolon
+            | CanonicalKey::Apostrophe
+            | CanonicalKey::Grave
+            | CanonicalKey::Comma
+            | CanonicalKey::Period
+            | CanonicalKey::Slash
+            | CanonicalKey::Space
+            | CanonicalKey::Tab
+    ) || (element.kind == ElementKind::Multiline && binding.key == CanonicalKey::Enter)
+}
+
 fn slot_scrollbar_thumb_press_y(
     element: &Element,
     state: Option<&ResolvedNodeState>,
@@ -5228,9 +5396,8 @@ fn slot_primary_left_press(
         ))
         .collect();
     let pointer_drag = click_press_tracker::left_press_drag_bootstrap(element, matcher_kind);
-    let text_cursor_element_id =
-        (element.kind == ElementKind::TextInput).then_some(element.id.clone());
-    let text_drag = (element.kind == ElementKind::TextInput).then_some(TextDragTracker {
+    let text_cursor_element_id = element.kind.is_text_input_family().then_some(element.id.clone());
+    let text_drag = element.kind.is_text_input_family().then_some(TextDragTracker {
         element_id: element.id.clone(),
         matcher_kind,
     });
@@ -5278,6 +5445,22 @@ fn slot_key_right_press(element: &Element, _state: Option<&ResolvedNodeState>) -
     )
 }
 
+fn slot_key_up_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
+    slot_text_key_edit(
+        element,
+        ListenerMatcher::KeyUpPressNoCtrlAltMeta,
+        TextInputKeyEditKind::Up,
+    )
+}
+
+fn slot_key_down_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
+    slot_text_key_edit(
+        element,
+        ListenerMatcher::KeyDownPressNoCtrlAltMeta,
+        TextInputKeyEditKind::Down,
+    )
+}
+
 /// Build Home-key listener for focused text inputs.
 fn slot_key_home_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
     slot_text_key_edit(
@@ -5307,6 +5490,24 @@ fn slot_text_key_edit(
         element_id: Some(element_id.clone()),
         matcher,
         compute: ListenerCompute::TextInputKeyEditToRuntime { element_id, kind },
+    })
+}
+
+fn slot_multiline_enter_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    if element.kind != ElementKind::Multiline || !element.attrs.text_input_focused.unwrap_or(false) {
+        return None;
+    }
+
+    Some(Listener {
+        element_id: Some(element.id.clone()),
+        matcher: ListenerMatcher::KeyEnterPressNoCtrlAltMeta,
+        compute: ListenerCompute::TextInputEditToRuntimeMaybe {
+            element_id: element.id.clone(),
+            request: TextInputEditRequest::Insert("\n".to_string()),
+        },
     })
 }
 
@@ -6454,9 +6655,14 @@ mod tests {
             preedit_cursor: None,
             focused,
             emit_change,
+            multiline: false,
             frame_x: 0.0,
+            frame_y: 0.0,
             frame_width: 100.0,
+            frame_height: 20.0,
+            inset_top: 0.0,
             inset_left: 0.0,
+            inset_bottom: 0.0,
             inset_right: 0.0,
             screen_to_local: Some(Affine2::identity()),
             text_align: TextAlign::Left,
@@ -6644,7 +6850,7 @@ mod tests {
                 ..
             })]
         ));
-        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Default]);
+        assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Pointer]);
     }
 
     #[test]

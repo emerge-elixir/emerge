@@ -57,6 +57,85 @@ fn test_layout_text_letter_and_word_spacing() {
 }
 
 #[test]
+fn test_layout_multiline_defaults_to_one_line_minimum_height() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.content = Some(String::new());
+    attrs.font_size = Some(16.0);
+
+    let el = make_element("multiline", ElementKind::Multiline, attrs);
+    let root_id = el.id.clone();
+    tree.root = Some(root_id.clone());
+    tree.insert(el);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    assert_eq!(frame.height, 16.0);
+    assert_eq!(frame.content_height, 16.0);
+}
+
+#[test]
+fn test_layout_multiline_wraps_and_auto_grows_height() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.content = Some("abcd".to_string());
+    attrs.width = Some(Length::Px(16.0));
+    attrs.font_size = Some(16.0);
+
+    let el = make_element("multiline", ElementKind::Multiline, attrs);
+    let root_id = el.id.clone();
+    tree.root = Some(root_id.clone());
+    tree.insert(el);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    assert_eq!(frame.width, 16.0);
+    assert_eq!(frame.height, 32.0);
+    assert_eq!(frame.content_height, 32.0);
+}
+
+#[test]
+fn test_layout_multiline_respects_explicit_height_override() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.content = Some("abcd".to_string());
+    attrs.width = Some(Length::Px(16.0));
+    attrs.height = Some(Length::Px(16.0));
+    attrs.font_size = Some(16.0);
+
+    let el = make_element("multiline", ElementKind::Multiline, attrs);
+    let root_id = el.id.clone();
+    tree.root = Some(root_id.clone());
+    tree.insert(el);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    assert_eq!(frame.height, 16.0);
+    assert_eq!(frame.content_height, 32.0);
+}
+
+#[test]
 fn test_content_size_basic_element() {
     let mut tree = ElementTree::new();
 

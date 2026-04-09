@@ -658,6 +658,11 @@ defmodule Emerge.UI.Event do
     text("Save")
   )
   ```
+
+  On focused `Emerge.UI.Input.text/2` and `Emerge.UI.Input.multiline/2`
+  elements, a matching `on_key_down/2` suppresses the input's default keydown
+  behavior for that keydown. This lets apps override built-in editing such as
+  character insertion or multiline `Enter` handling.
   """
   @spec on_key_down(key_matcher(), payload() | term()) :: key_down_attr()
   def on_key_down(matcher, {pid, _msg} = payload) when is_pid(pid) do
@@ -720,6 +725,10 @@ defmodule Emerge.UI.Event do
     text("A")
   )
   ```
+
+  `{:text_and_key, text, key, mods}` participates in the same text-input
+  keydown suppression rules as a physical key press. `{:text, text}` does not,
+  because it inserts text without a preceding keydown.
   """
   @spec virtual_key(virtual_key_spec() | keyword()) :: virtual_key_attr()
   def virtual_key(spec) do
