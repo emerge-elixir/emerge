@@ -9,7 +9,7 @@ mix deps.get                    # Install Elixir dependencies
 mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
 mix test                        # Run tests
 mix docs                        # Generate ExDoc documentation
-cd example && iex -S mix        # Run the example app (requires Wayland)
+cd ../emerge_demo && iex -S mix # Run the standalone demo app from https://github.com/emerge-elixir/emerge_demo
 ./ci-tests.sh                   # Run the full CI check suite locally
 
 # Rust-specific (from native/emerge_skia/)
