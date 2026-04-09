@@ -143,6 +143,16 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
+  test "force_precompiled_build? resolves the current target without crashing" do
+    assert is_boolean(
+             BuildConfig.force_precompiled_build?(
+               checksum_path: __ENV__.file,
+               compiled_backends: [:wayland],
+               env: %{}
+             )
+           )
+  end
+
   test "force_precompiled_build? forces builds when backend profile is unsupported" do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
