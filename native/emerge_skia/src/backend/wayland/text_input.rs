@@ -354,7 +354,10 @@ fn preedit_cursor_to_char_range(
 }
 
 fn normalize_commit_text(text: &str) -> Option<String> {
-    let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    let filtered: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
+        .collect();
     if filtered.is_empty() {
         None
     } else {
@@ -379,6 +382,7 @@ mod tests {
             content_len: 3,
             cursor: 2,
             selection_anchor: Some(1),
+            multiline: false,
             ..Default::default()
         };
 

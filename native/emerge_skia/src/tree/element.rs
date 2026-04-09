@@ -34,6 +34,7 @@ pub enum ElementKind {
     El,
     Text,
     TextInput,
+    Multiline,
     Image,
     Video,
     None,
@@ -55,8 +56,13 @@ impl ElementKind {
             9 => Some(Self::Image),
             10 => Some(Self::TextInput),
             11 => Some(Self::Video),
+            12 => Some(Self::Multiline),
             _ => None,
         }
+    }
+
+    pub fn is_text_input_family(self) -> bool {
+        matches!(self, Self::TextInput | Self::Multiline)
     }
 }
 
@@ -796,7 +802,7 @@ impl ElementTree {
             return false;
         };
 
-        if element.kind != ElementKind::TextInput {
+        if !element.kind.is_text_input_family() {
             return false;
         }
 
@@ -857,7 +863,7 @@ impl ElementTree {
             return false;
         };
 
-        if element.kind != ElementKind::TextInput {
+        if !element.kind.is_text_input_family() {
             return false;
         }
 
@@ -1019,6 +1025,7 @@ mod tests {
         assert_eq!(ElementKind::from_tag(9), Some(ElementKind::Image));
         assert_eq!(ElementKind::from_tag(10), Some(ElementKind::TextInput));
         assert_eq!(ElementKind::from_tag(11), Some(ElementKind::Video));
+        assert_eq!(ElementKind::from_tag(12), Some(ElementKind::Multiline));
     }
 
     #[test]

@@ -438,6 +438,17 @@ pub(super) fn build_text_input_tree_with_frame(attrs: Attrs, frame: Frame) -> El
     tree
 }
 
+pub(super) fn build_multiline_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
+    let id = ElementId::from_term_bytes(vec![31]);
+    let mut element = Element::with_attrs(id.clone(), ElementKind::Multiline, Vec::new(), attrs);
+    element.frame = Some(frame);
+
+    let mut tree = ElementTree::new();
+    tree.root = Some(id);
+    tree.insert(element);
+    tree
+}
+
 pub(super) fn build_tree_with_child_frame(
     mut parent_attrs: Attrs,
     parent_frame: Frame,

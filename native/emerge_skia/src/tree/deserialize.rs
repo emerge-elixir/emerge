@@ -20,8 +20,9 @@ use super::attrs::{Attrs, decode_attrs};
 use super::element::{Element, ElementId, ElementKind, ElementTree, NearbyMounts, NearbySlot};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 5;
-const LEGACY_VERSION: u8 = 3;
+const VERSION: u8 = 6;
+const LEGACY_VERSION: u8 = 5;
+const EARLY_LEGACY_VERSION: u8 = 3;
 
 /// Error type for deserialization failures.
 #[derive(Debug, Clone)]
@@ -114,7 +115,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     }
 
     let version = cursor.read_u8()?;
-    if version != VERSION && version != LEGACY_VERSION {
+    if version != VERSION && version != LEGACY_VERSION && version != EARLY_LEGACY_VERSION {
         return Err(DecodeError::UnsupportedVersion(version));
     }
 

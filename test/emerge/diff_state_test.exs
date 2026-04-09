@@ -378,6 +378,30 @@ defmodule Emerge.Engine.DiffStateTest do
     assert {:ok, {_, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
   end
 
+  test "multiline input registers change and key handlers" do
+    layout =
+      Emerge.UI.Input.multiline(
+        [
+          key(:notes),
+          Event.on_change({self(), :changed}),
+          Event.on_key_down(:enter, {self(), :submitted})
+        ],
+        "hello\nworld"
+      )
+
+    state = Emerge.Engine.diff_state_new(layout)
+    id_bin = :erlang.term_to_binary(state.tree.id)
+
+    assert {:ok, {_, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
+
+    assert {:ok, {_, :submitted}} =
+             Emerge.Engine.lookup_event(
+               state,
+               id_bin,
+               {:key_down, Event.key_route_id(:key_down, :enter, [], :exact)}
+             )
+  end
+
   test "dispatch_event with payload appends payload to tuple message" do
     layout =
       Emerge.UI.Input.text([key(:field), Event.on_change({self(), {:changed, :field}})], "hello")

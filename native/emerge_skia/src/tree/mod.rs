@@ -18,4 +18,5 @@ pub mod render;
 pub mod scene;
 pub mod scrollbar;
 pub mod serialize;
+pub mod text_layout;
 pub mod transform;

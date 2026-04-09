@@ -956,6 +956,27 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
+  test "Input.multiline creates a multiline element" do
+    element =
+      Emerge.UI.Input.multiline(
+        [
+          key(:notes),
+          width(px(320)),
+          Event.on_change({self(), :notes_changed}),
+          Event.on_key_down(:enter, :submit)
+        ],
+        "hello\nworld"
+      )
+
+    assert element.type == :multiline
+    assert element.id == :notes
+    assert element.attrs.content == "hello\nworld"
+    assert element.attrs.width == {:px, 320}
+    assert element.attrs.on_change == {self(), :notes_changed}
+    assert [%{key: :enter}] = element.attrs.on_key_down
+    assert element.children == []
+  end
+
   test "Input.button creates an el with a child and handlers" do
     element =
       Emerge.UI.Input.button(

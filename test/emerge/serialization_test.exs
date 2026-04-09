@@ -162,6 +162,27 @@ defmodule Emerge.Engine.SerializationTest do
            }
   end
 
+  test "multiline roundtrip preserves content and handlers" do
+    layout =
+      Emerge.UI.Input.multiline(
+        [
+          width(px(280)),
+          Event.on_change({self(), :changed}),
+          Event.on_key_down(:enter, {self(), :submitted})
+        ],
+        "hello\nworld"
+      )
+
+    {binary, tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert tree.type == :multiline
+    assert decoded.type == :multiline
+    assert decoded.attrs.content == "hello\nworld"
+    assert decoded.attrs.on_change == true
+    assert [%{key: :enter, mods: [], match: :exact}] = decoded.attrs.on_key_down
+  end
+
   test "input button roundtrip preserves press and focus handlers" do
     layout =
       Emerge.UI.Input.button(
