@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use crate::input::InputEvent;
 use crate::native_log::NativeLogLevel;
-use crate::renderer::make_font_with_style;
+use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 #[cfg(test)]
 use crate::tree::element::ElementKind;
@@ -43,6 +43,7 @@ use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
 use crate::tree::scrollbar::ScrollbarAxis;
+use crate::tree::text_layout::{TextLayoutStyle, layout_text_lines};
 use crate::tree::transform::{Affine2, Point};
 
 pub mod registry_builder;
@@ -111,9 +112,14 @@ pub struct TextInputState {
     pub preedit_cursor: Option<(u32, u32)>,
     pub focused: bool,
     pub emit_change: bool,
+    pub multiline: bool,
     pub frame_x: f32,
+    pub frame_y: f32,
     pub frame_width: f32,
+    pub frame_height: f32,
+    pub inset_top: f32,
     pub inset_left: f32,
+    pub inset_bottom: f32,
     pub inset_right: f32,
     pub screen_to_local: Option<Affine2>,
     pub text_align: TextAlign,
@@ -128,9 +134,14 @@ pub struct TextInputState {
 impl TextInputState {
     pub fn copy_rebuild_metadata_from(&mut self, other: &Self) {
         self.emit_change = other.emit_change;
+        self.multiline = other.multiline;
         self.frame_x = other.frame_x;
+        self.frame_y = other.frame_y;
         self.frame_width = other.frame_width;
+        self.frame_height = other.frame_height;
+        self.inset_top = other.inset_top;
         self.inset_left = other.inset_left;
+        self.inset_bottom = other.inset_bottom;
         self.inset_right = other.inset_right;
         self.screen_to_local = other.screen_to_local;
         self.text_align = other.text_align;
@@ -330,32 +341,132 @@ impl TextInputState {
     }
 
     pub fn cursor_from_click_point(&self, x: f32, y: f32) -> u32 {
-        let local_x = self
+        let local = self
             .screen_to_local
-            .map(|transform| transform.map_point(Point { x, y }).x)
-            .unwrap_or(x);
-        self.cursor_from_local_x(local_x)
+            .map(|transform| transform.map_point(Point { x, y }))
+            .unwrap_or(Point { x, y });
+
+        if self.multiline {
+            self.cursor_from_local_point(local.x, local.y)
+        } else {
+            self.cursor_from_local_x(local.x)
+        }
     }
 
     fn cursor_from_local_x(&self, x: f32) -> u32 {
-        let text_width = self.measure_text_width(&self.content);
+        let (text_left_overhang, text_width) = self.measure_text_visual_metrics(&self.content);
         let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
 
         let text_start_x = match self.text_align {
-            TextAlign::Left => self.frame_x + self.inset_left,
+            TextAlign::Left => self.frame_x + self.inset_left + text_left_overhang,
             TextAlign::Center => {
-                self.frame_x + self.inset_left + (content_width - text_width) / 2.0
+                self.frame_x
+                    + self.inset_left
+                    + (content_width - text_width) / 2.0
+                    + text_left_overhang
             }
-            TextAlign::Right => self.frame_x + self.frame_width - self.inset_right - text_width,
+            TextAlign::Right => {
+                self.frame_x + self.frame_width - self.inset_right - text_width + text_left_overhang
+            }
         };
 
         let click_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
         self.nearest_char_index_for_offset(&self.content, click_x)
     }
 
-    fn measure_text_width(&self, text: &str) -> f32 {
+    fn cursor_from_local_point(&self, x: f32, y: f32) -> u32 {
+        let layout = self.text_layout(&self.content);
+        let local_y = (y - (self.frame_y + self.inset_top)).max(0.0);
+        let line_index = layout.line_index_for_y(local_y);
+        let line = &layout.lines[line_index];
+        let click_x = (x - self.line_x(line.width)).clamp(0.0, line.width.max(0.0));
+        line.nearest_cursor_for_x(click_x) as u32
+    }
+
+    pub fn move_home_target(&self) -> u32 {
+        if !self.multiline {
+            return 0;
+        }
+
+        let layout = self.text_layout(&self.content);
+        let line = &layout.lines[layout.line_index_for_cursor(self.cursor as usize)];
+        line.start as u32
+    }
+
+    pub fn move_end_target(&self) -> u32 {
+        if !self.multiline {
+            return self.content_len;
+        }
+
+        let layout = self.text_layout(&self.content);
+        let line = &layout.lines[layout.line_index_for_cursor(self.cursor as usize)];
+        line.visual_end as u32
+    }
+
+    pub fn move_vertical_target(&self, direction: i32) -> u32 {
+        if !self.multiline {
+            return self.cursor;
+        }
+
+        let layout = self.text_layout(&self.content);
+        let current_line_index = layout.line_index_for_cursor(self.cursor as usize);
+        let next_line_index = (current_line_index as i32 + direction)
+            .clamp(0, layout.lines.len() as i32 - 1) as usize;
+        if next_line_index == current_line_index {
+            return self.cursor;
+        }
+
+        let current_line = &layout.lines[current_line_index];
+        let target_x = current_line.offset_for_cursor(self.cursor as usize);
+        layout.lines[next_line_index].nearest_cursor_for_x(target_x) as u32
+    }
+
+    fn text_layout(&self, text: &str) -> crate::tree::text_layout::TextLayout {
+        let font = make_font_with_style(
+            &self.font_family,
+            self.font_weight,
+            self.font_italic,
+            self.font_size,
+        );
+        let wrap_width = self
+            .multiline
+            .then_some((self.frame_width - self.inset_left - self.inset_right).max(0.0));
+        layout_text_lines(
+            text,
+            wrap_width,
+            self.text_metrics(),
+            TextLayoutStyle {
+                font_size: self.font_size,
+                letter_spacing: self.letter_spacing,
+                word_spacing: self.word_spacing,
+            },
+            |ch| font.measure_str(&ch.to_string(), None).0,
+        )
+    }
+
+    fn text_metrics(&self) -> (f32, f32) {
+        let font = make_font_with_style(
+            &self.font_family,
+            self.font_weight,
+            self.font_italic,
+            self.font_size,
+        );
+        let (_, metrics) = font.metrics();
+        (metrics.ascent.abs(), metrics.descent)
+    }
+
+    fn line_x(&self, line_width: f32) -> f32 {
+        let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
+        match self.text_align {
+            TextAlign::Left => self.frame_x + self.inset_left,
+            TextAlign::Center => self.frame_x + self.inset_left + (content_width - line_width) / 2.0,
+            TextAlign::Right => self.frame_x + self.frame_width - self.inset_right - line_width,
+        }
+    }
+
+    fn measure_text_visual_metrics(&self, text: &str) -> (f32, f32) {
         if text.is_empty() {
-            return 0.0;
+            return (0.0, 0.0);
         }
 
         let font = make_font_with_style(
@@ -364,6 +475,11 @@ impl TextInputState {
             self.font_italic,
             self.font_size,
         );
+
+        if self.letter_spacing == 0.0 && self.word_spacing == 0.0 {
+            let metrics = measure_text_visual_metrics_with_font(&font, text);
+            return (metrics.left_overhang, metrics.visual_width);
+        }
 
         let mut total = 0.0;
         let mut chars = text.chars().peekable();
@@ -380,7 +496,7 @@ impl TextInputState {
             }
         }
 
-        total
+        (0.0, total)
     }
 
     fn nearest_char_index_for_offset(&self, text: &str, offset_x: f32) -> u32 {
@@ -444,6 +560,12 @@ pub enum TextInputEditRequest {
         extend_selection: bool,
     },
     MoveRight {
+        extend_selection: bool,
+    },
+    MoveUp {
+        extend_selection: bool,
+    },
+    MoveDown {
         extend_selection: bool,
     },
     MoveHome {
@@ -524,7 +646,7 @@ fn text_input_state(
         .text_input_selection_anchor
         .map(|anchor| anchor.min(content_len))
         .filter(|anchor| *anchor != cursor);
-    let (inset_left, inset_right) = text_content_insets(&element.attrs);
+    let (inset_top, inset_right, inset_bottom, inset_left) = text_content_insets(&element.attrs);
     let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.attrs);
 
     TextInputState {
@@ -537,9 +659,14 @@ fn text_input_state(
         preedit_cursor: element.attrs.text_input_preedit_cursor,
         focused: element.attrs.text_input_focused.unwrap_or(false),
         emit_change: element.attrs.on_change.unwrap_or(false),
+        multiline: element.kind == crate::tree::element::ElementKind::Multiline,
         frame_x: adjusted_rect.x,
+        frame_y: adjusted_rect.y,
         frame_width: adjusted_rect.width,
+        frame_height: adjusted_rect.height,
+        inset_top,
         inset_left,
+        inset_bottom,
         inset_right,
         screen_to_local,
         text_align: element.attrs.text_align.unwrap_or_default(),
@@ -552,20 +679,35 @@ fn text_input_state(
     }
 }
 
-fn text_content_insets(attrs: &crate::tree::attrs::Attrs) -> (f32, f32) {
-    let (pad_left, pad_right) = match attrs.padding.as_ref() {
-        Some(Padding::Uniform(v)) => (*v as f32, *v as f32),
-        Some(Padding::Sides { left, right, .. }) => (*left as f32, *right as f32),
-        None => (0.0, 0.0),
+fn text_content_insets(attrs: &crate::tree::attrs::Attrs) -> (f32, f32, f32, f32) {
+    let (pad_top, pad_right, pad_bottom, pad_left) = match attrs.padding.as_ref() {
+        Some(Padding::Uniform(v)) => (*v as f32, *v as f32, *v as f32, *v as f32),
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => (*top as f32, *right as f32, *bottom as f32, *left as f32),
+        None => (0.0, 0.0, 0.0, 0.0),
     };
 
-    let (border_left, border_right) = match attrs.border_width.as_ref() {
-        Some(BorderWidth::Uniform(v)) => (*v as f32, *v as f32),
-        Some(BorderWidth::Sides { left, right, .. }) => (*left as f32, *right as f32),
-        None => (0.0, 0.0),
+    let (border_top, border_right, border_bottom, border_left) = match attrs.border_width.as_ref() {
+        Some(BorderWidth::Uniform(v)) => (*v as f32, *v as f32, *v as f32, *v as f32),
+        Some(BorderWidth::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => (*top as f32, *right as f32, *bottom as f32, *left as f32),
+        None => (0.0, 0.0, 0.0, 0.0),
     };
 
-    (pad_left + border_left, pad_right + border_right)
+    (
+        pad_top + border_top,
+        pad_right + border_right,
+        pad_bottom + border_bottom,
+        pad_left + border_left,
+    )
 }
 
 fn font_info_from_attrs(attrs: &crate::tree::attrs::Attrs) -> (String, u16, bool) {
@@ -861,9 +1003,14 @@ mod tests {
             preedit_cursor: None,
             focused: true,
             emit_change: false,
+            multiline: false,
             frame_x: 0.0,
+            frame_y: 0.0,
             frame_width: 100.0,
+            frame_height: 20.0,
+            inset_top: 0.0,
             inset_left: 0.0,
+            inset_bottom: 0.0,
             inset_right: 0.0,
             screen_to_local: Some(Affine2::translation(-40.0, -10.0)),
             text_align: TextAlign::Left,

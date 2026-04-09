@@ -1,6 +1,6 @@
 use super::super::text::{
-    TEXT_SELECTION_COLOR, TextRunStyle, measure_text_width_with_font, text_metrics_with_font,
-    text_offset_for_char_index,
+    measure_text_width_with_font, text_metrics_with_font, text_offset_for_char_index, TextRunStyle,
+    TEXT_SELECTION_COLOR,
 };
 use super::common::*;
 use super::*;
@@ -46,11 +46,9 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
         .collect();
 
     assert_eq!(decoration_rects.len(), 2);
-    assert!(
-        decoration_rects
-            .iter()
-            .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
-    );
+    assert!(decoration_rects
+        .iter()
+        .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0));
 }
 
 #[test]
@@ -297,6 +295,35 @@ fn test_render_text_input_selection_emits_highlight_rect() {
     });
 
     assert!(has_selection_rect);
+}
+
+#[test]
+fn test_render_multiline_text_input_places_caret_on_wrapped_second_line() {
+    let mut attrs = Attrs::default();
+    attrs.content = Some("abcd".to_string());
+    attrs.font_size = Some(16.0);
+    attrs.text_input_focused = Some(true);
+    attrs.text_input_cursor = Some(4);
+
+    let frame = Frame {
+        x: 10.0,
+        y: 20.0,
+        width: 16.0,
+        height: 32.0,
+        content_width: 16.0,
+        content_height: 32.0,
+    };
+
+    let tree = build_multiline_tree_with_frame(attrs, frame);
+    let (output, _draws) = observe_output(&tree);
+
+    assert!(output.text_input_focused);
+
+    let (_caret_x, caret_y, _caret_w, _caret_h) = output
+        .text_input_cursor_area
+        .expect("caret area should be present");
+
+    assert!(caret_y > 20.0);
 }
 
 #[test]

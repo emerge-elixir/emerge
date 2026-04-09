@@ -1,10 +1,11 @@
 use super::box_model::content_insets;
-use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
+use super::color::{color_to_u32, DEFAULT_TEXT_COLOR};
 use crate::render_scene::{DrawPrimitive, RenderNode};
-use crate::renderer::make_font_with_style;
+use crate::renderer::{make_font_with_style, measure_text_visual_metrics};
 use crate::tree::attrs::{Attrs, TextAlign};
 use crate::tree::element::Frame;
-use crate::tree::layout::{FontContext, font_info_with_inheritance};
+use crate::tree::layout::{font_info_with_inheritance, FontContext};
+use crate::tree::text_layout::{layout_text_lines, TextLayoutStyle};
 
 pub(super) const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 
@@ -70,24 +71,18 @@ pub(super) fn render_text_items(
     let inset_top = insets.top;
     let inset_right = insets.right;
     let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
-    let text_width = measure_text_width_with_font(
-        content,
-        font_size,
-        &family,
-        weight,
-        italic,
-        letter_spacing,
-        word_spacing,
-    );
+    let (text_left_overhang, text_width) = text_alignment_metrics(content, style);
     let content_width = frame.width - inset_left - inset_right;
     let text_align = attrs
         .text_align
         .or(inherited.text_align)
         .unwrap_or_default();
     let text_x = match text_align {
-        TextAlign::Left => frame.x + inset_left,
-        TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
-        TextAlign::Right => frame.x + frame.width - inset_right - text_width,
+        TextAlign::Left => frame.x + inset_left + text_left_overhang,
+        TextAlign::Center => {
+            frame.x + inset_left + (content_width - text_width) / 2.0 + text_left_overhang
+        }
+        TextAlign::Right => frame.x + frame.width - inset_right - text_width + text_left_overhang,
     };
     let baseline_y = frame.y + inset_top + ascent;
 
@@ -175,24 +170,18 @@ pub(super) fn render_text_input_items(
         None => content.to_string(),
     };
 
-    let text_width = measure_text_width_with_font(
-        &displayed_text,
-        style.font_size,
-        style.family,
-        style.weight,
-        style.italic,
-        style.letter_spacing,
-        style.word_spacing,
-    );
+    let (text_left_overhang, text_width) = text_alignment_metrics(&displayed_text, style);
     let content_width = frame.width - inset_left - inset_right;
     let text_align = attrs
         .text_align
         .or(inherited.text_align)
         .unwrap_or_default();
     let text_x = match text_align {
-        TextAlign::Left => frame.x + inset_left,
-        TextAlign::Center => frame.x + inset_left + (content_width - text_width) / 2.0,
-        TextAlign::Right => frame.x + frame.width - inset_right - text_width,
+        TextAlign::Left => frame.x + inset_left + text_left_overhang,
+        TextAlign::Center => {
+            frame.x + inset_left + (content_width - text_width) / 2.0 + text_left_overhang
+        }
+        TextAlign::Right => frame.x + frame.width - inset_right - text_width + text_left_overhang,
     };
     let baseline_y = frame.y + inset_top + ascent;
 
@@ -289,6 +278,217 @@ pub(super) fn render_text_input_items(
         let caret_x = text_x + caret_offset;
         let caret_top = baseline_y - ascent;
         let caret_height = (ascent + descent).max(font_size * 0.9);
+        let caret_width = (font_size * 0.08).max(1.0);
+
+        items.push(RenderNode::Primitive(DrawPrimitive::Rect(
+            caret_x,
+            caret_top,
+            caret_width,
+            caret_height,
+            color,
+        )));
+
+        return Some((caret_x, caret_top, caret_width, caret_height));
+    }
+
+    None
+}
+
+pub(super) fn render_multiline_text_input_items(
+    items: &mut Vec<RenderNode>,
+    frame: Frame,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) -> Option<(f32, f32, f32, f32)> {
+    let content = attrs.content.as_deref().unwrap_or("");
+    let preedit = attrs
+        .text_input_preedit
+        .as_deref()
+        .filter(|value| !value.is_empty());
+
+    let font_size = attrs
+        .font_size
+        .map(|s| s as f32)
+        .or(inherited.font_size)
+        .unwrap_or(16.0);
+    let color = attrs
+        .font_color
+        .as_ref()
+        .map(color_to_u32)
+        .or(inherited.font_color)
+        .unwrap_or(DEFAULT_TEXT_COLOR);
+    let underline = attrs
+        .font_underline
+        .or(inherited.font_underline)
+        .unwrap_or(false);
+    let strike = attrs.font_strike.or(inherited.font_strike).unwrap_or(false);
+    let letter_spacing = attrs
+        .font_letter_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_letter_spacing)
+        .unwrap_or(0.0);
+    let word_spacing = attrs
+        .font_word_spacing
+        .map(|v| v as f32)
+        .or(inherited.font_word_spacing)
+        .unwrap_or(0.0);
+    let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+    let style = TextRunStyle {
+        font_size,
+        color,
+        family: &family,
+        weight,
+        italic,
+        letter_spacing,
+        word_spacing,
+    };
+    let insets = content_insets(attrs);
+    let inset_left = insets.left;
+    let inset_top = insets.top;
+    let inset_right = insets.right;
+    let content_width = (frame.width - inset_left - inset_right).max(0.0);
+    let text_align = attrs
+        .text_align
+        .or(inherited.text_align)
+        .unwrap_or_default();
+    let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
+    let font = make_font_with_style(&family, weight, italic, font_size);
+    let content_char_count = content.chars().count() as u32;
+    let base_cursor = attrs
+        .text_input_cursor
+        .unwrap_or(content_char_count)
+        .min(content_char_count);
+    let prefix: String = content.chars().take(base_cursor as usize).collect();
+    let suffix: String = content.chars().skip(base_cursor as usize).collect();
+    let displayed_text = match preedit {
+        Some(preedit_text) => {
+            let mut value = String::with_capacity(content.len() + preedit_text.len());
+            value.push_str(&prefix);
+            value.push_str(preedit_text);
+            value.push_str(&suffix);
+            value
+        }
+        None => content.to_string(),
+    };
+    let layout = layout_text_lines(
+        &displayed_text,
+        Some(content_width),
+        (ascent, descent),
+        TextLayoutStyle {
+            font_size,
+            letter_spacing,
+            word_spacing,
+        },
+        |ch| {
+            let (glyph_width, _bounds) = font.measure_str(&ch.to_string(), None);
+            glyph_width
+        },
+    );
+
+    let line_x = |line_width: f32| match text_align {
+        TextAlign::Left => frame.x + inset_left,
+        TextAlign::Center => frame.x + inset_left + (content_width - line_width) / 2.0,
+        TextAlign::Right => frame.x + frame.width - inset_right - line_width,
+    };
+    let line_top = |line_index: usize| frame.y + inset_top + line_index as f32 * layout.line_height;
+    let preedit_len = preedit
+        .map(|value| value.chars().count() as u32)
+        .unwrap_or(0);
+    let map_committed_to_displayed = |index: u32| {
+        if preedit_len > 0 && index > base_cursor {
+            index + preedit_len
+        } else {
+            index
+        }
+    };
+
+    if let Some(anchor) = attrs.text_input_selection_anchor {
+        let anchor = anchor.min(content_char_count);
+        if anchor != base_cursor {
+            let displayed_start = map_committed_to_displayed(anchor.min(base_cursor)) as usize;
+            let displayed_end = map_committed_to_displayed(anchor.max(base_cursor)) as usize;
+            for (line_index, line) in layout.lines.iter().enumerate() {
+                let line_start = displayed_start.max(line.start).min(line.visual_end);
+                let line_end = displayed_end.max(line.start).min(line.visual_end);
+                if line_end <= line_start {
+                    continue;
+                }
+
+                let x = line_x(line.width) + line.offset_for_cursor(line_start);
+                let width = line.offset_for_cursor(line_end) - line.offset_for_cursor(line_start);
+                if width <= 0.0 {
+                    continue;
+                }
+
+                items.push(RenderNode::Primitive(DrawPrimitive::Rect(
+                    x,
+                    line_top(line_index),
+                    width,
+                    layout.line_height,
+                    TEXT_SELECTION_COLOR,
+                )));
+            }
+        }
+    }
+
+    for (line_index, line) in layout.lines.iter().enumerate() {
+        let x = line_x(line.width);
+        let baseline_y = line_top(line_index) + layout.ascent;
+        items.extend(text_run_items(x, baseline_y, &line.text, style));
+        items.extend(text_decoration_items(TextDecorationSpec {
+            x,
+            baseline_y,
+            width: line.width,
+            font_size,
+            color,
+            underline,
+            strike,
+        }));
+    }
+
+    if let Some(preedit_text) = preedit {
+        let preedit_start = base_cursor as usize;
+        let preedit_end = preedit_start + preedit_text.chars().count();
+        for (line_index, line) in layout.lines.iter().enumerate() {
+            let line_start = preedit_start.max(line.start).min(line.visual_end);
+            let line_end = preedit_end.max(line.start).min(line.visual_end);
+            if line_end <= line_start {
+                continue;
+            }
+
+            let baseline_y = line_top(line_index) + layout.ascent;
+            let x = line_x(line.width) + line.offset_for_cursor(line_start);
+            let width = line.offset_for_cursor(line_end) - line.offset_for_cursor(line_start);
+            items.extend(text_decoration_items(TextDecorationSpec {
+                x,
+                baseline_y,
+                width,
+                font_size,
+                color,
+                underline: true,
+                strike: false,
+            }));
+        }
+    }
+
+    if attrs.text_input_focused.unwrap_or(false) {
+        let displayed_char_count = displayed_text.chars().count() as u32;
+        let caret_char_index = if let Some(preedit_text) = preedit {
+            let preedit_len = preedit_text.chars().count() as u32;
+            let preedit_cursor_end = attrs
+                .text_input_preedit_cursor
+                .map(|(_start, end)| end.min(preedit_len))
+                .unwrap_or(preedit_len);
+            (base_cursor + preedit_cursor_end).min(displayed_char_count)
+        } else {
+            base_cursor.min(displayed_char_count)
+        } as usize;
+
+        let line_index = layout.line_index_for_cursor(caret_char_index);
+        let line = &layout.lines[line_index];
+        let caret_x = line_x(line.width) + line.offset_for_cursor(caret_char_index);
+        let caret_top = line_top(line_index);
+        let caret_height = layout.line_height.max(font_size * 0.9);
         let caret_width = (font_size * 0.08).max(1.0);
 
         items.push(RenderNode::Primitive(DrawPrimitive::Rect(
@@ -435,8 +635,7 @@ pub(super) fn measure_text_width_with_font(
     }
 
     if letter_spacing == 0.0 && word_spacing == 0.0 {
-        let (width, _bounds) = font.measure_str(text, None);
-        return width;
+        return measure_text_visual_metrics_with_style(text, family, weight, italic, font_size).1;
     }
 
     let mut total = 0.0;
@@ -456,6 +655,46 @@ pub(super) fn measure_text_width_with_font(
     }
 
     total
+}
+
+fn text_alignment_metrics(text: &str, style: TextRunStyle<'_>) -> (f32, f32) {
+    if text.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+        return measure_text_visual_metrics_with_style(
+            text,
+            style.family,
+            style.weight,
+            style.italic,
+            style.font_size,
+        );
+    }
+
+    (
+        0.0,
+        measure_text_width_with_font(
+            text,
+            style.font_size,
+            style.family,
+            style.weight,
+            style.italic,
+            style.letter_spacing,
+            style.word_spacing,
+        ),
+    )
+}
+
+fn measure_text_visual_metrics_with_style(
+    text: &str,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    font_size: f32,
+) -> (f32, f32) {
+    let metrics = measure_text_visual_metrics(family, weight, italic, font_size, text);
+    (metrics.left_overhang, metrics.visual_width)
 }
 
 pub(super) fn text_offset_for_char_index(

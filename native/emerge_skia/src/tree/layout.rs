@@ -14,6 +14,7 @@ use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
 };
 use super::render::DEFAULT_TEXT_COLOR;
+use super::text_layout::{TextLayoutStyle, layout_text_lines};
 use crate::assets;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -115,6 +116,19 @@ pub trait TextMeasurer {
         italic: bool,
     ) -> (f32, f32);
 
+    /// Measure the visual width needed to paint the text without clipping.
+    fn measure_visual_width_with_font(
+        &self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        self.measure_with_font(text, font_size, family, weight, italic)
+            .0
+    }
+
     /// Return (ascent, descent) for a given font configuration.
     fn font_metrics(&self, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32);
 }
@@ -139,6 +153,19 @@ impl TextMeasurer for SkiaTextMeasurer {
         let height = metrics.ascent.abs() + metrics.descent;
 
         (width, height)
+    }
+
+    fn measure_visual_width_with_font(
+        &self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        use crate::renderer::measure_text_visual_metrics;
+
+        measure_text_visual_metrics(family, weight, italic, font_size, text).visual_width
     }
 
     fn font_metrics(&self, font_size: f32, family: &str, weight: u16, italic: bool) -> (f32, f32) {
@@ -223,9 +250,7 @@ fn measure_text_width_with_spacing<M: TextMeasurer>(
     }
 
     if letter_spacing == 0.0 && word_spacing == 0.0 {
-        return measurer
-            .measure_with_font(text, font_size, family, weight, italic)
-            .0;
+        return measurer.measure_visual_width_with_font(text, font_size, family, weight, italic);
     }
 
     let mut total = 0.0;
@@ -246,6 +271,30 @@ fn measure_text_width_with_spacing<M: TextMeasurer>(
     }
 
     total
+}
+
+fn multiline_text_layout<M: TextMeasurer>(
+    measurer: &M,
+    text: &str,
+    font_size: f32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    spacing: (f32, f32),
+    wrap_width: Option<f32>,
+) -> crate::tree::text_layout::TextLayout {
+    let (letter_spacing, word_spacing) = spacing;
+    layout_text_lines(
+        text,
+        wrap_width,
+        measurer.font_metrics(font_size, family, weight, italic),
+        TextLayoutStyle {
+            font_size,
+            letter_spacing,
+            word_spacing,
+        },
+        |ch| measurer.measure_with_font(&ch.to_string(), font_size, family, weight, italic).0,
+    )
 }
 
 /// Convert a Color to u32 RGBA format.
@@ -860,6 +909,48 @@ fn measure_element<M: TextMeasurer>(
             }
         }
 
+        ElementKind::Multiline => {
+            let content = attrs.content.as_deref().unwrap_or("");
+            let font_size = attrs
+                .font_size
+                .map(|s| s as f32)
+                .or(inherited.font_size)
+                .unwrap_or(16.0);
+            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let letter_spacing = attrs
+                .font_letter_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_letter_spacing)
+                .unwrap_or(0.0);
+            let word_spacing = attrs
+                .font_word_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_word_spacing)
+                .unwrap_or(0.0);
+            let layout = multiline_text_layout(
+                measurer,
+                content,
+                font_size,
+                &family,
+                weight,
+                italic,
+                (letter_spacing, word_spacing),
+                None,
+            );
+            IntrinsicSize {
+                width: resolve_outer_intrinsic_length(
+                    attrs.width.as_ref(),
+                    layout.max_width,
+                    insets.horizontal(),
+                ),
+                height: resolve_outer_intrinsic_length(
+                    attrs.height.as_ref(),
+                    layout.total_height,
+                    insets.vertical(),
+                ),
+            }
+        }
+
         ElementKind::Image | ElementKind::Video => {
             let (image_width, image_height) = if let Some((w, h)) = attrs.image_size {
                 (w, h)
@@ -1367,6 +1458,54 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
     }
 }
 
+fn resolve_multiline_kind<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    params: &ResolvePassParams<'_>,
+    element_context: &FontContext,
+    measurer: &M,
+) {
+    let content = params.attrs.content.as_deref().unwrap_or("");
+    let font_size = params
+        .attrs
+        .font_size
+        .map(|s| s as f32)
+        .or(element_context.font_size)
+        .unwrap_or(16.0);
+    let (family, weight, italic) = font_info_with_inheritance(params.attrs, element_context);
+    let letter_spacing = params
+        .attrs
+        .font_letter_spacing
+        .map(|s| s as f32)
+        .or(element_context.font_letter_spacing)
+        .unwrap_or(0.0);
+    let word_spacing = params
+        .attrs
+        .font_word_spacing
+        .map(|s| s as f32)
+        .or(element_context.font_word_spacing)
+        .unwrap_or(0.0);
+    let layout = multiline_text_layout(
+        measurer,
+        content,
+        font_size,
+        &family,
+        weight,
+        italic,
+        (letter_spacing, word_spacing),
+        Some(params.content.width.max(0.0)),
+    );
+
+    if layout.total_height > params.content.height
+        && !params.is_scrollable
+        && is_content_length(params.attrs.height.as_ref())
+    {
+        expand_frame_height_to_content(tree, params.id, layout.total_height, params.insets);
+        set_frame_content_width(tree, params.id, layout.max_width, params.insets);
+    } else {
+        set_frame_content_size(tree, params.id, layout.max_width, layout.total_height, params.insets);
+    }
+}
+
 /// Resolve an element's frame given constraints and position.
 /// Reads from pre-scaled attrs.
 fn resolve_element<M: TextMeasurer>(
@@ -1466,9 +1605,7 @@ fn resolve_element<M: TextMeasurer>(
     };
 
     match kind {
-        ElementKind::Text
-        | ElementKind::TextInput
-        | ElementKind::Image
+        ElementKind::Text | ElementKind::TextInput | ElementKind::Image
         | ElementKind::Video
         | ElementKind::None => {}
         ElementKind::El => resolve_el_kind(tree, &params, &element_context, measurer),
@@ -1481,6 +1618,7 @@ fn resolve_element<M: TextMeasurer>(
             resolve_text_column_kind(tree, &params, &element_context, measurer)
         }
         ElementKind::Paragraph => resolve_paragraph_kind(tree, &params, &element_context, measurer),
+        ElementKind::Multiline => resolve_multiline_kind(tree, &params, &element_context, measurer),
     }
 
     update_paint_children(tree, id, kind);
@@ -3095,7 +3233,8 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
                 measurer,
             );
 
-            line_height = line_height.max(frame.map(|snapshot| snapshot.content_height).unwrap_or(0.0));
+            line_height =
+                line_height.max(frame.map(|snapshot| snapshot.content_height).unwrap_or(0.0));
             line_children.push((child_id.clone(), align_y));
             current_x += child_width + options.spacing_x;
         }
@@ -3264,7 +3403,8 @@ fn resolve_paragraph_children<M: TextMeasurer>(
         let (_, text_height) = measurer.measure_with_font("Hg", font_size, &family, weight, italic);
         let (ascent, _descent) = measurer.font_metrics(font_size, &family, weight, italic);
 
-        let (space_width, _) = measurer.measure_with_font(" ", font_size, &family, weight, italic);
+        let space_width =
+            measurer.measure_visual_width_with_font(" ", font_size, &family, weight, italic);
 
         // Split content into words
         let words: Vec<&str> = content.split_whitespace().collect();
@@ -3304,8 +3444,8 @@ fn resolve_paragraph_children<M: TextMeasurer>(
         }
 
         for (i, word) in words.iter().enumerate() {
-            let (word_width, _) =
-                measurer.measure_with_font(word, font_size, &family, weight, italic);
+            let word_width =
+                measurer.measure_visual_width_with_font(word, font_size, &family, weight, italic);
 
             loop {
                 prune_flow_floats(active_floats, cursor_y);

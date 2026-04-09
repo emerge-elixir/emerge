@@ -42,7 +42,10 @@ pub(super) fn mods_from_sctk(modifiers: Modifiers) -> u8 {
 }
 
 pub(super) fn normalize_commit_text(text: &str) -> Option<String> {
-    let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    let filtered: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
+        .collect();
 
     if filtered.is_empty() {
         None
@@ -246,7 +249,8 @@ mod tests {
 
     #[test]
     fn normalize_commit_text_filters_control_characters() {
-        assert_eq!(normalize_commit_text("ab\ncd"), Some("abcd".to_string()));
+        assert_eq!(normalize_commit_text("ab\ncd"), Some("ab\ncd".to_string()));
+        assert_eq!(normalize_commit_text("ab\tcd"), Some("ab\tcd".to_string()));
         assert_eq!(normalize_commit_text("\u{7f}"), None);
     }
 }

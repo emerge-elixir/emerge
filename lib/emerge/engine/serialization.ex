@@ -7,7 +7,7 @@ defmodule Emerge.Engine.Serialization do
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Tree.Nearby
 
-  @version 5
+  @version 6
 
   @type_tag %{
     row: 1,
@@ -20,7 +20,8 @@ defmodule Emerge.Engine.Serialization do
     text_column: 8,
     image: 9,
     text_input: 10,
-    video: 11
+    video: 11,
+    multiline: 12
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)

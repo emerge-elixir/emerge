@@ -169,6 +169,8 @@ pub(super) fn apply_edit_request(
         } => apply_delete_surrounding(content, cursor, *before_length, *after_length),
         TextInputEditRequest::MoveLeft { .. }
         | TextInputEditRequest::MoveRight { .. }
+        | TextInputEditRequest::MoveUp { .. }
+        | TextInputEditRequest::MoveDown { .. }
         | TextInputEditRequest::MoveHome { .. }
         | TextInputEditRequest::MoveEnd { .. } => None,
     }

@@ -484,6 +484,39 @@ defmodule EmergeSkia.EmrgRoundtripTest do
            }
   end
 
+  test "EMRG roundtrip preserves multiline element" do
+    tree =
+      Emerge.UI.Input.multiline(
+        [
+          width(px(200)),
+          Emerge.UI.Font.size(14.0),
+          Event.on_change({self(), :changed}),
+          Event.on_key_down(:enter, {self(), :submitted})
+        ],
+        "alpha\nbeta"
+      )
+
+    {_vdom, assigned} = Emerge.Engine.Reconcile.assign_ids(tree)
+    encoded = Emerge.Engine.Serialization.encode_tree(assigned)
+
+    roundtrip =
+      case EmergeSkia.Native.tree_roundtrip(encoded) do
+        bin when is_binary(bin) -> bin
+        {:ok, bin} when is_binary(bin) -> bin
+        {:error, reason} -> flunk("tree_roundtrip failed: #{reason}")
+        other -> flunk("unexpected tree_roundtrip result: #{inspect(other)}")
+      end
+
+    decoded = Emerge.Engine.Serialization.decode(roundtrip)
+
+    assert assigned.type == :multiline
+    assert decoded.type == :multiline
+    assert decoded.attrs.content == "alpha\nbeta"
+    assert decoded.attrs.font_size == 14.0
+    assert decoded.attrs.on_change == true
+    assert [%{key: :enter, mods: [], match: :exact}] = decoded.attrs.on_key_down
+  end
+
   test "EMRG roundtrip preserves new border features" do
     tree =
       el(

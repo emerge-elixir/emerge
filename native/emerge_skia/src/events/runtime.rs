@@ -30,7 +30,8 @@ use crate::{
     actors::{EventMsg, TreeMsg},
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
-    input::{InputEvent, InputHandler, SCROLL_LINE_PIXELS},
+    input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
+    keys::CanonicalKey,
     tree::{
         element::{ElementId, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
@@ -83,6 +84,12 @@ struct AdaptiveScrollSimulation {
     initial_velocity: f32,
     duration_secs: f32,
     distance: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TextCommitSuppression {
+    element_id: ElementId,
+    key: CanonicalKey,
 }
 
 impl AdaptiveScrollSimulation {
@@ -267,6 +274,7 @@ struct RuntimeListenerComputeCtx<'a> {
     focused_id: Option<&'a ElementId>,
     hovered_id: Option<&'a ElementId>,
     text_states: &'a HashMap<ElementId, TextInputState>,
+    text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
     clipboard: &'a mut ClipboardManager,
 }
 
@@ -285,6 +293,16 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 
     fn clipboard_text(&mut self, target: ClipboardTarget) -> Option<String> {
         self.clipboard.get_text(target)
+    }
+
+    fn take_text_commit_suppression(&mut self, element_id: &ElementId) -> bool {
+        self.text_commit_suppressions
+            .iter()
+            .position(|suppression| &suppression.element_id == element_id)
+            .map(|index| {
+                self.text_commit_suppressions.remove(index);
+            })
+            .is_some()
     }
 
     fn dispatch_base(&mut self, input: &ListenerInput) -> Vec<ListenerAction> {
@@ -381,6 +399,7 @@ struct DirectEventRuntime {
     last_focus_on_mount_revision: u64,
     focused_id: Option<ElementId>,
     text_states: HashMap<ElementId, TextInputState>,
+    text_commit_suppressions: Vec<TextCommitSuppression>,
     pending_text_patches: HashMap<ElementId, VecDeque<PendingTextPatch>>,
     scrollbar_nodes: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
@@ -424,6 +443,7 @@ impl DirectEventRuntime {
             last_focus_on_mount_revision: 0,
             focused_id: None,
             text_states: HashMap::new(),
+            text_commit_suppressions: Vec::new(),
             pending_text_patches: HashMap::new(),
             scrollbar_nodes: HashMap::new(),
             input_handler: InputHandler::new(),
@@ -725,6 +745,7 @@ impl DirectEventRuntime {
             self.listener_lane.buffered_inputs.len()
         );
         forward_observer_input(&event, &self.input_handler, &self.input_target);
+        self.clear_text_commit_suppressions_for_event(&event);
 
         if self.listener_lane.is_stale() {
             self.listener_lane.buffer_input(event);
@@ -790,6 +811,11 @@ impl DirectEventRuntime {
         self.reconcile_runtime_overlay(&text_inputs);
         self.recompose_overlay_registry();
         self.focused_id = focused_id;
+        self.text_commit_suppressions.retain(|suppression| {
+            self.focused_id
+                .as_ref()
+                .is_some_and(|focused_id| focused_id == &suppression.element_id)
+        });
 
         let mut changed_tree = reconcile_text_input_states(
             &text_inputs,
@@ -1028,6 +1054,7 @@ impl DirectEventRuntime {
                 focused_id: self.focused_id.as_ref(),
                 hovered_id: self.hovered_id.as_ref(),
                 text_states: &self.text_states,
+                text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
             };
             registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
@@ -1225,6 +1252,10 @@ impl DirectEventRuntime {
             RuntimeChange::SetTextInputState { element_id, state } => {
                 self.apply_text_input_state(&element_id, state);
             }
+            RuntimeChange::ArmTextCommitSuppression { element_id, key } => {
+                self.text_commit_suppressions
+                    .push(TextCommitSuppression { element_id, key });
+            }
             RuntimeChange::ExpectTextInputPatchValue {
                 element_id,
                 content,
@@ -1239,6 +1270,19 @@ impl DirectEventRuntime {
 
     fn apply_text_input_state(&mut self, element_id: &ElementId, state: TextInputState) {
         self.text_states.insert(element_id.clone(), state);
+    }
+
+    fn clear_text_commit_suppressions_for_event(&mut self, event: &InputEvent) {
+        match event {
+            InputEvent::Key { key, action, .. } if *action == ACTION_PRESS => {
+                self.text_commit_suppressions
+                    .retain(|suppression| suppression.key == *key);
+            }
+            InputEvent::Focused { focused: false } => {
+                self.text_commit_suppressions.clear();
+            }
+            _ => {}
+        }
     }
 
     fn enqueue_pending_text_patch(&mut self, element_id: ElementId, content: String) {
@@ -1963,8 +2007,8 @@ mod tests {
     };
     use crate::tree::attrs::TextAlign;
     use crate::tree::attrs::{
-        AlignX, AlignY, Attrs, Length, MouseOverAttrs, VirtualKeyHoldMode, VirtualKeySpec,
-        VirtualKeyTapAction,
+        AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
+        VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
     use crate::tree::element::ElementId;
     use crate::tree::element::{
@@ -2007,9 +2051,14 @@ mod tests {
             preedit_cursor: None,
             focused,
             emit_change: false,
+            multiline: false,
             frame_x: 0.0,
+            frame_y: 0.0,
             frame_width: 100.0,
+            frame_height: 20.0,
+            inset_top: 0.0,
             inset_left: 0.0,
+            inset_bottom: 0.0,
             inset_right: 0.0,
             screen_to_local: Some(crate::tree::transform::Affine2::identity()),
             text_align: TextAlign::Left,
@@ -2028,6 +2077,15 @@ mod tests {
             push_tree_msg_flat(msg, &mut out);
         }
         out
+    }
+
+    fn make_key_down_binding(key: CanonicalKey) -> KeyBindingSpec {
+        KeyBindingSpec {
+            route: format!("key_down:{}", key.atom_name()),
+            key,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }
     }
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
@@ -3466,6 +3524,169 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_key_down_binding_suppresses_buffered_text_commit() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![make_key_down_binding(CanonicalKey::A)]);
+        let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![150]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![150])),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::A,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(runtime.listener_lane.is_stale());
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "a".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::A,
+                action: ACTION_RELEASE,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![150]))
+            .expect("session preserved after suppression");
+        assert_eq!(session.content, "ab");
+        assert_eq!(session.cursor, 2);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, .. }
+                if *element_id == ElementId::from_term_bytes(vec![150])
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_multiline_enter_inserts_newline() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        let element = with_interaction(make_element(151, ElementKind::Multiline, attrs));
+        let mut state = make_text_input_state("ab", 2, None, true);
+        state.multiline = true;
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(ElementId::from_term_bytes(vec![151]), state)]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![151])),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::Enter,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![151]))
+            .expect("multiline session updated");
+        assert_eq!(session.content, "ab\n");
+        assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_multiline_key_down_binding_suppresses_enter_default() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("ab".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(2);
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![make_key_down_binding(CanonicalKey::Enter)]);
+        let element = with_interaction(make_element(152, ElementKind::Multiline, attrs));
+        let mut state = make_text_input_state("ab", 2, None, true);
+        state.multiline = true;
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(ElementId::from_term_bytes(vec![152]), state)]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![152])),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::Enter,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![152]))
+            .expect("multiline session preserved");
+        assert_eq!(session.content, "ab");
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, .. }
+                if *element_id == ElementId::from_term_bytes(vec![152])
+        )));
+    }
+
+    #[test]
     fn direct_runtime_virtual_key_release_commits_text_to_focused_input() {
         let mut text_attrs = Attrs::default();
         text_attrs.content = Some("ab".to_string());
@@ -3548,6 +3769,93 @@ mod tests {
             .expect("session updated after virtual key tap");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_virtual_key_text_and_key_respects_key_down_suppression() {
+        let mut text_attrs = Attrs::default();
+        text_attrs.content = Some("ab".to_string());
+        text_attrs.text_input_focused = Some(true);
+        text_attrs.text_input_cursor = Some(2);
+        text_attrs.focused_active = Some(true);
+        text_attrs.on_key_down = Some(vec![make_key_down_binding(CanonicalKey::A)]);
+        let text_input = with_interaction(make_element(180, ElementKind::TextInput, text_attrs));
+
+        let mut key_attrs = Attrs::default();
+        key_attrs.virtual_key = Some(VirtualKeySpec {
+            tap: VirtualKeyTapAction::TextAndKey {
+                text: "a".to_string(),
+                key: CanonicalKey::A,
+                mods: 0,
+            },
+            hold: VirtualKeyHoldMode::None,
+            hold_ms: 350,
+            repeat_ms: 40,
+        });
+        let soft_key = with_interaction_rect(
+            make_element(181, ElementKind::El, key_attrs),
+            0.0,
+            50.0,
+            100.0,
+            40.0,
+        );
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+            text_inputs: HashMap::from([(
+                ElementId::from_term_bytes(vec![180]),
+                make_text_input_state("ab", 2, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(ElementId::from_term_bytes(vec![180])),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 60.0,
+            },
+            &tree_tx,
+            false,
+        );
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 60.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        let session = runtime
+            .text_states
+            .get(&ElementId::from_term_bytes(vec![180]))
+            .expect("session preserved after suppressed virtual key tap");
+        assert_eq!(session.content, "ab");
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, .. }
+                if *element_id == ElementId::from_term_bytes(vec![180])
+        )));
     }
 
     #[test]
@@ -4340,7 +4648,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_updates_cursor_icon_for_text_pressable_and_fallback() {
+    fn direct_runtime_updates_cursor_icon_for_text_pressable_mouse_down_and_fallback() {
         let text_input = with_interaction_rect(
             make_element(170, ElementKind::TextInput, Attrs::default()),
             0.0,
@@ -4359,8 +4667,22 @@ mod tests {
             40.0,
         );
 
+        let mut mouse_down_attrs = Attrs::default();
+        mouse_down_attrs.on_mouse_down = Some(true);
+        let mouse_down_only = with_interaction_rect(
+            make_element(172, ElementKind::El, mouse_down_attrs),
+            120.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
         let rebuild = RegistryRebuildPayload {
-            base_registry: registry_builder::registry_for_elements(&[text_input, pressable]),
+            base_registry: registry_builder::registry_for_elements(&[
+                text_input,
+                pressable,
+                mouse_down_only,
+            ]),
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
@@ -4382,6 +4704,11 @@ mod tests {
         assert!(drain_msgs(&tree_rx).is_empty());
 
         runtime.handle_input_event(InputEvent::CursorPos { x: 130.0, y: 10.0 }, &tree_tx, false);
+        assert_eq!(runtime.current_cursor_icon, CursorIcon::Pointer);
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 190.0, y: 10.0 }, &tree_tx, false);
         assert_eq!(runtime.current_cursor_icon, CursorIcon::Default);
         assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).is_empty());

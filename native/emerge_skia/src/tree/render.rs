@@ -13,22 +13,23 @@ use self::paint::{
     collect_scrollbar_nodes, render_image_nodes, render_video_nodes,
 };
 use self::text::{
-    TextDecorationSpec, render_text_input_items, render_text_items, text_decoration_items,
+    render_multiline_text_input_items, render_text_input_items, render_text_items,
+    text_decoration_items, TextDecorationSpec,
 };
-use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
+use super::attrs::{effective_scrollbar_x, effective_scrollbar_y, Attrs};
 use super::element::{
     Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
     RetainedLocalBranchRef,
 };
-use super::geometry::{ClipShape, Rect, host_clip_shape, self_shape as geometry_self_shape};
+use super::geometry::{host_clip_shape, self_shape as geometry_self_shape, ClipShape, Rect};
 use super::layout::FontContext;
 use super::scene::{
-    ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
+    child_context as next_scene_context, resolve_node_state, ResolvedNodeState, SceneContext,
 };
 use super::transform::element_transform;
-use crate::events::{RegistryRebuildPayload, registry_builder};
+use crate::events::{registry_builder, RegistryRebuildPayload};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
-use crate::renderer::make_font_with_style;
+use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 
 pub(crate) struct RenderOutput {
     pub scene: RenderScene,
@@ -533,7 +534,8 @@ fn build_paragraph_subtree(
             if frag.underline || frag.strike {
                 let font =
                     make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
-                let (word_width, _) = font.measure_str(&frag.text, None);
+                let word_width =
+                    measure_text_visual_metrics_with_font(&font, &frag.text).visual_width;
                 fragment_nodes.extend(text_decoration_items(TextDecorationSpec {
                     x,
                     baseline_y,
@@ -581,6 +583,18 @@ fn build_own_content_nodes(
                     render_text_input_items(&mut nodes, frame, attrs, inherited);
             } else {
                 let _ = render_text_input_items(&mut nodes, frame, attrs, inherited);
+            }
+        }
+        ElementKind::Multiline => {
+            if attrs.text_input_focused.unwrap_or(false) {
+                *text_input_focused = true;
+            }
+
+            if text_input_cursor_area.is_none() {
+                *text_input_cursor_area =
+                    render_multiline_text_input_items(&mut nodes, frame, attrs, inherited);
+            } else {
+                let _ = render_multiline_text_input_items(&mut nodes, frame, attrs, inherited);
             }
         }
         ElementKind::Image => nodes.extend(render_image_nodes(frame, attrs)),
