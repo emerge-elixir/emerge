@@ -193,6 +193,22 @@ With the default routing, a change like `"hello"` becomes:
 
 and that message is sent to `self()` unless you provide another pid explicitly.
 
+The same payload shape applies to `Input.multiline/2`:
+
+```elixir
+Input.multiline([Event.on_change(:notes_changed)], "")
+```
+
+If the value becomes `"hello\nworld"`, the delivered message is:
+
+```elixir
+{:notes_changed, "hello\nworld"}
+```
+
+`Input.multiline/2` is still controlled from your viewport or app state, just
+like `Input.text/2`. `Enter` inserts a newline by default unless you intercept
+it with `Event.on_key_down(:enter, ...)`.
+
 ## Keeping app state in the viewport is an anti-pattern
 
 This tutorial keeps the counter state inside the viewport for demonstration purposes.

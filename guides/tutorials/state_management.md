@@ -454,6 +454,15 @@ def create_task_input do
     create_task.title
   )
 end
+
+def comment_body_input do
+  comment = solve(MyApp.App, :comment_draft)
+
+  Input.multiline(
+    [Event.on_change(event(comment, :set_body))],
+    comment.body
+  )
+end
 ```
 
 This keeps ownership obvious:
@@ -461,6 +470,11 @@ This keeps ownership obvious:
 - screen selection goes to the screen controller
 - input changes go to the input controller
 - list mutations go to the list controller
+
+The same ownership pattern works for longer drafts such as notes, descriptions,
+or comments. `Input.multiline/2` still emits updated values through
+`on_change/1`; omitting `height(...)` just means the field auto-grows with its
+wrapped content.
 
 The viewport should not become a generic event router for application logic.
 
@@ -579,7 +593,9 @@ end
 ```
 
 Use this when many entities need the same local behavior, but each entity needs
-its own isolated state.
+its own isolated state. If each item needs a multiline draft instead, swap
+`Input.text/2` for `Input.multiline/2`; the collection ownership pattern stays
+the same.
 
 ## Keep overlays close to the trigger
 
