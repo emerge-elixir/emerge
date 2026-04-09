@@ -8,7 +8,7 @@ on:
         required: true
         default: main
       organization:
-        description: Hex organization to publish to (optional; falls back to HEX_ORGANIZATION variable)
+        description: Hex organization to publish to (optional; leave blank for the public Hex repo)
         required: false
         default: ""
   workflow_run:
@@ -45,8 +45,6 @@ jobs:
         run: |
           if [ -n "${{ inputs.organization }}" ]; then
             echo "HEX_ORGANIZATION=${{ inputs.organization }}" >> "$GITHUB_ENV"
-          elif [ -n "${{ vars.HEX_ORGANIZATION }}" ]; then
-            echo "HEX_ORGANIZATION=${{ vars.HEX_ORGANIZATION }}" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Elixir and OTP
