@@ -1728,7 +1728,13 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
             a
         });
 
-        let text = make_element(text_id, ElementKind::Text, text_attrs("Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content."));
+        let text = make_element(
+            text_id,
+            ElementKind::Text,
+            text_attrs(
+                "Relaxed line spacing improves readability for body text. Good for articles, documentation, and longer content.",
+            ),
+        );
 
         let label_id = label.id.clone();
         let box_id = box_el.id.clone();

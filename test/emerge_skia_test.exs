@@ -51,7 +51,7 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels supports snapshot placeholders" do
-    tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
+    tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     snapshot =
       EmergeSkia.render_to_pixels(
@@ -71,8 +71,8 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels await mode resolves logical image assets" do
-    good_tree = image([width(px(32)), height(px(24))], "demo_images/static.jpg")
-    bad_tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
+    good_tree = image([width(px(32)), height(px(24))], "sample_assets/static.jpg")
+    bad_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     good =
       EmergeSkia.render_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
@@ -86,7 +86,7 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels resolves logical SVG image assets" do
-    tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "demo_images/tile_quad.svg")
+    tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
 
     pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
@@ -98,7 +98,7 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels svg/2 preserves original multicolor SVGs by default" do
-    tree = svg([width(px(8)), height(px(8)), image_fit(:cover)], "demo_images/tile_quad.svg")
+    tree = svg([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
 
     pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
@@ -118,7 +118,7 @@ defmodule EmergeSkiaTest do
           image_fit(:cover),
           Svg.color({:color_rgb, {255, 255, 255}})
         ],
-        "demo_images/tile_quad.svg"
+        "sample_assets/tile_quad.svg"
       )
 
     pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
@@ -131,8 +131,8 @@ defmodule EmergeSkiaTest do
   end
 
   test "render_to_pixels svg/2 fails when source resolves to raster" do
-    bad_tree = svg([width(px(32)), height(px(24))], "demo_images/static.jpg")
-    failed_tree = image([width(px(32)), height(px(24))], "demo_images/missing.jpg")
+    bad_tree = svg([width(px(32)), height(px(24))], "sample_assets/static.jpg")
+    failed_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     bad = EmergeSkia.render_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
     failed = EmergeSkia.render_to_pixels(failed_tree, otp_app: :emerge, width: 32, height: 24)
@@ -147,7 +147,7 @@ defmodule EmergeSkiaTest do
         [
           width(px(8)),
           height(px(8)),
-          Emerge.UI.Background.image("demo_images/tile_quad.svg", fit: :repeat)
+          Emerge.UI.Background.image("sample_assets/tile_quad.svg", fit: :repeat)
         ],
         none()
       )
@@ -269,14 +269,14 @@ defmodule EmergeSkiaTest do
       EmergeSkia.start(
         otp_app: :emerge,
         backend: :wayland,
-        drm_cursor: [default: [source: "demo_images/tile_quad.svg", hotspot: {1, 1}]]
+        drm_cursor: [default: [source: "sample_assets/tile_quad.svg", hotspot: {1, 1}]]
       )
     end
   end
 
   test "load_font_file/4 normalizes native ok tuple" do
     priv_dir = :code.priv_dir(:emerge) |> List.to_string()
-    path = Path.join(priv_dir, "demo_fonts/Lobster-Regular.ttf")
+    path = Path.join(priv_dir, "test_assets/Lobster-Regular.ttf")
 
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)

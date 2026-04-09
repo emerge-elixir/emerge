@@ -64,7 +64,7 @@ defmodule EmergeSkia.OptionsTest do
     assert [
              %{
                icon: "default",
-               source: "demo_images/tile_quad.svg",
+               source: "sample_assets/tile_quad.svg",
                hotspot_x: 1.0,
                hotspot_y: 1.0
              },
@@ -77,7 +77,7 @@ defmodule EmergeSkia.OptionsTest do
            ] =
              Assets.normalize_drm_cursor_overrides!(
                drm_cursor: [
-                 default: [source: %Ref{path: "demo_images/tile_quad.svg"}, hotspot: {1, 1}],
+                 default: [source: %Ref{path: "sample_assets/tile_quad.svg"}, hotspot: {1, 1}],
                  text: [source: runtime_path, hotspot: {11.5, 11.5}]
                ]
              )
@@ -87,14 +87,14 @@ defmodule EmergeSkia.OptionsTest do
     assert [
              %{
                icon: "pointer",
-               source: "demo_images/tile_quad.svg",
+               source: "sample_assets/tile_quad.svg",
                hotspot_x: 7.0,
                hotspot_y: 2.0
              }
            ] =
              Assets.normalize_drm_cursor_overrides!(
                drm_cursor: %{
-                 "pointer" => %{"source" => "demo_images/tile_quad.svg", "hotspot" => {7, 2}}
+                 "pointer" => %{"source" => "sample_assets/tile_quad.svg", "hotspot" => {7, 2}}
                }
              )
   end
@@ -102,7 +102,7 @@ defmodule EmergeSkia.OptionsTest do
   test "normalize_drm_cursor_overrides! rejects unsupported extensions" do
     assert_raise ArgumentError, ~r/drm_cursor\.default\.source extension must be one of/, fn ->
       Assets.normalize_drm_cursor_overrides!(
-        drm_cursor: [default: [source: "demo_images/static.jpg", hotspot: {1, 1}]]
+        drm_cursor: [default: [source: "sample_assets/static.jpg", hotspot: {1, 1}]]
       )
     end
   end
