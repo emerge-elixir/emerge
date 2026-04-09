@@ -73,14 +73,6 @@ end
 
 <img src="assets/counter-basic.png" alt="Rendered counter example" width="272">
 
-## State management
-
-Emerge works well with [Solve](https://github.com/emerge-elixir/solve) for powerful state management in larger apps. It keeps shared application state and rerender coordination outside the viewport process while Emerge stays focused on rendering.
-
-Emerge does not depend on Solve. You can use another state management approach if it fits your app better.
-
-For a fuller app example that uses `Emerge` and `Solve`, see [`example/`](https://github.com/emerge-elixir/emerge/tree/main/example).
-
 ## Easy reuse
 
 Reuse in Emerge is just Elixir. Build data, map over it, and extract helpers that return UI trees.
@@ -134,6 +126,17 @@ end
 
 There is no separate component model to learn. If a function returns UI, you can compose it like any other Elixir function.
 
+## State management
+
+Emerge is designed with [Solve](https://hex.pm/packages/solve) as a state management solution to keep complex UI apps sane. It keeps shared application state and rerender coordination outside the viewport process while Emerge stays focused on rendering.
+
+Emerge does not depend on Solve. You can use another state management approach if it fits your app better.
+
+
+## Try it out
+
+Try the standalone demo app in [`emerge_demo`](https://github.com/emerge-elixir/emerge_demo).
+
 ## Features
 
 - Build layout and styling in one declarative tree with `el/2`, `row/2`, `column/2`, and related helpers
@@ -147,21 +150,15 @@ There is no separate component model to learn. If a function returns UI, you can
 
 - **Wayland** for desktop Linux windows
 - **DRM** for embedded, kiosk, and Nerves deployments
-- **Raster** for offscreen rendering and tests
-
-Compile the backends you need:
-
-```elixir
-config :emerge, compiled_backends: [:wayland]
-```
+- **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
 
 For runtime backend selection and multi-backend setup, see [Set up a viewport](guides/tutorials/set_up_viewport.md).
 
 ## Requirements
 
 - Elixir 1.19+
-- Rust toolchain
-- Linux (Wayland or DRM for on-screen backends)
+- Linux (Wayland session or DRM for on-screen backends)
+- Rust toolchain (if rustler precompiled doesn't cover your combination)
 
 ## Documentation
 
@@ -179,3 +176,14 @@ Run `mix docs` to build the full docs locally.
 ## Attribution
 
 Emerge's UI API is heavily inspired by [elm-ui](https://package.elm-lang.org/packages/mdgriffith/elm-ui/latest/) by Matthew Griffith.
+
+## Third-Party Assets
+
+Bundled third-party asset notices are documented in [THIRD_PARTY_ASSETS.md](THIRD_PARTY_ASSETS.md). Package/runtime-relevant notices are summarized in [NOTICE](NOTICE).
+
+Packaged/runtime-relevant asset groups:
+
+- Inter default fonts in `native/emerge_skia/src/fonts` - SIL Open Font License 1.1
+- Mocu DRM cursor SVGs in `native/emerge_skia/src/backend/drm/cursors/mocu_black_right` - CC0 1.0 Universal
+
+If you redistribute Emerge inside an application or firmware image, include the applicable notice files.
