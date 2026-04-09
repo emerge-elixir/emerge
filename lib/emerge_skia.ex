@@ -54,8 +54,9 @@ defmodule EmergeSkia do
   - `0x00000080` = Black at 50% opacity
 
   When you register an input target with `set_input_target/2`, Wayland close
-  requests are delivered as `:closed`. This lifecycle message bypasses the
-  input mask so higher-level runtimes can shut down promptly.
+  requests are delivered separately as
+  `{:emerge_skia_close, :window_close_requested}`. This lifecycle message
+  bypasses the input mask so higher-level runtimes can shut down promptly.
   """
 
   alias EmergeSkia.Assets
@@ -80,11 +81,13 @@ defmodule EmergeSkia do
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
+  - `scroll_line_pixels` - Pixel distance used for each discrete mouse-wheel line step (default: `30.0`)
   - `drm_card` - DRM device path (default: `/dev/dri/card0`)
   - `hw_cursor` - Enable hardware cursor when available (default: true)
   - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
+  - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as
@@ -505,8 +508,9 @@ defmodule EmergeSkia do
   @doc """
   Set the input event mask to filter which events are sent.
 
-  `:closed` lifecycle notifications are always delivered to the input target and
-  are not filtered by this mask.
+  Wayland close notifications are always delivered to the input target as
+  `{:emerge_skia_close, :window_close_requested}` and are not filtered by this
+  mask.
 
   ## Example
 
@@ -540,12 +544,12 @@ defmodule EmergeSkia do
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
 
-  On Wayland, lifecycle event payloads include:
+  On Wayland, close notifications are sent separately as:
 
-  - `:closed`
+  - `{:emerge_skia_close, :window_close_requested}`
 
-  `:closed` bypasses the input mask so close requests are still delivered when
-  other raw input categories are disabled.
+  This lifecycle message bypasses the input mask so close requests are still
+  delivered when other raw input categories are disabled.
 
   On DRM, raw `{:cursor_pos, {x, y}}` delivery is latest-wins under load so
   pointer motion does not stall rendering. Button, scroll, key, and text events

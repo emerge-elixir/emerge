@@ -44,6 +44,7 @@ use wayland_client::{
 };
 
 use crate::{
+    InputTargetRelay,
     actors::{EventMsg, RenderMsg, TreeMsg},
     backend::{
         wake::{
@@ -83,6 +84,8 @@ struct WaylandAppRuntime {
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
+    input_target: Arc<InputTargetRelay>,
+    close_signal_log: bool,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
@@ -94,6 +97,8 @@ pub(crate) struct WaylandRunArgs {
     pub running_flag: Arc<AtomicBool>,
     pub tree_tx: CrossbeamSender<TreeMsg>,
     pub event_tx: crossbeam_channel::Sender<EventMsg>,
+    pub input_target: Arc<InputTargetRelay>,
+    pub close_signal_log: bool,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
     pub video_registry: Arc<VideoRegistry>,
@@ -136,6 +141,27 @@ fn should_reconfigure_surface(size_changed: bool, env_missing: bool) -> bool {
 
 fn should_draw_frame(present: &PresentState, env_ready: bool, exit: bool) -> bool {
     env_ready && present.can_draw(exit)
+}
+
+// The compositor thread must never block on actor queues. Under backpressure,
+// dropping stale work is preferable to letting the window stop responding.
+fn try_send_wayland_event(event_tx: &crossbeam_channel::Sender<EventMsg>, msg: EventMsg) {
+    match event_tx.try_send(msg) {
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn try_send_wayland_tree(tree_tx: &CrossbeamSender<TreeMsg>, msg: TreeMsg) {
+    match tree_tx.try_send(msg) {
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn log_close_signal(enabled: bool, message: impl Into<String>) {
+    if enabled {
+        let message = message.into();
+        eprintln!("EmergeSkia native[wayland_close] {message}");
+    }
 }
 
 fn key_text_commit_event(
@@ -188,6 +214,8 @@ pub(super) struct WaylandApp {
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
+    input_target: Arc<InputTargetRelay>,
+    close_signal_log: bool,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
     render_state: RenderState,
@@ -220,6 +248,8 @@ impl WaylandApp {
             running_flag,
             tree_tx,
             event_tx,
+            input_target,
+            close_signal_log,
             render_rx,
             cursor_icon_rx,
             video_registry,
@@ -247,6 +277,8 @@ impl WaylandApp {
             render_rx,
             cursor_icon_rx,
             event_tx,
+            input_target,
+            close_signal_log,
             video_registry,
             loop_handle,
             render_state: RenderState::default(),
@@ -281,7 +313,7 @@ impl WaylandApp {
     }
 
     pub(super) fn send_input_event(&self, event: InputEvent) {
-        let _ = self.event_tx.send(EventMsg::InputEvent(event));
+        try_send_wayland_event(&self.event_tx, EventMsg::InputEvent(event));
     }
 
     fn emit_key_press(&self, event: &KeyEvent, allow_protocol_text_active_text_commit: bool) {
@@ -304,6 +336,20 @@ impl WaylandApp {
 
     fn emit_key_repeat(&self, event: &KeyEvent) {
         self.emit_key_press(event, true);
+    }
+
+    fn unmap_for_close(&self, conn: &Connection) {
+        log_close_signal(self.close_signal_log, "request_close before unmap");
+        self.window.attach(None, 0, 0);
+        self.window.wl_surface().commit();
+
+        match conn.flush() {
+            Ok(()) => log_close_signal(self.close_signal_log, "request_close after unmap flush"),
+            Err(err) => log_close_signal(
+                self.close_signal_log,
+                format!("request_close unmap flush failed: {err}"),
+            ),
+        }
     }
 
     fn flush_backend_updates(&mut self, conn: &Connection) {
@@ -534,18 +580,13 @@ impl WaylandApp {
         presented_at: std::time::Instant,
         predicted_next_present_at: std::time::Instant,
     ) {
-        let msg = TreeMsg::AnimationPulse {
-            presented_at,
-            predicted_next_present_at,
-        };
-
-        match self.tree_tx.try_send(msg) {
-            Ok(()) => {}
-            Err(TrySendError::Full(msg)) => {
-                let _ = self.tree_tx.send(msg);
-            }
-            Err(TrySendError::Disconnected(_)) => {}
-        }
+        try_send_wayland_tree(
+            &self.tree_tx,
+            TreeMsg::AnimationPulse {
+                presented_at,
+                predicted_next_present_at,
+            },
+        );
     }
 
     fn send_present_timing(
@@ -553,14 +594,13 @@ impl WaylandApp {
         presented_at: std::time::Instant,
         predicted_next_present_at: std::time::Instant,
     ) {
-        let msg = EventMsg::PresentTiming {
-            presented_at,
-            predicted_next_present_at,
-        };
-
-        match self.event_tx.try_send(msg) {
-            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-        }
+        try_send_wayland_event(
+            &self.event_tx,
+            EventMsg::PresentTiming {
+                presented_at,
+                predicted_next_present_at,
+            },
+        );
     }
 }
 
@@ -616,9 +656,16 @@ impl CompositorHandler for WaylandApp {
 
 impl WindowHandler for WaylandApp {
     fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &Window) {
-        let _ = self.event_tx.send(EventMsg::Closed);
+        log_close_signal(self.close_signal_log, "request_close begin");
+        self.unmap_for_close(_conn);
         self.running_flag.store(false, Ordering::Relaxed);
         self.exit = true;
+        self.input_target
+            .send_close_requested(self.close_signal_log);
+        log_close_signal(
+            self.close_signal_log,
+            "request_close after send_close_requested",
+        );
     }
 
     fn configure(
@@ -944,6 +991,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
         running_flag,
         tree_tx,
         event_tx,
+        input_target,
+        close_signal_log,
         render_rx,
         cursor_icon_rx,
         video_registry,
@@ -1034,6 +1083,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
             running_flag: Arc::clone(&running_flag),
             tree_tx,
             event_tx: event_tx.clone(),
+            input_target,
+            close_signal_log,
             render_rx,
             cursor_icon_rx,
             video_registry,
@@ -1064,14 +1115,26 @@ pub(crate) fn run(args: WaylandRunArgs) {
         app.flush_backend_updates(&conn);
         app.maybe_draw();
     }
+
+    let env = app.env.take();
+    drop(env);
+    drop(app);
+    drop(event_loop);
+    drop(conn);
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration};
+
+    use crossbeam_channel::bounded;
+
     use super::{
         PresentState, WaylandVideoImportState, WaylandVideoSyncAction, key_text_commit_event,
-        should_draw_frame, should_reconfigure_surface,
+        should_draw_frame, should_reconfigure_surface, try_send_wayland_event,
+        try_send_wayland_tree,
     };
+    use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
 
     #[test]
@@ -1138,5 +1201,66 @@ mod tests {
             event,
             Some(InputEvent::TextCommit { text, mods }) if text == "b" && mods == 0
         ));
+    }
+
+    #[test]
+    fn wayland_event_send_does_not_block_when_event_channel_is_full() {
+        let (event_tx, event_rx) = bounded(1);
+        event_tx.send(EventMsg::Stop).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            try_send_wayland_event(
+                &event_tx,
+                EventMsg::InputEvent(InputEvent::Focused { focused: true }),
+            );
+            let _ = done_tx.send(());
+        });
+
+        let completed = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+
+        if completed {
+            assert!(matches!(event_rx.try_recv(), Ok(EventMsg::Stop)));
+        }
+
+        drop(event_rx);
+        let _ = handle.join();
+
+        assert!(
+            completed,
+            "wayland event send should not block when event channel is full"
+        );
+    }
+
+    #[test]
+    fn wayland_animation_pulse_send_does_not_block_when_tree_channel_is_full() {
+        let (tree_tx, tree_rx) = bounded(1);
+        tree_tx.send(TreeMsg::Stop).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            try_send_wayland_tree(
+                &tree_tx,
+                TreeMsg::AnimationPulse {
+                    presented_at: std::time::Instant::now(),
+                    predicted_next_present_at: std::time::Instant::now(),
+                },
+            );
+            let _ = done_tx.send(());
+        });
+
+        let completed = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+
+        if completed {
+            assert!(matches!(tree_rx.try_recv(), Ok(TreeMsg::Stop)));
+        }
+
+        drop(tree_rx);
+        let _ = handle.join();
+
+        assert!(
+            completed,
+            "wayland tree send should not block when tree channel is full"
+        );
     }
 }

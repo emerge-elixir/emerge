@@ -34,6 +34,23 @@ defmodule EmergeSkia.OptionsTest do
     end
   end
 
+  test "build_start_native_opts! normalizes scroll_line_pixels" do
+    assert %{scroll_line_pixels: 45.0} =
+             Options.build_start_native_opts!(scroll_line_pixels: 45)
+
+    assert %{scroll_line_pixels: 18.5} =
+             Options.build_start_native_opts!(scroll_line_pixels: 18.5)
+
+    assert_raise ArgumentError, ~r/:scroll_line_pixels must be a positive number/, fn ->
+      Options.build_start_native_opts!(scroll_line_pixels: 0)
+    end
+  end
+
+  test "build_start_native_opts! keeps close_signal_log option" do
+    assert %{close_signal_log: false} = Options.build_start_native_opts!([])
+    assert %{close_signal_log: true} = Options.build_start_native_opts!(close_signal_log: true)
+  end
+
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do
     runtime_path =
       Path.join(System.tmp_dir!(), "emerge_cursor_#{System.unique_integer([:positive])}.svg")

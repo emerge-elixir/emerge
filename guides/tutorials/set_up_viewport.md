@@ -64,11 +64,13 @@ end
 
 `use Emerge` brings the `Viewport` behaviour and implementation, along with `Emerge.UI` helpers, into scope.
 
-You have to implement the `mount/1` callback and either `render/0` or `render/1`; `handle_info/2` is optional.
+You have to implement the `mount/1` callback and either `render/0` or `render/1`; `handle_info/2`, `handle_input/2`, and `handle_close/2` are optional.
 
 - `mount/1` creates the initial viewport state and returns the default viewport options
 - `render/0` or `render/1` returns the UI definition
 - `handle_info/2` receives routed element events and triggers rerenders
+- `handle_input/2` receives raw renderer input selected by the input mask
+- `handle_close/2` handles Wayland window close requests
 
 If a viewport does not need local state, `mount/1` can return `{:ok, opts}` and `render/0` can be used instead.
 
@@ -93,6 +95,7 @@ You should now see a window with a counter rendering inside of it.
 - `title` comes from `mount/1`. Sets the window title
 - `width` and `height` default to `800x600`. This is just the initial window size; you can resize it.
 - `otp_app` is inferred from the viewport module. It tells Emerge where to resolve logical assets from `priv/`. Set it explicitly when that inference is not enough.
+- `scroll_line_pixels` sets the pixel distance used for each discrete mouse-wheel line step. The default is `30.0`.
 - `backend` selects how the viewport is presented. If `backend` is omitted, Emerge uses the runtime default backend.
 - `assets` - Asset runtime policy options (optional)
 
@@ -331,16 +334,33 @@ end
 
 This asks the viewport to receive raw resize input and check renderer liveness every 500 milliseconds.
 
+Renderer-specific input tuning stays under `emerge_skia:`. For example, to make each mouse-wheel line step scroll farther:
+
+```elixir
+@impl Viewport
+def mount(opts) do
+  {:ok,
+   %{count: 0},
+   Keyword.merge(
+     [
+       title: "Counter",
+       emerge_skia: [scroll_line_pixels: 45]
+     ],
+     opts
+   )}
+end
+```
+
 ## Raw renderer input
 
-Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, text input, and window close requests coming directly from the renderer.
+Raw renderer input is the low-level stream of backend and renderer notifications. It is separate from events declared on individual elements. It includes resize notifications, focus changes, pointer movement, scrolling, key input, and text input coming directly from the renderer.
 
 To handle raw renderer input, implement the `handle_input/2` callback.
 
 `handle_input/2` is separate from `handle_info/2`:
 
 - `handle_info/2` handles processed element events
-- `handle_input/2` handles raw renderer input selected by the input mask, plus the `:closed` lifecycle message
+- `handle_input/2` handles raw renderer input selected by the input mask
 
 Representative raw input messages include:
 
@@ -351,7 +371,6 @@ Representative raw input messages include:
 - `{:key, {key, action, mods}}`
 - `{:codepoint, {char, mods}}`
 - `{:text_commit, {text, mods}}`
-- `:closed`
 
 A viewport can handle them directly:
 
@@ -368,19 +387,24 @@ def handle_input(event, state), do: super(event, state)
 Handling raw cursor input can cause a lot of messages, so be aware of how you handle it.
 The most common use case for raw input is listening to resize events if you want to change the UI depending on window size.
 
-`use Emerge` stops the viewport by default when it receives `:closed`. That message bypasses the input mask so close requests are still delivered even when you only listen to a narrow set of raw input events.
+## Window close
 
-If you want custom close behavior, handle `:closed` explicitly:
+On Wayland, close requests use the dedicated `handle_close/2` callback instead of `handle_input/2`.
+
+`use Emerge` stops the viewport by default when it receives `:window_close_requested`.
+
+If you want custom close behavior, implement `handle_close/2`:
 
 ```elixir
 @impl Viewport
-def handle_input(:closed, state) do
+def handle_close(:window_close_requested, state) do
   # Notify other processes or persist state here before stopping.
   {:stop, :normal, state}
 end
-
-def handle_input(event, state), do: super(event, state)
 ```
+
+Close requests bypass the input mask so they still arrive when you only listen
+to a narrow set of raw input events.
 
 ## Run the same viewport on Nerves (DRM)
 

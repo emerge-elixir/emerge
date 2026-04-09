@@ -128,6 +128,42 @@ defmodule Emerge.ViewportTest do
     def render, do: el([], text("opts only"))
   end
 
+  defmodule ScrollLinePixelsViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       title: "Scroll line pixels",
+       emerge_skia: [otp_app: :emerge, scroll_line_pixels: 45],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("scroll line pixels"))
+  end
+
+  defmodule CloseSignalLogViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       title: "Close signal log",
+       emerge_skia: [otp_app: :emerge, close_signal_log: true],
+       viewport: [
+         renderer_module: Emerge.ViewportTest.FakeRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("close signal log"))
+  end
+
   defmodule CounterViewport do
     use Emerge
 
@@ -340,14 +376,10 @@ defmodule Emerge.ViewportTest do
     def render(_state), do: el([], text("close aware"))
 
     @impl Viewport
-    def handle_input(event, state)
-
-    def handle_input(:closed, state) do
+    def handle_close(:window_close_requested, state) do
       send(state.test_pid, :close_requested)
       {:noreply, %{state | closed?: true}}
     end
-
-    def handle_input(event, state), do: super(event, state)
   end
 
   defmodule RecoveringViewport do
@@ -445,6 +477,28 @@ defmodule Emerge.ViewportTest do
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Opts Only"
     assert rendered_text(pid) == "opts only"
+
+    GenServer.stop(pid)
+  end
+
+  test "mount can pass emerge_skia scroll_line_pixels option to the renderer" do
+    {:ok, pid} = ScrollLinePixelsViewport.start_link()
+
+    renderer = Emerge.renderer(pid)
+
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :scroll_line_pixels) == 45
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
+
+    GenServer.stop(pid)
+  end
+
+  test "mount can pass emerge_skia close_signal_log option to the renderer" do
+    {:ok, pid} = CloseSignalLogViewport.start_link()
+
+    renderer = Emerge.renderer(pid)
+
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :close_signal_log) == true
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
 
     GenServer.stop(pid)
   end
@@ -772,19 +826,19 @@ defmodule Emerge.ViewportTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
   end
 
-  test "default handle_input stops viewport when close is received" do
+  test "default handle_close stops viewport when close is received" do
     {:ok, pid} = LivenessViewport.start_link()
 
     ref = Process.monitor(pid)
-    send(pid, {:emerge_skia_event, :closed})
+    send(pid, {:emerge_skia_close, :window_close_requested})
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
   end
 
-  test "viewport can override close handling through handle_input" do
+  test "viewport can override close handling through handle_close" do
     {:ok, pid} = CloseAwareViewport.start_link(test_pid: self())
 
-    send(pid, {:emerge_skia_event, :closed})
+    send(pid, {:emerge_skia_close, :window_close_requested})
 
     assert_receive :close_requested
     assert Process.alive?(pid)
