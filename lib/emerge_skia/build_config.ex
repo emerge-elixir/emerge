@@ -289,8 +289,42 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   defp default_precompiled_target_resolver(targets, nif_versions) do
-    RustlerPrecompiled.target(%{}, targets, nif_versions)
+    RustlerPrecompiled.target(
+      %{
+        os_type: :os.type(),
+        target_system: current_target_system(),
+        word_size: :erlang.system_info(:wordsize),
+        nif_version: current_compatible_nif_version(nif_versions)
+      },
+      targets,
+      nif_versions
+    )
   end
+
+  defp current_compatible_nif_version(nif_versions) do
+    current_nif_version = :erlang.system_info(:nif_version) |> List.to_string()
+
+    case RustlerPrecompiled.find_compatible_nif_version(current_nif_version, nif_versions) do
+      {:ok, version} -> version
+      :error -> current_nif_version
+    end
+  end
+
+  defp current_target_system do
+    :erlang.system_info(:system_architecture)
+    |> List.to_string()
+    |> String.split("-")
+    |> system_arch_parts_to_map()
+    |> RustlerPrecompiled.maybe_override_with_env_vars()
+  end
+
+  defp system_arch_parts_to_map([arch, vendor, os, abi]),
+    do: %{arch: arch, vendor: vendor, os: os, abi: abi}
+
+  defp system_arch_parts_to_map([arch, vendor, os]),
+    do: %{arch: arch, vendor: vendor, os: os}
+
+  defp system_arch_parts_to_map(_parts), do: %{}
 
   defp force_build_requested?(env) do
     Map.get(env, @force_precompiled_build_env_key) in ["1", "true"]
