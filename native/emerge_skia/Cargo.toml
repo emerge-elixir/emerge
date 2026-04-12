@@ -5,11 +5,41 @@ edition = "2024"
 
 [lib]
 name = "emerge_skia"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "macos_host"
+path = "src/bin/macos_host.rs"
+required-features = ["macos"]
+
+[[bin]]
+name = "macos_smoke"
+path = "src/bin/macos_smoke.rs"
+required-features = ["macos"]
+
+[[bin]]
+name = "macos_wrapper_smoke"
+path = "src/bin/macos_wrapper_smoke.rs"
+required-features = ["macos"]
+
+[[bin]]
+name = "metal_probe"
+path = "src/bin/metal_probe.rs"
+required-features = ["macos"]
 
 [features]
 default = ["wayland"]
 hover-trace = []
+macos = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-metal",
+    "dep:objc2-quartz-core",
+    "skia-safe/metal",
+]
 wayland = [
     "dep:glutin",
     "dep:smithay-client-toolkit",
@@ -18,29 +48,37 @@ wayland = [
     "dep:wayland-protocols",
     "dep:raw-window-handle",
     "dep:arboard",
-    "skia-safe/wayland",
 ]
 drm = ["dep:drm", "dep:gbm", "dep:evdev"]
 
 [dependencies]
 rustler = "0.37"
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSAttributedString", "NSDate", "NSRange", "NSString", "NSRunLoop"], optional = true }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSCell", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSTextInputClient", "NSTrackingArea", "NSView", "NSWindow"], optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-core-graphics = { version = "0.3", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+objc2-quartz-core = { version = "0.3", features = ["CALayer", "CAMetalLayer", "objc2-metal", "objc2-core-foundation"], optional = true }
+gl = "0.14"
+libloading = "0.9"
+libc = "0.2"
+crossbeam-channel = "0.5"
+sha2 = "0.10"
+resvg = "0.47"
+skia-bindings = { version = "=0.93.1", default-features = false, features = ["jpeg"] }
+
+skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "pdf", "binary-cache"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", optional = true }
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"], optional = true }
 wayland-client = { version = "0.31", optional = true }
 wayland-backend = { version = "0.3", features = ["client_system", "rwh_06"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-gl = "0.14"
 drm = { version = "0.14", optional = true }
 gbm = { version = "0.18", default-features = false, features = ["drm-support", "import-egl"], optional = true }
 glutin_egl_sys = "0.7"
-libloading = "0.9"
-libc = "0.2"
 evdev = { version = "0.13", optional = true }
-crossbeam-channel = "0.5"
-sha2 = "0.10"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
-resvg = "0.47"
-skia-bindings = { version = "=0.93.1", default-features = false, features = ["jpeg"] }
-
-skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "pdf", "binary-cache"] }

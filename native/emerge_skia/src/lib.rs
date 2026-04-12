@@ -1,8 +1,24 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::cloned_ref_to_slice_refs,
+        clippy::field_reassign_with_default,
+        clippy::needless_borrow,
+        clippy::needless_lifetimes,
+        clippy::nonminimal_bool,
+        clippy::op_ref,
+        clippy::redundant_pattern_matching,
+        clippy::too_many_arguments
+    )
+)]
+
 //! EmergeSkia NIF - Minimal Skia renderer for Elixir.
 //!
 //! This crate provides a Rustler NIF that exposes tree upload, layout,
 //! rendering, and headless rasterization for Emerge.
 
+#[cfg(feature = "macos")]
+use std::sync::OnceLock;
 use std::{
     sync::{
         Arc, Mutex,
@@ -12,51 +28,63 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+use crossbeam_channel::unbounded;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
+#[cfg(feature = "macos")]
+use objc2::MainThreadMarker;
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
-mod actors;
-mod assets;
-mod backend;
+pub mod actors;
+pub mod assets;
+pub mod backend;
 mod clipboard;
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 mod cursor;
 mod debug_trace;
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 mod drm_input;
-mod events;
-mod input;
-mod keys;
-#[cfg(feature = "drm")]
+pub mod events;
+pub mod input;
+pub mod keys;
+#[cfg(all(feature = "drm", target_os = "linux"))]
 mod linux_wait;
 mod native_log;
-mod render_scene;
-mod renderer;
-mod tree;
+pub mod render_scene;
+pub mod renderer;
+pub mod stats;
+pub mod tree;
 mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 use backend::drm;
 use backend::raster::{RasterBackend, RasterConfig};
 use backend::wake::BackendWakeHandle;
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 use backend::wayland;
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 use backend::wayland_config::WaylandConfig;
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 use cursor::{CursorState, SharedCursorState};
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 use drm_input::DrmInput;
 use events::{CursorIcon, spawn_event_actor};
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", target_os = "linux"))]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
-use renderer::{
-    RenderState, clear_global_caches, load_font, make_font_with_style, set_render_log_enabled,
-};
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+use renderer::set_render_log_enabled;
+use renderer::{RenderState, clear_global_caches, load_font, make_font_with_style};
+use stats::RendererStatsCollector;
 use std::time::Instant;
 use tree::animation::AnimationRuntime;
 use tree::element::{ElementId, ElementTree};
@@ -83,9 +111,11 @@ mod atoms {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendKind {
-    #[cfg(feature = "wayland")]
+    #[cfg(feature = "macos")]
+    Macos,
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
     Wayland,
-    #[cfg(feature = "drm")]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     Drm,
 }
 
@@ -131,6 +161,13 @@ pub(crate) struct InputTargetRelay {
 }
 
 impl InputTargetRelay {
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     fn new(target: Option<LocalPid>) -> Self {
         Self {
             target: Mutex::new(target),
@@ -145,6 +182,18 @@ impl InputTargetRelay {
         *guard = target;
     }
 
+    fn send_running(&self) {
+        let target = *self
+            .target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(pid) = target {
+            events::send_running_message(pid);
+        }
+    }
+
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
     fn send_close_requested(&self, close_signal_log: bool) {
         let target = *self
             .target
@@ -208,6 +257,7 @@ struct RendererHandles {
     input_handle: Option<thread::JoinHandle<()>>,
     tree_handle: Option<thread::JoinHandle<()>>,
     event_handle: Option<thread::JoinHandle<()>>,
+    heartbeat_handle: Option<thread::JoinHandle<()>>,
 }
 
 struct ShutdownRuntimeContext {
@@ -221,6 +271,15 @@ struct ShutdownRuntimeContext {
     log_render: bool,
     log_input: bool,
 }
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+const RUNNING_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 
 fn log_close_signal(enabled: bool, source: &'static str, message: impl Into<String>) {
     if enabled {
@@ -341,6 +400,10 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
         let _ = handle.join();
     }
 
+    if let Some(handle) = handles.heartbeat_handle.take() {
+        let _ = handle.join();
+    }
+
     if let Some(handle) = handles.tree_handle.take() {
         let _ = handle.join();
     }
@@ -356,6 +419,60 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
     log_close_signal(close_signal_log, "nif_close", "shutdown end");
     clear_global_caches();
     trim_process_allocator();
+}
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+fn backend_stats_label(backend: BackendKind) -> &'static str {
+    match backend {
+        #[cfg(feature = "macos")]
+        BackendKind::Macos => "macos",
+        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        BackendKind::Wayland => "wayland",
+        #[cfg(all(feature = "drm", target_os = "linux"))]
+        BackendKind::Drm => "drm",
+    }
+}
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+fn spawn_running_heartbeat(
+    running_flag: Arc<AtomicBool>,
+    input_target: Arc<InputTargetRelay>,
+    native_log: Arc<NativeLogRelay>,
+    stats: Option<Arc<RendererStatsCollector>>,
+    backend_label: &'static str,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut ticks = 0_u64;
+
+        while running_flag.load(Ordering::Relaxed) {
+            input_target.send_running();
+
+            if let Some(stats) = stats.as_ref() {
+                ticks = ticks.wrapping_add(1);
+
+                if ticks % 10 == 0 {
+                    native_log.info(
+                        "renderer_stats",
+                        stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
+                    );
+                }
+            }
+
+            thread::sleep(RUNNING_HEARTBEAT_INTERVAL);
+        }
+    })
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -493,31 +610,82 @@ fn decide_refresh_action(
 
 #[derive(Clone, Debug)]
 struct StartConfig {
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+            feature = "macos"
+        )),
+        allow(dead_code)
+    )]
     backend: BackendKind,
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
     title: String,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     width: u32,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     height: u32,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     scroll_line_pixels: f32,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     asset_config: AssetConfig,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_card: Option<String>,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_startup_retries: u32,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_retry_interval_ms: u32,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_input_log: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     render_log: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     close_signal_log: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+        )),
+        allow(dead_code)
+    )]
+    renderer_stats_log: bool,
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct DrmCursorOverrideConfig {
     pub icon: CursorIcon,
@@ -546,6 +714,7 @@ struct StartOptsNif {
     input_log: bool,
     render_log: bool,
     close_signal_log: bool,
+    renderer_stats_log: bool,
 }
 
 #[derive(rustler::NifMap)]
@@ -571,6 +740,18 @@ struct RenderTreeOffscreenOptsNif {
     asset_timeout_ms: u64,
 }
 
+#[derive(Clone, rustler::NifMap)]
+struct MacosThreadProbeNif {
+    phase: String,
+    rust_thread_id: String,
+    pthread_thread_id: u64,
+    pthread_main: bool,
+    objc_main_thread_marker: bool,
+}
+
+#[cfg(feature = "macos")]
+static MACOS_LOAD_THREAD_PROBE: OnceLock<MacosThreadProbeNif> = OnceLock::new();
+
 struct OffscreenRasterOutput {
     width: u32,
     height: u32,
@@ -581,12 +762,20 @@ struct TreeActorConfig {
     render_sender: RenderSender,
     event_tx: Sender<EventMsg>,
     render_counter: Arc<AtomicU64>,
+    stats: Option<Arc<RendererStatsCollector>>,
     log_input: bool,
     window_wake: BackendWakeHandle,
     initial_width: u32,
     initial_height: u32,
 }
 
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
 fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thread::JoinHandle<()> {
     spawn_tree_actor_with_initial_tree(tree_rx, config, ElementTree::new())
 }
@@ -601,6 +790,7 @@ fn spawn_tree_actor_with_initial_tree(
             render_sender,
             event_tx,
             render_counter,
+            stats,
             log_input,
             window_wake,
             initial_width,
@@ -647,6 +837,7 @@ fn spawn_tree_actor_with_initial_tree(
             let mut mouse_over_active_state = std::collections::HashMap::new();
             let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut focused_active_state = std::collections::HashMap::new();
+            let mut pending_patch_started_ats = Vec::new();
             let mut tree_changed = false;
             let mut registry_requested = false;
             let mut animation_sample_time = latest_animation_sample_time;
@@ -666,17 +857,27 @@ fn spawn_tree_actor_with_initial_tree(
                             eprintln!("tree upload failed: {err}");
                         }
                     },
-                    TreeMsg::PatchTree { bytes } => {
+                    TreeMsg::PatchTree { bytes, queued_at } => {
                         let patches = match tree::patch::decode_patches(&bytes) {
                             Ok(patches) => patches,
                             Err(err) => {
+                                if let (Some(stats), Some(queued_at)) = (stats.as_ref(), queued_at)
+                                {
+                                    stats.record_patch_tree_total(queued_at.elapsed());
+                                }
                                 eprintln!("tree patch decode failed: {err}");
                                 continue;
                             }
                         };
                         if let Err(err) = tree::patch::apply_patches(&mut tree, patches) {
+                            if let (Some(stats), Some(queued_at)) = (stats.as_ref(), queued_at) {
+                                stats.record_patch_tree_total(queued_at.elapsed());
+                            }
                             eprintln!("tree patch apply failed: {err}");
                             continue;
+                        }
+                        if let Some(queued_at) = queued_at {
+                            pending_patch_started_ats.push(queued_at);
                         }
                         tree_changed = true;
                     }
@@ -816,10 +1017,22 @@ fn spawn_tree_actor_with_initial_tree(
                 decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some());
 
             match refresh_decision {
-                RefreshDecision::Skip => continue,
+                RefreshDecision::Skip => {
+                    if let Some(stats) = stats.as_ref() {
+                        pending_patch_started_ats.into_iter().for_each(|queued_at| {
+                            stats.record_patch_tree_total(queued_at.elapsed())
+                        });
+                    }
+                    continue;
+                }
                 RefreshDecision::UseCachedRebuild => {
                     if let Some(rebuild) = cached_rebuild.clone() {
                         send_registry_update(&event_tx, rebuild, log_input);
+                    }
+                    if let Some(stats) = stats.as_ref() {
+                        pending_patch_started_ats.into_iter().for_each(|queued_at| {
+                            stats.record_patch_tree_total(queued_at.elapsed())
+                        });
                     }
                     continue;
                 }
@@ -840,6 +1053,7 @@ fn spawn_tree_actor_with_initial_tree(
                     animation_runtime.sync_with_tree(&tree, sample_time);
                     let _ =
                         animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
+                    let layout_started_at = Instant::now();
                     let output = if animation_runtime.is_empty() {
                         layout_and_refresh_default(&mut tree, constraint, scale)
                     } else {
@@ -851,6 +1065,9 @@ fn spawn_tree_actor_with_initial_tree(
                             sample_time,
                         )
                     };
+                    if let Some(stats) = stats.as_ref() {
+                        stats.record_layout(layout_started_at.elapsed());
+                    }
                     cached_rebuild = Some(output.event_rebuild.clone());
                     send_registry_update(&event_tx, output.event_rebuild, log_input);
 
@@ -882,6 +1099,12 @@ fn spawn_tree_actor_with_initial_tree(
                     if animation_runtime.is_empty() || !output.animations_active {
                         latest_animation_sample_time = None;
                     }
+
+                    if let Some(stats) = stats.as_ref() {
+                        pending_patch_started_ats.into_iter().for_each(|queued_at| {
+                            stats.record_patch_tree_total(queued_at.elapsed())
+                        });
+                    }
                 }
             }
         }
@@ -892,18 +1115,41 @@ fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    #[cfg(feature = "macos")]
+    if matches!(config.backend, BackendKind::Macos) {
+        return Err(rustler::Error::Term(Box::new(
+            "macOS uses the external host path; start it through EmergeSkia.start/1 with backend: :macos"
+                .to_string(),
+        )));
+    }
+
+    start_native_renderer_with_config(config, initial_log_target)
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+fn start_native_renderer_with_config(
+    config: StartConfig,
+    initial_log_target: Option<LocalPid>,
+) -> NifResult<ResourceArc<RendererResource>> {
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
 
-    #[cfg(feature = "drm")]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
-    #[cfg(not(feature = "drm"))]
+    #[cfg(not(all(feature = "drm", target_os = "linux")))]
     let log_input = false;
     let log_render = config.render_log;
     let close_signal_log = config.close_signal_log;
+    let renderer_stats = config
+        .renderer_stats_log
+        .then(|| Arc::new(RendererStatsCollector::new()));
+    let backend_label = backend_stats_label(config.backend);
     set_render_log_enabled(log_render);
 
     let (tree_tx, tree_rx) = bounded(512);
@@ -915,7 +1161,7 @@ fn start_with_config(
         log_render,
     };
     let (backend_cursor_tx, backend_cursor_rx) = unbounded();
-    #[cfg(feature = "drm")]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     let drm_cursor_state = Arc::new(SharedCursorState::new(CursorState {
         pos: (0.0, 0.0),
         visible: false,
@@ -923,30 +1169,44 @@ fn start_with_config(
 
     assets::start(tree_tx.clone(), log_render);
 
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     let system_clipboard = false;
     let mut handles = RendererHandles::default();
+    handles.heartbeat_handle = Some(spawn_running_heartbeat(
+        Arc::clone(&running_flag),
+        Arc::clone(&input_target),
+        Arc::clone(&native_log),
+        renderer_stats.clone(),
+        backend_label,
+    ));
 
     let initial_width = config.width;
     let initial_height = config.height;
     let release_tx = video::spawn_release_worker();
     let video_registry = Arc::new(VideoRegistry::new(release_tx));
-    #[cfg(any(feature = "wayland", feature = "drm"))]
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     #[allow(unused_assignments)]
     let mut backend_wake = BackendWakeHandle::noop();
-    #[cfg(not(any(feature = "wayland", feature = "drm")))]
+    #[cfg(not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )))]
     let backend_wake = BackendWakeHandle::noop();
 
-    let (backend, prime_video_supported) = match config.backend {
-        #[cfg(feature = "wayland")]
+    let (backend, prime_video_supported): (BackendKind, bool) = match config.backend {
+        #[cfg(all(feature = "wayland", target_os = "linux"))]
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let input_target_clone = Arc::clone(&input_target);
+            let renderer_stats_clone = renderer_stats.clone();
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -962,6 +1222,7 @@ fn start_with_config(
                     event_tx: event_tx_clone,
                     input_target: input_target_clone,
                     close_signal_log,
+                    stats: renderer_stats_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
                     video_registry: video_registry_clone,
@@ -1019,6 +1280,7 @@ fn start_with_config(
                     render_sender: render_sender.clone(),
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
+                    stats: renderer_stats.clone(),
                     log_input,
                     window_wake: startup.wake.clone(),
                     initial_width,
@@ -1028,7 +1290,7 @@ fn start_with_config(
 
             (BackendKind::Wayland, startup.prime_video_supported)
         }
-        #[cfg(feature = "drm")]
+        #[cfg(all(feature = "drm", target_os = "linux"))]
         BackendKind::Drm => {
             let presenter_wake = EventFd::new().map_err(|err| {
                 rustler::Error::Term(Box::new(format!(
@@ -1075,6 +1337,7 @@ fn start_with_config(
             let event_tx_clone = event_tx.clone();
             let drm_cursor_state_for_backend = Arc::clone(&drm_cursor_state);
             let native_log_for_backend = Arc::clone(&native_log);
+            let renderer_stats_for_backend = renderer_stats.clone();
             let presenter_wake_for_backend = presenter_wake.clone();
             let input_wake_for_backend = input_wake.clone();
             let drm_config = drm::DrmRunConfig {
@@ -1104,6 +1367,7 @@ fn start_with_config(
                         screen_tx,
                         render_counter: render_counter_clone,
                         native_log: native_log_for_backend,
+                        stats: renderer_stats_for_backend,
                         video_registry: video_registry_clone,
                     },
                     drm_config,
@@ -1158,6 +1422,7 @@ fn start_with_config(
                     render_sender: render_sender.clone(),
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
+                    stats: renderer_stats.clone(),
                     log_input,
                     window_wake: backend_wake.clone(),
                     initial_width,
@@ -1167,6 +1432,8 @@ fn start_with_config(
 
             (BackendKind::Drm, true)
         }
+        #[cfg(feature = "macos")]
+        BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
     };
 
     handles.event_handle = Some(spawn_event_actor(
@@ -1177,18 +1444,25 @@ fn start_with_config(
         config.scroll_line_pixels,
         log_render,
         system_clipboard,
+        renderer_stats.clone(),
     ));
 
-    #[cfg(any(feature = "wayland", feature = "drm"))]
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     let video_wake = match backend {
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", target_os = "linux"))]
         BackendKind::Wayland => VideoWake::new(backend_wake.clone()),
-        #[cfg(feature = "drm")]
+        #[cfg(all(feature = "drm", target_os = "linux"))]
         BackendKind::Drm => VideoWake::new(backend_wake.clone()),
         #[allow(unreachable_patterns)]
         _ => VideoWake::noop(),
     };
-    #[cfg(not(any(feature = "wayland", feature = "drm")))]
+    #[cfg(not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )))]
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
@@ -1212,6 +1486,21 @@ fn start_with_config(
     Ok(ResourceArc::new(resource))
 }
 
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+fn start_native_renderer_with_config(
+    config: StartConfig,
+    initial_log_target: Option<LocalPid>,
+) -> NifResult<ResourceArc<RendererResource>> {
+    let _ = (config, initial_log_target);
+
+    Err(rustler::Error::Term(Box::new(
+        "no native window backend is compiled for this build".to_string(),
+    )))
+}
+
 #[rustler::nif]
 fn start(
     env: Env,
@@ -1219,7 +1508,7 @@ fn start(
     width: u32,
     height: u32,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
     {
         start_with_config(
             StartConfig {
@@ -1237,11 +1526,12 @@ fn start(
                 drm_input_log: false,
                 render_log: false,
                 close_signal_log: false,
+                renderer_stats_log: false,
             },
             Some(env.pid()),
         )
     }
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     {
         let _ = (env, title, width, height);
         Err(rustler::Error::Term(Box::new(
@@ -1283,9 +1573,109 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
             close_signal_log: opts.close_signal_log,
+            renderer_stats_log: opts.renderer_stats_log,
         },
         Some(env.pid()),
     )
+}
+
+#[cfg(feature = "macos")]
+fn capture_macos_thread_probe(phase: &str) -> MacosThreadProbeNif {
+    let rust_thread_id = format!("{:?}", thread::current().id());
+    let mut pthread_thread_id = 0_u64;
+    let pthread_thread_result =
+        unsafe { libc::pthread_threadid_np(libc::pthread_self(), &mut pthread_thread_id) };
+
+    MacosThreadProbeNif {
+        phase: phase.to_string(),
+        rust_thread_id,
+        pthread_thread_id: if pthread_thread_result == 0 {
+            pthread_thread_id
+        } else {
+            0
+        },
+        pthread_main: unsafe { libc::pthread_main_np() == 1 },
+        objc_main_thread_marker: MainThreadMarker::new().is_some(),
+    }
+}
+
+#[rustler::nif]
+fn macos_probe_load_context() -> NifResult<MacosThreadProbeNif> {
+    #[cfg(feature = "macos")]
+    {
+        MACOS_LOAD_THREAD_PROBE.get().cloned().ok_or_else(|| {
+            rustler::Error::Term(Box::new("macOS load probe not recorded".to_string()))
+        })
+    }
+
+    #[cfg(not(feature = "macos"))]
+    {
+        Err(rustler::Error::Term(Box::new(
+            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
+        )))
+    }
+}
+
+#[rustler::nif]
+fn macos_probe_call_context() -> NifResult<MacosThreadProbeNif> {
+    #[cfg(feature = "macos")]
+    {
+        Ok(capture_macos_thread_probe("regular_nif_call"))
+    }
+
+    #[cfg(not(feature = "macos"))]
+    {
+        Err(rustler::Error::Term(Box::new(
+            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
+        )))
+    }
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn macos_probe_dirty_call_context() -> NifResult<MacosThreadProbeNif> {
+    #[cfg(feature = "macos")]
+    {
+        Ok(capture_macos_thread_probe("dirty_io_nif_call"))
+    }
+
+    #[cfg(not(feature = "macos"))]
+    {
+        Err(rustler::Error::Term(Box::new(
+            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
+        )))
+    }
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn macos_probe_spawned_thread_context() -> NifResult<MacosThreadProbeNif> {
+    #[cfg(feature = "macos")]
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+
+        thread::Builder::new()
+            .name("emerge_skia_probe_thread".to_string())
+            .spawn(move || {
+                let _ = reply_tx.send(capture_macos_thread_probe("nif_spawned_thread"));
+            })
+            .map_err(|err| {
+                rustler::Error::Term(Box::new(format!("failed to spawn probe thread: {err}")))
+            })?;
+
+        reply_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|err| {
+                rustler::Error::Term(Box::new(format!(
+                    "failed to receive spawned thread probe: {err}"
+                )))
+            })
+    }
+
+    #[cfg(not(feature = "macos"))]
+    {
+        Err(rustler::Error::Term(Box::new(
+            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
+        )))
+    }
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -1360,7 +1750,10 @@ fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Resu
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::PatchTree { bytes },
+        TreeMsg::PatchTree {
+            bytes,
+            queued_at: Some(Instant::now()),
+        },
         renderer.log_render,
     );
     Ok(atoms::ok())
@@ -1451,6 +1844,7 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
     renderer.input_target.set_target(pid);
+    renderer.input_target.send_running();
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1751,6 +2145,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         input::SCROLL_LINE_PIXELS,
         false,
         false,
+        None,
     );
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
@@ -1758,6 +2153,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
             render_sender,
             event_tx: event_tx.clone(),
             render_counter,
+            stats: None,
             log_input: false,
             window_wake: BackendWakeHandle::noop(),
             initial_width: width,
@@ -1804,6 +2200,7 @@ fn test_harness_patch(
         &harness.tree_tx,
         TreeMsg::PatchTree {
             bytes: data.as_slice().to_vec(),
+            queued_at: None,
         },
         false,
     );
@@ -1926,6 +2323,9 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
 }
 
 fn load(env: Env, _info: Term) -> bool {
+    #[cfg(feature = "macos")]
+    let _ = MACOS_LOAD_THREAD_PROBE.set(capture_macos_thread_probe("nif_load_callback"));
+
     env.register::<RendererResource>().is_ok()
         && env.register::<TreeResource>().is_ok()
         && env.register::<TestHarnessResource>().is_ok()
@@ -1985,6 +2385,7 @@ mod tests {
                 input::SCROLL_LINE_PIXELS,
                 false,
                 false,
+                None,
             );
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
@@ -1992,6 +2393,7 @@ mod tests {
                     render_sender,
                     event_tx: event_tx.clone(),
                     render_counter,
+                    stats: None,
                     log_input: false,
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
@@ -2080,6 +2482,7 @@ mod tests {
                 input::SCROLL_LINE_PIXELS,
                 false,
                 false,
+                None,
             );
 
             Self {
@@ -2200,6 +2603,7 @@ mod tests {
                 input_handle: Some(input_handle),
                 tree_handle: Some(tree_handle),
                 event_handle: Some(event_handle),
+                heartbeat_handle: None,
             },
         );
 
@@ -2456,16 +2860,23 @@ fn parse_cursor_icon_name(value: &str) -> Result<CursorIcon, String> {
 
 fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
     match value {
-        #[cfg(feature = "drm")]
+        #[cfg(feature = "macos")]
+        "macos" => Ok(BackendKind::Macos),
+        #[cfg(not(feature = "macos"))]
+        "macos" => Err(
+            "macOS backend not compiled; add :macos to config :emerge, compiled_backends: [...]"
+                .to_string(),
+        ),
+        #[cfg(all(feature = "drm", target_os = "linux"))]
         "drm" => Ok(BackendKind::Drm),
-        #[cfg(not(feature = "drm"))]
+        #[cfg(not(all(feature = "drm", target_os = "linux")))]
         "drm" => Err(
             "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", target_os = "linux"))]
         "wayland" => Ok(BackendKind::Wayland),
-        #[cfg(not(feature = "wayland"))]
+        #[cfg(not(all(feature = "wayland", target_os = "linux")))]
         "wayland" => Err(
             "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),

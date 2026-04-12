@@ -54,6 +54,7 @@ pub mod test_support;
 pub mod text_ops;
 
 pub(crate) use runtime::spawn_event_actor;
+pub use runtime::{HostEventRuntime, HostEventSink};
 use scrollbar::ScrollbarNode;
 
 /// Element-level events that Rust can emit back to Elixir after input matching.
@@ -94,6 +95,7 @@ pub enum CursorIcon {
 /// `TextInputState` combines:
 ///
 /// - live editing state (`content`, `cursor`, `selection_anchor`, `preedit`)
+/// - focused-only pending tree patch text (`patch_content`)
 /// - focus/runtime flags
 /// - layout and font metadata needed to place the caret, selection, and preedit
 ///   correctly after rebuild
@@ -104,6 +106,7 @@ pub enum CursorIcon {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextInputState {
     pub content: String,
+    pub patch_content: Option<String>,
     pub content_origin: TextInputContentOrigin,
     pub content_len: u32,
     pub cursor: u32,
@@ -133,6 +136,7 @@ pub struct TextInputState {
 
 impl TextInputState {
     pub fn copy_rebuild_metadata_from(&mut self, other: &Self) {
+        self.patch_content = other.patch_content.clone();
         self.emit_change = other.emit_change;
         self.multiline = other.multiline;
         self.frame_x = other.frame_x;
@@ -167,6 +171,33 @@ impl TextInputState {
         let had_preedit = self.preedit.take().is_some();
         let had_cursor = self.preedit_cursor.take().is_some();
         had_preedit || had_cursor
+    }
+
+    pub fn set_selection_range(&mut self, start: u32, end: u32) -> bool {
+        let len = text_ops::text_char_len(&self.content);
+        let start = start.min(len);
+        let end = end.min(len);
+        let next_start = start.min(end);
+        let next_end = start.max(end);
+        let next_anchor = (next_start != next_end).then_some(next_start);
+        let mut changed = false;
+
+        if self.cursor != next_end {
+            self.cursor = next_end;
+            changed = true;
+        }
+
+        if self.selection_anchor != next_anchor {
+            self.selection_anchor = next_anchor;
+            changed = true;
+        }
+
+        if self.clear_preedit() {
+            changed = true;
+        }
+
+        self.sync_content_metadata();
+        changed
     }
 
     pub fn set_content(&mut self, content: String) -> bool {
@@ -403,6 +434,30 @@ impl TextInputState {
         line.visual_end as u32
     }
 
+    pub fn move_word_left_target(&self) -> u32 {
+        text_ops::move_word_left_target(&self.content, self.cursor)
+    }
+
+    pub fn move_word_right_target(&self) -> u32 {
+        text_ops::move_word_right_target(&self.content, self.cursor)
+    }
+
+    pub fn move_paragraph_start_target(&self) -> u32 {
+        text_ops::move_paragraph_start_target(&self.content, self.cursor)
+    }
+
+    pub fn move_paragraph_end_target(&self) -> u32 {
+        text_ops::move_paragraph_end_target(&self.content, self.cursor)
+    }
+
+    pub fn move_document_start_target(&self) -> u32 {
+        0
+    }
+
+    pub fn move_document_end_target(&self) -> u32 {
+        self.content_len
+    }
+
     pub fn move_vertical_target(&self, direction: i32) -> u32 {
         if !self.multiline {
             return self.cursor;
@@ -419,6 +474,290 @@ impl TextInputState {
         let current_line = &layout.lines[current_line_index];
         let target_x = current_line.offset_for_cursor(self.cursor as usize);
         layout.lines[next_line_index].nearest_cursor_for_x(target_x) as u32
+    }
+
+    pub fn appkit_selected_range_utf16(&self) -> (usize, usize) {
+        let displayed_text = self.displayed_text();
+
+        match self.preedit_selection_char_range() {
+            Some((start, end)) => {
+                let location = char_index_to_utf16_offset(&displayed_text, start);
+                let end = char_index_to_utf16_offset(&displayed_text, end);
+                (location, end.saturating_sub(location))
+            }
+            None => {
+                let (start, end) = self.selected_range().unwrap_or((self.cursor, self.cursor));
+                let location = char_index_to_utf16_offset(&self.content, start);
+                let end = char_index_to_utf16_offset(&self.content, end);
+                (location, end.saturating_sub(location))
+            }
+        }
+    }
+
+    pub fn appkit_marked_range_utf16(&self) -> Option<(usize, usize)> {
+        let displayed_text = self.displayed_text();
+        let (start, end) = self.marked_char_range()?;
+        let location = char_index_to_utf16_offset(&displayed_text, start);
+        let end = char_index_to_utf16_offset(&displayed_text, end);
+        Some((location, end.saturating_sub(location)))
+    }
+
+    pub fn appkit_displayed_text(&self) -> String {
+        self.displayed_text()
+    }
+
+    pub fn appkit_substring_for_utf16_range(
+        &self,
+        location: usize,
+        length: usize,
+    ) -> Option<String> {
+        let displayed_text = self.displayed_text();
+        let start = utf16_offset_to_char_index(&displayed_text, location);
+        let end = utf16_offset_to_char_index(&displayed_text, location.saturating_add(length));
+        Some(
+            displayed_text
+                .chars()
+                .skip(start as usize)
+                .take((end.saturating_sub(start)) as usize)
+                .collect(),
+        )
+    }
+
+    pub fn appkit_character_index_for_point_utf16(&self, x: f32, y: f32) -> usize {
+        let displayed_text = self.displayed_text();
+        let local = self
+            .screen_to_local
+            .map(|transform| transform.map_point(Point { x, y }))
+            .unwrap_or(Point { x, y });
+
+        let char_index = if self.multiline {
+            self.cursor_from_local_point_in_text(&displayed_text, local.x, local.y)
+        } else {
+            self.cursor_from_local_x_in_text(&displayed_text, local.x)
+        };
+
+        char_index_to_utf16_offset(&displayed_text, char_index)
+    }
+
+    pub fn appkit_first_rect_for_utf16_range(
+        &self,
+        location: usize,
+        length: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let displayed_text = self.displayed_text();
+        let start = utf16_offset_to_char_index(&displayed_text, location);
+        let end = utf16_offset_to_char_index(&displayed_text, location.saturating_add(length));
+        self.rect_for_char_range_in_text(&displayed_text, start, end.max(start))
+    }
+
+    pub fn appkit_replacement_char_range(
+        &self,
+        location: usize,
+        length: usize,
+    ) -> Option<(u32, u32)> {
+        if location == usize::MAX {
+            return None;
+        }
+
+        let displayed_text = self.displayed_text();
+        let start = utf16_offset_to_char_index(&displayed_text, location);
+        let end = utf16_offset_to_char_index(&displayed_text, location.saturating_add(length));
+
+        Some((
+            self.displayed_char_index_to_committed(start, false),
+            self.displayed_char_index_to_committed(end, true),
+        ))
+    }
+
+    fn displayed_text(&self) -> String {
+        let preedit = self.preedit.as_deref().filter(|value| !value.is_empty());
+        let (base_start, base_end) = self.preedit_base_range();
+
+        match preedit {
+            Some(preedit_text) => {
+                let prefix: String = self.content.chars().take(base_start as usize).collect();
+                let suffix: String = self.content.chars().skip(base_end as usize).collect();
+                let mut displayed =
+                    String::with_capacity(prefix.len() + preedit_text.len() + suffix.len());
+                displayed.push_str(&prefix);
+                displayed.push_str(preedit_text);
+                displayed.push_str(&suffix);
+                displayed
+            }
+            None => self.content.clone(),
+        }
+    }
+
+    fn marked_char_range(&self) -> Option<(u32, u32)> {
+        let preedit = self.preedit.as_deref().filter(|value| !value.is_empty())?;
+        let (start, _) = self.preedit_base_range();
+        let end = start + text_ops::text_char_len(preedit);
+        Some((start, end))
+    }
+
+    fn preedit_selection_char_range(&self) -> Option<(u32, u32)> {
+        let preedit = self.preedit.as_deref().filter(|value| !value.is_empty())?;
+        let (base, _) = self.preedit_base_range();
+        let preedit_len = text_ops::text_char_len(preedit);
+        let (start, end) = self
+            .preedit_cursor
+            .map(|(start, end)| (start.min(preedit_len), end.min(preedit_len)))
+            .unwrap_or((preedit_len, preedit_len));
+        Some((base + start, base + end))
+    }
+
+    fn preedit_base_range(&self) -> (u32, u32) {
+        let content_len = text_ops::text_char_len(&self.content);
+        let cursor = self.cursor.min(content_len);
+
+        if self.preedit.is_some() {
+            self.selected_range().unwrap_or((cursor, cursor))
+        } else {
+            (cursor, cursor)
+        }
+    }
+
+    fn displayed_char_index_to_committed(&self, index: u32, prefer_end: bool) -> u32 {
+        let Some(preedit) = self.preedit.as_deref().filter(|value| !value.is_empty()) else {
+            return index.min(self.content_len);
+        };
+
+        let (replace_start, replace_end) = self.preedit_base_range();
+        let preedit_len = text_ops::text_char_len(preedit);
+        let displayed_preedit_start = replace_start;
+        let displayed_preedit_end = replace_start + preedit_len;
+
+        if index <= displayed_preedit_start {
+            index.min(self.content_len)
+        } else if index >= displayed_preedit_end {
+            (index - preedit_len + (replace_end - replace_start)).min(self.content_len)
+        } else if prefer_end {
+            replace_end
+        } else {
+            replace_start
+        }
+    }
+
+    fn cursor_from_local_x_in_text(&self, text: &str, x: f32) -> u32 {
+        let (text_left_overhang, text_width) = self.measure_text_visual_metrics(text);
+        let text_start_x = self.text_start_x(text_width, text_left_overhang);
+        let click_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
+        self.nearest_char_index_for_offset(text, click_x)
+    }
+
+    fn cursor_from_local_point_in_text(&self, text: &str, x: f32, y: f32) -> u32 {
+        let layout = self.text_layout(text);
+        let local_y = (y - (self.frame_y + self.inset_top)).max(0.0);
+        let line_index = layout.line_index_for_y(local_y);
+        let line = &layout.lines[line_index];
+        let click_x = (x - self.line_x(line.width)).clamp(0.0, line.width.max(0.0));
+        line.nearest_cursor_for_x(click_x) as u32
+    }
+
+    fn rect_for_char_range_in_text(
+        &self,
+        text: &str,
+        start: u32,
+        end: u32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        if self.multiline {
+            self.multiline_rect_for_char_range(text, start, end)
+        } else {
+            Some(self.single_line_rect_for_char_range(text, start, end))
+        }
+    }
+
+    fn single_line_rect_for_char_range(
+        &self,
+        text: &str,
+        start: u32,
+        end: u32,
+    ) -> (f32, f32, f32, f32) {
+        let (text_left_overhang, text_width) = self.measure_text_visual_metrics(text);
+        let text_x = self.text_start_x(text_width, text_left_overhang);
+        let start_offset = self.text_offset_for_char_index(text, start as usize);
+        let end_offset = self.text_offset_for_char_index(text, end as usize);
+        let (ascent, descent) = self.text_metrics();
+        let top = self.frame_y + self.inset_top;
+        let height = (ascent + descent).max(self.font_size * 0.9);
+        let caret_width = (self.font_size * 0.08).max(1.0);
+        let width = if start == end {
+            caret_width
+        } else {
+            (end_offset - start_offset).abs().max(caret_width)
+        };
+
+        (text_x + start_offset, top, width, height)
+    }
+
+    fn multiline_rect_for_char_range(
+        &self,
+        text: &str,
+        start: u32,
+        end: u32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let layout = self.text_layout(text);
+        let start_index = start.min(text.chars().count() as u32) as usize;
+        let end_index = end.min(text.chars().count() as u32) as usize;
+        let line_index = layout.line_index_for_cursor(start_index);
+        let line = layout.lines.get(line_index)?;
+        let start_x = self.line_x(line.width) + line.offset_for_cursor(start_index);
+        let end_line_index = layout
+            .line_index_for_cursor(end_index.saturating_sub((end_index > start_index) as usize));
+        let end_x = if start_index == end_index {
+            start_x + (self.font_size * 0.08).max(1.0)
+        } else if end_line_index == line_index {
+            self.line_x(line.width) + line.offset_for_cursor(end_index)
+        } else {
+            self.line_x(line.width) + line.width
+        };
+        let top = self.frame_y + self.inset_top + line_index as f32 * layout.line_height;
+        let height = layout.line_height.max(self.font_size * 0.9);
+        let width = (end_x - start_x)
+            .abs()
+            .max((self.font_size * 0.08).max(1.0));
+        Some((start_x, top, width, height))
+    }
+
+    fn text_start_x(&self, text_width: f32, text_left_overhang: f32) -> f32 {
+        let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
+        match self.text_align {
+            TextAlign::Left => self.frame_x + self.inset_left + text_left_overhang,
+            TextAlign::Center => {
+                self.frame_x
+                    + self.inset_left
+                    + (content_width - text_width) / 2.0
+                    + text_left_overhang
+            }
+            TextAlign::Right => {
+                self.frame_x + self.frame_width - self.inset_right - text_width + text_left_overhang
+            }
+        }
+    }
+
+    fn text_offset_for_char_index(&self, text: &str, char_index: usize) -> f32 {
+        let target = char_index.min(text.chars().count());
+        let font = make_font_with_style(
+            &self.font_family,
+            self.font_weight,
+            self.font_italic,
+            self.font_size,
+        );
+
+        let chars: Vec<char> = text.chars().collect();
+        let mut advance = 0.0;
+        for (idx, ch) in chars.iter().take(target).enumerate() {
+            let glyph = ch.to_string();
+            let (glyph_width, _bounds) = font.measure_str(&glyph, None);
+            advance += glyph_width;
+            if idx + 1 < chars.len() {
+                advance += self.letter_spacing;
+                if ch.is_whitespace() {
+                    advance += self.word_spacing;
+                }
+            }
+        }
+        advance
     }
 
     fn text_layout(&self, text: &str) -> crate::tree::text_layout::TextLayout {
@@ -556,12 +895,42 @@ impl TextInputState {
     }
 }
 
+fn char_index_to_utf16_offset(text: &str, char_index: u32) -> usize {
+    text.chars()
+        .take(char_index as usize)
+        .map(char::len_utf16)
+        .sum()
+}
+
+fn utf16_offset_to_char_index(text: &str, utf16_offset: usize) -> u32 {
+    let mut utf16_count = 0;
+    let mut char_count = 0;
+
+    for ch in text.chars() {
+        let next = utf16_count + ch.len_utf16();
+        if next > utf16_offset {
+            break;
+        }
+
+        utf16_count = next;
+        char_count += 1;
+    }
+
+    char_count
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextInputEditRequest {
     MoveLeft {
         extend_selection: bool,
     },
     MoveRight {
+        extend_selection: bool,
+    },
+    MoveWordLeft {
+        extend_selection: bool,
+    },
+    MoveWordRight {
         extend_selection: bool,
     },
     MoveUp {
@@ -576,8 +945,26 @@ pub enum TextInputEditRequest {
     MoveEnd {
         extend_selection: bool,
     },
+    MoveParagraphStart {
+        extend_selection: bool,
+    },
+    MoveParagraphEnd {
+        extend_selection: bool,
+    },
+    MoveDocumentStart {
+        extend_selection: bool,
+    },
+    MoveDocumentEnd {
+        extend_selection: bool,
+    },
     Backspace,
     Delete,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteToHome,
+    DeleteToEnd,
+    DeleteToParagraphStart,
+    DeleteToParagraphEnd,
     DeleteSurrounding {
         before_length: u32,
         after_length: u32,
@@ -653,6 +1040,7 @@ fn text_input_state(
 
     TextInputState {
         content,
+        patch_content: element.patch_content.clone(),
         content_origin: element.text_input_content_origin,
         content_len,
         cursor,
@@ -782,6 +1170,14 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     });
 }
 
+pub(crate) fn send_running_message(pid: LocalPid) {
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |inner_env| {
+        (emerge_skia_running(), heartbeat()).encode(inner_env)
+    });
+}
+
+#[cfg(all(feature = "wayland", target_os = "linux"))]
 pub(crate) fn send_close_message(pid: LocalPid) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -789,7 +1185,7 @@ pub(crate) fn send_close_message(pid: LocalPid) {
     });
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 pub(crate) fn send_log_event(pid: LocalPid, level: NativeLogLevel, source: &str, message: &str) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -807,6 +1203,8 @@ rustler::atoms! {
     emerge_skia_event,
     emerge_skia_close,
     emerge_skia_log,
+    emerge_skia_running,
+    heartbeat,
     click,
     press,
     swipe_up,
@@ -903,7 +1301,7 @@ pub(crate) fn mouse_move_atom() -> Atom {
     mouse_move()
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 fn log_level_atom(level: NativeLogLevel) -> Atom {
     match level {
         NativeLogLevel::Info => info(),
@@ -913,6 +1311,7 @@ fn log_level_atom(level: NativeLogLevel) -> Atom {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
@@ -997,6 +1396,7 @@ mod tests {
     fn text_input_cursor_from_click_point_uses_screen_to_local_transform() {
         let state = TextInputState {
             content: "ab".to_string(),
+            patch_content: None,
             content_origin: TextInputContentOrigin::TreePatch,
             content_len: 2,
             cursor: 0,
@@ -1026,5 +1426,83 @@ mod tests {
 
         assert_eq!(state.cursor_from_click_point(40.0, 10.0), 0);
         assert_eq!(state.cursor_from_click_point(140.0, 10.0), 2);
+    }
+
+    #[test]
+    fn appkit_ranges_account_for_marked_text_and_utf16_offsets() {
+        let state = TextInputState {
+            content: "a😀b".to_string(),
+            patch_content: None,
+            content_origin: TextInputContentOrigin::TreePatch,
+            content_len: 3,
+            cursor: 1,
+            selection_anchor: None,
+            preedit: Some("é".to_string()),
+            preedit_cursor: Some((1, 1)),
+            focused: true,
+            emit_change: false,
+            multiline: false,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 100.0,
+            frame_height: 20.0,
+            inset_top: 0.0,
+            inset_left: 0.0,
+            inset_bottom: 0.0,
+            inset_right: 0.0,
+            screen_to_local: None,
+            text_align: TextAlign::Left,
+            font_family: "default".to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_italic: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+        };
+
+        assert_eq!(state.appkit_displayed_text(), "aé😀b");
+        assert_eq!(state.appkit_marked_range_utf16(), Some((1, 1)));
+        assert_eq!(state.appkit_selected_range_utf16(), (2, 0));
+        assert_eq!(
+            state.appkit_substring_for_utf16_range(1, 3),
+            Some("é😀".to_string())
+        );
+    }
+
+    #[test]
+    fn appkit_replacement_range_maps_marked_text_back_to_committed_selection() {
+        let state = TextInputState {
+            content: "abcd".to_string(),
+            patch_content: None,
+            content_origin: TextInputContentOrigin::TreePatch,
+            content_len: 4,
+            cursor: 3,
+            selection_anchor: Some(1),
+            preedit: Some("X".to_string()),
+            preedit_cursor: Some((1, 1)),
+            focused: true,
+            emit_change: false,
+            multiline: false,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 100.0,
+            frame_height: 20.0,
+            inset_top: 0.0,
+            inset_left: 0.0,
+            inset_bottom: 0.0,
+            inset_right: 0.0,
+            screen_to_local: None,
+            text_align: TextAlign::Left,
+            font_family: "default".to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_italic: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+        };
+
+        assert_eq!(state.appkit_displayed_text(), "aXd");
+        assert_eq!(state.appkit_marked_range_utf16(), Some((1, 1)));
+        assert_eq!(state.appkit_replacement_char_range(1, 1), Some((1, 3)));
     }
 }

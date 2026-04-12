@@ -75,7 +75,7 @@ impl Affine2 {
         }
     }
 
-    pub fn mul(self, other: Self) -> Self {
+    pub fn then(self, other: Self) -> Self {
         Self {
             xx: self.xx * other.xx + self.xy * other.yx,
             yx: self.yx * other.xx + self.yy * other.yx,
@@ -205,15 +205,15 @@ pub fn element_transform(frame: Frame, attrs: &Attrs) -> Affine2 {
     let mut transform = Affine2::identity();
 
     if move_x != 0.0 || move_y != 0.0 {
-        transform = transform.mul(Affine2::translation(move_x, move_y));
+        transform = transform.then(Affine2::translation(move_x, move_y));
     }
 
     if rotate != 0.0 || (scale - 1.0).abs() > f32::EPSILON {
         transform = transform
-            .mul(Affine2::translation(center_x, center_y))
-            .mul(Affine2::rotation_degrees(rotate))
-            .mul(Affine2::scale(scale, scale))
-            .mul(Affine2::translation(-center_x, -center_y));
+            .then(Affine2::translation(center_x, center_y))
+            .then(Affine2::rotation_degrees(rotate))
+            .then(Affine2::scale(scale, scale))
+            .then(Affine2::translation(-center_x, -center_y));
     }
 
     transform
@@ -227,10 +227,10 @@ mod tests {
     #[test]
     fn affine_inverse_round_trips_points() {
         let transform = Affine2::translation(12.0, -5.0)
-            .mul(Affine2::translation(30.0, 20.0))
-            .mul(Affine2::rotation_degrees(30.0))
-            .mul(Affine2::scale(1.5, 1.5))
-            .mul(Affine2::translation(-30.0, -20.0));
+            .then(Affine2::translation(30.0, 20.0))
+            .then(Affine2::rotation_degrees(30.0))
+            .then(Affine2::scale(1.5, 1.5))
+            .then(Affine2::translation(-30.0, -20.0));
         let inverse = transform.inverse().expect("transform should invert");
         let point = Point { x: 42.0, y: 17.0 };
 

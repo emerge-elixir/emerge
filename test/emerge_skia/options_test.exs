@@ -21,6 +21,16 @@ defmodule EmergeSkia.OptionsTest do
     assert %{backend: "wayland"} = Options.build_start_native_opts!(backend: "wayland")
   end
 
+  test "build_start_native_opts! normalizes macos_backend" do
+    assert %{macos_backend: "auto"} = Options.build_start_native_opts!([])
+    assert %{macos_backend: "metal"} = Options.build_start_native_opts!(macos_backend: :metal)
+    assert %{macos_backend: "raster"} = Options.build_start_native_opts!(macos_backend: "raster")
+
+    assert_raise ArgumentError, ~r/:macos_backend must be :auto, :metal, or :raster/, fn ->
+      Options.build_start_native_opts!(macos_backend: :bogus)
+    end
+  end
+
   test "build_start_native_opts! validates drm retry options" do
     assert %{drm_startup_retries: 5, drm_retry_interval_ms: 100} =
              Options.build_start_native_opts!(drm_startup_retries: 5, drm_retry_interval_ms: 100)
@@ -49,6 +59,13 @@ defmodule EmergeSkia.OptionsTest do
   test "build_start_native_opts! keeps close_signal_log option" do
     assert %{close_signal_log: false} = Options.build_start_native_opts!([])
     assert %{close_signal_log: true} = Options.build_start_native_opts!(close_signal_log: true)
+  end
+
+  test "build_start_native_opts! keeps renderer_stats_log option" do
+    assert %{renderer_stats_log: false} = Options.build_start_native_opts!([])
+
+    assert %{renderer_stats_log: true} =
+             Options.build_start_native_opts!(renderer_stats_log: true)
   end
 
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do

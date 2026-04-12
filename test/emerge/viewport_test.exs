@@ -14,6 +14,7 @@ defmodule Emerge.ViewportTest do
           ops: [],
           running?: true,
           target: nil,
+          heartbeat_pid: nil,
           log_target: nil,
           skia_opts: skia_opts,
           renderer_opts: renderer_opts
@@ -23,6 +24,10 @@ defmodule Emerge.ViewportTest do
 
     @impl true
     def stop(renderer) do
+      renderer
+      |> Agent.get(& &1.heartbeat_pid)
+      |> stop_heartbeat()
+
       Agent.stop(renderer)
       :ok
     catch
@@ -33,14 +38,33 @@ defmodule Emerge.ViewportTest do
     def running?(renderer), do: Agent.get(renderer, & &1.running?)
 
     def set_running(renderer, running?) when is_boolean(running?) do
-      Agent.update(renderer, &Map.put(&1, :running?, running?))
+      Agent.update(renderer, fn state ->
+        heartbeat_pid =
+          if running? and is_pid(state.target) and is_nil(state.heartbeat_pid) do
+            start_heartbeat(state.target)
+          else
+            stop_heartbeat_unless_running(state.heartbeat_pid, running?)
+          end
+
+        %{state | running?: running?, heartbeat_pid: heartbeat_pid}
+      end)
     end
 
     @impl true
     def set_input_target(renderer, pid) do
       Agent.update(renderer, fn state ->
+        stop_heartbeat(state.heartbeat_pid)
+
+        heartbeat_pid =
+          if state.running? and is_pid(pid) do
+            start_heartbeat(pid)
+          else
+            nil
+          end
+
         state
         |> Map.put(:target, pid)
+        |> Map.put(:heartbeat_pid, heartbeat_pid)
         |> log_op({:set_input_target, pid})
       end)
 
@@ -85,6 +109,26 @@ defmodule Emerge.ViewportTest do
     def renderer_opts(renderer), do: Agent.get(renderer, & &1.renderer_opts)
 
     defp log_op(state, op), do: %{state | ops: [op | state.ops]}
+
+    defp start_heartbeat(pid) do
+      spawn(fn -> heartbeat_loop(pid) end)
+    end
+
+    defp heartbeat_loop(pid) do
+      send(pid, {:emerge_skia_running, :heartbeat})
+      Process.sleep(500)
+      heartbeat_loop(pid)
+    end
+
+    defp stop_heartbeat(nil), do: nil
+
+    defp stop_heartbeat(pid) do
+      Process.exit(pid, :kill)
+      nil
+    end
+
+    defp stop_heartbeat_unless_running(heartbeat_pid, true), do: heartbeat_pid
+    defp stop_heartbeat_unless_running(heartbeat_pid, false), do: stop_heartbeat(heartbeat_pid)
   end
 
   defmodule BareSkiaViewport do
@@ -779,6 +823,23 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "payload wrapping preserves empty string change payloads" do
+    {:ok, pid} = PayloadViewport.start_link(test_pid: self())
+
+    state = :sys.get_state(pid)
+
+    {id_bin, _events} =
+      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
+        Map.has_key?(events, :change)
+      end)
+
+    send(pid, {:emerge_skia_event, {id_bin, :change, ""}})
+
+    assert_receive {:wrapped_payload, ""}
+
+    GenServer.stop(pid)
+  end
+
   test "key listener events route through the viewport mailbox" do
     {:ok, pid} = KeyViewport.start_link(count: 0)
 
@@ -815,10 +876,18 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "renderer liveness check stops viewport when renderer closes" do
+  test "renderer heartbeat watchdog stops viewport when heartbeats go stale" do
     {:ok, pid} = LivenessViewport.start_link()
     renderer = Emerge.renderer(pid)
+
     FakeRenderer.set_running(renderer, false)
+
+    :sys.replace_state(pid, fn state ->
+      update_in(
+        state.__emerge__.last_renderer_heartbeat_at_ms,
+        fn _last_seen -> System.monotonic_time(:millisecond) - 1_500 end
+      )
+    end)
 
     ref = Process.monitor(pid)
     send(pid, {:emerge_viewport, :check_renderer})

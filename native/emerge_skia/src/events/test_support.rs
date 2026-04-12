@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 use std::time::{Duration, Instant};
 
 use super::registry_builder::{self, Listener, ListenerAction, Registry};
@@ -174,7 +176,7 @@ fn first_matching_actions(
         .unwrap_or_default()
 }
 
-pub fn winner_from_actions(
+pub(crate) fn winner_from_actions(
     actions: &[ListenerAction],
     target_id: &ElementId,
     underlying_id: &ElementId,

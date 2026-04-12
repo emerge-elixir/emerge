@@ -1,6 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 use std::ffi::{CString, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{
@@ -10,7 +18,15 @@ use std::sync::{
 use std::thread;
 
 use crossbeam_channel::{Sender, unbounded};
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 use glutin_egl_sys::egl;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 use libloading::Library;
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
@@ -27,24 +43,96 @@ rustler::atoms! {
 
 const DRM_FORMAT_NV12: u32 = fourcc(b'N', b'V', b'1', b'2');
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_LINUX_DMA_BUF_EXT: egl::types::EGLenum = 0x3270;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_LINUX_DRM_FOURCC_EXT: egl::types::EGLint = 0x3271;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE0_FD_EXT: egl::types::EGLint = 0x3272;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE0_OFFSET_EXT: egl::types::EGLint = 0x3273;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE0_PITCH_EXT: egl::types::EGLint = 0x3274;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE1_FD_EXT: egl::types::EGLint = 0x3275;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE1_OFFSET_EXT: egl::types::EGLint = 0x3276;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE1_PITCH_EXT: egl::types::EGLint = 0x3277;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE2_FD_EXT: egl::types::EGLint = 0x3278;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE2_OFFSET_EXT: egl::types::EGLint = 0x3279;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE2_PITCH_EXT: egl::types::EGLint = 0x327A;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: egl::types::EGLint = 0x3443;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: egl::types::EGLint = 0x3444;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: egl::types::EGLint = 0x3445;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: egl::types::EGLint = 0x3446;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT: egl::types::EGLint = 0x3447;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT: egl::types::EGLint = 0x3448;
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 
 const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
@@ -168,18 +256,39 @@ pub struct PrimeDesc {
     trace_token: Option<TraceToken>,
 }
 
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
 struct PrimeObjectOwned {
     fd: OwnedFd,
     modifier: Option<u64>,
 }
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
 struct PrimePlaneDesc {
     obj_idx: u32,
     pitch: u32,
     offset: u32,
 }
 
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
 pub struct PrimeFrame {
     pub width: u32,
     pub height: u32,
@@ -191,12 +300,20 @@ pub struct PrimeFrame {
 }
 
 impl PrimeFrame {
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     fn object(&self, index: usize) -> Result<&PrimeObjectOwned, String> {
         self.objects
             .get(index)
             .ok_or_else(|| format!("prime object index out of range: {index}"))
     }
 
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     fn plane(&self, index: usize) -> Result<&PrimePlaneDesc, String> {
         self.planes
             .get(index)
@@ -373,7 +490,7 @@ impl VideoRegistry {
         Ok(())
     }
 
-    #[cfg(feature = "drm")]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
@@ -413,7 +530,13 @@ impl VideoRegistry {
             .collect())
     }
 
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     pub fn drain_pending_to_release(&self) -> Result<(), String> {
         let snapshot = self.snapshot_pending()?;
 
@@ -448,11 +571,18 @@ pub struct PendingVideoFrame {
 pub struct VideoWake(BackendWakeHandle);
 
 impl VideoWake {
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
     pub fn new(wake: BackendWakeHandle) -> Self {
         Self(wake)
     }
 
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
     pub fn noop() -> Self {
         Self(BackendWakeHandle::noop())
     }
@@ -480,6 +610,13 @@ impl Drop for VideoTargetResource {
     }
 }
 
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
 pub fn spawn_release_worker() -> Sender<PrimeFrame> {
     let (tx, rx) = unbounded();
     let _ = thread::Builder::new()
@@ -492,18 +629,34 @@ pub fn spawn_release_worker() -> Sender<PrimeFrame> {
     tx
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 type GlEglImageTargetTexture2DOes = unsafe extern "system" fn(u32, *const c_void);
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 type RawEglGetProcAddress =
     unsafe extern "system" fn(
         *const c_char,
     ) -> egl::types::__eglMustCastToProperFunctionPointerType;
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 pub struct VideoImportContext {
     support: EglDmabufSupport,
     blitter: ExternalVideoBlitter,
     use_gl_fences: bool,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
         let support = EglDmabufSupport::new_current()?;
@@ -519,6 +672,26 @@ impl VideoImportContext {
     }
 }
 
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+pub struct VideoImportContext;
+
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+impl VideoImportContext {
+    pub fn new_current() -> Result<Self, String> {
+        Err("prime video import requires a Wayland or DRM backend build".to_string())
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn collect_gl_errors() -> Vec<u32> {
     let mut errors = Vec::new();
     loop {
@@ -531,6 +704,10 @@ fn collect_gl_errors() -> Vec<u32> {
     errors
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn gl_step_check(step: &str) -> Result<(), String> {
     let errors = collect_gl_errors();
     if errors.is_empty() {
@@ -546,21 +723,37 @@ pub struct VideoSyncResult {
     pub needs_cleanup: bool,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 struct RetiredImport {
     sync: gl::types::GLsync,
     imported: ImportedExternalFrame,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 enum RetiredImportPoll {
     Released,
     Pending,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 enum RetiredImportPollError {
     WaitFailed,
     UnexpectedStatus(u32),
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl RetiredImport {
     fn poll(&self) -> Result<RetiredImportPoll, RetiredImportPollError> {
         let status = unsafe { gl::ClientWaitSync(self.sync, 0, 0) };
@@ -588,6 +781,67 @@ impl RetiredImport {
     }
 }
 
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+struct RetiredImport;
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+enum RetiredImportPoll {
+    Released,
+    Pending,
+}
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+enum RetiredImportPollError {
+    WaitFailed,
+    UnexpectedStatus(u32),
+}
+
+#[cfg(not(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+)))]
+impl RetiredImport {
+    fn poll(&self) -> Result<RetiredImportPoll, RetiredImportPollError> {
+        Ok(RetiredImportPoll::Released)
+    }
+
+    fn wait_blocking(self, _target_id: &str) {}
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 struct EglDmabufSupport {
     egl: egl::Egl,
     _lib: Library,
@@ -595,6 +849,10 @@ struct EglDmabufSupport {
     image_target_texture_2d_oes: GlEglImageTargetTexture2DOes,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl EglDmabufSupport {
     fn new_current() -> Result<Self, String> {
         let lib = unsafe { Library::new("libEGL.so.1") }
@@ -730,6 +988,10 @@ impl EglDmabufSupport {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn plane_fd_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
         0 => Ok(EGL_DMA_BUF_PLANE0_FD_EXT),
@@ -739,6 +1001,10 @@ fn plane_fd_attr(index: usize) -> Result<egl::types::EGLint, String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn plane_offset_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
         0 => Ok(EGL_DMA_BUF_PLANE0_OFFSET_EXT),
@@ -748,6 +1014,10 @@ fn plane_offset_attr(index: usize) -> Result<egl::types::EGLint, String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn plane_pitch_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
         0 => Ok(EGL_DMA_BUF_PLANE0_PITCH_EXT),
@@ -757,6 +1027,10 @@ fn plane_pitch_attr(index: usize) -> Result<egl::types::EGLint, String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn plane_modifier_lo_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
         0 => Ok(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT),
@@ -766,6 +1040,10 @@ fn plane_modifier_lo_attr(index: usize) -> Result<egl::types::EGLint, String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn plane_modifier_hi_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
         0 => Ok(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT),
@@ -775,6 +1053,10 @@ fn plane_modifier_hi_attr(index: usize) -> Result<egl::types::EGLint, String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 struct ExternalVideoBlitter {
     program: u32,
     pos_loc: u32,
@@ -784,6 +1066,10 @@ struct ExternalVideoBlitter {
     vertex_array: u32,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl ExternalVideoBlitter {
     fn new() -> Result<Self, String> {
         let vertices: [f32; 16] = [
@@ -930,6 +1216,10 @@ void main() {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn compile_shader(kind: u32, source: &str) -> Result<u32, String> {
     let shader = unsafe { gl::CreateShader(kind) };
     let source = CString::new(source).map_err(|_| "shader source contained interior nul")?;
@@ -951,6 +1241,10 @@ fn compile_shader(kind: u32, source: &str) -> Result<u32, String> {
     Ok(shader)
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn link_program(vertex_shader: u32, fragment_shader: u32) -> Result<u32, String> {
     let program = unsafe { gl::CreateProgram() };
     unsafe {
@@ -972,6 +1266,10 @@ fn link_program(vertex_shader: u32, fragment_shader: u32) -> Result<u32, String>
     Ok(program)
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn shader_info_log(shader: u32) -> String {
     let mut len = 0;
     unsafe {
@@ -994,6 +1292,10 @@ fn shader_info_log(shader: u32) -> String {
         .to_string()
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn program_info_log(program: u32) -> String {
     let mut len = 0;
     unsafe {
@@ -1016,6 +1318,10 @@ fn program_info_log(program: u32) -> String {
         .to_string()
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 struct ImportedExternalFrame {
     support: *const EglDmabufSupport,
     egl_image: egl::types::EGLImageKHR,
@@ -1023,6 +1329,10 @@ struct ImportedExternalFrame {
     _frame: PrimeFrame,
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl ImportedExternalFrame {
     fn new(target_id: &str, frame: PrimeFrame, support: &EglDmabufSupport) -> Result<Self, String> {
         let egl_image = support.create_image(target_id, &frame)?;
@@ -1067,6 +1377,10 @@ impl ImportedExternalFrame {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 impl Drop for ImportedExternalFrame {
     fn drop(&mut self) {
         unsafe {
@@ -1157,6 +1471,10 @@ impl RenderedVideoTarget {
         })
     }
 
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     fn upload_frame(
         &mut self,
         frame: PrimeFrame,
@@ -1199,6 +1517,20 @@ impl RenderedVideoTarget {
         }
 
         Ok(())
+    }
+
+    #[cfg(not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )))]
+    fn upload_frame(
+        &mut self,
+        frame: PrimeFrame,
+        ctx: &VideoImportContext,
+        gr_context: &mut gpu::DirectContext,
+    ) -> Result<(), String> {
+        let _ = (&mut *self, frame, ctx, gr_context);
+        Err("prime video import requires a Wayland or DRM backend build".to_string())
     }
 
     fn reap_retired_imports(&mut self) -> bool {

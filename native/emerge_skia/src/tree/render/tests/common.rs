@@ -1,6 +1,6 @@
 use super::*;
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
-use crate::renderer::{RenderState, Renderer};
+use crate::renderer::{RenderFrame, RenderState, SceneRenderer};
 use crate::tree::geometry::ClipShape;
 use crate::tree::transform::Affine2;
 use skia_safe::Color as SkColor;
@@ -109,22 +109,23 @@ pub(super) fn render_scene_to_pixels(width: u32, height: u32, scene: RenderScene
         skia_safe::AlphaType::Premul,
         None,
     );
-    let surface = skia_safe::surfaces::raster(&info, None, None)
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)
         .expect("raster surface should be created for render test");
 
-    let mut renderer = Renderer::from_surface(surface);
+    let mut renderer = SceneRenderer::new();
     let state = RenderState {
         scene,
         clear_color: SkColor::TRANSPARENT,
         render_version: 1,
         animate: false,
     };
-    renderer.render(&state);
+    {
+        let mut frame = RenderFrame::new(&mut surface, None);
+        renderer.render(&mut frame, &state);
+    }
 
     let mut pixels = vec![0u8; (width * height * 4) as usize];
-    renderer
-        .surface_mut()
-        .read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
     pixels
 }
 
@@ -331,7 +332,7 @@ fn trace_nodes(
 
                 let mut next_context = context.clone();
                 next_context.scope_path.push(scope_id);
-                next_context.cumulative_transform = context.cumulative_transform.mul(*transform);
+                next_context.cumulative_transform = context.cumulative_transform.then(*transform);
                 trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::Alpha { alpha, children } => {

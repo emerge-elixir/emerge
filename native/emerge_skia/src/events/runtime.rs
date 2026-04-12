@@ -19,6 +19,7 @@
 //!   materializing a merged registry
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -32,6 +33,7 @@ use crate::{
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
     keys::CanonicalKey,
+    stats::RendererStatsCollector,
     tree::{
         element::{ElementId, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
@@ -39,9 +41,10 @@ use crate::{
 };
 
 use super::{
-    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState, blur_atom, change_atom,
-    click_atom, focus_atom, key_down_atom, key_press_atom, key_up_atom, mouse_down_atom,
-    mouse_enter_atom, mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
+    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
+    TextInputEditRequest, TextInputState, blur_atom, change_atom, click_atom, focus_atom,
+    key_down_atom, key_press_atom, key_up_atom, mouse_down_atom, mouse_enter_atom,
+    mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
     registry_builder::{
         self, GestureAxis, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
         RuntimeChange, RuntimeOverlayState,
@@ -51,7 +54,104 @@ use super::{
     swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
-const PENDING_TEXT_PATCH_TTL: Duration = Duration::from_millis(50);
+pub trait HostEventSink: Send + Sync {
+    fn send_raw_input(&self, event: &InputEvent);
+    fn send_element_event(
+        &self,
+        element_id: &ElementId,
+        kind: ElementEventKind,
+        payload: Option<&str>,
+    );
+}
+
+pub struct HostEventRuntime {
+    runtime: DirectEventRuntime,
+    tree_tx: Sender<TreeMsg>,
+    tree_rx: Receiver<TreeMsg>,
+    log_render: bool,
+}
+
+impl HostEventRuntime {
+    pub fn new(
+        system_clipboard: bool,
+        scroll_line_pixels: f32,
+        log_render: bool,
+        sink: Arc<dyn HostEventSink>,
+        stats: Option<Arc<RendererStatsCollector>>,
+    ) -> Self {
+        let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
+        let mut runtime = DirectEventRuntime::new_with_host_sink(
+            system_clipboard,
+            None,
+            BackendWakeHandle::noop(),
+            sink,
+            stats,
+        );
+        runtime.set_scroll_line_pixels(scroll_line_pixels);
+
+        Self {
+            runtime,
+            tree_tx,
+            tree_rx,
+            log_render,
+        }
+    }
+
+    pub fn set_input_mask(&mut self, mask: u32) {
+        self.runtime.set_input_mask(mask);
+    }
+
+    pub fn handle_input(&mut self, event: InputEvent) {
+        self.runtime
+            .handle_input_event(event, &self.tree_tx, self.log_render);
+    }
+
+    pub fn install_rebuild(&mut self, rebuild: RegistryRebuildPayload) {
+        self.runtime
+            .handle_registry_update(rebuild, &self.tree_tx, self.log_render);
+    }
+
+    pub fn handle_timers(&mut self) {
+        self.runtime.handle_timers(&self.tree_tx, self.log_render);
+    }
+
+    pub fn focused_text_state(&self) -> Option<TextInputState> {
+        self.runtime.focused_text_state()
+    }
+
+    pub fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
+        self.runtime
+            .handle_text_input_command(request, &self.tree_tx, self.log_render)
+    }
+
+    pub fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
+        self.runtime
+            .handle_text_input_edit(request, &self.tree_tx, self.log_render)
+    }
+
+    pub fn prepare_text_input_replacement_range(
+        &mut self,
+        replacement_range: Option<(u32, u32)>,
+    ) -> bool {
+        self.runtime
+            .prepare_text_input_replacement_range(replacement_range)
+    }
+
+    pub fn drain_tree_messages(&self) -> Vec<TreeMsg> {
+        let mut messages = Vec::new();
+
+        while let Ok(msg) = self.tree_rx.try_recv() {
+            messages.push(msg);
+        }
+
+        messages
+    }
+}
+
+const PENDING_TEXT_PATCH_TTL_FALLBACK: Duration = Duration::from_millis(100);
+const PENDING_TEXT_PATCH_TTL_MIN: Duration = Duration::from_millis(40);
+const PENDING_TEXT_PATCH_TTL_MAX: Duration = Duration::from_millis(400);
+const PENDING_TEXT_PATCH_TTL_FRAME_WINDOW: u32 = 4;
 const DRAG_VELOCITY_SAMPLE_MIN_DT: Duration = Duration::from_millis(4);
 const DRAG_VELOCITY_FILTER_ALPHA: f32 = 0.25;
 const ADAPTIVE_SCROLL_FRICTION: f32 = 0.015;
@@ -62,7 +162,6 @@ const ADAPTIVE_SCROLL_MIN_VELOCITY: f32 = 500.0;
 const ADAPTIVE_SCROLL_MAX_VELOCITY: f32 = 6_000.0;
 const ADAPTIVE_SCROLL_STOP_TOLERANCE: f32 = 0.5;
 const ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY: Duration = Duration::from_millis(100);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PresentTimingState {
     presented_at: Instant,
@@ -404,6 +503,7 @@ struct DirectEventRuntime {
     scrollbar_nodes: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
+    host_event_sink: Option<Arc<dyn HostEventSink>>,
     clipboard: ClipboardManager,
     backend_cursor_tx: Option<Sender<CursorIcon>>,
     backend_wake: BackendWakeHandle,
@@ -417,18 +517,20 @@ struct DirectEventRuntime {
     inertial_scroll: Option<InertialScrollState>,
     suppress_drag_release_inertia: bool,
     scroll_line_pixels: f32,
+    stats: Option<Arc<RendererStatsCollector>>,
 }
 
 impl DirectEventRuntime {
     #[cfg(test)]
     fn new(system_clipboard: bool) -> Self {
-        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop())
+        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop(), None)
     }
 
     fn new_with_backend_cursor(
         system_clipboard: bool,
         backend_cursor_tx: Option<Sender<CursorIcon>>,
         backend_wake: BackendWakeHandle,
+        stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         let base_registry = registry_builder::Registry::default();
         let runtime_overlay = RuntimeOverlayState::default();
@@ -448,6 +550,7 @@ impl DirectEventRuntime {
             scrollbar_nodes: HashMap::new(),
             input_handler: InputHandler::new(),
             input_target: None,
+            host_event_sink: None,
             clipboard: ClipboardManager::new(system_clipboard),
             backend_cursor_tx,
             backend_wake,
@@ -461,7 +564,28 @@ impl DirectEventRuntime {
             inertial_scroll: None,
             suppress_drag_release_inertia: false,
             scroll_line_pixels: SCROLL_LINE_PIXELS,
+            stats,
         }
+    }
+
+    fn focused_text_state(&self) -> Option<TextInputState> {
+        self.focused_id
+            .as_ref()
+            .and_then(|element_id| self.text_states.get(element_id))
+            .cloned()
+    }
+
+    fn new_with_host_sink(
+        system_clipboard: bool,
+        backend_cursor_tx: Option<Sender<CursorIcon>>,
+        backend_wake: BackendWakeHandle,
+        host_event_sink: Arc<dyn HostEventSink>,
+        stats: Option<Arc<RendererStatsCollector>>,
+    ) -> Self {
+        let mut runtime =
+            Self::new_with_backend_cursor(system_clipboard, backend_cursor_tx, backend_wake, stats);
+        runtime.host_event_sink = Some(host_event_sink);
+        runtime
     }
 
     fn set_scroll_line_pixels(&mut self, scroll_line_pixels: f32) {
@@ -476,11 +600,31 @@ impl DirectEventRuntime {
         self.input_target = target;
     }
 
+    fn record_event_resolve_duration(&self, duration: Duration) {
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_event_resolve(duration);
+        }
+    }
+
     fn note_present_timing(&mut self, presented_at: Instant, predicted_next_present_at: Instant) {
         self.last_present_timing = Some(PresentTimingState {
             presented_at,
             predicted_next_present_at,
         });
+    }
+
+    fn pending_text_patch_ttl(&self) -> Duration {
+        self.last_present_timing
+            .and_then(|timing| {
+                timing
+                    .predicted_next_present_at
+                    .checked_duration_since(timing.presented_at)
+            })
+            .filter(|interval| !interval.is_zero())
+            .map(|interval| interval.saturating_mul(PENDING_TEXT_PATCH_TTL_FRAME_WINDOW))
+            .unwrap_or(PENDING_TEXT_PATCH_TTL_FALLBACK)
+            .max(PENDING_TEXT_PATCH_TTL_MIN)
+            .min(PENDING_TEXT_PATCH_TTL_MAX)
     }
 
     fn cancel_inertial_scroll(&mut self) {
@@ -744,7 +888,12 @@ impl DirectEventRuntime {
             self.listener_lane.is_stale(),
             self.listener_lane.buffered_inputs.len()
         );
-        forward_observer_input(&event, &self.input_handler, &self.input_target);
+        forward_observer_input(
+            &event,
+            &self.input_handler,
+            &self.input_target,
+            self.host_event_sink.as_deref(),
+        );
         self.clear_text_commit_suppressions_for_event(&event);
 
         if self.listener_lane.is_stale() {
@@ -753,6 +902,105 @@ impl DirectEventRuntime {
         }
 
         self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
+    }
+
+    fn handle_text_input_command(
+        &mut self,
+        request: TextInputCommandRequest,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        let Some(element_id) = self
+            .focused_id
+            .clone()
+            .filter(|element_id| self.text_states.contains_key(element_id))
+        else {
+            return false;
+        };
+
+        let started_at = Instant::now();
+        let actions = {
+            let mut ctx = RuntimeListenerComputeCtx {
+                base_registry: &self.base_registry,
+                overlay_registry: &self.overlay_registry,
+                focused_id: self.focused_id.as_ref(),
+                hovered_id: self.hovered_id.as_ref(),
+                text_states: &self.text_states,
+                text_commit_suppressions: &mut self.text_commit_suppressions,
+                clipboard: &mut self.clipboard,
+            };
+
+            registry_builder::resolve_text_input_command_actions(&element_id, request, &mut ctx)
+        };
+
+        if actions.is_empty() {
+            self.record_event_resolve_duration(started_at.elapsed());
+            return false;
+        }
+
+        self.apply_listener_actions(actions, tree_tx, log_render, DispatchMode::Normal);
+        self.record_event_resolve_duration(started_at.elapsed());
+        true
+    }
+
+    fn handle_text_input_edit(
+        &mut self,
+        request: TextInputEditRequest,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        let Some(element_id) = self
+            .focused_id
+            .clone()
+            .filter(|element_id| self.text_states.contains_key(element_id))
+        else {
+            return false;
+        };
+
+        let started_at = Instant::now();
+        let actions = {
+            let mut ctx = RuntimeListenerComputeCtx {
+                base_registry: &self.base_registry,
+                overlay_registry: &self.overlay_registry,
+                focused_id: self.focused_id.as_ref(),
+                hovered_id: self.hovered_id.as_ref(),
+                text_states: &self.text_states,
+                text_commit_suppressions: &mut self.text_commit_suppressions,
+                clipboard: &mut self.clipboard,
+            };
+
+            registry_builder::resolve_text_input_edit_actions(&element_id, request, &mut ctx)
+        };
+
+        if actions.is_empty() {
+            self.record_event_resolve_duration(started_at.elapsed());
+            return false;
+        }
+
+        self.apply_listener_actions(actions, tree_tx, log_render, DispatchMode::Normal);
+        self.record_event_resolve_duration(started_at.elapsed());
+        true
+    }
+
+    fn prepare_text_input_replacement_range(
+        &mut self,
+        replacement_range: Option<(u32, u32)>,
+    ) -> bool {
+        let Some((start, end)) = replacement_range else {
+            return false;
+        };
+
+        let Some(element_id) = self
+            .focused_id
+            .clone()
+            .filter(|element_id| self.text_states.contains_key(element_id))
+        else {
+            return false;
+        };
+
+        self.text_states
+            .get_mut(&element_id)
+            .is_some_and(|state| state.set_selection_range(start, end))
     }
 
     fn inject_synthetic_inputs(
@@ -835,7 +1083,9 @@ impl DirectEventRuntime {
                 &target.reveal_scrolls,
                 &mut self.focused_id,
                 &self.input_target,
+                self.host_event_sink.as_deref(),
                 &mut self.text_states,
+                &mut self.pending_text_patches,
                 tree_tx,
                 log_render,
             );
@@ -1046,6 +1296,7 @@ impl DirectEventRuntime {
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
+        let started_at = Instant::now();
         let input = ListenerInput::Raw(event);
         let actions = {
             let mut ctx = RuntimeListenerComputeCtx {
@@ -1064,6 +1315,8 @@ impl DirectEventRuntime {
         if !actions.is_empty() {
             self.apply_listener_actions(actions, tree_tx, log_render, dispatch_mode);
         }
+
+        self.record_event_resolve_duration(started_at.elapsed());
     }
 
     fn apply_listener_actions(
@@ -1104,6 +1357,11 @@ impl DirectEventRuntime {
     }
 
     fn send_elixir_event(&self, event: registry_builder::ElixirEvent) {
+        if let Some(sink) = self.host_event_sink.as_deref() {
+            sink.send_element_event(&event.element_id, event.kind, event.payload.as_deref());
+            return;
+        }
+
         let Some(pid) = self.input_target else {
             return;
         };
@@ -1287,17 +1545,18 @@ impl DirectEventRuntime {
 
     fn enqueue_pending_text_patch(&mut self, element_id: ElementId, content: String) {
         let now = Instant::now();
+        let ttl = self.pending_text_patch_ttl();
         let queue = self.pending_text_patches.entry(element_id).or_default();
         prune_expired_pending_text_patch_queue(queue, now);
 
         if let Some(existing) = queue.back_mut()
             && existing.content == content
         {
-            existing.expires_at = now + PENDING_TEXT_PATCH_TTL;
+            existing.expires_at = now + ttl;
         } else {
             queue.push_back(PendingTextPatch {
                 content,
-                expires_at: now + PENDING_TEXT_PATCH_TTL,
+                expires_at: now + ttl,
             });
         }
     }
@@ -1593,9 +1852,8 @@ fn reconcile_text_input_states(
             let mut changed_tree = false;
 
             state.copy_rebuild_metadata_from(rebuild_state);
-            if rebuild_state.content_origin == TextInputContentOrigin::Event
-                && state.content != rebuild_state.content
-            {
+            let had_patch_content = state.patch_content.take().is_some();
+            if had_patch_content || state.content != rebuild_state.content {
                 changed_tree |=
                     send_content_update(tree_tx, log_render, element_id, state.content.clone());
             }
@@ -1614,25 +1872,31 @@ fn reconcile_text_input_states(
             element_id: &ElementId,
             rebuild_state: &TextInputState,
             state: &mut TextInputState,
+            patch_content: String,
             tree_tx: &Sender<TreeMsg>,
             log_render: bool,
         ) -> bool {
-            *state = rebuild_state.clone();
+            state.copy_rebuild_metadata_from(rebuild_state);
+            state.set_content(patch_content.clone());
+            state.content_origin = TextInputContentOrigin::Event;
+            state.patch_content = None;
             state.focused = true;
             state.normalize_runtime();
 
-            text_input_runtime_mismatch(rebuild_state, state)
-                && send_runtime_update(tree_tx, log_render, element_id, state)
+            let mut changed_tree =
+                send_content_update(tree_tx, log_render, element_id, patch_content);
+
+            if text_input_runtime_mismatch(rebuild_state, state) {
+                changed_tree |= send_runtime_update(tree_tx, log_render, element_id, state);
+            }
+
+            changed_tree
         }
 
-        let preserve_runtime = match rebuild_state.content_origin {
-            TextInputContentOrigin::Event => true,
-            TextInputContentOrigin::TreePatch => consume_pending_text_patch_match(
-                pending_text_patches,
-                element_id,
-                &rebuild_state.content,
-            ),
-        };
+        let patch_content = rebuild_state.patch_content.clone();
+        let preserve_runtime = patch_content.as_deref().is_none_or(|patch_content| {
+            consume_pending_text_patch_match(pending_text_patches, element_id, patch_content)
+        });
 
         if preserve_runtime {
             preserve_runtime_focused_text_input(
@@ -1648,6 +1912,7 @@ fn reconcile_text_input_states(
                 element_id,
                 rebuild_state,
                 state,
+                patch_content.expect("focused patch reconcile requires patch_content"),
                 tree_tx,
                 log_render,
             )
@@ -1705,22 +1970,31 @@ fn reconcile_text_input_states(
     changed_tree
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_focus_to(
     next_focus: Option<ElementId>,
     reveal_scrolls: &[registry_builder::FocusRevealScroll],
     focused: &mut Option<ElementId>,
     target: &Option<LocalPid>,
+    host_event_sink: Option<&dyn HostEventSink>,
     states: &mut HashMap<ElementId, TextInputState>,
+    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
 ) -> bool {
     fn blur_previous_focus(
         prev_id: ElementId,
         target: &Option<LocalPid>,
+        host_event_sink: Option<&dyn HostEventSink>,
         states: &mut HashMap<ElementId, TextInputState>,
+        pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
+        if let Some(sink) = host_event_sink {
+            sink.send_element_event(&prev_id, ElementEventKind::Blur, None);
+        }
+
         if let Some(pid) = target.as_ref().copied() {
             send_element_event(pid, &prev_id, blur_atom());
         }
@@ -1736,6 +2010,29 @@ fn apply_focus_to(
 
         let mut changed_tree = true;
         if let Some(state) = states.get_mut(&prev_id) {
+            if let Some(patch_content) = state.patch_content.clone() {
+                let preserve_runtime = consume_pending_text_patch_match(
+                    pending_text_patches,
+                    &prev_id,
+                    &patch_content,
+                );
+                pending_text_patches.remove(&prev_id);
+
+                if preserve_runtime {
+                    changed_tree |=
+                        send_content_update(tree_tx, log_render, &prev_id, state.content.clone());
+                    state.patch_content = None;
+                } else {
+                    state.set_content(patch_content.clone());
+                    state.content_origin = TextInputContentOrigin::Event;
+                    state.patch_content = None;
+                    changed_tree |=
+                        send_content_update(tree_tx, log_render, &prev_id, patch_content);
+                }
+            } else {
+                pending_text_patches.remove(&prev_id);
+            }
+
             let cursor = state.cursor;
             state.set_runtime(false, Some(cursor), None, None, None);
             changed_tree |= send_runtime_update(tree_tx, log_render, &prev_id, state);
@@ -1747,10 +2044,15 @@ fn apply_focus_to(
     fn focus_next_element(
         next_id: ElementId,
         target: &Option<LocalPid>,
+        host_event_sink: Option<&dyn HostEventSink>,
         states: &mut HashMap<ElementId, TextInputState>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
+        if let Some(sink) = host_event_sink {
+            sink.send_element_event(&next_id, ElementEventKind::Focus, None);
+        }
+
         if let Some(pid) = target.as_ref().copied() {
             send_element_event(pid, &next_id, focus_atom());
         }
@@ -1812,11 +2114,26 @@ fn apply_focus_to(
     let mut changed_tree = false;
 
     if let Some(prev_id) = previous_focus {
-        changed_tree |= blur_previous_focus(prev_id, target, states, tree_tx, log_render);
+        changed_tree |= blur_previous_focus(
+            prev_id,
+            target,
+            host_event_sink,
+            states,
+            pending_text_patches,
+            tree_tx,
+            log_render,
+        );
     }
 
     if let Some(next_id) = next_focus {
-        changed_tree |= focus_next_element(next_id, target, states, tree_tx, log_render);
+        changed_tree |= focus_next_element(
+            next_id,
+            target,
+            host_event_sink,
+            states,
+            tree_tx,
+            log_render,
+        );
     }
 
     changed_tree |= emit_reveal_scroll_requests(reveal_scrolls, tree_tx, log_render);
@@ -1889,11 +2206,16 @@ fn forward_observer_input(
     event: &InputEvent,
     input_handler: &InputHandler,
     target: &Option<LocalPid>,
+    host_event_sink: Option<&dyn HostEventSink>,
 ) {
-    if input_handler.accepts(event)
-        && let Some(pid) = target.as_ref()
-    {
-        send_input_event(*pid, event);
+    if input_handler.accepts(event) {
+        if let Some(sink) = host_event_sink {
+            sink.send_raw_input(event);
+        }
+
+        if let Some(pid) = target.as_ref() {
+            send_input_event(*pid, event);
+        }
     }
 }
 
@@ -1905,12 +2227,14 @@ pub(crate) fn spawn_event_actor(
     scroll_line_pixels: f32,
     log_render: bool,
     system_clipboard: bool,
+    stats: Option<Arc<RendererStatsCollector>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut runtime = DirectEventRuntime::new_with_backend_cursor(
             system_clipboard,
             backend_cursor_tx,
             backend_wake,
+            stats,
         );
         runtime.set_scroll_line_pixels(scroll_line_pixels);
         let mut pending_message: Option<EventMsg> = None;
@@ -1993,10 +2317,12 @@ fn coalesce_registry_updates(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
 
     use super::*;
+    use crate::clipboard::ClipboardTarget;
     use crate::events::registry_builder::{self, FocusRevealScroll};
     use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::events::{CursorIcon, FocusOnMountTarget, RegistryRebuildPayload};
@@ -2043,6 +2369,7 @@ mod tests {
     ) -> TextInputState {
         TextInputState {
             content: content.to_string(),
+            patch_content: None,
             content_origin,
             content_len: content.chars().count() as u32,
             cursor,
@@ -2069,6 +2396,25 @@ mod tests {
             letter_spacing: 0.0,
             word_spacing: 0.0,
         }
+    }
+
+    fn make_text_input_state_with_patch(
+        content: &str,
+        patch_content: Option<&str>,
+        content_origin: TextInputContentOrigin,
+        cursor: u32,
+        selection_anchor: Option<u32>,
+        focused: bool,
+    ) -> TextInputState {
+        let mut state = make_text_input_state_with_origin(
+            content,
+            content_origin,
+            cursor,
+            selection_anchor,
+            focused,
+        );
+        state.patch_content = patch_content.map(ToString::to_string);
+        state
     }
 
     fn drain_msgs(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
@@ -2416,6 +2762,7 @@ mod tests {
         let mut sessions =
             HashMap::from([(previous_id.clone(), previous), (next_id.clone(), next)]);
         let mut focused = Some(previous_id.clone());
+        let mut pending_text_patches = HashMap::new();
         let (tree_tx, tree_rx) = bounded(32);
 
         assert!(apply_focus_to(
@@ -2427,7 +2774,9 @@ mod tests {
             }],
             &mut focused,
             &None,
+            None,
             &mut sessions,
+            &mut pending_text_patches,
             &tree_tx,
             false,
         ));
@@ -2458,6 +2807,104 @@ mod tests {
                 if *element_id == scroll_id
                     && (*dx - 12.0).abs() < f32::EPSILON
                     && (*dy + 8.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn apply_focus_to_blur_reconciles_matching_patch_content_to_runtime_value() {
+        let previous_id = ElementId::from_term_bytes(vec![211]);
+        let next_id = ElementId::from_term_bytes(vec![212]);
+
+        let mut previous = make_text_input_state("abc", 3, None, true);
+        previous.patch_content = Some("abc".to_string());
+        let next = make_text_input_state("next", 0, None, false);
+
+        let mut sessions =
+            HashMap::from([(previous_id.clone(), previous), (next_id.clone(), next)]);
+        let mut focused = Some(previous_id.clone());
+        let mut pending_text_patches = HashMap::from([(
+            previous_id.clone(),
+            VecDeque::from([PendingTextPatch {
+                content: "abc".to_string(),
+                expires_at: Instant::now() + Duration::from_millis(200),
+            }]),
+        )]);
+        let (tree_tx, tree_rx) = bounded(32);
+
+        assert!(apply_focus_to(
+            Some(next_id.clone()),
+            &[],
+            &mut focused,
+            &None,
+            None,
+            &mut sessions,
+            &mut pending_text_patches,
+            &tree_tx,
+            false,
+        ));
+
+        let previous = sessions
+            .get(&previous_id)
+            .expect("previous session updated");
+        assert_eq!(previous.content, "abc");
+        assert_eq!(previous.patch_content, None);
+        assert!(!previous.focused);
+        assert!(!pending_text_patches.contains_key(&previous_id));
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == previous_id && content == "abc"
+        )));
+    }
+
+    #[test]
+    fn apply_focus_to_blur_accepts_conflicting_patch_content() {
+        let previous_id = ElementId::from_term_bytes(vec![213]);
+        let next_id = ElementId::from_term_bytes(vec![214]);
+
+        let mut previous = make_text_input_state("abc", 3, None, true);
+        previous.patch_content = Some("server".to_string());
+        let next = make_text_input_state("next", 0, None, false);
+
+        let mut sessions =
+            HashMap::from([(previous_id.clone(), previous), (next_id.clone(), next)]);
+        let mut focused = Some(previous_id.clone());
+        let mut pending_text_patches = HashMap::from([(
+            previous_id.clone(),
+            VecDeque::from([PendingTextPatch {
+                content: "abc".to_string(),
+                expires_at: Instant::now() + Duration::from_millis(200),
+            }]),
+        )]);
+        let (tree_tx, tree_rx) = bounded(32);
+
+        assert!(apply_focus_to(
+            Some(next_id.clone()),
+            &[],
+            &mut focused,
+            &None,
+            None,
+            &mut sessions,
+            &mut pending_text_patches,
+            &tree_tx,
+            false,
+        ));
+
+        let previous = sessions
+            .get(&previous_id)
+            .expect("previous session updated");
+        assert_eq!(previous.content, "server");
+        assert_eq!(previous.patch_content, None);
+        assert!(!previous.focused);
+        assert!(!pending_text_patches.contains_key(&previous_id));
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == previous_id && content == "server"
         )));
     }
 
@@ -3064,6 +3511,28 @@ mod tests {
     }
 
     #[test]
+    fn pending_text_patch_ttl_defaults_and_tracks_present_timing() {
+        let mut runtime = DirectEventRuntime::new(false);
+        assert_eq!(
+            runtime.pending_text_patch_ttl(),
+            PENDING_TEXT_PATCH_TTL_FALLBACK
+        );
+
+        let now = Instant::now();
+        runtime.last_present_timing = Some(PresentTimingState {
+            presented_at: now,
+            predicted_next_present_at: now + Duration::from_millis(30),
+        });
+        assert_eq!(runtime.pending_text_patch_ttl(), Duration::from_millis(120));
+
+        runtime.last_present_timing = Some(PresentTimingState {
+            presented_at: now,
+            predicted_next_present_at: now + Duration::from_millis(200),
+        });
+        assert_eq!(runtime.pending_text_patch_ttl(), PENDING_TEXT_PATCH_TTL_MAX);
+    }
+
+    #[test]
     fn direct_runtime_pointer_press_and_blur_leave_cancel_inertia() {
         let element_id = ElementId::from_term_bytes(vec![214]);
         let (tree_tx, _tree_rx) = bounded(8);
@@ -3357,7 +3826,7 @@ mod tests {
         );
 
         let msgs = drain_msgs(&tree_rx);
-        assert!(matches!(runtime.runtime_overlay.scrollbar, Some(_)));
+        assert!(runtime.runtime_overlay.scrollbar.is_some());
         assert!(msgs.is_empty());
 
         let rebuild = render_tree(&tree).event_rebuild;
@@ -3521,6 +3990,175 @@ mod tests {
             .expect("session updated after commit");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
+    }
+
+    #[test]
+    fn direct_runtime_text_input_command_select_all_updates_selection() {
+        let input_id = ElementId::from_term_bytes(vec![58]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("abcd", 2, None, true),
+        );
+
+        assert!(runtime.handle_text_input_command(
+            TextInputCommandRequest::SelectAll,
+            &tree_tx,
+            false,
+        ));
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.cursor, 4);
+        assert_eq!(session.selection_anchor, Some(0));
+        assert_eq!(
+            runtime.clipboard.get_text(ClipboardTarget::Primary),
+            Some("abcd".to_string())
+        );
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, cursor, selection_anchor, .. }
+                if *element_id == input_id && *cursor == Some(4) && *selection_anchor == Some(0)
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_input_command_paste_updates_content() {
+        let input_id = ElementId::from_term_bytes(vec![59]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime
+            .text_states
+            .insert(input_id.clone(), make_text_input_state("ab", 2, None, true));
+        runtime.clipboard.set_text(ClipboardTarget::Clipboard, "cd");
+
+        assert!(
+            runtime.handle_text_input_command(TextInputCommandRequest::Paste, &tree_tx, false,)
+        );
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.content, "abcd");
+        assert_eq!(session.cursor, 4);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "abcd"
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_input_command_cut_updates_clipboard_and_content() {
+        let input_id = ElementId::from_term_bytes(vec![60]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("abcd", 3, Some(1), true),
+        );
+
+        assert!(runtime.handle_text_input_command(TextInputCommandRequest::Cut, &tree_tx, false,));
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.content, "ad");
+        assert_eq!(session.cursor, 1);
+        assert_eq!(session.selection_anchor, None);
+        assert_eq!(
+            runtime.clipboard.get_text(ClipboardTarget::Clipboard),
+            Some("bc".to_string())
+        );
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "ad"
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_input_edit_moves_by_word() {
+        let input_id = ElementId::from_term_bytes(vec![61]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("hello world", 11, None, true),
+        );
+
+        assert!(runtime.handle_text_input_edit(
+            TextInputEditRequest::MoveWordLeft {
+                extend_selection: false,
+            },
+            &tree_tx,
+            false,
+        ));
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.cursor, 6);
+        assert_eq!(session.selection_anchor, None);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, cursor, .. }
+                if *element_id == input_id && *cursor == Some(6)
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_input_edit_moves_to_document_end_with_selection() {
+        let input_id = ElementId::from_term_bytes(vec![62]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("hello", 1, None, true),
+        );
+
+        assert!(runtime.handle_text_input_edit(
+            TextInputEditRequest::MoveDocumentEnd {
+                extend_selection: true,
+            },
+            &tree_tx,
+            false,
+        ));
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.cursor, 5);
+        assert_eq!(session.selection_anchor, Some(1));
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, cursor, selection_anchor, .. }
+                if *element_id == input_id && *cursor == Some(5) && *selection_anchor == Some(1)
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_input_edit_deletes_word_backward() {
+        let input_id = ElementId::from_term_bytes(vec![63]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.focused_id = Some(input_id.clone());
+        runtime.text_states.insert(
+            input_id.clone(),
+            make_text_input_state("hello world", 11, None, true),
+        );
+
+        assert!(runtime.handle_text_input_edit(
+            TextInputEditRequest::DeleteWordBackward,
+            &tree_tx,
+            false,
+        ));
+
+        let session = runtime.text_states.get(&input_id).expect("session updated");
+        assert_eq!(session.content, "hello ");
+        assert_eq!(session.cursor, 6);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "hello "
+        )));
     }
 
     #[test]
@@ -4107,7 +4745,7 @@ mod tests {
         let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
 
         let rebuild_ab = RegistryRebuildPayload {
-            base_registry: registry_builder::registry_for_elements(&[element.clone()]),
+            base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(
                 input_id.clone(),
                 make_text_input_state("ab", 2, None, true),
@@ -4187,14 +4825,15 @@ mod tests {
     #[test]
     fn focused_tree_patch_matching_pending_value_preserves_runtime_content() {
         let input_id = ElementId::from_term_bytes(vec![55]);
-        let rebuild_ab = RegistryRebuildPayload {
+        let rebuild_abc = RegistryRebuildPayload {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
                 input_id.clone(),
-                make_text_input_state_with_origin(
-                    "ab",
-                    TextInputContentOrigin::TreePatch,
-                    2,
+                make_text_input_state_with_patch(
+                    "abc",
+                    Some("abc"),
+                    TextInputContentOrigin::Event,
+                    3,
                     None,
                     true,
                 ),
@@ -4211,21 +4850,22 @@ mod tests {
             input_id.clone(),
             make_text_input_state("abc", 3, None, true),
         );
+        let ttl = runtime.pending_text_patch_ttl();
         runtime.pending_text_patches.insert(
             input_id.clone(),
             VecDeque::from([
                 PendingTextPatch {
                     content: "ab".to_string(),
-                    expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                    expires_at: Instant::now() + ttl,
                 },
                 PendingTextPatch {
                     content: "abc".to_string(),
-                    expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                    expires_at: Instant::now() + ttl,
                 },
             ]),
         );
 
-        runtime.handle_registry_update(rebuild_ab, &tree_tx, false);
+        runtime.handle_registry_update(rebuild_abc, &tree_tx, false);
 
         let session = runtime
             .text_states
@@ -4233,17 +4873,9 @@ mod tests {
             .expect("session preserved");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
-        assert_eq!(
-            runtime
-                .pending_text_patches
-                .get(&input_id)
-                .expect("latest pending retained")
-                .iter()
-                .map(|pending| pending.content.as_str())
-                .collect::<Vec<_>>(),
-            vec!["abc"]
-        );
-        assert!(drain_msgs(&tree_rx).iter().all(|msg| !matches!(
+        assert_eq!(session.patch_content, None);
+        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
                 if *element_id == input_id && content == "abc"
@@ -4257,10 +4889,11 @@ mod tests {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
                 input_id.clone(),
-                make_text_input_state_with_origin(
-                    "server",
-                    TextInputContentOrigin::TreePatch,
-                    6,
+                make_text_input_state_with_patch(
+                    "abc",
+                    Some("server"),
+                    TextInputContentOrigin::Event,
+                    3,
                     None,
                     true,
                 ),
@@ -4277,11 +4910,12 @@ mod tests {
             input_id.clone(),
             make_text_input_state("abc", 3, None, true),
         );
+        let ttl = runtime.pending_text_patch_ttl();
         runtime.pending_text_patches.insert(
             input_id.clone(),
             VecDeque::from([PendingTextPatch {
                 content: "abc".to_string(),
-                expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                expires_at: Instant::now() + ttl,
             }]),
         );
 
@@ -4292,9 +4926,14 @@ mod tests {
             .get(&input_id)
             .expect("session accepted");
         assert_eq!(session.content, "server");
-        assert_eq!(session.content_origin, TextInputContentOrigin::TreePatch);
+        assert_eq!(session.content_origin, TextInputContentOrigin::Event);
+        assert_eq!(session.patch_content, None);
         assert!(!runtime.pending_text_patches.contains_key(&input_id));
-        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "server"
+        )));
     }
 
     #[test]
@@ -4304,10 +4943,11 @@ mod tests {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
                 input_id.clone(),
-                make_text_input_state_with_origin(
-                    "server",
-                    TextInputContentOrigin::TreePatch,
-                    6,
+                make_text_input_state_with_patch(
+                    "abc",
+                    Some("server"),
+                    TextInputContentOrigin::Event,
+                    3,
                     None,
                     true,
                 ),
@@ -4343,7 +4983,11 @@ mod tests {
             "server"
         );
         assert!(!runtime.pending_text_patches.contains_key(&input_id));
-        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputContent { element_id, content }
+                if *element_id == input_id && content == "server"
+        )));
     }
 
     #[test]
@@ -4368,11 +5012,12 @@ mod tests {
 
         let (tree_tx, _tree_rx) = bounded(32);
         let mut runtime = DirectEventRuntime::new(false);
+        let ttl = runtime.pending_text_patch_ttl();
         runtime.pending_text_patches.insert(
             input_id.clone(),
             VecDeque::from([PendingTextPatch {
                 content: "abc".to_string(),
-                expires_at: Instant::now() + PENDING_TEXT_PATCH_TTL,
+                expires_at: Instant::now() + ttl,
             }]),
         );
 
@@ -4798,6 +5443,7 @@ mod tests {
             false,
             Some(cursor_tx),
             BackendWakeHandle::noop(),
+            None,
         );
         runtime.handle_registry_update(rebuild, &tree_tx, false);
 
