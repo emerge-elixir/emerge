@@ -2,11 +2,23 @@ defmodule EmergeSkia.TreeRenderer do
   @moduledoc false
 
   alias EmergeSkia.Assets
+  alias EmergeSkia.Macos.Host
+  alias EmergeSkia.Macos.Renderer
   alias EmergeSkia.Native
   alias EmergeSkia.Options
 
   @spec upload_tree(reference(), Emerge.Engine.Element.t()) ::
           {Emerge.Engine.diff_state(), Emerge.Engine.Element.t()}
+  def upload_tree(%Renderer{} = renderer, tree) do
+    state = Emerge.Engine.diff_state_new()
+    {full_bin, state, assigned} = Emerge.Engine.encode_full(state, tree)
+
+    case Host.upload_tree(renderer, full_bin) do
+      :ok -> {state, assigned}
+      {:error, reason} -> raise "renderer_upload failed: #{reason}"
+    end
+  end
+
   def upload_tree(renderer, tree) do
     state = Emerge.Engine.diff_state_new()
     {full_bin, state, assigned} = Emerge.Engine.encode_full(state, tree)
@@ -22,6 +34,15 @@ defmodule EmergeSkia.TreeRenderer do
 
   @spec patch_tree(reference(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
           {Emerge.Engine.diff_state(), Emerge.Engine.Element.t()}
+  def patch_tree(%Renderer{} = renderer, state, tree) do
+    {patch_bin, state, assigned} = Emerge.Engine.diff_state_update(state, tree)
+
+    case Host.patch_tree(renderer, patch_bin) do
+      :ok -> {state, assigned}
+      {:error, reason} -> raise "renderer_patch failed: #{reason}"
+    end
+  end
+
   def patch_tree(renderer, state, tree) do
     {patch_bin, state, assigned} = Emerge.Engine.diff_state_update(state, tree)
 
