@@ -332,7 +332,7 @@ fn trace_nodes(
 
                 let mut next_context = context.clone();
                 next_context.scope_path.push(scope_id);
-                next_context.cumulative_transform = context.cumulative_transform.mul(*transform);
+                next_context.cumulative_transform = context.cumulative_transform.then(*transform);
                 trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::Alpha { alpha, children } => {

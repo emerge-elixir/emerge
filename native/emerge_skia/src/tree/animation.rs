@@ -875,6 +875,7 @@ fn scale_border_width(value: &BorderWidth, scale: f64) -> BorderWidth {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::element::{Element, ElementKind, GhostAttachment, NodeResidency};

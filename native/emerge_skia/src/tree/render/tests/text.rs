@@ -220,6 +220,15 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
         .expect("caret area should be present");
 
     let displayed = "quxyick";
+    let text_x = draws
+        .iter()
+        .find_map(|draw| match &draw.primitive {
+            DrawPrimitive::TextWithFont(x, _, content, _, _, _, _, _) if content == displayed => {
+                Some(*x)
+            }
+            _ => None,
+        })
+        .expect("displayed text draw should be present");
     let expected_caret_offset = text_offset_for_char_index(
         displayed,
         3,
@@ -233,13 +242,13 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
             word_spacing: 0.0,
         },
     );
-    let expected_caret_x = 10.0 + expected_caret_offset;
+    let expected_caret_x = text_x + expected_caret_offset;
     assert!((caret_x - expected_caret_x).abs() < 0.2);
 
     let (ascent, _descent) = text_metrics_with_font(16.0, "default", 400, false);
     let baseline_y = 20.0 + ascent;
 
-    let preedit_x = 10.0
+    let preedit_x = text_x
         + text_offset_for_char_index(
             displayed,
             2,

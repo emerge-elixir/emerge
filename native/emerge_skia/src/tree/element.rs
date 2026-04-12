@@ -297,6 +297,9 @@ pub struct Element {
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
 
+    /// Runtime-only pending patch content for focused text inputs.
+    pub patch_content: Option<String>,
+
     /// Child element IDs (order matters).
     pub children: Vec<ElementId>,
 
@@ -339,6 +342,7 @@ impl Element {
             base_attrs: attrs.clone(),
             attrs,
             text_input_content_origin: TextInputContentOrigin::TreePatch,
+            patch_content: None,
             children: Vec::new(),
             paint_children: Vec::new(),
             nearby: NearbyMounts::default(),
@@ -812,6 +816,10 @@ impl ElementTree {
 
         element.base_attrs.content = Some(content.clone());
         element.attrs.content = Some(content.clone());
+
+        if element.patch_content.take().is_some() {
+            changed = true;
+        }
 
         if element.text_input_content_origin != TextInputContentOrigin::Event {
             element.text_input_content_origin = TextInputContentOrigin::Event;

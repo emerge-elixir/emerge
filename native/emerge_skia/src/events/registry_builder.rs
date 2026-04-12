@@ -92,7 +92,7 @@ impl Registry {
     /// The closure should read from highest precedence to lowest precedence.
     /// Internally the appended storage slice is reversed so the underlying vec
     /// remains low-to-high precedence with the top of stack at the end.
-    pub fn in_precedence_order<R>(
+    pub(crate) fn in_precedence_order<R>(
         &mut self,
         build: impl FnOnce(&mut PrecedenceEmitter<'_>) -> R,
     ) -> R {
@@ -105,7 +105,7 @@ impl Registry {
     }
 
     /// Returns a precedence-ordered read view over the registry.
-    pub fn view(&self) -> RegistryView<'_> {
+    pub(crate) fn view(&self) -> RegistryView<'_> {
         RegistryView {
             listeners: &self.listeners,
         }
@@ -127,20 +127,20 @@ impl Registry {
 /// lowest precedence. `Registry::in_precedence_order(...)` then reverses the
 /// appended storage slice so the underlying registry keeps its low-to-high
 /// storage layout.
-pub struct PrecedenceEmitter<'a> {
+pub(crate) struct PrecedenceEmitter<'a> {
     listeners: &'a mut Vec<Listener>,
 }
 
 impl PrecedenceEmitter<'_> {
-    pub fn emit(&mut self, listener: Listener) {
+    fn emit(&mut self, listener: Listener) {
         self.listeners.push(listener);
     }
 
-    pub fn emit_all(&mut self, listeners: impl IntoIterator<Item = Listener>) {
+    fn emit_all(&mut self, listeners: impl IntoIterator<Item = Listener>) {
         self.listeners.extend(listeners);
     }
 
-    pub fn emit_opt(&mut self, listener: Option<Listener>) {
+    fn emit_opt(&mut self, listener: Option<Listener>) {
         if let Some(listener) = listener {
             self.emit(listener);
         }
@@ -152,27 +152,27 @@ impl PrecedenceEmitter<'_> {
 /// This hides the registry's physical storage order and exposes the logical
 /// dispatch order used by first-match listener resolution.
 #[derive(Clone, Copy)]
-pub struct RegistryView<'a> {
+pub(crate) struct RegistryView<'a> {
     listeners: &'a [Listener],
 }
 
 impl<'a> RegistryView<'a> {
-    pub fn iter_precedence(&self) -> impl Iterator<Item = &'a Listener> + 'a {
+    pub(crate) fn iter_precedence(&self) -> impl Iterator<Item = &'a Listener> + 'a {
         self.listeners.iter().rev()
     }
 
-    pub fn any_precedence(&self, predicate: impl FnMut(&Listener) -> bool) -> bool {
+    pub(crate) fn any_precedence(&self, predicate: impl FnMut(&Listener) -> bool) -> bool {
         self.iter_precedence().any(predicate)
     }
 
-    pub fn find_precedence(
+    pub(crate) fn find_precedence(
         &self,
         mut predicate: impl FnMut(&Listener) -> bool,
     ) -> Option<&'a Listener> {
         self.iter_precedence().find(|listener| predicate(listener))
     }
 
-    pub fn matching_listener(
+    pub(crate) fn matching_listener(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
@@ -183,7 +183,7 @@ impl<'a> RegistryView<'a> {
         })
     }
 
-    pub fn first_match<C: ListenerComputeCtx>(
+    pub(crate) fn first_match<C: ListenerComputeCtx>(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
@@ -203,17 +203,17 @@ impl<'a> RegistryView<'a> {
 /// order without materializing a separate merged registry on every overlay
 /// rebuild.
 #[derive(Clone, Copy)]
-pub struct LayeredRegistryView<'a> {
+pub(crate) struct LayeredRegistryView<'a> {
     higher: &'a Registry,
     lower: &'a Registry,
 }
 
 impl<'a> LayeredRegistryView<'a> {
-    pub fn new(higher: &'a Registry, lower: &'a Registry) -> Self {
+    pub(crate) fn new(higher: &'a Registry, lower: &'a Registry) -> Self {
         Self { higher, lower }
     }
 
-    pub fn matching_listener(
+    pub(crate) fn matching_listener(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
@@ -228,7 +228,7 @@ impl<'a> LayeredRegistryView<'a> {
             })
     }
 
-    pub fn first_match<C: ListenerComputeCtx>(
+    pub(crate) fn first_match<C: ListenerComputeCtx>(
         &self,
         input: &ListenerInput,
         skip_matchers: &[ListenerMatcherKind],
@@ -251,14 +251,14 @@ pub struct ClickPressTracker {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtualKeyPhase {
+pub(crate) enum VirtualKeyPhase {
     Armed,
     Repeating,
     Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct VirtualKeyTracker {
+pub(crate) struct VirtualKeyTracker {
     pub element_id: ElementId,
     pub region: PointerRegion,
     pub tap: VirtualKeyTapAction,
@@ -512,7 +512,7 @@ pub struct SwipeTracker {
 /// interaction, such as click/press tracking, drag tracking, scrollbar thumb
 /// dragging, and text selection dragging.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct RuntimeOverlayState {
+pub(crate) struct RuntimeOverlayState {
     pub click_press: Option<ClickPressTracker>,
     pub virtual_key: Option<VirtualKeyTracker>,
     pub key_presses: Vec<KeyPressTracker>,
@@ -661,7 +661,7 @@ fn emit_runtime_overlay_listeners(
 
 /// Build runtime overlay listeners from transient runtime state.
 #[cfg(test)]
-pub fn runtime_listeners_for_overlay(
+pub(crate) fn runtime_listeners_for_overlay(
     base: &Registry,
     runtime: &RuntimeOverlayState,
 ) -> Vec<Listener> {
@@ -681,7 +681,10 @@ pub(crate) fn build_runtime_overlay_registry(
 /// Compose a test-only combined registry from base listeners and runtime
 /// overlay state.
 #[cfg(test)]
-pub fn compose_combined_registry(base: &Registry, runtime: &RuntimeOverlayState) -> Registry {
+pub(crate) fn compose_combined_registry(
+    base: &Registry,
+    runtime: &RuntimeOverlayState,
+) -> Registry {
     let overlay_registry = build_runtime_overlay_registry(base, runtime);
     let mut registry = Registry::default();
     registry.extend_storage_from(base);
@@ -1298,7 +1301,7 @@ fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> 
     }
 }
 
-pub trait ListenerComputeCtx {
+pub(crate) trait ListenerComputeCtx {
     fn focused_id(&self) -> Option<&ElementId> {
         None
     }
@@ -1350,7 +1353,7 @@ pub trait ListenerComputeCtx {
 
 #[cfg(test)]
 #[derive(Default)]
-pub struct NoopListenerComputeCtx;
+pub(crate) struct NoopListenerComputeCtx;
 
 #[cfg(test)]
 impl ListenerComputeCtx for NoopListenerComputeCtx {}
@@ -1408,7 +1411,7 @@ impl ListenerInput {
 /// - `matcher` decides whether this listener applies to the current input
 /// - `compute` produces final sink actions from the matched input
 #[derive(Clone, Debug)]
-pub struct Listener {
+pub(crate) struct Listener {
     /// Optional source element id for this listener.
     pub element_id: Option<ElementId>,
     /// Match rule for this listener.
@@ -1455,7 +1458,7 @@ impl Listener {
 /// The first iteration includes concrete pointer/hover variants needed by
 /// `listeners_for_element`.
 #[derive(Clone, Debug)]
-pub enum ListenerMatcher {
+pub(crate) enum ListenerMatcher {
     /// Match left-button press when pointer is inside `region`.
     CursorButtonLeftPressInside { region: PointerRegion },
     /// Match left-button release when pointer is inside `region`.
@@ -1993,7 +1996,7 @@ pub(crate) fn base_has_key_press_source(base: &Registry, tracker: &KeyPressTrack
 ///
 /// A matched listener always resolves into one or more of these sink actions.
 #[derive(Clone, Debug)]
-pub enum ListenerAction {
+pub(crate) enum ListenerAction {
     /// Message forwarded to the tree actor.
     TreeMsg(TreeMsg),
     /// Event-runtime transient mutation.
@@ -2047,7 +2050,7 @@ pub enum SemanticAction {
 
 /// Transient event-runtime state changes.
 #[derive(Clone, Debug, PartialEq)]
-pub enum RuntimeChange {
+pub(crate) enum RuntimeChange {
     /// Begin click/press followup tracking for pointer interaction.
     StartClickPressTracker {
         element_id: ElementId,
@@ -2167,7 +2170,7 @@ pub struct ElixirEvent {
 ///
 /// This is where input-dependent outputs are generated.
 #[derive(Clone, Debug)]
-pub enum ListenerCompute {
+pub(crate) enum ListenerCompute {
     /// Fixed action list independent of input payload.
     Static { actions: Vec<ListenerAction> },
     /// Dispatch base listeners, then append fixed actions.
@@ -2552,9 +2555,7 @@ impl ListenerCompute {
                 {
                     match ctx.text_input_state(element_id) {
                         None => Vec::new(),
-                        Some(_) if ctx.take_text_commit_suppression(element_id) => {
-                            Vec::new()
-                        }
+                        Some(_) if ctx.take_text_commit_suppression(element_id) => Vec::new(),
                         Some(snapshot) => {
                             let filtered = sanitize_text_input_text(text, snapshot.multiline);
                             if filtered.is_empty() {
@@ -3173,6 +3174,34 @@ fn resolve_listener_actions<C: ListenerComputeCtx>(
     })
 }
 
+pub(crate) fn resolve_text_input_command_actions<C: ListenerComputeCtx>(
+    element_id: &ElementId,
+    request: TextInputCommandRequest,
+    ctx: &mut C,
+) -> Vec<ListenerAction> {
+    resolve_listener_actions(
+        vec![ListenerAction::Semantic(SemanticAction::TextInputCommand {
+            element_id: element_id.clone(),
+            request,
+        })],
+        ctx,
+    )
+}
+
+pub(crate) fn resolve_text_input_edit_actions<C: ListenerComputeCtx>(
+    element_id: &ElementId,
+    request: TextInputEditRequest,
+    ctx: &mut C,
+) -> Vec<ListenerAction> {
+    resolve_listener_actions(
+        vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
+            element_id: element_id.clone(),
+            request,
+        })],
+        ctx,
+    )
+}
+
 enum FocusTransition {
     Blur(ElementId),
     Focus(ElementId),
@@ -3652,6 +3681,66 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
                 self.finish_with_primary_selection_write(runtime_actions, primary)
             }
+            TextInputEditRequest::MoveWordLeft { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let next_cursor = if !extend_selection {
+                        if let Some((start, _)) = selected_range(snapshot) {
+                            start
+                        } else {
+                            snapshot.move_word_left_target()
+                        }
+                    } else {
+                        snapshot.move_word_left_target()
+                    };
+
+                    if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveWordRight { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let next_cursor = if !extend_selection {
+                        if let Some((_, end)) = selected_range(snapshot) {
+                            end
+                        } else {
+                            snapshot.move_word_right_target()
+                        }
+                    } else {
+                        snapshot.move_word_right_target()
+                    };
+
+                    if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
             TextInputEditRequest::MoveHome { extend_selection } => {
                 let Some((runtime_actions, primary)) = ({
                     let snapshot = match self.snapshot(&element_id) {
@@ -3684,6 +3773,102 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                     };
                     if !move_snapshot_cursor(snapshot, snapshot.move_end_target(), extend_selection)
                     {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveParagraphStart { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    if !move_snapshot_cursor(
+                        snapshot,
+                        snapshot.move_paragraph_start_target(),
+                        extend_selection,
+                    ) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveParagraphEnd { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    if !move_snapshot_cursor(
+                        snapshot,
+                        snapshot.move_paragraph_end_target(),
+                        extend_selection,
+                    ) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveDocumentStart { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    if !move_snapshot_cursor(
+                        snapshot,
+                        snapshot.move_document_start_target(),
+                        extend_selection,
+                    ) {
+                        None
+                    } else {
+                        Some((
+                            text_runtime_actions(&element_id, snapshot),
+                            extend_selection.then(|| selection_text(snapshot)).flatten(),
+                        ))
+                    }
+                }) else {
+                    return Vec::new();
+                };
+
+                self.finish_with_primary_selection_write(runtime_actions, primary)
+            }
+            TextInputEditRequest::MoveDocumentEnd { extend_selection } => {
+                let Some((runtime_actions, primary)) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    if !move_snapshot_cursor(
+                        snapshot,
+                        snapshot.move_document_end_target(),
+                        extend_selection,
+                    ) {
                         None
                     } else {
                         Some((
@@ -3775,6 +3960,166 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         &snapshot.content,
                         snapshot.cursor,
                         snapshot.selection_anchor,
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteWordBackward => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_word_backward(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteWordForward => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_word_forward(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteToHome => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_to_target(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                        snapshot.move_home_target(),
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteToEnd => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_to_target(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                        snapshot.move_end_target(),
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteToParagraphStart => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_to_target(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                        snapshot.move_paragraph_start_target(),
+                    ) else {
+                        return Vec::new();
+                    };
+
+                    apply_content_change_snapshot(snapshot, next_content, next_cursor);
+                    let change_payload = snapshot.emit_change.then(|| snapshot.content.clone());
+                    Some(content_change_actions(
+                        &element_id,
+                        snapshot,
+                        change_payload,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                actions
+            }
+            TextInputEditRequest::DeleteToParagraphEnd => {
+                let Some(actions) = ({
+                    let snapshot = match self.snapshot(&element_id) {
+                        Some(snapshot) => snapshot,
+                        None => return Vec::new(),
+                    };
+                    let Some((next_content, next_cursor)) = text_ops::apply_delete_to_target(
+                        &snapshot.content,
+                        snapshot.cursor,
+                        snapshot.selection_anchor,
+                        snapshot.move_paragraph_end_target(),
                     ) else {
                         return Vec::new();
                     };
@@ -4952,7 +5297,7 @@ fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
 /// - text-input command listeners for cut/paste command requests
 /// - local wheel-scroll listeners for scrollable elements
 #[cfg(test)]
-pub fn listeners_for_element(element: &Element) -> Vec<Listener> {
+pub(crate) fn listeners_for_element(element: &Element) -> Vec<Listener> {
     let state = crate::tree::scene::resolve_node_state(
         element,
         crate::tree::scene::SceneContext::default(),
@@ -5009,7 +5354,7 @@ fn emit_window_listeners(out: &mut PrecedenceEmitter<'_>) {
 
 /// Build window-level listeners that do not belong to any single element.
 #[cfg(test)]
-pub fn window_listeners() -> Vec<Listener> {
+pub(crate) fn window_listeners() -> Vec<Listener> {
     let mut registry = Registry::default();
     registry.in_precedence_order(emit_window_listeners);
     registry.precedence_listeners()
@@ -6275,6 +6620,7 @@ mod scroll_wheel {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use std::collections::HashMap;
 
@@ -6667,6 +7013,7 @@ mod tests {
     ) -> TextInputState {
         TextInputState {
             content: content.to_string(),
+            patch_content: None,
             content_origin: crate::tree::element::TextInputContentOrigin::TreePatch,
             content_len: content.chars().count() as u32,
             cursor,

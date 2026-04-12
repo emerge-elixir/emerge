@@ -694,7 +694,7 @@ fn expand_path(path: &str) -> String {
     }
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 pub(crate) fn resolve_configured_path(path: &str, config: &AssetConfig) -> Result<PathBuf, String> {
     if Path::new(path).is_absolute() {
         resolve_runtime_path(path, config)

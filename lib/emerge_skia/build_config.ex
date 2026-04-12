@@ -8,7 +8,7 @@ defmodule EmergeSkia.BuildConfig do
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
   @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
   @precompiled_nif_versions ["2.15"]
-  @valid_backends [:wayland, :drm]
+  @valid_backends [:wayland, :drm, :macos]
   @default_precompiled_source_url Mix.Project.config()[:source_url]
 
   @default_compiled_backends (
@@ -68,7 +68,14 @@ defmodule EmergeSkia.BuildConfig do
                                     ] or has_target_env? do
                                  [:drm]
                                else
-                                 [:wayland]
+                                 if (case Map.get(env, "TARGET_OS") do
+                                       os when is_binary(os) and os != "" -> os == "darwin"
+                                       _ -> :os.type() == {:unix, :darwin}
+                                     end) do
+                                   [:macos]
+                                 else
+                                   [:wayland]
+                                 end
                                end
                              )
 
@@ -94,7 +101,7 @@ defmodule EmergeSkia.BuildConfig do
 
                          invalid_entries != [] ->
                            raise ArgumentError,
-                                 "config :emerge, compiled_backends: ... must be a list containing only :wayland and :drm, got invalid entries: #{inspect(invalid_entries)}"
+                                 "config :emerge, compiled_backends: ... must be a list containing only :wayland, :drm, and :macos, got invalid entries: #{inspect(invalid_entries)}"
 
                          true ->
                            for backend <- @valid_backends, backend in backends, do: backend
@@ -137,7 +144,11 @@ defmodule EmergeSkia.BuildConfig do
 
   @doc false
   def default_compiled_backends(env) when is_map(env) do
-    if nerves_build_env?(env), do: [:drm], else: [:wayland]
+    cond do
+      nerves_build_env?(env) -> [:drm]
+      host_darwin?(env) -> [:macos]
+      true -> [:wayland]
+    end
   end
 
   @doc false
@@ -153,7 +164,7 @@ defmodule EmergeSkia.BuildConfig do
 
     if invalid_entries != [] do
       raise ArgumentError,
-            "config :emerge, compiled_backends: ... must be a list containing only :wayland and :drm, got invalid entries: #{inspect(invalid_entries)}"
+            "config :emerge, compiled_backends: ... must be a list containing only :wayland, :drm, and :macos, got invalid entries: #{inspect(invalid_entries)}"
     end
 
     for backend <- @valid_backends, backend in backends, do: backend
@@ -285,6 +296,13 @@ defmodule EmergeSkia.BuildConfig do
     case Map.get(env, "MIX_TARGET") do
       target when is_binary(target) and target not in ["", "host"] -> true
       _ -> false
+    end
+  end
+
+  defp host_darwin?(env) when is_map(env) do
+    case Map.get(env, "TARGET_OS") do
+      os when is_binary(os) and os != "" -> os == "darwin"
+      _ -> :os.type() == {:unix, :darwin}
     end
   end
 

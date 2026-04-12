@@ -23,6 +23,10 @@ defmodule EmergeSkia.Options do
 
     %{
       backend: backend,
+      macos_backend:
+        opts
+        |> Keyword.get(:macos_backend, :auto)
+        |> normalize_macos_backend!(),
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
@@ -170,6 +174,19 @@ defmodule EmergeSkia.Options do
   def normalize_asset_mode!(value) do
     raise ArgumentError,
           ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
+  end
+
+  @doc false
+  def normalize_macos_backend!(:auto), do: "auto"
+  def normalize_macos_backend!(:metal), do: "metal"
+  def normalize_macos_backend!(:raster), do: "raster"
+  def normalize_macos_backend!("auto"), do: "auto"
+  def normalize_macos_backend!("metal"), do: "metal"
+  def normalize_macos_backend!("raster"), do: "raster"
+
+  def normalize_macos_backend!(value) do
+    raise ArgumentError,
+          ":macos_backend must be :auto, :metal, or :raster, got: #{inspect(value)}"
   end
 
   defp normalize_keyword_list!(opts, error_message) when is_list(opts) do

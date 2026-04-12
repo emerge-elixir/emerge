@@ -314,7 +314,10 @@ impl CanonicalKey {
         })
     }
 
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
+        allow(dead_code)
+    )]
     pub fn from_printable_char(ch: char) -> Option<Self> {
         match ch.to_ascii_lowercase() {
             'a' => Some(CanonicalKey::A),

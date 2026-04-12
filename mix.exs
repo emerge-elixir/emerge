@@ -169,6 +169,7 @@ defmodule Emerge.MixProject do
     [
       "guides/internals/architecture.md",
       "guides/internals/assets-images.md",
+      "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
       "guides/internals/emrg-format.md",
       "guides/internals/events.md",

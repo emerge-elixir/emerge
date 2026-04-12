@@ -20,6 +20,61 @@ pub(super) struct TextRunStyle<'a> {
     pub(super) word_spacing: f32,
 }
 
+fn text_input_selected_range(
+    cursor: u32,
+    selection_anchor: Option<u32>,
+    content_len: u32,
+) -> Option<(u32, u32)> {
+    let cursor = cursor.min(content_len);
+    let anchor = selection_anchor?.min(content_len);
+    (anchor != cursor).then_some((anchor.min(cursor), anchor.max(cursor)))
+}
+
+fn text_input_display_state(
+    content: &str,
+    cursor: u32,
+    selection_anchor: Option<u32>,
+    preedit: Option<&str>,
+) -> (u32, u32, String) {
+    let content_len = content.chars().count() as u32;
+    let cursor = cursor.min(content_len);
+    let (replace_start, replace_end) = if preedit.is_some() {
+        text_input_selected_range(cursor, selection_anchor, content_len).unwrap_or((cursor, cursor))
+    } else {
+        (cursor, cursor)
+    };
+
+    let displayed_text = match preedit {
+        Some(preedit_text) => {
+            let prefix: String = content.chars().take(replace_start as usize).collect();
+            let suffix: String = content.chars().skip(replace_end as usize).collect();
+            let mut value = String::with_capacity(prefix.len() + preedit_text.len() + suffix.len());
+            value.push_str(&prefix);
+            value.push_str(preedit_text);
+            value.push_str(&suffix);
+            value
+        }
+        None => content.to_string(),
+    };
+
+    (replace_start, replace_end, displayed_text)
+}
+
+fn map_committed_to_displayed(
+    index: u32,
+    replace_start: u32,
+    replace_end: u32,
+    preedit_len: u32,
+) -> u32 {
+    if preedit_len == 0 || index <= replace_start {
+        index
+    } else if index >= replace_end {
+        index - (replace_end - replace_start) + preedit_len
+    } else {
+        replace_start
+    }
+}
+
 pub(super) fn render_text_items(
     frame: Frame,
     attrs: &Attrs,
@@ -153,22 +208,12 @@ pub(super) fn render_text_input_items(
     let inset_right = insets.right;
     let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
     let content_char_count = content.chars().count() as u32;
-    let base_cursor = attrs
+    let cursor = attrs
         .text_input_cursor
         .unwrap_or(content_char_count)
         .min(content_char_count);
-    let prefix: String = content.chars().take(base_cursor as usize).collect();
-    let suffix: String = content.chars().skip(base_cursor as usize).collect();
-    let displayed_text = match preedit {
-        Some(preedit_text) => {
-            let mut value = String::with_capacity(content.len() + preedit_text.len());
-            value.push_str(&prefix);
-            value.push_str(preedit_text);
-            value.push_str(&suffix);
-            value
-        }
-        None => content.to_string(),
-    };
+    let (replace_start, replace_end, displayed_text) =
+        text_input_display_state(content, cursor, attrs.text_input_selection_anchor, preedit);
 
     let (text_left_overhang, text_width) = text_alignment_metrics(&displayed_text, style);
     let content_width = frame.width - inset_left - inset_right;
@@ -187,22 +232,17 @@ pub(super) fn render_text_input_items(
 
     if let Some(anchor) = attrs.text_input_selection_anchor {
         let anchor = anchor.min(content_char_count);
-        if anchor != base_cursor {
+        if anchor != cursor && !(preedit.is_some() && replace_end > replace_start) {
             let preedit_len = preedit
                 .map(|value| value.chars().count() as u32)
                 .unwrap_or(0);
-            let map_committed_to_displayed = |index: u32| {
-                if preedit_len > 0 && index > base_cursor {
-                    index + preedit_len
-                } else {
-                    index
-                }
-            };
 
-            let sel_start = anchor.min(base_cursor);
-            let sel_end = anchor.max(base_cursor);
-            let displayed_start = map_committed_to_displayed(sel_start);
-            let displayed_end = map_committed_to_displayed(sel_end);
+            let sel_start = anchor.min(cursor);
+            let sel_end = anchor.max(cursor);
+            let displayed_start =
+                map_committed_to_displayed(sel_start, replace_start, replace_end, preedit_len);
+            let displayed_end =
+                map_committed_to_displayed(sel_end, replace_start, replace_end, preedit_len);
 
             let start_offset =
                 text_offset_for_char_index(&displayed_text, displayed_start as usize, style);
@@ -238,7 +278,7 @@ pub(super) fn render_text_input_items(
 
     if let Some(preedit_text) = preedit {
         let preedit_start_offset =
-            text_offset_for_char_index(&displayed_text, base_cursor as usize, style);
+            text_offset_for_char_index(&displayed_text, replace_start as usize, style);
         let preedit_width = measure_text_width_with_font(
             preedit_text,
             style.font_size,
@@ -268,9 +308,9 @@ pub(super) fn render_text_input_items(
                 .text_input_preedit_cursor
                 .map(|(_start, end)| end.min(preedit_len))
                 .unwrap_or(preedit_len);
-            (base_cursor + preedit_cursor_end).min(displayed_char_count)
+            (replace_start + preedit_cursor_end).min(displayed_char_count)
         } else {
-            base_cursor.min(displayed_char_count)
+            cursor.min(displayed_char_count)
         };
 
         let caret_offset =
@@ -354,22 +394,12 @@ pub(super) fn render_multiline_text_input_items(
     let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
     let font = make_font_with_style(&family, weight, italic, font_size);
     let content_char_count = content.chars().count() as u32;
-    let base_cursor = attrs
+    let cursor = attrs
         .text_input_cursor
         .unwrap_or(content_char_count)
         .min(content_char_count);
-    let prefix: String = content.chars().take(base_cursor as usize).collect();
-    let suffix: String = content.chars().skip(base_cursor as usize).collect();
-    let displayed_text = match preedit {
-        Some(preedit_text) => {
-            let mut value = String::with_capacity(content.len() + preedit_text.len());
-            value.push_str(&prefix);
-            value.push_str(preedit_text);
-            value.push_str(&suffix);
-            value
-        }
-        None => content.to_string(),
-    };
+    let (replace_start, replace_end, displayed_text) =
+        text_input_display_state(content, cursor, attrs.text_input_selection_anchor, preedit);
     let layout = layout_text_lines(
         &displayed_text,
         Some(content_width),
@@ -394,19 +424,22 @@ pub(super) fn render_multiline_text_input_items(
     let preedit_len = preedit
         .map(|value| value.chars().count() as u32)
         .unwrap_or(0);
-    let map_committed_to_displayed = |index: u32| {
-        if preedit_len > 0 && index > base_cursor {
-            index + preedit_len
-        } else {
-            index
-        }
-    };
 
     if let Some(anchor) = attrs.text_input_selection_anchor {
         let anchor = anchor.min(content_char_count);
-        if anchor != base_cursor {
-            let displayed_start = map_committed_to_displayed(anchor.min(base_cursor)) as usize;
-            let displayed_end = map_committed_to_displayed(anchor.max(base_cursor)) as usize;
+        if anchor != cursor && !(preedit.is_some() && replace_end > replace_start) {
+            let displayed_start = map_committed_to_displayed(
+                anchor.min(cursor),
+                replace_start,
+                replace_end,
+                preedit_len,
+            ) as usize;
+            let displayed_end = map_committed_to_displayed(
+                anchor.max(cursor),
+                replace_start,
+                replace_end,
+                preedit_len,
+            ) as usize;
             for (line_index, line) in layout.lines.iter().enumerate() {
                 let line_start = displayed_start.max(line.start).min(line.visual_end);
                 let line_end = displayed_end.max(line.start).min(line.visual_end);
@@ -447,7 +480,7 @@ pub(super) fn render_multiline_text_input_items(
     }
 
     if let Some(preedit_text) = preedit {
-        let preedit_start = base_cursor as usize;
+        let preedit_start = replace_start as usize;
         let preedit_end = preedit_start + preedit_text.chars().count();
         for (line_index, line) in layout.lines.iter().enumerate() {
             let line_start = preedit_start.max(line.start).min(line.visual_end);
@@ -479,9 +512,9 @@ pub(super) fn render_multiline_text_input_items(
                 .text_input_preedit_cursor
                 .map(|(_start, end)| end.min(preedit_len))
                 .unwrap_or(preedit_len);
-            (base_cursor + preedit_cursor_end).min(displayed_char_count)
+            (replace_start + preedit_cursor_end).min(displayed_char_count)
         } else {
-            base_cursor.min(displayed_char_count)
+            cursor.min(displayed_char_count)
         } as usize;
 
         let line_index = layout.line_index_for_cursor(caret_char_index);

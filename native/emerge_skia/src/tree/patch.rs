@@ -285,14 +285,24 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
                 .get_mut(&id)
                 .ok_or_else(|| "SetAttrs: node not found".to_string())?;
             element.attrs_raw = attrs_raw.clone();
-            let decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
             let content_is_from_patch =
                 element.kind.is_text_input_family() && decoded.content.is_some();
+            let text_input_is_focused = element.kind.is_text_input_family()
+                && element.attrs.text_input_focused == Some(true);
+
+            if content_is_from_patch && text_input_is_focused {
+                element.patch_content = decoded.content.clone();
+                decoded.content = element.base_attrs.content.clone();
+            } else if element.kind.is_text_input_family() && !text_input_is_focused {
+                element.patch_content = None;
+            }
+
             element.base_attrs = decoded.clone();
             let mut merged = decoded;
             preserve_runtime_scroll_attrs(&element.attrs, &mut merged);
             element.attrs = merged;
-            if content_is_from_patch {
+            if content_is_from_patch && !text_input_is_focused {
                 element.text_input_content_origin = TextInputContentOrigin::TreePatch;
             }
         }
@@ -654,6 +664,7 @@ fn clone_as_ghost(
         base_attrs: attrs.clone(),
         attrs,
         text_input_content_origin: old.text_input_content_origin,
+        patch_content: old.patch_content.clone(),
         children: old
             .children
             .iter()
@@ -1079,6 +1090,70 @@ mod tests {
         assert_eq!(
             tree.get(&id).unwrap().text_input_content_origin,
             TextInputContentOrigin::Event
+        );
+    }
+
+    #[test]
+    fn test_set_attrs_buffers_focused_text_input_patch_content() {
+        let id = ElementId::from_term_bytes(vec![181]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("before".to_string());
+        attrs.text_input_focused = Some(true);
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        element.text_input_content_origin = TextInputContentOrigin::Event;
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
+            }],
+        )
+        .unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.base_attrs.content.as_deref(), Some("before"));
+        assert_eq!(updated.attrs.content.as_deref(), Some("before"));
+        assert_eq!(updated.patch_content.as_deref(), Some("after"));
+        assert_eq!(
+            updated.text_input_content_origin,
+            TextInputContentOrigin::Event
+        );
+    }
+
+    #[test]
+    fn test_set_attrs_clears_patch_content_when_unfocused_text_input_accepts_patch() {
+        let id = ElementId::from_term_bytes(vec![182]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("before".to_string());
+        let mut element =
+            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        element.patch_content = Some("stale".to_string());
+
+        let mut tree = ElementTree::new();
+        tree.root = Some(id.clone());
+        tree.insert(element);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
+            }],
+        )
+        .unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(updated.base_attrs.content.as_deref(), Some("after"));
+        assert_eq!(updated.patch_content, None);
+        assert_eq!(
+            updated.text_input_content_origin,
+            TextInputContentOrigin::TreePatch
         );
     }
 

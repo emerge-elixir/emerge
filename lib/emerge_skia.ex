@@ -60,12 +60,14 @@ defmodule EmergeSkia do
   """
 
   alias EmergeSkia.Assets
+  alias EmergeSkia.Macos.Host
+  alias EmergeSkia.Macos.Renderer
   alias EmergeSkia.Native
   alias EmergeSkia.Options
   alias EmergeSkia.TreeRenderer
   alias EmergeSkia.VideoTarget
 
-  @type renderer :: reference()
+  @type renderer :: reference() | Renderer.t()
   @type color :: non_neg_integer()
   @type video_target :: VideoTarget.t()
 
@@ -77,7 +79,8 @@ defmodule EmergeSkia do
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `backend` - Backend selection (`:wayland` or `:drm`). Defaults to `:wayland` for desktop builds and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
+   - `backend` - Backend selection (`:wayland`, `:drm`, or `:macos`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
+   - `macos_backend` - macOS surface backend selection (`:auto`, `:metal`, or `:raster`). Defaults to `:auto` and is only supported with `backend: :macos`.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -88,13 +91,14 @@ defmodule EmergeSkia do
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
+  - `renderer_stats_log` - Log renderer timing stats every 5 seconds, including frame rate and min/avg/max/count timing windows for layout, event resolve, and patch completion (default: false)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as
   `{:emerge_skia_log, level, source, message}` messages. Call
   `set_log_target/2` to redirect them.
 
-  `assets` options:
+   `assets` options:
   - `runtime_paths.enabled` (default: `false`)
   - `runtime_paths.allowlist` (default: `[]`)
   - `runtime_paths.follow_symlinks` (default: `false`)
@@ -134,19 +138,29 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    case Native.start_opts(native_opts) do
-      ref when is_reference(ref) ->
-        case Assets.initialize_renderer_assets(ref, asset_config) do
-          :ok ->
-            {:ok, ref}
+    if Keyword.has_key?(opts, :macos_backend) and String.downcase(native_opts.backend) != "macos" do
+      raise ArgumentError, "macos_backend is only supported with backend: :macos"
+    end
 
-          {:error, reason} ->
-            _ = Native.stop(ref)
-            {:error, reason}
+    case String.downcase(native_opts.backend) do
+      "macos" ->
+        Host.start_session(native_opts, asset_config)
+
+      _ ->
+        case Native.start_opts(Map.delete(native_opts, :macos_backend)) do
+          ref when is_reference(ref) ->
+            case Assets.initialize_renderer_assets(ref, asset_config) do
+              :ok ->
+                {:ok, ref}
+
+              {:error, reason} ->
+                _ = Native.stop(ref)
+                {:error, reason}
+            end
+
+          error ->
+            {:error, error}
         end
-
-      error ->
-        {:error, error}
     end
   end
 
@@ -178,6 +192,10 @@ defmodule EmergeSkia do
   Stop the renderer and close the window.
   """
   @spec stop(renderer()) :: :ok
+  def stop(%Renderer{} = renderer) do
+    Host.stop_session(renderer)
+  end
+
   def stop(renderer) do
     Native.stop(renderer)
   end
@@ -186,6 +204,10 @@ defmodule EmergeSkia do
   Check if the renderer window is still open.
   """
   @spec running?(renderer()) :: boolean()
+  def running?(%Renderer{} = renderer) do
+    Host.running?(renderer)
+  end
+
   def running?(renderer) do
     Native.is_running(renderer)
   end
@@ -197,6 +219,10 @@ defmodule EmergeSkia do
   (`:wayland` and `:drm`).
   """
   @spec video_target(renderer(), keyword()) :: {:ok, video_target()} | {:error, term()}
+  def video_target(%Renderer{}, _opts) do
+    {:error, "video targets are not supported on the macOS backend for now"}
+  end
+
   def video_target(renderer, opts) when is_list(opts) do
     opts = Keyword.new(opts)
     id = Keyword.get_lazy(opts, :id, fn -> "video-#{System.unique_integer([:positive])}" end)
@@ -520,6 +546,10 @@ defmodule EmergeSkia do
       EmergeSkia.set_input_mask(renderer, mask)
   """
   @spec set_input_mask(renderer(), non_neg_integer()) :: :ok
+  def set_input_mask(%Renderer{} = renderer, mask) do
+    Host.set_input_mask(renderer, mask)
+  end
+
   def set_input_mask(renderer, mask) do
     Native.set_input_mask(renderer, mask)
   end
@@ -593,6 +623,10 @@ defmodule EmergeSkia do
       end
   """
   @spec set_input_target(renderer(), pid() | nil) :: :ok
+  def set_input_target(%Renderer{} = renderer, pid) do
+    Host.set_input_target(renderer, pid)
+  end
+
   def set_input_target(renderer, pid) do
     Native.set_input_target(renderer, pid)
   end
@@ -604,6 +638,10 @@ defmodule EmergeSkia do
   `{:emerge_skia_log, level, source, message}` messages.
   """
   @spec set_log_target(renderer(), pid() | nil) :: :ok
+  def set_log_target(%Renderer{} = renderer, pid) do
+    Host.set_log_target(renderer, pid)
+  end
+
   def set_log_target(renderer, pid) do
     Native.set_log_target(renderer, pid)
   end

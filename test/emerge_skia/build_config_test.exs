@@ -3,6 +3,8 @@ defmodule EmergeSkia.BuildConfigTest do
 
   alias EmergeSkia.BuildConfig
 
+  @host_default if(:os.type() == {:unix, :darwin}, do: [:macos], else: [:wayland])
+
   test "normalize_compiled_backends! defaults to canonical backend order" do
     assert BuildConfig.normalize_compiled_backends!([:drm, :wayland, :drm]) == [:wayland, :drm]
   end
@@ -37,8 +39,8 @@ defmodule EmergeSkia.BuildConfigTest do
   end
 
   test "default_compiled_backends uses wayland outside Nerves build environments" do
-    assert BuildConfig.default_compiled_backends(%{}) == [:wayland]
-    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "host"}) == [:wayland]
+    assert BuildConfig.default_compiled_backends(%{}) == @host_default
+    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "host"}) == @host_default
   end
 
   test "normalize_compiled_backends! accepts an empty backend list" do
@@ -237,7 +239,7 @@ defmodule EmergeSkia.BuildConfigTest do
   end
 
   test "normalize_compiled_backends! rejects invalid entries" do
-    assert_raise ArgumentError, ~r/containing only :wayland and :drm/, fn ->
+    assert_raise ArgumentError, ~r/containing only :wayland, :drm, and :macos/, fn ->
       BuildConfig.normalize_compiled_backends!([:wayland, :bogus, "drm"])
     end
   end
