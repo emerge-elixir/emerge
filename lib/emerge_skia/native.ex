@@ -24,6 +24,7 @@ defmodule EmergeSkia.Native do
       )
   else
     @rustler_opts Mix.Project.config()[:rustler_opts] || []
+    @crate_path Path.expand("../../native/emerge_skia", __DIR__)
     @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
     @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
     @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
@@ -48,7 +49,7 @@ defmodule EmergeSkia.Native do
             targets: @precompiled_targets,
             nif_versions: @precompiled_nif_versions,
             variants: @precompiled_variants,
-            path: "native/emerge_skia",
+            path: @crate_path,
             default_features: false,
             features: @cargo_features
           ],
@@ -96,9 +97,26 @@ defmodule EmergeSkia.Native do
           required(:hw_cursor) => boolean(),
           required(:input_log) => boolean(),
           required(:render_log) => boolean(),
-          required(:close_signal_log) => boolean()
+          required(:close_signal_log) => boolean(),
+          required(:renderer_stats_log) => boolean()
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec macos_probe_load_context() :: map() | {:error, term()}
+  def macos_probe_load_context, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec macos_probe_call_context() :: map() | {:error, term()}
+  def macos_probe_call_context, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec macos_probe_dirty_call_context() :: map() | {:error, term()}
+  def macos_probe_dirty_call_context, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec macos_probe_spawned_thread_context() :: map() | {:error, term()}
+  def macos_probe_spawned_thread_context, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Stop the renderer and close the window.
