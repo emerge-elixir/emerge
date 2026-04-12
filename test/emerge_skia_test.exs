@@ -197,6 +197,12 @@ defmodule EmergeSkiaTest do
              EmergeSkia.start(otp_app: :emerge, backend: :bogus)
   end
 
+  test "start/1 rejects macos_backend on non-macOS backends" do
+    assert_raise ArgumentError, ~r/macos_backend is only supported with backend: :macos/, fn ->
+      EmergeSkia.start(otp_app: :emerge, backend: :drm, macos_backend: :raster)
+    end
+  end
+
   test "start/1 rejects backends that were not compiled in" do
     {backend, message} =
       if :drm in BuildConfig.compiled_backends() do

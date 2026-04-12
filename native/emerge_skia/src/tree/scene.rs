@@ -94,7 +94,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         .scrollbar_y
         .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
     let local_transform = element_transform(adjusted_frame, &element.attrs);
-    let interaction_transform = ctx.interaction_transform.mul(local_transform);
+    let interaction_transform = ctx.interaction_transform.then(local_transform);
     let interaction_inverse = interaction_transform.inverse();
 
     Some(ResolvedNodeState {

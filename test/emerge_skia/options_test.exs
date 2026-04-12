@@ -21,6 +21,16 @@ defmodule EmergeSkia.OptionsTest do
     assert %{backend: "wayland"} = Options.build_start_native_opts!(backend: "wayland")
   end
 
+  test "build_start_native_opts! normalizes macos_backend" do
+    assert %{macos_backend: "auto"} = Options.build_start_native_opts!([])
+    assert %{macos_backend: "metal"} = Options.build_start_native_opts!(macos_backend: :metal)
+    assert %{macos_backend: "raster"} = Options.build_start_native_opts!(macos_backend: "raster")
+
+    assert_raise ArgumentError, ~r/:macos_backend must be :auto, :metal, or :raster/, fn ->
+      Options.build_start_native_opts!(macos_backend: :bogus)
+    end
+  end
+
   test "build_start_native_opts! validates drm retry options" do
     assert %{drm_startup_retries: 5, drm_retry_interval_ms: 100} =
              Options.build_start_native_opts!(drm_startup_retries: 5, drm_retry_interval_ms: 100)
