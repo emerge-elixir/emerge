@@ -96,11 +96,11 @@ pub enum RenderMsg {
         scene: Box<RenderScene>,
         version: u64,
         animate: bool,
-        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_enabled: bool,
-        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
-        #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_text_state: Box<Option<TextInputState>>,
     },
     Stop,

@@ -14,11 +14,13 @@ defmodule Emerge.Runtime.Viewport do
   require Logger
 
   alias Emerge.Runtime.Viewport.Config
+  alias Emerge.Runtime.Viewport.Renderer
   alias Emerge.Runtime.Viewport.ReloadGroup
   alias Emerge.Runtime.Viewport.State
 
   @genserver_start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
   @runtime_key :__emerge__
+  @renderer_heartbeat_timeout_ms 1_000
 
   @type t :: map()
 
@@ -34,12 +36,14 @@ defmodule Emerge.Runtime.Viewport do
 
   @impl true
   def handle_info({:emerge_skia_log, level, source, message}, state) do
+    state = note_renderer_heartbeat(state)
     log_native_renderer_message(level, source, message)
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:emerge_skia_close, reason}, state) do
+    state = note_renderer_heartbeat(state)
     Logger.info("Emerge viewport window closed for #{inspect(runtime!(state).module)}")
 
     maybe_log_close_signal(state, fn ->
@@ -51,6 +55,7 @@ defmodule Emerge.Runtime.Viewport do
 
   @impl true
   def handle_info({:emerge_skia_event, event}, state) do
+    state = note_renderer_heartbeat(state)
     handle_skia_event(event, state)
   end
 
@@ -66,7 +71,11 @@ defmodule Emerge.Runtime.Viewport do
 
   @impl true
   def handle_info(message, state) do
-    delegate_handle_info(message, state)
+    if message == Renderer.heartbeat_message() do
+      {:noreply, note_renderer_heartbeat(state)}
+    else
+      delegate_handle_info(message, state)
+    end
   end
 
   @impl true
@@ -176,7 +185,7 @@ defmodule Emerge.Runtime.Viewport do
       is_nil(runtime.renderer) ->
         {:noreply, state}
 
-      runtime.renderer_module.running?(runtime.renderer) ->
+      renderer_heartbeat_recent?(runtime) ->
         {:noreply, maybe_schedule_renderer_check(state)}
 
       true ->
@@ -384,6 +393,30 @@ defmodule Emerge.Runtime.Viewport do
     state
   end
 
+  defp note_renderer_heartbeat(state) when is_map(state) do
+    if Map.has_key?(state, @runtime_key) do
+      update_runtime(state, fn runtime ->
+        %{runtime | last_renderer_heartbeat_at_ms: monotonic_ms()}
+      end)
+    else
+      state
+    end
+  end
+
+  defp renderer_heartbeat_recent?(runtime) do
+    case runtime.last_renderer_heartbeat_at_ms do
+      last_seen_ms when is_integer(last_seen_ms) ->
+        monotonic_ms() - last_seen_ms <= @renderer_heartbeat_timeout_ms
+
+      _ ->
+        false
+    end
+  end
+
+  defp monotonic_ms do
+    System.monotonic_time(:millisecond)
+  end
+
   defp put_mount_config(state, %Config{} = mount_config) when is_map(state) do
     update_runtime(state, fn runtime ->
       %{
@@ -482,7 +515,12 @@ defmodule Emerge.Runtime.Viewport do
         state =
           state
           |> update_runtime(fn current ->
-            %{current | renderer: renderer, diff_state: diff_state}
+            %{
+              current
+              | renderer: renderer,
+                diff_state: diff_state,
+                last_renderer_heartbeat_at_ms: monotonic_ms()
+            }
           end)
           |> maybe_schedule_renderer_check()
 

@@ -12,11 +12,15 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     @impl true
     def start(_skia_opts, _renderer_opts) do
-      Agent.start_link(fn -> %{ops: [], running?: true} end)
+      Agent.start_link(fn -> %{ops: [], running?: true, heartbeat_pid: nil} end)
     end
 
     @impl true
     def stop(renderer) do
+      renderer
+      |> Agent.get(& &1.heartbeat_pid)
+      |> stop_heartbeat()
+
       Agent.stop(renderer)
       :ok
     catch
@@ -28,7 +32,16 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     @impl true
     def set_input_target(renderer, pid) do
-      Agent.update(renderer, &log_op(&1, {:set_input_target, pid}))
+      Agent.update(renderer, fn state ->
+        stop_heartbeat(state.heartbeat_pid)
+
+        heartbeat_pid = if is_pid(pid), do: start_heartbeat(pid), else: nil
+
+        state
+        |> Map.put(:heartbeat_pid, heartbeat_pid)
+        |> log_op({:set_input_target, pid})
+      end)
+
       :ok
     end
 
@@ -61,6 +74,23 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     def ops(renderer), do: Agent.get(renderer, &Enum.reverse(&1.ops))
 
     defp log_op(state, op), do: %{state | ops: [op | state.ops]}
+
+    defp start_heartbeat(pid) do
+      spawn(fn -> heartbeat_loop(pid) end)
+    end
+
+    defp heartbeat_loop(pid) do
+      send(pid, Emerge.Runtime.Viewport.Renderer.heartbeat_message())
+      Process.sleep(500)
+      heartbeat_loop(pid)
+    end
+
+    defp stop_heartbeat(nil), do: nil
+
+    defp stop_heartbeat(pid) do
+      Process.exit(pid, :kill)
+      nil
+    end
   end
 
   defmodule ReloadViewport do

@@ -41,6 +41,7 @@ use crate::input::InputEvent;
 use crate::linux_wait::{EventFd, poll_fds};
 use crate::native_log::NativeLogRelay;
 use crate::renderer::{RenderState, SceneRenderer};
+use crate::stats::RendererStatsCollector;
 use crate::video::{VideoImportContext, VideoRegistry};
 
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
@@ -1309,6 +1310,7 @@ pub struct DrmRunContext {
     pub screen_tx: Sender<(u32, u32)>,
     pub render_counter: Arc<AtomicU64>,
     pub native_log: Arc<NativeLogRelay>,
+    pub stats: Option<Arc<RendererStatsCollector>>,
     pub video_registry: Arc<VideoRegistry>,
 }
 
@@ -1327,6 +1329,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         screen_tx,
         render_counter,
         native_log,
+        stats,
         video_registry,
     } = context;
 
@@ -1978,9 +1981,21 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
+                                        if let Some(stats) = stats.as_ref() {
+                                            stats.record_frame_present();
+                                        }
+
                                         let presented_at = Instant::now();
                                         let predicted_next_present_at =
                                             present_state.observe_present(presented_at);
+
+                                        if let Some(stats) = stats.as_ref() {
+                                            stats.record_display_interval(
+                                                predicted_next_present_at
+                                                    .saturating_duration_since(presented_at),
+                                            );
+                                        }
+
                                         send_present_timing(
                                             &event_tx,
                                             presented_at,
