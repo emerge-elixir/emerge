@@ -1537,13 +1537,14 @@ mod app {
                 Ok(HostCommand::PatchTree {
                     session_id,
                     bytes,
-                    queued_at,
+                    queued_at: _,
                 }) => match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                     Some(session) => {
+                        let patch_started_at = Instant::now();
                         let result = patch_tree(session, &bytes);
 
                         if let Some(stats) = session.stats.as_ref() {
-                            stats.record_patch_tree_total(queued_at.elapsed());
+                            stats.record_patch_tree_process(patch_started_at.elapsed());
                         }
 
                         if let Err(err) = result {
