@@ -33,13 +33,15 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use crate::DrmCursorOverrideConfig;
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
+use crate::backend::skia_gpu::GlFrameSurface;
 use crate::backend::wake::BackendWake;
 use crate::cursor::{CursorState, SharedCursorState};
 use crate::events::CursorIcon;
 use crate::input::InputEvent;
 use crate::linux_wait::{EventFd, poll_fds};
 use crate::native_log::NativeLogRelay;
-use crate::renderer::{RenderState, Renderer};
+use crate::renderer::{RenderState, SceneRenderer};
+use crate::stats::RendererStatsCollector;
 use crate::video::{VideoImportContext, VideoRegistry};
 
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
@@ -1142,7 +1144,7 @@ fn init_egl(
     Ok((display, context, surface))
 }
 
-fn create_renderer(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<Renderer, String> {
+fn create_frame_surface(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<GlFrameSurface, String> {
     gl::load_with(|s| unsafe {
         let symbol = CString::new(s).expect("gl symbol");
         egl.GetProcAddress(symbol.as_ptr()) as *const _
@@ -1171,7 +1173,7 @@ fn create_renderer(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<Renderer, S
         }
     };
 
-    Ok(Renderer::new_gl(dimensions, fb_info, gr_context, 0, 0))
+    Ok(GlFrameSurface::new(dimensions, fb_info, gr_context, 0, 0))
 }
 
 fn framebuffer_for_bo(
@@ -1193,7 +1195,8 @@ fn framebuffer_for_bo(
 
 fn prepare_primary_frame(
     generation: u64,
-    renderer: &mut Renderer,
+    renderer: &mut SceneRenderer,
+    frame_surface: &mut GlFrameSurface,
     render_state: &RenderState,
     cursor_pos: (f32, f32),
     cursor_visible: bool,
@@ -1207,15 +1210,22 @@ fn prepare_primary_frame(
     card: &Card,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
 ) -> Result<PreparedPrimaryFrame, String> {
+    let mut frame = frame_surface.frame();
     let mut video_needs_cleanup = false;
-    match renderer.sync_video_frames(video_registry, video_import) {
+    match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
         Ok(result) => video_needs_cleanup = result.needs_cleanup,
         Err(err) => eprintln!("video sync failed: {err}"),
     }
-    renderer.render(render_state);
+    renderer.render(&mut frame, render_state);
     if !hw_cursor_enabled && cursor_visible {
-        draw_software_cursor(renderer, cursor_theme.cursor(cursor_icon), cursor_pos);
+        draw_software_cursor(
+            renderer,
+            &mut frame,
+            cursor_theme.cursor(cursor_icon),
+            cursor_pos,
+        );
     }
+    drop(frame);
 
     if unsafe {
         egl_state
@@ -1239,19 +1249,24 @@ fn prepare_primary_frame(
     })
 }
 
-fn draw_software_cursor(renderer: &mut Renderer, visual: &CursorVisual, cursor_pos: (f32, f32)) {
+fn draw_software_cursor(
+    renderer: &mut SceneRenderer,
+    frame: &mut crate::renderer::RenderFrame<'_>,
+    visual: &CursorVisual,
+    cursor_pos: (f32, f32),
+) {
     let (cursor_width, cursor_height) = visual.size();
     let hotspot = visual.hotspot();
     let x = cursor_pos.0 - hotspot.0;
     let y = cursor_pos.1 - hotspot.1;
-    let canvas = renderer.surface_mut().canvas();
+    let canvas = frame.surface_mut().canvas();
     let sampling =
         skia_safe::SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None);
     let paint = Paint::default();
     let dst = Rect::from_xywh(x, y, cursor_width as f32, cursor_height as f32);
     canvas.draw_image_rect_with_sampling_options(visual.image(), None, dst, sampling, &paint);
 
-    renderer.flush();
+    renderer.flush(frame);
 }
 
 #[derive(Clone)]
@@ -1280,6 +1295,7 @@ pub struct DrmRunContext {
     pub screen_tx: Sender<(u32, u32)>,
     pub render_counter: Arc<AtomicU64>,
     pub native_log: Arc<NativeLogRelay>,
+    pub stats: Option<Arc<RendererStatsCollector>>,
     pub video_registry: Arc<VideoRegistry>,
 }
 
@@ -1298,6 +1314,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         screen_tx,
         render_counter,
         native_log,
+        stats,
         video_registry,
     } = context;
 
@@ -1672,8 +1689,8 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             surface,
         };
 
-        let mut renderer = match create_renderer(&egl_state.egl, dimensions) {
-            Ok(renderer) => renderer,
+        let mut frame_surface = match create_frame_surface(&egl_state.egl, dimensions) {
+            Ok(frame_surface) => frame_surface,
             Err(err) => {
                 if handle_startup_failure_with_card(
                     &card,
@@ -1690,6 +1707,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 continue;
             }
         };
+        let mut renderer = SceneRenderer::new();
         let video_import = match VideoImportContext::new_current() {
             Ok(ctx) => Some(ctx),
             Err(err) => {
@@ -1721,7 +1739,10 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut framebuffer_cache: HashMap<u32, framebuffer::Handle> = HashMap::new();
 
         let mut render_state = RenderState::default();
-        renderer.render(&render_state);
+        {
+            let mut frame = frame_surface.frame();
+            renderer.render(&mut frame, &render_state);
+        }
 
         if unsafe {
             egl_state
@@ -1945,9 +1966,21 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
+                                        if let Some(stats) = stats.as_ref() {
+                                            stats.record_frame_present();
+                                        }
+
                                         let presented_at = Instant::now();
                                         let predicted_next_present_at =
                                             present_state.observe_present(presented_at);
+
+                                        if let Some(stats) = stats.as_ref() {
+                                            stats.record_display_interval(
+                                                predicted_next_present_at
+                                                    .saturating_duration_since(presented_at),
+                                            );
+                                        }
+
                                         send_present_timing(
                                             &event_tx,
                                             presented_at,
@@ -2096,6 +2129,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 match prepare_primary_frame(
                     desired_primary_generation,
                     &mut renderer,
+                    &mut frame_surface,
                     &render_state,
                     cursor_pos,
                     cursor_visible,
