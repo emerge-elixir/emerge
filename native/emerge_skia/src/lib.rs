@@ -12,7 +12,9 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
+#[cfg(any(feature = "wayland", feature = "drm"))]
+use crossbeam_channel::unbounded;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
@@ -54,9 +56,9 @@ use events::{CursorIcon, spawn_event_actor};
 #[cfg(feature = "drm")]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
-use renderer::{
-    RenderState, clear_global_caches, load_font, make_font_with_style, set_render_log_enabled,
-};
+#[cfg(any(feature = "wayland", feature = "drm"))]
+use renderer::set_render_log_enabled;
+use renderer::{RenderState, clear_global_caches, load_font, make_font_with_style};
 use std::time::Instant;
 use tree::animation::AnimationRuntime;
 use tree::element::{ElementId, ElementTree};
@@ -892,6 +894,14 @@ fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    start_native_renderer_with_config(config, initial_log_target)
+}
+
+#[cfg(any(feature = "wayland", feature = "drm"))]
+fn start_native_renderer_with_config(
+    config: StartConfig,
+    initial_log_target: Option<LocalPid>,
+) -> NifResult<ResourceArc<RendererResource>> {
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
@@ -1210,6 +1220,18 @@ fn start_with_config(
     };
 
     Ok(ResourceArc::new(resource))
+}
+
+#[cfg(not(any(feature = "wayland", feature = "drm")))]
+fn start_native_renderer_with_config(
+    config: StartConfig,
+    initial_log_target: Option<LocalPid>,
+) -> NifResult<ResourceArc<RendererResource>> {
+    let _ = (config, initial_log_target);
+
+    Err(rustler::Error::Term(Box::new(
+        "no native window backend is compiled for this build".to_string(),
+    )))
 }
 
 #[rustler::nif]

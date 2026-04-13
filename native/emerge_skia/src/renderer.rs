@@ -3,7 +3,7 @@
 //! This module contains:
 //! - `RenderScene` / `RenderNode` scene graph types
 //! - `RenderState` for holding scene data between frames
-//! - `Renderer` struct that executes scene nodes on a Skia surface
+//! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
 use std::collections::{HashMap, HashSet};
@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use resvg::usvg;
 use skia_safe::{
-    BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontHinting, FontMgr, Image,
-    MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect,
-    Rect, SamplingOptions, Surface, TileMode, Typeface,
+    BlendMode, BlurStyle, Color, Data, FilterMode, Font, FontHinting, FontMgr, Image, MaskFilter,
+    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect,
+    SamplingOptions, Surface, TileMode, Typeface,
     canvas::{SaveLayerRec, SrcRectConstraint},
     dash_path_effect,
     font::Edging as FontEdging,
-    gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
+    gpu,
     gradient::{Colors as GradientColors, Gradient, Interpolation},
     shaders,
 };
@@ -577,87 +577,57 @@ fn remove_asset(id: &str) {
 // Renderer
 // ============================================================================
 
-#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
-#[derive(Clone, Copy)]
-pub enum SurfaceSource {
-    Gl {
-        fb_info: FramebufferInfo,
-        num_samples: usize,
-        stencil_size: usize,
-    },
-    Raster,
+pub struct RenderFrame<'a> {
+    surface: &'a mut Surface,
+    direct_context: Option<&'a mut gpu::DirectContext>,
 }
 
-pub struct Renderer {
-    surface: Surface,
-    gr_context: Option<skia_safe::gpu::DirectContext>,
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
-    source: SurfaceSource,
+impl<'a> RenderFrame<'a> {
+    pub fn new(
+        surface: &'a mut Surface,
+        direct_context: Option<&'a mut gpu::DirectContext>,
+    ) -> Self {
+        Self {
+            surface,
+            direct_context,
+        }
+    }
+
+    pub fn surface_mut(&mut self) -> &mut Surface {
+        self.surface
+    }
+
+    pub fn flush(&mut self) {
+        if let Some(gr_context) = self.direct_context.as_deref_mut() {
+            gr_context.flush_and_submit();
+        }
+    }
+}
+
+pub struct SceneRenderer {
     video_state: RendererVideoState,
 }
 
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        let _ = std::mem::take(&mut self.video_state);
-
-        if let Some(gr_context) = self.gr_context.as_mut() {
-            gr_context.flush_and_submit();
-            gr_context.perform_deferred_cleanup(std::time::Duration::ZERO, None);
-            gr_context.free_gpu_resources();
-            gr_context.flush_and_submit();
-        }
-
-        #[cfg(not(test))]
-        skia_safe::graphics::purge_all_caches();
+impl Default for SceneRenderer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl Renderer {
-    /// Create a new renderer with a GPU-backed surface (for GL/Wayland/DRM backends).
-    pub fn new_gl(
-        dimensions: (u32, u32),
-        fb_info: FramebufferInfo,
-        gr_context: skia_safe::gpu::DirectContext,
-        num_samples: usize,
-        stencil_size: usize,
-    ) -> Self {
-        let mut gr_context = gr_context;
-        let surface = create_gl_surface(
-            (dimensions.0 as i32, dimensions.1 as i32),
-            fb_info,
-            &mut gr_context,
-            num_samples,
-            stencil_size,
-        );
-
+impl SceneRenderer {
+    pub fn new() -> Self {
         Self {
-            surface,
-            gr_context: Some(gr_context),
-            source: SurfaceSource::Gl {
-                fb_info,
-                num_samples,
-                stencil_size,
-            },
-            video_state: RendererVideoState::default(),
-        }
-    }
-
-    /// Create a new renderer with a CPU-backed surface (for raster backend).
-    pub fn from_surface(surface: Surface) -> Self {
-        Self {
-            surface,
-            gr_context: None,
-            source: SurfaceSource::Raster,
             video_state: RendererVideoState::default(),
         }
     }
 
     pub fn sync_video_frames(
         &mut self,
+        frame: &mut RenderFrame<'_>,
         registry: &Arc<crate::video::VideoRegistry>,
         ctx: Option<&crate::video::VideoImportContext>,
     ) -> Result<VideoSyncResult, String> {
-        let Some(gr_context) = self.gr_context.as_mut() else {
+        let Some(gr_context) = frame.direct_context.as_deref_mut() else {
             return Ok(VideoSyncResult::default());
         };
 
@@ -668,41 +638,13 @@ impl Renderer {
         Ok(result)
     }
 
-    /// Get mutable access to the underlying Skia surface.
-    pub fn surface_mut(&mut self) -> &mut Surface {
-        &mut self.surface
-    }
-
-    /// Resize the surface (only works for GL surfaces).
-    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
-    pub fn resize(&mut self, dimensions: (u32, u32)) {
-        if let SurfaceSource::Gl {
-            fb_info,
-            num_samples,
-            stencil_size,
-        } = self.source
-            && let Some(context) = self.gr_context.as_mut()
-        {
-            self.surface = create_gl_surface(
-                (dimensions.0 as i32, dimensions.1 as i32),
-                fb_info,
-                context,
-                num_samples,
-                stencil_size,
-            );
-        }
-    }
-
     /// Render the given state to the surface.
-    pub fn render(&mut self, state: &RenderState) {
-        let canvas = self.surface.canvas();
+    pub fn render(&mut self, frame: &mut RenderFrame<'_>, state: &RenderState) {
+        let canvas = frame.surface.canvas();
         canvas.clear(state.clear_color);
 
         Self::render_nodes(canvas, &state.scene.nodes, &self.video_state, 0.0);
-
-        if let Some(gr) = self.gr_context.as_mut() {
-            gr.flush_and_submit();
-        }
+        frame.flush();
     }
 
     fn render_nodes(
@@ -1181,12 +1123,10 @@ impl Renderer {
         }
     }
 
-    #[cfg(feature = "drm")]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     /// Flush the GPU context after manual drawing.
-    pub fn flush(&mut self) {
-        if let Some(gr) = self.gr_context.as_mut() {
-            gr.flush_and_submit();
-        }
+    pub fn flush(&mut self, frame: &mut RenderFrame<'_>) {
+        frame.flush();
     }
 }
 
@@ -1347,27 +1287,6 @@ fn outset_rect_in_device_space(canvas: &skia_safe::Canvas, rect: Rect, device_ou
         mapped_back.right().max(rect.right()),
         mapped_back.bottom().max(rect.bottom()),
     )
-}
-
-fn create_gl_surface(
-    dimensions: (i32, i32),
-    fb_info: FramebufferInfo,
-    gr_context: &mut skia_safe::gpu::DirectContext,
-    num_samples: usize,
-    stencil_size: usize,
-) -> Surface {
-    let backend_render_target =
-        backend_render_targets::make_gl(dimensions, num_samples, stencil_size, fb_info);
-
-    gpu::surfaces::wrap_backend_render_target(
-        gr_context,
-        &backend_render_target,
-        SurfaceOrigin::BottomLeft,
-        ColorType::RGBA8888,
-        None,
-        None,
-    )
-    .expect("Could not create Skia surface")
 }
 
 fn draw_cached_asset_with_fit(
@@ -2331,25 +2250,23 @@ mod tests {
             skia_safe::AlphaType::Premul,
             None,
         );
-        let surface = skia_safe::surfaces::raster(&info, None, None)
+        let mut surface = skia_safe::surfaces::raster(&info, None, None)
             .expect("raster surface should be created for renderer test");
 
-        let mut renderer = Renderer::from_surface(surface);
+        let mut renderer = SceneRenderer::new();
         let state = RenderState {
             scene,
             clear_color: Color::TRANSPARENT,
             render_version: 1,
             animate: false,
         };
-        renderer.render(&state);
+        {
+            let mut frame = RenderFrame::new(&mut surface, None);
+            renderer.render(&mut frame, &state);
+        }
 
         let mut pixels = vec![0u8; (width * height * 4) as usize];
-        renderer.surface_mut().read_pixels(
-            &info,
-            pixels.as_mut_slice(),
-            (width * 4) as usize,
-            (0, 0),
-        );
+        surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
         pixels
     }
 
@@ -2644,6 +2561,7 @@ mod tests {
         dx * dx + dy * dy <= r * r
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn point_in_inset_rounded_rect(
         px: f32,
         py: f32,
@@ -3456,7 +3374,7 @@ mod tests {
                     px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
                 );
 
-                if !(in_inner_near_edge && !in_inner_deep) {
+                if !in_inner_near_edge || in_inner_deep {
                     continue;
                 }
 
