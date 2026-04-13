@@ -42,7 +42,8 @@ defmodule EmergeSkia.Options do
       hw_cursor: Keyword.get(opts, :hw_cursor, true),
       input_log: Keyword.get(opts, :input_log, false),
       render_log: Keyword.get(opts, :render_log, false),
-      close_signal_log: Keyword.get(opts, :close_signal_log, false)
+      close_signal_log: Keyword.get(opts, :close_signal_log, false),
+      renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false)
     }
   end
 
