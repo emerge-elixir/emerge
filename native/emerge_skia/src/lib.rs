@@ -35,6 +35,7 @@ mod linux_wait;
 mod native_log;
 mod render_scene;
 mod renderer;
+mod stats;
 mod tree;
 mod video;
 
@@ -59,6 +60,7 @@ use native_log::NativeLogRelay;
 #[cfg(any(feature = "wayland", feature = "drm"))]
 use renderer::set_render_log_enabled;
 use renderer::{RenderState, clear_global_caches, load_font, make_font_with_style};
+use stats::RendererStatsCollector;
 use std::time::Instant;
 use tree::animation::AnimationRuntime;
 use tree::element::{ElementId, ElementTree};
@@ -147,6 +149,17 @@ impl InputTargetRelay {
         *guard = target;
     }
 
+    fn send_running(&self) {
+        let target = *self
+            .target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(pid) = target {
+            events::send_running_message(pid);
+        }
+    }
+
     fn send_close_requested(&self, close_signal_log: bool) {
         let target = *self
             .target
@@ -210,6 +223,7 @@ struct RendererHandles {
     input_handle: Option<thread::JoinHandle<()>>,
     tree_handle: Option<thread::JoinHandle<()>>,
     event_handle: Option<thread::JoinHandle<()>>,
+    heartbeat_handle: Option<thread::JoinHandle<()>>,
 }
 
 struct ShutdownRuntimeContext {
@@ -343,6 +357,10 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
         let _ = handle.join();
     }
 
+    if let Some(handle) = handles.heartbeat_handle.take() {
+        let _ = handle.join();
+    }
+
     if let Some(handle) = handles.tree_handle.take() {
         let _ = handle.join();
     }
@@ -370,6 +388,46 @@ fn trim_process_allocator() {
 
 #[cfg(any(test, not(all(target_os = "linux", target_env = "gnu"))))]
 fn trim_process_allocator() {}
+
+const RUNNING_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+
+fn backend_stats_label(backend: BackendKind) -> &'static str {
+    match backend {
+        #[cfg(feature = "wayland")]
+        BackendKind::Wayland => "wayland",
+        #[cfg(feature = "drm")]
+        BackendKind::Drm => "drm",
+    }
+}
+
+fn spawn_running_heartbeat(
+    running_flag: Arc<AtomicBool>,
+    input_target: Arc<InputTargetRelay>,
+    native_log: Arc<NativeLogRelay>,
+    stats: Option<Arc<RendererStatsCollector>>,
+    backend_label: &'static str,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut ticks = 0_u64;
+
+        while running_flag.load(Ordering::Relaxed) {
+            input_target.send_running();
+
+            if let Some(stats) = stats.as_ref() {
+                ticks = ticks.wrapping_add(1);
+
+                if ticks % 10 == 0 {
+                    native_log.info(
+                        "renderer_stats",
+                        stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
+                    );
+                }
+            }
+
+            thread::sleep(RUNNING_HEARTBEAT_INTERVAL);
+        }
+    })
+}
 
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     match tree_tx.try_send(msg) {
@@ -517,6 +575,7 @@ struct StartConfig {
     drm_input_log: bool,
     render_log: bool,
     close_signal_log: bool,
+    renderer_stats_log: bool,
 }
 
 #[cfg_attr(not(feature = "drm"), allow(dead_code))]
@@ -548,6 +607,7 @@ struct StartOptsNif {
     input_log: bool,
     render_log: bool,
     close_signal_log: bool,
+    renderer_stats_log: bool,
 }
 
 #[derive(rustler::NifMap)]
@@ -583,6 +643,7 @@ struct TreeActorConfig {
     render_sender: RenderSender,
     event_tx: Sender<EventMsg>,
     render_counter: Arc<AtomicU64>,
+    stats: Option<Arc<RendererStatsCollector>>,
     log_input: bool,
     window_wake: BackendWakeHandle,
     initial_width: u32,
@@ -603,6 +664,7 @@ fn spawn_tree_actor_with_initial_tree(
             render_sender,
             event_tx,
             render_counter,
+            stats,
             log_input,
             window_wake,
             initial_width,
@@ -649,6 +711,7 @@ fn spawn_tree_actor_with_initial_tree(
             let mut mouse_over_active_state = std::collections::HashMap::new();
             let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut focused_active_state = std::collections::HashMap::new();
+            let mut patch_processing_started_ats = Vec::new();
             let mut tree_changed = false;
             let mut registry_requested = false;
             let mut animation_sample_time = latest_animation_sample_time;
@@ -669,17 +732,25 @@ fn spawn_tree_actor_with_initial_tree(
                         }
                     },
                     TreeMsg::PatchTree { bytes } => {
+                        let patch_started_at = Instant::now();
                         let patches = match tree::patch::decode_patches(&bytes) {
                             Ok(patches) => patches,
                             Err(err) => {
+                                if let Some(stats) = stats.as_ref() {
+                                    stats.record_patch_tree_process(patch_started_at.elapsed());
+                                }
                                 eprintln!("tree patch decode failed: {err}");
                                 continue;
                             }
                         };
                         if let Err(err) = tree::patch::apply_patches(&mut tree, patches) {
+                            if let Some(stats) = stats.as_ref() {
+                                stats.record_patch_tree_process(patch_started_at.elapsed());
+                            }
                             eprintln!("tree patch apply failed: {err}");
                             continue;
                         }
+                        patch_processing_started_ats.push(patch_started_at);
                         tree_changed = true;
                     }
                     TreeMsg::Resize {
@@ -818,10 +889,22 @@ fn spawn_tree_actor_with_initial_tree(
                 decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some());
 
             match refresh_decision {
-                RefreshDecision::Skip => continue,
+                RefreshDecision::Skip => {
+                    if let Some(stats) = stats.as_ref() {
+                        patch_processing_started_ats.into_iter().for_each(|started_at| {
+                            stats.record_patch_tree_process(started_at.elapsed())
+                        });
+                    }
+                    continue;
+                }
                 RefreshDecision::UseCachedRebuild => {
                     if let Some(rebuild) = cached_rebuild.clone() {
                         send_registry_update(&event_tx, rebuild, log_input);
+                    }
+                    if let Some(stats) = stats.as_ref() {
+                        patch_processing_started_ats.into_iter().for_each(|started_at| {
+                            stats.record_patch_tree_process(started_at.elapsed())
+                        });
                     }
                     continue;
                 }
@@ -842,6 +925,7 @@ fn spawn_tree_actor_with_initial_tree(
                     animation_runtime.sync_with_tree(&tree, sample_time);
                     let _ =
                         animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
+                    let layout_started_at = Instant::now();
                     let output = if animation_runtime.is_empty() {
                         layout_and_refresh_default(&mut tree, constraint, scale)
                     } else {
@@ -853,6 +937,9 @@ fn spawn_tree_actor_with_initial_tree(
                             sample_time,
                         )
                     };
+                    if let Some(stats) = stats.as_ref() {
+                        stats.record_layout(layout_started_at.elapsed());
+                    }
                     cached_rebuild = Some(output.event_rebuild.clone());
                     send_registry_update(&event_tx, output.event_rebuild, log_input);
 
@@ -884,6 +971,12 @@ fn spawn_tree_actor_with_initial_tree(
                     if animation_runtime.is_empty() || !output.animations_active {
                         latest_animation_sample_time = None;
                     }
+
+                    if let Some(stats) = stats.as_ref() {
+                        patch_processing_started_ats.into_iter().for_each(|started_at| {
+                            stats.record_patch_tree_process(started_at.elapsed())
+                        });
+                    }
                 }
             }
         }
@@ -914,6 +1007,10 @@ fn start_native_renderer_with_config(
     let log_input = false;
     let log_render = config.render_log;
     let close_signal_log = config.close_signal_log;
+    let renderer_stats = config
+        .renderer_stats_log
+        .then(|| Arc::new(RendererStatsCollector::new()));
+    let backend_label = backend_stats_label(config.backend);
     set_render_log_enabled(log_render);
 
     let (tree_tx, tree_rx) = bounded(512);
@@ -938,6 +1035,13 @@ fn start_native_renderer_with_config(
     #[cfg(not(feature = "wayland"))]
     let system_clipboard = false;
     let mut handles = RendererHandles::default();
+    handles.heartbeat_handle = Some(spawn_running_heartbeat(
+        Arc::clone(&running_flag),
+        Arc::clone(&input_target),
+        Arc::clone(&native_log),
+        renderer_stats.clone(),
+        backend_label,
+    ));
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -957,6 +1061,7 @@ fn start_native_renderer_with_config(
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let input_target_clone = Arc::clone(&input_target);
+            let renderer_stats_clone = renderer_stats.clone();
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -972,6 +1077,7 @@ fn start_native_renderer_with_config(
                     event_tx: event_tx_clone,
                     input_target: input_target_clone,
                     close_signal_log,
+                    stats: renderer_stats_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
                     video_registry: video_registry_clone,
@@ -1029,6 +1135,7 @@ fn start_native_renderer_with_config(
                     render_sender: render_sender.clone(),
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
+                    stats: renderer_stats.clone(),
                     log_input,
                     window_wake: startup.wake.clone(),
                     initial_width,
@@ -1085,6 +1192,7 @@ fn start_native_renderer_with_config(
             let event_tx_clone = event_tx.clone();
             let drm_cursor_state_for_backend = Arc::clone(&drm_cursor_state);
             let native_log_for_backend = Arc::clone(&native_log);
+            let renderer_stats_for_backend = renderer_stats.clone();
             let presenter_wake_for_backend = presenter_wake.clone();
             let input_wake_for_backend = input_wake.clone();
             let drm_config = drm::DrmRunConfig {
@@ -1114,6 +1222,7 @@ fn start_native_renderer_with_config(
                         screen_tx,
                         render_counter: render_counter_clone,
                         native_log: native_log_for_backend,
+                        stats: renderer_stats_for_backend,
                         video_registry: video_registry_clone,
                     },
                     drm_config,
@@ -1168,6 +1277,7 @@ fn start_native_renderer_with_config(
                     render_sender: render_sender.clone(),
                     event_tx: event_tx.clone(),
                     render_counter: Arc::clone(&render_counter),
+                    stats: renderer_stats.clone(),
                     log_input,
                     window_wake: backend_wake.clone(),
                     initial_width,
@@ -1187,6 +1297,7 @@ fn start_native_renderer_with_config(
         config.scroll_line_pixels,
         log_render,
         system_clipboard,
+        renderer_stats.clone(),
     ));
 
     #[cfg(any(feature = "wayland", feature = "drm"))]
@@ -1259,6 +1370,7 @@ fn start(
                 drm_input_log: false,
                 render_log: false,
                 close_signal_log: false,
+                renderer_stats_log: false,
             },
             Some(env.pid()),
         )
@@ -1305,6 +1417,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
             close_signal_log: opts.close_signal_log,
+            renderer_stats_log: opts.renderer_stats_log,
         },
         Some(env.pid()),
     )
@@ -1473,6 +1586,7 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
     renderer.input_target.set_target(pid);
+    renderer.input_target.send_running();
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1773,6 +1887,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         input::SCROLL_LINE_PIXELS,
         false,
         false,
+        None,
     );
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
@@ -1780,6 +1895,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
             render_sender,
             event_tx: event_tx.clone(),
             render_counter,
+            stats: None,
             log_input: false,
             window_wake: BackendWakeHandle::noop(),
             initial_width: width,
@@ -2007,6 +2123,7 @@ mod tests {
                 input::SCROLL_LINE_PIXELS,
                 false,
                 false,
+                None,
             );
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
@@ -2014,6 +2131,7 @@ mod tests {
                     render_sender,
                     event_tx: event_tx.clone(),
                     render_counter,
+                    stats: None,
                     log_input: false,
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
@@ -2102,6 +2220,7 @@ mod tests {
                 input::SCROLL_LINE_PIXELS,
                 false,
                 false,
+                None,
             );
 
             Self {
@@ -2222,6 +2341,7 @@ mod tests {
                 input_handle: Some(input_handle),
                 tree_handle: Some(tree_handle),
                 event_handle: Some(event_handle),
+                heartbeat_handle: None,
             },
         );
 

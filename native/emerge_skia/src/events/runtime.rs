@@ -19,6 +19,7 @@
 //!   materializing a merged registry
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -32,6 +33,7 @@ use crate::{
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
     keys::CanonicalKey,
+    stats::RendererStatsCollector,
     tree::{
         element::{ElementId, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
@@ -417,18 +419,20 @@ struct DirectEventRuntime {
     inertial_scroll: Option<InertialScrollState>,
     suppress_drag_release_inertia: bool,
     scroll_line_pixels: f32,
+    stats: Option<Arc<RendererStatsCollector>>,
 }
 
 impl DirectEventRuntime {
     #[cfg(test)]
     fn new(system_clipboard: bool) -> Self {
-        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop())
+        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop(), None)
     }
 
     fn new_with_backend_cursor(
         system_clipboard: bool,
         backend_cursor_tx: Option<Sender<CursorIcon>>,
         backend_wake: BackendWakeHandle,
+        stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         let base_registry = registry_builder::Registry::default();
         let runtime_overlay = RuntimeOverlayState::default();
@@ -461,6 +465,7 @@ impl DirectEventRuntime {
             inertial_scroll: None,
             suppress_drag_release_inertia: false,
             scroll_line_pixels: SCROLL_LINE_PIXELS,
+            stats,
         }
     }
 
@@ -474,6 +479,12 @@ impl DirectEventRuntime {
 
     fn set_input_target(&mut self, target: Option<LocalPid>) {
         self.input_target = target;
+    }
+
+    fn record_event_resolve_duration(&self, duration: Duration) {
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_event_resolve(duration);
+        }
     }
 
     fn note_present_timing(&mut self, presented_at: Instant, predicted_next_present_at: Instant) {
@@ -1046,6 +1057,7 @@ impl DirectEventRuntime {
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
+        let started_at = Instant::now();
         let input = ListenerInput::Raw(event);
         let actions = {
             let mut ctx = RuntimeListenerComputeCtx {
@@ -1064,6 +1076,8 @@ impl DirectEventRuntime {
         if !actions.is_empty() {
             self.apply_listener_actions(actions, tree_tx, log_render, dispatch_mode);
         }
+
+        self.record_event_resolve_duration(started_at.elapsed());
     }
 
     fn apply_listener_actions(
@@ -1905,12 +1919,14 @@ pub(crate) fn spawn_event_actor(
     scroll_line_pixels: f32,
     log_render: bool,
     system_clipboard: bool,
+    stats: Option<Arc<RendererStatsCollector>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut runtime = DirectEventRuntime::new_with_backend_cursor(
             system_clipboard,
             backend_cursor_tx,
             backend_wake,
+            stats,
         );
         runtime.set_scroll_line_pixels(scroll_line_pixels);
         let mut pending_message: Option<EventMsg> = None;
@@ -4798,6 +4814,7 @@ mod tests {
             false,
             Some(cursor_tx),
             BackendWakeHandle::noop(),
+            None,
         );
         runtime.handle_registry_update(rebuild, &tree_tx, false);
 
