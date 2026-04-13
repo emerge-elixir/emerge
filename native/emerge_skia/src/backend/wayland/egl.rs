@@ -14,12 +14,13 @@ use skia_safe::gpu::{
 };
 use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
-use crate::renderer::Renderer;
+use crate::{backend::skia_gpu::GlFrameSurface, renderer::SceneRenderer};
 
 pub(super) struct GlEnv {
     pub(super) gl_surface: GlutinSurface<WindowSurface>,
     pub(super) gl_context: PossiblyCurrentContext,
-    pub(super) renderer: Renderer,
+    pub(super) frame_surface: GlFrameSurface,
+    pub(super) renderer: SceneRenderer,
 }
 
 pub(super) fn create_gl_env(
@@ -110,7 +111,7 @@ pub(super) fn create_gl_env(
         }
     };
 
-    let renderer = Renderer::new_gl(
+    let frame_surface = GlFrameSurface::new(
         (dimensions.0.max(1), dimensions.1.max(1)),
         fb_info,
         gr_context,
@@ -121,7 +122,8 @@ pub(super) fn create_gl_env(
     Ok(GlEnv {
         gl_surface,
         gl_context,
-        renderer,
+        frame_surface,
+        renderer: SceneRenderer::new(),
     })
 }
 
@@ -131,7 +133,7 @@ pub(super) fn resize_gl_env(env: &mut GlEnv, dimensions: (u32, u32)) {
         NonZeroU32::new(dimensions.0.max(1)).unwrap(),
         NonZeroU32::new(dimensions.1.max(1)).unwrap(),
     );
-    env.renderer
+    env.frame_surface
         .resize((dimensions.0.max(1), dimensions.1.max(1)));
 }
 
