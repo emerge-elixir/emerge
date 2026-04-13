@@ -12,15 +12,15 @@ use skia_safe::gpu::{
     direct_contexts,
     gl::{FramebufferInfo, Interface},
 };
-use wayland_client::{Connection, Proxy, protocol::wl_surface};
+use wayland_client::{protocol::wl_surface, Connection, Proxy};
 
 use crate::{backend::skia_gpu::GlFrameSurface, renderer::SceneRenderer};
 
 pub(super) struct GlEnv {
     pub(super) gl_surface: GlutinSurface<WindowSurface>,
     pub(super) gl_context: PossiblyCurrentContext,
-    pub(super) frame_surface: GlFrameSurface,
     pub(super) renderer: SceneRenderer,
+    pub(super) frame_surface: GlFrameSurface,
 }
 
 pub(super) fn create_gl_env(
@@ -122,8 +122,8 @@ pub(super) fn create_gl_env(
     Ok(GlEnv {
         gl_surface,
         gl_context,
-        frame_surface,
         renderer: SceneRenderer::new(),
+        frame_surface,
     })
 }
 

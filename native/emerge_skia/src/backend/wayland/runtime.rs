@@ -55,7 +55,6 @@ use crate::{
     events::CursorIcon,
     input::InputEvent,
     renderer::RenderState,
-    stats::RendererStatsCollector,
     video::{VideoImportContext, VideoRegistry},
 };
 
@@ -87,7 +86,6 @@ struct WaylandAppRuntime {
     event_tx: crossbeam_channel::Sender<EventMsg>,
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
-    stats: Option<Arc<RendererStatsCollector>>,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
@@ -101,7 +99,6 @@ pub(crate) struct WaylandRunArgs {
     pub event_tx: crossbeam_channel::Sender<EventMsg>,
     pub input_target: Arc<InputTargetRelay>,
     pub close_signal_log: bool,
-    pub stats: Option<Arc<RendererStatsCollector>>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
     pub video_registry: Arc<VideoRegistry>,
@@ -253,7 +250,6 @@ impl WaylandApp {
             event_tx,
             input_target,
             close_signal_log,
-            stats,
             render_rx,
             cursor_icon_rx,
             video_registry,
@@ -283,7 +279,6 @@ impl WaylandApp {
             event_tx,
             input_target,
             close_signal_log,
-            stats,
             video_registry,
             loop_handle,
             render_state: RenderState::default(),
@@ -506,18 +501,8 @@ impl WaylandApp {
             return;
         }
 
-        if let Some(stats) = self.stats.as_ref() {
-            stats.record_frame_present();
-        }
-
         let presented_at = std::time::Instant::now();
         let predicted_next_present_at = self.present.observe_present(presented_at);
-
-        if let Some(stats) = self.stats.as_ref() {
-            stats.record_display_interval(
-                predicted_next_present_at.saturating_duration_since(presented_at),
-            );
-        }
 
         self.send_present_timing(presented_at, predicted_next_present_at);
 
@@ -1011,7 +996,6 @@ pub(crate) fn run(args: WaylandRunArgs) {
         event_tx,
         input_target,
         close_signal_log,
-        stats,
         render_rx,
         cursor_icon_rx,
         video_registry,
@@ -1104,7 +1088,6 @@ pub(crate) fn run(args: WaylandRunArgs) {
             event_tx: event_tx.clone(),
             input_target,
             close_signal_log,
-            stats,
             render_rx,
             cursor_icon_rx,
             video_registry,
