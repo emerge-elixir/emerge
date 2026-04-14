@@ -2840,6 +2840,202 @@ fn test_row_self_alignment_zones() {
 }
 
 #[test]
+fn test_wrapped_row_center_alignment_on_wrapped_line() {
+    let mut tree = ElementTree::new();
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.width = Some(Length::Px(200.0));
+    row_attrs.spacing = Some(10.0);
+
+    let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+    let wide_child = make_element("wide", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(160.0));
+        a.height = Some(Length::Px(30.0));
+        a
+    });
+
+    let centered_child = make_element("centered", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(50.0));
+        a.height = Some(Length::Px(30.0));
+        a.align_x = Some(AlignX::Center);
+        a
+    });
+
+    let row_id = row.id.clone();
+    let wide_id = wide_child.id.clone();
+    let centered_id = centered_child.id.clone();
+
+    row.children = vec![wide_id.clone(), centered_id.clone()];
+
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(wide_child);
+    tree.insert(centered_child);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    assert_eq!(row_frame.height, 70.0);
+
+    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
+    let centered_frame = tree.get(&centered_id).unwrap().frame.unwrap();
+
+    assert_eq!(wide_frame.x, 0.0);
+    assert_eq!(wide_frame.y, 0.0);
+    assert_eq!(centered_frame.x, 75.0);
+    assert_eq!(centered_frame.y, 40.0);
+}
+
+#[test]
+fn test_wrapped_row_right_alignment_on_wrapped_line() {
+    let mut tree = ElementTree::new();
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.width = Some(Length::Px(200.0));
+    row_attrs.spacing = Some(10.0);
+
+    let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+    let wide_child = make_element("wide", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(160.0));
+        a.height = Some(Length::Px(30.0));
+        a
+    });
+
+    let right_child = make_element("right", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(50.0));
+        a.height = Some(Length::Px(30.0));
+        a.align_x = Some(AlignX::Right);
+        a
+    });
+
+    let row_id = row.id.clone();
+    let wide_id = wide_child.id.clone();
+    let right_id = right_child.id.clone();
+
+    row.children = vec![wide_id.clone(), right_id.clone()];
+
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(wide_child);
+    tree.insert(right_child);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    assert_eq!(row_frame.height, 70.0);
+
+    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
+    let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+
+    assert_eq!(wide_frame.x, 0.0);
+    assert_eq!(wide_frame.y, 0.0);
+    assert_eq!(right_frame.x, 150.0);
+    assert_eq!(right_frame.y, 40.0);
+}
+
+#[test]
+fn test_wrapped_row_mixed_alignment_zones_per_line() {
+    let mut tree = ElementTree::new();
+
+    let mut row_attrs = Attrs::default();
+    row_attrs.width = Some(Length::Px(200.0));
+    row_attrs.spacing = Some(10.0);
+
+    let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
+
+    let wide_child = make_element("wide", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(160.0));
+        a.height = Some(Length::Px(30.0));
+        a
+    });
+
+    let left_child = make_element("left", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(40.0));
+        a.height = Some(Length::Px(30.0));
+        a.align_x = Some(AlignX::Left);
+        a
+    });
+
+    let center_child = make_element("center", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(40.0));
+        a.height = Some(Length::Px(30.0));
+        a.align_x = Some(AlignX::Center);
+        a
+    });
+
+    let right_child = make_element("right", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(40.0));
+        a.height = Some(Length::Px(30.0));
+        a.align_x = Some(AlignX::Right);
+        a
+    });
+
+    let row_id = row.id.clone();
+    let wide_id = wide_child.id.clone();
+    let left_id = left_child.id.clone();
+    let center_id = center_child.id.clone();
+    let right_id = right_child.id.clone();
+
+    row.children = vec![
+        wide_id.clone(),
+        left_id.clone(),
+        center_id.clone(),
+        right_id.clone(),
+    ];
+
+    tree.root = Some(row_id.clone());
+    tree.insert(row);
+    tree.insert(wide_child);
+    tree.insert(left_child);
+    tree.insert(center_child);
+    tree.insert(right_child);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    assert_eq!(row_frame.height, 70.0);
+
+    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
+    let left_frame = tree.get(&left_id).unwrap().frame.unwrap();
+    let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
+    let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+
+    assert_eq!(wide_frame.x, 0.0);
+    assert_eq!(wide_frame.y, 0.0);
+    assert_eq!(left_frame.x, 0.0);
+    assert_eq!(left_frame.y, 40.0);
+    assert_eq!(center_frame.x, 80.0);
+    assert_eq!(center_frame.y, 40.0);
+    assert_eq!(right_frame.x, 160.0);
+    assert_eq!(right_frame.y, 40.0);
+}
+
+#[test]
 fn test_column_self_alignment_zones() {
     let mut tree = ElementTree::new();
 
