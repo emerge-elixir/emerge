@@ -47,6 +47,10 @@ defmodule Emerge.UI.Space do
   - `wrapped_row/2` uses horizontal spacing within each line and vertical
     spacing between wrapped lines
 
+  Wrapped rows also measure each line from the resolved child frames on that
+  line. If a child grows taller after reflow, the line height and total wrapped
+  row height grow with it, and later siblings are pushed down accordingly.
+
   ## Even Distribution
 
   `space_evenly/0` is for rows and columns with definite room on their main
