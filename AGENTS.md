@@ -137,6 +137,7 @@ Run `mix docs` to generate the full ExDoc site.
 - Default to functional composition for collection building (`map`, `filter`, `flat_map`, `fold`, `collect`) instead of mutable accumulator loops.
 - Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
 - Prefer functions that return collections over functions that mutate passed-in output collections.
+- Avoid Elixir aliases with `as:`. Prefer the original module name or a normal alias without renaming.
 
 ## Git Commit Guidelines
 
