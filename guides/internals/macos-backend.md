@@ -112,39 +112,20 @@ until reconciliation resolves them.
 macOS now uses the real system clipboard through `NSPasteboard` for text input
 commands.
 
-## Wrapper Mode
-
-Wrapper mode is still supported as a development/probing path:
-
-- `macos_wrapper.exs`
-- `macos_wrapper_beam_child.exs`
-- `native/emerge_skia/src/bin/macos_wrapper_smoke.rs`
-
-The production implementation is still the shared external host plus normal
-`EmergeSkia.start/1` session creation.
-
 ## Unsupported For Now
 
 - video targets on macOS
-- app-bundle/productized wrapper distribution
 - precompiled Darwin artifacts
 
 `EmergeSkia.video_target/2` intentionally returns an error for macOS.
 
-## Cleanup Status
+## Validation
 
-The old in-process macOS smoke backend path has been removed from the active
-native API surface.
+The supported runtime path is the shared external host plus normal
+`EmergeSkia.start/1` session creation.
 
-What remains intentionally:
-
-- `beam_macos_probe.exs` for BEAM thread probing
-- `macos.exs` for shared-host smoke testing
-- `macos_wrapper.exs` for wrapper smoke testing
-- `native/emerge_skia/src/bin/macos_smoke.rs` as a standalone AppKit proof that
-  direct Rust/AppKit works when Rust owns the process main thread
-
-These are probes and smokes, not the production backend path.
+Manual smoke validation should happen through `emerge_demo`, not through
+standalone probe or wrapper binaries.
 
 ## Next Work
 
