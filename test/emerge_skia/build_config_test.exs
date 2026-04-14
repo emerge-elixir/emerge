@@ -16,6 +16,25 @@ defmodule EmergeSkia.BuildConfigTest do
            ]
   end
 
+  test "load_native_runtime? skips Rustler on macOS-only runtime builds" do
+    refute BuildConfig.load_native_runtime?(%{"TARGET_OS" => "darwin"}, [:macos], :prod)
+  end
+
+  test "load_native_runtime? keeps Rustler for tests on macOS-only builds" do
+    assert BuildConfig.load_native_runtime?(%{"TARGET_OS" => "darwin"}, [:macos], :test)
+  end
+
+  test "load_native_runtime? respects explicit macOS NIF opt-in" do
+    assert BuildConfig.load_native_runtime?(
+             %{
+               "TARGET_OS" => "darwin",
+               BuildConfig.load_macos_nif_env_key() => "true"
+             },
+             [:macos],
+             :prod
+           )
+  end
+
   test "default_compiled_backends uses drm when NERVES_SDK_SYSROOT is present" do
     assert BuildConfig.default_compiled_backends(%{"NERVES_SDK_SYSROOT" => "/tmp/nerves/staging"}) ==
              [:drm]
