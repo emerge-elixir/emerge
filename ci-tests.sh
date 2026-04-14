@@ -4,10 +4,25 @@ set -euo pipefail
 
 mode="${1:-all}"
 
+run_rust_feature_checks() {
+  cargo check --manifest-path native/emerge_skia/Cargo.toml --no-default-features
+  cargo check --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features wayland
+  cargo check --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features drm
+  cargo check --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features wayland,drm
+}
+
+run_rust_feature_clippy() {
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml --no-default-features -- -D warnings
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features wayland -- -D warnings
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features drm -- -D warnings
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml --no-default-features --features wayland,drm -- -D warnings
+}
+
 run_quality() {
   mix format --check-formatted
   mix credo --strict
-  cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+  run_rust_feature_checks
+  run_rust_feature_clippy
 }
 
 run_tests() {

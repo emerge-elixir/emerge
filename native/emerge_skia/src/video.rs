@@ -1,3 +1,5 @@
+#![cfg_attr(not(any(feature = "wayland", feature = "drm")), allow(dead_code))]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
@@ -537,6 +539,7 @@ impl VideoRegistry {
         )),
         allow(dead_code)
     )]
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub fn drain_pending_to_release(&self) -> Result<(), String> {
         let snapshot = self.snapshot_pending()?;
 

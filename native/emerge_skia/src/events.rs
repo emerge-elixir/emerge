@@ -782,6 +782,7 @@ pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {
     });
 }
 
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 pub(crate) fn send_close_message(pid: LocalPid) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {

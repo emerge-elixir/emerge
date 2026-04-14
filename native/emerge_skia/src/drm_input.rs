@@ -77,6 +77,31 @@ enum KeyKind {
     Key(CanonicalKey),
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct AbsModeHints {
+    direct_prop: bool,
+    pointer_prop: bool,
+    buttonpad_prop: bool,
+    topbuttonpad_prop: bool,
+    semi_mt_prop: bool,
+    touchpad_key_hint: bool,
+    touch_key_hint: bool,
+    mt_position_hint: bool,
+    name_touchpad_hint: bool,
+    name_touch_hint: bool,
+}
+
+pub struct DrmInputConfig {
+    pub screen_size: (u32, u32),
+    pub screen_rx: Receiver<(u32, u32)>,
+    pub event_tx: Sender<EventMsg>,
+    pub cursor_state: Arc<SharedCursorState>,
+    pub stop: Arc<AtomicBool>,
+    pub backend_wake: BackendWakeHandle,
+    pub input_wake: EventFd,
+    pub log_enabled: bool,
+}
+
 pub struct DrmInput {
     devices: Vec<InputDevice>,
     cursor_pos: (f32, f32),
@@ -97,16 +122,18 @@ pub struct DrmInput {
 }
 
 impl DrmInput {
-    pub fn new(
-        screen_size: (u32, u32),
-        screen_rx: Receiver<(u32, u32)>,
-        event_tx: Sender<EventMsg>,
-        cursor_state: Arc<SharedCursorState>,
-        stop: Arc<AtomicBool>,
-        backend_wake: BackendWakeHandle,
-        input_wake: EventFd,
-        log_enabled: bool,
-    ) -> Self {
+    pub fn new(config: DrmInputConfig) -> Self {
+        let DrmInputConfig {
+            screen_size,
+            screen_rx,
+            event_tx,
+            cursor_state,
+            stop,
+            backend_wake,
+            input_wake,
+            log_enabled,
+        } = config;
+
         let devices = enumerate_devices(log_enabled);
         let rescan_interval = Duration::from_millis(500);
         Self {
@@ -172,14 +199,15 @@ impl DrmInput {
         let screen_size = self.screen_size;
         let mut idx = 0;
         while idx < self.devices.len() {
-            let events = match {
+            let fetch_result = {
                 let device = &mut self.devices[idx];
                 match device.device.fetch_events() {
                     Ok(events) => Ok(events.collect::<Vec<_>>()),
                     Err(err) if should_remove_device_on_fetch_error(&err) => Err(err),
                     Err(_) => Ok(Vec::new()),
                 }
-            } {
+            };
+            let events = match fetch_result {
                 Ok(events) => events,
                 Err(err) => {
                     self.remove_device(idx, Some(err));
@@ -469,7 +497,14 @@ impl DrmInput {
             return;
         };
 
-        match self.try_push_input(InputEvent::CursorPos { x, y }) {
+        if self.log_enabled {
+            eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
+        }
+
+        match self
+            .event_tx
+            .try_send(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+        {
             Ok(()) | Err(TrySendError::Disconnected(_)) => {
                 self.pending_cursor_pos = None;
             }
@@ -531,17 +566,6 @@ impl DrmInput {
                 Err(SendTimeoutError::Disconnected(_)) => break,
             }
         }
-    }
-
-    fn try_push_input(&self, event: InputEvent) -> Result<(), TrySendError<EventMsg>> {
-        if self.log_enabled
-            && let InputEvent::CursorPos { x, y } = &event
-        {
-            eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
-        }
-
-        let msg = EventMsg::InputEvent(event);
-        self.event_tx.try_send(msg)
     }
 }
 
@@ -759,25 +783,18 @@ fn axis_state_from_abs(info: Option<&input_absinfo>) -> Option<AbsAxisState> {
     })
 }
 
-fn classify_abs_mode(
-    direct_prop: bool,
-    pointer_prop: bool,
-    buttonpad_prop: bool,
-    topbuttonpad_prop: bool,
-    semi_mt_prop: bool,
-    touchpad_key_hint: bool,
-    touch_key_hint: bool,
-    mt_position_hint: bool,
-    name_touchpad_hint: bool,
-    name_touch_hint: bool,
-) -> AbsMode {
-    let touchpad = !direct_prop
-        && ((pointer_prop
-            && (buttonpad_prop || topbuttonpad_prop || semi_mt_prop || touchpad_key_hint))
-            || name_touchpad_hint);
+fn classify_abs_mode(hints: AbsModeHints) -> AbsMode {
+    let touchpad = !hints.direct_prop
+        && ((hints.pointer_prop
+            && (hints.buttonpad_prop
+                || hints.topbuttonpad_prop
+                || hints.semi_mt_prop
+                || hints.touchpad_key_hint))
+            || hints.name_touchpad_hint);
 
-    let direct_touch =
-        direct_prop || name_touch_hint || (!touchpad && (mt_position_hint || touch_key_hint));
+    let direct_touch = hints.direct_prop
+        || hints.name_touch_hint
+        || (!touchpad && (hints.mt_position_hint || hints.touch_key_hint));
 
     if direct_touch {
         AbsMode::DirectTouch
@@ -853,21 +870,20 @@ fn detect_abs_mode(device: &Device) -> (AbsMode, String) {
         name_touch_hint
     );
 
-    (
-        classify_abs_mode(
-            direct_prop,
-            pointer_prop,
-            buttonpad_prop,
-            topbuttonpad_prop,
-            semi_mt_prop,
-            touchpad_key_hint,
-            touch_key_hint,
-            has_mt_position,
-            name_touchpad_hint,
-            name_touch_hint,
-        ),
-        info,
-    )
+    let hints = AbsModeHints {
+        direct_prop,
+        pointer_prop,
+        buttonpad_prop,
+        topbuttonpad_prop,
+        semi_mt_prop,
+        touchpad_key_hint,
+        touch_key_hint,
+        mt_position_hint: has_mt_position,
+        name_touchpad_hint,
+        name_touch_hint,
+    };
+
+    (classify_abs_mode(hints), info)
 }
 
 fn direct_touch_button_action(abs_mode: AbsMode, key: Key, pressed: bool) -> Option<u8> {
@@ -1239,15 +1255,21 @@ mod tests {
     #[test]
     fn classify_abs_mode_keeps_touchpad_devices_relative_from_abs() {
         assert_eq!(
-            classify_abs_mode(
-                false, true, true, false, false, true, true, true, false, false
-            ),
+            classify_abs_mode(AbsModeHints {
+                pointer_prop: true,
+                buttonpad_prop: true,
+                touchpad_key_hint: true,
+                touch_key_hint: true,
+                mt_position_hint: true,
+                ..AbsModeHints::default()
+            }),
             AbsMode::RelativeFromAbs
         );
         assert_eq!(
-            classify_abs_mode(
-                false, false, false, false, false, false, false, false, true, false
-            ),
+            classify_abs_mode(AbsModeHints {
+                name_touchpad_hint: true,
+                ..AbsModeHints::default()
+            }),
             AbsMode::RelativeFromAbs
         );
     }
@@ -1255,21 +1277,31 @@ mod tests {
     #[test]
     fn classify_abs_mode_marks_direct_touch_devices_as_direct_touch() {
         assert_eq!(
-            classify_abs_mode(
-                true, true, false, false, false, false, true, true, false, false
-            ),
+            classify_abs_mode(AbsModeHints {
+                direct_prop: true,
+                pointer_prop: true,
+                touch_key_hint: true,
+                mt_position_hint: true,
+                ..AbsModeHints::default()
+            }),
             AbsMode::DirectTouch
         );
         assert_eq!(
-            classify_abs_mode(
-                false, true, false, false, false, false, true, true, false, false
-            ),
+            classify_abs_mode(AbsModeHints {
+                pointer_prop: true,
+                touch_key_hint: true,
+                mt_position_hint: true,
+                ..AbsModeHints::default()
+            }),
             AbsMode::DirectTouch
         );
         assert_eq!(
-            classify_abs_mode(
-                false, true, false, false, false, false, true, false, false, true
-            ),
+            classify_abs_mode(AbsModeHints {
+                pointer_prop: true,
+                touch_key_hint: true,
+                name_touch_hint: true,
+                ..AbsModeHints::default()
+            }),
             AbsMode::DirectTouch
         );
     }

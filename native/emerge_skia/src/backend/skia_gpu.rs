@@ -8,8 +8,11 @@ use crate::renderer::RenderFrame;
 pub struct GlFrameSurface {
     surface: Surface,
     direct_context: gpu::DirectContext,
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     fb_info: FramebufferInfo,
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     num_samples: usize,
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     stencil_size: usize,
 }
 
@@ -39,6 +42,7 @@ impl GlFrameSurface {
         }
     }
 
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub fn resize(&mut self, dimensions: (u32, u32)) {
         self.surface = create_gl_surface(
             (dimensions.0 as i32, dimensions.1 as i32),

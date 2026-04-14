@@ -812,13 +812,13 @@ fn test_render_scrollbar_y_thumb() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let thumb = only_draw(&draws, |draw| {
+    let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR)
@@ -876,14 +876,14 @@ fn test_render_scrollbar_x_thumb() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF)
         )
     });
 
-    let thumb = only_draw(&draws, |draw| {
+    let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR)

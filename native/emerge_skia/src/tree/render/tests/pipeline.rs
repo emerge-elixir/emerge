@@ -337,13 +337,13 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         radii: None,
     };
 
-    let left_draw = only_draw(&draws, |draw| {
+    let left_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 104.0, 60.0, 0x32465AFF)
         )
     });
-    let right_draw = only_draw(&draws, |draw| {
+    let right_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(116.0, 0.0, 104.0, 60.0, 0x463C5AFF)
@@ -430,7 +430,7 @@ fn test_render_rounded_parent_clips_child_background_corners() {
 
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
-    let child_rect = only_draw(&draws, |draw| {
+    let child_rect = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 365.0, 80.0, 0xF0EDF8FF)
@@ -570,7 +570,7 @@ fn test_render_emits_translate_for_move() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -598,7 +598,7 @@ fn test_render_emits_rotate_for_rotation() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -626,7 +626,7 @@ fn test_render_emits_scale_for_scale() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -643,7 +643,7 @@ fn test_render_emits_alpha_layer() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -1009,7 +1009,7 @@ fn test_render_skips_transform_when_default() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -1070,19 +1070,19 @@ fn test_render_nearby_behind_and_in_front_order() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
         )
     });
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF)
@@ -1144,19 +1144,19 @@ fn test_render_behind_between_background_and_children() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
         )
     });
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF)
@@ -1227,13 +1227,13 @@ fn test_render_behind_inside_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
         )
     });
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
@@ -1303,19 +1303,19 @@ fn test_render_nearby_above_below_order_after_parent() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let above = only_draw(&draws, |draw| {
+    let above = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF)
         )
     });
-    let below = only_draw(&draws, |draw| {
+    let below = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF)
@@ -1378,13 +1378,13 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
         )
     });
-    let nearby = only_draw(&draws, |draw| {
+    let nearby = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF)
@@ -1449,13 +1449,13 @@ fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let first = only_draw(&draws, |draw| {
+    let first = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0xFF0000FF)
         )
     });
-    let second = only_draw(&draws, |draw| {
+    let second = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0x00FF00FF)
@@ -1928,13 +1928,13 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
@@ -1981,7 +1981,7 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF)
@@ -2025,7 +2025,7 @@ fn test_render_above_fill_width_uses_parent_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF)
@@ -2069,7 +2069,7 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF)
@@ -2114,7 +2114,7 @@ fn test_render_in_front_ignores_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
@@ -2160,10 +2160,10 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -2284,10 +2284,10 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -2381,10 +2381,10 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -2480,10 +2480,10 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -2621,10 +2621,10 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
         "scroll rendering should not need transform wrappers"
     );
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let child_c = only_draw(&draws, |draw| {
+    let child_c = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 30.0, 100.0, 20.0, 0x0000FFFF)
@@ -2710,7 +2710,7 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     let draws = &trace.draws;
 
     let text_draw = only_draw(
-        &draws,
+        draws,
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "visible"),
     );
 
@@ -2784,7 +2784,7 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     let draws = &trace.draws;
 
     let text_draw = only_draw(
-        &draws,
+        draws,
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"),
     );
     assert!(text_draw.clips.iter().any(|clip| {
@@ -2847,13 +2847,13 @@ fn test_border_renders_after_host_clip_pops() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let child_draw = only_draw(&draws, |draw| {
+    let child_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0xFFFFFFFF)
         )
     });
-    let border_draw = only_draw(&draws, |draw| {
+    let border_draw = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Border(..))
     });
     let expected_host_clip = ClipShape {
@@ -2875,7 +2875,7 @@ fn test_border_renders_after_host_clip_pops() {
     assert!(
         child_clip_scopes
             .iter()
-            .any(|scope| { clip_scope_shapes(scope).unwrap() == &[expected_host_clip] })
+            .any(|scope| { clip_scope_shapes(scope).unwrap() == [expected_host_clip] })
     );
     assert!(scope_chain(&trace, border_draw).is_empty());
     assert!(paints_before(child_draw, border_draw));
@@ -2889,7 +2889,7 @@ fn test_render_uses_only_background_self_clip_when_nothing_else_is_clipped() {
     let tree = build_tree_with_attrs(attrs);
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)

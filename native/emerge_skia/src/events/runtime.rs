@@ -3357,7 +3357,7 @@ mod tests {
         );
 
         let msgs = drain_msgs(&tree_rx);
-        assert!(matches!(runtime.runtime_overlay.scrollbar, Some(_)));
+        assert!(runtime.runtime_overlay.scrollbar.is_some());
         assert!(msgs.is_empty());
 
         let rebuild = render_tree(&tree).event_rebuild;

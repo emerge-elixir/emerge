@@ -149,7 +149,7 @@ pub(super) fn render_tree_to_pixels(
     (output, pixels)
 }
 
-pub(super) fn only_draw<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> &'a ResolvedDraw
+pub(super) fn only_draw<F>(draws: &[ResolvedDraw], pred: F) -> &ResolvedDraw
 where
     F: Fn(&ResolvedDraw) -> bool,
 {
@@ -158,7 +158,7 @@ where
     matches[0]
 }
 
-pub(super) fn matching_draws<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> Vec<&'a ResolvedDraw>
+pub(super) fn matching_draws<F>(draws: &[ResolvedDraw], pred: F) -> Vec<&ResolvedDraw>
 where
     F: Fn(&ResolvedDraw) -> bool,
 {
@@ -176,7 +176,7 @@ pub(super) fn shares_alpha_scope(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
         .eq(b.alpha_scopes.iter().map(|scope| scope.scope_id))
 }
 
-pub(super) fn scope<'a>(trace: &'a SceneTrace, scope_id: usize) -> &'a ScopeRecord {
+pub(super) fn scope(trace: &SceneTrace, scope_id: usize) -> &ScopeRecord {
     trace
         .scopes
         .iter()

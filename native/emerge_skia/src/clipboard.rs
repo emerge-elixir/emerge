@@ -5,6 +5,7 @@ pub enum ClipboardTarget {
 }
 
 pub struct ClipboardManager {
+    #[cfg(feature = "wayland")]
     system_enabled: bool,
     #[cfg(feature = "wayland")]
     system: Option<arboard::Clipboard>,
@@ -14,7 +15,11 @@ pub struct ClipboardManager {
 
 impl ClipboardManager {
     pub fn new(system_enabled: bool) -> Self {
+        #[cfg(not(feature = "wayland"))]
+        let _ = system_enabled;
+
         Self {
+            #[cfg(feature = "wayland")]
             system_enabled,
             #[cfg(feature = "wayland")]
             system: None,
@@ -26,12 +31,10 @@ impl ClipboardManager {
     pub fn set_text(&mut self, target: ClipboardTarget, text: &str) {
         self.set_fallback(target, text);
 
-        if !self.system_enabled {
-            return;
-        }
-
         #[cfg(feature = "wayland")]
-        if let Some(system) = self.system_mut() {
+        if self.system_enabled
+            && let Some(system) = self.system_mut()
+        {
             let _ = set_system_text(system, target, text);
         }
     }

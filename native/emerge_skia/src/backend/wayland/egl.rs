@@ -12,7 +12,7 @@ use skia_safe::gpu::{
     direct_contexts,
     gl::{FramebufferInfo, Interface},
 };
-use wayland_client::{protocol::wl_surface, Connection, Proxy};
+use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
 use crate::{backend::skia_gpu::GlFrameSurface, renderer::SceneRenderer};
 

@@ -2552,9 +2552,7 @@ impl ListenerCompute {
                 {
                     match ctx.text_input_state(element_id) {
                         None => Vec::new(),
-                        Some(_) if ctx.take_text_commit_suppression(element_id) => {
-                            Vec::new()
-                        }
+                        Some(_) if ctx.take_text_commit_suppression(element_id) => Vec::new(),
                         Some(snapshot) => {
                             let filtered = sanitize_text_input_text(text, snapshot.multiline);
                             if filtered.is_empty() {

@@ -115,6 +115,37 @@ struct PreparedPrimaryFrame {
     video_needs_cleanup: bool,
 }
 
+#[derive(Clone, Copy)]
+struct DrmOutputConfig<'a> {
+    connector: connector::Handle,
+    crtc_handle: crtc::Handle,
+    plane: plane::Handle,
+    con_props: &'a HashMap<String, property::Info>,
+    crtc_props: &'a HashMap<String, property::Info>,
+    plane_props: &'a HashMap<String, property::Info>,
+}
+
+struct PrimaryFrameCursorContext<'a> {
+    pos: (f32, f32),
+    visible: bool,
+    hw_cursor_enabled: bool,
+    icon: CursorIcon,
+    theme: &'a DrmCursorTheme,
+}
+
+struct PrimaryFrameContext<'a> {
+    renderer: &'a mut SceneRenderer,
+    frame_surface: &'a mut GlFrameSurface,
+    render_state: &'a RenderState,
+    cursor: PrimaryFrameCursorContext<'a>,
+    video_registry: &'a Arc<VideoRegistry>,
+    video_import: Option<&'a VideoImportContext>,
+    egl_state: &'a EglState,
+    gbm_surface: &'a Surface<()>,
+    card: &'a Card,
+    framebuffer_cache: &'a mut HashMap<u32, framebuffer::Handle>,
+}
+
 struct CurrentPrimaryFrame {
     generation: u64,
     render_version: u64,
@@ -320,12 +351,7 @@ fn destroy_session_resources(
 
 fn teardown_drm_output(
     card: &Card,
-    connector: connector::Handle,
-    crtc_handle: crtc::Handle,
-    plane: plane::Handle,
-    con_props: &HashMap<String, property::Info>,
-    crtc_props: &HashMap<String, property::Info>,
-    plane_props: &HashMap<String, property::Info>,
+    output: DrmOutputConfig<'_>,
     cursor_plane: Option<&CursorPlaneCommit>,
 ) -> Result<(), String> {
     let mut req = atomic::AtomicModeReq::new();
@@ -345,28 +371,28 @@ fn teardown_drm_output(
     }
 
     req.add_property(
-        plane,
-        prop_handle(plane_props, "FB_ID")?,
+        output.plane,
+        prop_handle(output.plane_props, "FB_ID")?,
         property::Value::Framebuffer(None),
     );
     req.add_property(
-        plane,
-        prop_handle(plane_props, "CRTC_ID")?,
+        output.plane,
+        prop_handle(output.plane_props, "CRTC_ID")?,
         property::Value::CRTC(None),
     );
     req.add_property(
-        connector,
-        prop_handle(con_props, "CRTC_ID")?,
+        output.connector,
+        prop_handle(output.con_props, "CRTC_ID")?,
         property::Value::CRTC(None),
     );
     req.add_property(
-        crtc_handle,
-        prop_handle(crtc_props, "ACTIVE")?,
+        output.crtc_handle,
+        prop_handle(output.crtc_props, "ACTIVE")?,
         property::Value::Boolean(false),
     );
 
-    if let Ok(mode_handle) = prop_handle(crtc_props, "MODE_ID") {
-        req.add_property(crtc_handle, mode_handle, property::Value::Blob(0));
+    if let Ok(mode_handle) = prop_handle(output.crtc_props, "MODE_ID") {
+        req.add_property(output.crtc_handle, mode_handle, property::Value::Blob(0));
     }
 
     card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
@@ -375,26 +401,14 @@ fn teardown_drm_output(
 
 fn cleanup_active_session(
     card: &Card,
-    connector: connector::Handle,
-    crtc_handle: crtc::Handle,
-    plane: plane::Handle,
-    con_props: &HashMap<String, property::Info>,
-    crtc_props: &HashMap<String, property::Info>,
-    plane_props: &HashMap<String, property::Info>,
+    output: DrmOutputConfig<'_>,
     cursor_plane: Option<CursorPlane>,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     mode_blob_id: Option<u64>,
 ) {
-    if let Err(err) = teardown_drm_output(
-        card,
-        connector,
-        crtc_handle,
-        plane,
-        con_props,
-        crtc_props,
-        plane_props,
-        cursor_plane.as_ref().map(CursorPlane::commit),
-    ) {
+    if let Err(err) =
+        teardown_drm_output(card, output, cursor_plane.as_ref().map(CursorPlane::commit))
+    {
         eprintln!("DRM teardown failed: {err}");
     }
 
@@ -1194,37 +1208,38 @@ fn framebuffer_for_bo(
 
 fn prepare_primary_frame(
     generation: u64,
-    renderer: &mut SceneRenderer,
-    frame_surface: &mut GlFrameSurface,
-    render_state: &RenderState,
-    cursor_pos: (f32, f32),
-    cursor_visible: bool,
-    hw_cursor_enabled: bool,
-    cursor_icon: CursorIcon,
-    cursor_theme: &DrmCursorTheme,
-    video_registry: &Arc<VideoRegistry>,
-    video_import: Option<&VideoImportContext>,
-    egl_state: &EglState,
-    gbm_surface: &Surface<()>,
-    card: &Card,
-    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    context: PrimaryFrameContext<'_>,
 ) -> Result<PreparedPrimaryFrame, String> {
-    let mut frame = frame_surface.frame();
+    let PrimaryFrameContext {
+        renderer,
+        frame_surface,
+        render_state,
+        cursor,
+        video_registry,
+        video_import,
+        egl_state,
+        gbm_surface,
+        card,
+        framebuffer_cache,
+    } = context;
+
     let mut video_needs_cleanup = false;
-    match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
-        Ok(result) => video_needs_cleanup = result.needs_cleanup,
-        Err(err) => eprintln!("video sync failed: {err}"),
+    {
+        let mut frame = frame_surface.frame();
+        match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
+            Ok(result) => video_needs_cleanup = result.needs_cleanup,
+            Err(err) => eprintln!("video sync failed: {err}"),
+        }
+        renderer.render(&mut frame, render_state);
+        if !cursor.hw_cursor_enabled && cursor.visible {
+            draw_software_cursor(
+                renderer,
+                &mut frame,
+                cursor.theme.cursor(cursor.icon),
+                cursor.pos,
+            );
+        }
     }
-    renderer.render(&mut frame, render_state);
-    if !hw_cursor_enabled && cursor_visible {
-        draw_software_cursor(
-            renderer,
-            &mut frame,
-            cursor_theme.cursor(cursor_icon),
-            cursor_pos,
-        );
-    }
-    drop(frame);
 
     if unsafe {
         egl_state
@@ -2113,20 +2128,24 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             {
                 match prepare_primary_frame(
                     desired_primary_generation,
-                    &mut renderer,
-                    &mut frame_surface,
-                    &render_state,
-                    cursor_pos,
-                    cursor_visible,
-                    hw_cursor_enabled,
-                    current_cursor_icon,
-                    &cursor_theme,
-                    &video_registry,
-                    video_import.as_ref(),
-                    &egl_state,
-                    &gbm_surface,
-                    &card,
-                    &mut framebuffer_cache,
+                    PrimaryFrameContext {
+                        renderer: &mut renderer,
+                        frame_surface: &mut frame_surface,
+                        render_state: &render_state,
+                        cursor: PrimaryFrameCursorContext {
+                            pos: cursor_pos,
+                            visible: cursor_visible,
+                            hw_cursor_enabled,
+                            icon: current_cursor_icon,
+                            theme: &cursor_theme,
+                        },
+                        video_registry: &video_registry,
+                        video_import: video_import.as_ref(),
+                        egl_state: &egl_state,
+                        gbm_surface: &gbm_surface,
+                        card: &card,
+                        framebuffer_cache: &mut framebuffer_cache,
+                    },
                 ) {
                     Ok(frame) => prepared_primary = Some(frame),
                     Err(err) => {
@@ -2181,20 +2200,20 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                 let cursor_visual = cursor_theme.cursor(current_cursor_icon);
 
-                if submit_cursor && hw_cursor_enabled {
-                    if let Some(cursor_plane) = cursor_plane.as_mut()
-                        && let Err(err) = cursor_plane.write_visual(cursor_visual)
-                    {
-                        native_log.error(
-                            "drm",
-                            format!("DRM cursor setup failed during cursor upload: {err}"),
-                        );
-                        hw_cursor_enabled = false;
-                        committed_cursor_visible = false;
-                        committed_cursor_icon = None;
-                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                        continue;
-                    }
+                if submit_cursor
+                    && hw_cursor_enabled
+                    && let Some(cursor_plane) = cursor_plane.as_mut()
+                    && let Err(err) = cursor_plane.write_visual(cursor_visual)
+                {
+                    native_log.error(
+                        "drm",
+                        format!("DRM cursor setup failed during cursor upload: {err}"),
+                    );
+                    hw_cursor_enabled = false;
+                    committed_cursor_visible = false;
+                    committed_cursor_icon = None;
+                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                    continue;
                 }
 
                 if submit_cursor && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)
@@ -2376,12 +2395,14 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
         // buffers can be released safely.
         cleanup_active_session(
             &card,
-            connector,
-            crtc_handle,
-            plane,
-            &con_props,
-            &crtc_props,
-            &plane_props,
+            DrmOutputConfig {
+                connector,
+                crtc_handle,
+                plane,
+                con_props: &con_props,
+                crtc_props: &crtc_props,
+                plane_props: &plane_props,
+            },
             cursor_plane.take(),
             &mut framebuffer_cache,
             mode_blob_id,

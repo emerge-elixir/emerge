@@ -1,3 +1,5 @@
+#![cfg_attr(not(any(feature = "wayland", feature = "drm")), allow(dead_code))]
+
 use std::sync::Mutex;
 
 use rustler::LocalPid;

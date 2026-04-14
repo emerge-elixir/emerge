@@ -6,6 +6,8 @@
 //! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
+#![cfg_attr(not(any(feature = "wayland", feature = "drm")), allow(dead_code))]
+
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -593,6 +595,7 @@ impl<'a> RenderFrame<'a> {
         }
     }
 
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     pub fn surface_mut(&mut self) -> &mut Surface {
         self.surface
     }

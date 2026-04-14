@@ -5,6 +5,7 @@
 #[cfg(all(feature = "drm", target_os = "linux"))]
 pub mod drm;
 pub mod raster;
+#[cfg(any(feature = "wayland", feature = "drm"))]
 pub mod skia_gpu;
 pub mod wake;
 #[cfg(all(feature = "wayland", target_os = "linux"))]

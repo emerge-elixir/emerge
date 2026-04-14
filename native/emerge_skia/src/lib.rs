@@ -3,6 +3,8 @@
 //! This crate provides a Rustler NIF that exposes tree upload, layout,
 //! rendering, and headless rasterization for Emerge.
 
+#![cfg_attr(not(any(feature = "wayland", feature = "drm")), allow(dead_code))]
+
 use std::{
     sync::{
         Arc, Mutex,
@@ -147,6 +149,7 @@ impl InputTargetRelay {
         *guard = target;
     }
 
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     fn send_close_requested(&self, close_signal_log: bool) {
         let target = *self
             .target
@@ -1065,16 +1068,16 @@ fn start_native_renderer_with_config(
             let video_registry_clone = Arc::clone(&video_registry);
 
             handles.input_handle = Some(thread::spawn(move || {
-                let mut input = DrmInput::new(
-                    drm_input_size,
+                let mut input = DrmInput::new(drm_input::DrmInputConfig {
+                    screen_size: drm_input_size,
                     screen_rx,
-                    event_tx_clone,
-                    drm_cursor_state_for_input,
-                    Arc::clone(&stop_clone),
-                    backend_wake_for_input,
-                    input_wake_for_input,
-                    input_log,
-                );
+                    event_tx: event_tx_clone,
+                    cursor_state: drm_cursor_state_for_input,
+                    stop: Arc::clone(&stop_clone),
+                    backend_wake: backend_wake_for_input,
+                    input_wake: input_wake_for_input,
+                    log_enabled: input_log,
+                });
                 input.run();
             }));
 
