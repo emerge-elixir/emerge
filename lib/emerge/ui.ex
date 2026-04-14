@@ -64,6 +64,14 @@ defmodule Emerge.UI do
 
   #{Examples.image_tag!("ui-root-layouts", "Rendered Emerge.UI layout comparison")}
 
+  `wrapped_row/2` wraps against the width it resolves from its parent,
+  including nested fill-driven layouts. Its height grows to match the tallest
+  child on each wrapped line, so multiline or reflowed children push following
+  content down instead of clipping. Horizontal child alignment also stays
+  line-local after wrapping, which means `center_x/0` and `align_right/0`
+  position children within the remaining width of their wrapped line rather
+  than across the full container width.
+
   ## use Emerge.UI
 
   `use Emerge.UI` imports:
