@@ -4,10 +4,13 @@ defmodule EmergeSkia.BuildConfig do
   @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
   @load_macos_nif_env_key "EMERGE_SKIA_LOAD_MACOS_NIF"
+  @build_local_macos_host_env_key "EMERGE_SKIA_MACOS_HOST_BUILD_LOCAL"
+  @macos_host_cache_dir_env_key "EMERGE_SKIA_MACOS_HOST_CACHE_DIR"
   @checksum_only_env_key "EMERGE_SKIA_CHECKSUM_ONLY"
   @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
   @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+  @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
   @default_precompiled_source_url Mix.Project.config()[:source_url]
@@ -69,13 +72,14 @@ defmodule EmergeSkia.BuildConfig do
                                     ] or has_target_env? do
                                  [:drm]
                                else
-                                 if (case Map.get(env, "TARGET_OS") do
-                                       os when is_binary(os) and os != "" -> os == "darwin"
-                                       _ -> :os.type() == {:unix, :darwin}
-                                     end) do
-                                   [:macos]
-                                 else
-                                   [:wayland]
+                                 case Map.get(env, "TARGET_OS") do
+                                   os when is_binary(os) and os != "" ->
+                                     if os == "darwin", do: [:macos], else: [:wayland]
+
+                                   _ ->
+                                     if :os.type() == {:unix, :darwin},
+                                       do: [:macos],
+                                       else: [:wayland]
                                  end
                                end
                              )
@@ -127,10 +131,19 @@ defmodule EmergeSkia.BuildConfig do
   def load_macos_nif_env_key, do: @load_macos_nif_env_key
 
   @doc false
+  def build_local_macos_host_env_key, do: @build_local_macos_host_env_key
+
+  @doc false
+  def macos_host_cache_dir_env_key, do: @macos_host_cache_dir_env_key
+
+  @doc false
   def checksum_only_env_key, do: @checksum_only_env_key
 
   @doc false
   def precompiled_targets, do: @precompiled_targets
+
+  @doc false
+  def macos_host_targets, do: @macos_host_targets
 
   @doc false
   def precompiled_nif_versions, do: @precompiled_nif_versions
@@ -265,17 +278,60 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
+  def macos_host_target(env \\ System.get_env()) when is_map(env) do
+    case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
+      {arch, os} when is_binary(arch) and arch != "" and os == "darwin" ->
+        macos_target_from_arch(arch)
+
+      _ ->
+        current_target_system()
+        |> Map.get(:arch)
+        |> macos_target_from_arch()
+    end
+  end
+
+  @doc false
+  def macos_host_archive_name(target, version \\ @version)
+      when is_binary(target) and is_binary(version) do
+    "macos_host-v#{version}-#{target}.tar.gz"
+  end
+
+  @doc false
+  def macos_host_checksum_name(target, version \\ @version)
+      when is_binary(target) and is_binary(version) do
+    "#{macos_host_archive_name(target, version)}.sha256"
+  end
+
+  @doc false
+  def macos_host_download_url(target, env \\ System.get_env(), version \\ @version)
+      when is_binary(target) and is_map(env) and is_binary(version) do
+    release_asset_url(macos_host_archive_name(target, version), version, env)
+  end
+
+  @doc false
+  def macos_host_checksum_url(target, env \\ System.get_env(), version \\ @version)
+      when is_binary(target) and is_map(env) and is_binary(version) do
+    release_asset_url(macos_host_checksum_name(target, version), version, env)
+  end
+
+  @doc false
+  def macos_host_cache_dir(target, version \\ @version, env \\ System.get_env())
+      when is_binary(target) and is_binary(version) and is_map(env) do
+    base =
+      case Map.get(env, @macos_host_cache_dir_env_key) do
+        path when is_binary(path) and path != "" -> path
+        _ -> user_cache_dir()
+      end
+
+    Path.join([base, "emerge_skia", "macos_host", version, target])
+  end
+
+  @doc false
   def precompiled_tar_gz_url(file_name), do: precompiled_tar_gz_url(file_name, System.get_env())
 
   @doc false
   def precompiled_tar_gz_url(file_name, env) when is_binary(file_name) and is_map(env) do
-    source_url = precompiled_source_url(env)
-    direct_url = "#{source_url}/releases/download/v#{@version}/#{file_name}"
-
-    case github_release_asset_request(source_url, @version, file_name, env) do
-      {:ok, request} -> request
-      :error -> maybe_authenticated_direct_url(direct_url, env)
-    end
+    release_asset_url(file_name, @version, env)
   end
 
   @doc false
@@ -391,6 +447,17 @@ defmodule EmergeSkia.BuildConfig do
     end
   end
 
+  defp release_asset_url(file_name, version, env)
+       when is_binary(file_name) and is_binary(version) and is_map(env) do
+    source_url = precompiled_source_url(env)
+    direct_url = "#{source_url}/releases/download/v#{version}/#{file_name}"
+
+    case github_release_asset_request(source_url, version, file_name, env) do
+      {:ok, request} -> request
+      :error -> maybe_authenticated_direct_url(direct_url, env)
+    end
+  end
+
   defp github_release_asset_request(source_url, version, file_name, env) do
     with token when is_binary(token) and token != "" <- Map.get(env, @github_token_env_key),
          {:ok, owner, repo} <- github_repo(source_url),
@@ -472,6 +539,20 @@ defmodule EmergeSkia.BuildConfig do
       {:ok, %{variant: ^variant}} -> true
       _ -> false
     end
+  end
+
+  defp macos_target_from_arch("aarch64"), do: "aarch64-apple-darwin"
+  defp macos_target_from_arch("arm64"), do: "aarch64-apple-darwin"
+  defp macos_target_from_arch("x86_64"), do: "x86_64-apple-darwin"
+  defp macos_target_from_arch("amd64"), do: "x86_64-apple-darwin"
+
+  defp macos_target_from_arch(other) do
+    raise ArgumentError, "unsupported macOS target architecture: #{inspect(other)}"
+  end
+
+  defp user_cache_dir do
+    :filename.basedir(:user_cache, "", %{os: :darwin})
+    |> to_string()
   end
 
   defp compiler_prefix(nil), do: nil

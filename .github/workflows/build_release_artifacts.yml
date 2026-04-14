@@ -1,4 +1,4 @@
-name: Build Precompiled NIFs
+name: Build Release Artifacts
 
 on:
   workflow_dispatch:
@@ -71,14 +71,18 @@ jobs:
           elixir-version: "1.19.0"
           otp-version: "28.3"
 
+      - name: Install dependencies
+        run: mix deps.get
+
       - name: Extract project version
         shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
             project_version="${GITHUB_REF_NAME#v}"
           else
-            project_version="$(mix emerge.version)"
-            project_version="${project_version##*$'\n'}"
+            # Avoid custom Mix tasks here because they compile the project and can
+            # trigger a host NIF build before this job installs native packages.
+            project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
           fi
 
           if [[ -z "$project_version" ]]; then
@@ -130,3 +134,94 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.build-crate.outputs.file-path }}
+
+  build_macos_host:
+    name: macos_host - ${{ matrix.job.name }}
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - name: macos_arm64
+            target: aarch64-apple-darwin
+            os: macos-15
+          - name: macos_x86_64
+            target: x86_64-apple-darwin
+            os: macos-15-intel
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v5
+
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.0"
+          otp-version: "28.3"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Extract project version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            project_version="${GITHUB_REF_NAME#v}"
+          else
+            # Avoid custom Mix tasks here because they compile the project and can
+            # trigger a host NIF build before this job installs native packages.
+            project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          fi
+
+          if [[ -z "$project_version" ]]; then
+            echo "Failed to resolve project version" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
+            exit 1
+          fi
+
+          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.job.target }}
+
+      - name: Build macos_host
+        working-directory: native/emerge_skia
+        run: >
+          cargo build --release
+          --bin macos_host
+          --no-default-features
+          --features macos
+
+      - name: Package macos_host archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp native/emerge_skia/target/release/macos_host dist/macos_host
+          chmod 755 dist/macos_host
+          archive="macos_host-v${PROJECT_VERSION}-${{ matrix.job.target }}.tar.gz"
+          tar -C dist -czf "$archive" macos_host
+          shasum -a 256 "$archive" > "$archive.sha256"
+          echo "ARCHIVE_NAME=$archive" >> "$GITHUB_ENV"
+
+      - name: Artifact upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos_host-v${{ env.PROJECT_VERSION }}-${{ matrix.job.target }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+
+      - name: Publish macos_host archives
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256

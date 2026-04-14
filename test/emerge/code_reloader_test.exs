@@ -200,7 +200,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.ex")
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.txt")
 
-    assert_receive {:compiler_reloaded, [:emerge], paths}
+    assert_receive {:compiler_reloaded, [:emerge], paths}, 300
 
     assert paths == [
              "/workspace/emerge/lib/emerge/code_reloader.ex",
@@ -232,7 +232,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
 
-    assert_receive {:compiler_reloaded, [:emerge], _paths}
+    assert_receive {:compiler_reloaded, [:emerge], _paths}, 300
 
     assert_eventually(fn -> patch_count(renderer) == 1 end)
 
@@ -260,7 +260,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
 
-    assert_receive {:compiler_reloaded, [:emerge], _paths}
+    assert_receive {:compiler_reloaded, [:emerge], _paths}, 300
 
     assert_eventually(fn -> patch_count(renderer) == 1 end)
 

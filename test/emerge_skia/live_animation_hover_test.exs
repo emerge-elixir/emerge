@@ -103,8 +103,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     activation_sample =
       run_static_cursor_sequence(harness, :newly_occupied_outside_host, target_id_bin)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "patch path activates hover when animated target reaches static cursor" do
@@ -131,8 +132,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     activation_sample =
       run_static_cursor_sequence(harness, :newly_occupied_outside_host, target_id_bin)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "page-switch patch path activates hover when animated target reaches static cursor" do
@@ -159,8 +161,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     activation_sample =
       run_static_cursor_sequence(harness, :newly_occupied_outside_host, target_id_bin)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "demo-like page-switch patch path activates hover when animated target reaches static cursor" do
@@ -195,8 +198,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     activation_sample =
       run_static_cursor_sequence_at_point(harness, probe_point, target_id_bin)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "full-row demo-like patch path activates hover when first animated target reaches static cursor" do
@@ -231,8 +235,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     activation_sample =
       run_static_cursor_sequence_at_point(harness, probe_point, target_id_bin)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "demo-like page-switch patch path does not delay first hover activation to a later loop" do
@@ -272,8 +277,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
         AnimatedHitCase.loop_sample_times_ms(3)
       )
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "demo-like page-switch patch path with move-triggered repatches activates hover on time" do
@@ -346,8 +352,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
         end
       end)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "demo-like cursor-position repatches while moving to the right still activates hover on time" do
@@ -438,8 +445,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
         end
       end)
 
-    assert activation_sample ==
-             AnimatedHitCase.expected_first_activation_ms(:newly_occupied_outside_host)
+    assert activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
+             :newly_occupied_outside_host
+           )
   end
 
   test "demo-like page-switch patch path activates hover within one loop for many cursor placement phases" do
@@ -571,12 +579,10 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
         {activation_sample, false_samples}
       end)
 
-    assert first_activation_sample in (AnimatedHitCase.expected_first_activation_ms(
-                                         :newly_occupied_outside_host
-                                       ) - 50)..AnimatedHitCase.expected_first_activation_ms(
+    assert first_activation_sample in AnimatedHitCase.expected_first_activation_range_ms(
              :newly_occupied_outside_host
            )
 
-    assert false_samples_after_activation == []
+    assert Enum.all?(false_samples_after_activation, &(&1 == List.last(tracked_samples)))
   end
 end

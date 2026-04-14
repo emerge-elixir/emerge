@@ -439,7 +439,7 @@ fn spawn_running_heartbeat(
             if let Some(stats) = stats.as_ref() {
                 ticks = ticks.wrapping_add(1);
 
-                if ticks % 10 == 0 {
+                if ticks.is_multiple_of(10) {
                     native_log.info(
                         "renderer_stats",
                         stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
@@ -689,14 +689,16 @@ fn start_native_renderer_with_config(
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     let system_clipboard = false;
-    let mut handles = RendererHandles::default();
-    handles.heartbeat_handle = Some(spawn_running_heartbeat(
-        Arc::clone(&running_flag),
-        Arc::clone(&input_target),
-        Arc::clone(&native_log),
-        renderer_stats.clone(),
-        backend_label,
-    ));
+    let mut handles = RendererHandles {
+        heartbeat_handle: Some(spawn_running_heartbeat(
+            Arc::clone(&running_flag),
+            Arc::clone(&input_target),
+            Arc::clone(&native_log),
+            renderer_stats.clone(),
+            backend_label,
+        )),
+        ..RendererHandles::default()
+    };
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -952,16 +954,16 @@ fn start_native_renderer_with_config(
         BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
     };
 
-    handles.event_handle = Some(spawn_event_actor(
+    handles.event_handle = Some(spawn_event_actor(SpawnEventActorConfig {
         event_rx,
-        tree_tx.clone(),
-        Some(backend_cursor_tx),
-        backend_wake.clone(),
-        config.scroll_line_pixels,
+        tree_tx: tree_tx.clone(),
+        backend_cursor_tx: Some(backend_cursor_tx),
+        backend_wake: backend_wake.clone(),
+        scroll_line_pixels: config.scroll_line_pixels,
         log_render,
         system_clipboard,
-        renderer_stats.clone(),
-    ));
+        stats: renderer_stats.clone(),
+    }));
 
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),

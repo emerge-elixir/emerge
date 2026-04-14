@@ -35,6 +35,32 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
+  test "macos_host_target resolves darwin runtime target from env" do
+    assert BuildConfig.macos_host_target(%{"TARGET_ARCH" => "arm64", "TARGET_OS" => "darwin"}) ==
+             "aarch64-apple-darwin"
+
+    assert BuildConfig.macos_host_target(%{"TARGET_ARCH" => "x86_64", "TARGET_OS" => "darwin"}) ==
+             "x86_64-apple-darwin"
+  end
+
+  test "macos_host artifact helpers use stable names" do
+    assert BuildConfig.macos_host_archive_name("aarch64-apple-darwin", "0.1.0") ==
+             "macos_host-v0.1.0-aarch64-apple-darwin.tar.gz"
+
+    assert BuildConfig.macos_host_checksum_name("x86_64-apple-darwin", "0.1.0") ==
+             "macos_host-v0.1.0-x86_64-apple-darwin.tar.gz.sha256"
+  end
+
+  test "macos_host download helpers reuse release base url" do
+    env = %{BuildConfig.precompiled_source_url_env_key() => "https://github.com/acme/emerge"}
+
+    assert BuildConfig.macos_host_download_url("aarch64-apple-darwin", env, "0.1.0") ==
+             "https://github.com/acme/emerge/releases/download/v0.1.0/macos_host-v0.1.0-aarch64-apple-darwin.tar.gz"
+
+    assert BuildConfig.macos_host_checksum_url("x86_64-apple-darwin", env, "0.1.0") ==
+             "https://github.com/acme/emerge/releases/download/v0.1.0/macos_host-v0.1.0-x86_64-apple-darwin.tar.gz.sha256"
+  end
+
   test "default_compiled_backends uses drm when NERVES_SDK_SYSROOT is present" do
     assert BuildConfig.default_compiled_backends(%{"NERVES_SDK_SYSROOT" => "/tmp/nerves/staging"}) ==
              [:drm]
