@@ -17,8 +17,6 @@
 //! This crate provides a Rustler NIF that exposes tree upload, layout,
 //! rendering, and headless rasterization for Emerge.
 
-#[cfg(feature = "macos")]
-use std::sync::OnceLock;
 use std::{
     sync::{
         Arc, Mutex,
@@ -35,10 +33,7 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-#[cfg(feature = "macos")]
-use objc2::MainThreadMarker;
 use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
-use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
 pub mod actors;
 pub mod assets;
 pub mod backend;
@@ -56,6 +51,8 @@ mod linux_wait;
 mod native_log;
 pub mod render_scene;
 pub mod renderer;
+mod runtime;
+pub mod services;
 pub mod stats;
 pub mod tree;
 mod video;
@@ -64,7 +61,6 @@ use actors::{EventMsg, RenderMsg, TreeMsg};
 use assets::AssetConfig;
 #[cfg(all(feature = "drm", target_os = "linux"))]
 use backend::drm;
-use backend::raster::{RasterBackend, RasterConfig};
 use backend::wake::BackendWakeHandle;
 #[cfg(all(feature = "wayland", target_os = "linux"))]
 use backend::wayland;
@@ -83,12 +79,11 @@ use native_log::NativeLogRelay;
     all(feature = "drm", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
-use renderer::{RenderState, clear_global_caches, load_font, make_font_with_style};
+use renderer::clear_global_caches;
+use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::RendererStatsCollector;
 use std::time::Instant;
-use tree::animation::AnimationRuntime;
 use tree::element::{ElementId, ElementTree};
-use tree::layout::{layout_and_refresh_default, layout_and_refresh_default_with_animation};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
@@ -117,24 +112,6 @@ enum BackendKind {
     Wayland,
     #[cfg(all(feature = "drm", target_os = "linux"))]
     Drm,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OffscreenAssetMode {
-    Await,
-    Snapshot,
-}
-
-impl OffscreenAssetMode {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "await" => Ok(Self::Await),
-            "snapshot" => Ok(Self::Snapshot),
-            other => Err(format!(
-                "invalid offscreen asset mode: {other}; expected 'await' or 'snapshot'"
-            )),
-        }
-    }
 }
 
 struct RendererResource {
@@ -218,7 +195,7 @@ impl InputTargetRelay {
 }
 
 #[derive(Clone)]
-struct RenderSender {
+pub(crate) struct RenderSender {
     tx: Sender<RenderMsg>,
     drop_rx: Receiver<RenderMsg>,
     log_render: bool,
@@ -462,7 +439,7 @@ fn spawn_running_heartbeat(
             if let Some(stats) = stats.as_ref() {
                 ticks = ticks.wrapping_add(1);
 
-                if ticks.is_multiple_of(10) {
+                if ticks % 10 == 0 {
                     native_log.info(
                         "renderer_stats",
                         stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
@@ -511,96 +488,6 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
             let _ = event_tx.send(msg);
         }
         Err(TrySendError::Disconnected(_)) => {}
-    }
-}
-
-fn send_registry_update(
-    event_tx: &Sender<EventMsg>,
-    rebuild: events::RegistryRebuildPayload,
-    log_input: bool,
-) {
-    // Registry rebuilds are snapshot state. Dropping one under backpressure is
-    // preferable to blocking the tree actor and deadlocking against the event actor.
-    match event_tx.try_send(EventMsg::RegistryUpdate { rebuild }) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
-            if log_input {
-                eprintln!("event channel full, dropping registry update");
-            }
-            crate::debug_trace::hover_trace!(
-                "event_channel",
-                "event channel full, dropping registry update"
-            );
-        }
-        Err(TrySendError::Disconnected(_)) => {}
-    }
-}
-
-fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
-    match msg {
-        TreeMsg::Batch(messages) => {
-            for nested in messages {
-                push_tree_message_flat(nested, out);
-            }
-        }
-        other => out.push(other),
-    }
-}
-
-fn is_animation_pulse(msg: &TreeMsg) -> bool {
-    matches!(msg, TreeMsg::AnimationPulse { .. })
-}
-
-fn batch_is_animation_only(messages: &[TreeMsg]) -> bool {
-    !messages.is_empty() && messages.iter().all(is_animation_pulse)
-}
-
-#[cfg(feature = "hover-trace")]
-fn trace_element_snapshots(
-    tree: &ElementTree,
-) -> Vec<(ElementId, f32, f32, f32, f32, Option<f64>)> {
-    tree.nodes
-        .values()
-        .filter(|element| {
-            element.attrs.on_mouse_move.unwrap_or(false)
-                || element.attrs.mouse_over.is_some()
-                || element.attrs.mouse_over_active.unwrap_or(false)
-        })
-        .filter_map(|element| {
-            element.frame.map(|frame| {
-                (
-                    element.id.clone(),
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    element.attrs.move_x,
-                )
-            })
-        })
-        .collect()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RefreshDecision {
-    Skip,
-    UseCachedRebuild,
-    Recompute,
-}
-
-fn decide_refresh_action(
-    tree_changed: bool,
-    registry_requested: bool,
-    has_cached_rebuild: bool,
-) -> RefreshDecision {
-    if tree_changed {
-        RefreshDecision::Recompute
-    } else if registry_requested && has_cached_rebuild {
-        RefreshDecision::UseCachedRebuild
-    } else if registry_requested {
-        RefreshDecision::Recompute
-    } else {
-        RefreshDecision::Skip
     }
 }
 
@@ -740,381 +627,6 @@ struct RenderTreeOffscreenOptsNif {
     asset_timeout_ms: u64,
 }
 
-#[derive(Clone, rustler::NifMap)]
-struct MacosThreadProbeNif {
-    phase: String,
-    rust_thread_id: String,
-    pthread_thread_id: u64,
-    pthread_main: bool,
-    objc_main_thread_marker: bool,
-}
-
-#[cfg(feature = "macos")]
-static MACOS_LOAD_THREAD_PROBE: OnceLock<MacosThreadProbeNif> = OnceLock::new();
-
-struct OffscreenRasterOutput {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
-
-struct TreeActorConfig {
-    render_sender: RenderSender,
-    event_tx: Sender<EventMsg>,
-    render_counter: Arc<AtomicU64>,
-    stats: Option<Arc<RendererStatsCollector>>,
-    log_input: bool,
-    window_wake: BackendWakeHandle,
-    initial_width: u32,
-    initial_height: u32,
-}
-
-#[cfg_attr(
-    not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
-    )),
-    allow(dead_code)
-)]
-fn spawn_tree_actor(tree_rx: Receiver<TreeMsg>, config: TreeActorConfig) -> thread::JoinHandle<()> {
-    spawn_tree_actor_with_initial_tree(tree_rx, config, ElementTree::new())
-}
-
-fn spawn_tree_actor_with_initial_tree(
-    tree_rx: Receiver<TreeMsg>,
-    config: TreeActorConfig,
-    initial_tree: ElementTree,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let TreeActorConfig {
-            render_sender,
-            event_tx,
-            render_counter,
-            stats,
-            log_input,
-            window_wake,
-            initial_width,
-            initial_height,
-        } = config;
-
-        let mut tree = initial_tree;
-        let mut width = (initial_width as f32).max(1.0);
-        let mut height = (initial_height as f32).max(1.0);
-        let mut scale = 1.0f32;
-        let mut cached_rebuild: Option<events::RegistryRebuildPayload> = None;
-        let mut animation_runtime = AnimationRuntime::default();
-        let mut latest_animation_sample_time: Option<Instant> = None;
-        let mut pending_msg: Option<TreeMsg> = None;
-
-        loop {
-            let msg = match pending_msg.take() {
-                Some(msg) => msg,
-                None => match tree_rx.recv() {
-                    Ok(msg) => msg,
-                    Err(_) => return,
-                },
-            };
-            let mut messages = Vec::new();
-            push_tree_message_flat(msg, &mut messages);
-            let animation_only_batch = batch_is_animation_only(&messages);
-            while let Ok(next) = tree_rx.try_recv() {
-                let mut next_messages = Vec::new();
-                push_tree_message_flat(next, &mut next_messages);
-
-                if batch_is_animation_only(&next_messages) != animation_only_batch {
-                    pending_msg = Some(TreeMsg::Batch(next_messages));
-                    break;
-                }
-
-                messages.extend(next_messages);
-            }
-
-            let mut scroll_acc = std::collections::HashMap::new();
-            let mut thumb_drag_x_acc = std::collections::HashMap::new();
-            let mut thumb_drag_y_acc = std::collections::HashMap::new();
-            let mut hover_x_state = std::collections::HashMap::new();
-            let mut hover_y_state = std::collections::HashMap::new();
-            let mut mouse_over_active_state = std::collections::HashMap::new();
-            let mut mouse_down_active_state = std::collections::HashMap::new();
-            let mut focused_active_state = std::collections::HashMap::new();
-            let mut patch_processing_started_ats = Vec::new();
-            let mut tree_changed = false;
-            let mut registry_requested = false;
-            let mut animation_sample_time = latest_animation_sample_time;
-
-            for message in messages.iter().cloned() {
-                match message {
-                    TreeMsg::Stop => return,
-                    TreeMsg::Batch(_) => {
-                        unreachable!("tree batches must be flattened before processing")
-                    }
-                    TreeMsg::UploadTree { bytes } => match tree::deserialize::decode_tree(&bytes) {
-                        Ok(decoded) => {
-                            tree.replace_with_uploaded(decoded);
-                            tree_changed = true;
-                        }
-                        Err(err) => {
-                            eprintln!("tree upload failed: {err}");
-                        }
-                    },
-                    TreeMsg::PatchTree { bytes } => {
-                        let patch_started_at = Instant::now();
-                        let patches = match tree::patch::decode_patches(&bytes) {
-                            Ok(patches) => patches,
-                            Err(err) => {
-                                if let Some(stats) = stats.as_ref() {
-                                    stats.record_patch_tree_process(patch_started_at.elapsed());
-                                }
-                                eprintln!("tree patch decode failed: {err}");
-                                continue;
-                            }
-                        };
-                        if let Err(err) = tree::patch::apply_patches(&mut tree, patches) {
-                            if let Some(stats) = stats.as_ref() {
-                                stats.record_patch_tree_process(patch_started_at.elapsed());
-                            }
-                            eprintln!("tree patch apply failed: {err}");
-                            continue;
-                        }
-                        patch_processing_started_ats.push(patch_started_at);
-                        tree_changed = true;
-                    }
-                    TreeMsg::Resize {
-                        width: w,
-                        height: h,
-                        scale: s,
-                    } => {
-                        width = w.max(1.0);
-                        height = h.max(1.0);
-                        scale = s;
-                        tree_changed = true;
-                    }
-                    TreeMsg::ScrollRequest { element_id, dx, dy } => {
-                        let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
-                        entry.0 += dx;
-                        entry.1 += dy;
-                    }
-                    TreeMsg::ScrollbarThumbDragX { element_id, dx } => {
-                        let entry = thumb_drag_x_acc.entry(element_id).or_insert(0.0);
-                        *entry += dx;
-                    }
-                    TreeMsg::ScrollbarThumbDragY { element_id, dy } => {
-                        let entry = thumb_drag_y_acc.entry(element_id).or_insert(0.0);
-                        *entry += dy;
-                    }
-                    TreeMsg::SetScrollbarXHover {
-                        element_id,
-                        hovered,
-                    } => {
-                        hover_x_state.insert(element_id, hovered);
-                    }
-                    TreeMsg::SetScrollbarYHover {
-                        element_id,
-                        hovered,
-                    } => {
-                        hover_y_state.insert(element_id, hovered);
-                    }
-                    TreeMsg::SetMouseOverActive { element_id, active } => {
-                        crate::debug_trace::hover_trace!(
-                            "tree_msg",
-                            "set_mouse_over_active id={:?} active={}",
-                            element_id.0,
-                            active
-                        );
-                        mouse_over_active_state.insert(element_id, active);
-                    }
-                    TreeMsg::SetMouseDownActive { element_id, active } => {
-                        mouse_down_active_state.insert(element_id, active);
-                    }
-                    TreeMsg::SetFocusedActive { element_id, active } => {
-                        focused_active_state.insert(element_id, active);
-                    }
-                    TreeMsg::SetTextInputContent {
-                        element_id,
-                        content,
-                    } => {
-                        let changed = tree.set_text_input_content(&element_id, content);
-                        tree_changed |= changed;
-                    }
-                    TreeMsg::SetTextInputRuntime {
-                        element_id,
-                        focused,
-                        cursor,
-                        selection_anchor,
-                        preedit,
-                        preedit_cursor,
-                    } => {
-                        let changed = tree.set_text_input_runtime(
-                            &element_id,
-                            focused,
-                            cursor,
-                            selection_anchor,
-                            preedit,
-                            preedit_cursor,
-                        );
-                        tree_changed |= changed;
-                    }
-                    TreeMsg::AnimationPulse {
-                        presented_at,
-                        predicted_next_present_at,
-                    } => {
-                        crate::debug_trace::hover_trace!(
-                            "tree_pulse",
-                            "presented_at={:?} predicted_next={:?}",
-                            presented_at,
-                            predicted_next_present_at
-                        );
-                        animation_sample_time = Some(predicted_next_present_at.max(presented_at));
-                        tree_changed = true;
-                    }
-                    TreeMsg::RebuildRegistry => {
-                        registry_requested = true;
-                    }
-                    TreeMsg::AssetStateChanged => {
-                        tree_changed = true;
-                    }
-                }
-            }
-
-            for (id, (dx, dy)) in scroll_acc {
-                let changed = tree.apply_scroll(&id, dx, dy);
-                tree_changed |= changed;
-            }
-
-            for (id, dx) in thumb_drag_x_acc {
-                let changed = tree.apply_scroll_x(&id, dx);
-                tree_changed |= changed;
-            }
-
-            for (id, dy) in thumb_drag_y_acc {
-                let changed = tree.apply_scroll_y(&id, dy);
-                tree_changed |= changed;
-            }
-
-            for (id, hovered) in hover_x_state {
-                tree_changed |= tree.set_scrollbar_x_hover(&id, hovered);
-            }
-
-            for (id, hovered) in hover_y_state {
-                tree_changed |= tree.set_scrollbar_y_hover(&id, hovered);
-            }
-
-            for (id, active) in &mouse_over_active_state {
-                tree_changed |= tree.set_mouse_over_active(id, *active);
-            }
-
-            for (id, active) in mouse_down_active_state {
-                tree_changed |= tree.set_mouse_down_active(&id, active);
-            }
-
-            for (id, active) in focused_active_state {
-                tree_changed |= tree.set_focused_active(&id, active);
-            }
-
-            let refresh_decision =
-                decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some());
-
-            match refresh_decision {
-                RefreshDecision::Skip => {
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
-                    }
-                    continue;
-                }
-                RefreshDecision::UseCachedRebuild => {
-                    if let Some(rebuild) = cached_rebuild.clone() {
-                        send_registry_update(&event_tx, rebuild, log_input);
-                    }
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
-                    }
-                    continue;
-                }
-                RefreshDecision::Recompute => {
-                    assets::ensure_tree_sources(&tree);
-
-                    let constraint = tree::layout::Constraint::new(width, height);
-                    let sample_time = animation_sample_time.unwrap_or_else(Instant::now);
-                    latest_animation_sample_time = Some(sample_time);
-                    crate::debug_trace::hover_trace!(
-                        "tree_recompute",
-                        "sample_time={:?} cached_rebuild={} tree_changed={} registry_requested={}",
-                        sample_time,
-                        cached_rebuild.is_some(),
-                        tree_changed,
-                        registry_requested
-                    );
-                    animation_runtime.sync_with_tree(&tree, sample_time);
-                    let _ =
-                        animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
-                    let layout_started_at = Instant::now();
-                    let output = if animation_runtime.is_empty() {
-                        layout_and_refresh_default(&mut tree, constraint, scale)
-                    } else {
-                        layout_and_refresh_default_with_animation(
-                            &mut tree,
-                            constraint,
-                            scale,
-                            &animation_runtime,
-                            sample_time,
-                        )
-                    };
-                    if let Some(stats) = stats.as_ref() {
-                        stats.record_layout(layout_started_at.elapsed());
-                    }
-                    cached_rebuild = Some(output.event_rebuild.clone());
-                    send_registry_update(&event_tx, output.event_rebuild, log_input);
-
-                    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    render_sender.send_latest(RenderMsg::Scene {
-                        scene: Box::new(output.scene),
-                        version,
-                        animate: output.animations_active,
-                        ime_enabled: output.ime_enabled,
-                        ime_cursor_area: output.ime_cursor_area,
-                        ime_text_state: Box::new(output.ime_text_state),
-                    });
-
-                    window_wake.request_redraw();
-
-                    #[cfg(feature = "hover-trace")]
-                    {
-                        for (id, x, y, w, h, move_x) in trace_element_snapshots(&tree) {
-                            crate::debug_trace::hover_trace!(
-                                "tree_snapshot",
-                                "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
-                                id.0,
-                                move_x.unwrap_or(0.0),
-                                x + move_x.unwrap_or(0.0) as f32
-                            );
-                        }
-                    }
-
-                    if animation_runtime.is_empty() || !output.animations_active {
-                        latest_animation_sample_time = None;
-                    }
-
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
-                    }
-                }
-            }
-        }
-    })
-}
-
 fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
@@ -1177,16 +689,14 @@ fn start_native_renderer_with_config(
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     let system_clipboard = false;
-    let mut handles = RendererHandles {
-        heartbeat_handle: Some(spawn_running_heartbeat(
-            Arc::clone(&running_flag),
-            Arc::clone(&input_target),
-            Arc::clone(&native_log),
-            renderer_stats.clone(),
-            backend_label,
-        )),
-        ..RendererHandles::default()
-    };
+    let mut handles = RendererHandles::default();
+    handles.heartbeat_handle = Some(spawn_running_heartbeat(
+        Arc::clone(&running_flag),
+        Arc::clone(&input_target),
+        Arc::clone(&native_log),
+        renderer_stats.clone(),
+        backend_label,
+    ));
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -1280,7 +790,7 @@ fn start_native_renderer_with_config(
 
             backend_wake = startup.wake.clone();
 
-            handles.tree_handle = Some(spawn_tree_actor(
+            handles.tree_handle = Some(runtime::tree_actor::spawn_tree_actor(
                 tree_rx,
                 TreeActorConfig {
                     render_sender: render_sender.clone(),
@@ -1422,7 +932,7 @@ fn start_native_renderer_with_config(
                 }
             }
 
-            handles.tree_handle = Some(spawn_tree_actor(
+            handles.tree_handle = Some(runtime::tree_actor::spawn_tree_actor(
                 tree_rx,
                 TreeActorConfig {
                     render_sender: render_sender.clone(),
@@ -1442,16 +952,16 @@ fn start_native_renderer_with_config(
         BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
     };
 
-    handles.event_handle = Some(spawn_event_actor(SpawnEventActorConfig {
+    handles.event_handle = Some(spawn_event_actor(
         event_rx,
-        tree_tx: tree_tx.clone(),
-        backend_cursor_tx: Some(backend_cursor_tx),
-        backend_wake: backend_wake.clone(),
-        scroll_line_pixels: config.scroll_line_pixels,
+        tree_tx.clone(),
+        Some(backend_cursor_tx),
+        backend_wake.clone(),
+        config.scroll_line_pixels,
         log_render,
         system_clipboard,
-        stats: renderer_stats.clone(),
-    }));
+        renderer_stats.clone(),
+    ));
 
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),
@@ -1585,105 +1095,6 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     )
 }
 
-#[cfg(feature = "macos")]
-fn capture_macos_thread_probe(phase: &str) -> MacosThreadProbeNif {
-    let rust_thread_id = format!("{:?}", thread::current().id());
-    let mut pthread_thread_id = 0_u64;
-    let pthread_thread_result =
-        unsafe { libc::pthread_threadid_np(libc::pthread_self(), &mut pthread_thread_id) };
-
-    MacosThreadProbeNif {
-        phase: phase.to_string(),
-        rust_thread_id,
-        pthread_thread_id: if pthread_thread_result == 0 {
-            pthread_thread_id
-        } else {
-            0
-        },
-        pthread_main: unsafe { libc::pthread_main_np() == 1 },
-        objc_main_thread_marker: MainThreadMarker::new().is_some(),
-    }
-}
-
-#[rustler::nif]
-fn macos_probe_load_context() -> NifResult<MacosThreadProbeNif> {
-    #[cfg(feature = "macos")]
-    {
-        MACOS_LOAD_THREAD_PROBE.get().cloned().ok_or_else(|| {
-            rustler::Error::Term(Box::new("macOS load probe not recorded".to_string()))
-        })
-    }
-
-    #[cfg(not(feature = "macos"))]
-    {
-        Err(rustler::Error::Term(Box::new(
-            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
-        )))
-    }
-}
-
-#[rustler::nif]
-fn macos_probe_call_context() -> NifResult<MacosThreadProbeNif> {
-    #[cfg(feature = "macos")]
-    {
-        Ok(capture_macos_thread_probe("regular_nif_call"))
-    }
-
-    #[cfg(not(feature = "macos"))]
-    {
-        Err(rustler::Error::Term(Box::new(
-            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
-        )))
-    }
-}
-
-#[rustler::nif(schedule = "DirtyIo")]
-fn macos_probe_dirty_call_context() -> NifResult<MacosThreadProbeNif> {
-    #[cfg(feature = "macos")]
-    {
-        Ok(capture_macos_thread_probe("dirty_io_nif_call"))
-    }
-
-    #[cfg(not(feature = "macos"))]
-    {
-        Err(rustler::Error::Term(Box::new(
-            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
-        )))
-    }
-}
-
-#[rustler::nif(schedule = "DirtyIo")]
-fn macos_probe_spawned_thread_context() -> NifResult<MacosThreadProbeNif> {
-    #[cfg(feature = "macos")]
-    {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-
-        thread::Builder::new()
-            .name("emerge_skia_probe_thread".to_string())
-            .spawn(move || {
-                let _ = reply_tx.send(capture_macos_thread_probe("nif_spawned_thread"));
-            })
-            .map_err(|err| {
-                rustler::Error::Term(Box::new(format!("failed to spawn probe thread: {err}")))
-            })?;
-
-        reply_rx
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|err| {
-                rustler::Error::Term(Box::new(format!(
-                    "failed to receive spawned thread probe: {err}"
-                )))
-            })
-    }
-
-    #[cfg(not(feature = "macos"))]
-    {
-        Err(rustler::Error::Term(Box::new(
-            "macOS probe NIFs are only compiled when :macos backend is enabled".to_string(),
-        )))
-    }
-}
-
 #[rustler::nif(schedule = "DirtyIo")]
 fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
     renderer.stop();
@@ -1764,16 +1175,7 @@ fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Resu
 
 #[rustler::nif]
 fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
-    let font = make_font_with_style("default", 400, false, font_size);
-
-    let (width, _bounds) = font.measure_str(&text, None);
-    let (_, metrics) = font.metrics();
-
-    let ascent = metrics.ascent.abs();
-    let descent = metrics.descent;
-    let line_height = ascent + descent;
-
-    (width, line_height, ascent, descent)
+    services::measure_text(&text, font_size)
 }
 
 /// Load a font from binary data and register it with a name.
@@ -1784,7 +1186,7 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
 /// - `data`: Binary font data (TTF file contents)
 #[rustler::nif(schedule = "DirtyIo")]
 fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<Atom, String> {
-    load_font(&name, weight as u16, italic, data.as_slice())?;
+    services::load_font_bytes(&name, weight as u16, italic, data.as_slice())?;
     Ok(atoms::ok())
 }
 
@@ -1798,7 +1200,7 @@ fn configure_assets_nif(
     max_file_size: u64,
     extensions: Vec<String>,
 ) -> Atom {
-    assets::configure(AssetConfig {
+    services::configure_assets(AssetConfig {
         sources,
         runtime_enabled,
         runtime_allowlist: allowlist,
@@ -1847,6 +1249,7 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
     renderer.input_target.set_target(pid);
+    renderer.input_target.send_running();
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1872,10 +1275,10 @@ fn render_tree_to_pixels_nif<'a>(
     data: Binary,
     opts: RenderTreeOffscreenOptsNif,
 ) -> Result<Binary<'a>, String> {
-    let output = render_tree_offscreen(data.as_slice(), opts)?;
+    let output = services::render_tree_to_pixels(data.as_slice(), offscreen_opts_from_nif(opts))?;
 
-    let mut binary = NewBinary::new(env, output.pixels.len());
-    binary.as_mut_slice().copy_from_slice(&output.pixels);
+    let mut binary = NewBinary::new(env, output.len());
+    binary.as_mut_slice().copy_from_slice(&output);
 
     Ok(binary.into())
 }
@@ -1886,8 +1289,7 @@ fn render_tree_to_png_nif<'a>(
     data: Binary,
     opts: RenderTreeOffscreenOptsNif,
 ) -> Result<Binary<'a>, String> {
-    let output = render_tree_offscreen(data.as_slice(), opts)?;
-    let encoded = encode_png(&output)?;
+    let encoded = services::render_tree_to_png(data.as_slice(), offscreen_opts_from_nif(opts))?;
 
     let mut binary = NewBinary::new(env, encoded.len());
     binary.as_mut_slice().copy_from_slice(&encoded);
@@ -1895,72 +1297,22 @@ fn render_tree_to_png_nif<'a>(
     Ok(binary.into())
 }
 
-fn render_tree_offscreen(
-    data: &[u8],
-    opts: RenderTreeOffscreenOptsNif,
-) -> Result<OffscreenRasterOutput, String> {
-    let mode = OffscreenAssetMode::parse(&opts.asset_mode)?;
-    let mut tree = tree::deserialize::decode_tree(data).map_err(|e| e.to_string())?;
-
-    assets::configure(AssetConfig {
-        sources: opts.sources,
-        runtime_enabled: opts.runtime_enabled,
-        runtime_allowlist: opts.allowlist,
-        runtime_follow_symlinks: opts.follow_symlinks,
-        runtime_max_file_size: opts.max_file_size,
-        runtime_extensions: opts.extensions,
-    });
-
-    match mode {
-        OffscreenAssetMode::Await => assets::resolve_tree_sources_sync(
-            &tree,
-            Some(Duration::from_millis(opts.asset_timeout_ms)),
-        )?,
-        OffscreenAssetMode::Snapshot => assets::snapshot_tree_sources(&tree),
+fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::OffscreenRenderOptions {
+    services::OffscreenRenderOptions {
+        width: opts.width,
+        height: opts.height,
+        scale: opts.scale,
+        asset_mode: opts.asset_mode,
+        asset_timeout_ms: opts.asset_timeout_ms,
+        asset_config: AssetConfig {
+            sources: opts.sources,
+            runtime_enabled: opts.runtime_enabled,
+            runtime_allowlist: opts.allowlist,
+            runtime_follow_symlinks: opts.follow_symlinks,
+            runtime_max_file_size: opts.max_file_size,
+            runtime_extensions: opts.extensions,
+        },
     }
-
-    let constraint = tree::layout::Constraint::new(opts.width as f32, opts.height as f32);
-    let output = layout_and_refresh_default(&mut tree, constraint, opts.scale);
-
-    let config = RasterConfig {
-        width: opts.width,
-        height: opts.height,
-    };
-    let mut backend = RasterBackend::new(&config)?;
-
-    let state = RenderState {
-        scene: output.scene,
-        ..Default::default()
-    };
-
-    let frame = backend.render(&state);
-
-    Ok(OffscreenRasterOutput {
-        width: opts.width,
-        height: opts.height,
-        pixels: frame.data,
-    })
-}
-
-fn encode_png(output: &OffscreenRasterOutput) -> Result<Vec<u8>, String> {
-    let info = ImageInfo::new(
-        (output.width as i32, output.height as i32),
-        ColorType::RGBA8888,
-        AlphaType::Premul,
-        None,
-    );
-    let data = Data::new_copy(&output.pixels);
-    let image = images::raster_from_data(&info, data, (output.width * 4) as usize)
-        .ok_or_else(|| "Failed to create raster image from RGBA pixels".to_string())?;
-    let encoded = image
-        .encode(
-            None::<&mut skia_safe::gpu::DirectContext>,
-            EncodedImageFormat::PNG,
-            100,
-        )
-        .ok_or_else(|| "Failed to encode raster output as PNG".to_string())?;
-
-    Ok(encoded.as_bytes().to_vec())
 }
 
 // ============================================================================
@@ -2288,9 +1640,9 @@ fn test_harness_drain_mouse_over_msgs<'a>(
     let mut flat = Vec::new();
 
     if let Ok(msg) = harness.tree_tap_rx.recv_timeout(timeout) {
-        push_tree_message_flat(msg, &mut flat);
+        runtime::tree_actor::push_tree_message_flat(msg, &mut flat);
         while let Ok(msg) = harness.tree_tap_rx.recv_timeout(Duration::from_millis(10)) {
-            push_tree_message_flat(msg, &mut flat);
+            runtime::tree_actor::push_tree_message_flat(msg, &mut flat);
         }
     }
 
@@ -2324,9 +1676,6 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
 }
 
 fn load(env: Env, _info: Term) -> bool {
-    #[cfg(feature = "macos")]
-    let _ = MACOS_LOAD_THREAD_PROBE.set(capture_macos_thread_probe("nif_load_callback"));
-
     env.register::<RendererResource>().is_ok()
         && env.register::<TreeResource>().is_ok()
         && env.register::<TestHarnessResource>().is_ok()
@@ -2439,7 +1788,7 @@ mod tests {
         fn drain_set_mouse_over_active(&self, element_id: &ElementId) -> Vec<bool> {
             let mut msgs = Vec::new();
             while let Ok(msg) = self.tree_tap_rx.try_recv() {
-                push_tree_message_flat(msg, &mut msgs);
+                runtime::tree_actor::push_tree_message_flat(msg, &mut msgs);
             }
 
             msgs.into_iter()
@@ -2515,9 +1864,9 @@ mod tests {
         let mut out = Vec::new();
 
         if let Ok(msg) = rx.recv_timeout(Duration::from_millis(50)) {
-            push_tree_message_flat(msg, &mut out);
+            runtime::tree_actor::push_tree_message_flat(msg, &mut out);
             while let Ok(msg) = rx.recv_timeout(Duration::from_millis(10)) {
-                push_tree_message_flat(msg, &mut out);
+                runtime::tree_actor::push_tree_message_flat(msg, &mut out);
             }
         }
 
@@ -2623,7 +1972,11 @@ mod tests {
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let handle = thread::spawn(move || {
-            send_registry_update(&event_tx, RegistryRebuildPayload::default(), false);
+            runtime::tree_actor::send_registry_update(
+                &event_tx,
+                RegistryRebuildPayload::default(),
+                false,
+            );
             let _ = done_tx.send(());
         });
 

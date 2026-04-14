@@ -25,7 +25,8 @@ mod app {
         },
         input::InputEvent,
         keys::CanonicalKey,
-        renderer::{RenderFrame, RenderState, SceneRenderer, load_font},
+        renderer::{RenderFrame, RenderState, SceneRenderer},
+        services::{self, OffscreenRenderOptions},
         stats::{RendererStatsCollector, format_renderer_stats_log},
         tree::{
             animation::AnimationRuntime,
@@ -82,6 +83,14 @@ mod app {
     const REQUEST_PATCH_TREE: u16 = 0x0014;
     const REQUEST_SHUTDOWN_HOST: u16 = 0x0015;
     const REQUEST_SET_INPUT_MASK: u16 = 0x0016;
+    const REQUEST_MEASURE_TEXT: u16 = 0x0017;
+    const REQUEST_LOAD_FONT: u16 = 0x0018;
+    const REQUEST_CONFIGURE_ASSETS: u16 = 0x0019;
+    const REQUEST_RENDER_TREE_TO_PIXELS: u16 = 0x001A;
+    const REQUEST_RENDER_TREE_TO_PNG: u16 = 0x001B;
+
+    const ASSET_MODE_AWAIT: u8 = 0;
+    const ASSET_MODE_SNAPSHOT: u8 = 1;
 
     const NOTIFY_RESIZED: u16 = 0x0100;
     const NOTIFY_FOCUSED: u16 = 0x0101;
@@ -370,11 +379,37 @@ mod app {
         PatchTree {
             session_id: u64,
             bytes: Vec<u8>,
-            queued_at: Instant,
         },
         SetInputMask {
             session_id: u64,
             mask: u32,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
+        MeasureText {
+            text: String,
+            font_size: f32,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
+        LoadFont {
+            family: String,
+            weight: u16,
+            italic: bool,
+            data: Vec<u8>,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
+        ConfigureAssets {
+            session_id: u64,
+            asset_config: AssetConfig,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
+        RenderTreeToPixels {
+            bytes: Vec<u8>,
+            opts: OffscreenRenderOptions,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
+        RenderTreeToPng {
+            bytes: Vec<u8>,
+            opts: OffscreenRenderOptions,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
         Shutdown {
@@ -394,6 +429,16 @@ mod app {
         UploadTree,
         PatchTree,
         SetInputMask,
+        MeasureText {
+            width: f32,
+            line_height: f32,
+            ascent: f32,
+            descent: f32,
+        },
+        LoadFont,
+        ConfigureAssets,
+        RenderTreeToPixels { data: Vec<u8> },
+        RenderTreeToPng { data: Vec<u8> },
         Shutdown,
         Error(String),
     }
@@ -662,11 +707,21 @@ mod app {
         loaded_fonts: HashSet<HostFontSpec>,
     }
 
-    fn configure_host_assets(
+    fn configure_host_assets_for_start(
         ui_state: &mut HostUiState,
         asset_config: &StartSessionAssetConfig,
     ) -> Result<bool, String> {
-        let config_changed = merge_asset_config(&mut ui_state.asset_config, asset_config);
+        let config_changed = replace_asset_config(
+            &mut ui_state.asset_config,
+            AssetConfig {
+                sources: asset_config.sources.clone(),
+                runtime_enabled: asset_config.runtime_enabled,
+                runtime_allowlist: asset_config.runtime_allowlist.clone(),
+                runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
+                runtime_max_file_size: asset_config.runtime_max_file_size,
+                runtime_extensions: asset_config.runtime_extensions.clone(),
+            },
+        );
         if config_changed {
             assets::configure(ui_state.asset_config.clone());
         }
@@ -675,43 +730,25 @@ mod app {
         Ok(config_changed || fonts_changed)
     }
 
-    fn merge_asset_config(existing: &mut AssetConfig, incoming: &StartSessionAssetConfig) -> bool {
-        let mut changed = false;
-
-        changed |= merge_string_list(&mut existing.sources, &incoming.sources);
-        changed |= merge_string_list(&mut existing.runtime_allowlist, &incoming.runtime_allowlist);
-        changed |= merge_string_list(
-            &mut existing.runtime_extensions,
-            &incoming.runtime_extensions,
-        );
-
-        if incoming.runtime_enabled && !existing.runtime_enabled {
-            existing.runtime_enabled = true;
-            changed = true;
+    fn configure_host_assets(ui_state: &mut HostUiState, asset_config: AssetConfig) -> bool {
+        let changed = replace_asset_config(&mut ui_state.asset_config, asset_config);
+        if changed {
+            assets::configure(ui_state.asset_config.clone());
         }
-
-        if incoming.runtime_follow_symlinks && !existing.runtime_follow_symlinks {
-            existing.runtime_follow_symlinks = true;
-            changed = true;
-        }
-
-        if incoming.runtime_max_file_size > existing.runtime_max_file_size {
-            existing.runtime_max_file_size = incoming.runtime_max_file_size;
-            changed = true;
-        }
-
         changed
     }
 
-    fn merge_string_list(existing: &mut Vec<String>, incoming: &[String]) -> bool {
-        let mut changed = false;
+    fn replace_asset_config(existing: &mut AssetConfig, incoming: AssetConfig) -> bool {
+        let changed = existing.sources != incoming.sources
+            || existing.runtime_enabled != incoming.runtime_enabled
+            || existing.runtime_allowlist != incoming.runtime_allowlist
+            || existing.runtime_follow_symlinks != incoming.runtime_follow_symlinks
+            || existing.runtime_max_file_size != incoming.runtime_max_file_size
+            || existing.runtime_extensions != incoming.runtime_extensions;
 
-        incoming.iter().for_each(|value| {
-            if !existing.contains(value) {
-                existing.push(value.clone());
-                changed = true;
-            }
-        });
+        if changed {
+            *existing = incoming;
+        }
 
         changed
     }
@@ -734,7 +771,7 @@ mod app {
                 )
             })?;
 
-            load_font(&font.family, font.weight, font.italic, &data).map_err(|err| {
+            services::load_font_bytes(&font.family, font.weight, font.italic, &data).map_err(|err| {
                 format!(
                     "failed to load macOS font asset family={} path={}: {err}",
                     font.family, font.path
@@ -1445,7 +1482,7 @@ mod app {
 
                     let assets_changed = {
                         let mut ui = ui_state.borrow_mut();
-                        match configure_host_assets(&mut ui, &asset_config) {
+                        match configure_host_assets_for_start(&mut ui, &asset_config) {
                             Ok(changed) => changed,
                             Err(reason) => {
                                 let _ = reply_tx.send(HostReply::Error(reason));
@@ -1537,7 +1574,6 @@ mod app {
                 Ok(HostCommand::PatchTree {
                     session_id,
                     bytes,
-                    queued_at: _,
                 }) => match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                     Some(session) => {
                         let patch_started_at = Instant::now();
@@ -1574,6 +1610,84 @@ mod app {
                             HostReply::SetInputMask
                         }
                         None => HostReply::Error(format!("unknown session_id {session_id}")),
+                    };
+
+                    let _ = reply_tx.send(reply);
+                }
+                Ok(HostCommand::MeasureText {
+                    text,
+                    font_size,
+                    reply_tx,
+                }) => {
+                    let (width, line_height, ascent, descent) =
+                        services::measure_text(&text, font_size);
+                    let _ = reply_tx.send(HostReply::MeasureText {
+                        width,
+                        line_height,
+                        ascent,
+                        descent,
+                    });
+                }
+                Ok(HostCommand::LoadFont {
+                    family,
+                    weight,
+                    italic,
+                    data,
+                    reply_tx,
+                }) => {
+                    let reply = match services::load_font_bytes(&family, weight, italic, &data) {
+                        Ok(()) => HostReply::LoadFont,
+                        Err(reason) => HostReply::Error(reason),
+                    };
+
+                    let _ = reply_tx.send(reply);
+                }
+                Ok(HostCommand::ConfigureAssets {
+                    session_id,
+                    asset_config,
+                    reply_tx,
+                }) => {
+                    let reply = if ui_state.borrow().sessions.contains_key(&session_id) {
+                        let assets_changed = {
+                            let mut ui = ui_state.borrow_mut();
+                            configure_host_assets(&mut ui, asset_config)
+                        };
+
+                        if assets_changed {
+                            ui_state.borrow_mut().sessions.values_mut().for_each(|session| {
+                                if let Err(err) = rerender_session(session) {
+                                    eprintln!("macOS session rerender after asset update failed: {err}");
+                                }
+                            });
+                        }
+
+                        HostReply::ConfigureAssets
+                    } else {
+                        HostReply::Error(format!("unknown session_id {session_id}"))
+                    };
+
+                    let _ = reply_tx.send(reply);
+                }
+                Ok(HostCommand::RenderTreeToPixels {
+                    bytes,
+                    opts,
+                    reply_tx,
+                }) => {
+                    let reply = match services::render_tree_to_pixels(&bytes, opts) {
+                        Ok(data) => HostReply::RenderTreeToPixels { data },
+                        Err(reason) => HostReply::Error(reason),
+                    };
+
+                    let _ = reply_tx.send(reply);
+                }
+                Ok(HostCommand::RenderTreeToPng {
+                    bytes,
+                    opts,
+                    reply_tx,
+                }) => {
+                    let reply = match services::render_tree_to_png(&bytes, opts) {
+                        Ok(data) => HostReply::RenderTreeToPng { data },
+                        Err(reason) => HostReply::Error(reason),
                     };
 
                     let _ = reply_tx.send(reply);
@@ -3412,7 +3526,6 @@ mod app {
                 HostCommand::PatchTree {
                     session_id: frame.session_id,
                     bytes: frame.payload,
-                    queued_at: Instant::now(),
                 },
                 HostReply::PatchTree,
             ),
@@ -3431,6 +3544,104 @@ mod app {
                 roundtrip(command_tx, |reply_tx| HostCommand::SetInputMask {
                     session_id: frame.session_id,
                     mask,
+                    reply_tx,
+                })
+            }
+            REQUEST_MEASURE_TEXT => {
+                let Some((text, font_size)) = decode_measure_text(&frame.payload) else {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid measure_text payload",
+                    );
+                };
+
+                roundtrip(command_tx, |reply_tx| HostCommand::MeasureText {
+                    text,
+                    font_size,
+                    reply_tx,
+                })
+            }
+            REQUEST_LOAD_FONT => {
+                let Some((family, weight, italic, data)) = decode_load_font(&frame.payload) else {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid load_font payload",
+                    );
+                };
+
+                roundtrip(command_tx, |reply_tx| HostCommand::LoadFont {
+                    family,
+                    weight,
+                    italic,
+                    data,
+                    reply_tx,
+                })
+            }
+            REQUEST_CONFIGURE_ASSETS => {
+                let mut cursor = 0;
+                let Some(asset_config) = decode_asset_config(&frame.payload, &mut cursor) else {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid configure_assets payload",
+                    );
+                };
+
+                if cursor != frame.payload.len() {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid configure_assets payload",
+                    );
+                }
+
+                roundtrip(command_tx, |reply_tx| HostCommand::ConfigureAssets {
+                    session_id: frame.session_id,
+                    asset_config,
+                    reply_tx,
+                })
+            }
+            REQUEST_RENDER_TREE_TO_PIXELS => {
+                let Some((bytes, opts)) = decode_offscreen_request(&frame.payload) else {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid render_tree_to_pixels payload",
+                    );
+                };
+
+                roundtrip(command_tx, |reply_tx| HostCommand::RenderTreeToPixels {
+                    bytes,
+                    opts,
+                    reply_tx,
+                })
+            }
+            REQUEST_RENDER_TREE_TO_PNG => {
+                let Some((bytes, opts)) = decode_offscreen_request(&frame.payload) else {
+                    return encode_frame(
+                        FRAME_ERROR,
+                        frame.request_id,
+                        frame.session_id,
+                        frame.tag,
+                        b"invalid render_tree_to_png payload",
+                    );
+                };
+
+                roundtrip(command_tx, |reply_tx| HostCommand::RenderTreeToPng {
+                    bytes,
+                    opts,
                     reply_tx,
                 })
             }
@@ -3514,6 +3725,28 @@ mod app {
             HostReply::UploadTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::PatchTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::SetInputMask => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
+            HostReply::MeasureText {
+                width,
+                line_height,
+                ascent,
+                descent,
+            } => encode_frame(
+                FRAME_REPLY,
+                request_id,
+                session_id,
+                tag,
+                &encode_measure_text_reply(width, line_height, ascent, descent),
+            ),
+            HostReply::LoadFont => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
+            HostReply::ConfigureAssets => {
+                encode_frame(FRAME_REPLY, request_id, session_id, tag, &[])
+            }
+            HostReply::RenderTreeToPixels { data } => {
+                encode_frame(FRAME_REPLY, request_id, session_id, tag, &encode_blob_payload(&data))
+            }
+            HostReply::RenderTreeToPng { data } => {
+                encode_frame(FRAME_REPLY, request_id, session_id, tag, &encode_blob_payload(&data))
+            }
             HostReply::Shutdown => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::Error(message) => {
                 encode_frame(FRAME_ERROR, request_id, session_id, tag, message.as_bytes())
@@ -3605,12 +3838,7 @@ mod app {
         let scroll_line_pixels = decode_f32(payload, &mut cursor)?;
         let renderer_stats_log = decode_u8(payload, &mut cursor)? != 0;
         let backend = decode_requested_macos_backend(decode_u8(payload, &mut cursor)?)?;
-        let sources = decode_string_list(payload, &mut cursor)?;
-        let runtime_enabled = decode_u8(payload, &mut cursor)? != 0;
-        let runtime_allowlist = decode_string_list(payload, &mut cursor)?;
-        let runtime_follow_symlinks = decode_u8(payload, &mut cursor)? != 0;
-        let runtime_max_file_size = decode_u64(payload, &mut cursor)?;
-        let runtime_extensions = decode_string_list(payload, &mut cursor)?;
+        let asset_config = decode_asset_config(payload, &mut cursor)?;
         let fonts = decode_font_list(payload, &mut cursor)?;
 
         if cursor != payload.len() {
@@ -3625,15 +3853,83 @@ mod app {
             renderer_stats_log,
             backend,
             StartSessionAssetConfig {
-                sources,
-                runtime_enabled,
-                runtime_allowlist,
-                runtime_follow_symlinks,
-                runtime_max_file_size,
-                runtime_extensions,
+                sources: asset_config.sources,
+                runtime_enabled: asset_config.runtime_enabled,
+                runtime_allowlist: asset_config.runtime_allowlist,
+                runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
+                runtime_max_file_size: asset_config.runtime_max_file_size,
+                runtime_extensions: asset_config.runtime_extensions,
                 fonts,
             },
         ))
+    }
+
+    fn decode_measure_text(payload: &[u8]) -> Option<(String, f32)> {
+        let mut cursor = 0;
+        let text = decode_string(payload, &mut cursor)?;
+        let font_size = decode_f32(payload, &mut cursor)?;
+
+        if cursor == payload.len() {
+            Some((text, font_size))
+        } else {
+            None
+        }
+    }
+
+    fn decode_load_font(payload: &[u8]) -> Option<(String, u16, bool, Vec<u8>)> {
+        let mut cursor = 0;
+        let family = decode_string(payload, &mut cursor)?;
+        let weight = decode_u16(payload, &mut cursor)?;
+        let italic = decode_u8(payload, &mut cursor)? != 0;
+        let data = decode_blob(payload, &mut cursor)?;
+
+        if cursor == payload.len() {
+            Some((family, weight, italic, data))
+        } else {
+            None
+        }
+    }
+
+    fn decode_asset_config(payload: &[u8], cursor: &mut usize) -> Option<AssetConfig> {
+        Some(AssetConfig {
+            sources: decode_string_list(payload, cursor)?,
+            runtime_enabled: decode_u8(payload, cursor)? != 0,
+            runtime_allowlist: decode_string_list(payload, cursor)?,
+            runtime_follow_symlinks: decode_u8(payload, cursor)? != 0,
+            runtime_max_file_size: decode_u64(payload, cursor)?,
+            runtime_extensions: decode_string_list(payload, cursor)?,
+        })
+    }
+
+    fn decode_offscreen_request(payload: &[u8]) -> Option<(Vec<u8>, OffscreenRenderOptions)> {
+        let mut cursor = 0;
+        let bytes = decode_blob(payload, &mut cursor)?;
+        let width = decode_u32(payload, &mut cursor)?;
+        let height = decode_u32(payload, &mut cursor)?;
+        let scale = decode_f32(payload, &mut cursor)?;
+        let asset_mode = match decode_u8(payload, &mut cursor)? {
+            ASSET_MODE_AWAIT => "await".to_string(),
+            ASSET_MODE_SNAPSHOT => "snapshot".to_string(),
+            _ => return None,
+        };
+        let asset_timeout_ms = decode_u32(payload, &mut cursor)? as u64;
+        let asset_config = decode_asset_config(payload, &mut cursor)?;
+
+        if cursor == payload.len() {
+            Some((
+                bytes,
+                OffscreenRenderOptions {
+                    width,
+                    height,
+                    scale,
+                    asset_mode,
+                    asset_timeout_ms,
+                    asset_config,
+                },
+            ))
+        } else {
+            None
+        }
     }
 
     fn decode_font_list(payload: &[u8], cursor: &mut usize) -> Option<Vec<HostFontSpec>> {
@@ -3669,6 +3965,14 @@ mod app {
         let bytes = payload.get(*cursor..end)?;
         *cursor = end;
         String::from_utf8(bytes.to_vec()).ok()
+    }
+
+    fn decode_blob(payload: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
+        let len = decode_u32(payload, cursor)? as usize;
+        let end = (*cursor).checked_add(len)?;
+        let bytes = payload.get(*cursor..end)?;
+        *cursor = end;
+        Some(bytes.to_vec())
     }
 
     fn decode_u8(payload: &[u8], cursor: &mut usize) -> Option<u8> {
@@ -3742,6 +4046,27 @@ mod app {
             SelectedMacosBackend::Metal => MACOS_BACKEND_METAL,
             SelectedMacosBackend::Raster => MACOS_BACKEND_RASTER,
         }
+    }
+
+    fn encode_measure_text_reply(
+        width: f32,
+        line_height: f32,
+        ascent: f32,
+        descent: f32,
+    ) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16);
+        out.extend_from_slice(&width.to_be_bytes());
+        out.extend_from_slice(&line_height.to_be_bytes());
+        out.extend_from_slice(&ascent.to_be_bytes());
+        out.extend_from_slice(&descent.to_be_bytes());
+        out
+    }
+
+    fn encode_blob_payload(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + data.len());
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(data);
+        out
     }
 }
 

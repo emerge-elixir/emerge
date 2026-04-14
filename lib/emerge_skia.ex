@@ -60,10 +60,10 @@ defmodule EmergeSkia do
   """
 
   alias EmergeSkia.Assets
-  alias EmergeSkia.Macos.Host
   alias EmergeSkia.Macos.Renderer
   alias EmergeSkia.Native
   alias EmergeSkia.Options
+  alias EmergeSkia.Transport
   alias EmergeSkia.TreeRenderer
   alias EmergeSkia.VideoTarget
 
@@ -142,26 +142,9 @@ defmodule EmergeSkia do
       raise ArgumentError, "macos_backend is only supported with backend: :macos"
     end
 
-    case String.downcase(native_opts.backend) do
-      "macos" ->
-        Host.start_session(native_opts, asset_config)
-
-      _ ->
-        case Native.start_opts(Map.delete(native_opts, :macos_backend)) do
-          ref when is_reference(ref) ->
-            case Assets.initialize_renderer_assets(ref, asset_config) do
-              :ok ->
-                {:ok, ref}
-
-              {:error, reason} ->
-                _ = Native.stop(ref)
-                {:error, reason}
-            end
-
-          error ->
-            {:error, error}
-        end
-    end
+    native_opts.backend
+    |> Transport.for_backend()
+    |> apply(:start_session, [native_opts, asset_config])
   end
 
   @spec start(String.t()) :: no_return()
@@ -192,24 +175,20 @@ defmodule EmergeSkia do
   Stop the renderer and close the window.
   """
   @spec stop(renderer()) :: :ok
-  def stop(%Renderer{} = renderer) do
-    Host.stop_session(renderer)
-  end
-
   def stop(renderer) do
-    Native.stop(renderer)
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:stop_session, [renderer])
   end
 
   @doc """
   Check if the renderer window is still open.
   """
   @spec running?(renderer()) :: boolean()
-  def running?(%Renderer{} = renderer) do
-    Host.running?(renderer)
-  end
-
   def running?(renderer) do
-    Native.is_running(renderer)
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:session_running?, [renderer])
   end
 
   @doc """
@@ -302,7 +281,7 @@ defmodule EmergeSkia do
   """
   @spec measure_text(String.t(), number()) :: {float(), float(), float(), float()}
   def measure_text(text, font_size) do
-    Native.measure_text(text, font_size / 1.0)
+    Transport.default().measure_text(text, font_size / 1.0)
   end
 
   # ===========================================================================
@@ -546,12 +525,10 @@ defmodule EmergeSkia do
       EmergeSkia.set_input_mask(renderer, mask)
   """
   @spec set_input_mask(renderer(), non_neg_integer()) :: :ok
-  def set_input_mask(%Renderer{} = renderer, mask) do
-    Host.set_input_mask(renderer, mask)
-  end
-
   def set_input_mask(renderer, mask) do
-    Native.set_input_mask(renderer, mask)
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:set_input_mask, [renderer, mask])
   end
 
   @doc """
@@ -623,12 +600,10 @@ defmodule EmergeSkia do
       end
   """
   @spec set_input_target(renderer(), pid() | nil) :: :ok
-  def set_input_target(%Renderer{} = renderer, pid) do
-    Host.set_input_target(renderer, pid)
-  end
-
   def set_input_target(renderer, pid) do
-    Native.set_input_target(renderer, pid)
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:set_input_target, [renderer, pid])
   end
 
   @doc """
@@ -638,12 +613,10 @@ defmodule EmergeSkia do
   `{:emerge_skia_log, level, source, message}` messages.
   """
   @spec set_log_target(renderer(), pid() | nil) :: :ok
-  def set_log_target(%Renderer{} = renderer, pid) do
-    Host.set_log_target(renderer, pid)
-  end
-
   def set_log_target(renderer, pid) do
-    Native.set_log_target(renderer, pid)
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:set_log_target, [renderer, pid])
   end
 
   defp normalize_native_ok(:ok), do: :ok
