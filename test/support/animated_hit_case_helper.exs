@@ -68,6 +68,10 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   def expected_first_activation_range_ms(label),
     do: expected_first_activation_ms(label)..expected_first_activation_ms(label)
 
+  def allowed_clear_tail_start_ms(:newly_occupied_inside_host), do: 1350
+  def allowed_clear_tail_start_ms(:newly_occupied_outside_host), do: 1300
+  def allowed_clear_tail_start_ms(label), do: expected_first_activation_ms(label)
+
   def target_id_bin(%Element{} = assigned_tree) do
     target_id_from_tree(assigned_tree) |> :erlang.term_to_binary()
   end

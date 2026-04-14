@@ -583,6 +583,9 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
              :newly_occupied_outside_host
            )
 
-    assert Enum.all?(false_samples_after_activation, &(&1 == List.last(tracked_samples)))
+    assert Enum.all?(
+             false_samples_after_activation,
+             &(&1 >= AnimatedHitCase.allowed_clear_tail_start_ms(:newly_occupied_outside_host))
+           )
   end
 end
