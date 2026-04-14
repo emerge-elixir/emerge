@@ -219,6 +219,7 @@ pub(super) struct WaylandApp {
     event_tx: crossbeam_channel::Sender<EventMsg>,
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
+    stats: Option<Arc<RendererStatsCollector>>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
     render_state: RenderState,

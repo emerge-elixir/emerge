@@ -55,7 +55,7 @@ use backend::wayland_config::WaylandConfig;
 use cursor::{CursorState, SharedCursorState};
 #[cfg(feature = "drm")]
 use drm_input::DrmInput;
-use events::{CursorIcon, spawn_event_actor};
+use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
 #[cfg(feature = "drm")]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
@@ -419,7 +419,7 @@ fn spawn_running_heartbeat(
             if let Some(stats) = stats.as_ref() {
                 ticks = ticks.wrapping_add(1);
 
-                if ticks % 10 == 0 {
+                if ticks.is_multiple_of(10) {
                     native_log.info(
                         "renderer_stats",
                         stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
@@ -894,9 +894,11 @@ fn spawn_tree_actor_with_initial_tree(
             match refresh_decision {
                 RefreshDecision::Skip => {
                     if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats.into_iter().for_each(|started_at| {
-                            stats.record_patch_tree_process(started_at.elapsed())
-                        });
+                        patch_processing_started_ats
+                            .into_iter()
+                            .for_each(|started_at| {
+                                stats.record_patch_tree_process(started_at.elapsed())
+                            });
                     }
                     continue;
                 }
@@ -905,9 +907,11 @@ fn spawn_tree_actor_with_initial_tree(
                         send_registry_update(&event_tx, rebuild, log_input);
                     }
                     if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats.into_iter().for_each(|started_at| {
-                            stats.record_patch_tree_process(started_at.elapsed())
-                        });
+                        patch_processing_started_ats
+                            .into_iter()
+                            .for_each(|started_at| {
+                                stats.record_patch_tree_process(started_at.elapsed())
+                            });
                     }
                     continue;
                 }
@@ -976,9 +980,11 @@ fn spawn_tree_actor_with_initial_tree(
                     }
 
                     if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats.into_iter().for_each(|started_at| {
-                            stats.record_patch_tree_process(started_at.elapsed())
-                        });
+                        patch_processing_started_ats
+                            .into_iter()
+                            .for_each(|started_at| {
+                                stats.record_patch_tree_process(started_at.elapsed())
+                            });
                     }
                 }
             }
@@ -1037,14 +1043,16 @@ fn start_native_renderer_with_config(
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     #[cfg(not(feature = "wayland"))]
     let system_clipboard = false;
-    let mut handles = RendererHandles::default();
-    handles.heartbeat_handle = Some(spawn_running_heartbeat(
-        Arc::clone(&running_flag),
-        Arc::clone(&input_target),
-        Arc::clone(&native_log),
-        renderer_stats.clone(),
-        backend_label,
-    ));
+    let mut handles = RendererHandles {
+        heartbeat_handle: Some(spawn_running_heartbeat(
+            Arc::clone(&running_flag),
+            Arc::clone(&input_target),
+            Arc::clone(&native_log),
+            renderer_stats.clone(),
+            backend_label,
+        )),
+        ..RendererHandles::default()
+    };
 
     let initial_width = config.width;
     let initial_height = config.height;
@@ -1292,16 +1300,16 @@ fn start_native_renderer_with_config(
         }
     };
 
-    handles.event_handle = Some(spawn_event_actor(
+    handles.event_handle = Some(spawn_event_actor(SpawnEventActorConfig {
         event_rx,
-        tree_tx.clone(),
-        Some(backend_cursor_tx),
-        backend_wake.clone(),
-        config.scroll_line_pixels,
+        tree_tx: tree_tx.clone(),
+        backend_cursor_tx: Some(backend_cursor_tx),
+        backend_wake: backend_wake.clone(),
+        scroll_line_pixels: config.scroll_line_pixels,
         log_render,
         system_clipboard,
-        renderer_stats.clone(),
-    ));
+        stats: renderer_stats.clone(),
+    }));
 
     #[cfg(any(feature = "wayland", feature = "drm"))]
     let video_wake = match backend {
@@ -1589,7 +1597,6 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 #[rustler::nif]
 fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
     renderer.input_target.set_target(pid);
-    renderer.input_target.send_running();
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1882,16 +1889,16 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         }
     });
 
-    let event_handle = spawn_event_actor(
+    let event_handle = spawn_event_actor(SpawnEventActorConfig {
         event_rx,
-        tree_tx.clone(),
-        None,
-        BackendWakeHandle::noop(),
-        input::SCROLL_LINE_PIXELS,
-        false,
-        false,
-        None,
-    );
+        tree_tx: tree_tx.clone(),
+        backend_cursor_tx: None,
+        backend_wake: BackendWakeHandle::noop(),
+        scroll_line_pixels: input::SCROLL_LINE_PIXELS,
+        log_render: false,
+        system_clipboard: false,
+        stats: None,
+    });
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
         TreeActorConfig {
@@ -2118,16 +2125,16 @@ mod tests {
                 }
             });
 
-            let event_handle = spawn_event_actor(
+            let event_handle = spawn_event_actor(SpawnEventActorConfig {
                 event_rx,
-                tree_tx.clone(),
-                None,
-                BackendWakeHandle::noop(),
-                input::SCROLL_LINE_PIXELS,
-                false,
-                false,
-                None,
-            );
+                tree_tx: tree_tx.clone(),
+                backend_cursor_tx: None,
+                backend_wake: BackendWakeHandle::noop(),
+                scroll_line_pixels: input::SCROLL_LINE_PIXELS,
+                log_render: false,
+                system_clipboard: false,
+                stats: None,
+            });
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
                 TreeActorConfig {
@@ -2215,16 +2222,16 @@ mod tests {
         fn new() -> Self {
             let (event_tx, event_rx) = bounded(4096);
             let (tree_tx, tree_rx) = bounded(4096);
-            let handle = spawn_event_actor(
+            let handle = spawn_event_actor(SpawnEventActorConfig {
                 event_rx,
                 tree_tx,
-                None,
-                BackendWakeHandle::noop(),
-                input::SCROLL_LINE_PIXELS,
-                false,
-                false,
-                None,
-            );
+                backend_cursor_tx: None,
+                backend_wake: BackendWakeHandle::noop(),
+                scroll_line_pixels: input::SCROLL_LINE_PIXELS,
+                log_render: false,
+                system_clipboard: false,
+                stats: None,
+            });
 
             Self {
                 event_tx,
