@@ -14,8 +14,8 @@ defmodule Emerge.Runtime.Viewport do
   require Logger
 
   alias Emerge.Runtime.Viewport.Config
-  alias Emerge.Runtime.Viewport.Renderer
   alias Emerge.Runtime.Viewport.ReloadGroup
+  alias Emerge.Runtime.Viewport.Renderer
   alias Emerge.Runtime.Viewport.State
 
   @genserver_start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]

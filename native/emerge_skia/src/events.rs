@@ -53,7 +53,7 @@ pub mod scrollbar;
 pub mod test_support;
 pub mod text_ops;
 
-pub(crate) use runtime::spawn_event_actor;
+pub(crate) use runtime::{SpawnEventActorConfig, spawn_event_actor};
 pub use runtime::{HostEventRuntime, HostEventSink};
 use scrollbar::ScrollbarNode;
 
