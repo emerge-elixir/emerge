@@ -50,8 +50,9 @@ use super::{
         RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
-    send_element_event, send_element_event_with_string_payload, send_input_event, swipe_down_atom,
-    swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
+    send_element_event, send_element_event_with_string_payload, send_input_event,
+    send_running_message, swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
+    virtual_key_hold_atom,
 };
 
 pub trait HostEventSink: Send + Sync {
@@ -598,6 +599,10 @@ impl DirectEventRuntime {
 
     fn set_input_target(&mut self, target: Option<LocalPid>) {
         self.input_target = target;
+
+        if let Some(pid) = self.input_target {
+            send_running_message(pid);
+        }
     }
 
     fn record_event_resolve_duration(&self, duration: Duration) {
@@ -2219,16 +2224,29 @@ fn forward_observer_input(
     }
 }
 
-pub(crate) fn spawn_event_actor(
-    event_rx: Receiver<EventMsg>,
-    tree_tx: Sender<TreeMsg>,
-    backend_cursor_tx: Option<Sender<CursorIcon>>,
-    backend_wake: BackendWakeHandle,
-    scroll_line_pixels: f32,
-    log_render: bool,
-    system_clipboard: bool,
-    stats: Option<Arc<RendererStatsCollector>>,
-) -> thread::JoinHandle<()> {
+pub(crate) struct SpawnEventActorConfig {
+    pub event_rx: Receiver<EventMsg>,
+    pub tree_tx: Sender<TreeMsg>,
+    pub backend_cursor_tx: Option<Sender<CursorIcon>>,
+    pub backend_wake: BackendWakeHandle,
+    pub scroll_line_pixels: f32,
+    pub log_render: bool,
+    pub system_clipboard: bool,
+    pub stats: Option<Arc<RendererStatsCollector>>,
+}
+
+pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHandle<()> {
+    let SpawnEventActorConfig {
+        event_rx,
+        tree_tx,
+        backend_cursor_tx,
+        backend_wake,
+        scroll_line_pixels,
+        log_render,
+        system_clipboard,
+        stats,
+    } = config;
+
     thread::spawn(move || {
         let mut runtime = DirectEventRuntime::new_with_backend_cursor(
             system_clipboard,
