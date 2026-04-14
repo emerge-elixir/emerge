@@ -2,9 +2,12 @@ defmodule EmergeSkia.Macos.Host do
   @moduledoc false
 
   use GenServer
+
+  alias Emerge.Runtime.Viewport
+  alias EmergeSkia.Macos.Launcher
+  alias EmergeSkia.Macos.Protocol
   alias EmergeSkia.Macos.Renderer
-  alias EmergeSkia.Macos.{Launcher, Protocol, Session}
-  alias Emerge.Runtime.Viewport.Renderer, as: ViewportRenderer
+  alias EmergeSkia.Macos.Session
 
   @name __MODULE__
   @connect_retries 100
@@ -296,7 +299,7 @@ defmodule EmergeSkia.Macos.Host do
       |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
     if is_pid(pid) do
-      send(pid, ViewportRenderer.heartbeat_message())
+      send(pid, Viewport.Renderer.heartbeat_message())
     end
 
     {:reply, :ok, state}

@@ -473,32 +473,33 @@ impl WaylandApp {
             return;
         };
 
-        let mut frame = env.frame_surface.frame();
-
         self.present.request_frame_callback(&self.window, &self.qh);
 
         let mut video_needs_cleanup = false;
 
-        match sync_action {
-            WaylandVideoSyncAction::Hold => {}
-            WaylandVideoSyncAction::Import => {
-                match env
-                    .renderer
-                    .sync_video_frames(&mut frame, video_registry, video_import_ctx)
-                {
-                    Ok(result) => video_needs_cleanup = result.needs_cleanup,
-                    Err(err) => eprintln!("video sync failed: {err}"),
-                }
-            }
-            WaylandVideoSyncAction::Drop => {
-                if let Err(err) = video_registry.drain_pending_to_release() {
-                    eprintln!("video sync failed: {err}");
-                }
-            }
-        }
+        {
+            let mut frame = env.frame_surface.frame();
 
-        env.renderer.render(&mut frame, &self.render_state);
-        drop(frame);
+            match sync_action {
+                WaylandVideoSyncAction::Hold => {}
+                WaylandVideoSyncAction::Import => {
+                    match env
+                        .renderer
+                        .sync_video_frames(&mut frame, video_registry, video_import_ctx)
+                    {
+                        Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                        Err(err) => eprintln!("video sync failed: {err}"),
+                    }
+                }
+                WaylandVideoSyncAction::Drop => {
+                    if let Err(err) = video_registry.drain_pending_to_release() {
+                        eprintln!("video sync failed: {err}");
+                    }
+                }
+            }
+
+            env.renderer.render(&mut frame, &self.render_state);
+        }
 
         if let Err(err) = env.gl_surface.swap_buffers(&env.gl_context) {
             eprintln!("wayland egl swap_buffers failed: {err}");

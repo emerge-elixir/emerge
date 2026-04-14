@@ -127,6 +127,19 @@ The supported runtime path is the shared external host plus normal
 Manual smoke validation should happen through `emerge_demo`, not through
 standalone probe or wrapper binaries.
 
+## Distribution
+
+`macos_host` is the only supported macOS runtime artifact.
+
+The intended release flow is:
+
+- Linux ships Rustler precompiled NIFs
+- macOS ships versioned `macos_host` GitHub release archives
+- macOS runtime downloads and caches the matching `macos_host` binary on first run
+
+The goal is that a user can run `emerge_demo` on macOS without any local Rust
+toolchain or source build.
+
 ## Next Work
 
 Most remaining macOS work is cleanup and parity work, not foundational backend
