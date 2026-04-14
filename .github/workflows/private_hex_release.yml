@@ -8,7 +8,7 @@ on:
         required: true
         default: main
   workflow_run:
-    workflows: ["Build Precompiled NIFs"]
+    workflows: ["Build Release Artifacts"]
     types: [completed]
 
 jobs:
@@ -61,6 +61,49 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
+
+      - name: Extract project version
+        shell: bash
+        run: |
+          # Avoid custom Mix tasks here because they compile the project and can
+          # trigger a host NIF build before native packages are installed.
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$project_version" ]]; then
+            echo "Failed to resolve project version" >&2
+            exit 1
+          fi
+
+          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
+
+      - name: Verify macOS host release assets exist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${PROJECT_VERSION}"
+          release_json="$(mktemp)"
+
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "User-Agent: emerge-skia-release" \
+            "$release_url" > "$release_json"
+
+          for asset in \
+            "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz" \
+            "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz.sha256" \
+            "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz" \
+            "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz.sha256"
+          do
+            if ! grep -F '"name": "'"$asset"'"' "$release_json" >/dev/null; then
+              echo "Missing required macOS host release asset: $asset" >&2
+              exit 1
+            fi
+          done
 
       - name: Generate precompiled checksum file
         env:
