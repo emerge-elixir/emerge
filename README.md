@@ -135,11 +135,11 @@ Emerge does not depend on Solve. You can use another state management approach i
 
 ## Try it out
 
-Checkout [`emerge_demo`](https://github.com/emerge-elixir/emerge_demo) example repository.
+Take a look at [`emerge_demo`](https://github.com/emerge-elixir/emerge_demo) example repository.
 It has https://todomvc.com/ app implentation so you can compare to web stacks and
-an showcase app that covers most of the UI features at the basic level.
+a showcase app that covers most of the UI features at the basic level.
 
-For fastest nerves example take a look at [`nerves_emerge_demo`](https://github.com/emerge-elixir/nerves_emerge_demo)
+For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emerge-elixir/nerves_emerge_demo)
 
 ## Features
 
