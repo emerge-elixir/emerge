@@ -211,7 +211,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
 
 #[cfg(test)]
 mod tests {
-    use super::{format_renderer_stats_log, RendererStatsCollector};
+    use super::{RendererStatsCollector, format_renderer_stats_log};
     use std::time::Duration;
 
     #[test]
