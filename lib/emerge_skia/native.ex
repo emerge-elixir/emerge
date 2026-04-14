@@ -8,6 +8,7 @@ defmodule EmergeSkia.Native do
   @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
   @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
   @checksum_only EmergeSkia.BuildConfig.checksum_only_mode?()
+  @load_native_runtime EmergeSkia.BuildConfig.load_native_runtime?()
 
   if @checksum_only do
     # Checksum generation only needs RustlerPrecompiled metadata, not a built or downloaded NIF.
@@ -38,23 +39,25 @@ defmodule EmergeSkia.Native do
                    nif_versions: @precompiled_nif_versions
                  )
 
-    use RustlerPrecompiled,
-        Keyword.merge(
-          [
-            otp_app: :emerge,
-            crate: "emerge_skia",
-            base_url: @base_url,
-            version: @version,
-            force_build: @force_build,
-            targets: @precompiled_targets,
-            nif_versions: @precompiled_nif_versions,
-            variants: @precompiled_variants,
-            path: @crate_path,
-            default_features: false,
-            features: @cargo_features
-          ],
-          @rustler_opts
-        )
+    if @load_native_runtime do
+      use RustlerPrecompiled,
+          Keyword.merge(
+            [
+              otp_app: :emerge,
+              crate: "emerge_skia",
+              base_url: @base_url,
+              version: @version,
+              force_build: @force_build,
+              targets: @precompiled_targets,
+              nif_versions: @precompiled_nif_versions,
+              variants: @precompiled_variants,
+              path: @crate_path,
+              default_features: false,
+              features: @cargo_features
+            ],
+            @rustler_opts
+          )
+    end
   end
 
   @doc """
@@ -101,22 +104,6 @@ defmodule EmergeSkia.Native do
           required(:renderer_stats_log) => boolean()
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec macos_probe_load_context() :: map() | {:error, term()}
-  def macos_probe_load_context, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec macos_probe_call_context() :: map() | {:error, term()}
-  def macos_probe_call_context, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec macos_probe_dirty_call_context() :: map() | {:error, term()}
-  def macos_probe_dirty_call_context, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec macos_probe_spawned_thread_context() :: map() | {:error, term()}
-  def macos_probe_spawned_thread_context, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Stop the renderer and close the window.

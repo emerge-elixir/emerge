@@ -192,6 +192,24 @@ pub fn snapshot_tree_sources(tree: &ElementTree) {
     }
 }
 
+pub fn snapshot_tree_sources_for_offscreen(tree: &ElementTree) {
+    let sources = collect_tree_sources(tree);
+
+    let guard = match global().lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+
+    if let Ok(mut state) = guard.state.lock() {
+        state.pending_count = 0;
+        sources.iter().for_each(|source| {
+            state
+                .sources
+                .insert(source.clone(), snapshot_status_for_source(source));
+        });
+    }
+}
+
 pub fn resolve_tree_sources_sync(
     tree: &ElementTree,
     timeout: Option<Duration>,

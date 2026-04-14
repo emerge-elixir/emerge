@@ -2,8 +2,8 @@ defmodule EmergeSkia.Assets do
   @moduledoc false
 
   alias Emerge.Assets.Ref
-  alias EmergeSkia.Native
   alias EmergeSkia.Options
+  alias EmergeSkia.Transport
 
   @supported_drm_cursor_icons [:default, :text, :pointer]
   @supported_drm_cursor_extensions [".png", ".svg"]
@@ -99,8 +99,9 @@ defmodule EmergeSkia.Assets do
   @doc false
   @spec initialize_renderer_assets(reference(), config()) :: :ok | {:error, term()}
   def initialize_renderer_assets(renderer, asset_config) do
-    :ok = configure_assets_for_renderer(renderer, asset_config)
-    preload_font_assets(asset_config)
+    transport = Transport.for_renderer(renderer)
+    :ok = configure_assets_for_renderer(renderer, asset_config, transport)
+    preload_font_assets(asset_config, transport)
   end
 
   @doc false
@@ -126,16 +127,21 @@ defmodule EmergeSkia.Assets do
 
   @doc false
   @spec preload_font_assets(config()) :: :ok | {:error, term()}
-  def preload_font_assets(%{fonts: []}), do: :ok
+  def preload_font_assets(asset_config) do
+    preload_font_assets(asset_config, Transport.default())
+  end
 
-  def preload_font_assets(%{fonts: fonts, priv_dir: priv_dir}) do
+  @spec preload_font_assets(config(), module()) :: :ok | {:error, term()}
+  def preload_font_assets(%{fonts: []}, _transport), do: :ok
+
+  def preload_font_assets(%{fonts: fonts, priv_dir: priv_dir}, transport) do
     Enum.reduce_while(fonts, :ok, fn font, :ok ->
       absolute_path = Path.join(priv_dir, font.source)
 
       case File.read(absolute_path) do
         {:ok, data} ->
-          case normalize_native_ok(
-                 Native.load_font_nif(font.family, font.weight, font.italic, data)
+          case normalize_transport_ok(
+                 transport.load_font(font.family, font.weight, font.italic, data)
                ) do
             :ok ->
               {:cont, :ok}
@@ -159,22 +165,16 @@ defmodule EmergeSkia.Assets do
   @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
           :ok | {:error, term()}
   def load_font_file(name, weight, italic, path) do
+    transport = Transport.default()
+
     case File.read(path) do
-      {:ok, data} -> normalize_native_ok(Native.load_font_nif(name, weight, italic, data))
+      {:ok, data} -> normalize_transport_ok(transport.load_font(name, weight, italic, data))
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp configure_assets_for_renderer(renderer, asset_config) do
-    Native.configure_assets_nif(
-      renderer,
-      [asset_config.priv_dir],
-      asset_config.runtime_enabled,
-      asset_config.runtime_allowlist,
-      asset_config.runtime_follow_symlinks,
-      asset_config.runtime_max_file_size,
-      asset_config.runtime_extensions
-    )
+  defp configure_assets_for_renderer(renderer, asset_config, transport) do
+    normalize_transport_ok(transport.configure_assets(renderer, asset_config))
   end
 
   defp normalize_otp_app!(opts) do
@@ -427,9 +427,9 @@ defmodule EmergeSkia.Assets do
 
   defp font_key(%{family: family, weight: weight, italic: italic}), do: {family, weight, italic}
 
-  defp normalize_native_ok(:ok), do: :ok
-  defp normalize_native_ok({:ok, _}), do: :ok
-  defp normalize_native_ok({:error, reason}), do: {:error, reason}
+  defp normalize_transport_ok(:ok), do: :ok
+  defp normalize_transport_ok({:ok, _}), do: :ok
+  defp normalize_transport_ok({:error, reason}), do: {:error, reason}
 
   defp otp_app_priv_dir!(otp_app) do
     case :code.priv_dir(otp_app) do

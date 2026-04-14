@@ -2,17 +2,13 @@ defmodule EmergeSkia.Macos.Host do
   @moduledoc false
 
   use GenServer
-  import Bitwise
-
   alias EmergeSkia.Macos.Renderer
+  alias EmergeSkia.Macos.{Launcher, Protocol, Session}
+  alias Emerge.Runtime.Viewport.Renderer, as: ViewportRenderer
 
   @name __MODULE__
-  @protocol_name "emerge_skia_macos"
-  @protocol_version 7
   @connect_retries 100
   @connect_retry_ms 50
-  @host_socket_env "EMERGE_SKIA_MACOS_HOST_SOCKET"
-  @host_binary_env "EMERGE_SKIA_MACOS_HOST_BINARY"
 
   @frame_init 1
   @frame_init_ok 2
@@ -28,6 +24,11 @@ defmodule EmergeSkia.Macos.Host do
   @request_patch_tree 0x0014
   @request_shutdown_host 0x0015
   @request_set_input_mask 0x0016
+  @request_measure_text 0x0017
+  @request_load_font 0x0018
+  @request_configure_assets 0x0019
+  @request_render_tree_to_pixels 0x001A
+  @request_render_tree_to_png 0x001B
 
   @notify_resized 0x0100
   @notify_focused 0x0101
@@ -44,12 +45,6 @@ defmodule EmergeSkia.Macos.Host do
   @notify_text_preedit_clear 0x010C
   @notify_running 0x010D
 
-  @log_level_info 1
-  @log_level_warning 2
-  @log_level_error 3
-  @macos_backend_auto 0
-  @macos_backend_metal 1
-  @macos_backend_raster 2
   @input_mask_key 0x01
   @input_mask_codepoint 0x02
   @input_mask_resize 0x40
@@ -141,6 +136,58 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
+  @spec measure_text(String.t(), float()) ::
+          {float(), float(), float(), float()} | no_return()
+  def measure_text(text, font_size) when is_binary(text) and is_float(font_size) do
+    with :ok <- ensure_started() do
+      case GenServer.call(@name, {:measure_text, text, font_size}, 15_000) do
+        {:ok, metrics} -> metrics
+        {:error, reason} -> raise "measure_text failed: #{reason}"
+      end
+    end
+  end
+
+  @spec load_font(String.t(), non_neg_integer(), boolean(), binary()) :: :ok | {:error, term()}
+  def load_font(family, weight, italic, data)
+      when is_binary(family) and is_integer(weight) and is_boolean(italic) and is_binary(data) do
+    with :ok <- ensure_started() do
+      GenServer.call(@name, {:load_font, family, weight, italic, data}, 15_000)
+    end
+  end
+
+  @spec configure_assets(Renderer.t(), map()) :: :ok | {:error, term()}
+  def configure_assets(%Renderer{} = renderer, asset_config) when is_map(asset_config) do
+    with :ok <- ensure_started() do
+      GenServer.call(@name, {:configure_assets, renderer.session_id, asset_config}, 15_000)
+    end
+  end
+
+  @spec render_tree_to_pixels(binary(), map(), map()) :: binary() | {:error, term()}
+  def render_tree_to_pixels(bytes, raster_opts, asset_config)
+      when is_binary(bytes) and is_map(raster_opts) and is_map(asset_config) do
+    with :ok <- ensure_started() do
+      case GenServer.call(
+             @name,
+             {:render_tree_to_pixels, bytes, raster_opts, asset_config},
+             30_000
+           ) do
+        {:ok, binary} -> binary
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @spec render_tree_to_png(binary(), map(), map()) :: binary() | {:error, term()}
+  def render_tree_to_png(bytes, raster_opts, asset_config)
+      when is_binary(bytes) and is_map(raster_opts) and is_map(asset_config) do
+    with :ok <- ensure_started() do
+      case GenServer.call(@name, {:render_tree_to_png, bytes, raster_opts, asset_config}, 30_000) do
+        {:ok, binary} -> binary
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   @spec shutdown() :: :ok
   def shutdown do
     case GenServer.whereis(@name) do
@@ -205,7 +252,7 @@ defmodule EmergeSkia.Macos.Host do
            {:start_session, native_opts},
            0,
            @request_start_session,
-           encode_start_session(
+           Protocol.encode_start_session(
              title,
              width,
              height,
@@ -233,23 +280,23 @@ defmodule EmergeSkia.Macos.Host do
            <<>>
          ) do
       {:ok, state} -> {:noreply, state}
-      {:error, _reason} -> {:reply, :ok, mark_session_stopped(state, session_id)}
+      {:error, _reason} -> {:reply, :ok, Session.mark_stopped(state, session_id, @input_mask_all)}
     end
   end
 
   def handle_call({:running, session_id}, from, state) do
     _ = from
-    {:reply, session_running?(state, session_id), state}
+    {:reply, Session.running?(state, session_id), state}
   end
 
   def handle_call({:set_input_target, session_id, pid}, _from, state) do
     state =
       state
-      |> update_session_metadata(session_id, :input_target, pid)
-      |> flush_buffered_session(session_id)
+      |> Session.update_metadata(session_id, :input_target, pid, @input_mask_all)
+      |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
     if is_pid(pid) do
-      send(pid, {:emerge_skia_running, :heartbeat})
+      send(pid, ViewportRenderer.heartbeat_message())
     end
 
     {:reply, :ok, state}
@@ -258,16 +305,16 @@ defmodule EmergeSkia.Macos.Host do
   def handle_call({:set_log_target, session_id, pid}, _from, state) do
     {:reply, :ok,
      state
-     |> update_session_metadata(session_id, :log_target, pid)
-     |> flush_buffered_session(session_id)}
+     |> Session.update_metadata(session_id, :log_target, pid, @input_mask_all)
+     |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)}
   end
 
   def handle_call({:set_input_mask, session_id, mask}, _from, state) do
     state =
       state
-      |> update_session_metadata(session_id, :input_mask, mask)
-      |> update_session_metadata(session_id, :input_ready, true)
-      |> flush_buffered_session(session_id)
+      |> Session.update_metadata(session_id, :input_mask, mask, @input_mask_all)
+      |> Session.update_metadata(session_id, :input_ready, true, @input_mask_all)
+      |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
     case queue_request(
            state,
@@ -310,6 +357,76 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
+  def handle_call({:measure_text, text, font_size}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:measure_text},
+           0,
+           @request_measure_text,
+           Protocol.encode_measure_text(text, font_size)
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:load_font, family, weight, italic, data}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:load_font},
+           0,
+           @request_load_font,
+           Protocol.encode_load_font(family, weight, italic, data)
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:configure_assets, session_id, asset_config}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:configure_assets, session_id},
+           session_id,
+           @request_configure_assets,
+           Protocol.encode_configure_assets(asset_config)
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:render_tree_to_pixels, bytes, raster_opts, asset_config}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:render_tree_to_pixels},
+           0,
+           @request_render_tree_to_pixels,
+           Protocol.encode_offscreen_request(bytes, raster_opts, asset_config)
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:render_tree_to_png, bytes, raster_opts, asset_config}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:render_tree_to_png},
+           0,
+           @request_render_tree_to_png,
+           Protocol.encode_offscreen_request(bytes, raster_opts, asset_config)
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_info({_port, {:exit_status, _status}}, state) do
     {:noreply, %{state | port: nil}}
@@ -336,7 +453,7 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   def handle_info({:tcp_error, socket, reason}, %{socket: socket} = state) do
-    fail_pending_requests(state, format_socket_error(reason))
+    fail_pending_requests(state, Protocol.format_socket_error(reason))
     {:stop, :normal, %{state | socket: nil}}
   end
 
@@ -346,7 +463,7 @@ defmodule EmergeSkia.Macos.Host do
       _ =
         :gen_tcp.send(
           state.socket,
-          encode_frame(@frame_request, 0, 0, @request_shutdown_host, <<>>)
+          Protocol.encode_frame(@frame_request, 0, 0, @request_shutdown_host, <<>>)
         )
     end
 
@@ -369,111 +486,7 @@ defmodule EmergeSkia.Macos.Host do
     :ok
   end
 
-  defp update_session_metadata(state, session_id, key, value) do
-    sessions =
-      Map.update(
-        state.sessions,
-        session_id,
-        Map.put(base_session_state(), key, value),
-        &Map.put(&1, key, value)
-      )
-
-    %{state | sessions: sessions}
-  end
-
-  defp prepare_host_launch do
-    case System.get_env(@host_socket_env) do
-      socket_path when is_binary(socket_path) and socket_path != "" ->
-        {:ok, %{socket_path: socket_path, port: nil, launched?: false}}
-
-      _ ->
-        socket_path = default_socket_path()
-        _ = File.rm(socket_path)
-
-        with :ok <- ensure_host_binary_built(),
-             {:ok, port} <- launch_host(socket_path) do
-          {:ok, %{socket_path: socket_path, port: port, launched?: true}}
-        end
-    end
-  end
-
-  defp ensure_host_binary_built do
-    host_binary = host_binary_path()
-
-    if File.regular?(host_binary) do
-      :ok
-    else
-      build_host_binary(host_binary)
-    end
-  end
-
-  defp build_host_binary(host_binary) do
-    cargo = System.find_executable("cargo")
-    mise = System.find_executable("mise") || "/usr/local/bin/mise"
-    project_root = project_root()
-
-    {command, args} =
-      if cargo do
-        {cargo,
-         [
-           "build",
-           "--manifest-path",
-           Path.join(project_root, "native/emerge_skia/Cargo.toml"),
-           "--bin",
-           "macos_host",
-           "--no-default-features",
-           "--features",
-           "macos"
-         ]}
-      else
-        {mise,
-         [
-           "x",
-           "--",
-           "cargo",
-           "build",
-           "--manifest-path",
-           Path.join(project_root, "native/emerge_skia/Cargo.toml"),
-           "--bin",
-           "macos_host",
-           "--no-default-features",
-           "--features",
-           "macos"
-         ]}
-      end
-
-    case System.cmd(command, args, stderr_to_stdout: true) do
-      {_output, 0} ->
-        if File.regular?(host_binary) do
-          :ok
-        else
-          {:error, "macOS host build succeeded but binary was not found at #{host_binary}"}
-        end
-
-      {output, status} ->
-        {:error, "failed to build macOS host (status #{status}):\n#{output}"}
-    end
-  end
-
-  defp launch_host(socket_path) do
-    host_binary = host_binary_path()
-
-    port =
-      Port.open(
-        {:spawn_executable, host_binary},
-        [
-          :binary,
-          :exit_status,
-          :use_stdio,
-          :hide,
-          args: ["--socket", socket_path, "--monitor-stdin"]
-        ]
-      )
-
-    {:ok, port}
-  rescue
-    error -> {:error, "failed to launch macOS host: #{Exception.message(error)}"}
-  end
+  defp prepare_host_launch, do: Launcher.prepare()
 
   defp connect_socket(socket_path) do
     connect_socket(socket_path, @connect_retries)
@@ -497,23 +510,23 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp init_handshake(socket) do
-    init_payload = encode_init_payload()
+    init_payload = Protocol.encode_init_payload()
 
-    with :ok <- :gen_tcp.send(socket, encode_frame(@frame_init, 0, 0, 0, init_payload)),
+    with :ok <- :gen_tcp.send(socket, Protocol.encode_frame(@frame_init, 0, 0, 0, init_payload)),
          {:ok, response} <- :gen_tcp.recv(socket, 0, 10_000),
-         {:ok, frame} <- decode_frame(response) do
+         {:ok, frame} <- Protocol.decode_frame(response) do
       case frame do
         %{frame_type: @frame_init_ok, payload: payload} ->
-          decode_init_ok_payload(payload)
+          Protocol.decode_init_ok_payload(payload)
 
         %{frame_type: @frame_error, payload: payload} ->
-          {:error, decode_error_payload(payload)}
+          {:error, Protocol.decode_error_payload(payload)}
 
         other ->
           {:error, "unexpected init response: #{inspect(other)}"}
       end
     else
-      {:error, reason} -> {:error, format_socket_error(reason)}
+      {:error, reason} -> {:error, Protocol.format_socket_error(reason)}
     end
   end
 
@@ -523,7 +536,7 @@ defmodule EmergeSkia.Macos.Host do
 
     case :gen_tcp.send(
            state.socket,
-           encode_frame(@frame_request, request_id, session_id, tag, payload)
+           Protocol.encode_frame(@frame_request, request_id, session_id, tag, payload)
          ) do
       :ok ->
         {:ok,
@@ -534,12 +547,12 @@ defmodule EmergeSkia.Macos.Host do
          }}
 
       {:error, reason} ->
-        {:error, format_socket_error(reason)}
+        {:error, Protocol.format_socket_error(reason)}
     end
   end
 
   defp handle_socket_frame(data, state) do
-    case decode_frame(data) do
+    case Protocol.decode_frame(data) do
       {:ok, %{frame_type: @frame_reply} = frame} ->
         handle_reply_frame(frame, state)
 
@@ -581,7 +594,7 @@ defmodule EmergeSkia.Macos.Host do
        ) do
     case payload do
       <<backend_tag>> ->
-        selected_backend = decode_macos_backend_tag(backend_tag)
+        selected_backend = Protocol.decode_macos_backend_tag(backend_tag)
 
         renderer = %Renderer{
           session_id: session_id,
@@ -594,7 +607,7 @@ defmodule EmergeSkia.Macos.Host do
           Map.update(
             state.sessions,
             session_id,
-            %{base_session_state() | running: true},
+            %{Session.base_state(@input_mask_all) | running: true},
             &Map.put(&1, :running, true)
           )
 
@@ -602,7 +615,7 @@ defmodule EmergeSkia.Macos.Host do
 
         state
         |> Map.put(:sessions, sessions)
-        |> flush_buffered_session(session_id)
+        |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
       _ ->
         GenServer.reply(from, {:error, "invalid start_session reply payload"})
@@ -619,7 +632,7 @@ defmodule EmergeSkia.Macos.Host do
          state
        ) do
     GenServer.reply(from, :ok)
-    mark_session_stopped(state, session_id)
+    Session.mark_stopped(state, session_id, @input_mask_all)
   end
 
   defp handle_reply_request(
@@ -633,7 +646,7 @@ defmodule EmergeSkia.Macos.Host do
        when running_flag in 0..1 do
     running? = running_flag == 1
     GenServer.reply(from, running?)
-    update_session_metadata(state, session_id, :running, running?)
+    Session.update_metadata(state, session_id, :running, running?, @input_mask_all)
   end
 
   defp handle_reply_request(
@@ -647,8 +660,8 @@ defmodule EmergeSkia.Macos.Host do
     GenServer.reply(from, :ok)
 
     state
-    |> update_session_metadata(session_id, :input_ready, true)
-    |> flush_buffered_session(session_id)
+    |> Session.update_metadata(session_id, :input_ready, true, @input_mask_all)
+    |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
   end
 
   defp handle_reply_request(
@@ -662,8 +675,8 @@ defmodule EmergeSkia.Macos.Host do
     GenServer.reply(from, :ok)
 
     state
-    |> update_session_metadata(session_id, :input_ready, true)
-    |> flush_buffered_session(session_id)
+    |> Session.update_metadata(session_id, :input_ready, true, @input_mask_all)
+    |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
   end
 
   defp handle_reply_request(
@@ -674,6 +687,64 @@ defmodule EmergeSkia.Macos.Host do
          <<>>,
          state
        ) do
+    state
+  end
+
+  defp handle_reply_request({:measure_text}, from, 0, @request_measure_text, payload, state) do
+    case Protocol.decode_measure_text_reply(payload) do
+      {:ok, metrics} -> GenServer.reply(from, {:ok, metrics})
+      :error -> GenServer.reply(from, {:error, "invalid measure_text reply payload"})
+    end
+
+    state
+  end
+
+  defp handle_reply_request({:load_font}, from, 0, @request_load_font, <<>>, state) do
+    GenServer.reply(from, :ok)
+    state
+  end
+
+  defp handle_reply_request(
+         {:configure_assets, _session_id},
+         from,
+         _reply_session_id,
+         @request_configure_assets,
+         <<>>,
+         state
+       ) do
+    GenServer.reply(from, :ok)
+    state
+  end
+
+  defp handle_reply_request(
+         {:render_tree_to_pixels},
+         from,
+         0,
+         @request_render_tree_to_pixels,
+         payload,
+         state
+       ) do
+    case Protocol.decode_binary_reply(payload) do
+      {:ok, binary} -> GenServer.reply(from, {:ok, binary})
+      :error -> GenServer.reply(from, {:error, "invalid render_tree_to_pixels reply payload"})
+    end
+
+    state
+  end
+
+  defp handle_reply_request(
+         {:render_tree_to_png},
+         from,
+         0,
+         @request_render_tree_to_png,
+         payload,
+         state
+       ) do
+    case Protocol.decode_binary_reply(payload) do
+      {:ok, binary} -> GenServer.reply(from, {:ok, binary})
+      :error -> GenServer.reply(from, {:error, "invalid render_tree_to_png reply payload"})
+    end
+
     state
   end
 
@@ -690,7 +761,7 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_error_frame(%{request_id: request_id, payload: payload}, state) do
-    message = decode_error_payload(payload)
+    message = Protocol.decode_error_payload(payload)
 
     case Map.pop(state.pending_requests, request_id) do
       {{request, from}, pending_requests} ->
@@ -712,8 +783,8 @@ defmodule EmergeSkia.Macos.Host do
         <<scale_factor::float-32>> = <<scale_bits::unsigned-big-32>>
 
         state
-        |> buffer_resize(session_id, width, height, scale_factor)
-        |> flush_buffered_session(session_id)
+        |> Session.buffer_resize(session_id, width, height, scale_factor, @input_mask_all)
+        |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
       _ ->
         state
@@ -726,22 +797,22 @@ defmodule EmergeSkia.Macos.Host do
        )
        when focused in 0..1 do
     state
-    |> buffer_focus(session_id, focused == 1)
-    |> flush_buffered_session(session_id)
+    |> Session.buffer_focus(session_id, focused == 1, @input_mask_all)
+    |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
   end
 
   defp handle_notify_frame(%{session_id: session_id, tag: @notify_close_requested}, state) do
     state
-    |> buffer_close(session_id)
-    |> flush_buffered_session(session_id)
+    |> Session.buffer_close(session_id, @input_mask_all)
+    |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
   end
 
   defp handle_notify_frame(%{session_id: session_id, tag: @notify_log, payload: payload}, state) do
-    case decode_log_payload(payload) do
+    case Protocol.decode_log_payload(payload) do
       {:ok, log} ->
         state
-        |> buffer_log(session_id, log)
-        |> flush_buffered_session(session_id)
+        |> Session.buffer_log(session_id, log, @input_mask_all)
+        |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
       :error ->
         state
@@ -756,7 +827,13 @@ defmodule EmergeSkia.Macos.Host do
       <<x_bits::unsigned-big-32, y_bits::unsigned-big-32>> ->
         <<x::float-32>> = <<x_bits::unsigned-big-32>>
         <<y::float-32>> = <<y_bits::unsigned-big-32>>
-        maybe_dispatch_input(state, session_id, @input_mask_cursor_pos, {:cursor_pos, {x, y}})
+
+        Session.maybe_dispatch_input(
+          state,
+          session_id,
+          @input_mask_cursor_pos,
+          {:cursor_pos, {x, y}}
+        )
 
       _ ->
         state
@@ -772,11 +849,12 @@ defmodule EmergeSkia.Macos.Host do
         <<x::float-32>> = <<x_bits::unsigned-big-32>>
         <<y::float-32>> = <<y_bits::unsigned-big-32>>
 
-        maybe_dispatch_input(
+        Session.maybe_dispatch_input(
           state,
           session_id,
           @input_mask_cursor_button,
-          {:cursor_button, {decode_button(button_tag), action, decode_mods(mods_bits), {x, y}}}
+          {:cursor_button,
+           {Protocol.decode_button(button_tag), action, Protocol.decode_mods(mods_bits), {x, y}}}
         )
 
       _ ->
@@ -796,7 +874,7 @@ defmodule EmergeSkia.Macos.Host do
         <<x::float-32>> = <<x_bits::unsigned-big-32>>
         <<y::float-32>> = <<y_bits::unsigned-big-32>>
 
-        maybe_dispatch_input(
+        Session.maybe_dispatch_input(
           state,
           session_id,
           @input_mask_cursor_scroll,
@@ -813,7 +891,7 @@ defmodule EmergeSkia.Macos.Host do
          state
        )
        when entered in 0..1 do
-    maybe_dispatch_input(
+    Session.maybe_dispatch_input(
       state,
       session_id,
       @input_mask_cursor_enter,
@@ -822,8 +900,8 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_notify_frame(%{session_id: session_id, tag: @notify_key, payload: payload}, state) do
-    case decode_key_payload(payload) do
-      {:ok, event} -> maybe_dispatch_input(state, session_id, @input_mask_key, event)
+    case Protocol.decode_key_payload(payload) do
+      {:ok, event} -> Session.maybe_dispatch_input(state, session_id, @input_mask_key, event)
       :error -> state
     end
   end
@@ -832,9 +910,12 @@ defmodule EmergeSkia.Macos.Host do
          %{session_id: session_id, tag: @notify_text_commit, payload: payload},
          state
        ) do
-    case decode_text_commit_payload(payload) do
-      {:ok, event} -> maybe_dispatch_input(state, session_id, @input_mask_codepoint, event)
-      :error -> state
+    case Protocol.decode_text_commit_payload(payload) do
+      {:ok, event} ->
+        Session.maybe_dispatch_input(state, session_id, @input_mask_codepoint, event)
+
+      :error ->
+        state
     end
   end
 
@@ -842,9 +923,12 @@ defmodule EmergeSkia.Macos.Host do
          %{session_id: session_id, tag: @notify_text_preedit, payload: payload},
          state
        ) do
-    case decode_text_preedit_payload(payload) do
-      {:ok, event} -> maybe_dispatch_input(state, session_id, @input_mask_codepoint, event)
-      :error -> state
+    case Protocol.decode_text_preedit_payload(payload) do
+      {:ok, event} ->
+        Session.maybe_dispatch_input(state, session_id, @input_mask_codepoint, event)
+
+      :error ->
+        state
     end
   end
 
@@ -852,22 +936,22 @@ defmodule EmergeSkia.Macos.Host do
          %{session_id: session_id, tag: @notify_text_preedit_clear, payload: <<>>},
          state
        ) do
-    maybe_dispatch_input(state, session_id, @input_mask_codepoint, :text_preedit_clear)
+    Session.maybe_dispatch_input(state, session_id, @input_mask_codepoint, :text_preedit_clear)
   end
 
   defp handle_notify_frame(%{session_id: session_id, tag: @notify_running, payload: <<>>}, state) do
-    maybe_dispatch_running(state, session_id)
+    Session.maybe_dispatch_running(state, session_id)
   end
 
   defp handle_notify_frame(
          %{session_id: session_id, tag: @notify_element_event, payload: payload},
          state
        ) do
-    case decode_element_event_payload(payload) do
+    case Protocol.decode_element_event_payload(payload) do
       {:ok, event} ->
         state
-        |> buffer_element_event(session_id, event)
-        |> flush_buffered_session(session_id)
+        |> Session.buffer_element_event(session_id, event, @input_mask_all)
+        |> Session.flush(session_id, @input_mask_resize, @input_mask_focus)
 
       :error ->
         state
@@ -885,6 +969,21 @@ defmodule EmergeSkia.Macos.Host do
   defp reply_pending_error({:patch_tree, _session_id}, from, message),
     do: GenServer.reply(from, {:error, message})
 
+  defp reply_pending_error({:measure_text}, from, message),
+    do: GenServer.reply(from, {:error, message})
+
+  defp reply_pending_error({:load_font}, from, message),
+    do: GenServer.reply(from, {:error, message})
+
+  defp reply_pending_error({:configure_assets, _session_id}, from, message),
+    do: GenServer.reply(from, {:error, message})
+
+  defp reply_pending_error({:render_tree_to_pixels}, from, message),
+    do: GenServer.reply(from, {:error, message})
+
+  defp reply_pending_error({:render_tree_to_png}, from, message),
+    do: GenServer.reply(from, {:error, message})
+
   defp reply_pending_error({:set_input_mask, _session_id}, _from, _message), do: :ok
 
   defp reply_pending_error({:running, _session_id}, from, _message),
@@ -897,462 +996,5 @@ defmodule EmergeSkia.Macos.Host do
     Enum.each(state.pending_requests, fn {_request_id, {request, from}} ->
       reply_pending_error(request, from, message)
     end)
-  end
-
-  defp flush_buffered_session(state, session_id) do
-    case Map.fetch(state.sessions, session_id) do
-      {:ok, session} ->
-        {state, session} = flush_buffered_logs(state, session_id, session)
-        {state, session} = flush_buffered_close(state, session_id, session)
-        {state, session} = flush_buffered_element_events(state, session_id, session)
-        {state, session} = flush_buffered_resize(state, session_id, session)
-        {state, session} = flush_buffered_focus(state, session_id, session)
-        put_session(state, session_id, session)
-
-      :error ->
-        state
-    end
-  end
-
-  defp flush_buffered_logs(state, _session_id, %{log_target: nil} = session), do: {state, session}
-
-  defp flush_buffered_logs(
-         state,
-         _session_id,
-         %{log_target: log_target, pending_logs: logs} = session
-       ) do
-    Enum.each(logs, fn {level, source, message} ->
-      send(log_target, {:emerge_skia_log, level, source, message})
-    end)
-
-    {state, %{session | pending_logs: []}}
-  end
-
-  defp flush_buffered_close(state, _session_id, %{input_target: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_close(
-         state,
-         _session_id,
-         %{input_target: input_target, pending_close: true} = session
-       ) do
-    send(input_target, {:emerge_skia_close, :window_close_requested})
-    {state, %{session | pending_close: false}}
-  end
-
-  defp flush_buffered_close(state, _session_id, session), do: {state, session}
-
-  defp flush_buffered_element_events(state, _session_id, %{input_target: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_element_events(
-         state,
-         _session_id,
-         %{input_target: input_target, pending_element_events: events} = session
-       ) do
-    Enum.each(events, &send(input_target, {:emerge_skia_event, &1}))
-    {state, %{session | pending_element_events: []}}
-  end
-
-  defp flush_buffered_resize(state, _session_id, %{input_target: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_resize(state, _session_id, %{input_ready: false} = session),
-    do: {state, session}
-
-  defp flush_buffered_resize(state, _session_id, %{pending_resize: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_resize(
-         state,
-         _session_id,
-         %{
-           input_target: input_target,
-           input_mask: mask,
-           pending_resize: {width, height, scale_factor}
-         } = session
-       ) do
-    if (mask &&& @input_mask_resize) != 0 do
-      send(input_target, {:emerge_skia_event, {:resized, {width, height, scale_factor}}})
-    end
-
-    {state, %{session | pending_resize: nil}}
-  end
-
-  defp flush_buffered_focus(state, _session_id, %{input_target: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_focus(state, _session_id, %{input_ready: false} = session),
-    do: {state, session}
-
-  defp flush_buffered_focus(state, _session_id, %{pending_focus: nil} = session),
-    do: {state, session}
-
-  defp flush_buffered_focus(
-         state,
-         _session_id,
-         %{input_target: input_target, input_mask: mask, pending_focus: focused} = session
-       ) do
-    if (mask &&& @input_mask_focus) != 0 do
-      send(input_target, {:emerge_skia_event, {:focused, focused}})
-    end
-
-    {state, %{session | pending_focus: nil}}
-  end
-
-  defp buffer_resize(state, session_id, width, height, scale_factor) do
-    update_session(state, session_id, fn session ->
-      %{session | pending_resize: {width, height, scale_factor}}
-    end)
-  end
-
-  defp buffer_focus(state, session_id, focused) do
-    update_session(state, session_id, fn session ->
-      %{session | pending_focus: focused}
-    end)
-  end
-
-  defp buffer_close(state, session_id) do
-    state
-    |> mark_session_stopped(session_id)
-    |> update_session(session_id, fn session -> %{session | pending_close: true} end)
-  end
-
-  defp buffer_log(state, session_id, {level, source, message}) do
-    update_session(state, session_id, fn session ->
-      %{session | pending_logs: session.pending_logs ++ [{level, source, message}]}
-    end)
-  end
-
-  defp buffer_element_event(state, session_id, event) do
-    update_session(state, session_id, fn session ->
-      %{session | pending_element_events: session.pending_element_events ++ [event]}
-    end)
-  end
-
-  defp maybe_dispatch_input(state, session_id, mask_bit, event) do
-    case Map.fetch(state.sessions, session_id) do
-      {:ok, %{input_target: pid, input_ready: true, input_mask: mask}} when is_pid(pid) ->
-        if (mask &&& mask_bit) != 0 do
-          send(pid, {:emerge_skia_event, event})
-        end
-
-        state
-
-      _ ->
-        state
-    end
-  end
-
-  defp maybe_dispatch_running(state, session_id) do
-    case Map.fetch(state.sessions, session_id) do
-      {:ok, %{input_target: pid}} when is_pid(pid) ->
-        send(pid, {:emerge_skia_running, :heartbeat})
-        state
-
-      _ ->
-        state
-    end
-  end
-
-  defp put_session(state, session_id, session) do
-    %{state | sessions: Map.put(state.sessions, session_id, session)}
-  end
-
-  defp update_session(state, session_id, fun) when is_function(fun, 1) do
-    sessions =
-      Map.update(
-        state.sessions,
-        session_id,
-        fun.(base_session_state()),
-        fun
-      )
-
-    %{state | sessions: sessions}
-  end
-
-  defp mark_session_stopped(state, session_id) do
-    update_session(state, session_id, &Map.put(&1, :running, false))
-  end
-
-  defp session_running?(state, session_id) do
-    case Map.fetch(state.sessions, session_id) do
-      {:ok, %{running: running?}} -> running?
-      :error -> false
-    end
-  end
-
-  defp encode_init_payload do
-    protocol_name = IO.iodata_to_binary(@protocol_name)
-
-    <<byte_size(protocol_name)::unsigned-big-16, protocol_name::binary,
-      @protocol_version::unsigned-big-16>>
-  end
-
-  defp decode_init_ok_payload(payload) do
-    with {:ok, {protocol_name, version, host_id, host_pid}} <- decode_init_ok_tuple(payload),
-         true <- protocol_name == @protocol_name,
-         true <- version == @protocol_version do
-      {:ok, %{host_id: host_id, host_pid: host_pid}}
-    else
-      false -> {:error, "unsupported macOS host init response"}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp decode_init_ok_tuple(<<name_len::unsigned-big-16, rest::binary>>)
-       when byte_size(rest) >= name_len + 2 + 8 + 4 do
-    <<protocol_name::binary-size(name_len), version::unsigned-big-16, host_id::unsigned-big-64,
-      host_pid::unsigned-big-32>> = rest
-
-    {:ok, {protocol_name, version, host_id, host_pid}}
-  rescue
-    MatchError -> {:error, "invalid init_ok payload"}
-  end
-
-  defp decode_init_ok_tuple(_payload), do: {:error, "invalid init_ok payload"}
-
-  defp encode_frame(frame_type, request_id, session_id, tag, payload) when is_binary(payload) do
-    <<frame_type, request_id::unsigned-big-32, session_id::unsigned-big-64, tag::unsigned-big-16,
-      payload::binary>>
-  end
-
-  defp decode_frame(
-         <<frame_type, request_id::unsigned-big-32, session_id::unsigned-big-64,
-           tag::unsigned-big-16, payload::binary>>
-       ) do
-    {:ok,
-     %{
-       frame_type: frame_type,
-       request_id: request_id,
-       session_id: session_id,
-       tag: tag,
-       payload: payload
-     }}
-  end
-
-  defp decode_frame(_data), do: {:error, "invalid frame"}
-
-  defp decode_error_payload(payload) when is_binary(payload), do: payload
-
-  defp decode_log_payload(<<level_tag, source_len::unsigned-big-32, rest::binary>>)
-       when byte_size(rest) >= source_len + 4 do
-    <<source::binary-size(source_len), message_len::unsigned-big-32,
-      message::binary-size(message_len)>> = rest
-
-    {:ok, {decode_log_level(level_tag), source, message}}
-  rescue
-    MatchError -> :error
-  end
-
-  defp decode_log_payload(_payload), do: :error
-
-  defp decode_log_level(@log_level_info), do: :info
-  defp decode_log_level(@log_level_warning), do: :warning
-  defp decode_log_level(@log_level_error), do: :error
-  defp decode_log_level(_other), do: :info
-
-  defp decode_key_payload(<<key_len::unsigned-big-32, rest::binary>>)
-       when byte_size(rest) >= key_len + 2 do
-    <<key::binary-size(key_len), action, mods_bits>> = rest
-    {:ok, {:key, {String.to_atom(key), action, decode_mods(mods_bits)}}}
-  rescue
-    MatchError -> :error
-  end
-
-  defp decode_key_payload(_payload), do: :error
-
-  defp decode_text_commit_payload(<<text_len::unsigned-big-32, rest::binary>>)
-       when byte_size(rest) >= text_len + 1 do
-    <<text::binary-size(text_len), mods_bits>> = rest
-    {:ok, {:text_commit, {text, decode_mods(mods_bits)}}}
-  rescue
-    MatchError -> :error
-  end
-
-  defp decode_text_commit_payload(_payload), do: :error
-
-  defp decode_text_preedit_payload(<<text_len::unsigned-big-32, rest::binary>>)
-       when byte_size(rest) >= text_len + 1 do
-    <<text::binary-size(text_len), has_cursor, cursor_rest::binary>> = rest
-
-    case {has_cursor, cursor_rest} do
-      {0, <<>>} ->
-        {:ok, {:text_preedit, {text, nil}}}
-
-      {1, <<start::unsigned-big-32, ending::unsigned-big-32>>} ->
-        {:ok, {:text_preedit, {text, {start, ending}}}}
-
-      _ ->
-        :error
-    end
-  rescue
-    MatchError -> :error
-  end
-
-  defp decode_text_preedit_payload(_payload), do: :error
-
-  defp decode_element_event_payload(
-         <<kind_tag, has_payload, id_len::unsigned-big-32, rest::binary>>
-       )
-       when byte_size(rest) >= id_len + 4 do
-    <<id::binary-size(id_len), payload_len::unsigned-big-32, payload::binary-size(payload_len)>> =
-      rest
-
-    event =
-      case has_payload do
-        0 -> {id, decode_element_event_kind(kind_tag)}
-        1 -> {id, decode_element_event_kind(kind_tag), payload}
-      end
-
-    {:ok, event}
-  rescue
-    MatchError -> :error
-  end
-
-  defp decode_element_event_payload(_payload), do: :error
-
-  defp decode_button(1), do: :left
-  defp decode_button(2), do: :right
-  defp decode_button(3), do: :middle
-  defp decode_button(_other), do: :middle
-
-  defp decode_mods(bits) when is_integer(bits) do
-    []
-    |> maybe_prepend((bits &&& 0x01) != 0, :shift)
-    |> maybe_prepend((bits &&& 0x02) != 0, :ctrl)
-    |> maybe_prepend((bits &&& 0x04) != 0, :alt)
-    |> maybe_prepend((bits &&& 0x08) != 0, :meta)
-    |> Enum.reverse()
-  end
-
-  defp decode_element_event_kind(1), do: :click
-  defp decode_element_event_kind(2), do: :press
-  defp decode_element_event_kind(3), do: :swipe_up
-  defp decode_element_event_kind(4), do: :swipe_down
-  defp decode_element_event_kind(5), do: :swipe_left
-  defp decode_element_event_kind(6), do: :swipe_right
-  defp decode_element_event_kind(7), do: :key_down
-  defp decode_element_event_kind(8), do: :key_up
-  defp decode_element_event_kind(9), do: :key_press
-  defp decode_element_event_kind(10), do: :virtual_key_hold
-  defp decode_element_event_kind(11), do: :mouse_down
-  defp decode_element_event_kind(12), do: :mouse_up
-  defp decode_element_event_kind(13), do: :mouse_enter
-  defp decode_element_event_kind(14), do: :mouse_leave
-  defp decode_element_event_kind(15), do: :mouse_move
-  defp decode_element_event_kind(16), do: :focus
-  defp decode_element_event_kind(17), do: :blur
-  defp decode_element_event_kind(18), do: :change
-  defp decode_element_event_kind(_other), do: :press
-
-  defp maybe_prepend(list, true, value), do: [value | list]
-  defp maybe_prepend(list, false, _value), do: list
-
-  defp encode_start_session(
-         title,
-         width,
-         height,
-         scroll_line_pixels,
-         renderer_stats_log,
-         macos_backend,
-         asset_config
-       ) do
-    title = IO.iodata_to_binary(title)
-    priv_dir = Map.fetch!(asset_config, :priv_dir)
-    sources = [priv_dir]
-    allowlist = Map.fetch!(asset_config, :runtime_allowlist)
-    extensions = Map.fetch!(asset_config, :runtime_extensions)
-    fonts = Map.fetch!(asset_config, :fonts)
-    runtime_enabled = if Map.fetch!(asset_config, :runtime_enabled), do: 1, else: 0
-
-    runtime_follow_symlinks =
-      if Map.fetch!(asset_config, :runtime_follow_symlinks), do: 1, else: 0
-
-    max_file_size = Map.fetch!(asset_config, :runtime_max_file_size)
-    renderer_stats_log = if renderer_stats_log, do: 1, else: 0
-
-    <<byte_size(title)::unsigned-big-32, title::binary, width::unsigned-big-32,
-      height::unsigned-big-32, scroll_line_pixels::float-big-32, renderer_stats_log,
-      encode_macos_backend_tag(macos_backend), encode_string_list(sources)::binary,
-      runtime_enabled, encode_string_list(allowlist)::binary, runtime_follow_symlinks,
-      max_file_size::unsigned-big-64, encode_string_list(extensions)::binary,
-      encode_fonts(fonts, priv_dir)::binary>>
-  end
-
-  defp encode_string_list(list) when is_list(list) do
-    encoded = Enum.map(list, &encode_string/1)
-    IO.iodata_to_binary([<<length(list)::unsigned-big-32>>, encoded])
-  end
-
-  defp encode_fonts(fonts, priv_dir) when is_list(fonts) and is_binary(priv_dir) do
-    encoded =
-      Enum.map(fonts, fn font ->
-        family = Map.fetch!(font, :family)
-        path = Path.join(priv_dir, Map.fetch!(font, :source))
-        weight = Map.fetch!(font, :weight)
-        italic = if Map.fetch!(font, :italic), do: 1, else: 0
-
-        [encode_string(family), encode_string(path), <<weight::unsigned-big-16, italic>>]
-      end)
-
-    IO.iodata_to_binary([<<length(fonts)::unsigned-big-32>>, encoded])
-  end
-
-  defp encode_string(value) when is_binary(value) do
-    <<byte_size(value)::unsigned-big-32, value::binary>>
-  end
-
-  defp host_binary_path do
-    case System.get_env(@host_binary_env) do
-      path when is_binary(path) and path != "" ->
-        path
-
-      _ ->
-        priv_binary = Path.join(project_root(), "priv/native/macos_host")
-
-        if File.regular?(priv_binary) do
-          priv_binary
-        else
-          Path.join(project_root(), "native/emerge_skia/target/debug/macos_host")
-        end
-    end
-  end
-
-  defp project_root do
-    Path.expand("../../..", __DIR__)
-  end
-
-  defp default_socket_path do
-    Path.join(System.tmp_dir!(), "emerge_skia_macos_#{System.unique_integer([:positive])}.sock")
-  end
-
-  defp format_socket_error(:closed), do: "macOS host connection closed"
-  defp format_socket_error(reason), do: "macOS host socket error: #{inspect(reason)}"
-
-  defp encode_macos_backend_tag("auto"), do: @macos_backend_auto
-  defp encode_macos_backend_tag("metal"), do: @macos_backend_metal
-  defp encode_macos_backend_tag("raster"), do: @macos_backend_raster
-
-  defp decode_macos_backend_tag(@macos_backend_metal), do: :metal
-  defp decode_macos_backend_tag(@macos_backend_raster), do: :raster
-
-  defp decode_macos_backend_tag(other) do
-    raise "unexpected macOS backend tag: #{inspect(other)}"
-  end
-
-  defp base_session_state do
-    %{
-      running: false,
-      input_target: nil,
-      log_target: nil,
-      input_mask: @input_mask_all,
-      input_ready: false,
-      pending_resize: nil,
-      pending_focus: nil,
-      pending_close: false,
-      pending_logs: [],
-      pending_element_events: []
-    }
   end
 end

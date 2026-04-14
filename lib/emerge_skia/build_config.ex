@@ -3,6 +3,7 @@ defmodule EmergeSkia.BuildConfig do
 
   @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
+  @load_macos_nif_env_key "EMERGE_SKIA_LOAD_MACOS_NIF"
   @checksum_only_env_key "EMERGE_SKIA_CHECKSUM_ONLY"
   @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
@@ -123,6 +124,9 @@ defmodule EmergeSkia.BuildConfig do
   def force_precompiled_build_env_key, do: @force_precompiled_build_env_key
 
   @doc false
+  def load_macos_nif_env_key, do: @load_macos_nif_env_key
+
+  @doc false
   def checksum_only_env_key, do: @checksum_only_env_key
 
   @doc false
@@ -180,6 +184,30 @@ defmodule EmergeSkia.BuildConfig do
     backends
     |> normalize_compiled_backends!()
     |> Enum.map(&Atom.to_string/1)
+  end
+
+  @doc false
+  def load_native_runtime?(
+        env \\ System.get_env(),
+        compiled_backends \\ compiled_backends(),
+        mix_env \\ Mix.env()
+      )
+      when is_map(env) and is_list(compiled_backends) do
+    compiled_backends = normalize_compiled_backends!(compiled_backends)
+
+    cond do
+      Map.get(env, @load_macos_nif_env_key) in ["1", "true"] ->
+        true
+
+      mix_env == :test ->
+        true
+
+      host_darwin?(env) and compiled_backends == [:macos] ->
+        false
+
+      true ->
+        true
+    end
   end
 
   @doc false
