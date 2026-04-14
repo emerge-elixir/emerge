@@ -12,21 +12,6 @@ name = "macos_host"
 path = "src/bin/macos_host.rs"
 required-features = ["macos"]
 
-[[bin]]
-name = "macos_smoke"
-path = "src/bin/macos_smoke.rs"
-required-features = ["macos"]
-
-[[bin]]
-name = "macos_wrapper_smoke"
-path = "src/bin/macos_wrapper_smoke.rs"
-required-features = ["macos"]
-
-[[bin]]
-name = "metal_probe"
-path = "src/bin/metal_probe.rs"
-required-features = ["macos"]
-
 [features]
 default = ["wayland"]
 hover-trace = []
