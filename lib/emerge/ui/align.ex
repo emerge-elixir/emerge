@@ -61,6 +61,18 @@ defmodule Emerge.UI.Align do
 
   #{Examples.image_tag!("ui-align-row", "Rendered row alignment example")}
 
+  ## `wrapped_row`
+
+  In `wrapped_row`, horizontal alignment is evaluated per wrapped line.
+
+  After wrapping, `align_left/0`, `center_x/0`, and `align_right/0` split each
+  line into left, center, and right zones using the remaining width of that
+  line. A centered or right-aligned child on a later line therefore aligns
+  within that line, not against the full wrapped row width.
+
+  `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
+  within the height of its own wrapped line.
+
   ## `column`
 
   In `column`, children do not inherit alignment from the column. Put alignment
