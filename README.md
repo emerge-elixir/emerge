@@ -5,7 +5,7 @@
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/emerge-elixir/emerge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/emerge-elixir/emerge.svg)](https://github.com/emerge-elixir/emerge/blob/main/LICENSE)
 
-Write native GUI directly from Elixir using declarative API.
+Write native GUI directly from Elixir using a declarative API.
 
 ## Installation
 
@@ -148,21 +148,26 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - Handle buttons, text input, keyboard, pointer events, and interactive states
 - Render images, SVGs, backgrounds, borders, text, and font assets
 - Use scroll containers, nearby overlays, paint-time transforms, and animation
-- Run the same renderer on Wayland, DRM, and raster backends with high-DPI rendering and efficient tree updates
+- Run the same renderer on macOS, Wayland, DRM, and raster backends with high-DPI rendering and efficient tree updates
 
 ## Backends
 
+- **macOS** for desktop macOS windows, using Metal when available and falling back to raster rendering through the external `macos_host` runtime
 - **Wayland** for desktop Linux windows
 - **DRM** for embedded, kiosk, and Nerves deployments
 - **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
+
+Initial macOS support in `0.2.0` does not include `video_target`.
 
 For runtime backend selection and multi-backend setup, see [Set up a viewport](guides/tutorials/set_up_viewport.md).
 
 ## Requirements
 
 - Elixir 1.19+
-- Linux (Wayland session or DRM for on-screen backends)
+- macOS for the `:macos` backend, or Linux with Wayland/DRM for Linux on-screen backends
 - Rust toolchain (if rustler precompiled doesn't cover your combination)
+
+On macOS, Emerge downloads and caches the matching versioned `macos_host` runtime artifact automatically.
 
 ## Documentation
 

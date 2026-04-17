@@ -115,7 +115,7 @@ commands.
 ## Unsupported For Now
 
 - video targets on macOS
-- precompiled Darwin artifacts
+- in-process macOS NIF window backend
 
 `EmergeSkia.video_target/2` intentionally returns an error for macOS.
 
@@ -139,6 +139,9 @@ The intended release flow is:
 
 The goal is that a user can run `emerge_demo` on macOS without any local Rust
 toolchain or source build.
+
+Darwin Rustler NIFs are not the supported distribution path for normal runtime
+use.
 
 ## Next Work
 
