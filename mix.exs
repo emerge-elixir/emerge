@@ -1,7 +1,7 @@
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/emerge-elixir/emerge"
 
   @nerves_rust_target_triple_mapping %{
@@ -112,6 +112,7 @@ defmodule Emerge.MixProject do
       "THIRD_PARTY_ASSETS.md",
       "licenses",
       "README.md",
+      "CHANGELOG.md",
       "mix.exs",
       "mix.lock"
     ] ++ package_assets() ++ Path.wildcard("checksum-*.exs")
