@@ -11,7 +11,12 @@ run_quality() {
 }
 
 run_tests() {
-  mix test
+  if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
+    mix test
+  else
+    mix test --include full_sweep
+  fi
+
   cargo test --release --manifest-path native/emerge_skia/Cargo.toml
 }
 
