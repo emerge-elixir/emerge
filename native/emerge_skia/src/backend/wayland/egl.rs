@@ -12,7 +12,7 @@ use skia_safe::gpu::{
     direct_contexts,
     gl::{FramebufferInfo, Interface},
 };
-use wayland_client::{protocol::wl_surface, Connection, Proxy};
+use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
 use crate::{backend::skia_gpu::GlFrameSurface, renderer::SceneRenderer};
 
@@ -21,6 +21,14 @@ pub(super) struct GlEnv {
     pub(super) gl_context: PossiblyCurrentContext,
     pub(super) renderer: SceneRenderer,
     pub(super) frame_surface: GlFrameSurface,
+}
+
+fn non_zero_dimension(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value.max(1)).expect("dimensions are clamped to at least 1")
+}
+
+fn gl_symbol_name(name: &str) -> CString {
+    CString::new(name).expect("GL symbol names never contain interior NUL bytes")
 }
 
 pub(super) fn create_gl_env(
@@ -72,8 +80,8 @@ pub(super) fn create_gl_env(
 
     let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
         raw_window_handle,
-        NonZeroU32::new(dimensions.0.max(1)).unwrap(),
-        NonZeroU32::new(dimensions.1.max(1)).unwrap(),
+        non_zero_dimension(dimensions.0),
+        non_zero_dimension(dimensions.1),
     );
 
     // SAFETY: the surface handle is the live wl_surface for this backend window.
@@ -84,14 +92,14 @@ pub(super) fn create_gl_env(
         .make_current(&gl_surface)
         .map_err(|err| format!("could not make EGL context current: {err}"))?;
 
-    gl::load_with(|symbol| gl_display.get_proc_address(CString::new(symbol).unwrap().as_c_str()));
+    gl::load_with(|symbol| gl_display.get_proc_address(gl_symbol_name(symbol).as_c_str()));
 
     let interface = Interface::new_load_with(|name| {
         if name == "eglGetCurrentDisplay" {
             return std::ptr::null();
         }
 
-        gl_display.get_proc_address(CString::new(name).unwrap().as_c_str())
+        gl_display.get_proc_address(gl_symbol_name(name).as_c_str())
     })
     .ok_or_else(|| "could not create Skia GL interface".to_string())?;
 

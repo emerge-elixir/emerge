@@ -44,6 +44,6 @@ defmodule EmergeSkia.TestHarness do
   def stop(harness), do: unwrap_ok(Native.test_harness_stop(harness))
 
   defp unwrap_ok(:ok), do: :ok
-  defp unwrap_ok({:ok, :ok}), do: :ok
+  defp unwrap_ok({:ok, _}), do: :ok
   defp unwrap_ok(other), do: other
 end

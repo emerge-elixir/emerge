@@ -483,10 +483,11 @@ impl WaylandApp {
             match sync_action {
                 WaylandVideoSyncAction::Hold => {}
                 WaylandVideoSyncAction::Import => {
-                    match env
-                        .renderer
-                        .sync_video_frames(&mut frame, video_registry, video_import_ctx)
-                    {
+                    match env.renderer.sync_video_frames(
+                        &mut frame,
+                        video_registry,
+                        video_import_ctx,
+                    ) {
                         Ok(result) => video_needs_cleanup = result.needs_cleanup,
                         Err(err) => eprintln!("video sync failed: {err}"),
                     }

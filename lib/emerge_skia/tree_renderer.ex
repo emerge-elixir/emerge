@@ -13,7 +13,6 @@ defmodule EmergeSkia.TreeRenderer do
 
     case Transport.for_renderer(renderer).upload_tree(renderer, full_bin) do
       :ok -> :ok
-      {:ok, :ok} -> :ok
       {:error, reason} -> raise "renderer_upload failed: #{reason}"
     end
 
@@ -27,7 +26,6 @@ defmodule EmergeSkia.TreeRenderer do
 
     case Transport.for_renderer(renderer).patch_tree(renderer, patch_bin) do
       :ok -> :ok
-      {:ok, :ok} -> :ok
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
     end
 

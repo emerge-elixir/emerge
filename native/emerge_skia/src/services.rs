@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use skia_safe::{images, AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo};
+use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
 
 use crate::{
     assets::{self, AssetConfig},
     backend::raster::{RasterBackend, RasterConfig},
-    renderer::{load_font, make_font_with_style, RenderState},
+    renderer::{RenderState, load_font, make_font_with_style},
     tree::{self, layout::layout_and_refresh_default},
 };
 

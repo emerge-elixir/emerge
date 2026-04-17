@@ -27,7 +27,7 @@
 //!   - shared scrollbar geometry and hit area helpers
 //! - `text_ops`
 //!   - shared single-line text editing helpers
-use rustler::{Atom, Encoder, LocalPid, OwnedBinary, OwnedEnv};
+use rustler::{Atom, Encoder, Env, LocalPid, OwnedBinary, OwnedEnv};
 use std::collections::HashMap;
 
 use crate::input::InputEvent;
@@ -53,8 +53,8 @@ pub mod scrollbar;
 pub mod test_support;
 pub mod text_ops;
 
-pub(crate) use runtime::{SpawnEventActorConfig, spawn_event_actor};
 pub use runtime::{HostEventRuntime, HostEventSink};
+pub(crate) use runtime::{SpawnEventActorConfig, spawn_event_actor};
 use scrollbar::ScrollbarNode;
 
 /// Element-level events that Rust can emit back to Elixir after input matching.
@@ -1139,10 +1139,13 @@ fn parse_font_weight(value: &str) -> u16 {
 }
 
 pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
+    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+        return;
+    };
+    bin.as_mut_slice().copy_from_slice(&element_id.0);
+
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
-        let mut bin = OwnedBinary::new(element_id.0.len()).unwrap();
-        bin.as_mut_slice().copy_from_slice(&element_id.0);
         let id_bin = bin.release(inner_env);
         (emerge_skia_event(), (id_bin, event)).encode(inner_env)
     });
@@ -1154,10 +1157,13 @@ pub(crate) fn send_element_event_with_string_payload(
     event: Atom,
     value: &str,
 ) {
+    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+        return;
+    };
+    bin.as_mut_slice().copy_from_slice(&element_id.0);
+
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
-        let mut bin = OwnedBinary::new(element_id.0.len()).unwrap();
-        bin.as_mut_slice().copy_from_slice(&element_id.0);
         let id_bin = bin.release(inner_env);
         (emerge_skia_event(), (id_bin, event, value.to_string())).encode(inner_env)
     });
@@ -1175,6 +1181,10 @@ pub(crate) fn send_running_message(pid: LocalPid) {
     let _ = env.send_and_clear(&pid, |inner_env| {
         (emerge_viewport_renderer(), heartbeat()).encode(inner_env)
     });
+}
+
+pub(crate) fn send_running_message_in_env(env: Env<'_>, pid: LocalPid) {
+    let _ = env.send(&pid, (emerge_viewport_renderer(), heartbeat()));
 }
 
 #[cfg(all(feature = "wayland", target_os = "linux"))]

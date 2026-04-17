@@ -33,7 +33,7 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
+use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc};
 pub mod actors;
 pub mod assets;
 pub mod backend;
@@ -74,12 +74,12 @@ use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
 #[cfg(all(feature = "drm", target_os = "linux"))]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
+use renderer::clear_global_caches;
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
-use renderer::clear_global_caches;
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::RendererStatsCollector;
 use std::time::Instant;
@@ -274,10 +274,13 @@ struct TestHarnessResource {
     handles: Mutex<Option<TestHarnessHandles>>,
 }
 
+#[rustler::resource_impl]
 impl rustler::Resource for RendererResource {}
 
+#[rustler::resource_impl]
 impl rustler::Resource for TreeResource {}
 
+#[rustler::resource_impl]
 impl rustler::Resource for TestHarnessResource {}
 
 impl Drop for RendererResource {
@@ -302,6 +305,8 @@ impl TestHarnessResource {
         let Some(handles) = handles_guard.take() else {
             return;
         };
+
+        drop(handles_guard);
 
         send_event(&self.event_tx, EventMsg::Stop, false);
         send_tree(&self.tree_tx, TreeMsg::Stop, false);
@@ -329,6 +334,8 @@ impl RendererResource {
         let Some(handles) = handles_guard.take() else {
             return;
         };
+
+        drop(handles_guard);
 
         let ctx = ShutdownRuntimeContext {
             running_flag: Arc::clone(&self.running_flag),
@@ -1019,7 +1026,7 @@ fn start_native_renderer_with_config(
     )))
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyIo")]
 fn start(
     env: Env,
     title: String,
@@ -1059,7 +1066,7 @@ fn start(
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyIo")]
 fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
     let backend = opts.backend.to_lowercase();
     let backend =
@@ -1147,32 +1154,34 @@ fn video_target_new(
 fn video_target_submit_prime(
     target: ResourceArc<VideoTargetResource>,
     desc: video::PrimeDesc,
-) -> Result<Atom, String> {
+) -> Result<bool, String> {
+    let spec = target.registry.target_spec(&target.id)?;
+    desc.validate_for_target(&target.id, spec.mode, spec.width, spec.height)?;
     target.registry.submit_prime(&target.id, desc.into())?;
     target.wake.notify();
-    Ok(atoms::ok())
+    Ok(true)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Result<Atom, String> {
+fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
         TreeMsg::UploadTree { bytes },
         renderer.log_render,
     );
-    Ok(atoms::ok())
+    atoms::ok()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Result<Atom, String> {
+fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
         TreeMsg::PatchTree { bytes },
         renderer.log_render,
     );
-    Ok(atoms::ok())
+    atoms::ok()
 }
 
 #[rustler::nif]
@@ -1187,9 +1196,9 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
 /// - `italic`: Whether this is an italic variant
 /// - `data`: Binary font data (TTF file contents)
 #[rustler::nif(schedule = "DirtyIo")]
-fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<Atom, String> {
+fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<bool, String> {
     services::load_font_bytes(&name, weight as u16, italic, data.as_slice())?;
-    Ok(atoms::ok())
+    Ok(true)
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -1249,9 +1258,17 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 /// Input events are sent directly to the target process as
 /// `{:emerge_skia_event, event}` messages.
 #[rustler::nif]
-fn set_input_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>) -> Atom {
+fn set_input_target(
+    env: Env<'_>,
+    renderer: ResourceArc<RendererResource>,
+    pid: Option<LocalPid>,
+) -> Atom {
     renderer.input_target.set_target(pid);
-    renderer.input_target.send_running();
+
+    if let Some(target) = pid {
+        events::send_running_message_in_env(env, target);
+    }
+
     send_event(
         &renderer.event_tx,
         EventMsg::SetInputTarget(pid),
@@ -1317,6 +1334,44 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
     }
 }
 
+fn tree_lock_error() -> String {
+    "failed to lock tree".to_string()
+}
+
+fn clone_tree_resource(tree_res: &TreeResource) -> Result<ElementTree, String> {
+    let tree = tree_res.tree.lock().map_err(|_| tree_lock_error())?;
+    Ok(tree.clone())
+}
+
+fn replace_tree_resource(tree_res: &TreeResource, tree: ElementTree) -> Result<(), String> {
+    let mut guard = tree_res.tree.lock().map_err(|_| tree_lock_error())?;
+    *guard = tree;
+    Ok(())
+}
+
+fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a> {
+    tree.nodes
+        .iter()
+        .filter_map(|(id, element)| {
+            if element.is_ghost() {
+                return None;
+            }
+
+            element.frame.map(|frame| {
+                let mut id_binary = NewBinary::new(env, id.0.len());
+                id_binary.as_mut_slice().copy_from_slice(&id.0);
+                (
+                    id_binary.into(),
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                )
+            })
+        })
+        .collect()
+}
+
 // ============================================================================
 // Tree NIF Functions
 // ============================================================================
@@ -1331,61 +1386,47 @@ fn tree_new() -> ResourceArc<TreeResource> {
 
 /// Upload a full tree from EMRG binary format.
 /// Replaces any existing tree contents.
-#[rustler::nif]
-fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
+#[rustler::nif(schedule = "DirtyCpu")]
+fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = tree_res.tree.lock() {
-        tree.replace_with_uploaded(decoded);
-        Ok(atoms::ok())
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    replace_tree_resource(&tree_res, decoded)?;
+    Ok(true)
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn tree_upload_roundtrip<'a>(
     env: Env<'a>,
     tree_res: ResourceArc<TreeResource>,
     data: Binary,
 ) -> Result<Binary<'a>, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = tree_res.tree.lock() {
-        tree.replace_with_uploaded(decoded);
-        Ok(encode_tree_binary(env, &tree))
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let encoded = encode_tree_binary(env, &decoded);
+    replace_tree_resource(&tree_res, decoded)?;
+    Ok(encoded)
 }
 
 /// Apply patches to an existing tree.
-#[rustler::nif]
-fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<Atom, String> {
+#[rustler::nif(schedule = "DirtyCpu")]
+fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
     let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = tree_res.tree.lock() {
-        tree::patch::apply_patches(&mut tree, patches)?;
-        Ok(atoms::ok())
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let mut tree = clone_tree_resource(&tree_res)?;
+    tree::patch::apply_patches(&mut tree, patches)?;
+    replace_tree_resource(&tree_res, tree)?;
+    Ok(true)
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn tree_patch_roundtrip<'a>(
     env: Env<'a>,
     tree_res: ResourceArc<TreeResource>,
     data: Binary,
 ) -> Result<Binary<'a>, String> {
     let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
-
-    if let Ok(mut tree) = tree_res.tree.lock() {
-        tree::patch::apply_patches(&mut tree, patches)?;
-        Ok(encode_tree_binary(env, &tree))
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let mut tree = clone_tree_resource(&tree_res)?;
+    tree::patch::apply_patches(&mut tree, patches)?;
+    let encoded = encode_tree_binary(env, &tree);
+    replace_tree_resource(&tree_res, tree)?;
+    Ok(encoded)
 }
 
 /// Get the number of nodes in the tree.
@@ -1420,7 +1461,7 @@ fn tree_clear(tree_res: ResourceArc<TreeResource>) -> Atom {
 /// Compute layout for the tree with the given constraints and scale factor.
 /// Returns list of {id_bytes, x, y, width, height} tuples for all elements.
 /// Scale is applied to all pixel-based attributes (px sizes, padding, spacing, etc.)
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn tree_layout<'a>(
     env: Env<'a>,
     tree_res: ResourceArc<TreeResource>,
@@ -1428,37 +1469,16 @@ fn tree_layout<'a>(
     height: f64,
     scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
-    if let Ok(mut tree) = tree_res.tree.lock() {
-        let constraint = tree::layout::Constraint::new(width as f32, height as f32);
-        tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
-
-        // Collect all frames
-        let mut frames = Vec::with_capacity(tree.len());
-        for (id, element) in tree.nodes.iter() {
-            if element.is_ghost() {
-                continue;
-            }
-
-            if let Some(frame) = element.frame {
-                let mut id_binary = NewBinary::new(env, id.0.len());
-                id_binary.as_mut_slice().copy_from_slice(&id.0);
-                frames.push((
-                    id_binary.into(),
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                ));
-            }
-        }
-        Ok(frames)
-    } else {
-        Err("failed to lock tree".to_string())
-    }
+    let mut tree = clone_tree_resource(&tree_res)?;
+    let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+    tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
+    let frames = encode_layout_frames(env, &tree);
+    replace_tree_resource(&tree_res, tree)?;
+    Ok(frames)
 }
 
 /// Round-trip EMRG binary: decode in Rust and re-encode.
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn tree_roundtrip<'a>(env: Env<'a>, data: Binary) -> Result<Binary<'a>, String> {
     let tree = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
     Ok(encode_tree_binary(env, &tree))
@@ -1467,7 +1487,7 @@ fn tree_roundtrip<'a>(env: Env<'a>, data: Binary) -> Result<Binary<'a>, String> 
 type HoverMsg<'a> = (Binary<'a>, bool);
 type HoverMsgList<'a> = Vec<HoverMsg<'a>>;
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyIo")]
 fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessResource>, String> {
     let (tree_tx, tree_rx_proxy) = bounded(512);
     let (tree_actor_tx, tree_actor_rx) = bounded(512);
@@ -1532,11 +1552,8 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
     }))
 }
 
-#[rustler::nif]
-fn test_harness_upload(
-    harness: ResourceArc<TestHarnessResource>,
-    data: Binary,
-) -> Result<Atom, String> {
+#[rustler::nif(schedule = "DirtyCpu")]
+fn test_harness_upload(harness: ResourceArc<TestHarnessResource>, data: Binary) -> Atom {
     send_tree(
         &harness.tree_tx,
         TreeMsg::UploadTree {
@@ -1544,14 +1561,11 @@ fn test_harness_upload(
         },
         false,
     );
-    Ok(atoms::ok())
+    atoms::ok()
 }
 
-#[rustler::nif]
-fn test_harness_patch(
-    harness: ResourceArc<TestHarnessResource>,
-    data: Binary,
-) -> Result<Atom, String> {
+#[rustler::nif(schedule = "DirtyCpu")]
+fn test_harness_patch(harness: ResourceArc<TestHarnessResource>, data: Binary) -> Atom {
     send_tree(
         &harness.tree_tx,
         TreeMsg::PatchTree {
@@ -1559,15 +1573,11 @@ fn test_harness_patch(
         },
         false,
     );
-    Ok(atoms::ok())
+    atoms::ok()
 }
 
 #[rustler::nif]
-fn test_harness_cursor_pos(
-    harness: ResourceArc<TestHarnessResource>,
-    x: f64,
-    y: f64,
-) -> Result<Atom, String> {
+fn test_harness_cursor_pos(harness: ResourceArc<TestHarnessResource>, x: f64, y: f64) -> Atom {
     send_event(
         &harness.event_tx,
         EventMsg::InputEvent(input::InputEvent::CursorPos {
@@ -1576,7 +1586,7 @@ fn test_harness_cursor_pos(
         }),
         false,
     );
-    Ok(atoms::ok())
+    atoms::ok()
 }
 
 #[rustler::nif]
@@ -1584,7 +1594,7 @@ fn test_harness_animation_pulse(
     harness: ResourceArc<TestHarnessResource>,
     presented_ms: u64,
     predicted_ms: u64,
-) -> Result<Atom, String> {
+) -> Result<bool, String> {
     let base_instant = *harness
         .base_instant
         .lock()
@@ -1597,7 +1607,7 @@ fn test_harness_animation_pulse(
         },
         false,
     );
-    Ok(atoms::ok())
+    Ok(true)
 }
 
 #[rustler::nif]
@@ -1612,7 +1622,7 @@ fn test_harness_reset_clock(harness: ResourceArc<TestHarnessResource>) -> Atom {
 fn test_harness_await_render(
     harness: ResourceArc<TestHarnessResource>,
     timeout_ms: u64,
-) -> Result<Atom, String> {
+) -> Result<bool, String> {
     let timeout = Duration::from_millis(timeout_ms);
 
     match harness.render_rx.recv_timeout(timeout) {
@@ -1629,7 +1639,7 @@ fn test_harness_await_render(
         .is_ok()
     {}
 
-    Ok(atoms::ok())
+    Ok(true)
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -1675,13 +1685,6 @@ fn encode_tree_binary<'a>(env: Env<'a>, tree: &ElementTree) -> Binary<'a> {
     let mut binary = NewBinary::new(env, encoded.len());
     binary.as_mut_slice().copy_from_slice(&encoded);
     binary.into()
-}
-
-fn load(env: Env, _info: Term) -> bool {
-    env.register::<RendererResource>().is_ok()
-        && env.register::<TreeResource>().is_ok()
-        && env.register::<TestHarnessResource>().is_ok()
-        && env.register::<VideoTargetResource>().is_ok()
 }
 
 #[cfg(test)]
@@ -2188,7 +2191,7 @@ mod tests {
     }
 }
 
-rustler::init!("Elixir.EmergeSkia.Native", load = load);
+rustler::init!("Elixir.EmergeSkia.Native");
 
 fn parse_drm_cursor_overrides(
     overrides: Vec<DrmCursorOverrideNif>,

@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     thread,
     time::Instant,
@@ -10,6 +10,7 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
 use crate::{
+    RenderSender,
     actors::{EventMsg, RenderMsg, TreeMsg},
     assets,
     backend::wake::BackendWakeHandle,
@@ -20,7 +21,6 @@ use crate::{
         element::ElementTree,
         layout::{layout_and_refresh_default, layout_and_refresh_default_with_animation},
     },
-    RenderSender,
 };
 
 #[cfg(feature = "hover-trace")]

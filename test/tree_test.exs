@@ -44,7 +44,7 @@ defmodule EmergeSkia.TreeTest do
     test "accepts empty tree" do
       tree = Native.tree_new()
       data = make_header(0)
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_is_empty(tree)
     end
 
@@ -63,7 +63,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_node_count(tree) == 1
       refute Native.tree_is_empty(tree)
     end
@@ -83,7 +83,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_node_count(tree) == 1
     end
 
@@ -102,7 +102,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_node_count(tree) == 1
     end
 
@@ -145,7 +145,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(3) <> parent_node <> child1_node <> child2_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_node_count(tree) == 3
     end
   end
@@ -166,7 +166,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
       assert Native.tree_node_count(tree) == 1
 
       assert :ok = Native.tree_clear(tree)
@@ -191,7 +191,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 1
@@ -245,7 +245,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(3) <> row_node <> child1_node <> child2_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
@@ -307,7 +307,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(3) <> col_node <> child1_node <> child2_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
@@ -340,7 +340,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(1) <> node_data
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       # With scale=2.0, width should be 200, height should be 100
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 2.0)
@@ -418,7 +418,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(4) <> row_node <> c1_node <> c2_node <> c3_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
@@ -508,7 +508,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(5) <> row_node <> c1_node <> c2_node <> c3_node <> c4_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
@@ -620,7 +620,7 @@ defmodule EmergeSkia.TreeTest do
           <<0::unsigned-16>>
 
       data = make_header(6) <> col_node <> row_node <> c1_node <> c2_node <> c3_node <> below_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
