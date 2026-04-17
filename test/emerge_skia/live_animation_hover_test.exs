@@ -240,6 +240,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
            )
   end
 
+  @tag :full_sweep
   test "demo-like page-switch patch path does not delay first hover activation to a later loop" do
     state = Emerge.Engine.diff_state_new()
 
@@ -282,6 +283,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
            )
   end
 
+  @tag :full_sweep
   test "demo-like page-switch patch path with move-triggered repatches activates hover on time" do
     state = Emerge.Engine.diff_state_new()
 
@@ -357,6 +359,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
            )
   end
 
+  @tag :full_sweep
   test "demo-like cursor-position repatches while moving to the right still activates hover on time" do
     state = Emerge.Engine.diff_state_new()
 
@@ -516,6 +519,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
     assert failures == []
   end
 
+  @tag :full_sweep
   test "demo-like page-switch with predicted-next-frame pulses does not clear hover while target stays under static cursor" do
     state = Emerge.Engine.diff_state_new()
 
