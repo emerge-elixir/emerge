@@ -77,40 +77,48 @@ jobs:
           echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
       - name: Verify macOS host release assets exist
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
 
           release_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${PROJECT_VERSION}"
           release_json="$(mktemp)"
+          visible_assets_file="$(mktemp)"
           missing_assets_file="$(mktemp)"
+
+          required_assets=(
+            "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz"
+            "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz.sha256"
+            "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz"
+            "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz.sha256"
+          )
 
           for attempt in $(seq 1 30); do
             curl -fsSL \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "User-Agent: emerge-skia-release" \
               "$release_url" > "$release_json"
 
+            jq -r '.assets[].name // empty' "$release_json" | sort > "$visible_assets_file"
             : > "$missing_assets_file"
 
-            for asset in \
-              "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz" \
-              "macos_host-v${PROJECT_VERSION}-aarch64-apple-darwin.tar.gz.sha256" \
-              "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz" \
-              "macos_host-v${PROJECT_VERSION}-x86_64-apple-darwin.tar.gz.sha256"
-            do
-              if ! grep -F '"name": "'"$asset"'"' "$release_json" >/dev/null; then
+            for asset in "${required_assets[@]}"; do
+              if ! grep -Fx "$asset" "$visible_assets_file" >/dev/null; then
                 printf '%s\n' "$asset" >> "$missing_assets_file"
               fi
             done
 
             if [[ ! -s "$missing_assets_file" ]]; then
+              echo "Found all required macOS host release assets."
+              cat "$visible_assets_file"
               exit 0
             fi
+
+            echo "Release tag: $(jq -r '.tag_name' "$release_json")"
+            echo "Release updated_at: $(jq -r '.updated_at' "$release_json")"
+            echo "Assets currently visible from release API:"
+            cat "$visible_assets_file"
 
             if [[ "$attempt" -lt 30 ]]; then
               echo "Waiting for macOS host release assets to appear (attempt ${attempt}/30)"
