@@ -128,6 +128,7 @@ mod app {
     const ELEMENT_EVENT_BLUR: u8 = 17;
     const ELEMENT_EVENT_CHANGE: u8 = 18;
 
+    const LOG_LEVEL_DEBUG: u8 = 0;
     const LOG_LEVEL_INFO: u8 = 1;
 
     const ACTION_RELEASE: u8 = 0;
@@ -1566,7 +1567,7 @@ mod app {
                                 notify_log(
                                     state,
                                     session_id,
-                                    LOG_LEVEL_INFO,
+                                    LOG_LEVEL_DEBUG,
                                     "macos_host",
                                     "upload_tree applied",
                                 );
@@ -1595,7 +1596,7 @@ mod app {
                                 notify_log(
                                     state,
                                     session_id,
-                                    LOG_LEVEL_INFO,
+                                    LOG_LEVEL_DEBUG,
                                     "macos_host",
                                     "patch_tree applied",
                                 );
