@@ -14,7 +14,7 @@ Add `:emerge` to your dependencies:
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.2.1"}
+    {:emerge, "~> 0.2.0"}
   ]
 end
 ```
