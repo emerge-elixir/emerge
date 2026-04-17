@@ -14,13 +14,13 @@ defmodule EmergeSkia.Transport do
   @callback set_input_target(renderer_handle(), pid() | nil) :: :ok
   @callback set_log_target(renderer_handle(), pid() | nil) :: :ok
   @callback set_input_mask(renderer_handle(), non_neg_integer()) :: :ok
-  @callback upload_tree(renderer_handle(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
-  @callback patch_tree(renderer_handle(), binary()) :: :ok | {:ok, atom()} | {:error, String.t()}
+  @callback upload_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
+  @callback patch_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
   @callback measure_text(String.t(), float()) :: {float(), float(), float(), float()}
   @callback load_font(String.t(), non_neg_integer(), boolean(), binary()) ::
-              :ok | {:ok, atom()} | {:error, String.t()}
+              :ok | {:ok, boolean()} | {:error, term()}
   @callback configure_assets(renderer_handle(), asset_config()) ::
-              :ok | {:ok, atom()} | {:error, term()}
+              :ok | {:error, term()}
   @callback render_tree_to_pixels(binary(), offscreen_opts(), asset_config()) ::
               binary() | {:ok, binary()} | {:error, String.t()}
   @callback render_tree_to_png(binary(), offscreen_opts(), asset_config()) ::
