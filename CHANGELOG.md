@@ -1,11 +1,5 @@
 # Changelog
 
-## [0.2.1] - 2026-04-17
-
-### Changed
-
-- Updated macOS release and documentation flow so published HexDocs excludes internal guides and Hex release verification reports visible release assets more clearly.
-
 ## [0.2.0] - 2026-04-17
 
 ### Added
