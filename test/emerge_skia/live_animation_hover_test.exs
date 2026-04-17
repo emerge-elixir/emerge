@@ -450,6 +450,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
            )
   end
 
+  @tag :full_sweep
   test "demo-like page-switch patch path activates hover within one loop for many cursor placement phases" do
     probe_point =
       world_probe_for_initial_visual_origin(
