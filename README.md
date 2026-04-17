@@ -14,7 +14,7 @@ Add `:emerge` to your dependencies:
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.2.0"}
+    {:emerge, "~> 0.2.1"}
   ]
 end
 ```
@@ -157,7 +157,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - **DRM** for embedded, kiosk, and Nerves deployments
 - **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
 
-Initial macOS support in `0.2.0` does not include `video_target`.
+Initial macOS support in `0.2.1` does not include `video_target`.
 
 For runtime backend selection and multi-backend setup, see [Set up a viewport](guides/tutorials/set_up_viewport.md).
 
