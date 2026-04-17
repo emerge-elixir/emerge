@@ -6,6 +6,7 @@ defmodule EmergeSkia.Macos.Protocol do
   @protocol_name "emerge_skia_macos"
   @protocol_version 7
 
+  @log_level_debug 0
   @log_level_info 1
   @log_level_warning 2
   @log_level_error 3
@@ -245,6 +246,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   defp decode_init_ok_tuple(_payload), do: {:error, "invalid init_ok payload"}
 
+  defp decode_log_level(@log_level_debug), do: :debug
   defp decode_log_level(@log_level_info), do: :info
   defp decode_log_level(@log_level_warning), do: :warning
   defp decode_log_level(@log_level_error), do: :error
