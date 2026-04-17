@@ -4,7 +4,7 @@ A viewport is an Elixir process that manages a renderer for Emerge.
 
 Think of it as a gateway to the user. It sends UI definitions to the renderer, requests rerenders when needed, and routes renderer events back to Elixir.
 
-On Wayland, one viewport is one GUI window. You can start multiple viewports at the same time to open multiple windows.
+On Wayland and macOS, one viewport is one GUI window. You can start multiple viewports at the same time to open multiple windows.
 
 With the DRM backend (mostly used on Nerves), the viewport renders to the first connected display.
 
@@ -70,13 +70,15 @@ You have to implement the `mount/1` callback and either `render/0` or `render/1`
 - `render/0` or `render/1` returns the UI definition
 - `handle_info/2` receives routed element events and triggers rerenders
 - `handle_input/2` receives raw renderer input selected by the input mask
-- `handle_close/2` handles Wayland window close requests
+- `handle_close/2` handles window close requests
 
 If a viewport does not need local state, `mount/1` can return `{:ok, opts}` and `render/0` can be used instead.
 
-## Start a Wayland window
+## Start a desktop window
 
-To run this on Wayland, you need Linux with a working Wayland session.
+On Linux desktop, this starts a Wayland window.
+
+On macOS, it starts a macOS window through the external `macos_host` runtime.
 
 From `iex -S mix`:
 
@@ -103,7 +105,8 @@ You should now see a window with a counter rendering inside of it.
 ### Backends
 
 Default backends:
-- `:wayland` for desktop builds
+- `:macos` on Darwin host builds
+- `:wayland` on Linux desktop builds
 - `:drm` for Nerves builds
 
 Backend selection also has a compile-time requirement: a backend can start at runtime only if it was compiled into the native code.
@@ -120,7 +123,29 @@ To compile both Wayland and DRM:
 config :emerge, compiled_backends: [:wayland, :drm]
 ```
 
-If you leave `compiled_backends` unset, desktop builds default to `[:wayland]` and Nerves builds default to `[:drm]`.
+To compile macOS only:
+
+```elixir
+config :emerge, compiled_backends: [:macos]
+```
+
+To compile all supported runtime backends from one source tree:
+
+```elixir
+config :emerge, compiled_backends: [:wayland, :drm, :macos]
+```
+
+If you leave `compiled_backends` unset, it defaults to `[:macos]` on macOS, `[:wayland]` on Linux desktop builds, and `[:drm]` on Nerves builds.
+
+Runtime backend options:
+
+- `backend: :macos` starts the macOS backend explicitly
+- `macos_backend: :auto | :metal | :raster` selects the macOS surface backend. `:auto` prefers Metal and falls back to raster.
+
+macOS notes:
+
+- `video_target` is not supported on macOS in `0.2.0`
+- macOS uses a downloaded and cached `macos_host` runtime binary instead of the in-process Rustler path used by Linux backends
 
 ### Assets
 
