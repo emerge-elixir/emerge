@@ -69,7 +69,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
     do: expected_first_activation_ms(label)..expected_first_activation_ms(label)
 
   def allowed_clear_tail_start_ms(:newly_occupied_inside_host), do: 1350
-  def allowed_clear_tail_start_ms(:newly_occupied_outside_host), do: 1300
+  def allowed_clear_tail_start_ms(:newly_occupied_outside_host), do: 1250
   def allowed_clear_tail_start_ms(label), do: expected_first_activation_ms(label)
 
   def target_id_bin(%Element{} = assigned_tree) do
