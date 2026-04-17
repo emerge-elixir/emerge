@@ -273,11 +273,11 @@ impl Dispatch<ZwpTextInputV3, ()> for WaylandApp {
                 state.text_input.handle_enter(&surface, &state.window);
                 state.text_input.sync(&state.window, &state.geometry);
             }
-            TextInputEvent::Leave { surface } => {
-                if state.text_input.handle_leave(&surface, &state.window) {
-                    state.keyboard.ime_preedit_active = false;
-                    state.send_input_event(InputEvent::TextPreeditClear);
-                }
+            TextInputEvent::Leave { surface }
+                if state.text_input.handle_leave(&surface, &state.window) =>
+            {
+                state.keyboard.ime_preedit_active = false;
+                state.send_input_event(InputEvent::TextPreeditClear);
             }
             TextInputEvent::PreeditString {
                 text,
