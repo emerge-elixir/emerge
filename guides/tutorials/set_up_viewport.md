@@ -144,7 +144,7 @@ Runtime backend options:
 
 macOS notes:
 
-- `video_target` is not supported on macOS in `0.2.1`
+- `video_target` is not supported on macOS in `0.2.0`
 - macOS uses a downloaded and cached `macos_host` runtime binary instead of the in-process Rustler path used by Linux backends
 
 ### Assets
@@ -320,7 +320,7 @@ The code reloader also expects Mix compile notifications. Add this listener in `
 def project do
   [
     app: :my_app,
-    version: "0.2.1",
+    version: "0.2.0",
     elixir: "~> 1.19",
     start_permanent: Mix.env() == :prod,
     listeners: [Emerge.Runtime.CodeReloader.MixListener],
