@@ -437,8 +437,12 @@ mod app {
         },
         LoadFont,
         ConfigureAssets,
-        RenderTreeToPixels { data: Vec<u8> },
-        RenderTreeToPng { data: Vec<u8> },
+        RenderTreeToPixels {
+            data: Vec<u8>,
+        },
+        RenderTreeToPng {
+            data: Vec<u8>,
+        },
         Shutdown,
         Error(String),
     }
@@ -771,12 +775,14 @@ mod app {
                 )
             })?;
 
-            services::load_font_bytes(&font.family, font.weight, font.italic, &data).map_err(|err| {
-                format!(
-                    "failed to load macOS font asset family={} path={}: {err}",
-                    font.family, font.path
-                )
-            })?;
+            services::load_font_bytes(&font.family, font.weight, font.italic, &data).map_err(
+                |err| {
+                    format!(
+                        "failed to load macOS font asset family={} path={}: {err}",
+                        font.family, font.path
+                    )
+                },
+            )?;
 
             loaded_fonts.insert(font.clone());
             changed = true;
@@ -1571,34 +1577,35 @@ mod app {
                         }
                     }
                 }
-                Ok(HostCommand::PatchTree {
-                    session_id,
-                    bytes,
-                }) => match ui_state.borrow_mut().sessions.get_mut(&session_id) {
-                    Some(session) => {
-                        let patch_started_at = Instant::now();
-                        let result = patch_tree(session, &bytes);
+                Ok(HostCommand::PatchTree { session_id, bytes }) => {
+                    match ui_state.borrow_mut().sessions.get_mut(&session_id) {
+                        Some(session) => {
+                            let patch_started_at = Instant::now();
+                            let result = patch_tree(session, &bytes);
 
-                        if let Some(stats) = session.stats.as_ref() {
-                            stats.record_patch_tree_process(patch_started_at.elapsed());
+                            if let Some(stats) = session.stats.as_ref() {
+                                stats.record_patch_tree_process(patch_started_at.elapsed());
+                            }
+
+                            if let Err(err) = result {
+                                eprintln!(
+                                    "macOS patch_tree failed for session {session_id}: {err}"
+                                );
+                            } else {
+                                notify_log(
+                                    state,
+                                    session_id,
+                                    LOG_LEVEL_INFO,
+                                    "macos_host",
+                                    "patch_tree applied",
+                                );
+                            }
                         }
-
-                        if let Err(err) = result {
-                            eprintln!("macOS patch_tree failed for session {session_id}: {err}");
-                        } else {
-                            notify_log(
-                                state,
-                                session_id,
-                                LOG_LEVEL_INFO,
-                                "macos_host",
-                                "patch_tree applied",
-                            );
+                        None => {
+                            eprintln!("macOS patch_tree for unknown session {session_id}");
                         }
                     }
-                    None => {
-                        eprintln!("macOS patch_tree for unknown session {session_id}");
-                    }
-                },
+                }
                 Ok(HostCommand::SetInputMask {
                     session_id,
                     mask,
@@ -3741,12 +3748,20 @@ mod app {
             HostReply::ConfigureAssets => {
                 encode_frame(FRAME_REPLY, request_id, session_id, tag, &[])
             }
-            HostReply::RenderTreeToPixels { data } => {
-                encode_frame(FRAME_REPLY, request_id, session_id, tag, &encode_blob_payload(&data))
-            }
-            HostReply::RenderTreeToPng { data } => {
-                encode_frame(FRAME_REPLY, request_id, session_id, tag, &encode_blob_payload(&data))
-            }
+            HostReply::RenderTreeToPixels { data } => encode_frame(
+                FRAME_REPLY,
+                request_id,
+                session_id,
+                tag,
+                &encode_blob_payload(&data),
+            ),
+            HostReply::RenderTreeToPng { data } => encode_frame(
+                FRAME_REPLY,
+                request_id,
+                session_id,
+                tag,
+                &encode_blob_payload(&data),
+            ),
             HostReply::Shutdown => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::Error(message) => {
                 encode_frame(FRAME_ERROR, request_id, session_id, tag, message.as_bytes())

@@ -178,6 +178,36 @@ impl Encoder for FrozenTerm {
     }
 }
 
+fn validate_prime_target(
+    target_id: &str,
+    mode: VideoMode,
+    target_width: u32,
+    target_height: u32,
+    frame_width: u32,
+    frame_height: u32,
+    frame_format: u32,
+) -> Result<(), String> {
+    if mode != VideoMode::Prime {
+        return Err(format!("video target {target_id} is not a prime target"));
+    }
+
+    if frame_width != target_width || frame_height != target_height {
+        return Err(format!(
+            "prime frame size {}x{} does not match target {}x{}",
+            frame_width, frame_height, target_width, target_height
+        ));
+    }
+
+    if frame_format != DRM_FORMAT_NV12 {
+        return Err(format!(
+            "unsupported DRM format {:#x}; only NV12 is supported in v1",
+            frame_format
+        ));
+    }
+
+    Ok(())
+}
+
 struct Fd(OwnedFd);
 
 impl<'a> Decoder<'a> for Fd {
@@ -254,6 +284,26 @@ pub struct PrimeDesc {
     keepalive: FrozenTerm,
     owner_pid: LocalPid,
     trace_token: Option<TraceToken>,
+}
+
+impl PrimeDesc {
+    pub fn validate_for_target(
+        &self,
+        target_id: &str,
+        mode: VideoMode,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<(), String> {
+        validate_prime_target(
+            target_id,
+            mode,
+            target_width,
+            target_height,
+            self.width,
+            self.height,
+            self.format.0,
+        )
+    }
 }
 
 #[cfg_attr(
@@ -434,50 +484,41 @@ impl VideoRegistry {
     }
 
     pub fn submit_prime(&self, id: &str, frame: PrimeFrame) -> Result<(), String> {
-        let (mode, target_width, target_height) = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| "video registry lock poisoned")?;
-            let entry = state
-                .get(id)
-                .ok_or_else(|| format!("unknown video target: {id}"))?;
-            (entry.spec.mode, entry.spec.width, entry.spec.height)
-        };
-
-        if mode != VideoMode::Prime {
-            self.defer_release(frame);
-            return Err(format!("video target {id} is not a prime target"));
-        }
-
         let frame_width = frame.width;
         let frame_height = frame.height;
         let frame_format = frame.format;
 
-        if frame_width != target_width || frame_height != target_height {
-            self.defer_release(frame);
-            return Err(format!(
-                "prime frame size {}x{} does not match target {}x{}",
-                frame_width, frame_height, target_width, target_height
-            ));
-        }
-
-        if frame_format != DRM_FORMAT_NV12 {
-            self.defer_release(frame);
-            return Err(format!(
-                "unsupported DRM format {:#x}; only NV12 is supported in v1",
-                frame_format
-            ));
-        }
-
         let previous = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "video registry lock poisoned")?;
-            let entry = state
-                .get_mut(id)
-                .ok_or_else(|| format!("unknown video target: {id}"))?;
+            let mut state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => {
+                    self.defer_release(frame);
+                    return Err("video registry lock poisoned".to_string());
+                }
+            };
+            let entry = match state.get_mut(id) {
+                Some(entry) => entry,
+                None => {
+                    drop(state);
+                    self.defer_release(frame);
+                    return Err(format!("unknown video target: {id}"));
+                }
+            };
+
+            if let Err(reason) = validate_prime_target(
+                id,
+                entry.spec.mode,
+                entry.spec.width,
+                entry.spec.height,
+                frame_width,
+                frame_height,
+                frame_format,
+            ) {
+                drop(state);
+                self.defer_release(frame);
+                return Err(reason);
+            }
+
             entry.pending.replace(frame)
         };
 
@@ -528,6 +569,17 @@ impl VideoRegistry {
             .iter()
             .map(|(id, entry)| (id.clone(), entry.spec.clone()))
             .collect())
+    }
+
+    pub fn target_spec(&self, id: &str) -> Result<VideoTargetSpec, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "video registry lock poisoned".to_string())?;
+        state
+            .get(id)
+            .map(|entry| entry.spec.clone())
+            .ok_or_else(|| format!("unknown video target: {id}"))
     }
 
     #[cfg_attr(
@@ -601,6 +653,7 @@ pub struct VideoTargetResource {
     pub wake: VideoWake,
 }
 
+#[rustler::resource_impl]
 impl rustler::Resource for VideoTargetResource {}
 
 impl Drop for VideoTargetResource {
@@ -1828,5 +1881,31 @@ mod tests {
                 .pending
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn submit_prime_releases_rejected_frame_to_release_queue() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx);
+
+        registry
+            .create_target(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+
+        let error = registry
+            .submit_prime("preview", test_prime_frame(16, 16))
+            .expect_err("mismatched frame should be rejected");
+
+        assert!(error.contains("does not match target"));
+
+        let released = release_rx.try_recv().expect("expected released frame");
+        assert_eq!(released.width, 16);
+        assert_eq!(released.height, 16);
+        assert!(release_rx.try_recv().is_err());
     }
 }

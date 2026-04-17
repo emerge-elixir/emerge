@@ -75,7 +75,7 @@ defmodule EmergeSkia.LiveAnimationHoverTest do
   end
 
   defp unwrap_ok(:ok), do: :ok
-  defp unwrap_ok({:ok, :ok}), do: :ok
+  defp unwrap_ok({:ok, _}), do: :ok
   defp unwrap_ok(other), do: other
 
   defp drain_probe_events(acc \\ []) do
