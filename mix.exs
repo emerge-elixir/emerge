@@ -1,7 +1,7 @@
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.2.1"
   @source_url "https://github.com/emerge-elixir/emerge"
 
   @nerves_rust_target_triple_mapping %{
@@ -152,7 +152,15 @@ defmodule Emerge.MixProject do
   end
 
   defp docs_extras do
-    public_docs_extras() ++ optional_internal_docs_extras()
+    public_docs_extras() ++ internal_docs_extras()
+  end
+
+  defp internal_docs_extras do
+    if include_internal_docs?() do
+      optional_internal_docs_extras()
+    else
+      []
+    end
   end
 
   defp public_docs_extras do
@@ -181,11 +189,15 @@ defmodule Emerge.MixProject do
 
   defp docs_groups_for_extras do
     [Tutorials: ~r/guides\/tutorials\/.*/] ++
-      if optional_internal_docs_extras() == [] do
+      if internal_docs_extras() == [] do
         []
       else
         [Internals: ~r/guides\/internals\/.*/]
       end
+  end
+
+  defp include_internal_docs? do
+    System.get_env("EMERGE_INCLUDE_INTERNAL_DOCS", "true") not in ["0", "false"]
   end
 
   defp rustler_opts do

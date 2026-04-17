@@ -143,6 +143,7 @@ jobs:
 
       - name: Publish package and docs to Hex
         env:
+          EMERGE_INCLUDE_INTERNAL_DOCS: "false"
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         shell: bash
         run: |
