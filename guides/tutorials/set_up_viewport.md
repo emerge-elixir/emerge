@@ -295,7 +295,7 @@ The code reloader also expects Mix compile notifications. Add this listener in `
 def project do
   [
     app: :my_app,
-    version: "0.1.0",
+    version: "0.2.0",
     elixir: "~> 1.19",
     start_permanent: Mix.env() == :prod,
     listeners: [Emerge.Runtime.CodeReloader.MixListener],
