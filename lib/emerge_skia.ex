@@ -91,7 +91,7 @@ defmodule EmergeSkia do
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
-  - `renderer_stats_log` - Log renderer timing stats every 5 seconds, including frame rate and min/avg/max/count timing windows for layout, event resolve, and patch completion (default: false)
+  - `renderer_stats_log` - Log renderer timing stats every 5 seconds, including frame rate and min/avg/max/count timing windows for render, present submit, layout, event resolve, and patch completion (default: false)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as

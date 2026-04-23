@@ -602,7 +602,8 @@ defmodule Emerge.UITest do
     element = paragraph([key(:my_para), spacing(8)], [text("Hi")])
 
     assert element.type == :paragraph
-    assert element.id == :my_para
+    assert element.key == :my_para
+    assert is_nil(element.id)
     assert element.attrs.spacing == 8
   end
 
@@ -635,7 +636,8 @@ defmodule Emerge.UITest do
     element = text_column([key(:doc), spacing(10)], [paragraph([], [text("Hello")])])
 
     assert element.type == :text_column
-    assert element.id == :doc
+    assert element.key == :doc
+    assert is_nil(element.id)
     assert element.attrs.spacing == 10
   end
 
@@ -949,7 +951,8 @@ defmodule Emerge.UITest do
       )
 
     assert element.type == :text_input
-    assert element.id == :search
+    assert element.key == :search
+    assert is_nil(element.id)
     assert element.attrs.content == "hello"
     assert element.attrs.width == {:px, 240}
     assert element.attrs.on_change == {self(), :search_changed}
@@ -969,7 +972,8 @@ defmodule Emerge.UITest do
       )
 
     assert element.type == :multiline
-    assert element.id == :notes
+    assert element.key == :notes
+    assert is_nil(element.id)
     assert element.attrs.content == "hello\nworld"
     assert element.attrs.width == {:px, 320}
     assert element.attrs.on_change == {self(), :notes_changed}
@@ -991,7 +995,8 @@ defmodule Emerge.UITest do
       )
 
     assert element.type == :el
-    assert element.id == :save_btn
+    assert element.key == :save_btn
+    assert is_nil(element.id)
     assert element.attrs.width == {:px, 160}
     assert element.attrs.on_press == {self(), :save_pressed}
     assert element.attrs.on_focus == {self(), :save_focused}

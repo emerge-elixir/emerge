@@ -6,7 +6,7 @@ use super::registry_builder::{self, Listener, ListenerAction, Registry};
 use super::{ElementEventKind, RegistryRebuildPayload};
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
 use crate::tree::attrs::{AlignX, AlignY, Attrs, Length, MouseOverAttrs};
-use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, NearbySlot};
+use crate::tree::element::{Element, ElementKind, ElementTree, NearbySlot, NodeId};
 use crate::tree::layout::{
     Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
 };
@@ -43,9 +43,9 @@ pub enum SampledRegistrySource {
 
 #[derive(Clone, Debug)]
 pub struct AnimatedNearbyHitCase {
-    pub host_id: ElementId,
-    pub underlying_id: ElementId,
-    pub target_id: ElementId,
+    pub host_id: NodeId,
+    pub underlying_id: NodeId,
+    pub target_id: NodeId,
     pub constraint: Constraint,
     pub sample_times_ms: Vec<u64>,
     pub probes: Vec<HitProbe>,
@@ -54,9 +54,9 @@ pub struct AnimatedNearbyHitCase {
 impl AnimatedNearbyHitCase {
     pub fn width_move_in_front() -> Self {
         Self {
-            host_id: ElementId::from_term_bytes(vec![210]),
-            underlying_id: ElementId::from_term_bytes(vec![211]),
-            target_id: ElementId::from_term_bytes(vec![212]),
+            host_id: NodeId::from_term_bytes(vec![210]),
+            underlying_id: NodeId::from_term_bytes(vec![211]),
+            target_id: NodeId::from_term_bytes(vec![212]),
             constraint: Constraint::new(128.0, 82.0),
             sample_times_ms: vec![0, 500, 1000],
             probes: vec![
@@ -104,7 +104,7 @@ impl AnimatedNearbyHitCase {
         match source {
             SampledRegistrySource::LayoutOnly => {
                 let tree = self.tree_at(sample_ms, false);
-                let elements: Vec<_> = tree.nodes.values().cloned().collect();
+                let elements: Vec<_> = tree.iter_nodes().cloned().collect();
                 registry_builder::registry_for_elements(&elements)
             }
             SampledRegistrySource::RenderRebuild => self.rebuild_at(sample_ms, false).base_registry,
@@ -178,8 +178,8 @@ fn first_matching_actions(
 
 pub(crate) fn winner_from_actions(
     actions: &[ListenerAction],
-    target_id: &ElementId,
-    underlying_id: &ElementId,
+    target_id: &NodeId,
+    underlying_id: &NodeId,
 ) -> ExpectedHitWinner {
     for action in actions {
         match action {

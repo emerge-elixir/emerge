@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::input::InputEvent;
 use crate::render_scene::RenderScene;
-use crate::tree::element::ElementId;
+use crate::tree::element::NodeId;
 
 #[derive(Debug, Clone)]
 pub enum TreeMsg {
@@ -20,44 +20,44 @@ pub enum TreeMsg {
         scale: f32,
     },
     ScrollRequest {
-        element_id: ElementId,
+        element_id: NodeId,
         dx: f32,
         dy: f32,
     },
     ScrollbarThumbDragX {
-        element_id: ElementId,
+        element_id: NodeId,
         dx: f32,
     },
     ScrollbarThumbDragY {
-        element_id: ElementId,
+        element_id: NodeId,
         dy: f32,
     },
     SetScrollbarXHover {
-        element_id: ElementId,
+        element_id: NodeId,
         hovered: bool,
     },
     SetScrollbarYHover {
-        element_id: ElementId,
+        element_id: NodeId,
         hovered: bool,
     },
     SetMouseOverActive {
-        element_id: ElementId,
+        element_id: NodeId,
         active: bool,
     },
     SetMouseDownActive {
-        element_id: ElementId,
+        element_id: NodeId,
         active: bool,
     },
     SetFocusedActive {
-        element_id: ElementId,
+        element_id: NodeId,
         active: bool,
     },
     SetTextInputContent {
-        element_id: ElementId,
+        element_id: NodeId,
         content: String,
     },
     SetTextInputRuntime {
-        element_id: ElementId,
+        element_id: NodeId,
         focused: bool,
         cursor: Option<u32>,
         selection_anchor: Option<u32>,

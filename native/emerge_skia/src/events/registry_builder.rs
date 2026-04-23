@@ -51,7 +51,7 @@ use crate::tree::attrs::{
     KeyBindingMatch, KeyBindingSpec, VirtualKeyHoldMode, VirtualKeyTapAction,
 };
 use crate::tree::element::{
-    Element, ElementId, ElementKind, ElementTree, RetainedChildMode, RetainedPaintPhase,
+    Element, ElementKind, ElementTree, NodeId, RetainedChildMode, RetainedPaintPhase,
 };
 use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
 use crate::tree::scene::ResolvedNodeState;
@@ -244,7 +244,7 @@ impl<'a> LayeredRegistryView<'a> {
 /// Pointer click/press tracker state used to rematerialize release followups.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClickPressTracker {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub matcher_kind: ListenerMatcherKind,
     pub emit_click: bool,
     pub emit_press_pointer: bool,
@@ -259,7 +259,7 @@ pub(crate) enum VirtualKeyPhase {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct VirtualKeyTracker {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub region: PointerRegion,
     pub tap: VirtualKeyTapAction,
     pub hold: VirtualKeyHoldMode,
@@ -328,49 +328,46 @@ impl PointerRegion {
 /// Precomputed scroll requests needed to reveal a focus target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FocusRevealScroll {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub dx: f32,
     pub dy: f32,
 }
 
 #[derive(Clone, Debug, Default)]
 struct FocusBuildState {
-    focused_id: Option<ElementId>,
-    first_focusable: Option<ElementId>,
+    focused_id: Option<NodeId>,
+    first_focusable: Option<NodeId>,
     first_focusable_reveal_scrolls: Vec<FocusRevealScroll>,
-    last_focusable: Option<ElementId>,
+    last_focusable: Option<NodeId>,
     last_focusable_reveal_scrolls: Vec<FocusRevealScroll>,
-    by_id: HashMap<ElementId, ElementFocusMeta>,
+    by_id: HashMap<NodeId, ElementFocusMeta>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct ElementFocusMeta {
     is_currently_focused: bool,
     self_reveal_scrolls: Vec<FocusRevealScroll>,
-    tab_next: Option<ElementId>,
+    tab_next: Option<NodeId>,
     tab_next_reveal_scrolls: Vec<FocusRevealScroll>,
-    tab_prev: Option<ElementId>,
+    tab_prev: Option<NodeId>,
     tab_prev_reveal_scrolls: Vec<FocusRevealScroll>,
 }
 
 #[derive(Clone, Debug)]
 struct FocusEntry {
-    element_id: ElementId,
+    element_id: NodeId,
     is_currently_focused: bool,
     self_reveal_scrolls: Vec<FocusRevealScroll>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyPressFollowup {
-    ElixirEvent {
-        element_id: ElementId,
-        route: String,
-    },
+    ElixirEvent { element_id: NodeId, route: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyPressTracker {
-    pub source_element_id: Option<ElementId>,
+    pub source_element_id: Option<NodeId>,
     pub key: CanonicalKey,
     pub mods: u8,
     pub match_mode: KeyBindingMatch,
@@ -381,9 +378,9 @@ pub struct KeyPressTracker {
 pub(crate) struct RegistryBuildAcc {
     current_revision: u64,
     registry: Registry,
-    text_inputs: HashMap<ElementId, TextInputState>,
-    scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
-    focused_id: Option<ElementId>,
+    text_inputs: HashMap<NodeId, TextInputState>,
+    scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
+    focused_id: Option<NodeId>,
     focus_entries: Vec<FocusEntry>,
     focus_on_mount: Option<FocusOnMountTarget>,
 }
@@ -399,7 +396,7 @@ impl RegistryBuildAcc {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScrollContext {
-    id: ElementId,
+    id: NodeId,
     viewport: Rect,
     scroll_x: f32,
     scroll_y: f32,
@@ -409,7 +406,7 @@ pub(crate) struct ScrollContext {
 
 #[derive(Clone, Debug)]
 struct DeferredSubtree {
-    element_id: ElementId,
+    element_id: NodeId,
     scroll_contexts: Vec<ScrollContext>,
     scene_ctx: crate::tree::scene::SceneContext,
 }
@@ -447,14 +444,14 @@ pub enum DragTrackerState {
     #[default]
     Inactive,
     Candidate {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
         swipe_handlers: SwipeHandlers,
     },
     Active {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         last_x: f32,
         last_y: f32,
@@ -465,7 +462,7 @@ pub enum DragTrackerState {
 /// Scrollbar drag tracker state used to rematerialize thumb-drag followups.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollbarDragTracker {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub axis: ScrollbarAxis,
     pub track_start: f32,
     pub track_len: f32,
@@ -492,13 +489,13 @@ pub(crate) struct ScrollbarPressSpec {
 /// Text-selection drag tracker state used to rematerialize cursor followups.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextDragTracker {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub matcher_kind: ListenerMatcherKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SwipeTracker {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub matcher_kind: ListenerMatcherKind,
     pub origin_x: f32,
     pub origin_y: f32,
@@ -1269,7 +1266,7 @@ fn runtime_text_drag_window_leave_clear_listener(
 
 #[derive(Clone, Debug)]
 pub(crate) struct PointerDragBootstrap {
-    element_id: ElementId,
+    element_id: NodeId,
     matcher_kind: ListenerMatcherKind,
     swipe_handlers: SwipeHandlers,
 }
@@ -1286,7 +1283,7 @@ pub(crate) enum TextInputKeyEditKind {
 
 fn runtime_source_listener<'a>(
     base: &'a Registry,
-    element_id: &ElementId,
+    element_id: &NodeId,
     matcher_kind: ListenerMatcherKind,
 ) -> Option<&'a Listener> {
     base.view().find_precedence(|listener| {
@@ -1302,15 +1299,15 @@ fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> 
 }
 
 pub(crate) trait ListenerComputeCtx {
-    fn focused_id(&self) -> Option<&ElementId> {
+    fn focused_id(&self) -> Option<&NodeId> {
         None
     }
 
-    fn hover_owner(&self) -> Option<&ElementId> {
+    fn hover_owner(&self) -> Option<&NodeId> {
         None
     }
 
-    fn text_input_state(&self, _element_id: &ElementId) -> Option<TextInputState> {
+    fn text_input_state(&self, _element_id: &NodeId) -> Option<TextInputState> {
         None
     }
 
@@ -1318,7 +1315,7 @@ pub(crate) trait ListenerComputeCtx {
         None
     }
 
-    fn take_text_commit_suppression(&mut self, _element_id: &ElementId) -> bool {
+    fn take_text_commit_suppression(&mut self, _element_id: &NodeId) -> bool {
         false
     }
 
@@ -1344,7 +1341,7 @@ pub(crate) trait ListenerComputeCtx {
 
     fn base_source_listener(
         &self,
-        _element_id: &ElementId,
+        _element_id: &NodeId,
         _matcher_kind: ListenerMatcherKind,
     ) -> Option<Listener> {
         None
@@ -1368,7 +1365,7 @@ pub enum ScrollDirection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ScrollbarHoverCompute {
-    element_id: ElementId,
+    element_id: NodeId,
     current_axis: Option<ScrollbarAxis>,
     x_region: Option<PointerRegion>,
     y_region: Option<PointerRegion>,
@@ -1413,7 +1410,7 @@ impl ListenerInput {
 #[derive(Clone, Debug)]
 pub(crate) struct Listener {
     /// Optional source element id for this listener.
-    pub element_id: Option<ElementId>,
+    pub element_id: Option<NodeId>,
     /// Match rule for this listener.
     pub matcher: ListenerMatcher,
     /// Computation that generates output actions for this listener.
@@ -2021,29 +2018,29 @@ pub(crate) enum ListenerAction {
 pub enum SemanticAction {
     /// Apply a precomputed focus transition.
     FocusTo {
-        next: Option<ElementId>,
+        next: Option<NodeId>,
         reveal_scrolls: Vec<FocusRevealScroll>,
     },
     /// Request a text-input command operation.
     TextInputCommand {
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputCommandRequest,
     },
     /// Request a text-input edit operation.
     TextInputEdit {
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputEditRequest,
     },
     /// Request a text-input cursor operation.
     TextInputCursor {
-        element_id: ElementId,
+        element_id: NodeId,
         x: f32,
         y: f32,
         extend_selection: bool,
     },
     /// Request a text-input preedit operation.
     TextInputPreedit {
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputPreeditRequest,
     },
 }
@@ -2053,7 +2050,7 @@ pub enum SemanticAction {
 pub(crate) enum RuntimeChange {
     /// Begin click/press followup tracking for pointer interaction.
     StartClickPressTracker {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         emit_click: bool,
         emit_press_pointer: bool,
@@ -2064,7 +2061,7 @@ pub(crate) enum RuntimeChange {
     StartKeyPressTracker { tracker: KeyPressTracker },
     /// Begin drag threshold tracking.
     StartDragTracker {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
@@ -2072,7 +2069,7 @@ pub(crate) enum RuntimeChange {
     },
     /// Promote drag threshold tracking to an active drag followup.
     PromoteDragTracker {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         last_x: f32,
         last_y: f32,
@@ -2080,7 +2077,7 @@ pub(crate) enum RuntimeChange {
     },
     /// Begin text-selection drag tracking.
     StartTextDragTracker {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
     },
     /// End drag tracking on pointer release.
@@ -2111,21 +2108,18 @@ pub(crate) enum RuntimeChange {
     ClearTextDragTracker,
     /// Mirror full text input state into runtime state.
     SetTextInputState {
-        element_id: ElementId,
+        element_id: NodeId,
         state: TextInputState,
     },
     /// Suppress the next keydown-derived text commit for one text input.
     ArmTextCommitSuppression {
-        element_id: ElementId,
+        element_id: NodeId,
         key: CanonicalKey,
     },
     /// Track an expected content value coming back from an Elixir tree patch.
-    ExpectTextInputPatchValue {
-        element_id: ElementId,
-        content: String,
-    },
+    ExpectTextInputPatchValue { element_id: NodeId, content: String },
     /// Update the runtime's current hover owner.
-    SetHoverOwner { element_id: Option<ElementId> },
+    SetHoverOwner { element_id: Option<NodeId> },
 }
 
 impl RuntimeChange {
@@ -2159,7 +2153,7 @@ impl RuntimeChange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElixirEvent {
     /// Target element id.
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     /// Logical event kind.
     pub kind: ElementEventKind,
     /// Optional string payload.
@@ -2179,18 +2173,18 @@ pub(crate) enum ListenerCompute {
     StaticWithLeftPressRuntimeAugment {
         actions: Vec<ListenerAction>,
         pointer_drag: Option<PointerDragBootstrap>,
-        text_cursor_element_id: Option<ElementId>,
+        text_cursor_element_id: Option<NodeId>,
         text_drag: Option<TextDragTracker>,
     },
     /// Fixed actions plus a text-input cursor action derived from matched input.
     StaticWithTextInputCursorRuntime {
         actions: Vec<ListenerAction>,
-        element_id: ElementId,
+        element_id: NodeId,
         extend_selection: bool,
     },
     /// Emit pointer click/press followups, then redispatch raw release into the base registry.
     ClickPressReleaseFollowupToBase {
-        element_id: ElementId,
+        element_id: NodeId,
         emit_click: bool,
         emit_press_pointer: bool,
     },
@@ -2203,7 +2197,7 @@ pub(crate) enum ListenerCompute {
     },
     /// Promote drag threshold tracking using cursor-move payload.
     PromoteDragTrackerFromCursorPos {
-        element_id: ElementId,
+        element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
@@ -2215,14 +2209,14 @@ pub(crate) enum ListenerCompute {
     RedispatchPointerLifecycle,
     /// Build one `TreeMsg::ScrollRequest` from a directional scroll input.
     ScrollTreeMsgFromCursorScrollDirection {
-        element_id: ElementId,
+        element_id: NodeId,
         direction: ScrollDirection,
     },
     /// Build `TreeMsg::Resize` from a resize input.
     WindowResizeToTree,
     /// Emit a fixed key-scroll tree request.
     KeyScrollToTree {
-        element_id: ElementId,
+        element_id: NodeId,
         dx: f32,
         dy: f32,
     },
@@ -2234,27 +2228,27 @@ pub(crate) enum ListenerCompute {
     },
     /// Start scrollbar drag tracking from a thumb or track press.
     ScrollbarPressToRuntime {
-        element_id: ElementId,
+        element_id: NodeId,
         spec: ScrollbarPressSpec,
     },
     /// Emit scrollbar drag tree updates and update current scroll position.
     ScrollbarDragMove { tracker: ScrollbarDragTracker },
     /// Build a key-driven text cursor edit action from live text-input state.
     TextInputKeyEditToRuntime {
-        element_id: ElementId,
+        element_id: NodeId,
         kind: TextInputKeyEditKind,
     },
     /// Build a fixed text-edit action only when it changes content/state.
     TextInputEditToRuntimeMaybe {
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputEditRequest,
     },
     /// Build a text-commit insertion action.
-    TextCommitToRuntime { element_id: ElementId },
+    TextCommitToRuntime { element_id: NodeId },
     /// Build a text preedit action from matched IME input.
-    TextInputPreeditToRuntime { element_id: ElementId },
+    TextInputPreeditToRuntime { element_id: NodeId },
     /// Build an IME delete-surrounding edit action.
-    TextDeleteSurroundingToRuntime { element_id: ElementId },
+    TextDeleteSurroundingToRuntime { element_id: NodeId },
     /// Raw cursor position actions plus element-local scrollbar hover transitions.
     RawCursorPosWithScrollbarHover {
         actions: Vec<ListenerAction>,
@@ -2615,7 +2609,7 @@ impl ListenerCompute {
 
 fn text_cursor_action_from_input(
     input: Option<&InputEvent>,
-    element_id: &ElementId,
+    element_id: &NodeId,
     extend_selection: bool,
 ) -> Option<ListenerAction> {
     let action = match input? {
@@ -2702,7 +2696,7 @@ fn text_key_edit_request(
 
 fn text_preedit_action_from_input(
     input: Option<&InputEvent>,
-    element_id: &ElementId,
+    element_id: &NodeId,
 ) -> Option<ListenerAction> {
     let request = match input? {
         InputEvent::TextPreedit { text, cursor } => {
@@ -2727,7 +2721,7 @@ fn text_preedit_action_from_input(
 
 fn text_delete_surrounding_action_from_input(
     input: Option<&InputEvent>,
-    element_id: &ElementId,
+    element_id: &NodeId,
 ) -> Option<ListenerAction> {
     let (before_length, after_length) = match input? {
         InputEvent::DeleteSurrounding {
@@ -2973,7 +2967,7 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
 
 fn scroll_tree_actions_from_directional_input(
     input: &ListenerInput,
-    element_id: &ElementId,
+    element_id: &NodeId,
     direction: ScrollDirection,
 ) -> Vec<ListenerAction> {
     match input {
@@ -3059,7 +3053,7 @@ fn scrollbar_hover_delta_actions(
     }
 
     fn scrollbar_hover_axis_action(
-        element_id: &ElementId,
+        element_id: &NodeId,
         axis: Option<ScrollbarAxis>,
         hovered: bool,
     ) -> Option<ListenerAction> {
@@ -3175,7 +3169,7 @@ fn resolve_listener_actions<C: ListenerComputeCtx>(
 }
 
 pub(crate) fn resolve_text_input_command_actions<C: ListenerComputeCtx>(
-    element_id: &ElementId,
+    element_id: &NodeId,
     request: TextInputCommandRequest,
     ctx: &mut C,
 ) -> Vec<ListenerAction> {
@@ -3189,7 +3183,7 @@ pub(crate) fn resolve_text_input_command_actions<C: ListenerComputeCtx>(
 }
 
 pub(crate) fn resolve_text_input_edit_actions<C: ListenerComputeCtx>(
-    element_id: &ElementId,
+    element_id: &NodeId,
     request: TextInputEditRequest,
     ctx: &mut C,
 ) -> Vec<ListenerAction> {
@@ -3203,14 +3197,14 @@ pub(crate) fn resolve_text_input_edit_actions<C: ListenerComputeCtx>(
 }
 
 enum FocusTransition {
-    Blur(ElementId),
-    Focus(ElementId),
+    Blur(NodeId),
+    Focus(NodeId),
 }
 
 struct SemanticComputeState<'a, C> {
     ctx: &'a mut C,
-    focused_id: Option<ElementId>,
-    snapshots: HashMap<ElementId, Option<TextInputState>>,
+    focused_id: Option<NodeId>,
+    snapshots: HashMap<NodeId, Option<TextInputState>>,
     clipboard: HashMap<ClipboardTarget, Option<String>>,
 }
 
@@ -3224,7 +3218,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         }
     }
 
-    fn snapshot(&mut self, element_id: &ElementId) -> Option<&mut TextInputState> {
+    fn snapshot(&mut self, element_id: &NodeId) -> Option<&mut TextInputState> {
         self.snapshots
             .entry(element_id.clone())
             .or_insert_with(|| self.ctx.text_input_state(element_id))
@@ -3411,7 +3405,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_focus_to(
         &mut self,
-        next: Option<ElementId>,
+        next: Option<NodeId>,
         reveal_scrolls: Vec<FocusRevealScroll>,
     ) -> Vec<ListenerAction> {
         let previous = self.focused_id.clone();
@@ -3443,7 +3437,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_text_cursor(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         x: f32,
         y: f32,
         extend_selection: bool,
@@ -3471,7 +3465,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_text_command(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputCommandRequest,
     ) -> Vec<ListenerAction> {
         match request {
@@ -3587,7 +3581,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_text_paste(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         target: ClipboardTarget,
     ) -> Vec<ListenerAction> {
         let Some(pasted) = self.clipboard_text(target) else {
@@ -3616,7 +3610,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_text_edit(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputEditRequest,
     ) -> Vec<ListenerAction> {
         match request {
@@ -4198,7 +4192,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn resolve_text_preedit(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         request: TextInputPreeditRequest,
     ) -> Vec<ListenerAction> {
         let Some(snapshot) = self.snapshot(&element_id) else {
@@ -4283,7 +4277,7 @@ fn move_snapshot_cursor(
     snapshot.move_cursor(next_cursor, extend_selection)
 }
 
-fn text_runtime_tree_action(element_id: &ElementId, snapshot: &TextInputState) -> ListenerAction {
+fn text_runtime_tree_action(element_id: &NodeId, snapshot: &TextInputState) -> ListenerAction {
     ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime {
         element_id: element_id.clone(),
         focused: snapshot.focused,
@@ -4294,14 +4288,14 @@ fn text_runtime_tree_action(element_id: &ElementId, snapshot: &TextInputState) -
     })
 }
 
-fn text_runtime_mirror_change(element_id: &ElementId, snapshot: &TextInputState) -> ListenerAction {
+fn text_runtime_mirror_change(element_id: &NodeId, snapshot: &TextInputState) -> ListenerAction {
     ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState {
         element_id: element_id.clone(),
         state: snapshot.clone(),
     })
 }
 
-fn text_runtime_actions(element_id: &ElementId, snapshot: &TextInputState) -> Vec<ListenerAction> {
+fn text_runtime_actions(element_id: &NodeId, snapshot: &TextInputState) -> Vec<ListenerAction> {
     vec![
         text_runtime_tree_action(element_id, snapshot),
         text_runtime_mirror_change(element_id, snapshot),
@@ -4309,7 +4303,7 @@ fn text_runtime_actions(element_id: &ElementId, snapshot: &TextInputState) -> Ve
 }
 
 fn content_change_actions(
-    element_id: &ElementId,
+    element_id: &NodeId,
     snapshot: &TextInputState,
     change_payload: Option<String>,
 ) -> Vec<ListenerAction> {
@@ -4382,7 +4376,7 @@ fn cursor_from_click_point(snapshot: &TextInputState, x: f32, y: f32) -> u32 {
 
 fn scrollbar_press_actions_from_input(
     input: &InputEvent,
-    element_id: &ElementId,
+    element_id: &NodeId,
     spec: ScrollbarPressSpec,
 ) -> Vec<ListenerAction> {
     let InputEvent::CursorButton {
@@ -4491,7 +4485,7 @@ fn scrollbar_pointer_axis(
 }
 
 fn scrollbar_drag_tree_action(
-    element_id: &ElementId,
+    element_id: &NodeId,
     axis: ScrollbarAxis,
     delta: f32,
 ) -> ListenerAction {
@@ -4609,7 +4603,7 @@ fn live_scrollbar_nodes_for_element(
     )
 }
 
-fn focused_text_input_id(element: &Element) -> Option<ElementId> {
+fn focused_text_input_id(element: &Element) -> Option<NodeId> {
     if !element.kind.is_text_input_family() {
         return None;
     }
@@ -4705,12 +4699,12 @@ fn padding_sides(element: &Element) -> (f32, f32, f32, f32) {
 }
 
 fn focus_reveal_scrolls_for_contexts(
-    element_id: &ElementId,
+    element_id: &NodeId,
     element_rect: Rect,
     contexts: &[ScrollContext],
 ) -> Vec<FocusRevealScroll> {
     fn apply_focus_reveal_context(
-        element_id: &ElementId,
+        element_id: &NodeId,
         adjusted: Rect,
         context: &ScrollContext,
     ) -> (Rect, Option<FocusRevealScroll>) {
@@ -4786,20 +4780,14 @@ fn focus_reveal_scrolls_for_contexts(
         .1
 }
 
-fn focus_to_action(
-    next: Option<ElementId>,
-    reveal_scrolls: Vec<FocusRevealScroll>,
-) -> ListenerAction {
+fn focus_to_action(next: Option<NodeId>, reveal_scrolls: Vec<FocusRevealScroll>) -> ListenerAction {
     ListenerAction::Semantic(SemanticAction::FocusTo {
         next,
         reveal_scrolls,
     })
 }
 
-fn focus_to_element_action(
-    focus_meta: &ElementFocusMeta,
-    element_id: &ElementId,
-) -> ListenerAction {
+fn focus_to_element_action(focus_meta: &ElementFocusMeta, element_id: &NodeId) -> ListenerAction {
     focus_to_action(
         Some(element_id.clone()),
         focus_meta.self_reveal_scrolls.clone(),
@@ -5040,7 +5028,7 @@ fn local_focus_meta_for_element(
 
         if scroll_x_enabled || scroll_y_enabled {
             next_scroll_contexts.push(ScrollContext {
-                id: element.id.clone(),
+                id: element.id,
                 viewport: content_rect,
                 scroll_x: current_scroll_x,
                 scroll_y: current_scroll_y,
@@ -5129,7 +5117,7 @@ pub(crate) fn accumulate_element_rebuild(
 
 fn accumulate_subtree_rebuild_local(
     tree: &ElementTree,
-    element_id: &ElementId,
+    element_id: &NodeId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
     scene_ctx: crate::tree::scene::SceneContext,
@@ -5144,10 +5132,17 @@ fn accumulate_subtree_rebuild_local(
 
     let mut deferred = Vec::new();
 
-    for mount in element.local_nearby_mounts() {
+    let Some(element_ix) = tree.ix_of(&element.id) else {
+        return deferred;
+    };
+
+    for mount in tree.local_nearby_mounts_ix(element_ix) {
+        let Some(mount_id) = tree.id_of(mount.ix) else {
+            continue;
+        };
         deferred.extend(accumulate_subtree_rebuild_local(
             tree,
-            &mount.id,
+            &mount_id,
             acc,
             scroll_contexts,
             state
@@ -5167,7 +5162,7 @@ fn accumulate_subtree_rebuild_local(
         RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
             deferred.extend(accumulate_subtree_rebuild_local(
                 tree,
-                child.id,
+                &child.id,
                 acc,
                 &next_scroll_contexts,
                 child_scene_ctx.clone(),
@@ -5175,9 +5170,12 @@ fn accumulate_subtree_rebuild_local(
         }
     });
 
-    for mount in element.escape_nearby_mounts() {
+    for mount in tree.escape_nearby_mounts_ix(element_ix) {
+        let Some(mount_id) = tree.id_of(mount.ix) else {
+            continue;
+        };
         deferred.push(DeferredSubtree {
-            element_id: mount.id.clone(),
+            element_id: mount_id,
             scroll_contexts: scroll_contexts.to_vec(),
             scene_ctx: state
                 .clone()
@@ -5213,7 +5211,7 @@ fn drain_deferred_subtrees(
 
 pub(crate) fn accumulate_subtree_rebuild(
     tree: &ElementTree,
-    element_id: &ElementId,
+    element_id: &NodeId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
     scene_ctx: crate::tree::scene::SceneContext,
@@ -5265,8 +5263,8 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
 }
 
 #[cfg(test)]
-fn root_ids_for_elements(elements: &[Element]) -> Vec<ElementId> {
-    let child_ids: HashSet<ElementId> = elements
+fn root_ids_for_elements(elements: &[Element]) -> Vec<NodeId> {
+    let child_ids: HashSet<NodeId> = elements
         .iter()
         .flat_map(|element| {
             element
@@ -5361,9 +5359,9 @@ pub(crate) fn window_listeners() -> Vec<Listener> {
 }
 
 fn key_scroll_listener(
-    source_element_id: Option<ElementId>,
+    source_element_id: Option<NodeId>,
     matcher: ListenerMatcher,
-    target_id: &ElementId,
+    target_id: &NodeId,
     dx: f32,
     dy: f32,
 ) -> Listener {
@@ -6584,7 +6582,7 @@ mod text_input_commands {
     use super::*;
 
     pub(super) fn command_actions(
-        element_id: &ElementId,
+        element_id: &NodeId,
         request: TextInputCommandRequest,
     ) -> Vec<ListenerAction> {
         vec![ListenerAction::Semantic(SemanticAction::TextInputCommand {
@@ -6642,7 +6640,7 @@ mod tests {
         AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
         ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
-    use crate::tree::element::{Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot};
+    use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot, NodeId};
     use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
     use crate::tree::layout::{
         Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
@@ -6664,7 +6662,7 @@ mod tests {
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
+            NodeId::from_term_bytes(vec![id]),
             ElementKind::El,
             Vec::new(),
             attrs,
@@ -6673,7 +6671,7 @@ mod tests {
 
     fn make_text_input_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
+            NodeId::from_term_bytes(vec![id]),
             ElementKind::TextInput,
             Vec::new(),
             attrs,
@@ -6820,8 +6818,8 @@ mod tests {
     }
 
     fn animated_width_move_registry_at(sample_ms: u64) -> super::Registry {
-        let host_id = ElementId::from_term_bytes(vec![120]);
-        let overlay_id = ElementId::from_term_bytes(vec![121]);
+        let host_id = NodeId::from_term_bytes(vec![120]);
+        let overlay_id = NodeId::from_term_bytes(vec![121]);
 
         let mut tree = crate::tree::element::ElementTree::new();
 
@@ -6872,13 +6870,13 @@ mod tests {
             start + Duration::from_millis(sample_ms),
         );
 
-        let elements: Vec<_> = tree.nodes.values().cloned().collect();
+        let elements: Vec<_> = tree.iter_nodes().cloned().collect();
         registry_for_elements(&elements)
     }
 
     fn animated_width_move_render_registry_at(sample_ms: u64) -> super::Registry {
-        let host_id = ElementId::from_term_bytes(vec![122]);
-        let overlay_id = ElementId::from_term_bytes(vec![123]);
+        let host_id = NodeId::from_term_bytes(vec![122]);
+        let overlay_id = NodeId::from_term_bytes(vec![123]);
 
         let mut tree = crate::tree::element::ElementTree::new();
 
@@ -6933,24 +6931,24 @@ mod tests {
 
     #[derive(Default)]
     struct TestComputeCtx {
-        focused_id: Option<ElementId>,
-        hovered_id: Option<ElementId>,
-        text_inputs: HashMap<ElementId, TextInputState>,
+        focused_id: Option<NodeId>,
+        hovered_id: Option<NodeId>,
+        text_inputs: HashMap<NodeId, TextInputState>,
         clipboard: HashMap<ClipboardTarget, Option<String>>,
         base_registry: Option<super::Registry>,
         combined_registry: Option<super::Registry>,
     }
 
     impl ListenerComputeCtx for TestComputeCtx {
-        fn focused_id(&self) -> Option<&ElementId> {
+        fn focused_id(&self) -> Option<&NodeId> {
             self.focused_id.as_ref()
         }
 
-        fn hover_owner(&self) -> Option<&ElementId> {
+        fn hover_owner(&self) -> Option<&NodeId> {
             self.hovered_id.as_ref()
         }
 
-        fn text_input_state(&self, element_id: &ElementId) -> Option<TextInputState> {
+        fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
             self.text_inputs.get(element_id).cloned()
         }
 
@@ -6990,7 +6988,7 @@ mod tests {
 
         fn base_source_listener(
             &self,
-            element_id: &ElementId,
+            element_id: &NodeId,
             matcher_kind: ListenerMatcherKind,
         ) -> Option<Listener> {
             self.base_registry
@@ -7319,7 +7317,7 @@ mod tests {
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![22]) && active
+            }) if *element_id == NodeId::from_term_bytes(vec![22]) && active
         ));
 
         let release_actions = enter_listener
@@ -7348,7 +7346,7 @@ mod tests {
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![24]) && active
+            }) if *element_id == NodeId::from_term_bytes(vec![24]) && active
         ));
 
         let inside_listener = listener_matching(&listeners, |listener| {
@@ -7407,7 +7405,7 @@ mod tests {
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![23]) && !active
+            }) if *element_id == NodeId::from_term_bytes(vec![23]) && !active
         ));
 
         let release_actions =
@@ -7482,7 +7480,7 @@ mod tests {
         });
         assert_eq!(
             press_listener.element_id,
-            Some(ElementId::from_term_bytes(vec![5]))
+            Some(NodeId::from_term_bytes(vec![5]))
         );
 
         let actions = press_listener.compute_actions(&InputEvent::CursorButton {
@@ -7495,7 +7493,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if element_id == &ElementId::from_term_bytes(vec![5]) && *active
+                if element_id == &NodeId::from_term_bytes(vec![5]) && *active
         ));
     }
 
@@ -7537,7 +7535,7 @@ mod tests {
             ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![10]) && active
+            }) if *element_id == NodeId::from_term_bytes(vec![10]) && active
         ));
     }
 
@@ -7580,7 +7578,7 @@ mod tests {
             ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![11]) && active
+            }) if *element_id == NodeId::from_term_bytes(vec![11]) && active
         ));
         assert!(matches!(
             actions[2],
@@ -7589,7 +7587,7 @@ mod tests {
                 emit_click,
                 emit_press_pointer,
                 ..
-            }) if *element_id == ElementId::from_term_bytes(vec![11])
+            }) if *element_id == NodeId::from_term_bytes(vec![11])
                 && emit_click
                 && !emit_press_pointer
         ));
@@ -7601,7 +7599,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 ..
-            }) if *element_id == ElementId::from_term_bytes(vec![11])
+            }) if *element_id == NodeId::from_term_bytes(vec![11])
                 && matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && origin_x == 10.0
                 && origin_y == 10.0
@@ -7635,7 +7633,7 @@ mod tests {
         assert!(matches!(
             release_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if element_id == &ElementId::from_term_bytes(vec![6]) && !*active
+                if element_id == &NodeId::from_term_bytes(vec![6]) && !*active
         ));
 
         let leave_listener = listener_matching(&listeners, |listener| {
@@ -7654,7 +7652,7 @@ mod tests {
         assert!(matches!(
             leave_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if element_id == &ElementId::from_term_bytes(vec![6]) && !*active
+                if element_id == &NodeId::from_term_bytes(vec![6]) && !*active
         ));
 
         let blur_listener = listener_matching(&listeners, |listener| {
@@ -7665,7 +7663,7 @@ mod tests {
         assert!(matches!(
             blur_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if element_id == &ElementId::from_term_bytes(vec![6]) && !*active
+                if element_id == &NodeId::from_term_bytes(vec![6]) && !*active
         ));
     }
 
@@ -7694,7 +7692,7 @@ mod tests {
                 ListenerAction::ElixirEvent(ElixirEvent { kind, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active }),
             ] if *kind == ElementEventKind::MouseUp
-                && *element_id == ElementId::from_term_bytes(vec![60])
+                && *element_id == NodeId::from_term_bytes(vec![60])
                 && !*active
         ));
 
@@ -7711,7 +7709,7 @@ mod tests {
         assert!(matches!(
             outside_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if *element_id == ElementId::from_term_bytes(vec![60]) && !*active
+                if *element_id == NodeId::from_term_bytes(vec![60]) && !*active
         ));
     }
 
@@ -7727,11 +7725,9 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.children = vec![ElementId::from_term_bytes(vec![81])];
-        host.nearby.set(
-            NearbySlot::InFront,
-            Some(ElementId::from_term_bytes(vec![82])),
-        );
+        host.children = vec![NodeId::from_term_bytes(vec![81])];
+        host.nearby
+            .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![82])));
 
         let mut underlying_attrs = Attrs::default();
         underlying_attrs.on_mouse_down = Some(true);
@@ -7784,7 +7780,7 @@ mod tests {
         assert!(matches!(
             uncovered_actions.as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
-                if *element_id == ElementId::from_term_bytes(vec![81])
+                if *element_id == NodeId::from_term_bytes(vec![81])
                     && *kind == ElementEventKind::MouseDown
         ));
     }
@@ -7801,11 +7797,9 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.children = vec![ElementId::from_term_bytes(vec![84])];
-        host.nearby.set(
-            NearbySlot::InFront,
-            Some(ElementId::from_term_bytes(vec![85])),
-        );
+        host.children = vec![NodeId::from_term_bytes(vec![84])];
+        host.nearby
+            .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![85])));
 
         let mut underlying_attrs = Attrs::default();
         underlying_attrs.on_mouse_down = Some(true);
@@ -7848,7 +7842,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
-                if *element_id == ElementId::from_term_bytes(vec![85])
+                if *element_id == NodeId::from_term_bytes(vec![85])
                     && *kind == ElementEventKind::MouseDown
         ));
     }
@@ -7867,10 +7861,8 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.nearby.set(
-            NearbySlot::Above,
-            Some(ElementId::from_term_bytes(vec![87])),
-        );
+        host.nearby
+            .set(NearbySlot::Above, Some(NodeId::from_term_bytes(vec![87])));
 
         let mut overlay_attrs = Attrs::default();
         overlay_attrs.on_mouse_down = Some(true);
@@ -7902,9 +7894,9 @@ mod tests {
 
     #[test]
     fn registry_for_elements_earlier_child_escape_beats_later_normal_sibling() {
-        let host_id = ElementId::from_term_bytes(vec![141]);
-        let later_id = ElementId::from_term_bytes(vec![142]);
-        let overlay_id = ElementId::from_term_bytes(vec![143]);
+        let host_id = NodeId::from_term_bytes(vec![141]);
+        let later_id = NodeId::from_term_bytes(vec![142]);
+        let overlay_id = NodeId::from_term_bytes(vec![143]);
 
         let mut root = with_frame(
             make_element(140, Attrs::default()),
@@ -7978,9 +7970,9 @@ mod tests {
 
     #[test]
     fn registry_for_elements_ancestor_in_front_beats_descendant_below() {
-        let parent_id = ElementId::from_term_bytes(vec![145]);
-        let ancestor_overlay_id = ElementId::from_term_bytes(vec![146]);
-        let descendant_overlay_id = ElementId::from_term_bytes(vec![147]);
+        let parent_id = NodeId::from_term_bytes(vec![145]);
+        let ancestor_overlay_id = NodeId::from_term_bytes(vec![146]);
+        let descendant_overlay_id = NodeId::from_term_bytes(vec![147]);
 
         let mut root = with_frame(
             make_element(144, Attrs::default()),
@@ -8058,10 +8050,10 @@ mod tests {
 
     #[test]
     fn registry_for_elements_focus_order_follows_paint_order_with_escape_overlay() {
-        let root_id = ElementId::from_term_bytes(vec![149]);
-        let host_id = ElementId::from_term_bytes(vec![150]);
-        let sibling_id = ElementId::from_term_bytes(vec![151]);
-        let overlay_id = ElementId::from_term_bytes(vec![152]);
+        let root_id = NodeId::from_term_bytes(vec![149]);
+        let host_id = NodeId::from_term_bytes(vec![150]);
+        let sibling_id = NodeId::from_term_bytes(vec![151]);
+        let overlay_id = NodeId::from_term_bytes(vec![152]);
 
         let mut root = with_frame(
             make_element(149, Attrs::default()),
@@ -8172,11 +8164,9 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.children = vec![ElementId::from_term_bytes(vec![87])];
-        host.nearby.set(
-            NearbySlot::InFront,
-            Some(ElementId::from_term_bytes(vec![88])),
-        );
+        host.children = vec![NodeId::from_term_bytes(vec![87])];
+        host.nearby
+            .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![88])));
 
         let mut underlying_attrs = Attrs::default();
         underlying_attrs.on_mouse_move = Some(true);
@@ -8214,7 +8204,7 @@ mod tests {
         assert!(matches!(
             actions_without_cursor(&uncovered_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
-                if *element_id == ElementId::from_term_bytes(vec![87])
+                if *element_id == NodeId::from_term_bytes(vec![87])
                     && *kind == ElementEventKind::MouseMove
         ));
         assert_eq!(
@@ -8235,11 +8225,9 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.children = vec![ElementId::from_term_bytes(vec![90])];
-        host.nearby.set(
-            NearbySlot::InFront,
-            Some(ElementId::from_term_bytes(vec![91])),
-        );
+        host.children = vec![NodeId::from_term_bytes(vec![90])];
+        host.nearby
+            .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![91])));
 
         let mut underlying_attrs = Attrs::default();
         underlying_attrs.on_mouse_move = Some(true);
@@ -8275,16 +8263,16 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
-                if *element_id == ElementId::from_term_bytes(vec![91])
+                if *element_id == NodeId::from_term_bytes(vec![91])
                     && *kind == ElementEventKind::MouseMove
         ));
     }
 
     #[test]
     fn registry_for_elements_in_front_overlay_matches_right_of_initial_position() {
-        let host_id = ElementId::from_term_bytes(vec![110]);
-        let under_id = ElementId::from_term_bytes(vec![111]);
-        let overlay_id = ElementId::from_term_bytes(vec![112]);
+        let host_id = NodeId::from_term_bytes(vec![110]);
+        let under_id = NodeId::from_term_bytes(vec![111]);
+        let overlay_id = NodeId::from_term_bytes(vec![112]);
 
         let mut host = with_frame(
             make_element(110, Attrs::default()),
@@ -8355,8 +8343,8 @@ mod tests {
 
     #[test]
     fn registry_for_elements_in_front_descendant_blocker_does_not_beat_overlay_hover_listener() {
-        let overlay_id = ElementId::from_term_bytes(vec![141]);
-        let child_id = ElementId::from_term_bytes(vec![142]);
+        let overlay_id = NodeId::from_term_bytes(vec![141]);
+        let child_id = NodeId::from_term_bytes(vec![142]);
 
         let mut host = with_frame(
             make_element(140, Attrs::default()),
@@ -8413,9 +8401,9 @@ mod tests {
 
     #[test]
     fn registry_for_elements_nested_overlay_wrapper_does_not_beat_target_hover_listener() {
-        let overlay_id = ElementId::from_term_bytes(vec![150]);
-        let wrapper_id = ElementId::from_term_bytes(vec![151]);
-        let target_id = ElementId::from_term_bytes(vec![152]);
+        let overlay_id = NodeId::from_term_bytes(vec![150]);
+        let wrapper_id = NodeId::from_term_bytes(vec![151]);
+        let target_id = NodeId::from_term_bytes(vec![152]);
 
         let mut host = with_frame(
             make_element(149, Attrs::default()),
@@ -8521,7 +8509,7 @@ mod tests {
             assert!(matches!(
                 actions.as_slice(),
                 [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
-                    if *element_id == ElementId::from_term_bytes(vec![121])
+                    if *element_id == NodeId::from_term_bytes(vec![121])
                         && *kind == ElementEventKind::MouseMove
             ));
         }
@@ -8565,7 +8553,7 @@ mod tests {
             assert!(matches!(
                 actions.as_slice(),
                 [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. }), ..]
-                    if *element_id == ElementId::from_term_bytes(vec![123])
+                    if *element_id == NodeId::from_term_bytes(vec![123])
                         && *kind == ElementEventKind::MouseMove
             ));
         }
@@ -8603,7 +8591,7 @@ mod tests {
                 matcher_kind: kind,
                 emit_click,
                 emit_press_pointer,
-            }) if *element_id == ElementId::from_term_bytes(vec![7])
+            }) if *element_id == NodeId::from_term_bytes(vec![7])
                 && kind == matcher_kind
                 && emit_click
                 && !emit_press_pointer
@@ -8616,7 +8604,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 ..
-            }) if *element_id == ElementId::from_term_bytes(vec![7])
+            }) if *element_id == NodeId::from_term_bytes(vec![7])
                 && kind == matcher_kind
                 && origin_x == 10.0
                 && origin_y == 10.0
@@ -8665,7 +8653,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 ..
-            })] if element_id == &ElementId::from_term_bytes(vec![70])
+            })] if element_id == &NodeId::from_term_bytes(vec![70])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
                 && *origin_y == 10.0
@@ -8681,7 +8669,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![30]),
+                element_id: NodeId::from_term_bytes(vec![30]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -8689,7 +8677,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![30]),
+                element_id: NodeId::from_term_bytes(vec![30]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -8739,7 +8727,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![27]),
+                element_id: NodeId::from_term_bytes(vec![27]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -8780,7 +8768,7 @@ mod tests {
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![27])
+            ] if *element_id == NodeId::from_term_bytes(vec![27])
         ));
     }
 
@@ -8793,7 +8781,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![99]),
+                element_id: NodeId::from_term_bytes(vec![99]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -8838,7 +8826,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![91]),
+                element_id: NodeId::from_term_bytes(vec![91]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: false,
                 emit_press_pointer: true,
@@ -8876,7 +8864,7 @@ mod tests {
                 ListenerAction::ElixirEvent(ElixirEvent { kind, .. }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![91])
+            ] if *element_id == NodeId::from_term_bytes(vec![91])
                 && !*active
                 && *kind == ElementEventKind::Press
         ));
@@ -8891,7 +8879,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![29]),
+                element_id: NodeId::from_term_bytes(vec![29]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -8899,7 +8887,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
-                element_id: ElementId::from_term_bytes(vec![29]),
+                element_id: NodeId::from_term_bytes(vec![29]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 last_x: 10.0,
                 last_y: 10.0,
@@ -8947,7 +8935,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![31]),
+                element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -8955,7 +8943,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![31]),
+                element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -8998,7 +8986,7 @@ mod tests {
 
         let runtime = RuntimeOverlayState {
             click_press: Some(ClickPressTracker {
-                element_id: ElementId::from_term_bytes(vec![31]),
+                element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
@@ -9006,7 +8994,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![31]),
+                element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9039,7 +9027,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![31])
+            ] if *element_id == NodeId::from_term_bytes(vec![31])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && *locked_axis == GestureAxis::Horizontal
         ));
@@ -9076,7 +9064,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 swipe_handlers,
-            })] if element_id == &ElementId::from_term_bytes(vec![71])
+            })] if element_id == &NodeId::from_term_bytes(vec![71])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
                 && *origin_y == 10.0
@@ -9108,7 +9096,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![72]),
+                element_id: NodeId::from_term_bytes(vec![72]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9140,7 +9128,7 @@ mod tests {
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
-            ] if tracker.element_id == ElementId::from_term_bytes(vec![72])
+            ] if tracker.element_id == NodeId::from_term_bytes(vec![72])
                 && tracker.matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && (tracker.origin_x - 10.0).abs() < f32::EPSILON
                 && (tracker.origin_y - 10.0).abs() < f32::EPSILON
@@ -9161,7 +9149,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![75]),
+                element_id: NodeId::from_term_bytes(vec![75]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9201,7 +9189,7 @@ mod tests {
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
-            ] if tracker.element_id == ElementId::from_term_bytes(vec![75])
+            ] if tracker.element_id == NodeId::from_term_bytes(vec![75])
                 && tracker.locked_axis == GestureAxis::Horizontal
                 && tracker.handlers.right
         ));
@@ -9225,7 +9213,7 @@ mod tests {
                 content_height: 360.0,
             },
         );
-        parent.children = vec![ElementId::from_term_bytes(vec![77])];
+        parent.children = vec![NodeId::from_term_bytes(vec![77])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.on_swipe_left = Some(true);
@@ -9248,7 +9236,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![77]),
+                element_id: NodeId::from_term_bytes(vec![77]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 40.0,
                 origin_y: 40.0,
@@ -9281,7 +9269,7 @@ mod tests {
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
-            ] if tracker.element_id == ElementId::from_term_bytes(vec![77])
+            ] if tracker.element_id == NodeId::from_term_bytes(vec![77])
                 && tracker.locked_axis == GestureAxis::Horizontal
                 && tracker.handlers.left
                 && tracker.handlers.right
@@ -9306,7 +9294,7 @@ mod tests {
                 content_height: 360.0,
             },
         );
-        parent.children = vec![ElementId::from_term_bytes(vec![79])];
+        parent.children = vec![NodeId::from_term_bytes(vec![79])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.on_swipe_left = Some(true);
@@ -9329,7 +9317,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
-                element_id: ElementId::from_term_bytes(vec![79]),
+                element_id: NodeId::from_term_bytes(vec![79]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 40.0,
                 origin_y: 40.0,
@@ -9366,7 +9354,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![79])
+            ] if *element_id == NodeId::from_term_bytes(vec![79])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && *locked_axis == GestureAxis::Vertical
         ));
@@ -9386,7 +9374,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
-                element_id: ElementId::from_term_bytes(vec![73]),
+                element_id: NodeId::from_term_bytes(vec![73]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9431,7 +9419,7 @@ mod tests {
                     payload: None,
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![73])
+            ] if *element_id == NodeId::from_term_bytes(vec![73])
         ));
     }
 
@@ -9448,7 +9436,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
-                element_id: ElementId::from_term_bytes(vec![74]),
+                element_id: NodeId::from_term_bytes(vec![74]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9489,7 +9477,7 @@ mod tests {
                     payload: None,
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
-            ] if *element_id == ElementId::from_term_bytes(vec![74])
+            ] if *element_id == NodeId::from_term_bytes(vec![74])
         ));
     }
 
@@ -9506,7 +9494,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
-                element_id: ElementId::from_term_bytes(vec![80]),
+                element_id: NodeId::from_term_bytes(vec![80]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
@@ -9577,14 +9565,14 @@ mod tests {
                 ref element_id,
                 kind: ElementEventKind::Focus,
                 payload: None,
-            }) if *element_id == ElementId::from_term_bytes(vec![8])
+            }) if *element_id == NodeId::from_term_bytes(vec![8])
         ));
         assert!(matches!(
             actions[1],
             ListenerAction::TreeMsg(TreeMsg::SetFocusedActive {
                 ref element_id,
                 active,
-            }) if *element_id == ElementId::from_term_bytes(vec![8]) && active
+            }) if *element_id == NodeId::from_term_bytes(vec![8]) && active
         ));
         assert!(matches!(
             actions[2],
@@ -9593,7 +9581,7 @@ mod tests {
                 matcher_kind: kind,
                 emit_click,
                 emit_press_pointer,
-            }) if *element_id == ElementId::from_term_bytes(vec![8])
+            }) if *element_id == NodeId::from_term_bytes(vec![8])
                 && kind == matcher_kind
                 && !emit_click
                 && emit_press_pointer
@@ -9606,7 +9594,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 ..
-            }) if *element_id == ElementId::from_term_bytes(vec![8])
+            }) if *element_id == NodeId::from_term_bytes(vec![8])
                 && kind == matcher_kind
                 && origin_x == 10.0
                 && origin_y == 10.0
@@ -9647,7 +9635,7 @@ mod tests {
                 element_id,
                 kind: ElementEventKind::Press,
                 payload: None,
-            })] if *element_id == ElementId::from_term_bytes(vec![12])
+            })] if *element_id == NodeId::from_term_bytes(vec![12])
         ));
     }
 
@@ -9695,7 +9683,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::RuntimeChange(RuntimeChange::StartVirtualKeyTracker { tracker })]
-                if tracker.element_id == ElementId::from_term_bytes(vec![73])
+                if tracker.element_id == NodeId::from_term_bytes(vec![73])
                     && tracker.phase == VirtualKeyPhase::Armed
         ));
 
@@ -9714,7 +9702,7 @@ mod tests {
         let runtime = RuntimeOverlayState {
             click_press: None,
             virtual_key: Some(VirtualKeyTracker {
-                element_id: ElementId::from_term_bytes(vec![74]),
+                element_id: NodeId::from_term_bytes(vec![74]),
                 region: PointerRegion {
                     visible: true,
                     local_shape: ShapeBounds {
@@ -9824,7 +9812,7 @@ mod tests {
                 element_id,
                 kind: ElementEventKind::KeyDown,
                 payload,
-            })] if *element_id == ElementId::from_term_bytes(vec![37])
+            })] if *element_id == NodeId::from_term_bytes(vec![37])
                 && payload.as_deref() == Some("key_down:enter:exact:0")
         ));
 
@@ -9851,7 +9839,7 @@ mod tests {
                 element_id,
                 kind: ElementEventKind::KeyUp,
                 payload,
-            })] if *element_id == ElementId::from_term_bytes(vec![37])
+            })] if *element_id == NodeId::from_term_bytes(vec![37])
                 && payload.as_deref() == Some("key_up:escape:exact:2")
         ));
     }
@@ -9919,10 +9907,10 @@ mod tests {
                     payload,
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::StartKeyPressTracker { tracker }),
-            ] if *element_id == ElementId::from_term_bytes(vec![39])
+            ] if *element_id == NodeId::from_term_bytes(vec![39])
                 && payload.as_deref() == Some("key_down:space:exact:0")
                 && tracker.key == CanonicalKey::Space
-                && tracker.source_element_id == Some(ElementId::from_term_bytes(vec![39]))
+                && tracker.source_element_id == Some(NodeId::from_term_bytes(vec![39]))
                 && matches!(
                     tracker.followups.as_slice(),
                     [KeyPressFollowup::ElixirEvent { route, .. }]
@@ -9954,12 +9942,12 @@ mod tests {
             click_press: None,
             virtual_key: None,
             key_presses: vec![KeyPressTracker {
-                source_element_id: Some(ElementId::from_term_bytes(vec![40])),
+                source_element_id: Some(NodeId::from_term_bytes(vec![40])),
                 key: CanonicalKey::Space,
                 mods: 0,
                 match_mode: KeyBindingMatch::Exact,
                 followups: vec![KeyPressFollowup::ElixirEvent {
-                    element_id: ElementId::from_term_bytes(vec![40]),
+                    element_id: NodeId::from_term_bytes(vec![40]),
                     route: "key_press:space:exact:0".to_string(),
                 }],
             }],
@@ -10031,7 +10019,7 @@ mod tests {
             matches!(
                 action,
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id, active })
-                    if element_id == &ElementId::from_term_bytes(vec![24]) && *active
+                    if element_id == &NodeId::from_term_bytes(vec![24]) && *active
             )
         }));
     }
@@ -10049,7 +10037,7 @@ mod tests {
 
         let registry = registry_for_elements(&[focused, next]);
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![25])),
+            focused_id: Some(NodeId::from_term_bytes(vec![25])),
             ..Default::default()
         };
         let forward_actions = first_matching_actions_with_ctx(
@@ -10062,7 +10050,7 @@ mod tests {
             &mut ctx,
         );
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![25])),
+            focused_id: Some(NodeId::from_term_bytes(vec![25])),
             ..Default::default()
         };
         let reverse_actions = first_matching_actions_with_ctx(
@@ -10082,10 +10070,10 @@ mod tests {
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: previous_tree, active: false }),
                 ListenerAction::ElixirEvent(ElixirEvent { element_id: next, kind: ElementEventKind::Focus, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: next_tree, active: true }),
-            ] if *previous == ElementId::from_term_bytes(vec![25])
-                && *previous_tree == ElementId::from_term_bytes(vec![25])
-                && *next == ElementId::from_term_bytes(vec![26])
-                && *next_tree == ElementId::from_term_bytes(vec![26])
+            ] if *previous == NodeId::from_term_bytes(vec![25])
+                && *previous_tree == NodeId::from_term_bytes(vec![25])
+                && *next == NodeId::from_term_bytes(vec![26])
+                && *next_tree == NodeId::from_term_bytes(vec![26])
         ));
         assert!(matches!(
             reverse_actions.as_slice(),
@@ -10094,17 +10082,17 @@ mod tests {
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: previous_tree, active: false }),
                 ListenerAction::ElixirEvent(ElixirEvent { element_id: next, kind: ElementEventKind::Focus, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: next_tree, active: true }),
-            ] if *previous == ElementId::from_term_bytes(vec![25])
-                && *previous_tree == ElementId::from_term_bytes(vec![25])
-                && *next == ElementId::from_term_bytes(vec![26])
-                && *next_tree == ElementId::from_term_bytes(vec![26])
+            ] if *previous == NodeId::from_term_bytes(vec![25])
+                && *previous_tree == NodeId::from_term_bytes(vec![25])
+                && *next == NodeId::from_term_bytes(vec![26])
+                && *next_tree == NodeId::from_term_bytes(vec![26])
         ));
     }
 
     #[test]
     fn rebuild_payload_focus_on_mount_ignores_existing_node_when_attr_is_added_later() {
-        let root_id = ElementId::from_term_bytes(vec![27]);
-        let field_id = ElementId::from_term_bytes(vec![28]);
+        let root_id = NodeId::from_term_bytes(vec![27]);
+        let field_id = NodeId::from_term_bytes(vec![28]);
 
         let mut tree = ElementTree::new();
         tree.set_revision(2);
@@ -10152,9 +10140,9 @@ mod tests {
 
     #[test]
     fn rebuild_payload_focus_on_mount_prefers_newly_mounted_target() {
-        let root_id = ElementId::from_term_bytes(vec![29]);
-        let existing_id = ElementId::from_term_bytes(vec![30]);
-        let new_id = ElementId::from_term_bytes(vec![31]);
+        let root_id = NodeId::from_term_bytes(vec![29]);
+        let existing_id = NodeId::from_term_bytes(vec![30]);
+        let new_id = NodeId::from_term_bytes(vec![31]);
 
         let mut tree = ElementTree::new();
         tree.set_revision(2);
@@ -10219,9 +10207,9 @@ mod tests {
 
     #[test]
     fn rebuild_payload_focus_on_mount_keeps_first_candidate_in_same_revision() {
-        let root_id = ElementId::from_term_bytes(vec![32]);
-        let first_id = ElementId::from_term_bytes(vec![33]);
-        let second_id = ElementId::from_term_bytes(vec![34]);
+        let root_id = NodeId::from_term_bytes(vec![32]);
+        let first_id = NodeId::from_term_bytes(vec![33]);
+        let second_id = NodeId::from_term_bytes(vec![34]);
 
         let mut tree = ElementTree::new();
         tree.set_revision(3);
@@ -10321,16 +10309,16 @@ mod tests {
             [
                 ListenerAction::ElixirEvent(ElixirEvent { element_id, kind: ElementEventKind::Focus, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: tree_id, active: true }),
-            ] if *element_id == ElementId::from_term_bytes(vec![27])
-                && *tree_id == ElementId::from_term_bytes(vec![27])
+            ] if *element_id == NodeId::from_term_bytes(vec![27])
+                && *tree_id == NodeId::from_term_bytes(vec![27])
         ));
         assert!(matches!(
             reverse_actions.as_slice(),
             [
                 ListenerAction::ElixirEvent(ElixirEvent { element_id, kind: ElementEventKind::Focus, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: tree_id, active: true }),
-            ] if *element_id == ElementId::from_term_bytes(vec![28])
-                && *tree_id == ElementId::from_term_bytes(vec![28])
+            ] if *element_id == NodeId::from_term_bytes(vec![28])
+                && *tree_id == NodeId::from_term_bytes(vec![28])
         ));
     }
 
@@ -10606,9 +10594,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, None, true, true),
             )]),
             ..Default::default()
@@ -10624,33 +10612,33 @@ mod tests {
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputContent { element_id, content })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && content == "abx"
+                if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abx"
         )));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
                 element_id,
                 content,
-            }) if *element_id == ElementId::from_term_bytes(vec![17]) && content == "abx"
+            }) if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abx"
         )));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && state.content == "abx"
+                if *element_id == NodeId::from_term_bytes(vec![17]) && state.content == "abx"
         )));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && state.cursor == 3
+                if *element_id == NodeId::from_term_bytes(vec![17]) && state.cursor == 3
         )));
 
         let cut_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, Some(0), true, true),
             )]),
             ..Default::default()
@@ -10672,19 +10660,19 @@ mod tests {
         assert!(cut_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputContent { element_id, content })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && content.is_empty()
+                if *element_id == NodeId::from_term_bytes(vec![17]) && content.is_empty()
         )));
         assert!(cut_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && state.content.is_empty()
+                if *element_id == NodeId::from_term_bytes(vec![17]) && state.content.is_empty()
         )));
         assert!(cut_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
                 element_id,
                 content,
-            }) if *element_id == ElementId::from_term_bytes(vec![17]) && content.is_empty()
+            }) if *element_id == NodeId::from_term_bytes(vec![17]) && content.is_empty()
         )));
         assert!(cut_actions.iter().any(|action| matches!(
             action,
@@ -10698,9 +10686,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::KeyVPressCtrlOrMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, None, true, true),
             )]),
             clipboard: HashMap::from([(ClipboardTarget::Clipboard, Some("zz".to_string()))]),
@@ -10718,19 +10706,19 @@ mod tests {
         assert!(paste_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputContent { element_id, content })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && content == "abzz"
+                if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abzz"
         )));
         assert!(paste_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
                 element_id,
                 content,
-            }) if *element_id == ElementId::from_term_bytes(vec![17]) && content == "abzz"
+            }) if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abzz"
         )));
         assert!(paste_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17]) && state.content == "abzz"
+                if *element_id == NodeId::from_term_bytes(vec![17]) && state.content == "abzz"
         )));
         assert!(paste_actions.iter().any(|action| matches!(
             action,
@@ -10744,9 +10732,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::KeyLeftPressNoCtrlAltMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, None, true, true),
             )]),
             ..Default::default()
@@ -10763,13 +10751,13 @@ mod tests {
         assert!(left_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime { element_id, selection_anchor, .. })
-                if *element_id == ElementId::from_term_bytes(vec![17])
+                if *element_id == NodeId::from_term_bytes(vec![17])
                     && *selection_anchor == Some(2)
         )));
         assert!(left_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17])
+                if *element_id == NodeId::from_term_bytes(vec![17])
                     && state.selection_anchor == Some(2)
         )));
         assert!(left_actions.iter().any(|action| matches!(
@@ -10782,9 +10770,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::KeyAPressCtrlOrMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, None, true, true),
             )]),
             ..Default::default()
@@ -10801,13 +10789,13 @@ mod tests {
         assert!(select_all_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime { element_id, selection_anchor, .. })
-                if *element_id == ElementId::from_term_bytes(vec![17])
+                if *element_id == NodeId::from_term_bytes(vec![17])
                     && *selection_anchor == Some(0)
         )));
         assert!(select_all_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![17])
+                if *element_id == NodeId::from_term_bytes(vec![17])
                     && state.selection_anchor == Some(0)
         )));
         assert!(select_all_actions.iter().any(|action| matches!(
@@ -10820,9 +10808,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::KeyCPressCtrlOrMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, Some(0), true, true),
             )]),
             ..Default::default()
@@ -10847,9 +10835,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::TextPreeditAny)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![17])),
+            focused_id: Some(NodeId::from_term_bytes(vec![17])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![17]),
+                NodeId::from_term_bytes(vec![17]),
                 make_text_input_state("ab", 2, None, true, true),
             )]),
             ..Default::default()
@@ -10869,7 +10857,7 @@ mod tests {
                 preedit,
                 preedit_cursor,
                 ..
-            }) if *element_id == ElementId::from_term_bytes(vec![17])
+            }) if *element_id == NodeId::from_term_bytes(vec![17])
                 && preedit.as_deref() == Some("xy")
                 && *preedit_cursor == Some((1, 1))
         )));
@@ -10878,7 +10866,7 @@ mod tests {
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState {
                 element_id,
                 state,
-            }) if *element_id == ElementId::from_term_bytes(vec![17])
+            }) if *element_id == NodeId::from_term_bytes(vec![17])
                 && state.preedit.as_deref() == Some("xy")
                 && state.preedit_cursor == Some((1, 1))
         )));
@@ -10898,9 +10886,9 @@ mod tests {
             matches!(listener.matcher, ListenerMatcher::TextCommitNoCtrlMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![18])),
+            focused_id: Some(NodeId::from_term_bytes(vec![18])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![18]),
+                NodeId::from_term_bytes(vec![18]),
                 make_text_input_state("ab", 2, None, true, false),
             )]),
             ..Default::default()
@@ -10922,16 +10910,16 @@ mod tests {
         assert!(commit_actions.iter().any(|action| matches!(
             action,
             ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState { element_id, state })
-                if *element_id == ElementId::from_term_bytes(vec![18]) && state.content == "abx"
+                if *element_id == NodeId::from_term_bytes(vec![18]) && state.content == "abx"
         )));
 
         let cut_listener = listener_matching(&listeners, |listener| {
             matches!(listener.matcher, ListenerMatcher::KeyXPressCtrlOrMeta)
         });
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![18])),
+            focused_id: Some(NodeId::from_term_bytes(vec![18])),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![18]),
+                NodeId::from_term_bytes(vec![18]),
                 make_text_input_state("ab", 2, Some(0), true, false),
             )]),
             ..Default::default()
@@ -10998,7 +10986,7 @@ mod tests {
 
         let mut ctx = TestComputeCtx {
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![32]),
+                NodeId::from_term_bytes(vec![32]),
                 make_text_input_state("ab", 0, None, false, false),
             )]),
             ..Default::default()
@@ -11017,24 +11005,24 @@ mod tests {
         assert!(matches!(
             actions[0],
             ListenerAction::ElixirEvent(ElixirEvent { ref element_id, kind: ElementEventKind::Focus, .. })
-                if *element_id == ElementId::from_term_bytes(vec![32])
+                if *element_id == NodeId::from_term_bytes(vec![32])
         ));
         assert!(matches!(
             actions[1],
             ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { ref element_id, active })
-                if *element_id == ElementId::from_term_bytes(vec![32]) && active
+                if *element_id == NodeId::from_term_bytes(vec![32]) && active
         ));
         assert!(actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime { element_id, .. })
-                if *element_id == ElementId::from_term_bytes(vec![32])
+                if *element_id == NodeId::from_term_bytes(vec![32])
         )));
         assert!(matches!(
             actions.last().expect("text drag action"),
             ListenerAction::RuntimeChange(RuntimeChange::StartTextDragTracker {
                 element_id,
                 matcher_kind,
-            }) if *element_id == ElementId::from_term_bytes(vec![32])
+            }) if *element_id == NodeId::from_term_bytes(vec![32])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
         ));
     }
@@ -11057,7 +11045,7 @@ mod tests {
 
         let mut ctx = TestComputeCtx {
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![21]),
+                NodeId::from_term_bytes(vec![21]),
                 make_text_input_state("ab", 0, None, false, true),
             )]),
             clipboard: HashMap::from([(ClipboardTarget::Primary, Some("zz".to_string()))]),
@@ -11077,17 +11065,17 @@ mod tests {
         assert!(matches!(
             actions[0],
             ListenerAction::ElixirEvent(ElixirEvent { ref element_id, kind: ElementEventKind::Focus, .. })
-                if *element_id == ElementId::from_term_bytes(vec![21])
+                if *element_id == NodeId::from_term_bytes(vec![21])
         ));
         assert!(actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputContent { element_id, .. })
-                if *element_id == ElementId::from_term_bytes(vec![21])
+                if *element_id == NodeId::from_term_bytes(vec![21])
         )));
         assert!(actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime { element_id, .. })
-                if *element_id == ElementId::from_term_bytes(vec![21])
+                if *element_id == NodeId::from_term_bytes(vec![21])
         )));
     }
 
@@ -11106,7 +11094,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
-                element_id: ElementId::from_term_bytes(vec![33]),
+                element_id: NodeId::from_term_bytes(vec![33]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
             }),
         };
@@ -11137,7 +11125,7 @@ mod tests {
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![33]),
+                NodeId::from_term_bytes(vec![33]),
                 make_text_input_state("ab", 0, None, true, false),
             )]),
             ..Default::default()
@@ -11150,7 +11138,7 @@ mod tests {
         assert!(matches!(
             move_actions.first(),
             Some(ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime { element_id, .. }))
-                if *element_id == ElementId::from_term_bytes(vec![33])
+                if *element_id == NodeId::from_term_bytes(vec![33])
         ));
     }
 
@@ -11165,7 +11153,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: Some(TextDragTracker {
-                element_id: ElementId::from_term_bytes(vec![34]),
+                element_id: NodeId::from_term_bytes(vec![34]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
             }),
         };
@@ -11242,7 +11230,7 @@ mod tests {
             })
             .as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, dx, dy })]
-                if element_id == &ElementId::from_term_bytes(vec![40])
+                if element_id == &NodeId::from_term_bytes(vec![40])
                     && (dx - SCROLL_LINE_PIXELS).abs() < f32::EPSILON
                     && dy.abs() < f32::EPSILON
         )));
@@ -11254,7 +11242,7 @@ mod tests {
             })
             .as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, dx, dy })]
-                if element_id == &ElementId::from_term_bytes(vec![40])
+                if element_id == &NodeId::from_term_bytes(vec![40])
                     && (dx + SCROLL_LINE_PIXELS).abs() < f32::EPSILON
                     && dy.abs() < f32::EPSILON
         )));
@@ -11266,7 +11254,7 @@ mod tests {
             })
             .as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, dx, dy })]
-                if element_id == &ElementId::from_term_bytes(vec![40])
+                if element_id == &NodeId::from_term_bytes(vec![40])
                     && dx.abs() < f32::EPSILON
                     && (dy + SCROLL_LINE_PIXELS).abs() < f32::EPSILON
         )));
@@ -11305,7 +11293,7 @@ mod tests {
         assert!(matches!(
             actions_without_cursor(&move_actions).as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
-                if *element_id == ElementId::from_term_bytes(vec![45]) && *hovered
+                if *element_id == NodeId::from_term_bytes(vec![45]) && *hovered
         ));
         assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Default]);
 
@@ -11339,14 +11327,14 @@ mod tests {
         assert!(matches!(
             leave_actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
-                if *element_id == ElementId::from_term_bytes(vec![46]) && !*hovered
+                if *element_id == NodeId::from_term_bytes(vec![46]) && !*hovered
         ));
     }
 
     #[test]
     fn registry_for_elements_nested_scrolled_child_hover_uses_screen_space_position() {
-        let wrapper_id = ElementId::from_term_bytes(vec![92]);
-        let target_id = ElementId::from_term_bytes(vec![93]);
+        let wrapper_id = NodeId::from_term_bytes(vec![92]);
+        let target_id = NodeId::from_term_bytes(vec![93]);
 
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
@@ -11438,7 +11426,7 @@ mod tests {
         assert!(matches!(
             actions_without_cursor(&hit_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
-                if *element_id == ElementId::from_term_bytes(vec![96])
+                if *element_id == NodeId::from_term_bytes(vec![96])
                     && *kind == ElementEventKind::MouseMove
         ));
         assert_eq!(cursor_actions(&hit_actions), vec![CursorIcon::Default]);
@@ -11475,7 +11463,7 @@ mod tests {
         assert!(matches!(
             actions_without_cursor(&hit_actions).as_slice(),
             [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
-                if *element_id == ElementId::from_term_bytes(vec![97])
+                if *element_id == NodeId::from_term_bytes(vec![97])
                     && *kind == ElementEventKind::MouseMove
         ));
         assert_eq!(cursor_actions(&hit_actions), vec![CursorIcon::Default]);
@@ -11488,7 +11476,7 @@ mod tests {
 
     #[test]
     fn registry_for_elements_scrolled_child_scrollbar_hover_uses_screen_space_thumb_rect() {
-        let child_id = ElementId::from_term_bytes(vec![95]);
+        let child_id = NodeId::from_term_bytes(vec![95]);
 
         let mut parent_attrs = Attrs::default();
         parent_attrs.scrollbar_y = Some(true);
@@ -11601,7 +11589,7 @@ mod tests {
         assert!(matches!(
             actions_without_cursor(&actions).as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover { element_id, hovered })]
-                if *element_id == ElementId::from_term_bytes(vec![98]) && *hovered
+                if *element_id == NodeId::from_term_bytes(vec![98]) && *hovered
         ));
         assert_eq!(cursor_actions(&actions), vec![CursorIcon::Default]);
     }
@@ -11646,7 +11634,7 @@ mod tests {
         assert!(matches!(
             thumb_actions.as_slice(),
             [ListenerAction::RuntimeChange(RuntimeChange::StartScrollbarDrag { tracker })]
-                if tracker.element_id == ElementId::from_term_bytes(vec![47])
+                if tracker.element_id == NodeId::from_term_bytes(vec![47])
                     && tracker.axis == ScrollbarAxis::Y
         ));
 
@@ -11677,7 +11665,7 @@ mod tests {
         assert!(track_actions.iter().any(|action| matches!(
             action,
             ListenerAction::TreeMsg(TreeMsg::ScrollbarThumbDragY { element_id, .. })
-                if *element_id == ElementId::from_term_bytes(vec![47])
+                if *element_id == NodeId::from_term_bytes(vec![47])
         )));
     }
 
@@ -11714,7 +11702,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::RuntimeChange(RuntimeChange::StartScrollbarDrag { tracker })]
-                if tracker.element_id == ElementId::from_term_bytes(vec![92])
+                if tracker.element_id == NodeId::from_term_bytes(vec![92])
                     && tracker.axis == ScrollbarAxis::Y
         ));
     }
@@ -11743,7 +11731,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
-                element_id: ElementId::from_term_bytes(vec![48]),
+                element_id: NodeId::from_term_bytes(vec![48]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 last_x: 10.0,
                 last_y: 10.0,
@@ -11771,7 +11759,7 @@ mod tests {
                     last_x,
                     last_y,
                 }),
-            ] if *element_id == ElementId::from_term_bytes(vec![48])
+            ] if *element_id == NodeId::from_term_bytes(vec![48])
                 && (*dx - 14.0).abs() < f32::EPSILON
                 && dy.abs() < f32::EPSILON
                 && (*last_x - 24.0).abs() < f32::EPSILON
@@ -11803,7 +11791,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Active {
-                element_id: ElementId::from_term_bytes(vec![81]),
+                element_id: NodeId::from_term_bytes(vec![81]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 last_x: 10.0,
                 last_y: 10.0,
@@ -11842,7 +11830,7 @@ mod tests {
             drag: DragTrackerState::Inactive,
             swipe: None,
             scrollbar: Some(ScrollbarDragTracker {
-                element_id: ElementId::from_term_bytes(vec![49]),
+                element_id: NodeId::from_term_bytes(vec![49]),
                 axis: ScrollbarAxis::Y,
                 track_start: 0.0,
                 track_len: 30.0,
@@ -11875,7 +11863,7 @@ mod tests {
             [
                 ListenerAction::TreeMsg(TreeMsg::ScrollbarThumbDragY { element_id, .. }),
                 ListenerAction::RuntimeChange(RuntimeChange::UpdateScrollbarDragCurrentScroll { current_scroll }),
-            ] if *element_id == ElementId::from_term_bytes(vec![49])
+            ] if *element_id == NodeId::from_term_bytes(vec![49])
                 && (*current_scroll - 45.0).abs() < f32::EPSILON
         ));
     }
@@ -11921,7 +11909,7 @@ mod tests {
             .expect("expected window blur listener");
 
         let mut ctx = TestComputeCtx {
-            focused_id: Some(ElementId::from_term_bytes(vec![15])),
+            focused_id: Some(NodeId::from_term_bytes(vec![15])),
             ..Default::default()
         };
         let actions = blur_listener
@@ -11931,8 +11919,8 @@ mod tests {
             [
                 ListenerAction::ElixirEvent(ElixirEvent { element_id, kind: ElementEventKind::Blur, .. }),
                 ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id: tree_id, active: false }),
-            ] if element_id == &ElementId::from_term_bytes(vec![15])
-                && tree_id == &ElementId::from_term_bytes(vec![15])
+            ] if element_id == &NodeId::from_term_bytes(vec![15])
+                && tree_id == &NodeId::from_term_bytes(vec![15])
         ));
     }
 
@@ -11999,7 +11987,7 @@ mod tests {
                 element_id,
                 dx,
                 dy,
-            })] if *element_id == ElementId::from_term_bytes(vec![9]) && (*dx + 3.0).abs() < f32::EPSILON && dy.abs() < f32::EPSILON
+            })] if *element_id == NodeId::from_term_bytes(vec![9]) && (*dx + 3.0).abs() < f32::EPSILON && dy.abs() < f32::EPSILON
         ));
 
         let y_actions = scroll_listeners
@@ -12027,7 +12015,7 @@ mod tests {
                 element_id,
                 dx,
                 dy,
-            })] if *element_id == ElementId::from_term_bytes(vec![9]) && dx.abs() < f32::EPSILON && (dy + 2.0).abs() < f32::EPSILON
+            })] if *element_id == NodeId::from_term_bytes(vec![9]) && dx.abs() < f32::EPSILON && (dy + 2.0).abs() < f32::EPSILON
         ));
     }
 
@@ -12063,7 +12051,7 @@ mod tests {
         parent_attrs.scroll_y = Some(10.0);
         parent_attrs.scroll_y_max = Some(100.0);
         let mut parent = with_interaction(make_element(71, parent_attrs), true);
-        parent.children = vec![ElementId::from_term_bytes(vec![72])];
+        parent.children = vec![NodeId::from_term_bytes(vec![72])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.scrollbar_y = Some(true);
@@ -12086,7 +12074,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, dx, dy })]
-                if *element_id == ElementId::from_term_bytes(vec![72])
+                if *element_id == NodeId::from_term_bytes(vec![72])
                     && dx.abs() < f32::EPSILON
                     && (*dy + 6.0).abs() < f32::EPSILON
         ));
@@ -12094,7 +12082,7 @@ mod tests {
 
     #[test]
     fn listener_compute_scroll_builds_tree_message_from_directional_input() {
-        let element_id = ElementId::from_term_bytes(vec![9]);
+        let element_id = NodeId::from_term_bytes(vec![9]);
         let compute = ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
             element_id: element_id.clone(),
             direction: ScrollDirection::YNeg,
@@ -12117,7 +12105,7 @@ mod tests {
                 element_id,
                 dx,
                 dy,
-            })] if *element_id == ElementId::from_term_bytes(vec![9]) && dx.abs() < f32::EPSILON && (dy + 6.0).abs() < f32::EPSILON
+            })] if *element_id == NodeId::from_term_bytes(vec![9]) && dx.abs() < f32::EPSILON && (dy + 6.0).abs() < f32::EPSILON
         ));
     }
 
@@ -12162,8 +12150,8 @@ mod tests {
                     dx: dx2,
                     dy: dy2,
                 }),
-            ] if *element_id == ElementId::from_term_bytes(vec![91])
-                && *second_id == ElementId::from_term_bytes(vec![91])
+            ] if *element_id == NodeId::from_term_bytes(vec![91])
+                && *second_id == NodeId::from_term_bytes(vec![91])
                 && (*dx + 12.0).abs() < f32::EPSILON
                 && dy.abs() < f32::EPSILON
                 && dx2.abs() < f32::EPSILON

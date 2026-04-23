@@ -591,6 +591,46 @@ defmodule Emerge.Engine.PatchTest do
            end)
   end
 
+  test "nearby slot change preserves keyed node id and emits set_nearby_mounts only" do
+    state = Emerge.Engine.DiffState.new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host), Nearby.below(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+    patches = Patch.decode(bin2)
+
+    host1 = hd(tree1.children)
+    host2 = hd(tree2.children)
+    [{:above, tip1}] = host1.nearby
+    [{:below, tip2}] = host2.nearby
+
+    assert tip1.id == tip2.id
+
+    assert Enum.any?(patches, fn
+             {:set_nearby_mounts, id, mounts} when id == host1.id ->
+               mounts == [{:below, tip2.id}]
+
+             _ ->
+               false
+           end)
+
+    refute Enum.any?(patches, fn
+             {:insert_nearby_subtree, _, _, _, _} -> true
+             {:remove, id} when id == tip1.id -> true
+             _ -> false
+           end)
+  end
+
   defp content_id_map(%Emerge.Engine.Element{children: children}) do
     children
     |> Enum.map(fn child ->
@@ -615,8 +655,11 @@ defmodule Emerge.Engine.PatchTest do
   defp normalize_element(%Emerge.Engine.Element{} = element) do
     %{
       element
-      | attrs: normalize_attrs(element.attrs),
-        children: Enum.map(element.children, &normalize_element/1)
+      | key: nil,
+        attrs: normalize_attrs(element.attrs),
+        children: Enum.map(element.children, &normalize_element/1),
+        nearby:
+          Enum.map(element.nearby, fn {slot, nearby} -> {slot, normalize_element(nearby)} end)
     }
   end
 

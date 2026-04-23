@@ -158,7 +158,7 @@ defmodule Emerge.UI do
   @typedoc "A list of child elements."
   @type children :: [child()]
 
-  @typedoc "A stable key used to retain identity among siblings."
+  @typedoc "A globally unique semantic key for identifying a UI element in the tree."
   @type key :: term()
 
   @typedoc "Image fit modes accepted by `image_fit/1`."
@@ -459,10 +459,13 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  Provide a stable sibling key for identity in lists.
+  Provide a stable semantic key for identity in the tree.
 
-  Use `key/1` when sibling order can change and an element should retain its
-  identity across inserts, removals, or moves.
+  Keys must be globally unique across the full UI tree, including nearby mounts.
+
+  Use `key/1` when an element should retain its semantic identity across updates
+  or when it may need to be addressed by future semantic APIs such as focus or
+  drag-and-drop targeting.
   """
   @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}

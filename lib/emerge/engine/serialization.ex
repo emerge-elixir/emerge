@@ -7,7 +7,7 @@ defmodule Emerge.Engine.Serialization do
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Tree.Nearby
 
-  @version 6
+  @version 7
 
   @type_tag %{
     row: 1,
@@ -64,7 +64,13 @@ defmodule Emerge.Engine.Serialization do
     node_count = length(nodes)
 
     encoded_nodes =
-      Enum.map(nodes, fn %{id: id, type: type, attrs: attrs, children: children, nearby: nearby} ->
+      Enum.map(nodes, fn %{
+                           id: id,
+                           type: type,
+                           attrs: attrs,
+                           children: children,
+                           nearby: nearby
+                         } ->
         type_tag = Map.fetch!(@type_tag, type)
         attr_bin = Emerge.Engine.AttrCodec.encode_attrs(attrs)
         child_ids = Enum.map(children, & &1.id)
@@ -72,11 +78,9 @@ defmodule Emerge.Engine.Serialization do
         children_bin = encode_ids(child_ids)
         nearby_count = length(nearby)
         nearby_bin = encode_nearby(nearby)
-        id_bin = :erlang.term_to_binary(id)
 
         <<
-          byte_size(id_bin)::unsigned-32,
-          id_bin::binary,
+          id::unsigned-big-64,
           type_tag::unsigned-8,
           byte_size(attr_bin)::unsigned-32,
           attr_bin::binary,
@@ -95,10 +99,11 @@ defmodule Emerge.Engine.Serialization do
 
   defp decode_nodes(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
-  defp decode_nodes(<<id_len::unsigned-32, rest::binary>>, count, acc) do
-    <<id_bin::binary-size(id_len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
-    <<type_tag::unsigned-8, attr_len::unsigned-32, rest::binary>> = rest
+  defp decode_nodes(
+         <<id::unsigned-big-64, type_tag::unsigned-8, attr_len::unsigned-32, rest::binary>>,
+         count,
+         acc
+       ) do
     <<attr_bin::binary-size(attr_len), rest::binary>> = rest
     attrs = Emerge.Engine.AttrCodec.decode_attrs(attr_bin)
     <<child_count::unsigned-16, rest::binary>> = rest
@@ -108,7 +113,14 @@ defmodule Emerge.Engine.Serialization do
 
     type = Map.fetch!(@tag_type, type_tag)
 
-    node = %{id: id, type: type, attrs: attrs, child_ids: child_ids, nearby_ids: nearby_ids}
+    node = %{
+      id: id,
+      type: type,
+      attrs: attrs,
+      child_ids: child_ids,
+      nearby_ids: nearby_ids
+    }
+
     decode_nodes(rest, count - 1, [node | acc])
   end
 
@@ -127,6 +139,7 @@ defmodule Emerge.Engine.Serialization do
 
     %Element{
       type: node.type,
+      key: nil,
       id: node.id,
       attrs: node.attrs,
       children: children,
@@ -136,52 +149,50 @@ defmodule Emerge.Engine.Serialization do
   end
 
   defp collect_nodes(%Element{} = element) do
-    [
-      %{
-        id: element.id,
-        type: element.type,
-        attrs: element.attrs,
-        children: element.children,
-        nearby: element.nearby
-      }
-      | Enum.flat_map(element.children, &collect_nodes/1) ++
-          Enum.flat_map(element.nearby, fn {_slot, child} ->
-            collect_nodes(child)
-          end)
-    ]
+    do_collect_nodes([element], [])
+  end
+
+  defp do_collect_nodes([], acc), do: Enum.reverse(acc)
+
+  defp do_collect_nodes([%Element{} = element | rest], acc) do
+    nearby_children = Enum.map(element.nearby, fn {_slot, child} -> child end)
+
+    node = %{
+      id: element.id,
+      type: element.type,
+      attrs: element.attrs,
+      children: element.children,
+      nearby: element.nearby
+    }
+
+    do_collect_nodes(element.children ++ nearby_children ++ rest, [node | acc])
   end
 
   defp encode_ids(ids) do
     ids
     |> Enum.map(fn id ->
-      bin = :erlang.term_to_binary(id)
-      [<<byte_size(bin)::unsigned-32>>, bin]
+      <<id::unsigned-big-64>>
     end)
     |> IO.iodata_to_binary()
   end
 
   defp decode_ids(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
-  defp decode_ids(<<len::unsigned-32, rest::binary>>, count, acc) do
-    <<id_bin::binary-size(len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
+  defp decode_ids(<<id::unsigned-big-64, rest::binary>>, count, acc) do
     decode_ids(rest, count - 1, [id | acc])
   end
 
   defp encode_nearby(nearby) do
     nearby
     |> Enum.map(fn {slot, %Element{id: id}} ->
-      id_bin = :erlang.term_to_binary(id)
-      [<<Nearby.slot_tag(slot)::unsigned-8, byte_size(id_bin)::unsigned-32>>, id_bin]
+      <<Nearby.slot_tag(slot)::unsigned-8, id::unsigned-big-64>>
     end)
     |> IO.iodata_to_binary()
   end
 
   defp decode_nearby(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
-  defp decode_nearby(<<slot_tag::unsigned-8, len::unsigned-32, rest::binary>>, count, acc) do
-    <<id_bin::binary-size(len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
+  defp decode_nearby(<<slot_tag::unsigned-8, id::unsigned-big-64, rest::binary>>, count, acc) do
     decode_nearby(rest, count - 1, [{Nearby.slot_from_tag!(slot_tag), id} | acc])
   end
 end

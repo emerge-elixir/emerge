@@ -38,7 +38,7 @@ use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
-use crate::tree::element::{Element, ElementId, TextInputContentOrigin};
+use crate::tree::element::{Element, NodeId, TextInputContentOrigin};
 use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
@@ -992,7 +992,7 @@ pub enum TextInputPreeditRequest {
 
 #[derive(Clone, Debug)]
 pub struct FocusOnMountTarget {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub reveal_scrolls: Vec<registry_builder::FocusRevealScroll>,
     pub mounted_at_revision: u64,
 }
@@ -1012,9 +1012,9 @@ pub struct FocusOnMountTarget {
 #[derive(Default)]
 pub struct RegistryRebuildPayload {
     pub base_registry: registry_builder::Registry,
-    pub text_inputs: HashMap<ElementId, TextInputState>,
-    pub scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
-    pub focused_id: Option<ElementId>,
+    pub text_inputs: HashMap<NodeId, TextInputState>,
+    pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
+    pub focused_id: Option<NodeId>,
     pub focus_on_mount: Option<FocusOnMountTarget>,
 }
 
@@ -1138,11 +1138,12 @@ fn parse_font_weight(value: &str) -> u16 {
     }
 }
 
-pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
-    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+pub(crate) fn send_element_event(pid: LocalPid, element_id: &NodeId, event: Atom) {
+    let id_bytes = element_id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(id_bytes.len()) else {
         return;
     };
-    bin.as_mut_slice().copy_from_slice(&element_id.0);
+    bin.as_mut_slice().copy_from_slice(&id_bytes);
 
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1153,14 +1154,15 @@ pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: A
 
 pub(crate) fn send_element_event_with_string_payload(
     pid: LocalPid,
-    element_id: &ElementId,
+    element_id: &NodeId,
     event: Atom,
     value: &str,
 ) {
-    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+    let id_bytes = element_id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(id_bytes.len()) else {
         return;
     };
-    bin.as_mut_slice().copy_from_slice(&element_id.0);
+    bin.as_mut_slice().copy_from_slice(&id_bytes);
 
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1329,12 +1331,7 @@ mod tests {
     use crate::tree::transform::Affine2;
 
     fn make_element(id: u8, kind: ElementKind, attrs: Attrs) -> Element {
-        Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
-            kind,
-            Vec::new(),
-            attrs,
-        )
+        Element::with_attrs(NodeId::from_term_bytes(vec![id]), kind, Vec::new(), attrs)
     }
 
     #[test]
@@ -1342,7 +1339,7 @@ mod tests {
         let mut tree = ElementTree::new();
 
         let mut root = make_element(1, ElementKind::Column, Attrs::default());
-        root.children = vec![ElementId::from_term_bytes(vec![2])];
+        root.children = vec![NodeId::from_term_bytes(vec![2])];
         root.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -1373,15 +1370,12 @@ mod tests {
         tree.insert(child);
 
         let rebuild = render_tree(&tree).event_rebuild;
-        assert_eq!(
-            rebuild.focused_id,
-            Some(ElementId::from_term_bytes(vec![2]))
-        );
+        assert_eq!(rebuild.focused_id, Some(NodeId::from_term_bytes(vec![2])));
         assert_eq!(rebuild.text_inputs.len(), 1);
         assert_eq!(
             rebuild
                 .text_inputs
-                .get(&ElementId::from_term_bytes(vec![2]))
+                .get(&NodeId::from_term_bytes(vec![2]))
                 .expect("text input present")
                 .content_origin,
             TextInputContentOrigin::TreePatch
@@ -1389,7 +1383,7 @@ mod tests {
         assert_eq!(
             rebuild
                 .text_inputs
-                .get(&ElementId::from_term_bytes(vec![2]))
+                .get(&NodeId::from_term_bytes(vec![2]))
                 .expect("text input present")
                 .cursor,
             2
@@ -1398,7 +1392,7 @@ mod tests {
         assert!(
             rebuild
                 .scrollbars
-                .contains_key(&(ElementId::from_term_bytes(vec![2]), ScrollbarAxis::Y))
+                .contains_key(&(NodeId::from_term_bytes(vec![2]), ScrollbarAxis::Y))
         );
     }
 

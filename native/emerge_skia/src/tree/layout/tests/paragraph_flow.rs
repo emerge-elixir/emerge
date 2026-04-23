@@ -5,7 +5,7 @@ use crate::tree::attrs::FontWeight;
 fn build_paragraph(
     paragraph_attrs: Attrs,
     children: Vec<(&str, ElementKind, Attrs)>,
-) -> (ElementTree, ElementId, Vec<ElementId>) {
+) -> (ElementTree, NodeId, Vec<NodeId>) {
     let mut tree = ElementTree::new();
 
     let mut para = make_element("para", ElementKind::Paragraph, paragraph_attrs);

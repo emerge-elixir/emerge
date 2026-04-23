@@ -2,6 +2,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   use Emerge.UI
 
   alias Emerge.Engine.Element
+  alias Emerge.Engine.NodeId
 
   @sample_times_ms Enum.to_list(0..1400//50)
   @probes %{
@@ -73,7 +74,7 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   def allowed_clear_tail_start_ms(label), do: expected_first_activation_ms(label)
 
   def target_id_bin(%Element{} = assigned_tree) do
-    target_id_from_tree(assigned_tree) |> :erlang.term_to_binary()
+    target_id_from_tree(assigned_tree) |> NodeId.encode()
   end
 
   def target_id_bin_from_state(%Emerge.Engine.DiffState{event_registry: event_registry}) do
@@ -86,13 +87,13 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   end
 
   def host_id_bin(%Element{} = assigned_tree) do
-    host_id_from_tree(assigned_tree) |> :erlang.term_to_binary()
+    host_id_from_tree(assigned_tree) |> NodeId.encode()
   end
 
   def host_id_bin_for_target(%Element{} = assigned_tree, target_id_bin)
       when is_binary(target_id_bin) do
-    target_id = :erlang.binary_to_term(target_id_bin)
-    host_id_from_tree(assigned_tree, target_id) |> :erlang.term_to_binary()
+    target_id = NodeId.decode(target_id_bin)
+    host_id_from_tree(assigned_tree, target_id) |> NodeId.encode()
   end
 
   def page_switch_tree do
@@ -385,8 +386,11 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
     )
   end
 
-  defp target_id_from_tree(%Element{id: id, attrs: %{on_mouse_move: {_pid, {:probe, :target}}}}),
-    do: id
+  defp target_id_from_tree(%Element{
+         id: id,
+         attrs: %{on_mouse_move: {_pid, {:probe, :target}}}
+       }),
+       do: id
 
   defp target_id_from_tree(%Element{children: children, nearby: nearby}) do
     Enum.find_value(children, &target_id_from_tree/1) ||
@@ -415,7 +419,9 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
          %Element{id: id, nearby: nearby},
          target_id
        ) do
-    if Enum.any?(nearby, fn {slot, %Element{id: id}} -> slot == :in_front and id == target_id end) do
+    if Enum.any?(nearby, fn {slot, %Element{id: nearby_node_id}} ->
+         slot == :in_front and nearby_node_id == target_id
+       end) do
       id
     end
   end

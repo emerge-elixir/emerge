@@ -2,22 +2,22 @@ use super::super::*;
 use super::common::*;
 
 struct ExactAssetsIds {
-    weather_row_id: ElementId,
-    svg_row_id: ElementId,
-    weather_card_ids: Vec<ElementId>,
-    svg_card_ids: Vec<ElementId>,
+    weather_row_id: NodeId,
+    svg_row_id: NodeId,
+    weather_card_ids: Vec<NodeId>,
+    svg_card_ids: Vec<NodeId>,
 }
 
 #[test]
 fn test_row_paint_children_follow_layout_order_not_source_order() {
-    let row_id = ElementId::from_term_bytes(b"paint_row".to_vec());
-    let right_id = ElementId::from_term_bytes(b"paint_right".to_vec());
-    let center_id = ElementId::from_term_bytes(b"paint_center".to_vec());
+    let row_id = NodeId::from_u64(10_001);
+    let right_id = NodeId::from_u64(10_002);
+    let center_id = NodeId::from_u64(10_003);
 
     let mut row_attrs = Attrs::default();
     row_attrs.width = Some(Length::Px(200.0));
     row_attrs.height = Some(Length::Px(40.0));
-    let mut row = make_element("paint_row", ElementKind::Row, row_attrs);
+    let mut row = Element::with_attrs(row_id, ElementKind::Row, Vec::new(), row_attrs);
     row.children = vec![right_id.clone(), center_id.clone()];
 
     let mut right_attrs = Attrs::default();
@@ -46,19 +46,19 @@ fn test_row_paint_children_follow_layout_order_not_source_order() {
 
 #[test]
 fn test_wrapped_row_paint_children_follow_line_then_x_order() {
-    let row_id = ElementId::from_term_bytes(b"wrapped_paint_row".to_vec());
-    let first_id = ElementId::from_term_bytes(b"wrapped_first".to_vec());
-    let second_id = ElementId::from_term_bytes(b"wrapped_second".to_vec());
-    let third_id = ElementId::from_term_bytes(b"wrapped_third".to_vec());
+    let row_id = NodeId::from_u64(10_101);
+    let first_id = NodeId::from_u64(10_102);
+    let second_id = NodeId::from_u64(10_103);
+    let third_id = NodeId::from_u64(10_104);
 
     let mut row_attrs = Attrs::default();
     row_attrs.width = Some(Length::Px(150.0));
     row_attrs.height = Some(Length::Content);
     row_attrs.spacing = Some(10.0);
-    let mut row = make_element("wrapped_paint_row", ElementKind::WrappedRow, row_attrs);
+    let mut row = Element::with_attrs(row_id, ElementKind::WrappedRow, Vec::new(), row_attrs);
     row.children = vec![first_id.clone(), second_id.clone(), third_id.clone()];
 
-    let child = |id: ElementId| {
+    let child = |id: NodeId| {
         let mut attrs = Attrs::default();
         attrs.width = Some(Length::Px(70.0));
         attrs.height = Some(Length::Px(20.0));
@@ -80,7 +80,7 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
     assert_eq!(row.paint_children, vec![first_id, second_id, third_id]);
 }
 
-fn insert_text_node(tree: &mut ElementTree, id: &str, content: &str, font_size: f64) -> ElementId {
+fn insert_text_node(tree: &mut ElementTree, id: &str, content: &str, font_size: f64) -> NodeId {
     let mut attrs = text_attrs(content);
     attrs.font_size = Some(font_size);
     let element = make_element(id, ElementKind::Text, attrs);
@@ -95,7 +95,7 @@ fn insert_badge_node(
     label: &str,
     padding: (f64, f64, f64, f64),
     font_size: f64,
-) -> ElementId {
+) -> NodeId {
     let text_id = insert_text_node(tree, &format!("{id}_text"), label, font_size);
 
     let mut badge = make_element(id, ElementKind::El, {
@@ -120,7 +120,7 @@ fn insert_temp_line_node(
     label: &str,
     primary: &str,
     secondary: &str,
-) -> ElementId {
+) -> NodeId {
     let label_id = insert_text_node(tree, &format!("{id}_label"), label, 9.0);
     let primary_id = insert_text_node(tree, &format!("{id}_primary"), primary, 15.0);
     let secondary_id = insert_text_node(tree, &format!("{id}_secondary"), secondary, 11.0);
@@ -146,7 +146,7 @@ fn insert_weather_day_card_node(
     low_c: &str,
     low_f: &str,
     precip: &str,
-) -> ElementId {
+) -> NodeId {
     let day_id = insert_text_node(tree, &format!("{id}_day"), day, 12.0);
 
     let icon = make_element(&format!("{id}_icon"), ElementKind::Image, {
@@ -203,12 +203,7 @@ fn insert_weather_day_card_node(
     card_id
 }
 
-fn insert_svg_scale_card_node(
-    tree: &mut ElementTree,
-    id: &str,
-    label: &str,
-    note: &str,
-) -> ElementId {
+fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, note: &str) -> NodeId {
     let title_text_id = insert_text_node(tree, &format!("{id}_title_text"), label, 12.0);
     let mut title_fill = make_element(&format!("{id}_title_fill"), ElementKind::El, {
         let mut a = Attrs::default();

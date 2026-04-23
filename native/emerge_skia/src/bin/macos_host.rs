@@ -671,7 +671,7 @@ mod app {
 
         fn send_element_event(
             &self,
-            element_id: &emerge_skia::tree::element::ElementId,
+            element_id: &emerge_skia::tree::element::NodeId,
             kind: ElementEventKind,
             payload: Option<&str>,
         ) {
@@ -2169,11 +2169,13 @@ mod app {
         surface: &mut MetalSurface,
         renderer: &mut SceneRenderer,
         render_state: &RenderState,
+        stats: Option<&RendererStatsCollector>,
     ) -> Result<(), String> {
         let Some(drawable) = surface.metal_layer.nextDrawable() else {
             return Ok(());
         };
 
+        let render_started_at = Instant::now();
         let size = surface.metal_layer.drawableSize();
         let (drawable_width, drawable_height) = (size.width.max(1.0), size.height.max(1.0));
 
@@ -2201,8 +2203,14 @@ mod app {
         }
 
         surface.skia.flush_and_submit();
+
+        if let Some(stats) = stats {
+            stats.record_render(render_started_at.elapsed());
+        }
+
         drop(skia_surface);
 
+        let present_submit_started_at = Instant::now();
         let command_buffer = surface
             .command_queue
             .commandBuffer()
@@ -2211,6 +2219,11 @@ mod app {
         let drawable: Retained<ProtocolObject<dyn MTLDrawable>> = (&drawable).into();
         command_buffer.presentDrawable(&drawable);
         command_buffer.commit();
+
+        if let Some(stats) = stats {
+            stats.record_present_submit(present_submit_started_at.elapsed());
+        }
+
         Ok(())
     }
 
@@ -2218,10 +2231,17 @@ mod app {
         surface: &mut RasterLayerSurface,
         renderer: &mut SceneRenderer,
         render_state: &RenderState,
+        stats: Option<&RendererStatsCollector>,
     ) -> Result<(), String> {
+        let render_started_at = Instant::now();
+
         {
             let mut frame = RenderFrame::new(&mut surface.surface, None);
             renderer.render(&mut frame, render_state);
+        }
+
+        if let Some(stats) = stats {
+            stats.record_render(render_started_at.elapsed());
         }
 
         let image = surface.surface.image_snapshot();
@@ -2242,12 +2262,18 @@ mod app {
 
     fn draw_session(session: &mut HostSession) -> Result<(), String> {
         match &mut session.surface {
-            SessionSurface::Metal(surface) => {
-                draw_metal_surface(surface, &mut session.renderer, &session.render_state)?
-            }
-            SessionSurface::Raster(surface) => {
-                draw_raster_surface(surface, &mut session.renderer, &session.render_state)?
-            }
+            SessionSurface::Metal(surface) => draw_metal_surface(
+                surface,
+                &mut session.renderer,
+                &session.render_state,
+                session.stats.as_deref(),
+            )?,
+            SessionSurface::Raster(surface) => draw_raster_surface(
+                surface,
+                &mut session.renderer,
+                &session.render_state,
+                session.stats.as_deref(),
+            )?,
         }
 
         if let Some(stats) = session.stats.as_ref() {
@@ -2806,7 +2832,7 @@ mod app {
     fn notify_element_event(
         state: &Arc<HostState>,
         session_id: u64,
-        element_id: &emerge_skia::tree::element::ElementId,
+        element_id: &emerge_skia::tree::element::NodeId,
         kind: ElementEventKind,
         payload: Option<&str>,
     ) {

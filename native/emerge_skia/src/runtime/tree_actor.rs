@@ -24,7 +24,7 @@ use crate::{
 };
 
 #[cfg(feature = "hover-trace")]
-use crate::tree::element::ElementId;
+use crate::tree::element::NodeId;
 
 pub(crate) struct TreeActorConfig {
     pub(crate) render_sender: RenderSender,
@@ -447,9 +447,7 @@ fn decide_refresh_action(
 }
 
 #[cfg(feature = "hover-trace")]
-fn trace_element_snapshots(
-    tree: &ElementTree,
-) -> Vec<(ElementId, f32, f32, f32, f32, Option<f64>)> {
+fn trace_element_snapshots(tree: &ElementTree) -> Vec<(NodeId, f32, f32, f32, f32, Option<f64>)> {
     tree.nodes
         .values()
         .filter(|element| {

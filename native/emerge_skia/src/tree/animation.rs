@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
 };
-use super::element::{ElementId, ElementTree};
+use super::element::{ElementTree, NodeId};
 
 #[derive(Clone, Debug)]
 pub enum AnimationCurve {
@@ -51,9 +51,9 @@ pub struct ExitAnimationRuntimeEntry {
 
 #[derive(Clone, Debug, Default)]
 pub struct AnimationRuntime {
-    animate_entries: HashMap<ElementId, AnimationRuntimeEntry>,
-    enter_entries: HashMap<ElementId, EnterAnimationRuntimeEntry>,
-    exit_entries: HashMap<ElementId, ExitAnimationRuntimeEntry>,
+    animate_entries: HashMap<NodeId, AnimationRuntimeEntry>,
+    enter_entries: HashMap<NodeId, EnterAnimationRuntimeEntry>,
+    exit_entries: HashMap<NodeId, ExitAnimationRuntimeEntry>,
     last_seen_revision: u64,
 }
 
@@ -77,16 +77,16 @@ impl AnimationRuntime {
             })
         });
 
-        for (id, element) in &tree.nodes {
+        for (id, element) in tree.iter_node_pairs() {
             if element.is_ghost_root() {
                 if let Some(spec) = element.ghost_exit_animation.as_ref() {
-                    self.exit_entries.entry(id.clone()).or_insert_with(|| {
-                        ExitAnimationRuntimeEntry {
+                    self.exit_entries
+                        .entry(id)
+                        .or_insert_with(|| ExitAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
                             capture_scale: element.ghost_capture_scale.unwrap_or(1.0),
-                        }
-                    });
+                        });
                 }
                 continue;
             }
@@ -95,29 +95,29 @@ impl AnimationRuntime {
                 continue;
             }
 
-            if tree.was_mounted_after(id, self.last_seen_revision) {
-                self.animate_entries.remove(id);
+            if tree.was_mounted_after(&id, self.last_seen_revision) {
+                self.animate_entries.remove(&id);
 
                 if let Some(spec) = element.base_attrs.animate_enter.as_ref() {
                     self.enter_entries.insert(
-                        id.clone(),
+                        id,
                         EnterAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
                         },
                     );
                 } else {
-                    self.enter_entries.remove(id);
+                    self.enter_entries.remove(&id);
                 }
             }
 
-            let enter_active = self.enter_entries.get(id).cloned().is_some_and(|entry| {
+            let enter_active = self.enter_entries.get(&id).cloned().is_some_and(|entry| {
                 let sample = sample_enter_animation_spec(&entry, Some(started_at), 1.0);
                 if sample.active {
-                    self.animate_entries.remove(id);
+                    self.animate_entries.remove(&id);
                     true
                 } else {
-                    self.enter_entries.remove(id);
+                    self.enter_entries.remove(&id);
                     false
                 }
             });
@@ -127,16 +127,16 @@ impl AnimationRuntime {
             }
 
             let Some(spec) = element.base_attrs.animate.as_ref() else {
-                self.animate_entries.remove(id);
+                self.animate_entries.remove(&id);
                 continue;
             };
             let spec_hash = spec_fingerprint(spec);
 
-            match self.animate_entries.get(id) {
+            match self.animate_entries.get(&id) {
                 Some(entry) if entry.spec_hash == spec_hash => {}
                 _ => {
                     self.animate_entries.insert(
-                        id.clone(),
+                        id,
                         AnimationRuntimeEntry {
                             spec_hash,
                             started_at,
@@ -155,15 +155,15 @@ impl AnimationRuntime {
             && self.exit_entries.is_empty()
     }
 
-    pub fn animate_entry(&self, id: &ElementId) -> Option<&AnimationRuntimeEntry> {
+    pub fn animate_entry(&self, id: &NodeId) -> Option<&AnimationRuntimeEntry> {
         self.animate_entries.get(id)
     }
 
-    pub fn enter_entry(&self, id: &ElementId) -> Option<&EnterAnimationRuntimeEntry> {
+    pub fn enter_entry(&self, id: &NodeId) -> Option<&EnterAnimationRuntimeEntry> {
         self.enter_entries.get(id)
     }
 
-    pub fn exit_entry(&self, id: &ElementId) -> Option<&ExitAnimationRuntimeEntry> {
+    pub fn exit_entry(&self, id: &NodeId) -> Option<&ExitAnimationRuntimeEntry> {
         self.exit_entries.get(id)
     }
 
@@ -172,7 +172,7 @@ impl AnimationRuntime {
         tree: &mut ElementTree,
         sample_time: Option<Instant>,
     ) -> bool {
-        let completed_ids: Vec<ElementId> = self
+        let completed_ids: Vec<NodeId> = self
             .exit_entries
             .iter()
             .filter_map(|(id, entry)| {
@@ -219,7 +219,7 @@ pub fn apply_animation_overlays(
     sample_time: Option<Instant>,
     scale: f32,
 ) -> bool {
-    tree.nodes.values_mut().fold(false, |active_any, element| {
+    tree.iter_nodes_mut().fold(false, |active_any, element| {
         if let Some(sample) = runtime
             .and_then(|state| state.exit_entry(&element.id))
             .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
@@ -919,8 +919,8 @@ mod tests {
         attrs: Attrs,
         tree_revision: u64,
         mounted_at_revision: u64,
-    ) -> (ElementTree, ElementId) {
-        let id = ElementId::from_term_bytes(vec![1]);
+    ) -> (ElementTree, NodeId) {
+        let id = NodeId::from_term_bytes(vec![1]);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         element.mounted_at_revision = mounted_at_revision;
 
@@ -931,9 +931,9 @@ mod tests {
         (tree, id)
     }
 
-    fn tree_with_exit_ghost() -> (ElementTree, ElementId, ElementId) {
-        let root_id = ElementId::from_term_bytes(vec![10]);
-        let ghost_id = ElementId::from_term_bytes(vec![11]);
+    fn tree_with_exit_ghost() -> (ElementTree, NodeId, NodeId) {
+        let root_id = NodeId::from_term_bytes(vec![10]);
+        let ghost_id = NodeId::from_term_bytes(vec![11]);
 
         let mut root = Element::with_attrs(
             root_id.clone(),
