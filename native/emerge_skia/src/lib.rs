@@ -83,7 +83,7 @@ use renderer::set_render_log_enabled;
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::RendererStatsCollector;
 use std::time::Instant;
-use tree::element::{ElementId, ElementTree};
+use tree::element::{ElementTree, NodeId};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
@@ -1349,17 +1349,23 @@ fn replace_tree_resource(tree_res: &TreeResource, tree: ElementTree) -> Result<(
     Ok(())
 }
 
+fn upload_tree_resource(tree_res: &TreeResource, tree: ElementTree) -> Result<(), String> {
+    let mut guard = tree_res.tree.lock().map_err(|_| tree_lock_error())?;
+    guard.replace_with_uploaded(tree);
+    Ok(())
+}
+
 fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a> {
-    tree.nodes
-        .iter()
+    tree.iter_node_pairs()
         .filter_map(|(id, element)| {
             if element.is_ghost() {
                 return None;
             }
 
             element.frame.map(|frame| {
-                let mut id_binary = NewBinary::new(env, id.0.len());
-                id_binary.as_mut_slice().copy_from_slice(&id.0);
+                let id_bytes = id.to_be_bytes();
+                let mut id_binary = NewBinary::new(env, id_bytes.len());
+                id_binary.as_mut_slice().copy_from_slice(&id_bytes);
                 (
                     id_binary.into(),
                     frame.x,
@@ -1389,7 +1395,7 @@ fn tree_new() -> ResourceArc<TreeResource> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-    replace_tree_resource(&tree_res, decoded)?;
+    upload_tree_resource(&tree_res, decoded)?;
     Ok(true)
 }
 
@@ -1401,7 +1407,7 @@ fn tree_upload_roundtrip<'a>(
 ) -> Result<Binary<'a>, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
     let encoded = encode_tree_binary(env, &decoded);
-    replace_tree_resource(&tree_res, decoded)?;
+    upload_tree_resource(&tree_res, decoded)?;
     Ok(encoded)
 }
 
@@ -1674,9 +1680,10 @@ fn test_harness_stop(harness: ResourceArc<TestHarnessResource>) -> Atom {
     atoms::ok()
 }
 
-fn encode_hover_msg<'a>(env: Env<'a>, element_id: &ElementId, active: bool) -> HoverMsg<'a> {
-    let mut id_binary = NewBinary::new(env, element_id.0.len());
-    id_binary.as_mut_slice().copy_from_slice(&element_id.0);
+fn encode_hover_msg<'a>(env: Env<'a>, element_id: &NodeId, active: bool) -> HoverMsg<'a> {
+    let id_bytes = element_id.to_be_bytes();
+    let mut id_binary = NewBinary::new(env, id_bytes.len());
+    id_binary.as_mut_slice().copy_from_slice(&id_bytes);
     (id_binary.into(), active)
 }
 
@@ -1693,7 +1700,7 @@ mod tests {
     use crate::events::RegistryRebuildPayload;
     use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::input::InputEvent;
-    use crate::tree::element::ElementId;
+    use crate::tree::element::NodeId;
     use crossbeam_channel::RecvTimeoutError;
 
     struct LiveActorHarness {
@@ -1790,7 +1797,7 @@ mod tests {
             {}
         }
 
-        fn drain_set_mouse_over_active(&self, element_id: &ElementId) -> Vec<bool> {
+        fn drain_set_mouse_over_active(&self, element_id: &NodeId) -> Vec<bool> {
             let mut msgs = Vec::new();
             while let Ok(msg) = self.tree_tap_rx.try_recv() {
                 runtime::tree_actor::push_tree_message_flat(msg, &mut msgs);

@@ -322,7 +322,7 @@ defmodule EmergeSkia.Native do
   Compute layout for the tree with given width/height constraints and scale factor.
 
   Returns a list of `{id_binary, x, y, width, height}` tuples for all elements.
-  The id_binary is the Erlang term_to_binary of the element ID.
+  The `id_binary` is the element `id` encoded as `<<id::unsigned-big-64>>`.
 
   Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
   border radius, border width, font size). Use scale > 1.0 for high-DPI displays.

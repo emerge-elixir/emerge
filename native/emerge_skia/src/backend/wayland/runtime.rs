@@ -499,14 +499,25 @@ impl WaylandApp {
                 }
             }
 
+            let render_started_at = std::time::Instant::now();
             env.renderer.render(&mut frame, &self.render_state);
+
+            if let Some(stats) = self.stats.as_ref() {
+                stats.record_render(render_started_at.elapsed());
+            }
         }
+
+        let present_submit_started_at = std::time::Instant::now();
 
         if let Err(err) = env.gl_surface.swap_buffers(&env.gl_context) {
             eprintln!("wayland egl swap_buffers failed: {err}");
             self.running_flag.store(false, Ordering::Relaxed);
             self.exit = true;
             return;
+        }
+
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_present_submit(present_submit_started_at.elapsed());
         }
 
         if let Some(stats) = self.stats.as_ref() {

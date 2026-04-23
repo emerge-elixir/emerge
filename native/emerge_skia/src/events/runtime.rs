@@ -35,7 +35,7 @@ use crate::{
     keys::CanonicalKey,
     stats::RendererStatsCollector,
     tree::{
-        element::{ElementId, TextInputContentOrigin},
+        element::{NodeId, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
     },
 };
@@ -59,7 +59,7 @@ pub trait HostEventSink: Send + Sync {
     fn send_raw_input(&self, event: &InputEvent);
     fn send_element_event(
         &self,
-        element_id: &ElementId,
+        element_id: &NodeId,
         kind: ElementEventKind,
         payload: Option<&str>,
     );
@@ -171,7 +171,7 @@ struct PresentTimingState {
 
 #[derive(Clone, Debug, PartialEq)]
 struct DragMotionState {
-    element_id: ElementId,
+    element_id: NodeId,
     axis: ScrollbarAxis,
     last_pointer_axis: f32,
     last_sample_at: Instant,
@@ -188,7 +188,7 @@ struct AdaptiveScrollSimulation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TextCommitSuppression {
-    element_id: ElementId,
+    element_id: NodeId,
     key: CanonicalKey,
 }
 
@@ -237,7 +237,7 @@ impl AdaptiveScrollSimulation {
 
 #[derive(Clone, Debug, PartialEq)]
 struct InertialScrollState {
-    element_id: ElementId,
+    element_id: NodeId,
     axis: ScrollbarAxis,
     simulation: AdaptiveScrollSimulation,
     started_at: Instant,
@@ -371,23 +371,23 @@ impl PendingDispatchEffects {
 struct RuntimeListenerComputeCtx<'a> {
     base_registry: &'a registry_builder::Registry,
     overlay_registry: &'a registry_builder::Registry,
-    focused_id: Option<&'a ElementId>,
-    hovered_id: Option<&'a ElementId>,
-    text_states: &'a HashMap<ElementId, TextInputState>,
+    focused_id: Option<&'a NodeId>,
+    hovered_id: Option<&'a NodeId>,
+    text_states: &'a HashMap<NodeId, TextInputState>,
     text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
     clipboard: &'a mut ClipboardManager,
 }
 
 impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
-    fn focused_id(&self) -> Option<&ElementId> {
+    fn focused_id(&self) -> Option<&NodeId> {
         self.focused_id
     }
 
-    fn hover_owner(&self) -> Option<&ElementId> {
+    fn hover_owner(&self) -> Option<&NodeId> {
         self.hovered_id
     }
 
-    fn text_input_state(&self, element_id: &ElementId) -> Option<TextInputState> {
+    fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
         self.text_states.get(element_id).cloned()
     }
 
@@ -395,7 +395,7 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
         self.clipboard.get_text(target)
     }
 
-    fn take_text_commit_suppression(&mut self, element_id: &ElementId) -> bool {
+    fn take_text_commit_suppression(&mut self, element_id: &NodeId) -> bool {
         self.text_commit_suppressions
             .iter()
             .position(|suppression| &suppression.element_id == element_id)
@@ -431,7 +431,7 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 
     fn base_source_listener(
         &self,
-        element_id: &ElementId,
+        element_id: &NodeId,
         matcher_kind: ListenerMatcherKind,
     ) -> Option<registry_builder::Listener> {
         self.base_registry
@@ -497,11 +497,11 @@ struct DirectEventRuntime {
     overlay_registry: registry_builder::Registry,
     listener_lane: ListenerLaneState,
     last_focus_on_mount_revision: u64,
-    focused_id: Option<ElementId>,
-    text_states: HashMap<ElementId, TextInputState>,
+    focused_id: Option<NodeId>,
+    text_states: HashMap<NodeId, TextInputState>,
     text_commit_suppressions: Vec<TextCommitSuppression>,
-    pending_text_patches: HashMap<ElementId, VecDeque<PendingTextPatch>>,
-    scrollbar_nodes: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
+    pending_text_patches: HashMap<NodeId, VecDeque<PendingTextPatch>>,
+    scrollbar_nodes: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
     host_event_sink: Option<Arc<dyn HostEventSink>>,
@@ -510,7 +510,7 @@ struct DirectEventRuntime {
     backend_wake: BackendWakeHandle,
     last_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
-    hovered_id: Option<ElementId>,
+    hovered_id: Option<NodeId>,
     current_cursor_icon: CursorIcon,
     virtual_key_deadline: Option<Instant>,
     last_present_timing: Option<PresentTimingState>,
@@ -677,7 +677,7 @@ impl DirectEventRuntime {
 
     fn sync_drag_motion_start(
         &mut self,
-        element_id: ElementId,
+        element_id: NodeId,
         locked_axis: GestureAxis,
         last_x: f32,
         last_y: f32,
@@ -718,7 +718,7 @@ impl DirectEventRuntime {
 
     fn edge_blocks_inertial_scroll(
         &self,
-        element_id: &ElementId,
+        element_id: &NodeId,
         axis: ScrollbarAxis,
         velocity: f32,
     ) -> bool {
@@ -747,7 +747,7 @@ impl DirectEventRuntime {
 
     fn clamp_inertial_scroll_delta(
         &self,
-        element_id: &ElementId,
+        element_id: &NodeId,
         axis: ScrollbarAxis,
         delta: f32,
     ) -> (f32, bool) {
@@ -1531,7 +1531,7 @@ impl DirectEventRuntime {
         }
     }
 
-    fn apply_text_input_state(&mut self, element_id: &ElementId, state: TextInputState) {
+    fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
         self.text_states.insert(element_id.clone(), state);
     }
 
@@ -1548,7 +1548,7 @@ impl DirectEventRuntime {
         }
     }
 
-    fn enqueue_pending_text_patch(&mut self, element_id: ElementId, content: String) {
+    fn enqueue_pending_text_patch(&mut self, element_id: NodeId, content: String) {
         let now = Instant::now();
         let ttl = self.pending_text_patch_ttl();
         let queue = self.pending_text_patches.entry(element_id).or_default();
@@ -1574,7 +1574,7 @@ impl DirectEventRuntime {
         });
     }
 
-    fn reconcile_runtime_overlay(&mut self, text_inputs: &HashMap<ElementId, TextInputState>) {
+    fn reconcile_runtime_overlay(&mut self, text_inputs: &HashMap<NodeId, TextInputState>) {
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
             && !base_has_source_listener(
                 &self.base_registry,
@@ -1669,7 +1669,7 @@ impl DirectEventRuntime {
 
 fn base_has_source_listener(
     base: &registry_builder::Registry,
-    element_id: &ElementId,
+    element_id: &NodeId,
     matcher_kind: ListenerMatcherKind,
 ) -> bool {
     base.view().any_precedence(|listener| {
@@ -1677,7 +1677,7 @@ fn base_has_source_listener(
     })
 }
 
-fn scrollbar_key(element_id: &ElementId, axis: ScrollbarAxis) -> (ElementId, ScrollbarAxis) {
+fn scrollbar_key(element_id: &NodeId, axis: ScrollbarAxis) -> (NodeId, ScrollbarAxis) {
     (element_id.clone(), axis)
 }
 
@@ -1711,7 +1711,7 @@ fn dispatch_mode_label(mode: DispatchMode) -> &'static str {
 }
 
 #[cfg(feature = "hover-trace")]
-fn hover_msgs_from_tree_msgs(msgs: &[TreeMsg]) -> Vec<(ElementId, bool)> {
+fn hover_msgs_from_tree_msgs(msgs: &[TreeMsg]) -> Vec<(NodeId, bool)> {
     let mut out = Vec::new();
     for msg in msgs {
         match msg {
@@ -1751,7 +1751,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
 fn send_runtime_update(
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
-    element_id: &ElementId,
+    element_id: &NodeId,
     state: &TextInputState,
 ) -> bool {
     send_tree(
@@ -1772,7 +1772,7 @@ fn send_runtime_update(
 fn send_content_update(
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
-    element_id: &ElementId,
+    element_id: &NodeId,
     content: String,
 ) -> bool {
     send_tree(
@@ -1796,8 +1796,8 @@ fn prune_expired_pending_text_patch_queue(queue: &mut VecDeque<PendingTextPatch>
 }
 
 fn consume_pending_text_patch_match(
-    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
-    element_id: &ElementId,
+    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+    element_id: &NodeId,
     content: &str,
 ) -> bool {
     let matched = pending_text_patches
@@ -1824,10 +1824,10 @@ fn consume_pending_text_patch_match(
 }
 
 fn reconcile_text_input_states(
-    text_inputs: &HashMap<ElementId, TextInputState>,
-    states: &mut HashMap<ElementId, TextInputState>,
-    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
-    focused: &Option<ElementId>,
+    text_inputs: &HashMap<NodeId, TextInputState>,
+    states: &mut HashMap<NodeId, TextInputState>,
+    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+    focused: &Option<NodeId>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
 ) -> bool {
@@ -1840,15 +1840,15 @@ fn reconcile_text_input_states(
     }
 
     fn reconcile_focused_text_input(
-        element_id: &ElementId,
+        element_id: &NodeId,
         rebuild_state: &TextInputState,
         state: &mut TextInputState,
-        pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
+        pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
         fn preserve_runtime_focused_text_input(
-            element_id: &ElementId,
+            element_id: &NodeId,
             rebuild_state: &TextInputState,
             state: &mut TextInputState,
             tree_tx: &Sender<TreeMsg>,
@@ -1874,7 +1874,7 @@ fn reconcile_text_input_states(
         }
 
         fn accept_tree_patch_focused_text_input(
-            element_id: &ElementId,
+            element_id: &NodeId,
             rebuild_state: &TextInputState,
             state: &mut TextInputState,
             patch_content: String,
@@ -1977,22 +1977,22 @@ fn reconcile_text_input_states(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_focus_to(
-    next_focus: Option<ElementId>,
+    next_focus: Option<NodeId>,
     reveal_scrolls: &[registry_builder::FocusRevealScroll],
-    focused: &mut Option<ElementId>,
+    focused: &mut Option<NodeId>,
     target: &Option<LocalPid>,
     host_event_sink: Option<&dyn HostEventSink>,
-    states: &mut HashMap<ElementId, TextInputState>,
-    pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
+    states: &mut HashMap<NodeId, TextInputState>,
+    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     tree_tx: &Sender<TreeMsg>,
     log_render: bool,
 ) -> bool {
     fn blur_previous_focus(
-        prev_id: ElementId,
+        prev_id: NodeId,
         target: &Option<LocalPid>,
         host_event_sink: Option<&dyn HostEventSink>,
-        states: &mut HashMap<ElementId, TextInputState>,
-        pending_text_patches: &mut HashMap<ElementId, VecDeque<PendingTextPatch>>,
+        states: &mut HashMap<NodeId, TextInputState>,
+        pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
@@ -2047,10 +2047,10 @@ fn apply_focus_to(
     }
 
     fn focus_next_element(
-        next_id: ElementId,
+        next_id: NodeId,
         target: &Option<LocalPid>,
         host_event_sink: Option<&dyn HostEventSink>,
-        states: &mut HashMap<ElementId, TextInputState>,
+        states: &mut HashMap<NodeId, TextInputState>,
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) -> bool {
@@ -2354,7 +2354,7 @@ mod tests {
         AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
         VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
-    use crate::tree::element::ElementId;
+    use crate::tree::element::NodeId;
     use crate::tree::element::{
         Element, ElementKind, ElementTree, Frame, NearbySlot, TextInputContentOrigin,
     };
@@ -2454,14 +2454,14 @@ mod tests {
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
-            focused_id: Some(ElementId::from_term_bytes(vec![id])),
+            focused_id: Some(NodeId::from_term_bytes(vec![id])),
             ..RegistryRebuildPayload::default()
         }
     }
 
     fn focus_on_mount_target(id: u8, mounted_at_revision: u64) -> FocusOnMountTarget {
         FocusOnMountTarget {
-            element_id: ElementId::from_term_bytes(vec![id]),
+            element_id: NodeId::from_term_bytes(vec![id]),
             reveal_scrolls: Vec::new(),
             mounted_at_revision,
         }
@@ -2485,10 +2485,7 @@ mod tests {
         let (rebuild, coalesced) =
             coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
 
-        assert_eq!(
-            rebuild.focused_id,
-            Some(ElementId::from_term_bytes(vec![3]))
-        );
+        assert_eq!(rebuild.focused_id, Some(NodeId::from_term_bytes(vec![3])));
         assert_eq!(coalesced, 2);
         assert!(pending.is_none());
     }
@@ -2516,10 +2513,7 @@ mod tests {
         let (rebuild, coalesced) =
             coalesce_registry_updates(rebuild_with_focus(1), &event_rx, &mut pending);
 
-        assert_eq!(
-            rebuild.focused_id,
-            Some(ElementId::from_term_bytes(vec![2]))
-        );
+        assert_eq!(rebuild.focused_id, Some(NodeId::from_term_bytes(vec![2])));
         assert_eq!(coalesced, 1);
         assert!(matches!(
             pending,
@@ -2530,7 +2524,7 @@ mod tests {
         assert!(matches!(
             event_rx.try_recv(),
             Ok(EventMsg::RegistryUpdate { rebuild })
-                if rebuild.focused_id == Some(ElementId::from_term_bytes(vec![3]))
+                if rebuild.focused_id == Some(NodeId::from_term_bytes(vec![3]))
         ));
     }
 
@@ -2584,12 +2578,7 @@ mod tests {
     }
 
     fn make_element(id: u8, kind: ElementKind, attrs: Attrs) -> Element {
-        Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
-            kind,
-            Vec::new(),
-            attrs,
-        )
+        Element::with_attrs(NodeId::from_term_bytes(vec![id]), kind, Vec::new(), attrs)
     }
 
     fn with_frame(mut element: Element, frame: Frame) -> Element {
@@ -2601,8 +2590,8 @@ mod tests {
         sample_ms: u64,
         hover_active: bool,
     ) -> RegistryRebuildPayload {
-        let host_id = ElementId::from_term_bytes(vec![130]);
-        let overlay_id = ElementId::from_term_bytes(vec![131]);
+        let host_id = NodeId::from_term_bytes(vec![130]);
+        let overlay_id = NodeId::from_term_bytes(vec![131]);
 
         let mut tree = ElementTree::new();
 
@@ -2767,9 +2756,9 @@ mod tests {
 
     #[test]
     fn apply_focus_to_switches_focus_and_emits_reveal_scrolls() {
-        let previous_id = ElementId::from_term_bytes(vec![210]);
-        let next_id = ElementId::from_term_bytes(vec![211]);
-        let scroll_id = ElementId::from_term_bytes(vec![212]);
+        let previous_id = NodeId::from_term_bytes(vec![210]);
+        let next_id = NodeId::from_term_bytes(vec![211]);
+        let scroll_id = NodeId::from_term_bytes(vec![212]);
 
         let mut previous = make_text_input_state("prev", 4, None, true);
         previous.selection_anchor = Some(1);
@@ -2830,8 +2819,8 @@ mod tests {
 
     #[test]
     fn apply_focus_to_blur_reconciles_matching_patch_content_to_runtime_value() {
-        let previous_id = ElementId::from_term_bytes(vec![211]);
-        let next_id = ElementId::from_term_bytes(vec![212]);
+        let previous_id = NodeId::from_term_bytes(vec![211]);
+        let next_id = NodeId::from_term_bytes(vec![212]);
 
         let mut previous = make_text_input_state("abc", 3, None, true);
         previous.patch_content = Some("abc".to_string());
@@ -2879,8 +2868,8 @@ mod tests {
 
     #[test]
     fn apply_focus_to_blur_accepts_conflicting_patch_content() {
-        let previous_id = ElementId::from_term_bytes(vec![213]);
-        let next_id = ElementId::from_term_bytes(vec![214]);
+        let previous_id = NodeId::from_term_bytes(vec![213]);
+        let next_id = NodeId::from_term_bytes(vec![214]);
 
         let mut previous = make_text_input_state("abc", 3, None, true);
         previous.patch_content = Some("server".to_string());
@@ -2928,7 +2917,7 @@ mod tests {
 
     #[test]
     fn install_rebuild_reconciles_text_sessions_and_registry() {
-        let input_id = ElementId::from_term_bytes(vec![1]);
+        let input_id = NodeId::from_term_bytes(vec![1]);
         let descriptor = make_text_input_state("hello", 2, None, true);
         let base_registry = registry_builder::Registry::default();
         let rebuild = RegistryRebuildPayload {
@@ -2952,7 +2941,7 @@ mod tests {
 
     #[test]
     fn install_rebuild_applies_focus_on_mount_once_for_new_target() {
-        let input_id = ElementId::from_term_bytes(vec![9]);
+        let input_id = NodeId::from_term_bytes(vec![9]);
         let rebuild = RegistryRebuildPayload {
             text_inputs: HashMap::from([(
                 input_id.clone(),
@@ -2994,8 +2983,8 @@ mod tests {
 
     #[test]
     fn install_rebuild_focus_on_mount_steals_existing_focus() {
-        let previous_id = ElementId::from_term_bytes(vec![10]);
-        let next_id = ElementId::from_term_bytes(vec![11]);
+        let previous_id = NodeId::from_term_bytes(vec![10]);
+        let next_id = NodeId::from_term_bytes(vec![11]);
         let initial_rebuild = RegistryRebuildPayload {
             text_inputs: HashMap::from([(
                 previous_id.clone(),
@@ -3092,13 +3081,13 @@ mod tests {
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseDownActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![20]) && *active
+                if *element_id == NodeId::from_term_bytes(vec![20]) && *active
         )));
     }
 
     #[test]
     fn direct_runtime_on_press_inside_release_clears_mouse_down_style() {
-        let element_id = ElementId::from_term_bytes(vec![21]);
+        let element_id = NodeId::from_term_bytes(vec![21]);
 
         let mut attrs = Attrs::default();
         attrs.on_press = Some(true);
@@ -3186,7 +3175,7 @@ mod tests {
             base_registry: registry_builder::registry_for_elements(&[first, second]),
             text_inputs: HashMap::new(),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![30])),
+            focused_id: Some(NodeId::from_term_bytes(vec![30])),
             focus_on_mount: None,
         };
 
@@ -3209,12 +3198,12 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetFocusedActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![30]) && !*active
+                if *element_id == NodeId::from_term_bytes(vec![30]) && !*active
         )));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetFocusedActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![31]) && *active
+                if *element_id == NodeId::from_term_bytes(vec![31]) && *active
         )));
     }
 
@@ -3250,7 +3239,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_on_press_without_scroll_match_stays_press_only_until_release() {
-        let element_id = ElementId::from_term_bytes(vec![44]);
+        let element_id = NodeId::from_term_bytes(vec![44]);
 
         let mut attrs = Attrs::default();
         attrs.on_press = Some(true);
@@ -3360,7 +3349,7 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![43])
+                if *element_id == NodeId::from_term_bytes(vec![43])
                     && (*dx - 6.0).abs() < f32::EPSILON
                     && dy.abs() < f32::EPSILON
         )));
@@ -3368,7 +3357,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_clear_drag_tracker_starts_inertia_from_sampled_velocity() {
-        let element_id = ElementId::from_term_bytes(vec![211]);
+        let element_id = NodeId::from_term_bytes(vec![211]);
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
 
@@ -3401,7 +3390,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_present_timing_steps_inertia_with_adaptive_decay() {
-        let element_id = ElementId::from_term_bytes(vec![212]);
+        let element_id = NodeId::from_term_bytes(vec![212]);
         let (tree_tx, tree_rx) = bounded(32);
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
@@ -3484,7 +3473,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_watchdog_timer_steps_inertia_without_present_timing() {
-        let element_id = ElementId::from_term_bytes(vec![213]);
+        let element_id = NodeId::from_term_bytes(vec![213]);
         let (tree_tx, tree_rx) = bounded(32);
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
@@ -3552,7 +3541,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_pointer_press_and_blur_leave_cancel_inertia() {
-        let element_id = ElementId::from_term_bytes(vec![214]);
+        let element_id = NodeId::from_term_bytes(vec![214]);
         let (tree_tx, _tree_rx) = bounded(8);
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
@@ -3600,7 +3589,7 @@ mod tests {
         parent_attrs.scroll_y = Some(10.0);
         parent_attrs.scroll_y_max = Some(100.0);
         let mut parent = with_interaction(make_element(73, ElementKind::El, parent_attrs));
-        parent.children = vec![ElementId::from_term_bytes(vec![74])];
+        parent.children = vec![NodeId::from_term_bytes(vec![74])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.scrollbar_y = Some(true);
@@ -3641,7 +3630,7 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![74])
+                if *element_id == NodeId::from_term_bytes(vec![74])
                     && dx.abs() < f32::EPSILON
                     && (*dy - 6.0).abs() < f32::EPSILON
         )));
@@ -3654,7 +3643,7 @@ mod tests {
         parent_attrs.scroll_y = Some(10.0);
         parent_attrs.scroll_y_max = Some(100.0);
         let mut parent = with_interaction(make_element(75, ElementKind::El, parent_attrs));
-        parent.children = vec![ElementId::from_term_bytes(vec![76])];
+        parent.children = vec![NodeId::from_term_bytes(vec![76])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.scrollbar_y = Some(true);
@@ -3689,7 +3678,7 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![75])
+                if *element_id == NodeId::from_term_bytes(vec![75])
                     && dx.abs() < f32::EPSILON
                     && (*dy + 6.0).abs() < f32::EPSILON
         )));
@@ -3739,14 +3728,14 @@ mod tests {
         assert!(flat.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![88])
+                if *element_id == NodeId::from_term_bytes(vec![88])
                     && (*dx + 12.0).abs() < f32::EPSILON
                     && dy.abs() < f32::EPSILON
         )));
         assert!(flat.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![88])
+                if *element_id == NodeId::from_term_bytes(vec![88])
                     && dx.abs() < f32::EPSILON
                     && (*dy + 6.0).abs() < f32::EPSILON
         )));
@@ -3759,7 +3748,7 @@ mod tests {
         parent_attrs.scroll_y = Some(10.0);
         parent_attrs.scroll_y_max = Some(100.0);
         let mut parent = with_interaction(make_element(77, ElementKind::El, parent_attrs));
-        parent.children = vec![ElementId::from_term_bytes(vec![78])];
+        parent.children = vec![NodeId::from_term_bytes(vec![78])];
 
         let mut child_attrs = Attrs::default();
         child_attrs.scrollbar_y = Some(true);
@@ -3800,7 +3789,7 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollRequest { element_id, dx, dy }
-                if *element_id == ElementId::from_term_bytes(vec![77])
+                if *element_id == NodeId::from_term_bytes(vec![77])
                     && dx.abs() < f32::EPSILON
                     && (*dy + 6.0).abs() < f32::EPSILON
         )));
@@ -3823,7 +3812,7 @@ mod tests {
             },
         );
         let mut tree = ElementTree::new();
-        tree.root = Some(ElementId::from_term_bytes(vec![79]));
+        tree.root = Some(NodeId::from_term_bytes(vec![79]));
         tree.insert(element);
         let rebuild = render_tree(&tree).event_rebuild;
 
@@ -3859,7 +3848,7 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::ScrollbarThumbDragY { element_id, .. }
-                if *element_id == ElementId::from_term_bytes(vec![79])
+                if *element_id == NodeId::from_term_bytes(vec![79])
         )));
     }
 
@@ -3966,11 +3955,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![50]),
+                NodeId::from_term_bytes(vec![50]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![50])),
+            focused_id: Some(NodeId::from_term_bytes(vec![50])),
             focus_on_mount: None,
         };
 
@@ -3995,16 +3984,16 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![50]) && content == "abc"
+                if *element_id == NodeId::from_term_bytes(vec![50]) && content == "abc"
         )));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputRuntime { element_id, cursor, .. }
-                if *element_id == ElementId::from_term_bytes(vec![50]) && *cursor == Some(3)
+                if *element_id == NodeId::from_term_bytes(vec![50]) && *cursor == Some(3)
         )));
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![50]))
+            .get(&NodeId::from_term_bytes(vec![50]))
             .expect("session updated after commit");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
@@ -4012,7 +4001,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_command_select_all_updates_selection() {
-        let input_id = ElementId::from_term_bytes(vec![58]);
+        let input_id = NodeId::from_term_bytes(vec![58]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4043,7 +4032,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_command_paste_updates_content() {
-        let input_id = ElementId::from_term_bytes(vec![59]);
+        let input_id = NodeId::from_term_bytes(vec![59]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4068,7 +4057,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_command_cut_updates_clipboard_and_content() {
-        let input_id = ElementId::from_term_bytes(vec![60]);
+        let input_id = NodeId::from_term_bytes(vec![60]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4096,7 +4085,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_edit_moves_by_word() {
-        let input_id = ElementId::from_term_bytes(vec![61]);
+        let input_id = NodeId::from_term_bytes(vec![61]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4125,7 +4114,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_edit_moves_to_document_end_with_selection() {
-        let input_id = ElementId::from_term_bytes(vec![62]);
+        let input_id = NodeId::from_term_bytes(vec![62]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4154,7 +4143,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_text_input_edit_deletes_word_backward() {
-        let input_id = ElementId::from_term_bytes(vec![63]);
+        let input_id = NodeId::from_term_bytes(vec![63]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
         runtime.focused_id = Some(input_id.clone());
@@ -4191,11 +4180,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![150]),
+                NodeId::from_term_bytes(vec![150]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![150])),
+            focused_id: Some(NodeId::from_term_bytes(vec![150])),
             focus_on_mount: None,
         };
 
@@ -4239,7 +4228,7 @@ mod tests {
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![150]))
+            .get(&NodeId::from_term_bytes(vec![150]))
             .expect("session preserved after suppression");
         assert_eq!(session.content, "ab");
         assert_eq!(session.cursor, 2);
@@ -4248,7 +4237,7 @@ mod tests {
         assert!(msgs.iter().all(|msg| !matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, .. }
-                if *element_id == ElementId::from_term_bytes(vec![150])
+                if *element_id == NodeId::from_term_bytes(vec![150])
         )));
     }
 
@@ -4263,9 +4252,9 @@ mod tests {
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
-            text_inputs: HashMap::from([(ElementId::from_term_bytes(vec![151]), state)]),
+            text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![151]), state)]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![151])),
+            focused_id: Some(NodeId::from_term_bytes(vec![151])),
             focus_on_mount: None,
         };
 
@@ -4287,7 +4276,7 @@ mod tests {
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![151]))
+            .get(&NodeId::from_term_bytes(vec![151]))
             .expect("multiline session updated");
         assert_eq!(session.content, "ab\n");
         assert_eq!(session.cursor, 3);
@@ -4302,7 +4291,7 @@ mod tests {
         let element = with_interaction(make_element(153, ElementKind::Multiline, attrs));
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
-        let element_id = ElementId::from_term_bytes(vec![153]);
+        let element_id = NodeId::from_term_bytes(vec![153]);
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(element_id.clone(), state)]),
@@ -4366,9 +4355,9 @@ mod tests {
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
-            text_inputs: HashMap::from([(ElementId::from_term_bytes(vec![152]), state)]),
+            text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![152]), state)]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![152])),
+            focused_id: Some(NodeId::from_term_bytes(vec![152])),
             focus_on_mount: None,
         };
 
@@ -4390,7 +4379,7 @@ mod tests {
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![152]))
+            .get(&NodeId::from_term_bytes(vec![152]))
             .expect("multiline session preserved");
         assert_eq!(session.content, "ab");
 
@@ -4398,7 +4387,7 @@ mod tests {
         assert!(msgs.iter().all(|msg| !matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, .. }
-                if *element_id == ElementId::from_term_bytes(vec![152])
+                if *element_id == NodeId::from_term_bytes(vec![152])
         )));
     }
 
@@ -4428,11 +4417,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![80]),
+                NodeId::from_term_bytes(vec![80]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![80])),
+            focused_id: Some(NodeId::from_term_bytes(vec![80])),
             focus_on_mount: None,
         };
 
@@ -4476,12 +4465,12 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![80]) && content == "abc"
+                if *element_id == NodeId::from_term_bytes(vec![80]) && content == "abc"
         )));
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![80]))
+            .get(&NodeId::from_term_bytes(vec![80]))
             .expect("session updated after virtual key tap");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
@@ -4519,11 +4508,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![180]),
+                NodeId::from_term_bytes(vec![180]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![180])),
+            focused_id: Some(NodeId::from_term_bytes(vec![180])),
             focus_on_mount: None,
         };
 
@@ -4562,7 +4551,7 @@ mod tests {
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![180]))
+            .get(&NodeId::from_term_bytes(vec![180]))
             .expect("session preserved after suppressed virtual key tap");
         assert_eq!(session.content, "ab");
 
@@ -4570,7 +4559,7 @@ mod tests {
         assert!(msgs.iter().all(|msg| !matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, .. }
-                if *element_id == ElementId::from_term_bytes(vec![180])
+                if *element_id == NodeId::from_term_bytes(vec![180])
         )));
     }
 
@@ -4603,11 +4592,11 @@ mod tests {
                 soft_key.clone(),
             ]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![82]),
+                NodeId::from_term_bytes(vec![82]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![82])),
+            focused_id: Some(NodeId::from_term_bytes(vec![82])),
             focus_on_mount: None,
         };
 
@@ -4652,13 +4641,13 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![82]) && content == "abx"
+                if *element_id == NodeId::from_term_bytes(vec![82]) && content == "abx"
         )));
 
         let repeat_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![82]),
+                NodeId::from_term_bytes(vec![82]),
                 make_text_input_state_with_origin(
                     "abx",
                     TextInputContentOrigin::Event,
@@ -4668,7 +4657,7 @@ mod tests {
                 ),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![82])),
+            focused_id: Some(NodeId::from_term_bytes(vec![82])),
             focus_on_mount: None,
         };
         runtime.handle_registry_update(repeat_rebuild, &tree_tx, false);
@@ -4693,12 +4682,12 @@ mod tests {
         assert!(msgs.iter().all(|msg| !matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![82]) && content == "abxx"
+                if *element_id == NodeId::from_term_bytes(vec![82]) && content == "abxx"
         )));
 
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![82]))
+            .get(&NodeId::from_term_bytes(vec![82]))
             .expect("session retained after repeat cancel");
         assert_eq!(session.content, "abx");
     }
@@ -4713,11 +4702,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![51]),
+                NodeId::from_term_bytes(vec![51]),
                 make_text_input_state("ab", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![51])),
+            focused_id: Some(NodeId::from_term_bytes(vec![51])),
             focus_on_mount: None,
         };
 
@@ -4743,11 +4732,11 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![51]) && content == "a"
+                if *element_id == NodeId::from_term_bytes(vec![51]) && content == "a"
         )));
         let session = runtime
             .text_states
-            .get(&ElementId::from_term_bytes(vec![51]))
+            .get(&NodeId::from_term_bytes(vec![51]))
             .expect("session updated after backspace");
         assert_eq!(session.content, "a");
         assert_eq!(session.cursor, 1);
@@ -4755,7 +4744,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_focused_text_commit_survives_followup_rebuild() {
-        let input_id = ElementId::from_term_bytes(vec![53]);
+        let input_id = NodeId::from_term_bytes(vec![53]);
         let mut attrs = Attrs::default();
         attrs.content = Some("ab".to_string());
         attrs.text_input_focused = Some(true);
@@ -4842,7 +4831,7 @@ mod tests {
 
     #[test]
     fn focused_tree_patch_matching_pending_value_preserves_runtime_content() {
-        let input_id = ElementId::from_term_bytes(vec![55]);
+        let input_id = NodeId::from_term_bytes(vec![55]);
         let rebuild_abc = RegistryRebuildPayload {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
@@ -4902,7 +4891,7 @@ mod tests {
 
     #[test]
     fn focused_tree_patch_non_pending_value_is_accepted() {
-        let input_id = ElementId::from_term_bytes(vec![56]);
+        let input_id = NodeId::from_term_bytes(vec![56]);
         let rebuild_remote = RegistryRebuildPayload {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
@@ -4956,7 +4945,7 @@ mod tests {
 
     #[test]
     fn focused_tree_patch_accepts_value_after_pending_expiration() {
-        let input_id = ElementId::from_term_bytes(vec![57]);
+        let input_id = NodeId::from_term_bytes(vec![57]);
         let rebuild_remote = RegistryRebuildPayload {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
@@ -5010,7 +4999,7 @@ mod tests {
 
     #[test]
     fn unfocused_rebuild_clears_pending_text_patches() {
-        let input_id = ElementId::from_term_bytes(vec![58]);
+        let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
@@ -5054,11 +5043,11 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
-                ElementId::from_term_bytes(vec![54]),
+                NodeId::from_term_bytes(vec![54]),
                 make_text_input_state("abcd", 2, None, true),
             )]),
             scrollbars: HashMap::new(),
-            focused_id: Some(ElementId::from_term_bytes(vec![54])),
+            focused_id: Some(NodeId::from_term_bytes(vec![54])),
             focus_on_mount: None,
         };
 
@@ -5083,12 +5072,12 @@ mod tests {
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == ElementId::from_term_bytes(vec![54]) && content == "ad"
+                if *element_id == NodeId::from_term_bytes(vec![54]) && content == "ad"
         )));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputRuntime { element_id, cursor, .. }
-                if *element_id == ElementId::from_term_bytes(vec![54]) && *cursor == Some(1)
+                if *element_id == NodeId::from_term_bytes(vec![54]) && *cursor == Some(1)
         )));
     }
 
@@ -5114,7 +5103,7 @@ mod tests {
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![52]) && *active
+                if *element_id == NodeId::from_term_bytes(vec![52]) && *active
         )));
 
         attrs.mouse_over_active = Some(true);
@@ -5139,14 +5128,14 @@ mod tests {
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![52]) && !*active
+                if *element_id == NodeId::from_term_bytes(vec![52]) && !*active
         )));
     }
 
     #[test]
     fn direct_runtime_parent_hover_activates_through_mouse_move_child() {
-        let parent_id = ElementId::from_term_bytes(vec![62]);
-        let child_id = ElementId::from_term_bytes(vec![63]);
+        let parent_id = NodeId::from_term_bytes(vec![62]);
+        let child_id = NodeId::from_term_bytes(vec![63]);
 
         let mut parent_attrs = Attrs::default();
         parent_attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5189,8 +5178,8 @@ mod tests {
 
     #[test]
     fn direct_runtime_child_hover_beats_parent_hover() {
-        let parent_id = ElementId::from_term_bytes(vec![64]);
-        let child_id = ElementId::from_term_bytes(vec![65]);
+        let parent_id = NodeId::from_term_bytes(vec![64]);
+        let child_id = NodeId::from_term_bytes(vec![65]);
 
         let mut parent_attrs = Attrs::default();
         parent_attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5234,8 +5223,8 @@ mod tests {
 
     #[test]
     fn direct_runtime_hover_handoff_switches_from_parent_to_child() {
-        let parent_id = ElementId::from_term_bytes(vec![66]);
-        let child_id = ElementId::from_term_bytes(vec![67]);
+        let parent_id = NodeId::from_term_bytes(vec![66]);
+        let child_id = NodeId::from_term_bytes(vec![67]);
 
         let mut parent_attrs = Attrs::default();
         parent_attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5316,7 +5305,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_registry_rebuild_replays_static_cursor_into_new_hover_target() {
-        let element_id = ElementId::from_term_bytes(vec![57]);
+        let element_id = NodeId::from_term_bytes(vec![57]);
 
         let mut attrs = Attrs::default();
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5538,7 +5527,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_registry_rebuild_replays_static_cursor_out_of_old_hover_target() {
-        let element_id = ElementId::from_term_bytes(vec![58]);
+        let element_id = NodeId::from_term_bytes(vec![58]);
 
         let mut attrs = Attrs::default();
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5617,7 +5606,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_animated_in_front_overlay_activates_hover_right_of_initial_position() {
-        let overlay_id = ElementId::from_term_bytes(vec![131]);
+        let overlay_id = NodeId::from_term_bytes(vec![131]);
         let initial_rebuild = animated_width_move_rebuild_at(0, false);
         let mid_rebuild = animated_width_move_rebuild_at(500, false);
         let late_rebuild = animated_width_move_rebuild_at(1000, true);
@@ -5793,7 +5782,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_registry_rebuild_skips_cursor_replay_when_pointer_left_window() {
-        let element_id = ElementId::from_term_bytes(vec![59]);
+        let element_id = NodeId::from_term_bytes(vec![59]);
 
         let mut attrs = Attrs::default();
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -5926,7 +5915,7 @@ mod tests {
 
     #[test]
     fn direct_runtime_registry_rebuild_keeps_hovered_cursor_fresh_when_move_is_synthetic() {
-        let element_id = ElementId::from_term_bytes(vec![61]);
+        let element_id = NodeId::from_term_bytes(vec![61]);
 
         let mut attrs = Attrs::default();
         attrs.mouse_over = Some(MouseOverAttrs::default());
@@ -6064,7 +6053,7 @@ mod tests {
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
-                if *element_id == ElementId::from_term_bytes(vec![54]) && !*active
+                if *element_id == NodeId::from_term_bytes(vec![54]) && !*active
         )));
     }
 }

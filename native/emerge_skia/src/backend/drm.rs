@@ -114,6 +114,7 @@ struct PreparedPrimaryFrame {
     bo: BufferObject<()>,
     fb: framebuffer::Handle,
     video_needs_cleanup: bool,
+    present_submit_duration: Duration,
 }
 
 struct CurrentPrimaryFrame {
@@ -1209,6 +1210,7 @@ fn prepare_primary_frame(
     gbm_surface: &Surface<()>,
     card: &Card,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    stats: Option<&RendererStatsCollector>,
 ) -> Result<PreparedPrimaryFrame, String> {
     let mut frame = frame_surface.frame();
     let mut video_needs_cleanup = false;
@@ -1216,6 +1218,8 @@ fn prepare_primary_frame(
         Ok(result) => video_needs_cleanup = result.needs_cleanup,
         Err(err) => eprintln!("video sync failed: {err}"),
     }
+
+    let render_started_at = Instant::now();
     renderer.render(&mut frame, render_state);
     if !hw_cursor_enabled && cursor_visible {
         draw_software_cursor(
@@ -1226,6 +1230,12 @@ fn prepare_primary_frame(
         );
     }
     drop(frame);
+
+    if let Some(stats) = stats {
+        stats.record_render(render_started_at.elapsed());
+    }
+
+    let present_submit_started_at = Instant::now();
 
     if unsafe {
         egl_state
@@ -1246,6 +1256,7 @@ fn prepare_primary_frame(
         bo,
         fb,
         video_needs_cleanup,
+        present_submit_duration: present_submit_started_at.elapsed(),
     })
 }
 
@@ -2142,6 +2153,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     &gbm_surface,
                     &card,
                     &mut framebuffer_cache,
+                    stats.as_deref(),
                 ) {
                     Ok(frame) => prepared_primary = Some(frame),
                     Err(err) => {
@@ -2177,6 +2189,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
 
             if submit_primary || (submit_cursor && !defer_cursor_only) {
+                let present_submit_started_at = submit_primary.then(Instant::now);
                 let mut commit_req = atomic::AtomicModeReq::new();
                 let primary_fb = prepared_primary
                     .as_ref()
@@ -2252,6 +2265,17 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     commit_req,
                 ) {
                     Ok(()) => {
+                        if let Some(stats) = stats.as_ref()
+                            && let (Some(present_submit_started_at), Some(frame)) = (
+                                present_submit_started_at,
+                                prepared_primary.as_ref().filter(|_| submit_primary),
+                            )
+                        {
+                            stats.record_present_submit(
+                                frame.present_submit_duration + present_submit_started_at.elapsed(),
+                            );
+                        }
+
                         retry_commit_at = None;
                         in_flight = Some(InFlightCommit {
                             primary: if submit_primary {

@@ -18,6 +18,8 @@ pub struct RendererStatsSnapshot {
     pub display_fps: f64,
     pub display_frame_ms: f64,
     pub frame_count: u64,
+    pub render: DurationStatsSnapshot,
+    pub present_submit: DurationStatsSnapshot,
     pub layout: DurationStatsSnapshot,
     pub event_resolve: DurationStatsSnapshot,
     pub patch_tree_process: DurationStatsSnapshot,
@@ -63,6 +65,8 @@ struct RendererStatsWindow {
     started_at: Instant,
     last_display_interval_ns: Option<u64>,
     frame_count: u64,
+    render: DurationStatsWindow,
+    present_submit: DurationStatsWindow,
     layout: DurationStatsWindow,
     event_resolve: DurationStatsWindow,
     patch_tree_process: DurationStatsWindow,
@@ -74,6 +78,8 @@ impl RendererStatsWindow {
             started_at,
             last_display_interval_ns,
             frame_count: 0,
+            render: DurationStatsWindow::default(),
+            present_submit: DurationStatsWindow::default(),
             layout: DurationStatsWindow::default(),
             event_resolve: DurationStatsWindow::default(),
             patch_tree_process: DurationStatsWindow::default(),
@@ -115,6 +121,14 @@ impl RendererStatsCollector {
         window.last_display_interval_ns = Some(ns);
     }
 
+    pub fn record_render(&self, duration: Duration) {
+        self.record_duration(duration, |window| &mut window.render);
+    }
+
+    pub fn record_present_submit(&self, duration: Duration) {
+        self.record_duration(duration, |window| &mut window.present_submit);
+    }
+
     pub fn record_layout(&self, duration: Duration) {
         self.record_duration(duration, |window| &mut window.layout);
     }
@@ -151,6 +165,8 @@ impl RendererStatsCollector {
                 .map(|ns| ns as f64 / 1_000_000.0)
                 .unwrap_or(0.0),
             frame_count: window.frame_count,
+            render: window.render.snapshot(),
+            present_submit: window.present_submit.snapshot(),
             layout: window.layout.snapshot(),
             event_resolve: window.event_resolve.snapshot(),
             patch_tree_process: window.patch_tree_process.snapshot(),
@@ -182,6 +198,9 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "display_fps={:.1} ",
             "display_frame_ms={:.3} ",
             "frame_count={} ",
+            "render_ms_avg={:.3} render_ms_min={:.3} render_ms_max={:.3} render_ms_count={} ",
+            "present_submit_ms_avg={:.3} present_submit_ms_min={:.3} ",
+            "present_submit_ms_max={:.3} present_submit_ms_count={} ",
             "layout_ms_avg={:.3} layout_ms_min={:.3} layout_ms_max={:.3} layout_ms_count={} ",
             "event_resolve_ms_avg={:.3} event_resolve_ms_min={:.3} ",
             "event_resolve_ms_max={:.3} event_resolve_ms_count={} ",
@@ -194,6 +213,14 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.display_fps,
         snapshot.display_frame_ms,
         snapshot.frame_count,
+        snapshot.render.avg_ms,
+        snapshot.render.min_ms,
+        snapshot.render.max_ms,
+        snapshot.render.count,
+        snapshot.present_submit.avg_ms,
+        snapshot.present_submit.min_ms,
+        snapshot.present_submit.max_ms,
+        snapshot.present_submit.count,
         snapshot.layout.avg_ms,
         snapshot.layout.min_ms,
         snapshot.layout.max_ms,
@@ -221,6 +248,8 @@ mod tests {
         stats.record_frame_present();
         stats.record_display_interval(Duration::from_millis(16));
         stats.record_frame_present();
+        stats.record_render(Duration::from_millis(4));
+        stats.record_present_submit(Duration::from_millis(1));
         stats.record_layout(Duration::from_millis(2));
         stats.record_layout(Duration::from_millis(6));
         stats.record_event_resolve(Duration::from_millis(1));
@@ -229,6 +258,10 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.frame_count, 2);
         assert_eq!(snapshot.display_frame_ms, 16.0);
+        assert_eq!(snapshot.render.count, 1);
+        assert_eq!(snapshot.render.avg_ms, 4.0);
+        assert_eq!(snapshot.present_submit.count, 1);
+        assert_eq!(snapshot.present_submit.avg_ms, 1.0);
         assert_eq!(snapshot.layout.count, 2);
         assert_eq!(snapshot.layout.min_ms, 2.0);
         assert_eq!(snapshot.layout.max_ms, 6.0);
@@ -239,6 +272,8 @@ mod tests {
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
         assert_eq!(reset_snapshot.display_frame_ms, 16.0);
+        assert_eq!(reset_snapshot.render.count, 0);
+        assert_eq!(reset_snapshot.present_submit.count, 0);
         assert_eq!(reset_snapshot.layout.count, 0);
         assert_eq!(reset_snapshot.event_resolve.count, 0);
         assert_eq!(reset_snapshot.patch_tree_process.count, 0);
@@ -249,6 +284,8 @@ mod tests {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
         stats.record_display_interval(Duration::from_millis(16));
+        stats.record_render(Duration::from_millis(3));
+        stats.record_present_submit(Duration::from_millis(1));
         stats.record_layout(Duration::from_millis(3));
         stats.record_event_resolve(Duration::from_millis(2));
         stats.record_patch_tree_process(Duration::from_millis(7));
@@ -260,6 +297,10 @@ mod tests {
         assert!(message.contains("display_fps="));
         assert!(message.contains("display_frame_ms="));
         assert!(message.contains("frame_count=1"));
+        assert!(message.contains("render_ms_avg="));
+        assert!(message.contains("render_ms_count=1"));
+        assert!(message.contains("present_submit_ms_avg="));
+        assert!(message.contains("present_submit_ms_count=1"));
         assert!(message.contains("layout_ms_avg="));
         assert!(message.contains("layout_ms_min="));
         assert!(message.contains("layout_ms_max="));

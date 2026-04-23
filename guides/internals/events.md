@@ -103,8 +103,8 @@ Dispatch uses one logical precedence order:
 The rebuild payload sent from tree actor to event actor contains:
 
 - `base_registry`
-- `text_inputs: HashMap<ElementId, TextInputState>`
-- `scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>`
+- `text_inputs: HashMap<NodeId, TextInputState>`
+- `scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>`
 - `focused_id`
 
 ## Precedence Order
