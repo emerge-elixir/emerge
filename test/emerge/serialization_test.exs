@@ -275,8 +275,10 @@ defmodule Emerge.Engine.SerializationTest do
   defp strip_runtime(%Emerge.Engine.Element{} = element) do
     %{
       element
-      | attrs: Emerge.Engine.Tree.strip_runtime_attrs(element.attrs),
-        children: Enum.map(element.children, &strip_runtime/1)
+      | key: nil,
+        attrs: Emerge.Engine.Tree.strip_runtime_attrs(element.attrs),
+        children: Enum.map(element.children, &strip_runtime/1),
+        nearby: Enum.map(element.nearby, fn {slot, nearby} -> {slot, strip_runtime(nearby)} end)
     }
   end
 end

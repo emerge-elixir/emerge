@@ -622,9 +622,10 @@ defmodule Emerge.Engine.AttrCodecTest do
   defp normalize_value(%Emerge.Engine.Element{} = element) do
     %{
       element
-      | id: nil,
+      | key: nil,
         attrs: normalize_attrs(element.attrs),
-        children: Enum.map(element.children, &normalize_value/1)
+        children: Enum.map(element.children, &normalize_value/1),
+        nearby: Enum.map(element.nearby, fn {slot, nearby} -> {slot, normalize_value(nearby)} end)
     }
   end
 

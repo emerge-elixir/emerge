@@ -138,6 +138,20 @@ Run `mix docs` to generate the full ExDoc site.
 - Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
 - Prefer functions that return collections over functions that mutate passed-in output collections.
 
+## BEAM Performance Constraints
+
+- For Elixir-side reconciliation, diffing, serialization, and registry code, treat lists as linked lists. Avoid hot-path algorithms that rely on repeated `Enum.at/2`, repeated indexing, or repeated `Enum.drop/2`.
+- Build lists by prepending (`[item | acc]`) and reversing once at the end. Avoid repeated `++` in reducers and loops.
+- Prefer maps/structs for lookup and fixed-shape state. Do not introduce array-like storage unless keys are truly dense and there is a measured need.
+- Keep ordered collections and lookup indexes separate: lists for order, maps for lookup.
+- Prefer fixed-width numeric ids over `term_to_binary`/`binary_to_term` once ids are numeric.
+- Prefer iodata/deep-list style binary construction over flattening intermediate data.
+- Avoid repeated full-list scans when one pass can decide the same result.
+- Avoid rebuilding full-tree derived structures when a subtree-local or incremental design is possible.
+- Do not cargo-cult tail recursion. Focus first on avoiding bad list construction, repeated passes, and random-access list operations.
+- Measure before introducing less idiomatic BEAM structures such as `:array`, ETS, or tuple-indexed storage.
+- See `guides/internals/beam-performance-constraints.md` for detailed rationale and examples.
+
 ## Git Commit Guidelines
 
 - Do NOT include `Co-Authored-By` lines in commit messages

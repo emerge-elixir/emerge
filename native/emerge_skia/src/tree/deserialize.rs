@@ -3,26 +3,24 @@
 //! EMRG binary format:
 //! - Header: "EMRG" (4 bytes) + version (1 byte) + node_count (4 bytes BE)
 //! - Per node:
-//!   - id_len (4 bytes BE) + id_bytes (Erlang term binary)
+//!   - id (8 bytes BE)
 //!   - type_tag (1 byte)
 //!   - attr_len (4 bytes BE) + attr_bytes (typed attribute block)
 //!   - child_count (2 bytes BE)
-//!   - For each child: child_id_len (4 bytes BE) + child_id_bytes
+//!   - For each child: child_id (8 bytes BE)
 //!   - nearby_count (2 bytes BE)
 //!   - For each mounted nearby root in definition order:
-//!     slot_tag (1 byte) + id_len (4 bytes BE) + id_bytes
+//!     slot_tag (1 byte) + id (8 bytes BE)
 //!
 //! Attribute block format:
 //!   - attr_count (2 bytes BE)
 //!   - For each attr: tag (1 byte) + value (varies by tag)
 
 use super::attrs::{Attrs, decode_attrs};
-use super::element::{Element, ElementId, ElementKind, ElementTree, NearbyMounts, NearbySlot};
+use super::element::{Element, ElementKind, ElementTree, NearbyMounts, NearbySlot, NodeId};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 6;
-const LEGACY_VERSION: u8 = 5;
-const EARLY_LEGACY_VERSION: u8 = 3;
+const VERSION: u8 = 7;
 
 /// Error type for deserialization failures.
 #[derive(Debug, Clone)]
@@ -87,6 +85,13 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    fn read_u64_be(&mut self) -> Result<u64, DecodeError> {
+        let bytes = self.read_bytes(8)?;
+        Ok(u64::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
     fn read_length_prefixed(&mut self) -> Result<Vec<u8>, DecodeError> {
         let len = self.read_u32_be()? as usize;
         let bytes = self.read_bytes(len)?;
@@ -96,11 +101,11 @@ impl<'a> Cursor<'a> {
 
 /// Intermediate node representation during parsing.
 struct RawNode {
-    id: ElementId,
+    id: NodeId,
     kind: ElementKind,
     attrs_raw: Vec<u8>,
     attrs: Attrs,
-    child_ids: Vec<ElementId>,
+    child_ids: Vec<NodeId>,
     nearby: NearbyMounts,
 }
 
@@ -115,7 +120,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     }
 
     let version = cursor.read_u8()?;
-    if version != VERSION && version != LEGACY_VERSION && version != EARLY_LEGACY_VERSION {
+    if version != VERSION {
         return Err(DecodeError::UnsupportedVersion(version));
     }
 
@@ -128,7 +133,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     // Parse all nodes
     let mut raw_nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
-        let node = decode_node(&mut cursor, version)?;
+        let node = decode_node(&mut cursor)?;
         raw_nodes.push(node);
     }
 
@@ -145,25 +150,33 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
 
     // First node is the root
     if let Some(first) = raw_nodes.first() {
-        tree.root = Some(first.id.clone());
+        tree.set_root_id(first.id);
     }
 
-    // Insert all nodes
+    // Insert all nodes first so child/nearby references can resolve in a second pass.
+    let mut topology_updates = Vec::with_capacity(raw_nodes.len());
+
     for raw in raw_nodes {
-        let mut element = Element::with_attrs(raw.id, raw.kind, raw.attrs_raw, raw.attrs);
-        element.children = raw.child_ids;
-        element.nearby = raw.nearby;
+        let id = raw.id;
+        let element = Element::with_attrs(id, raw.kind, raw.attrs_raw, raw.attrs);
+        topology_updates.push((id, raw.child_ids, raw.nearby.mounts));
         tree.insert(element);
+    }
+
+    for (id, child_ids, nearby_mounts) in topology_updates {
+        tree.set_children(&id, child_ids)
+            .map_err(DecodeError::InvalidStructure)?;
+        tree.set_nearby_mounts(&id, nearby_mounts)
+            .map_err(DecodeError::InvalidStructure)?;
     }
 
     Ok(tree)
 }
 
 /// Decode a single node from the cursor.
-fn decode_node(cursor: &mut Cursor, version: u8) -> Result<RawNode, DecodeError> {
+fn decode_node(cursor: &mut Cursor) -> Result<RawNode, DecodeError> {
     // Read ID
-    let id_bytes = cursor.read_length_prefixed()?;
-    let id = ElementId::from_term_bytes(id_bytes);
+    let id = NodeId::from_wire_u64(cursor.read_u64_be()?);
 
     // Read type tag
     let type_tag = cursor.read_u8()?;
@@ -177,21 +190,18 @@ fn decode_node(cursor: &mut Cursor, version: u8) -> Result<RawNode, DecodeError>
     let child_count = cursor.read_u16_be()? as usize;
     let mut child_ids = Vec::with_capacity(child_count);
     for _ in 0..child_count {
-        let child_id_bytes = cursor.read_length_prefixed()?;
-        child_ids.push(ElementId::from_term_bytes(child_id_bytes));
+        child_ids.push(NodeId::from_wire_u64(cursor.read_u64_be()?));
     }
 
     let mut nearby = NearbyMounts::default();
-    if version >= VERSION {
-        let nearby_count = cursor.read_u16_be()? as usize;
-        for _ in 0..nearby_count {
-            let slot_tag = cursor.read_u8()?;
-            let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
-                DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
-            })?;
-            let nearby_id_bytes = cursor.read_length_prefixed()?;
-            nearby.push(slot, ElementId::from_term_bytes(nearby_id_bytes));
-        }
+    let nearby_count = cursor.read_u16_be()? as usize;
+    for _ in 0..nearby_count {
+        let slot_tag = cursor.read_u8()?;
+        let slot = NearbySlot::from_tag(slot_tag).ok_or_else(|| {
+            DecodeError::InvalidStructure(format!("unknown nearby slot tag: {}", slot_tag))
+        })?;
+        let nearby_id = NodeId::from_wire_u64(cursor.read_u64_be()?);
+        nearby.push(slot, nearby_id);
     }
 
     Ok(RawNode {
@@ -245,14 +255,12 @@ mod tests {
     fn test_decode_single_node() {
         let mut data = make_header(1);
 
-        let fake_id = vec![0x01, 0x02, 0x03]; // fake term bytes
+        let id = 0x010203_u64;
 
         // attrs: empty block (0 attrs)
         let attrs_block: Vec<u8> = vec![0, 0]; // attr_count = 0
 
-        // id_len + id
-        data.extend_from_slice(&(fake_id.len() as u32).to_be_bytes());
-        data.extend_from_slice(&fake_id);
+        data.extend_from_slice(&id.to_be_bytes());
 
         // type tag
         data.push(4); // el
@@ -278,16 +286,14 @@ mod tests {
     fn test_decode_with_attrs() {
         let mut data = make_header(1);
 
-        let fake_id = vec![0x01, 0x02, 0x03];
+        let id = 0x010203_u64;
 
         // attrs: 1 attr, tag=4 (spacing), f64=10.0
         let mut attrs_block = vec![0, 1]; // attr_count = 1
         attrs_block.push(4); // tag = spacing
         attrs_block.extend_from_slice(&10.0_f64.to_be_bytes());
 
-        // id_len + id
-        data.extend_from_slice(&(fake_id.len() as u32).to_be_bytes());
-        data.extend_from_slice(&fake_id);
+        data.extend_from_slice(&id.to_be_bytes());
 
         // type tag
         data.push(3); // column

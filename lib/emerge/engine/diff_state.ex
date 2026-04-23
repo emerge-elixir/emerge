@@ -3,6 +3,7 @@ defmodule Emerge.Engine.DiffState do
   Stateful diff helper that keeps numeric id assignments stable.
   """
 
+  alias Emerge.Engine.NodeId
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Tree.Nearby
   alias Emerge.Engine.VNode
@@ -10,10 +11,11 @@ defmodule Emerge.Engine.DiffState do
   @type t :: %__MODULE__{
           tree: Emerge.Engine.Element.t() | nil,
           vdom: VNode.t() | nil,
-          event_registry: %{binary() => %{term() => {pid(), term()}}}
+          event_registry: %{binary() => %{term() => {pid(), term()}}},
+          next_id: non_neg_integer()
         }
 
-  defstruct tree: nil, vdom: nil, event_registry: %{}
+  defstruct tree: nil, vdom: nil, event_registry: %{}, next_id: 1
 
   @doc """
   Initialize diff state with an optional tree.
@@ -23,8 +25,14 @@ defmodule Emerge.Engine.DiffState do
   def new(nil), do: %__MODULE__{}
 
   def new(tree) do
-    {vdom, tree} = Reconcile.assign_ids(tree)
-    %__MODULE__{tree: tree, vdom: vdom, event_registry: build_event_registry(tree)}
+    {vdom, tree, next_id} = Reconcile.assign_ids(tree, 1)
+
+    %__MODULE__{
+      tree: tree,
+      vdom: vdom,
+      event_registry: build_event_registry(tree),
+      next_id: next_id
+    }
   end
 
   @doc """
@@ -33,11 +41,17 @@ defmodule Emerge.Engine.DiffState do
   @spec diff_and_encode(t(), Emerge.Engine.Element.t()) ::
           {binary(), t(), Emerge.Engine.Element.t()}
   def diff_and_encode(%__MODULE__{} = state, tree) do
-    {vdom, patches, assigned} = Reconcile.reconcile(state.vdom, tree)
+    {vdom, patches, assigned, next_id} =
+      Reconcile.reconcile(state.vdom, tree, state.next_id)
 
     {
       Emerge.Engine.Patch.encode(patches),
-      %__MODULE__{tree: assigned, vdom: vdom, event_registry: build_event_registry(assigned)},
+      %__MODULE__{
+        tree: assigned,
+        vdom: vdom,
+        event_registry: build_event_registry(assigned),
+        next_id: next_id
+      },
       assigned
     }
   end
@@ -131,7 +145,7 @@ defmodule Emerge.Engine.DiffState do
   defp register_event(acc, element, attr, event) do
     case Map.get(element.attrs, attr) do
       {pid, msg} when is_pid(pid) ->
-        id_bin = :erlang.term_to_binary(element.id)
+        id_bin = NodeId.encode(element.id)
 
         Map.update(acc, id_bin, %{event => {pid, msg}}, fn events ->
           Map.put(events, event, {pid, msg})
@@ -156,7 +170,7 @@ defmodule Emerge.Engine.DiffState do
 
   defp register_key_event(acc, element, event_type, %{route: route, payload: {pid, msg}})
        when is_binary(route) and is_pid(pid) do
-    id_bin = :erlang.term_to_binary(element.id)
+    id_bin = NodeId.encode(element.id)
     event = {event_type, route}
 
     Map.update(acc, id_bin, %{event => {pid, msg}}, fn events ->
@@ -169,7 +183,7 @@ defmodule Emerge.Engine.DiffState do
   defp register_virtual_key_hold_event(acc, element) do
     case Map.get(element.attrs, :virtual_key) do
       %{hold: {:event, {pid, msg}}} when is_pid(pid) ->
-        id_bin = :erlang.term_to_binary(element.id)
+        id_bin = NodeId.encode(element.id)
 
         Map.update(acc, id_bin, %{virtual_key_hold: {pid, msg}}, fn events ->
           Map.put(events, :virtual_key_hold, {pid, msg})

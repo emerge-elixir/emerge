@@ -24,7 +24,8 @@ defmodule Emerge.UI.Internal.Builder do
 
     %Element{
       type: type,
-      id: key,
+      key: key,
+      id: nil,
       attrs: attrs,
       children: children,
       nearby: nearby

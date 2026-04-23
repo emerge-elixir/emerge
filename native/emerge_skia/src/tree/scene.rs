@@ -208,12 +208,12 @@ fn offset_scrollbar_metrics(metrics: ScrollbarMetrics, ctx: &SceneContext) -> Sc
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
-    use crate::tree::element::{Element, ElementId, ElementKind, NearbySlot};
+    use crate::tree::element::{Element, ElementKind, NearbySlot, NodeId};
     use crate::tree::geometry::Rect;
 
     fn make_element(id: u8, attrs: Attrs, frame: Frame) -> Element {
         let mut element = Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
+            NodeId::from_term_bytes(vec![id]),
             ElementKind::El,
             Vec::new(),
             attrs,

@@ -1,11 +1,37 @@
 defmodule EmergeSkia.TreeTest do
   use ExUnit.Case
 
+  alias Emerge.Engine.NodeId
   alias EmergeSkia.Native
 
-  # Helper to build EMRG header (version 3)
+  # Helper to build EMRG header (version 7)
   defp make_header(node_count) do
-    "EMRG" <> <<3, node_count::unsigned-32>>
+    "EMRG" <> <<7, node_count::unsigned-32>>
+  end
+
+  defp encode_node(id, type_tag, attrs, child_ids \\ [], nearby \\ []) do
+    <<
+      id::unsigned-big-64,
+      type_tag::unsigned-8,
+      byte_size(attrs)::unsigned-32,
+      attrs::binary,
+      length(child_ids)::unsigned-16,
+      encode_ids(child_ids)::binary,
+      length(nearby)::unsigned-16,
+      encode_nearby(nearby)::binary
+    >>
+  end
+
+  defp encode_ids(ids) do
+    ids
+    |> Enum.map(fn id -> <<id::unsigned-big-64>> end)
+    |> IO.iodata_to_binary()
+  end
+
+  defp encode_nearby(mounts) do
+    mounts
+    |> Enum.map(fn {slot_tag, id} -> <<slot_tag::unsigned-8, id::unsigned-big-64>> end)
+    |> IO.iodata_to_binary()
   end
 
   # Empty attrs block (attr_count = 0)
@@ -51,16 +77,10 @@ defmodule EmergeSkia.TreeTest do
     test "parses single node with empty attrs" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(:my_node)
+      id = 1
       attrs = empty_attrs()
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 4, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -71,16 +91,10 @@ defmodule EmergeSkia.TreeTest do
     test "parses node with spacing attribute" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(:column_node)
+      id = 2
       attrs = attrs_with_spacing(10.0)
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<3>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 3, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -90,16 +104,10 @@ defmodule EmergeSkia.TreeTest do
     test "parses node with width and height" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(:sized_node)
+      id = 3
       attrs = attrs_with_size(100.0, 200.0)
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 4, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -109,40 +117,14 @@ defmodule EmergeSkia.TreeTest do
     test "parses tree with children" do
       tree = Native.tree_new()
 
-      parent_id = :erlang.term_to_binary(:parent)
-      child1_id = :erlang.term_to_binary(:child1)
-      child2_id = :erlang.term_to_binary(:child2)
+      parent_id = 10
+      child1_id = 11
+      child2_id = 12
       attrs = empty_attrs()
 
-      parent_children =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<byte_size(child2_id)::unsigned-32>> <> child2_id
-
-      parent_node =
-        <<byte_size(parent_id)::unsigned-32>> <>
-          parent_id <>
-          <<3>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<2::unsigned-16>> <>
-          parent_children
-
-      child1_node =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
-
-      child2_node =
-        <<byte_size(child2_id)::unsigned-32>> <>
-          child2_id <>
-          <<5>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      parent_node = encode_node(parent_id, 3, attrs, [child1_id, child2_id])
+      child1_node = encode_node(child1_id, 4, attrs)
+      child2_node = encode_node(child2_id, 5, attrs)
 
       data = make_header(3) <> parent_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -154,16 +136,10 @@ defmodule EmergeSkia.TreeTest do
     test "clears the tree" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(1)
+      id = 1
       attrs = empty_attrs()
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 4, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -179,16 +155,10 @@ defmodule EmergeSkia.TreeTest do
     test "layouts single element with fixed size" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(:root)
+      id = 20
       attrs = attrs_with_size(100.0, 50.0)
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 4, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -197,7 +167,7 @@ defmodule EmergeSkia.TreeTest do
       assert length(frames) == 1
 
       [{frame_id, x, y, w, h}] = frames
-      assert frame_id == id
+      assert NodeId.decode(frame_id) == id
       assert x == 0.0
       assert y == 0.0
       assert w == 100.0
@@ -207,42 +177,16 @@ defmodule EmergeSkia.TreeTest do
     test "layouts row with two children" do
       tree = Native.tree_new()
 
-      row_id = :erlang.term_to_binary(:row)
-      child1_id = :erlang.term_to_binary(:c1)
-      child2_id = :erlang.term_to_binary(:c2)
+      row_id = 30
+      child1_id = 31
+      child2_id = 32
 
       row_attrs = attrs_with_spacing(10.0)
       child_attrs = attrs_with_size(50.0, 30.0)
 
-      row_children =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<byte_size(child2_id)::unsigned-32>> <> child2_id
-
-      row_node =
-        <<byte_size(row_id)::unsigned-32>> <>
-          row_id <>
-          <<1>> <>
-          <<byte_size(row_attrs)::unsigned-32>> <>
-          row_attrs <>
-          <<2::unsigned-16>> <>
-          row_children
-
-      child1_node =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      child2_node =
-        <<byte_size(child2_id)::unsigned-32>> <>
-          child2_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
+      row_node = encode_node(row_id, 1, row_attrs, [child1_id, child2_id])
+      child1_node = encode_node(child1_id, 4, child_attrs)
+      child2_node = encode_node(child2_id, 4, child_attrs)
 
       data = make_header(3) <> row_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -250,7 +194,7 @@ defmodule EmergeSkia.TreeTest do
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
 
-      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {NodeId.decode(id), {x, y, w, h}} end)
 
       # Child 1 should be at x=0
       {c1_x, _c1_y, c1_w, _c1_h} = frames_map[child1_id]
@@ -266,9 +210,9 @@ defmodule EmergeSkia.TreeTest do
     test "layouts column with fill children" do
       tree = Native.tree_new()
 
-      col_id = :erlang.term_to_binary(:col)
-      child1_id = :erlang.term_to_binary(:c1)
-      child2_id = :erlang.term_to_binary(:c2)
+      col_id = 40
+      child1_id = 41
+      child2_id = 42
 
       # Column with fixed height
       col_attrs = <<2::unsigned-16, 2, 2, 100.0::float-64, 1, 2, 50.0::float-64>>
@@ -276,35 +220,9 @@ defmodule EmergeSkia.TreeTest do
       # Children with fill height (tag=2, variant=0 for fill)
       child_attrs = <<2::unsigned-16, 1, 2, 50.0::float-64, 2, 0>>
 
-      col_children =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<byte_size(child2_id)::unsigned-32>> <> child2_id
-
-      col_node =
-        <<byte_size(col_id)::unsigned-32>> <>
-          col_id <>
-          <<3>> <>
-          <<byte_size(col_attrs)::unsigned-32>> <>
-          col_attrs <>
-          <<2::unsigned-16>> <>
-          col_children
-
-      child1_node =
-        <<byte_size(child1_id)::unsigned-32>> <>
-          child1_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      child2_node =
-        <<byte_size(child2_id)::unsigned-32>> <>
-          child2_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
+      col_node = encode_node(col_id, 3, col_attrs, [child1_id, child2_id])
+      child1_node = encode_node(child1_id, 4, child_attrs)
+      child2_node = encode_node(child2_id, 4, child_attrs)
 
       data = make_header(3) <> col_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -312,7 +230,7 @@ defmodule EmergeSkia.TreeTest do
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       assert length(frames) == 3
 
-      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {NodeId.decode(id), {x, y, w, h}} end)
 
       # Both children should split the 100px height equally
       {_c1_x, c1_y, _c1_w, c1_h} = frames_map[child1_id]
@@ -327,17 +245,11 @@ defmodule EmergeSkia.TreeTest do
     test "applies scale factor to pixel values" do
       tree = Native.tree_new()
 
-      id = :erlang.term_to_binary(:root)
+      id = 50
       # Element with width=100px, height=50px, padding=10px
       attrs = attrs_with_size_and_padding(100.0, 50.0, 10.0)
 
-      node_data =
-        <<byte_size(id)::unsigned-32>> <>
-          id <>
-          <<4>> <>
-          <<byte_size(attrs)::unsigned-32>> <>
-          attrs <>
-          <<0::unsigned-16>>
+      node_data = encode_node(id, 4, attrs)
 
       data = make_header(1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
@@ -364,10 +276,10 @@ defmodule EmergeSkia.TreeTest do
     test "wrapped_row height expands when items wrap" do
       tree = Native.tree_new()
 
-      row_id = :erlang.term_to_binary(:row)
-      c1_id = :erlang.term_to_binary(:c1)
-      c2_id = :erlang.term_to_binary(:c2)
-      c3_id = :erlang.term_to_binary(:c3)
+      row_id = 60
+      c1_id = 61
+      c2_id = 62
+      c3_id = 63
 
       # Row with 100px width and 10px spacing
       # attr_count=2, width(tag=1, px=100), spacing(tag=4, 10.0)
@@ -376,52 +288,16 @@ defmodule EmergeSkia.TreeTest do
       # Children 50px wide, 30px tall
       child_attrs = attrs_with_size(50.0, 30.0)
 
-      row_children =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<byte_size(c3_id)::unsigned-32>> <> c3_id
-
-      # type tag 2 = WrappedRow
-      row_node =
-        <<byte_size(row_id)::unsigned-32>> <>
-          row_id <>
-          <<2>> <>
-          <<byte_size(row_attrs)::unsigned-32>> <>
-          row_attrs <>
-          <<3::unsigned-16>> <>
-          row_children
-
-      c1_node =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c2_node =
-        <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c3_node =
-        <<byte_size(c3_id)::unsigned-32>> <>
-          c3_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
+      row_node = encode_node(row_id, 2, row_attrs, [c1_id, c2_id, c3_id])
+      c1_node = encode_node(c1_id, 4, child_attrs)
+      c2_node = encode_node(c2_id, 4, child_attrs)
+      c3_node = encode_node(c3_id, 4, child_attrs)
 
       data = make_header(4) <> row_node <> c1_node <> c2_node <> c3_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
-      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {NodeId.decode(id), {x, y, w, h}} end)
 
       # With 100px width and children 50px wide:
       # Each child wraps to its own line (50 + 10 spacing + 50 = 110 > 100)
@@ -444,11 +320,11 @@ defmodule EmergeSkia.TreeTest do
     test "wrapped_row with multiple items per line" do
       tree = Native.tree_new()
 
-      row_id = :erlang.term_to_binary(:row)
-      c1_id = :erlang.term_to_binary(:c1)
-      c2_id = :erlang.term_to_binary(:c2)
-      c3_id = :erlang.term_to_binary(:c3)
-      c4_id = :erlang.term_to_binary(:c4)
+      row_id = 70
+      c1_id = 71
+      c2_id = 72
+      c3_id = 73
+      c4_id = 74
 
       # Row with 120px width and 10px spacing
       # Two children fit per line: 50 + 10 + 50 = 110 < 120
@@ -457,61 +333,17 @@ defmodule EmergeSkia.TreeTest do
       # Children 50px wide, 30px tall
       child_attrs = attrs_with_size(50.0, 30.0)
 
-      row_children =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<byte_size(c3_id)::unsigned-32>> <>
-          c3_id <>
-          <<byte_size(c4_id)::unsigned-32>> <> c4_id
-
-      row_node =
-        <<byte_size(row_id)::unsigned-32>> <>
-          row_id <>
-          <<2>> <>
-          <<byte_size(row_attrs)::unsigned-32>> <>
-          row_attrs <>
-          <<4::unsigned-16>> <>
-          row_children
-
-      c1_node =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c2_node =
-        <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c3_node =
-        <<byte_size(c3_id)::unsigned-32>> <>
-          c3_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c4_node =
-        <<byte_size(c4_id)::unsigned-32>> <>
-          c4_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
+      row_node = encode_node(row_id, 2, row_attrs, [c1_id, c2_id, c3_id, c4_id])
+      c1_node = encode_node(c1_id, 4, child_attrs)
+      c2_node = encode_node(c2_id, 4, child_attrs)
+      c3_node = encode_node(c3_id, 4, child_attrs)
+      c4_node = encode_node(c4_id, 4, child_attrs)
 
       data = make_header(5) <> row_node <> c1_node <> c2_node <> c3_node <> c4_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
-      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {NodeId.decode(id), {x, y, w, h}} end)
 
       # With 120px width: 2 items per line
       # Total height = 2 * 30 + 1 * 10 = 70px
@@ -535,12 +367,12 @@ defmodule EmergeSkia.TreeTest do
     test "column with wrapped_row pushes sibling down" do
       tree = Native.tree_new()
 
-      col_id = :erlang.term_to_binary(:col)
-      row_id = :erlang.term_to_binary(:row)
-      c1_id = :erlang.term_to_binary(:c1)
-      c2_id = :erlang.term_to_binary(:c2)
-      c3_id = :erlang.term_to_binary(:c3)
-      below_id = :erlang.term_to_binary(:below)
+      col_id = 80
+      row_id = 81
+      c1_id = 82
+      c2_id = 83
+      c3_id = 84
+      below_id = 85
 
       # Column with 100px width and 10px spacing
       col_attrs = <<2::unsigned-16, 1, 2, 100.0::float-64, 4, 10.0::float-64>>
@@ -555,75 +387,18 @@ defmodule EmergeSkia.TreeTest do
       # Below element: 40px tall, fill width
       below_attrs = <<2::unsigned-16, 1, 0, 2, 2, 40.0::float-64>>
 
-      col_children =
-        <<byte_size(row_id)::unsigned-32>> <>
-          row_id <>
-          <<byte_size(below_id)::unsigned-32>> <> below_id
-
-      row_children =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<byte_size(c3_id)::unsigned-32>> <> c3_id
-
-      # type tag 3 = Column
-      col_node =
-        <<byte_size(col_id)::unsigned-32>> <>
-          col_id <>
-          <<3>> <>
-          <<byte_size(col_attrs)::unsigned-32>> <>
-          col_attrs <>
-          <<2::unsigned-16>> <>
-          col_children
-
-      # type tag 2 = WrappedRow
-      row_node =
-        <<byte_size(row_id)::unsigned-32>> <>
-          row_id <>
-          <<2>> <>
-          <<byte_size(row_attrs)::unsigned-32>> <>
-          row_attrs <>
-          <<3::unsigned-16>> <>
-          row_children
-
-      c1_node =
-        <<byte_size(c1_id)::unsigned-32>> <>
-          c1_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c2_node =
-        <<byte_size(c2_id)::unsigned-32>> <>
-          c2_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      c3_node =
-        <<byte_size(c3_id)::unsigned-32>> <>
-          c3_id <>
-          <<4>> <>
-          <<byte_size(child_attrs)::unsigned-32>> <>
-          child_attrs <>
-          <<0::unsigned-16>>
-
-      below_node =
-        <<byte_size(below_id)::unsigned-32>> <>
-          below_id <>
-          <<4>> <>
-          <<byte_size(below_attrs)::unsigned-32>> <>
-          below_attrs <>
-          <<0::unsigned-16>>
+      col_node = encode_node(col_id, 3, col_attrs, [row_id, below_id])
+      row_node = encode_node(row_id, 2, row_attrs, [c1_id, c2_id, c3_id])
+      c1_node = encode_node(c1_id, 4, child_attrs)
+      c2_node = encode_node(c2_id, 4, child_attrs)
+      c3_node = encode_node(c3_id, 4, child_attrs)
+      below_node = encode_node(below_id, 4, below_attrs)
 
       data = make_header(6) <> col_node <> row_node <> c1_node <> c2_node <> c3_node <> below_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
-      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {id, {x, y, w, h}} end)
+      frames_map = Map.new(frames, fn {id, x, y, w, h} -> {NodeId.decode(id), {x, y, w, h}} end)
 
       # Wrapped row: 3 lines * 30px + 2 * 10px spacing = 110px
       {_row_x, _row_y, _row_w, row_h} = frames_map[row_id]

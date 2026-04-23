@@ -71,7 +71,7 @@ fn build_scroll_panel_with_cards(
     panel_frame: Frame,
     cards: Vec<(u8, Attrs, Frame)>,
 ) -> ElementTree {
-    let panel_id = ElementId::from_term_bytes(vec![90]);
+    let panel_id = NodeId::from_term_bytes(vec![90]);
     let mut panel = Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
     panel.frame = Some(panel_frame);
 
@@ -80,7 +80,7 @@ fn build_scroll_panel_with_cards(
 
     let child_ids = cards
         .iter()
-        .map(|(id_byte, _attrs, _frame)| ElementId::from_term_bytes(vec![*id_byte]))
+        .map(|(id_byte, _attrs, _frame)| NodeId::from_term_bytes(vec![*id_byte]))
         .collect::<Vec<_>>();
     panel.children = child_ids.clone();
     tree.insert(panel);
@@ -207,7 +207,7 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 
 #[test]
 fn test_render_image_source_pending_emits_loading_placeholder() {
-    let id = ElementId::from_term_bytes(vec![9]);
+    let id = NodeId::from_term_bytes(vec![9]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Logical("images/photo.jpg".to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
@@ -723,7 +723,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
         "##,
     );
 
-    let id = ElementId::from_term_bytes(vec![19]);
+    let id = NodeId::from_term_bytes(vec![19]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
@@ -764,7 +764,7 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     crate::renderer::insert_raster_asset(image_id, DEMO_STATIC_JPEG)
         .expect("test JPEG should insert");
 
-    let id = ElementId::from_term_bytes(vec![20]);
+    let id = NodeId::from_term_bytes(vec![20]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
@@ -1193,10 +1193,10 @@ fn test_glow_cards_in_scroll_y_panel_bleed_horizontally_at_outer_grid_edges() {
 #[test]
 fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing_space() {
     let build_tree = |with_glow: bool| {
-        let panel_id = ElementId::from_term_bytes(vec![100]);
-        let column_id = ElementId::from_term_bytes(vec![101]);
-        let glow_row_id = ElementId::from_term_bytes(vec![102]);
-        let combined_row_id = ElementId::from_term_bytes(vec![103]);
+        let panel_id = NodeId::from_term_bytes(vec![100]);
+        let column_id = NodeId::from_term_bytes(vec![101]);
+        let glow_row_id = NodeId::from_term_bytes(vec![102]);
+        let combined_row_id = NodeId::from_term_bytes(vec![103]);
 
         let panel_frame = Frame {
             x: 20.0,
@@ -1426,7 +1426,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         glow_row.frame = Some(glow_row_frame);
         glow_row.children = glow_cards
             .iter()
-            .map(|(id, _, _)| ElementId::from_term_bytes(vec![*id]))
+            .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
             .collect();
 
         let mut combined_row = Element::with_attrs(
@@ -1438,7 +1438,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         combined_row.frame = Some(combined_row_frame);
         combined_row.children = combined_cards
             .iter()
-            .map(|(id, _, _)| ElementId::from_term_bytes(vec![*id]))
+            .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
             .collect();
 
         let mut tree = ElementTree::new();
@@ -1449,7 +1449,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         tree.insert(combined_row);
 
         for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
-            let id = ElementId::from_term_bytes(vec![id]);
+            let id = NodeId::from_term_bytes(vec![id]);
             let mut child = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
             child.frame = Some(frame);
             tree.insert(child);

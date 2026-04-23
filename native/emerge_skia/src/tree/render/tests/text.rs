@@ -339,12 +339,12 @@ fn test_render_multiline_text_input_places_caret_on_wrapped_second_line() {
 
 #[test]
 fn test_render_scrollable_text_column_emits_text_commands() {
-    let root_id = ElementId::from_term_bytes(vec![50]);
-    let column_id = ElementId::from_term_bytes(vec![51]);
-    let row1_id = ElementId::from_term_bytes(vec![52]);
-    let row1_text_id = ElementId::from_term_bytes(vec![53]);
-    let row2_id = ElementId::from_term_bytes(vec![54]);
-    let row2_text_id = ElementId::from_term_bytes(vec![55]);
+    let root_id = NodeId::from_term_bytes(vec![50]);
+    let column_id = NodeId::from_term_bytes(vec![51]);
+    let row1_id = NodeId::from_term_bytes(vec![52]);
+    let row1_text_id = NodeId::from_term_bytes(vec![53]);
+    let row2_id = NodeId::from_term_bytes(vec![54]);
+    let row2_text_id = NodeId::from_term_bytes(vec![55]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb {

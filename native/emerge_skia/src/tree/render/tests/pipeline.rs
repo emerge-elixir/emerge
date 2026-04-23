@@ -11,9 +11,9 @@ fn build_two_child_tree(
     right_attrs: Attrs,
     right_frame: Frame,
 ) -> ElementTree {
-    let root_id = ElementId::from_term_bytes(vec![200]);
-    let left_id = ElementId::from_term_bytes(vec![201]);
-    let right_id = ElementId::from_term_bytes(vec![202]);
+    let root_id = NodeId::from_term_bytes(vec![200]);
+    let left_id = NodeId::from_term_bytes(vec![201]);
+    let right_id = NodeId::from_term_bytes(vec![202]);
 
     let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![left_id.clone(), right_id.clone()];
@@ -57,9 +57,9 @@ fn build_nested_child_tree(
         }));
     }
 
-    let root_id = ElementId::from_term_bytes(vec![210]);
-    let parent_id = ElementId::from_term_bytes(vec![211]);
-    let child_id = ElementId::from_term_bytes(vec![212]);
+    let root_id = NodeId::from_term_bytes(vec![210]);
+    let parent_id = NodeId::from_term_bytes(vec![211]);
+    let child_id = NodeId::from_term_bytes(vec![212]);
 
     let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![parent_id.clone()];
@@ -83,10 +83,10 @@ fn build_nested_child_tree(
 
 #[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
-    let root_id = ElementId::from_term_bytes(vec![40]);
-    let column_id = ElementId::from_term_bytes(vec![41]);
-    let text_holder_id = ElementId::from_term_bytes(vec![42]);
-    let text_id = ElementId::from_term_bytes(vec![43]);
+    let root_id = NodeId::from_term_bytes(vec![40]);
+    let column_id = NodeId::from_term_bytes(vec![41]);
+    let text_holder_id = NodeId::from_term_bytes(vec![42]);
+    let text_id = NodeId::from_term_bytes(vec![43]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb {
@@ -260,9 +260,9 @@ fn test_render_nested_wrapper_children_use_host_clips() {
 
 #[test]
 fn test_render_transformed_children_stay_inside_parent_host_clip() {
-    let root_id = ElementId::from_term_bytes(vec![65]);
-    let left_id = ElementId::from_term_bytes(vec![66]);
-    let right_id = ElementId::from_term_bytes(vec![67]);
+    let root_id = NodeId::from_term_bytes(vec![65]);
+    let left_id = NodeId::from_term_bytes(vec![66]);
+    let right_id = NodeId::from_term_bytes(vec![67]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb {
@@ -385,8 +385,8 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
 
 #[test]
 fn test_render_rounded_parent_clips_child_background_corners() {
-    let root_id = ElementId::from_term_bytes(vec![68]);
-    let child_id = ElementId::from_term_bytes(vec![69]);
+    let root_id = NodeId::from_term_bytes(vec![68]);
+    let child_id = NodeId::from_term_bytes(vec![69]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb {
@@ -656,8 +656,8 @@ fn test_render_emits_alpha_layer() {
 
 #[test]
 fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip() {
-    let parent_id = ElementId::from_term_bytes(vec![90]);
-    let child_id = ElementId::from_term_bytes(vec![91]);
+    let parent_id = NodeId::from_term_bytes(vec![90]);
+    let child_id = NodeId::from_term_bytes(vec![91]);
 
     let mut parent_attrs = Attrs::default();
     parent_attrs.scrollbar_y = Some(true);
@@ -738,8 +738,8 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
 
 #[test]
 fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
-    let parent_id = ElementId::from_term_bytes(vec![12]);
-    let child_id = ElementId::from_term_bytes(vec![13]);
+    let parent_id = NodeId::from_term_bytes(vec![12]);
+    let child_id = NodeId::from_term_bytes(vec![13]);
 
     let mut parent = Element::with_attrs(
         parent_id.clone(),
@@ -928,9 +928,9 @@ fn test_tree_transform_scope_does_not_affect_following_sibling_pixels() {
 
 #[test]
 fn test_render_translated_full_width_row_moves_host_frame_and_children_together() {
-    let root_id = ElementId::from_term_bytes(vec![220]);
-    let row_id = ElementId::from_term_bytes(vec![221]);
-    let child_id = ElementId::from_term_bytes(vec![222]);
+    let root_id = NodeId::from_term_bytes(vec![220]);
+    let row_id = NodeId::from_term_bytes(vec![221]);
+    let child_id = NodeId::from_term_bytes(vec![222]);
 
     let mut root = Element::with_attrs(
         root_id.clone(),
@@ -1357,7 +1357,7 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
             content_height: 10.0,
         },
     );
-    let child_id = ElementId::from_term_bytes(vec![5]);
+    let child_id = NodeId::from_term_bytes(vec![5]);
     mount_nearby(
         &mut tree,
         &child_id,
@@ -1492,7 +1492,7 @@ fn test_render_clip_nearby_clips_escape_overlay() {
             content_height: 50.0,
         },
     );
-    let child_id = ElementId::from_term_bytes(vec![5]);
+    let child_id = NodeId::from_term_bytes(vec![5]);
     mount_nearby(
         &mut tree,
         &child_id,
@@ -1550,7 +1550,7 @@ fn test_render_earlier_child_escape_paints_after_later_normal_sibling() {
 
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![201]),
+        &NodeId::from_term_bytes(vec![201]),
         NearbySlot::Below,
         ElementKind::El,
         solid_fill_attrs((255, 0, 0)),
@@ -1619,7 +1619,7 @@ fn test_render_ancestor_in_front_beats_descendant_below() {
 
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![210]),
+        &NodeId::from_term_bytes(vec![210]),
         NearbySlot::InFront,
         ElementKind::El,
         solid_fill_attrs((0, 255, 0)),
@@ -1635,7 +1635,7 @@ fn test_render_ancestor_in_front_beats_descendant_below() {
     );
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![211]),
+        &NodeId::from_term_bytes(vec![211]),
         NearbySlot::Below,
         ElementKind::El,
         solid_fill_attrs((255, 0, 0)),
@@ -1701,7 +1701,7 @@ fn test_render_later_sibling_escape_beats_earlier_sibling_escape() {
 
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![201]),
+        &NodeId::from_term_bytes(vec![201]),
         NearbySlot::InFront,
         ElementKind::El,
         solid_fill_attrs((255, 0, 0)),
@@ -1717,7 +1717,7 @@ fn test_render_later_sibling_escape_beats_earlier_sibling_escape() {
     );
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![202]),
+        &NodeId::from_term_bytes(vec![202]),
         NearbySlot::OnLeft,
         ElementKind::El,
         solid_fill_attrs((0, 255, 0)),
@@ -1785,7 +1785,7 @@ fn test_render_transforms_do_not_change_escape_z_order() {
     moved_red.move_x = Some(60.0);
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![201]),
+        &NodeId::from_term_bytes(vec![201]),
         NearbySlot::InFront,
         ElementKind::El,
         moved_red,
@@ -1801,7 +1801,7 @@ fn test_render_transforms_do_not_change_escape_z_order() {
     );
     mount_nearby(
         &mut tree,
-        &ElementId::from_term_bytes(vec![202]),
+        &NodeId::from_term_bytes(vec![202]),
         NearbySlot::InFront,
         ElementKind::El,
         solid_fill_attrs((0, 255, 0)),
@@ -1834,8 +1834,8 @@ fn test_render_nested_escape_submenu_paints_after_parent_menu() {
         },
     );
     let host_id = tree.root.clone().unwrap();
-    let menu_id = ElementId::from_term_bytes(vec![72]);
-    let submenu_id = ElementId::from_term_bytes(vec![73]);
+    let menu_id = NodeId::from_term_bytes(vec![72]);
+    let submenu_id = NodeId::from_term_bytes(vec![73]);
 
     let mut menu = Element::with_attrs(
         menu_id.clone(),
@@ -2529,10 +2529,10 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
 
 #[test]
 fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translation() {
-    let root_id = ElementId::from_term_bytes(vec![30]);
-    let child_a_id = ElementId::from_term_bytes(vec![31]);
-    let child_b_id = ElementId::from_term_bytes(vec![32]);
-    let child_c_id = ElementId::from_term_bytes(vec![33]);
+    let root_id = NodeId::from_term_bytes(vec![30]);
+    let child_a_id = NodeId::from_term_bytes(vec![31]);
+    let child_b_id = NodeId::from_term_bytes(vec![32]);
+    let child_c_id = NodeId::from_term_bytes(vec![33]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
@@ -2648,9 +2648,9 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
 
 #[test]
 fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation() {
-    let root_id = ElementId::from_term_bytes(vec![60]);
-    let inner_id = ElementId::from_term_bytes(vec![61]);
-    let text_id = ElementId::from_term_bytes(vec![62]);
+    let root_id = NodeId::from_term_bytes(vec![60]);
+    let inner_id = NodeId::from_term_bytes(vec![61]);
+    let text_id = NodeId::from_term_bytes(vec![62]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
@@ -2743,8 +2743,8 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
 
 #[test]
 fn test_render_scroll_host_clip_uses_current_frame_geometry() {
-    let root_id = ElementId::from_term_bytes(vec![63]);
-    let text_id = ElementId::from_term_bytes(vec![64]);
+    let root_id = NodeId::from_term_bytes(vec![63]);
+    let text_id = NodeId::from_term_bytes(vec![64]);
 
     let mut root_attrs = Attrs::default();
     root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));

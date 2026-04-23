@@ -78,8 +78,8 @@ fn test_render_paragraph_emits_text_commands() {
 fn test_render_paragraph_renders_float_child_and_fragments() {
     use crate::tree::attrs::{AlignX, TextFragment};
 
-    let para_id = ElementId::from_term_bytes(vec![10]);
-    let float_id = ElementId::from_term_bytes(vec![11]);
+    let para_id = NodeId::from_term_bytes(vec![10]);
+    let float_id = NodeId::from_term_bytes(vec![11]);
 
     let mut para_attrs = Attrs::default();
     para_attrs.paragraph_fragments = Some(vec![TextFragment {
@@ -151,9 +151,9 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
 fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     use crate::tree::attrs::TextFragment;
 
-    let para_id = ElementId::from_term_bytes(vec![13]);
-    let float_id = ElementId::from_term_bytes(vec![14]);
-    let inline_id = ElementId::from_term_bytes(vec![15]);
+    let para_id = NodeId::from_term_bytes(vec![13]);
+    let float_id = NodeId::from_term_bytes(vec![14]);
+    let inline_id = NodeId::from_term_bytes(vec![15]);
 
     let mut para_attrs = Attrs::default();
     para_attrs.paragraph_fragments = Some(vec![TextFragment {

@@ -365,8 +365,7 @@ impl Worker {
 }
 
 fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
-    tree.nodes
-        .values()
+    tree.iter_nodes()
         .flat_map(|element| {
             element
                 .attrs

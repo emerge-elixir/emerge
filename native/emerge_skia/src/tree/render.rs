@@ -18,7 +18,7 @@ use self::text::{
 };
 use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
-    Element, ElementId, ElementKind, ElementTree, Frame, NearbySlot, RetainedChildMode,
+    Element, ElementKind, ElementTree, Frame, NearbySlot, NodeIx, RetainedChildMode,
     RetainedLocalBranchRef,
 };
 use super::geometry::{ClipShape, Rect, host_clip_shape, self_shape as geometry_self_shape};
@@ -179,7 +179,7 @@ impl RenderSubtree {
 /// Render the tree and collect rebuild metadata.
 /// Reads from pre-scaled attrs (layout pass must run first).
 pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
-    let Some(root) = tree.root.as_ref() else {
+    let Some(root_ix) = tree.root_ix() else {
         return RenderOutput {
             scene: RenderScene::default(),
             event_rebuild: RegistryRebuildPayload::default(),
@@ -191,7 +191,7 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     let mut text_input_focused = false;
     let mut text_input_cursor_area = None;
     let render_ctx = RenderBuildContext {
-        scene_bounds: scene_bounds_for_root(tree, root),
+        scene_bounds: scene_bounds_for_root(tree, root_ix),
         ..RenderBuildContext::default()
     };
     let mut outputs = RenderOutputs {
@@ -200,7 +200,7 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     };
     let subtree = build_element_subtree(
         tree,
-        root,
+        root_ix,
         &FontContext::default(),
         &mut outputs,
         RenderTraversal {
@@ -221,12 +221,12 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
 
 fn build_element_subtree(
     tree: &ElementTree,
-    id: &ElementId,
+    ix: NodeIx,
     inherited: &FontContext,
     outputs: &mut RenderOutputs<'_>,
     traversal: RenderTraversal<'_>,
 ) -> RenderSubtree {
-    let Some(element) = tree.get(id) else {
+    let Some(element) = tree.get_ix(ix) else {
         return RenderSubtree::default();
     };
     let Some(frame) = element.frame else {
@@ -257,6 +257,7 @@ fn build_element_subtree(
     let host_content = build_host_content_subtree(
         tree,
         element,
+        ix,
         render_frame,
         &element_context,
         &mut outputs.reborrow(),
@@ -316,6 +317,7 @@ fn build_element_subtree(
 fn build_host_content_subtree(
     tree: &ElementTree,
     element: &Element,
+    element_ix: NodeIx,
     render_frame: Frame,
     element_context: &FontContext,
     outputs: &mut RenderOutputs<'_>,
@@ -344,10 +346,10 @@ fn build_host_content_subtree(
     let mut subtree = RenderSubtree::default();
 
     if element.kind == ElementKind::Paragraph {
-        for mount in element.local_nearby_mounts() {
+        for mount in tree.local_nearby_mounts_ix(element_ix) {
             let branch_subtree = build_nearby_mount_subtree(
                 tree,
-                mount.id.clone(),
+                mount.ix,
                 mount.slot,
                 element_context,
                 &mut outputs.reborrow(),
@@ -364,7 +366,7 @@ fn build_host_content_subtree(
             RetainedLocalBranchRef::Nearby(mount) => {
                 let branch_subtree = build_nearby_mount_subtree(
                     tree,
-                    mount.id.clone(),
+                    mount.ix,
                     mount.slot,
                     element_context,
                     &mut outputs.reborrow(),
@@ -379,7 +381,7 @@ fn build_host_content_subtree(
             RetainedLocalBranchRef::Child(child) => {
                 let branch_subtree = build_element_subtree(
                     tree,
-                    child.id,
+                    child.ix,
                     element_context,
                     &mut outputs.reborrow(),
                     RenderTraversal {
@@ -436,10 +438,10 @@ fn build_host_content_subtree(
         current_host_clip.clip,
     ));
 
-    for mount in element.escape_nearby_mounts() {
+    for mount in tree.escape_nearby_mounts_ix(element_ix) {
         subtree.extend_escape(build_nearby_mount_subtree(
             tree,
-            mount.id.clone(),
+            mount.ix,
             mount.slot,
             element_context,
             &mut outputs.reborrow(),
@@ -456,7 +458,7 @@ fn build_host_content_subtree(
 
 fn build_nearby_mount_subtree(
     tree: &ElementTree,
-    nearby_id: ElementId,
+    nearby_ix: NodeIx,
     slot: NearbySlot,
     element_context: &FontContext,
     outputs: &mut RenderOutputs<'_>,
@@ -465,7 +467,7 @@ fn build_nearby_mount_subtree(
 ) -> RenderSubtree {
     build_element_subtree(
         tree,
-        &nearby_id,
+        nearby_ix,
         element_context,
         &mut outputs.reborrow(),
         RenderTraversal {
@@ -502,7 +504,7 @@ fn build_paragraph_subtree(
         RetainedChildMode::Scope => {
             let child_subtree = build_element_subtree(
                 tree,
-                child.id,
+                child.ix,
                 element_context,
                 &mut outputs.reborrow(),
                 RenderTraversal {
@@ -708,8 +710,8 @@ fn wrap_with_alpha(nodes: Vec<RenderNode>, alpha: f32) -> Vec<RenderNode> {
     }]
 }
 
-fn scene_bounds_for_root(tree: &ElementTree, root: &ElementId) -> Rect {
-    tree.get(root)
+fn scene_bounds_for_root(tree: &ElementTree, root: NodeIx) -> Rect {
+    tree.get_ix(root)
         .and_then(|element| element.frame)
         .map(Rect::from_frame)
         .unwrap_or_default()

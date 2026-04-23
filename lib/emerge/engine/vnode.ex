@@ -4,7 +4,7 @@ defmodule Emerge.Engine.VNode do
   """
 
   @type t :: %__MODULE__{
-          id: term(),
+          id: non_neg_integer(),
           kind: atom(),
           key: term() | nil,
           attrs: map(),

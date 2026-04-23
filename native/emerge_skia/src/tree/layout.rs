@@ -11,7 +11,7 @@ use super::attrs::{
     TextFragment, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
 };
 use super::element::{
-    Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
+    Element, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot, NodeId,
 };
 use super::render::DEFAULT_TEXT_COLOR;
 use super::text_layout::{TextLayoutStyle, layout_text_lines};
@@ -447,6 +447,8 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
         return false;
     };
 
+    tree.ensure_topology();
+
     tree.set_current_scale(scale);
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
@@ -478,7 +480,7 @@ fn prepare_attrs_for_frame(
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> bool {
-    for element in tree.nodes.values_mut() {
+    for element in tree.iter_nodes_mut() {
         let previous = element.attrs.clone();
         let scale_factor = match element.ghost_capture_scale {
             Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
@@ -665,7 +667,7 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
 }
 
 fn apply_interaction_styles(tree: &mut ElementTree) {
-    for element in tree.nodes.values_mut() {
+    for element in tree.iter_nodes_mut() {
         if element.attrs.mouse_over_active.unwrap_or(false)
             && let Some(mouse_over) = element.attrs.mouse_over.clone()
         {
@@ -835,7 +837,7 @@ fn scale_padding(padding: &Padding, scale: f32) -> Padding {
 /// Reads from pre-scaled attrs. Inherits font context from ancestors.
 fn measure_element<M: TextMeasurer>(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     measurer: &M,
     inherited: &FontContext,
 ) -> IntrinsicSize {
@@ -846,17 +848,12 @@ fn measure_element<M: TextMeasurer>(
         .unwrap_or_else(|| inherited.clone());
 
     // First measure all children with merged font context
-    let (child_ids, nearby_ids): (Vec<ElementId>, Vec<ElementId>) = tree
-        .get(id)
-        .map(|element| {
-            let nearby_ids = element
-                .nearby
-                .iter()
-                .map(|mount| mount.id.clone())
-                .collect();
-            (element.children.clone(), nearby_ids)
-        })
-        .unwrap_or_default();
+    let child_ids = tree.child_ids(id);
+    let nearby_ids: Vec<NodeId> = tree
+        .nearby_mounts_for(id)
+        .into_iter()
+        .map(|mount| mount.id)
+        .collect();
 
     let child_sizes: Vec<IntrinsicSize> = child_ids
         .iter()
@@ -1214,7 +1211,7 @@ fn container_prefers_fill_width(
     tree: &ElementTree,
     kind: ElementKind,
     attrs: &Attrs,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     constraint: Constraint,
 ) -> bool {
     attrs.width.is_none()
@@ -1231,7 +1228,7 @@ fn container_prefers_fill_height(
     tree: &ElementTree,
     kind: ElementKind,
     attrs: &Attrs,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     constraint: Constraint,
 ) -> bool {
     attrs.height.is_none()
@@ -1256,9 +1253,9 @@ struct ContentRect {
 }
 
 struct ResolvePassParams<'a> {
-    id: &'a ElementId,
+    id: &'a NodeId,
     attrs: &'a Attrs,
-    child_ids: &'a [ElementId],
+    child_ids: &'a [NodeId],
     content: ContentRect,
     insets: LayoutInsets,
     is_scrollable: bool,
@@ -1534,7 +1531,7 @@ fn resolve_multiline_kind<M: TextMeasurer>(
 /// Reads from pre-scaled attrs.
 fn resolve_element<M: TextMeasurer>(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     constraint: Constraint,
     x: f32,
     y: f32,
@@ -1548,7 +1545,7 @@ fn resolve_element<M: TextMeasurer>(
     // Read from pre-scaled attrs
     let attrs = element.attrs.clone();
     let kind = element.kind;
-    let child_ids = element.children.clone();
+    let child_ids = tree.child_ids(id);
     let intrinsic = element
         .frame
         .map(|f| IntrinsicSize {
@@ -1652,13 +1649,13 @@ fn resolve_element<M: TextMeasurer>(
     resolve_nearby_mounts(tree, id, &element_context, measurer);
 }
 
-fn update_paint_children(tree: &mut ElementTree, id: &ElementId, kind: ElementKind) {
-    let Some(element) = tree.get(id) else {
+fn update_paint_children(tree: &mut ElementTree, id: &NodeId, kind: ElementKind) {
+    if tree.get(id).is_none() {
         return;
-    };
+    }
 
-    let source_children = element.children.clone();
-    let mut ordered: Vec<(usize, ElementId, f32, f32)> = source_children
+    let source_children = tree.child_ids(id);
+    let mut ordered: Vec<(usize, NodeId, f32, f32)> = source_children
         .iter()
         .enumerate()
         .filter_map(|(index, child_id)| {
@@ -1713,9 +1710,7 @@ fn update_paint_children(tree: &mut ElementTree, id: &ElementId, kind: ElementKi
         source_children
     };
 
-    if let Some(element) = tree.get_mut(id) {
-        element.paint_children = paint_children;
-    }
+    let _ = tree.set_paint_children(id, paint_children);
 }
 
 /// Resolve final length from attribute, intrinsic, and constraint.
@@ -1738,7 +1733,7 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
 
 fn resolve_nearby_mounts<M: TextMeasurer>(
     tree: &mut ElementTree,
-    host_id: &ElementId,
+    host_id: &NodeId,
     inherited: &FontContext,
     measurer: &M,
 ) {
@@ -1746,16 +1741,11 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
         return;
     };
 
-    let nearby_roots: Vec<(NearbySlot, ElementId)> = tree
-        .get(host_id)
-        .map(|element| {
-            element
-                .nearby
-                .iter()
-                .map(|mount| (mount.slot, mount.id.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let nearby_roots: Vec<(NearbySlot, NodeId)> = tree
+        .nearby_mounts_for(host_id)
+        .into_iter()
+        .map(|mount| (mount.slot, mount.id))
+        .collect();
 
     for (slot, nearby_id) in nearby_roots {
         let constraint = nearby_constraint(host_frame, slot);
@@ -1941,7 +1931,7 @@ struct ChildFrameSnapshot {
     content_height: f32,
 }
 
-fn child_frame_snapshot(tree: &ElementTree, child_id: &ElementId) -> Option<ChildFrameSnapshot> {
+fn child_frame_snapshot(tree: &ElementTree, child_id: &NodeId) -> Option<ChildFrameSnapshot> {
     let frame = tree.get(child_id)?.frame?;
     Some(ChildFrameSnapshot {
         x: frame.x,
@@ -1955,7 +1945,7 @@ fn child_frame_snapshot(tree: &ElementTree, child_id: &ElementId) -> Option<Chil
 
 fn resolve_child_with_placement<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     placement: ChildPlacement<'_>,
     measurer: &M,
 ) -> Option<ChildFrameSnapshot> {
@@ -1971,19 +1961,19 @@ fn resolve_child_with_placement<M: TextMeasurer>(
     child_frame_snapshot(tree, child_id)
 }
 
-fn child_align_x(tree: &ElementTree, child_id: &ElementId) -> AlignX {
+fn child_align_x(tree: &ElementTree, child_id: &NodeId) -> AlignX {
     tree.get(child_id)
         .map(|child| child.attrs.align_x.unwrap_or_default())
         .unwrap_or_default()
 }
 
-fn child_align_y(tree: &ElementTree, child_id: &ElementId) -> AlignY {
+fn child_align_y(tree: &ElementTree, child_id: &NodeId) -> AlignY {
     tree.get(child_id)
         .map(|child| child.attrs.align_y.unwrap_or_default())
         .unwrap_or_default()
 }
 
-fn child_measured_width(tree: &ElementTree, child_id: &ElementId) -> f32 {
+fn child_measured_width(tree: &ElementTree, child_id: &NodeId) -> f32 {
     tree.get(child_id)
         .and_then(|child| child.measured_frame.or(child.frame))
         .map(|frame| frame.width)
@@ -1991,7 +1981,7 @@ fn child_measured_width(tree: &ElementTree, child_id: &ElementId) -> f32 {
         .max(0.0)
 }
 
-fn child_measured_height(tree: &ElementTree, child_id: &ElementId) -> f32 {
+fn child_measured_height(tree: &ElementTree, child_id: &NodeId) -> f32 {
     tree.get(child_id)
         .and_then(|child| child.measured_frame.or(child.frame))
         .map(|frame| frame.height)
@@ -2062,7 +2052,7 @@ fn planned_column_child_height(
 /// - Child can override with its own alignment attribute
 fn resolve_el_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: ElChildrenOptions,
     inherited: &FontContext,
@@ -2132,10 +2122,10 @@ fn resolve_el_children<M: TextMeasurer>(
 
 #[derive(Debug)]
 struct RowLayoutPlan {
-    child_widths: HashMap<ElementId, f32>,
-    left_children: Vec<ElementId>,
-    center_children: Vec<ElementId>,
-    right_children: Vec<ElementId>,
+    child_widths: HashMap<NodeId, f32>,
+    left_children: Vec<NodeId>,
+    center_children: Vec<NodeId>,
+    right_children: Vec<NodeId>,
     total_left_width: f32,
     total_center_width: f32,
     total_right_width: f32,
@@ -2151,7 +2141,7 @@ fn spacing_for_count(count: usize, spacing: f32) -> f32 {
 
 fn build_row_layout_plan(
     tree: &ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     options: RowChildrenOptions,
     content_width: f32,
 ) -> RowLayoutPlan {
@@ -2191,11 +2181,11 @@ fn build_row_layout_plan(
     };
 
     // Partition children by horizontal alignment and calculate widths.
-    let mut left_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut right_children: Vec<ElementId> = Vec::new();
+    let mut left_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut right_children: Vec<NodeId> = Vec::new();
 
-    let mut child_widths: HashMap<ElementId, f32> = HashMap::new();
+    let mut child_widths: HashMap<NodeId, f32> = HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
@@ -2240,15 +2230,12 @@ fn build_row_layout_plan(
     }
 }
 
-fn build_row_layout_plan_from_widths(
-    tree: &ElementTree,
-    line: &[(ElementId, f32)],
-) -> RowLayoutPlan {
-    let mut left_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut right_children: Vec<ElementId> = Vec::new();
+fn build_row_layout_plan_from_widths(tree: &ElementTree, line: &[(NodeId, f32)]) -> RowLayoutPlan {
+    let mut left_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut right_children: Vec<NodeId> = Vec::new();
 
-    let mut child_widths: HashMap<ElementId, f32> = HashMap::new();
+    let mut child_widths: HashMap<NodeId, f32> = HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
@@ -2381,9 +2368,9 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
 
 fn resolve_row_space_evenly<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
-    child_widths: &HashMap<ElementId, f32>,
+    child_widths: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
 ) -> (f32, f32) {
@@ -2430,7 +2417,7 @@ fn resolve_row_space_evenly<M: TextMeasurer>(
 
 fn resolve_row_grouped<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: RowChildrenOptions,
     plan: &RowLayoutPlan,
@@ -2542,7 +2529,7 @@ fn resolve_row_grouped<M: TextMeasurer>(
 ///   Returns (actual_content_width, actual_content_height).
 fn resolve_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: RowChildrenOptions,
     inherited: &FontContext,
@@ -2573,7 +2560,7 @@ fn resolve_row_children<M: TextMeasurer>(
 /// Apply vertical alignment to a child element.
 fn apply_vertical_alignment(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     content_y: f32,
     content_height: f32,
     align_y: AlignY,
@@ -2595,16 +2582,16 @@ fn apply_vertical_alignment(
 
 #[derive(Debug)]
 struct ColumnLayoutPlan {
-    child_heights: HashMap<ElementId, f32>,
-    top_children: Vec<ElementId>,
-    center_children: Vec<ElementId>,
-    bottom_children: Vec<ElementId>,
+    child_heights: HashMap<NodeId, f32>,
+    top_children: Vec<NodeId>,
+    center_children: Vec<NodeId>,
+    bottom_children: Vec<NodeId>,
     total_center_height: f32,
 }
 
 fn build_column_layout_plan(
     tree: &ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     options: ColumnChildrenOptions,
     content_height: f32,
 ) -> ColumnLayoutPlan {
@@ -2644,10 +2631,10 @@ fn build_column_layout_plan(
     };
 
     // Partition children by vertical alignment and calculate heights.
-    let mut top_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut bottom_children: Vec<ElementId> = Vec::new();
-    let mut child_heights: HashMap<ElementId, f32> = HashMap::new();
+    let mut top_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut bottom_children: Vec<NodeId> = Vec::new();
+    let mut child_heights: HashMap<NodeId, f32> = HashMap::new();
     let mut total_center_height = 0.0_f32;
 
     for child_id in child_ids {
@@ -2684,9 +2671,9 @@ fn build_column_layout_plan(
 
 fn resolve_column_space_evenly<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
-    child_heights: &HashMap<ElementId, f32>,
+    child_heights: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
 ) -> f32 {
@@ -2909,7 +2896,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
 /// Returns the actual content height after resolution.
 fn resolve_column_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: ColumnChildrenOptions,
     inherited: &FontContext,
@@ -3017,7 +3004,7 @@ fn flow_line_bounds(
 
 fn place_flow_float<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     side: AlignX,
     desired_y: f32,
     context: FlowPlacementContext<'_>,
@@ -3120,7 +3107,7 @@ fn place_flow_float<M: TextMeasurer>(
 
 fn resolve_paragraph_with_flow<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     layout: TextFlowLayoutContext<'_>,
     y: f32,
     measurer: &M,
@@ -3141,7 +3128,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         let Some(child) = tree.get(child_id) else {
             return;
         };
-        (child.children.clone(), child.attrs.clone(), child.frame)
+        (tree.child_ids(child_id), child.attrs.clone(), child.frame)
     };
     let Some(frame) = frame else {
         return;
@@ -3186,7 +3173,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
 
 fn resolve_text_column_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
 ) -> f32 {
@@ -3299,7 +3286,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
 /// Apply horizontal alignment to a child element.
 fn apply_horizontal_alignment(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     content_x: f32,
     content_width: f32,
     align_x: AlignX,
@@ -3324,7 +3311,7 @@ fn apply_horizontal_alignment(
 /// Returns the actual content height after wrapping.
 fn resolve_wrapped_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: WrappedRowChildrenOptions,
     inherited: &FontContext,
@@ -3337,8 +3324,8 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     // Build lines by wrapping (attrs are pre-scaled).
     // Width determines line membership; actual heights are measured after each child
     // is resolved against its final line width.
-    let mut lines: Vec<Vec<(ElementId, f32)>> = Vec::new(); // (id, width)
-    let mut current_line: Vec<(ElementId, f32)> = Vec::new();
+    let mut lines: Vec<Vec<(NodeId, f32)>> = Vec::new(); // (id, width)
+    let mut current_line: Vec<(NodeId, f32)> = Vec::new();
     let mut current_line_width = 0.0;
 
     for child_id in child_ids {
@@ -3380,7 +3367,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     let num_lines = lines.len();
 
     for line in lines {
-        let line_children: Vec<(ElementId, AlignY)> = line
+        let line_children: Vec<(NodeId, AlignY)> = line
             .iter()
             .map(|(child_id, _)| (child_id.clone(), child_align_y(tree, child_id)))
             .collect();
@@ -3423,7 +3410,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
 /// Returns (text_content, font_context) or None if child is not a text source.
 fn extract_inline_text(
     tree: &ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     inherited: &FontContext,
 ) -> Option<(String, FontContext)> {
     let child = tree.get(child_id)?;
@@ -3437,8 +3424,8 @@ fn extract_inline_text(
         ElementKind::El => {
             // Look for the first text child of this el wrapper
             let el_context = inherited.merge_with_attrs(&child.attrs);
-            for grandchild_id in &child.children {
-                let grandchild = tree.get(grandchild_id)?;
+            for grandchild_id in tree.child_ids(&child.id) {
+                let grandchild = tree.get(&grandchild_id)?;
                 if grandchild.kind == ElementKind::Text {
                     let content = grandchild.attrs.content.as_deref()?.to_string();
                     let font_ctx = el_context.merge_with_attrs(&grandchild.attrs);
@@ -3455,7 +3442,7 @@ fn extract_inline_text(
 /// Returns (fragments, total_content_height).
 fn resolve_paragraph_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
@@ -3881,7 +3868,7 @@ fn spacing_y(attrs: &Attrs) -> f32 {
 
 fn set_frame_content_width(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_width: f32,
     insets: LayoutInsets,
 ) {
@@ -3894,7 +3881,7 @@ fn set_frame_content_width(
 
 fn set_frame_content_height(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_height: f32,
     insets: LayoutInsets,
 ) {
@@ -3907,7 +3894,7 @@ fn set_frame_content_height(
 
 fn set_frame_content_size(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_width: f32,
     actual_content_height: f32,
     insets: LayoutInsets,
@@ -3922,7 +3909,7 @@ fn set_frame_content_size(
 
 fn expand_frame_height_to_content(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_height: f32,
     insets: LayoutInsets,
 ) {
@@ -3935,7 +3922,7 @@ fn expand_frame_height_to_content(
     }
 }
 
-fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
+fn update_scroll_state(tree: &mut ElementTree, id: &NodeId) {
     let Some(element) = tree.get_mut(id) else {
         return;
     };
@@ -4006,7 +3993,7 @@ fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
     }
 }
 
-fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
+fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
     if dx == 0.0 && dy == 0.0 {
         return;
     }
@@ -4026,8 +4013,8 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
             }
         }
 
-        let mut child_ids = element.children.clone();
-        child_ids.extend(element.nearby.iter().map(|mount| mount.id.clone()));
+        let mut child_ids = tree.child_ids(id);
+        child_ids.extend(tree.nearby_mounts_for(id).into_iter().map(|mount| mount.id));
         child_ids
     };
 
