@@ -1,4 +1,5 @@
 mod border_box;
+mod cache;
 mod common;
 mod font;
 mod measurement;
