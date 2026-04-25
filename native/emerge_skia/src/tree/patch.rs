@@ -730,6 +730,7 @@ fn clone_as_ghost(
             scroll_x_max: old.layout.scroll_x_max,
             scroll_y_max: old.layout.scroll_y_max,
             paragraph_fragments: old.layout.paragraph_fragments.clone(),
+            intrinsic_measure_cache: None,
         },
         lifecycle: crate::tree::element::NodeLifecycle {
             mounted_at_revision: old.lifecycle.mounted_at_revision,
