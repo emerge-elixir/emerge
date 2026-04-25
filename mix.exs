@@ -79,8 +79,13 @@ defmodule Emerge.MixProject do
       "bench.engine.diff": ["run bench/engine_diff_bench.exs"],
       "bench.engine.serialization": ["run bench/serialization_bench.exs"],
       "bench.fixtures": ["run bench/generate_fixtures.exs"],
-      "bench.native": ["bench.native.layout", "bench.native.patch"],
+      "bench.native": [
+        "bench.native.layout",
+        "bench.native.retained_layout",
+        "bench.native.patch"
+      ],
       "bench.native.layout": ["run bench/native_layout_bench.exs"],
+      "bench.native.retained_layout": ["run bench/native_retained_layout_bench.exs"],
       "bench.native.patch": ["run bench/native_patch_bench.exs"],
       docs: ["docs.screenshots", "docs"],
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
@@ -97,6 +102,7 @@ defmodule Emerge.MixProject do
       "bench.fixtures": :dev,
       "bench.native": :dev,
       "bench.native.layout": :dev,
+      "bench.native.retained_layout": :dev,
       "bench.native.patch": :dev,
       credo: :test,
       dialyzer: :dev,
