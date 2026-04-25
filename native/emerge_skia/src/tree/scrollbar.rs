@@ -30,23 +30,28 @@ pub struct ScrollbarMetrics {
     pub scroll_range: f32,
 }
 
-fn is_axis_hovered(attrs: &Attrs, axis: ScrollbarAxis) -> bool {
+fn is_axis_hovered(hover_axis: Option<ScrollbarHoverAxis>, axis: ScrollbarAxis) -> bool {
     matches!(
-        (attrs.scrollbar_hover_axis, axis),
+        (hover_axis, axis),
         (Some(ScrollbarHoverAxis::X), ScrollbarAxis::X)
             | (Some(ScrollbarHoverAxis::Y), ScrollbarAxis::Y)
     )
 }
 
-fn thickness_for_axis(attrs: &Attrs, axis: ScrollbarAxis) -> f32 {
-    if is_axis_hovered(attrs, axis) {
+fn thickness_for_axis(hover_axis: Option<ScrollbarHoverAxis>, axis: ScrollbarAxis) -> f32 {
+    if is_axis_hovered(hover_axis, axis) {
         SCROLLBAR_THICKNESS_HOVER
     } else {
         SCROLLBAR_THICKNESS
     }
 }
 
-pub fn horizontal_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetrics> {
+pub fn horizontal_metrics(
+    frame: Frame,
+    attrs: &Attrs,
+    scroll_offset: f32,
+    hover_axis: Option<ScrollbarHoverAxis>,
+) -> Option<ScrollbarMetrics> {
     if !effective_scrollbar_x(attrs) {
         return None;
     }
@@ -57,11 +62,10 @@ pub fn horizontal_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetric
         return None;
     }
 
-    let thickness = thickness_for_axis(attrs, ScrollbarAxis::X);
+    let thickness = thickness_for_axis(hover_axis, ScrollbarAxis::X);
     let thumb_len = (viewport * viewport / content)
         .max(SCROLLBAR_MIN_LENGTH)
         .min(viewport);
-    let scroll_offset = attrs.scroll_x.unwrap_or(0.0) as f32;
     let scroll_range = (content - viewport).max(0.0);
     let ratio = if scroll_range > 0.0 {
         (scroll_offset / scroll_range).clamp(0.0, 1.0)
@@ -90,7 +94,12 @@ pub fn horizontal_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetric
     })
 }
 
-pub fn vertical_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetrics> {
+pub fn vertical_metrics(
+    frame: Frame,
+    attrs: &Attrs,
+    scroll_offset: f32,
+    hover_axis: Option<ScrollbarHoverAxis>,
+) -> Option<ScrollbarMetrics> {
     if !effective_scrollbar_y(attrs) {
         return None;
     }
@@ -101,11 +110,10 @@ pub fn vertical_metrics(frame: Frame, attrs: &Attrs) -> Option<ScrollbarMetrics>
         return None;
     }
 
-    let thickness = thickness_for_axis(attrs, ScrollbarAxis::Y);
+    let thickness = thickness_for_axis(hover_axis, ScrollbarAxis::Y);
     let thumb_len = (viewport * viewport / content)
         .max(SCROLLBAR_MIN_LENGTH)
         .min(viewport);
-    let scroll_offset = attrs.scroll_y.unwrap_or(0.0) as f32;
     let scroll_range = (content - viewport).max(0.0);
     let ratio = if scroll_range > 0.0 {
         (scroll_offset / scroll_range).clamp(0.0, 1.0)
@@ -156,13 +164,18 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(50.0);
 
-        let base = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs).unwrap();
+        let base = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs, 50.0, None).unwrap();
         assert_eq!(base.track_width, 5.0);
         assert_eq!(base.thumb_width, 5.0);
         assert_eq!(base.track_x, 95.0);
 
-        attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
-        let hover = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs).unwrap();
+        let hover = vertical_metrics(
+            frame(100.0, 50.0, 100.0, 150.0),
+            &attrs,
+            50.0,
+            Some(ScrollbarHoverAxis::Y),
+        )
+        .unwrap();
         assert_eq!(hover.track_width, 7.0);
         assert_eq!(hover.thumb_width, 7.0);
         assert_eq!(hover.track_x, 93.0);
@@ -174,13 +187,18 @@ mod tests {
         attrs.scrollbar_x = Some(true);
         attrs.scroll_x = Some(30.0);
 
-        let base = horizontal_metrics(frame(80.0, 40.0, 160.0, 40.0), &attrs).unwrap();
+        let base = horizontal_metrics(frame(80.0, 40.0, 160.0, 40.0), &attrs, 30.0, None).unwrap();
         assert_eq!(base.track_height, 5.0);
         assert_eq!(base.thumb_height, 5.0);
         assert_eq!(base.track_y, 35.0);
 
-        attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
-        let hover = horizontal_metrics(frame(80.0, 40.0, 160.0, 40.0), &attrs).unwrap();
+        let hover = horizontal_metrics(
+            frame(80.0, 40.0, 160.0, 40.0),
+            &attrs,
+            30.0,
+            Some(ScrollbarHoverAxis::X),
+        )
+        .unwrap();
         assert_eq!(hover.track_height, 7.0);
         assert_eq!(hover.thumb_height, 7.0);
         assert_eq!(hover.track_y, 33.0);
@@ -191,7 +209,8 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_y = Some(true);
 
-        let metrics = vertical_metrics(frame(100.0, 50.0, 100.0, 5000.0), &attrs).unwrap();
+        let metrics =
+            vertical_metrics(frame(100.0, 50.0, 100.0, 5000.0), &attrs, 0.0, None).unwrap();
         assert_eq!(metrics.thumb_len, SCROLLBAR_MIN_LENGTH);
     }
 
@@ -201,11 +220,10 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(9999.0);
 
-        let max = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs).unwrap();
+        let max = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs, 9999.0, None).unwrap();
         assert!((max.thumb_start - 26.0).abs() < 0.001);
 
-        attrs.scroll_y = Some(-123.0);
-        let min = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs).unwrap();
+        let min = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs, -123.0, None).unwrap();
         assert!((min.thumb_start - 0.0).abs() < 0.001);
     }
 }

@@ -8,7 +8,6 @@ use crate::tree::attrs::{
 use crate::tree::element::Frame;
 use crate::tree::geometry::{ClipShape, Rect, self_shape as geometry_self_shape};
 use crate::tree::scene::ResolvedNodeState;
-use crate::tree::scrollbar;
 
 pub(super) const SCROLLBAR_COLOR: u32 = 0xD0D5DC99;
 
@@ -204,11 +203,9 @@ pub(super) fn collect_scrollbar_nodes(
     attrs: &Attrs,
 ) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
+    let _ = (frame, attrs);
 
-    if let Some(metrics) = scene_state
-        .and_then(|state| state.scrollbar_y)
-        .or_else(|| scrollbar::vertical_metrics(frame, attrs))
-    {
+    if let Some(metrics) = scene_state.and_then(|state| state.scrollbar_y) {
         nodes.push(RenderNode::Primitive(DrawPrimitive::RoundedRect(
             metrics.thumb_x,
             metrics.thumb_y,
@@ -219,10 +216,7 @@ pub(super) fn collect_scrollbar_nodes(
         )));
     }
 
-    if let Some(metrics) = scene_state
-        .and_then(|state| state.scrollbar_x)
-        .or_else(|| scrollbar::horizontal_metrics(frame, attrs))
-    {
+    if let Some(metrics) = scene_state.and_then(|state| state.scrollbar_x) {
         nodes.push(RenderNode::Primitive(DrawPrimitive::RoundedRect(
             metrics.thumb_x,
             metrics.thumb_y,

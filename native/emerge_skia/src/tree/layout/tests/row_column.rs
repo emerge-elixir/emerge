@@ -33,7 +33,7 @@ fn test_row_paint_children_follow_layout_order_not_source_order() {
     let center = Element::with_attrs(center_id.clone(), ElementKind::El, Vec::new(), center_attrs);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(right);
     tree.insert(center);
@@ -66,7 +66,7 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
     };
 
     let mut tree = ElementTree::new();
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child(first_id.clone()));
     tree.insert(child(second_id.clone()));
@@ -629,7 +629,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     tree.insert(body);
 
     root.children = vec![header_id, body_id, footer_id];
-    tree.root = Some(root.id.clone());
+    tree.set_root_id(root.id);
     tree.insert(root);
     tree.insert(header);
     tree.insert(menu);
@@ -676,7 +676,7 @@ fn test_layout_row_weighted_fill_with_content_parent() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -688,8 +688,8 @@ fn test_layout_row_weighted_fill_with_content_parent() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.width, 32.0); // 4 chars * 8px
     assert_eq!(c2_frame.width, 16.0); // 2 chars * 8px
@@ -725,7 +725,7 @@ fn test_layout_column_weighted_fill_with_content_parent() {
     let c2_id = child2.id.clone();
 
     col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -737,8 +737,8 @@ fn test_layout_column_weighted_fill_with_content_parent() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.height, 12.0);
     assert_eq!(c2_frame.height, 14.0);
@@ -772,7 +772,7 @@ fn test_layout_row_spacing_xy_uses_horizontal() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id);
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -784,8 +784,8 @@ fn test_layout_row_spacing_xy_uses_horizontal() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.x, 0.0);
     assert_eq!(c2_frame.x, 22.0); // 10 + spacing_x 12
@@ -819,7 +819,7 @@ fn test_layout_column_spacing_xy_uses_vertical() {
     let c2_id = child2.id.clone();
 
     col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(col_id);
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -831,8 +831,8 @@ fn test_layout_column_spacing_xy_uses_vertical() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.y, 0.0);
     assert_eq!(c2_frame.y, 24.0); // 10 + spacing_y 14
@@ -866,7 +866,7 @@ fn test_layout_text_column_stacks_like_column() {
     let c2_id = child2.id.clone();
 
     text_col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(text_col_id.clone());
+    tree.set_root_id(text_col_id.clone());
     tree.insert(text_col);
     tree.insert(child1);
     tree.insert(child2);
@@ -878,9 +878,9 @@ fn test_layout_text_column_stacks_like_column() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let text_col_frame = tree.get(&text_col_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let text_col_frame = tree.get(&text_col_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.y, 0.0);
     assert_eq!(c2_frame.y, 32.0); // 20 + spacing 12
@@ -916,7 +916,7 @@ fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id);
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -928,8 +928,8 @@ fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.y, 0.0);
     assert_eq!(c2_frame.y, 17.0); // 10 + spacing_y 7
@@ -971,7 +971,7 @@ fn test_layout_row_space_evenly_distribution() {
     let c3_id = child3.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(row_id);
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -984,9 +984,9 @@ fn test_layout_row_space_evenly_distribution() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.x, 0.0);
     assert_eq!(c2_frame.x, 90.0);
@@ -1029,7 +1029,7 @@ fn test_layout_column_space_evenly_distribution() {
     let c3_id = child3.id.clone();
 
     col.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(col_id);
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -1042,9 +1042,9 @@ fn test_layout_column_space_evenly_distribution() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.y, 0.0);
     assert_eq!(c2_frame.y, 90.0);
@@ -1079,7 +1079,7 @@ fn test_layout_row_space_evenly_ignored_for_content_parent() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id);
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1091,8 +1091,8 @@ fn test_layout_row_space_evenly_ignored_for_content_parent() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.x, 0.0);
     assert_eq!(c2_frame.x, 20.0);
@@ -1125,7 +1125,7 @@ fn test_layout_row() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1137,8 +1137,8 @@ fn test_layout_row() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.x, 0.0);
     assert_eq!(c2_frame.x, 60.0); // 50 + 10 spacing
@@ -1183,7 +1183,7 @@ fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
     let c3_id = child3.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1196,10 +1196,10 @@ fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(row_frame.width, 150.0);
     assert_eq!(row_frame.height, 40.0);
@@ -1239,7 +1239,7 @@ fn test_layout_column_fill() {
     let c2_id = child2.id.clone();
 
     col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -1251,8 +1251,8 @@ fn test_layout_column_fill() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     // Both children should split the 100px height equally
     assert_eq!(c1_frame.height, 50.0);
@@ -1289,7 +1289,7 @@ fn test_layout_row_with_max_width_child() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1301,8 +1301,8 @@ fn test_layout_row_with_max_width_child() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     // Both children are fill, so they split 400px = 200px each
     // But c2 has max(100), so it gets clamped to 100px
@@ -1355,7 +1355,7 @@ fn test_wrapped_row_height_with_wrapping() {
     let c3_id = child3.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1369,15 +1369,15 @@ fn test_wrapped_row_height_with_wrapping() {
     );
 
     // Check wrapped row height
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     // With 100px width, children wrap: each on its own line
     // 3 lines * 30px height + 2 * 10px spacing = 110px
     assert_eq!(row_frame.height, 110.0);
 
     // Check child positions
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     // All children should be at x=0 (each on its own line)
     assert_eq!(c1_frame.x, 0.0);
@@ -1421,7 +1421,7 @@ fn test_wrapped_row_two_items_per_line() {
     let row_id = row.id.clone();
     row.children = child_ids.clone();
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     for child in children {
         tree.insert(child);
@@ -1435,16 +1435,16 @@ fn test_wrapped_row_two_items_per_line() {
     );
 
     // Check wrapped row height: 2 lines * 30px + 1 * 10px spacing = 70px
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 70.0);
 
     // Check child positions
     // Line 1: c0 at x=0, c1 at x=60
     // Line 2: c2 at x=0, c3 at x=60
-    let c0_frame = tree.get(&child_ids[0]).unwrap().frame.unwrap();
-    let c1_frame = tree.get(&child_ids[1]).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&child_ids[2]).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&child_ids[3]).unwrap().frame.unwrap();
+    let c0_frame = tree.get(&child_ids[0]).unwrap().layout.frame.unwrap();
+    let c1_frame = tree.get(&child_ids[1]).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&child_ids[2]).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&child_ids[3]).unwrap().layout.frame.unwrap();
 
     assert_eq!(c0_frame.x, 0.0);
     assert_eq!(c0_frame.y, 0.0);
@@ -1518,7 +1518,7 @@ fn test_column_with_wrapped_row_pushes_siblings() {
     wrapped_row.children = vec![chip1_id.clone(), chip2_id.clone(), chip3_id.clone()];
     col.children = vec![row_id.clone(), below_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(wrapped_row);
     tree.insert(chip1);
@@ -1534,18 +1534,18 @@ fn test_column_with_wrapped_row_pushes_siblings() {
     );
 
     // Check wrapped_row height (3 lines * 30px + 2 * 10px spacing = 110px)
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 110.0);
     assert_eq!(row_frame.y, 0.0);
 
     // Check that the element below is positioned after the wrapped_row
     // y = wrapped_row.height (110) + spacing (10) = 120
-    let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+    let below_frame = tree.get(&below_id).unwrap().layout.frame.unwrap();
     assert_eq!(below_frame.y, 120.0);
     assert_eq!(below_frame.height, 40.0);
 
     // Column should encompass both children
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
     // Total: 110 (wrapped_row) + 10 (spacing) + 40 (below) = 160
     assert_eq!(col_frame.height, 160.0);
 }
@@ -1603,7 +1603,7 @@ fn test_wrapped_row_inside_fill_chain_wraps_cards() {
     column.children = vec![wrapper_id.clone()];
     root.children = vec![column_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(column);
     tree.insert(wrapper);
@@ -1619,16 +1619,16 @@ fn test_wrapped_row_inside_fill_chain_wraps_cards() {
         &MockTextMeasurer,
     );
 
-    let wrapper_frame = tree.get(&wrapper_id).unwrap().frame.unwrap();
+    let wrapper_frame = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
     assert_eq!(wrapper_frame.width, 840.0);
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.width, 840.0);
     assert_eq!(row_frame.height, 252.0);
 
-    let first = tree.get(&card_ids[0]).unwrap().frame.unwrap();
-    let second = tree.get(&card_ids[1]).unwrap().frame.unwrap();
-    let third = tree.get(&card_ids[2]).unwrap().frame.unwrap();
+    let first = tree.get(&card_ids[0]).unwrap().layout.frame.unwrap();
+    let second = tree.get(&card_ids[1]).unwrap().layout.frame.unwrap();
+    let third = tree.get(&card_ids[2]).unwrap().layout.frame.unwrap();
 
     assert_eq!(first.x, 0.0);
     assert_eq!(second.x, 312.0);
@@ -1665,7 +1665,7 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
     let card_ids: Vec<_> = cards.iter().map(|card| card.id.clone()).collect();
 
     wrapped_row.children = card_ids.clone();
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(wrapped_row);
     for card in cards {
         tree.insert(card);
@@ -1678,13 +1678,13 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 130.0);
 
-    let first = tree.get(&card_ids[0]).unwrap().frame.unwrap();
-    let second = tree.get(&card_ids[1]).unwrap().frame.unwrap();
-    let third = tree.get(&card_ids[2]).unwrap().frame.unwrap();
-    let fourth = tree.get(&card_ids[3]).unwrap().frame.unwrap();
+    let first = tree.get(&card_ids[0]).unwrap().layout.frame.unwrap();
+    let second = tree.get(&card_ids[1]).unwrap().layout.frame.unwrap();
+    let third = tree.get(&card_ids[2]).unwrap().layout.frame.unwrap();
+    let fourth = tree.get(&card_ids[3]).unwrap().layout.frame.unwrap();
 
     assert_eq!(first.x, 0.0);
     assert_eq!(second.x, 128.0);
@@ -1756,7 +1756,7 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
 
     let isolated_card_id = isolated_card.id.clone();
 
-    isolated_tree.root = Some(isolated_card_id.clone());
+    isolated_tree.set_root_id(isolated_card_id.clone());
     isolated_tree.insert(isolated_card);
     isolated_tree.insert(isolated_label);
     isolated_tree.insert(isolated_box);
@@ -1773,6 +1773,7 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
     let expected_card_height = isolated_tree
         .get(&isolated_card_id)
         .unwrap()
+        .layout
         .frame
         .unwrap()
         .height;
@@ -1828,7 +1829,7 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
     wrapped_row.children = vec![card_a_id.clone(), card_b_id.clone()];
     column.children = vec![row_id.clone(), below_id.clone()];
 
-    tree.root = Some(root_id);
+    tree.set_root_id(root_id);
     tree.insert(column);
     tree.insert(wrapped_row);
     tree.insert(card_a);
@@ -1850,10 +1851,10 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
-    let card_a_frame = tree.get(&card_a_id).unwrap().frame.unwrap();
-    let card_b_frame = tree.get(&card_b_id).unwrap().frame.unwrap();
-    let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
+    let card_a_frame = tree.get(&card_a_id).unwrap().layout.frame.unwrap();
+    let card_b_frame = tree.get(&card_b_id).unwrap().layout.frame.unwrap();
+    let below_frame = tree.get(&below_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(card_a_frame.height, expected_card_height);
     assert_eq!(card_b_frame.height, expected_card_height);
@@ -1899,7 +1900,7 @@ fn test_row_weighted_fill_subtracts_decorated_fixed_outer_width() {
 
     row.children = vec![fixed_id.clone(), fill_a_id.clone(), fill_b_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(fixed);
     tree.insert(fill_a);
@@ -1912,9 +1913,9 @@ fn test_row_weighted_fill_subtracts_decorated_fixed_outer_width() {
         &MockTextMeasurer,
     );
 
-    let fixed_frame = tree.get(&fixed_id).unwrap().frame.unwrap();
-    let fill_a_frame = tree.get(&fill_a_id).unwrap().frame.unwrap();
-    let fill_b_frame = tree.get(&fill_b_id).unwrap().frame.unwrap();
+    let fixed_frame = tree.get(&fixed_id).unwrap().layout.frame.unwrap();
+    let fill_a_frame = tree.get(&fill_a_id).unwrap().layout.frame.unwrap();
+    let fill_b_frame = tree.get(&fill_b_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(fixed_frame.x, 0.0);
     assert_eq!(fill_a_frame.x, 100.0);
@@ -1934,12 +1935,32 @@ fn test_exact_demo_assets_tree_wraps_cards_at_fresh_narrow_width() {
         &MockTextMeasurer,
     );
 
-    let weather_row_frame = tree.get(&ids.weather_row_id).unwrap().frame.unwrap();
-    let weather_first = tree.get(&ids.weather_card_ids[0]).unwrap().frame.unwrap();
-    let weather_last = tree.get(&ids.weather_card_ids[6]).unwrap().frame.unwrap();
-    let svg_row_frame = tree.get(&ids.svg_row_id).unwrap().frame.unwrap();
-    let svg_first = tree.get(&ids.svg_card_ids[0]).unwrap().frame.unwrap();
-    let svg_last = tree.get(&ids.svg_card_ids[2]).unwrap().frame.unwrap();
+    let weather_row_frame = tree.get(&ids.weather_row_id).unwrap().layout.frame.unwrap();
+    let weather_first = tree
+        .get(&ids.weather_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_last = tree
+        .get(&ids.weather_card_ids[6])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_row_frame = tree.get(&ids.svg_row_id).unwrap().layout.frame.unwrap();
+    let svg_first = tree
+        .get(&ids.svg_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_last = tree
+        .get(&ids.svg_card_ids[2])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
 
     assert!(
         weather_row_frame.width < 700.0,
@@ -1976,10 +1997,30 @@ fn test_exact_demo_assets_tree_wraps_after_wide_to_narrow_relayout() {
         &MockTextMeasurer,
     );
 
-    let weather_first_wide = tree.get(&ids.weather_card_ids[0]).unwrap().frame.unwrap();
-    let weather_last_wide = tree.get(&ids.weather_card_ids[6]).unwrap().frame.unwrap();
-    let svg_first_wide = tree.get(&ids.svg_card_ids[0]).unwrap().frame.unwrap();
-    let svg_last_wide = tree.get(&ids.svg_card_ids[2]).unwrap().frame.unwrap();
+    let weather_first_wide = tree
+        .get(&ids.weather_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_last_wide = tree
+        .get(&ids.weather_card_ids[6])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_first_wide = tree
+        .get(&ids.svg_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_last_wide = tree
+        .get(&ids.svg_card_ids[2])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
 
     assert_eq!(weather_last_wide.y, weather_first_wide.y);
     assert_eq!(svg_last_wide.y, svg_first_wide.y);
@@ -1991,10 +2032,30 @@ fn test_exact_demo_assets_tree_wraps_after_wide_to_narrow_relayout() {
         &MockTextMeasurer,
     );
 
-    let weather_first_narrow = tree.get(&ids.weather_card_ids[0]).unwrap().frame.unwrap();
-    let weather_last_narrow = tree.get(&ids.weather_card_ids[6]).unwrap().frame.unwrap();
-    let svg_first_narrow = tree.get(&ids.svg_card_ids[0]).unwrap().frame.unwrap();
-    let svg_last_narrow = tree.get(&ids.svg_card_ids[2]).unwrap().frame.unwrap();
+    let weather_first_narrow = tree
+        .get(&ids.weather_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_last_narrow = tree
+        .get(&ids.weather_card_ids[6])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_first_narrow = tree
+        .get(&ids.svg_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_last_narrow = tree
+        .get(&ids.svg_card_ids[2])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
 
     assert!(
         weather_last_narrow.y > weather_first_narrow.y,
@@ -2165,7 +2226,7 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
     body.children = vec![menu_id.clone(), content_panel_id.clone()];
     root.children = vec![header_id.clone(), body_id.clone(), footer_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(header);
     tree.insert(body);
@@ -2202,13 +2263,18 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
         &MockTextMeasurer,
     );
 
-    let content_panel_frame = tree.get(&content_panel_id).unwrap().frame.unwrap();
-    let page_frame = tree.get(&page_id).unwrap().frame.unwrap();
-    let weather_widget_frame = tree.get(&weather_widget_id).unwrap().frame.unwrap();
-    let weather_shell_frame = tree.get(&weather_shell_id).unwrap().frame.unwrap();
-    let weather_row_frame = tree.get(&weather_row_id).unwrap().frame.unwrap();
-    let centered_wrapper_frame = tree.get(&centered_wrapper_id).unwrap().frame.unwrap();
-    let svg_row_frame = tree.get(&svg_row_id).unwrap().frame.unwrap();
+    let content_panel_frame = tree.get(&content_panel_id).unwrap().layout.frame.unwrap();
+    let page_frame = tree.get(&page_id).unwrap().layout.frame.unwrap();
+    let weather_widget_frame = tree.get(&weather_widget_id).unwrap().layout.frame.unwrap();
+    let weather_shell_frame = tree.get(&weather_shell_id).unwrap().layout.frame.unwrap();
+    let weather_row_frame = tree.get(&weather_row_id).unwrap().layout.frame.unwrap();
+    let centered_wrapper_frame = tree
+        .get(&centered_wrapper_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let svg_row_frame = tree.get(&svg_row_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(content_panel_frame.width, 748.0);
     assert_eq!(page_frame.width, 716.0);
@@ -2218,10 +2284,30 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
     assert_eq!(centered_wrapper_frame.width, 716.0);
     assert_eq!(svg_row_frame.width, 716.0);
 
-    let weather_card_0 = tree.get(&weather_card_ids[0]).unwrap().frame.unwrap();
-    let weather_card_4 = tree.get(&weather_card_ids[4]).unwrap().frame.unwrap();
-    let weather_card_5 = tree.get(&weather_card_ids[5]).unwrap().frame.unwrap();
-    let weather_card_6 = tree.get(&weather_card_ids[6]).unwrap().frame.unwrap();
+    let weather_card_0 = tree
+        .get(&weather_card_ids[0])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_card_4 = tree
+        .get(&weather_card_ids[4])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_card_5 = tree
+        .get(&weather_card_ids[5])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let weather_card_6 = tree
+        .get(&weather_card_ids[6])
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
 
     assert_eq!(weather_card_0.x, weather_row_frame.x);
     assert_eq!(weather_card_4.x, weather_row_frame.x + 4.0 * 128.0);
@@ -2230,9 +2316,9 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
     assert_eq!(weather_card_6.x, weather_row_frame.x + 128.0);
     assert_eq!(weather_card_6.y, weather_card_0.y + 70.0);
 
-    let svg_card_0 = tree.get(&svg_card_ids[0]).unwrap().frame.unwrap();
-    let svg_card_1 = tree.get(&svg_card_ids[1]).unwrap().frame.unwrap();
-    let svg_card_2 = tree.get(&svg_card_ids[2]).unwrap().frame.unwrap();
+    let svg_card_0 = tree.get(&svg_card_ids[0]).unwrap().layout.frame.unwrap();
+    let svg_card_1 = tree.get(&svg_card_ids[1]).unwrap().layout.frame.unwrap();
+    let svg_card_2 = tree.get(&svg_card_ids[2]).unwrap().layout.frame.unwrap();
 
     assert_eq!(svg_card_0.x, centered_wrapper_frame.x);
     assert_eq!(svg_card_1.x, centered_wrapper_frame.x + 312.0);
@@ -2283,7 +2369,7 @@ fn test_content_height_column_repositions_bottom_aligned_child_after_expansion()
     row.children = vec![para_id.clone()];
     col.children = vec![row_id.clone(), bottom_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2297,14 +2383,14 @@ fn test_content_height_column_repositions_bottom_aligned_child_after_expansion()
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 40.0);
 
-    let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+    let bottom_frame = tree.get(&bottom_id).unwrap().layout.frame.unwrap();
     // Bottom child should render below expanded top content.
     assert_eq!(bottom_frame.y, 40.0);
 
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
     assert_eq!(col_frame.height, 50.0);
 }
 
@@ -2350,7 +2436,7 @@ fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
     row.children = vec![para_id.clone()];
     col.children = vec![row_id.clone(), bottom_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2364,14 +2450,14 @@ fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 40.0);
 
-    let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+    let bottom_frame = tree.get(&bottom_id).unwrap().layout.frame.unwrap();
     // Bottom child should appear after top content + column spacing.
     assert_eq!(bottom_frame.y, 56.0);
 
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
     // 40 (top) + 16 (zone spacing) + 10 (bottom)
     assert_eq!(col_frame.height, 66.0);
 }
@@ -2412,7 +2498,7 @@ fn test_row_expands_height_when_child_paragraph_wraps() {
     row.children = vec![para_id.clone()];
     col.children = vec![row_id.clone(), below_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2426,11 +2512,11 @@ fn test_row_expands_height_when_child_paragraph_wraps() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     // Row should match wrapped paragraph: 2 lines * 16px = 32px
     assert_eq!(row_frame.height, 32.0);
 
-    let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+    let below_frame = tree.get(&below_id).unwrap().layout.frame.unwrap();
     // below y = row height (32) + spacing (10)
     assert_eq!(below_frame.y, 42.0);
 }
@@ -2481,7 +2567,7 @@ fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
     row.children = vec![para_id.clone()];
     col.children = vec![top_id.clone(), row_id.clone(), footer_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(top);
     tree.insert(row);
@@ -2496,12 +2582,12 @@ fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     // Column allocates: 40 - top(8) - footer(8) - 2 spacings(8) = 16
     // Fill-height row should remain constrained to its allocated slot.
     assert_eq!(row_frame.height, 16.0);
 
-    let footer_frame = tree.get(&footer_id).unwrap().frame.unwrap();
+    let footer_frame = tree.get(&footer_id).unwrap().layout.frame.unwrap();
     // footer y = top(8) + spacing(4) + row(16) + spacing(4) = 32
     assert_eq!(footer_frame.y, 32.0);
 }
@@ -2544,7 +2630,7 @@ fn test_row_weighted_fill_distribution() {
     let c3_id = child3.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2557,9 +2643,9 @@ fn test_row_weighted_fill_distribution() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     // Total portions = 1 + 2 + 3 = 6
     // c1: 300 * 1/6 = 50
@@ -2613,7 +2699,7 @@ fn test_row_weighted_fill_with_fixed() {
     let c3_id = child3.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2626,9 +2712,9 @@ fn test_row_weighted_fill_with_fixed() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     // Remaining = 400 - 100 = 300
     // c1: 100px fixed
@@ -2677,7 +2763,7 @@ fn test_column_weighted_fill_distribution() {
     let c3_id = child3.id.clone();
 
     col.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -2690,9 +2776,9 @@ fn test_column_weighted_fill_distribution() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
-    let c3_frame = tree.get(&c3_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
+    let c3_frame = tree.get(&c3_id).unwrap().layout.frame.unwrap();
 
     // Total portions = 1 + 2 + 3 = 6
     // c1: 300 * 1/6 = 50
@@ -2741,7 +2827,7 @@ fn test_fill_and_weighted_fill_mixed() {
     let c2_id = child2.id.clone();
 
     row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2753,8 +2839,8 @@ fn test_fill_and_weighted_fill_mixed() {
         &MockTextMeasurer,
     );
 
-    let c1_frame = tree.get(&c1_id).unwrap().frame.unwrap();
-    let c2_frame = tree.get(&c2_id).unwrap().frame.unwrap();
+    let c1_frame = tree.get(&c1_id).unwrap().layout.frame.unwrap();
+    let c2_frame = tree.get(&c2_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(c1_frame.width, 100.0);
     assert_eq!(c2_frame.width, 300.0);
@@ -2805,7 +2891,7 @@ fn test_row_self_alignment_zones() {
 
     row.children = vec![left_id.clone(), center_id.clone(), right_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(left_child);
     tree.insert(center_child);
@@ -2818,9 +2904,9 @@ fn test_row_self_alignment_zones() {
         &MockTextMeasurer,
     );
 
-    let left_frame = tree.get(&left_id).unwrap().frame.unwrap();
-    let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
-    let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+    let left_frame = tree.get(&left_id).unwrap().layout.frame.unwrap();
+    let center_frame = tree.get(&center_id).unwrap().layout.frame.unwrap();
+    let right_frame = tree.get(&right_id).unwrap().layout.frame.unwrap();
 
     // Left child at x=0
     assert_eq!(left_frame.x, 0.0);
@@ -2865,7 +2951,7 @@ fn test_wrapped_row_center_alignment_on_wrapped_line() {
 
     row.children = vec![wide_id.clone(), centered_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(centered_child);
@@ -2877,11 +2963,11 @@ fn test_wrapped_row_center_alignment_on_wrapped_line() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 70.0);
 
-    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
-    let centered_frame = tree.get(&centered_id).unwrap().frame.unwrap();
+    let wide_frame = tree.get(&wide_id).unwrap().layout.frame.unwrap();
+    let centered_frame = tree.get(&centered_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(wide_frame.x, 0.0);
     assert_eq!(wide_frame.y, 0.0);
@@ -2920,7 +3006,7 @@ fn test_wrapped_row_right_alignment_on_wrapped_line() {
 
     row.children = vec![wide_id.clone(), right_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(right_child);
@@ -2932,11 +3018,11 @@ fn test_wrapped_row_right_alignment_on_wrapped_line() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 70.0);
 
-    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
-    let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+    let wide_frame = tree.get(&wide_id).unwrap().layout.frame.unwrap();
+    let right_frame = tree.get(&right_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(wide_frame.x, 0.0);
     assert_eq!(wide_frame.y, 0.0);
@@ -2998,7 +3084,7 @@ fn test_wrapped_row_mixed_alignment_zones_per_line() {
         right_id.clone(),
     ];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(left_child);
@@ -3012,13 +3098,13 @@ fn test_wrapped_row_mixed_alignment_zones_per_line() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     assert_eq!(row_frame.height, 70.0);
 
-    let wide_frame = tree.get(&wide_id).unwrap().frame.unwrap();
-    let left_frame = tree.get(&left_id).unwrap().frame.unwrap();
-    let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
-    let right_frame = tree.get(&right_id).unwrap().frame.unwrap();
+    let wide_frame = tree.get(&wide_id).unwrap().layout.frame.unwrap();
+    let left_frame = tree.get(&left_id).unwrap().layout.frame.unwrap();
+    let center_frame = tree.get(&center_id).unwrap().layout.frame.unwrap();
+    let right_frame = tree.get(&right_id).unwrap().layout.frame.unwrap();
 
     assert_eq!(wide_frame.x, 0.0);
     assert_eq!(wide_frame.y, 0.0);
@@ -3075,7 +3161,7 @@ fn test_column_self_alignment_zones() {
 
     col.children = vec![top_id.clone(), center_id.clone(), bottom_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(top_child);
     tree.insert(center_child);
@@ -3088,9 +3174,9 @@ fn test_column_self_alignment_zones() {
         &MockTextMeasurer,
     );
 
-    let top_frame = tree.get(&top_id).unwrap().frame.unwrap();
-    let center_frame = tree.get(&center_id).unwrap().frame.unwrap();
-    let bottom_frame = tree.get(&bottom_id).unwrap().frame.unwrap();
+    let top_frame = tree.get(&top_id).unwrap().layout.frame.unwrap();
+    let center_frame = tree.get(&center_id).unwrap().layout.frame.unwrap();
+    let bottom_frame = tree.get(&bottom_id).unwrap().layout.frame.unwrap();
 
     // Top child at y=0
     assert_eq!(top_frame.y, 0.0);
@@ -3141,7 +3227,7 @@ fn test_row_with_mixed_alignments_and_vertical() {
 
     row.children = vec![lt_id.clone(), rb_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(left_top);
     tree.insert(right_bottom);
@@ -3153,8 +3239,8 @@ fn test_row_with_mixed_alignments_and_vertical() {
         &MockTextMeasurer,
     );
 
-    let lt_frame = tree.get(&lt_id).unwrap().frame.unwrap();
-    let rb_frame = tree.get(&rb_id).unwrap().frame.unwrap();
+    let lt_frame = tree.get(&lt_id).unwrap().layout.frame.unwrap();
+    let rb_frame = tree.get(&rb_id).unwrap().layout.frame.unwrap();
 
     // Left-top: x=0, y=0
     assert_eq!(lt_frame.x, 0.0);
@@ -3193,7 +3279,7 @@ fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
     let plain_fill_id = plain_fill.id.clone();
     row.children = vec![min_fill_id.clone(), plain_fill_id.clone()];
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id.clone());
     tree.insert(row);
     tree.insert(min_fill);
     tree.insert(plain_fill);
@@ -3205,8 +3291,8 @@ fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
         &MockTextMeasurer,
     );
 
-    let first = tree.get(&min_fill_id).unwrap().frame.unwrap();
-    let second = tree.get(&plain_fill_id).unwrap().frame.unwrap();
+    let first = tree.get(&min_fill_id).unwrap().layout.frame.unwrap();
+    let second = tree.get(&plain_fill_id).unwrap().layout.frame.unwrap();
 
     // Base fill share is 150/150, but Minimum(180, weighted fill 1) clamps first child.
     assert_eq!(first.width, 180.0);
@@ -3242,7 +3328,7 @@ fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
     let plain_fill_id = plain_fill.id.clone();
     col.children = vec![max_fill_id.clone(), plain_fill_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(max_fill);
     tree.insert(plain_fill);
@@ -3254,8 +3340,8 @@ fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
         &MockTextMeasurer,
     );
 
-    let first = tree.get(&max_fill_id).unwrap().frame.unwrap();
-    let second = tree.get(&plain_fill_id).unwrap().frame.unwrap();
+    let first = tree.get(&max_fill_id).unwrap().layout.frame.unwrap();
+    let second = tree.get(&plain_fill_id).unwrap().layout.frame.unwrap();
 
     // Base fill share is 150/150, but Maximum(60, weighted fill 1) clamps first child.
     assert_eq!(first.height, 60.0);

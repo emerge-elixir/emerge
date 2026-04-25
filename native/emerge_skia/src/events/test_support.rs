@@ -275,10 +275,10 @@ fn source_tree_for_case(case: &AnimatedNearbyHitCase, hover_active: bool) -> Ele
         target_attrs,
     );
 
-    tree.root = Some(case.host_id.clone());
     tree.insert(host);
     tree.insert(underlying);
     tree.insert(target);
+    tree.set_root_id(case.host_id.clone());
 
     tree
 }

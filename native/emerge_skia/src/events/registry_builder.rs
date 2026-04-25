@@ -2997,7 +2997,7 @@ fn scrollbar_hover_compute_for_element(
         return None;
     }
 
-    let current_axis = match element.attrs.scrollbar_hover_axis {
+    let current_axis = match element.runtime.scrollbar_hover_axis {
         Some(crate::tree::attrs::ScrollbarHoverAxis::X) => Some(ScrollbarAxis::X),
         Some(crate::tree::attrs::ScrollbarHoverAxis::Y) => Some(ScrollbarAxis::Y),
         None => None,
@@ -4589,13 +4589,15 @@ fn live_scrollbar_nodes_for_element(
     let (scrollbar_x, scrollbar_y) = scrollbar_nodes_for_state(state);
     (
         element
-            .attrs
+            .layout
+            .effective
             .scrollbar_x
             .unwrap_or(false)
             .then_some(scrollbar_x)
             .flatten(),
         element
-            .attrs
+            .layout
+            .effective
             .scrollbar_y
             .unwrap_or(false)
             .then_some(scrollbar_y)
@@ -4604,11 +4606,11 @@ fn live_scrollbar_nodes_for_element(
 }
 
 fn focused_text_input_id(element: &Element) -> Option<NodeId> {
-    if !element.kind.is_text_input_family() {
+    if !element.spec.kind.is_text_input_family() {
         return None;
     }
 
-    let focused = element.attrs.text_input_focused.unwrap_or(false);
+    let focused = element.runtime.text_input_focused;
     if !focused {
         return None;
     }
@@ -4618,19 +4620,20 @@ fn focused_text_input_id(element: &Element) -> Option<NodeId> {
 
 fn text_input_emit_change(element: &Element) -> Option<bool> {
     element
+        .spec
         .kind
         .is_text_input_family()
-        .then_some(element.attrs.on_change.unwrap_or(false))
+        .then_some(element.layout.effective.on_change.unwrap_or(false))
 }
 
 fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
-    if element.kind.is_text_input_family() {
+    if element.spec.kind.is_text_input_family() {
         Some(CursorIcon::Text)
-    } else if element.attrs.on_click.unwrap_or(false)
-        || element.attrs.on_press.unwrap_or(false)
-        || element.attrs.on_mouse_down.unwrap_or(false)
+    } else if element.layout.effective.on_click.unwrap_or(false)
+        || element.layout.effective.on_press.unwrap_or(false)
+        || element.layout.effective.on_mouse_down.unwrap_or(false)
         || has_swipe_listener(element)
-        || element.attrs.virtual_key.is_some()
+        || element.layout.effective.virtual_key.is_some()
     {
         Some(CursorIcon::Pointer)
     } else {
@@ -4639,7 +4642,7 @@ fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
 }
 
 fn swipe_handlers_for_element(element: &Element) -> SwipeHandlers {
-    let attrs = &element.attrs;
+    let attrs = &element.layout.effective;
     SwipeHandlers {
         up: attrs.on_swipe_up.unwrap_or(false),
         down: attrs.on_swipe_down.unwrap_or(false),
@@ -4653,38 +4656,38 @@ fn has_swipe_listener(element: &Element) -> bool {
 }
 
 fn tracks_hover_inside(element: &Element) -> bool {
-    let attrs = &element.attrs;
+    let attrs = &element.layout.effective;
     attrs.mouse_over.is_some()
         || attrs.on_mouse_enter.unwrap_or(false)
         || attrs.on_mouse_leave.unwrap_or(false)
 }
 
 fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bool {
-    let attrs = &element.attrs;
+    let attrs = &element.layout.effective;
     cursor_icon_for_element(element).is_some()
         || attrs.on_mouse_move.unwrap_or(false)
         || tracks_hover_inside(element)
         || attrs.on_mouse_down.unwrap_or(false)
         || attrs.on_mouse_up.unwrap_or(false)
         || attrs.mouse_down.is_some()
-        || attrs.mouse_down_active.unwrap_or(false)
+        || element.runtime.mouse_down_active
         || is_focusable(element)
         || has_scrollbar_hover
 }
 
 fn is_focusable(element: &Element) -> bool {
-    element.attrs.virtual_key.is_none()
-        && (element.kind.is_text_input_family()
-            || element.attrs.on_press.unwrap_or(false)
-            || element.attrs.on_focus.unwrap_or(false)
-            || element.attrs.on_blur.unwrap_or(false)
-            || element.attrs.on_key_down.is_some()
-            || element.attrs.on_key_up.is_some()
-            || element.attrs.on_key_press.is_some())
+    element.layout.effective.virtual_key.is_none()
+        && (element.spec.kind.is_text_input_family()
+            || element.layout.effective.on_press.unwrap_or(false)
+            || element.layout.effective.on_focus.unwrap_or(false)
+            || element.layout.effective.on_blur.unwrap_or(false)
+            || element.layout.effective.on_key_down.is_some()
+            || element.layout.effective.on_key_up.is_some()
+            || element.layout.effective.on_key_press.is_some())
 }
 
 fn padding_sides(element: &Element) -> (f32, f32, f32, f32) {
-    match element.attrs.padding.as_ref() {
+    match element.layout.effective.padding.as_ref() {
         Some(crate::tree::attrs::Padding::Uniform(v)) => {
             (*v as f32, *v as f32, *v as f32, *v as f32)
         }
@@ -4802,7 +4805,7 @@ fn emit_element_listeners_with_focus_meta(
 ) {
     // Reordering these emissions changes per-element precedence. This function
     // is the element-side precedence table in code form.
-    if element.kind.is_text_input_family() {
+    if element.spec.kind.is_text_input_family() {
         emit_key_binding_listeners_for_element(element, out);
     }
     out.emit_all(
@@ -4814,7 +4817,7 @@ fn emit_element_listeners_with_focus_meta(
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
-    if !element.kind.is_text_input_family() {
+    if !element.spec.kind.is_text_input_family() {
         emit_key_binding_listeners_for_element(element, out);
     }
     out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
@@ -4954,15 +4957,15 @@ fn consider_focus_on_mount_candidate(
     element: &Element,
     focus_meta: &ElementFocusMeta,
 ) {
-    if !element.attrs.focus_on_mount.unwrap_or(false)
+    if !element.layout.effective.focus_on_mount.unwrap_or(false)
         || acc.current_revision == 0
-        || element.mounted_at_revision != acc.current_revision
+        || element.lifecycle.mounted_at_revision != acc.current_revision
     {
         return;
     }
 
     let should_replace = match acc.focus_on_mount.as_ref() {
-        Some(current) => element.mounted_at_revision > current.mounted_at_revision,
+        Some(current) => element.lifecycle.mounted_at_revision > current.mounted_at_revision,
         None => true,
     };
 
@@ -4970,7 +4973,7 @@ fn consider_focus_on_mount_candidate(
         acc.focus_on_mount = Some(FocusOnMountTarget {
             element_id: element.id.clone(),
             reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
-            mounted_at_revision: element.mounted_at_revision,
+            mounted_at_revision: element.lifecycle.mounted_at_revision,
         });
     }
 }
@@ -4986,7 +4989,7 @@ fn local_focus_meta_for_element(
     };
 
     let self_rect = Rect::from_frame(state.adjusted_frame);
-    if let Some(frame) = element.frame {
+    if let Some(_frame) = element.layout.frame {
         let (left, top, right, bottom) = padding_sides(element);
         let content_rect = Rect {
             x: self_rect.x + left,
@@ -4995,33 +4998,25 @@ fn local_focus_meta_for_element(
             height: (self_rect.height - top - bottom).max(0.0),
         };
 
-        let scroll_x_enabled = element.attrs.scrollbar_x.unwrap_or(false);
-        let scroll_y_enabled = element.attrs.scrollbar_y.unwrap_or(false);
+        let scroll_x_enabled = element.layout.effective.scrollbar_x.unwrap_or(false);
+        let scroll_y_enabled = element.layout.effective.scrollbar_y.unwrap_or(false);
         let max_x = if scroll_x_enabled {
-            element
-                .attrs
-                .scroll_x_max
-                .unwrap_or((frame.content_width - frame.width).max(0.0) as f64) as f32
+            element.layout.scroll_x_max.max(0.0)
         } else {
             0.0
-        }
-        .max(0.0);
+        };
         let max_y = if scroll_y_enabled {
-            element
-                .attrs
-                .scroll_y_max
-                .unwrap_or((frame.content_height - frame.height).max(0.0) as f64) as f32
+            element.layout.scroll_y_max.max(0.0)
         } else {
             0.0
-        }
-        .max(0.0);
+        };
         let current_scroll_x = if scroll_x_enabled {
-            (element.attrs.scroll_x.unwrap_or(0.0) as f32).clamp(0.0, max_x)
+            element.layout.scroll_x.clamp(0.0, max_x)
         } else {
             0.0
         };
         let current_scroll_y = if scroll_y_enabled {
-            (element.attrs.scroll_y.unwrap_or(0.0) as f32).clamp(0.0, max_y)
+            element.layout.scroll_y.clamp(0.0, max_y)
         } else {
             0.0
         };
@@ -5039,7 +5034,7 @@ fn local_focus_meta_for_element(
     }
 
     let focus_meta = is_focusable(element).then(|| ElementFocusMeta {
-        is_currently_focused: element.attrs.focused_active.unwrap_or(false),
+        is_currently_focused: element.runtime.focused_active,
         self_reveal_scrolls: focus_reveal_scrolls_for_contexts(
             &element.id,
             self_rect,
@@ -5057,7 +5052,7 @@ pub(crate) fn accumulate_element_rebuild(
     state: Option<&ResolvedNodeState>,
     scroll_contexts: &[ScrollContext],
 ) -> Vec<ScrollContext> {
-    if acc.focused_id.is_none() && element.attrs.focused_active.unwrap_or(false) {
+    if acc.focused_id.is_none() && element.runtime.focused_active {
         acc.focused_id = Some(element.id.clone());
     }
 
@@ -5089,7 +5084,7 @@ pub(crate) fn accumulate_element_rebuild(
             );
         }
 
-        if element.kind.is_text_input_family() {
+        if element.spec.kind.is_text_input_family() {
             let previous = acc.text_inputs.insert(
                 element.id.clone(),
                 super::text_input_state(element, adjusted_rect, state.interaction_inverse),
@@ -5224,10 +5219,10 @@ pub(crate) fn accumulate_subtree_rebuild(
 pub(crate) fn build_registry_rebuild(tree: &ElementTree) -> RegistryRebuildPayload {
     let mut acc = RegistryBuildAcc::for_tree(tree);
 
-    if let Some(root) = tree.root.as_ref() {
+    if let Some(root) = tree.root_id() {
         accumulate_subtree_rebuild(
             tree,
-            root,
+            &root,
             &mut acc,
             &[],
             crate::tree::scene::SceneContext::default(),
@@ -5318,7 +5313,9 @@ pub fn registry_for_elements(elements: &[Element]) -> Registry {
         tree.insert(element.clone());
     }
     let root_ids = root_ids_for_elements(elements);
-    tree.root = root_ids.first().cloned();
+    if let Some(root_id) = root_ids.first().copied() {
+        tree.set_root_id(root_id);
+    }
     let mut acc = RegistryBuildAcc::for_tree(&tree);
 
     for root_id in &root_ids {
@@ -5410,14 +5407,15 @@ fn emit_key_scroll_listeners_for_element(element: &Element, out: &mut Precedence
 }
 
 fn emit_key_binding_listeners_for_element(element: &Element, out: &mut PrecedenceEmitter<'_>) {
-    if !element.attrs.focused_active.unwrap_or(false) {
+    if !element.runtime.focused_active {
         return;
     }
 
     let mut slots = Vec::new();
 
     element
-        .attrs
+        .layout
+        .effective
         .on_key_down
         .as_ref()
         .into_iter()
@@ -5448,7 +5446,8 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
         });
 
     element
-        .attrs
+        .layout
+        .effective
         .on_key_press
         .as_ref()
         .into_iter()
@@ -5465,7 +5464,8 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
         });
 
     element
-        .attrs
+        .layout
+        .effective
         .on_key_up
         .as_ref()
         .into_iter()
@@ -5566,7 +5566,7 @@ fn user_key_slot_listener(element: &Element, slot: UserKeySlot) -> Listener {
 }
 
 fn binding_arms_text_commit_suppression(element: &Element, binding: &KeyBindingSpec) -> bool {
-    if !element.kind.is_text_input_family() || (binding.mods & (MOD_CTRL | MOD_META)) != 0 {
+    if !element.spec.kind.is_text_input_family() || (binding.mods & (MOD_CTRL | MOD_META)) != 0 {
         return false;
     }
 
@@ -5623,7 +5623,7 @@ fn binding_arms_text_commit_suppression(element: &Element, binding: &KeyBindingS
             | CanonicalKey::Slash
             | CanonicalKey::Space
             | CanonicalKey::Tab
-    ) || (element.kind == ElementKind::Multiline && binding.key == CanonicalKey::Enter)
+    ) || (element.spec.kind == ElementKind::Multiline && binding.key == CanonicalKey::Enter)
 }
 
 fn slot_scrollbar_thumb_press_y(
@@ -5745,10 +5745,12 @@ fn slot_primary_left_press(
         .collect();
     let pointer_drag = click_press_tracker::left_press_drag_bootstrap(element, matcher_kind);
     let text_cursor_element_id = element
+        .spec
         .kind
         .is_text_input_family()
         .then_some(element.id.clone());
     let text_drag = element
+        .spec
         .kind
         .is_text_input_family()
         .then_some(TextDragTracker {
@@ -5851,8 +5853,7 @@ fn slot_multiline_enter_press(
     element: &Element,
     _state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    if element.kind != ElementKind::Multiline || !element.attrs.text_input_focused.unwrap_or(false)
-    {
+    if element.spec.kind != ElementKind::Multiline || !element.runtime.text_input_focused {
         return None;
     }
 
@@ -6280,7 +6281,7 @@ mod mouse_events {
 
     pub(super) fn left_press_actions(element: &Element) -> Vec<ListenerAction> {
         let element_id = element.id.clone();
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let on_mouse_down = attrs.on_mouse_down.unwrap_or(false);
         on_mouse_down
             .then(|| {
@@ -6297,7 +6298,7 @@ mod mouse_events {
 
     pub(super) fn left_release_actions(element: &Element) -> Vec<ListenerAction> {
         let element_id = element.id.clone();
-        let on_mouse_up = element.attrs.on_mouse_up.unwrap_or(false);
+        let on_mouse_up = element.layout.effective.on_mouse_up.unwrap_or(false);
 
         on_mouse_up
             .then(|| {
@@ -6314,7 +6315,7 @@ mod mouse_events {
 
     pub(super) fn cursor_pos_actions(element: &Element) -> Vec<ListenerAction> {
         let element_id = element.id.clone();
-        let on_mouse_move = element.attrs.on_mouse_move.unwrap_or(false);
+        let on_mouse_move = element.layout.effective.on_mouse_move.unwrap_or(false);
 
         on_mouse_move
             .then(|| {
@@ -6335,10 +6336,10 @@ mod hover {
     use super::*;
 
     pub(super) fn inside_actions(element: &Element) -> Vec<ListenerAction> {
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let element_id = element.id.clone();
         let has_hover_style = attrs.mouse_over.is_some();
-        let hover_active = attrs.mouse_over_active.unwrap_or(false);
+        let hover_active = element.runtime.mouse_over_active;
         let on_mouse_enter = attrs.on_mouse_enter.unwrap_or(false);
         let on_mouse_leave = attrs.on_mouse_leave.unwrap_or(false);
         let track_hover_active = has_hover_style || on_mouse_enter || on_mouse_leave;
@@ -6368,10 +6369,10 @@ mod hover {
     }
 
     pub(super) fn leave_actions(element: &Element) -> Vec<ListenerAction> {
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let element_id = element.id.clone();
         let has_hover_style = attrs.mouse_over.is_some();
-        let hover_active = attrs.mouse_over_active.unwrap_or(false);
+        let hover_active = element.runtime.mouse_over_active;
         let on_mouse_leave = attrs.on_mouse_leave.unwrap_or(false);
         let on_mouse_enter = attrs.on_mouse_enter.unwrap_or(false);
         let track_hover_active = has_hover_style || on_mouse_enter || on_mouse_leave;
@@ -6406,9 +6407,9 @@ mod mouse_down_style {
     use super::*;
 
     fn has_and_active(element: &Element) -> (bool, bool) {
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let has_mouse_down_style = attrs.mouse_down.is_some();
-        let mouse_down_active = attrs.mouse_down_active.unwrap_or(false);
+        let mouse_down_active = element.runtime.mouse_down_active;
         (has_mouse_down_style, mouse_down_active)
     }
 
@@ -6486,7 +6487,8 @@ mod virtual_key {
         region: &PointerRegion,
     ) -> Vec<ListenerAction> {
         element
-            .attrs
+            .layout
+            .effective
             .virtual_key
             .as_ref()
             .map(|spec| {
@@ -6516,7 +6518,7 @@ mod click_press_tracker {
         element: &Element,
         matcher_kind: ListenerMatcherKind,
     ) -> Vec<ListenerAction> {
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let emit_click = attrs.on_click.unwrap_or(false);
         let emit_press_pointer = attrs.on_press.unwrap_or(false);
         let element_id = element.id.clone();
@@ -6541,7 +6543,7 @@ mod click_press_tracker {
         element: &Element,
         matcher_kind: ListenerMatcherKind,
     ) -> Option<PointerDragBootstrap> {
-        let attrs = &element.attrs;
+        let attrs = &element.layout.effective;
         let swipe_handlers = swipe_handlers_for_element(element);
         (attrs.on_click.unwrap_or(false)
             || attrs.on_press.unwrap_or(false)
@@ -6560,8 +6562,8 @@ mod on_press_keyboard {
     use super::*;
 
     pub(super) fn enter_press_actions(element: &Element) -> Vec<ListenerAction> {
-        let attrs = &element.attrs;
-        let emit_press = attrs.on_press.unwrap_or(false) && attrs.focused_active.unwrap_or(false);
+        let attrs = &element.layout.effective;
+        let emit_press = attrs.on_press.unwrap_or(false) && element.runtime.focused_active;
 
         emit_press
             .then(|| {
@@ -6597,11 +6599,11 @@ mod scroll_wheel {
     use super::*;
 
     pub(super) fn scroll_directions_for_element(element: &Element) -> Vec<ScrollDirection> {
-        let attrs = &element.attrs;
-        let scroll_x = attrs.scroll_x.unwrap_or(0.0) as f32;
-        let scroll_y = attrs.scroll_y.unwrap_or(0.0) as f32;
-        let scroll_x_max = attrs.scroll_x_max.unwrap_or(0.0) as f32;
-        let scroll_y_max = attrs.scroll_y_max.unwrap_or(0.0) as f32;
+        let attrs = &element.layout.effective;
+        let scroll_x = element.layout.scroll_x;
+        let scroll_y = element.layout.scroll_y;
+        let scroll_x_max = element.layout.scroll_x_max;
+        let scroll_y_max = element.layout.scroll_y_max;
 
         [
             (attrs.scrollbar_x.unwrap_or(false) && scroll_x < scroll_x_max)
@@ -6771,7 +6773,7 @@ mod tests {
             content_width: rect.width,
             content_height: rect.height,
         };
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
         element
     }
 
@@ -6793,22 +6795,22 @@ mod tests {
             content_width: rect.width,
             content_height: rect.height,
         };
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
         element
     }
 
     fn with_frame(mut element: Element, frame: Frame) -> Element {
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
         element
     }
 
     fn rebuild_payload_for_tree(tree: &ElementTree) -> RegistryRebuildPayload {
         let mut acc = super::RegistryBuildAcc::for_tree(tree);
-        let root_id = tree.root.as_ref().expect("tree should have a root");
+        let root_id = tree.root_id().expect("tree should have a root");
 
         super::accumulate_subtree_rebuild(
             tree,
-            root_id,
+            &root_id,
             &mut acc,
             &[],
             crate::tree::scene::SceneContext::default(),
@@ -6827,7 +6829,7 @@ mod tests {
         host_attrs.width = Some(Length::Px(128.0));
         host_attrs.height = Some(Length::Px(82.0));
         let mut host = make_element(120, host_attrs);
-        host.frame = None;
+        host.layout.frame = None;
         host.nearby
             .set(NearbySlot::InFront, Some(overlay_id.clone()));
 
@@ -6855,9 +6857,9 @@ mod tests {
 
         let overlay = make_element(121, overlay_attrs);
 
-        tree.root = Some(host_id.clone());
         tree.insert(host);
         tree.insert(overlay);
+        tree.set_root_id(host_id.clone());
 
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -6911,9 +6913,9 @@ mod tests {
 
         let overlay = make_element(123, overlay_attrs);
 
-        tree.root = Some(host_id);
         tree.insert(host);
         tree.insert(overlay);
+        tree.set_root_id(host_id);
 
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -8110,16 +8112,17 @@ mod tests {
         );
 
         let mut tree = ElementTree::new();
-        tree.root = Some(root_id);
         tree.insert(root);
         tree.insert(host);
         tree.insert(sibling);
         tree.insert(overlay);
+        tree.set_root_id(root_id);
 
         let mut acc = super::RegistryBuildAcc::for_tree(&tree);
+        let root_id = tree.root_id().expect("tree should have a root");
         super::accumulate_subtree_rebuild(
             &tree,
-            tree.root.as_ref().expect("tree should have a root"),
+            &root_id,
             &mut acc,
             &[],
             crate::tree::scene::SceneContext::default(),
@@ -10108,7 +10111,7 @@ mod tests {
                 content_height: 80.0,
             },
         );
-        root.mounted_at_revision = 1;
+        root.lifecycle.mounted_at_revision = 1;
         root.children = vec![field_id.clone()];
 
         let mut field_attrs = Attrs::default();
@@ -10124,11 +10127,11 @@ mod tests {
                 content_height: 24.0,
             },
         );
-        field.mounted_at_revision = 1;
+        field.lifecycle.mounted_at_revision = 1;
 
-        tree.root = Some(root_id);
         tree.insert(root);
         tree.insert(field);
+        tree.set_root_id(root_id);
 
         let rebuild = rebuild_payload_for_tree(&tree);
 
@@ -10158,7 +10161,7 @@ mod tests {
                 content_height: 90.0,
             },
         );
-        root.mounted_at_revision = 1;
+        root.lifecycle.mounted_at_revision = 1;
         root.children = vec![existing_id.clone(), new_id.clone()];
 
         let mut existing_attrs = Attrs::default();
@@ -10174,7 +10177,7 @@ mod tests {
                 content_height: 24.0,
             },
         );
-        existing.mounted_at_revision = 1;
+        existing.lifecycle.mounted_at_revision = 1;
 
         let mut new_attrs = Attrs::default();
         new_attrs.focus_on_mount = Some(true);
@@ -10189,12 +10192,12 @@ mod tests {
                 content_height: 24.0,
             },
         );
-        new_field.mounted_at_revision = 2;
+        new_field.lifecycle.mounted_at_revision = 2;
 
-        tree.root = Some(root_id);
         tree.insert(root);
         tree.insert(existing);
         tree.insert(new_field);
+        tree.set_root_id(root_id);
 
         let rebuild = rebuild_payload_for_tree(&tree);
 
@@ -10225,7 +10228,7 @@ mod tests {
                 content_height: 100.0,
             },
         );
-        root.mounted_at_revision = 1;
+        root.lifecycle.mounted_at_revision = 1;
         root.children = vec![first_id.clone(), second_id.clone()];
 
         let mut first_attrs = Attrs::default();
@@ -10241,7 +10244,7 @@ mod tests {
                 content_height: 24.0,
             },
         );
-        first.mounted_at_revision = 3;
+        first.lifecycle.mounted_at_revision = 3;
 
         let mut second_attrs = Attrs::default();
         second_attrs.focus_on_mount = Some(true);
@@ -10256,12 +10259,12 @@ mod tests {
                 content_height: 24.0,
             },
         );
-        second.mounted_at_revision = 3;
+        second.lifecycle.mounted_at_revision = 3;
 
-        tree.root = Some(root_id);
         tree.insert(root);
         tree.insert(first);
         tree.insert(second);
+        tree.set_root_id(root_id);
 
         let rebuild = rebuild_payload_for_tree(&tree);
 

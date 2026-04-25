@@ -21,6 +21,7 @@ pub struct RendererStatsSnapshot {
     pub render: DurationStatsSnapshot,
     pub present_submit: DurationStatsSnapshot,
     pub layout: DurationStatsSnapshot,
+    pub refresh: DurationStatsSnapshot,
     pub event_resolve: DurationStatsSnapshot,
     pub patch_tree_process: DurationStatsSnapshot,
 }
@@ -68,6 +69,7 @@ struct RendererStatsWindow {
     render: DurationStatsWindow,
     present_submit: DurationStatsWindow,
     layout: DurationStatsWindow,
+    refresh: DurationStatsWindow,
     event_resolve: DurationStatsWindow,
     patch_tree_process: DurationStatsWindow,
 }
@@ -81,6 +83,7 @@ impl RendererStatsWindow {
             render: DurationStatsWindow::default(),
             present_submit: DurationStatsWindow::default(),
             layout: DurationStatsWindow::default(),
+            refresh: DurationStatsWindow::default(),
             event_resolve: DurationStatsWindow::default(),
             patch_tree_process: DurationStatsWindow::default(),
         }
@@ -133,6 +136,10 @@ impl RendererStatsCollector {
         self.record_duration(duration, |window| &mut window.layout);
     }
 
+    pub fn record_refresh(&self, duration: Duration) {
+        self.record_duration(duration, |window| &mut window.refresh);
+    }
+
     pub fn record_event_resolve(&self, duration: Duration) {
         self.record_duration(duration, |window| &mut window.event_resolve);
     }
@@ -168,6 +175,7 @@ impl RendererStatsCollector {
             render: window.render.snapshot(),
             present_submit: window.present_submit.snapshot(),
             layout: window.layout.snapshot(),
+            refresh: window.refresh.snapshot(),
             event_resolve: window.event_resolve.snapshot(),
             patch_tree_process: window.patch_tree_process.snapshot(),
         };
@@ -202,6 +210,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "present_submit_ms_avg={:.3} present_submit_ms_min={:.3} ",
             "present_submit_ms_max={:.3} present_submit_ms_count={} ",
             "layout_ms_avg={:.3} layout_ms_min={:.3} layout_ms_max={:.3} layout_ms_count={} ",
+            "refresh_ms_avg={:.3} refresh_ms_min={:.3} refresh_ms_max={:.3} refresh_ms_count={} ",
             "event_resolve_ms_avg={:.3} event_resolve_ms_min={:.3} ",
             "event_resolve_ms_max={:.3} event_resolve_ms_count={} ",
             "patch_tree_actor_process_ms_avg={:.3} patch_tree_actor_process_ms_min={:.3} ",
@@ -225,6 +234,10 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout.min_ms,
         snapshot.layout.max_ms,
         snapshot.layout.count,
+        snapshot.refresh.avg_ms,
+        snapshot.refresh.min_ms,
+        snapshot.refresh.max_ms,
+        snapshot.refresh.count,
         snapshot.event_resolve.avg_ms,
         snapshot.event_resolve.min_ms,
         snapshot.event_resolve.max_ms,
@@ -252,6 +265,8 @@ mod tests {
         stats.record_present_submit(Duration::from_millis(1));
         stats.record_layout(Duration::from_millis(2));
         stats.record_layout(Duration::from_millis(6));
+        stats.record_refresh(Duration::from_millis(1));
+        stats.record_refresh(Duration::from_millis(3));
         stats.record_event_resolve(Duration::from_millis(1));
         stats.record_patch_tree_process(Duration::from_millis(9));
 
@@ -266,6 +281,10 @@ mod tests {
         assert_eq!(snapshot.layout.min_ms, 2.0);
         assert_eq!(snapshot.layout.max_ms, 6.0);
         assert_eq!(snapshot.layout.avg_ms, 4.0);
+        assert_eq!(snapshot.refresh.count, 2);
+        assert_eq!(snapshot.refresh.min_ms, 1.0);
+        assert_eq!(snapshot.refresh.max_ms, 3.0);
+        assert_eq!(snapshot.refresh.avg_ms, 2.0);
         assert_eq!(snapshot.event_resolve.count, 1);
         assert_eq!(snapshot.patch_tree_process.count, 1);
 
@@ -275,6 +294,7 @@ mod tests {
         assert_eq!(reset_snapshot.render.count, 0);
         assert_eq!(reset_snapshot.present_submit.count, 0);
         assert_eq!(reset_snapshot.layout.count, 0);
+        assert_eq!(reset_snapshot.refresh.count, 0);
         assert_eq!(reset_snapshot.event_resolve.count, 0);
         assert_eq!(reset_snapshot.patch_tree_process.count, 0);
     }
@@ -287,6 +307,7 @@ mod tests {
         stats.record_render(Duration::from_millis(3));
         stats.record_present_submit(Duration::from_millis(1));
         stats.record_layout(Duration::from_millis(3));
+        stats.record_refresh(Duration::from_millis(1));
         stats.record_event_resolve(Duration::from_millis(2));
         stats.record_patch_tree_process(Duration::from_millis(7));
 
@@ -305,6 +326,10 @@ mod tests {
         assert!(message.contains("layout_ms_min="));
         assert!(message.contains("layout_ms_max="));
         assert!(message.contains("layout_ms_count=1"));
+        assert!(message.contains("refresh_ms_avg="));
+        assert!(message.contains("refresh_ms_min="));
+        assert!(message.contains("refresh_ms_max="));
+        assert!(message.contains("refresh_ms_count=1"));
         assert!(message.contains("event_resolve_ms_count=1"));
         assert!(message.contains("patch_tree_actor_process_ms_count=1"));
     }

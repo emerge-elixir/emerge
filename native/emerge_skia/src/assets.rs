@@ -368,20 +368,23 @@ fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
     tree.iter_nodes()
         .flat_map(|element| {
             element
-                .attrs
+                .spec
+                .declared
                 .image_src
                 .iter()
                 .cloned()
                 .chain(
                     element
-                        .attrs
+                        .spec
+                        .declared
                         .background
                         .iter()
                         .filter_map(background_image_source),
                 )
                 .chain(
                     element
-                        .attrs
+                        .spec
+                        .declared
                         .mouse_over
                         .iter()
                         .filter_map(|mouse_over| mouse_over.background.as_ref())

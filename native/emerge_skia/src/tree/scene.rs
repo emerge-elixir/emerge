@@ -57,8 +57,13 @@ impl ResolvedNodeState {
 }
 
 pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<ResolvedNodeState> {
-    let frame = element.frame?;
-    let scene = local_scene_geometry(frame, &element.attrs);
+    let frame = element.layout.frame?;
+    let scene = local_scene_geometry(
+        frame,
+        &element.layout.effective,
+        (element.layout.scroll_x, element.layout.scroll_y),
+        element.runtime.scrollbar_hover_axis,
+    );
 
     let adjusted_frame = Frame {
         x: frame.x - ctx.scroll_dx,
@@ -66,7 +71,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         ..frame
     };
     let self_shape = scene.self_shape.offset(ctx.scroll_dx, ctx.scroll_dy);
-    let clip_nearby = element.attrs.clip_nearby.unwrap_or(false);
+    let clip_nearby = element.layout.effective.clip_nearby.unwrap_or(false);
     let inherited_clip = if ctx.front_nearby_subtree {
         ctx.nearby_visible_clip
     } else {
@@ -93,7 +98,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     let scrollbar_y = scene
         .scrollbar_y
         .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
-    let local_transform = element_transform(adjusted_frame, &element.attrs);
+    let local_transform = element_transform(adjusted_frame, &element.layout.effective);
     let interaction_transform = ctx.interaction_transform.then(local_transform);
     let interaction_inverse = interaction_transform.inverse();
 
@@ -107,8 +112,8 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         nearby_visible_clip,
         scrollbar_x,
         scrollbar_y,
-        local_scroll_x: element.attrs.scroll_x.unwrap_or(0.0) as f32,
-        local_scroll_y: element.attrs.scroll_y.unwrap_or(0.0) as f32,
+        local_scroll_x: element.layout.scroll_x,
+        local_scroll_y: element.layout.scroll_y,
         clip_nearby,
         front_nearby_subtree: ctx.front_nearby_subtree,
         front_nearby_root: ctx.front_nearby_root,
@@ -119,12 +124,17 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     })
 }
 
-fn local_scene_geometry(frame: Frame, attrs: &super::attrs::Attrs) -> LocalSceneGeometry {
+fn local_scene_geometry(
+    frame: Frame,
+    attrs: &super::attrs::Attrs,
+    scroll: (f32, f32),
+    hover_axis: Option<super::attrs::ScrollbarHoverAxis>,
+) -> LocalSceneGeometry {
     LocalSceneGeometry {
         self_shape: super::geometry::self_shape(frame, attrs),
         host_clip: super::geometry::host_clip_shape(frame, attrs),
-        scrollbar_x: tree_scrollbar::horizontal_metrics(frame, attrs),
-        scrollbar_y: tree_scrollbar::vertical_metrics(frame, attrs),
+        scrollbar_x: tree_scrollbar::horizontal_metrics(frame, attrs, scroll.0, hover_axis),
+        scrollbar_y: tree_scrollbar::vertical_metrics(frame, attrs, scroll.1, hover_axis),
     }
 }
 
@@ -218,7 +228,7 @@ mod tests {
             Vec::new(),
             attrs,
         );
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
         element
     }
 
@@ -363,7 +373,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_y = Some(true);
         let mut element = make_element(8, attrs, frame);
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
 
         let state =
             resolve_node_state(&element, SceneContext::default()).expect("state should resolve");
