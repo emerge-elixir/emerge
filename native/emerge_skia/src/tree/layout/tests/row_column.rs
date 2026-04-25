@@ -2252,6 +2252,7 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
         &weather_card_ids[0],
         &MockTextMeasurer,
         &FontContext::default(),
+        true,
     );
     assert_eq!(weather_card_intrinsic.width, 118.0);
     assert_eq!(weather_card_intrinsic.height, 60.0);

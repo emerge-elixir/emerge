@@ -11,8 +11,9 @@ use super::attrs::{
     TextFragment, effective_scrollbar_x, effective_scrollbar_y,
 };
 use super::element::{
-    Element, ElementKind, ElementTree, Frame, IntrinsicMeasureCache, IntrinsicMeasureCacheKey,
-    NearbyConstraintKind, NearbySlot, NodeId,
+    Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
+    IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId,
+    SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey,
 };
 use super::render::DEFAULT_TEXT_COLOR;
 use super::text_layout::{TextLayoutStyle, layout_text_lines};
@@ -457,7 +458,7 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
     apply_interaction_styles(tree);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, &root_id, measurer, inherited);
+    measure_element(tree, &root_id, measurer, inherited, !animations_active);
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(tree, &root_id, constraint, 0.0, 0.0, inherited, measurer);
@@ -852,37 +853,55 @@ fn measure_element<M: TextMeasurer>(
     id: &NodeId,
     measurer: &M,
     inherited: &FontContext,
+    use_subtree_cache: bool,
 ) -> IntrinsicSize {
-    // Get element's attrs to merge with inherited context
-    let element_context = tree
-        .get(id)
-        .map(|e| inherited.merge_with_attrs(&e.layout.effective))
-        .unwrap_or_else(|| inherited.clone());
-
-    // First measure all children with merged font context
-    let child_ids = tree.child_ids(id);
-    let nearby_ids: Vec<NodeId> = tree
-        .nearby_mounts_for(id)
-        .into_iter()
-        .map(|mount| mount.id)
-        .collect();
-
-    let child_sizes: Vec<IntrinsicSize> = child_ids
-        .iter()
-        .map(|child_id| measure_element(tree, child_id, measurer, &element_context))
-        .collect();
-
-    for nearby_id in &nearby_ids {
-        let _ = measure_element(tree, nearby_id, measurer, &element_context);
-    }
-
-    // Now measure this element
-    let Some((kind, attrs)) = tree
-        .get(id)
-        .map(|element| (element.spec.kind, element.layout.effective.clone()))
-    else {
+    let Some((kind, attrs, measure_dirty)) = tree.get(id).map(|element| {
+        (
+            element.spec.kind,
+            element.layout.effective.clone(),
+            element.layout.measure_dirty,
+        )
+    }) else {
         return IntrinsicSize::default();
     };
+
+    let element_context = inherited.merge_with_attrs(&attrs);
+    let child_ids = tree.child_ids(id);
+    let nearby_mounts = tree.nearby_mounts_for(id);
+    let subtree_cache_key = use_subtree_cache
+        .then(|| subtree_measure_cache_key(kind, &attrs, inherited, &child_ids, &nearby_mounts));
+
+    if use_subtree_cache
+        && !measure_dirty
+        && let Some(key) = subtree_cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
+    {
+        return intrinsic;
+    }
+
+    // First measure all children with merged font context.
+    let child_sizes: Vec<IntrinsicSize> = child_ids
+        .iter()
+        .map(|child_id| {
+            measure_element(
+                tree,
+                child_id,
+                measurer,
+                &element_context,
+                use_subtree_cache,
+            )
+        })
+        .collect();
+
+    for nearby_id in nearby_mounts.iter().map(|mount| mount.id) {
+        let _ = measure_element(
+            tree,
+            &nearby_id,
+            measurer,
+            &element_context,
+            use_subtree_cache,
+        );
+    }
 
     // Read from pre-scaled attrs
     let insets = LayoutInsets::from_attrs(&attrs);
@@ -1115,9 +1134,103 @@ fn measure_element<M: TextMeasurer>(
             key,
             frame: measured_frame,
         });
+        if use_subtree_cache {
+            element.layout.subtree_measure_cache =
+                subtree_cache_key.map(|key| SubtreeMeasureCache {
+                    key,
+                    frame: measured_frame,
+                });
+            element.layout.measure_dirty = false;
+        }
     }
 
     intrinsic
+}
+
+fn subtree_measure_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+    children: &[NodeId],
+    nearby: &[NearbyMount],
+) -> SubtreeMeasureCacheKey {
+    SubtreeMeasureCacheKey {
+        kind,
+        attrs: subtree_measure_attrs(attrs),
+        inherited: inherited_measure_font_key(inherited),
+        children: children.to_vec(),
+        nearby: nearby.to_vec(),
+    }
+}
+
+fn subtree_measure_attrs(attrs: &Attrs) -> SubtreeMeasureAttrs {
+    SubtreeMeasureAttrs {
+        width: attrs.width.clone(),
+        height: attrs.height.clone(),
+        padding: attrs.padding.clone(),
+        border_width: attrs.border_width.clone(),
+        spacing: attrs.spacing,
+        spacing_x: attrs.spacing_x,
+        spacing_y: attrs.spacing_y,
+        scrollbar_y: attrs.scrollbar_y,
+        scrollbar_x: attrs.scrollbar_x,
+        ghost_scrollbar_y: attrs.ghost_scrollbar_y,
+        ghost_scrollbar_x: attrs.ghost_scrollbar_x,
+        scroll_x: attrs.scroll_x,
+        scroll_y: attrs.scroll_y,
+        clip_nearby: attrs.clip_nearby,
+        content: attrs.content.clone(),
+        font_size: attrs.font_size,
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
+        font_letter_spacing: attrs.font_letter_spacing,
+        font_word_spacing: attrs.font_word_spacing,
+        image_src: attrs.image_src.clone(),
+        image_fit: attrs.image_fit,
+        image_size: attrs.image_size,
+        text_align: attrs.text_align,
+        snap_layout: attrs.snap_layout,
+        snap_text_metrics: attrs.snap_text_metrics,
+        space_evenly: attrs.space_evenly,
+        has_animation_attrs: attrs.animate.is_some()
+            || attrs.animate_enter.is_some()
+            || attrs.animate_exit.is_some(),
+    }
+}
+
+fn inherited_measure_font_key(inherited: &FontContext) -> InheritedMeasureFontKey {
+    InheritedMeasureFontKey {
+        family: inherited.font_family.clone(),
+        weight: inherited.font_weight,
+        italic: inherited.font_italic,
+        font_size: inherited.font_size,
+        letter_spacing: inherited.font_letter_spacing,
+        word_spacing: inherited.font_word_spacing,
+    }
+}
+
+fn try_reuse_subtree_measure_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &SubtreeMeasureCacheKey,
+) -> Option<IntrinsicSize> {
+    let frame = tree
+        .get(id)
+        .and_then(|element| element.layout.subtree_measure_cache.as_ref())
+        .filter(|cache| &cache.key == key)
+        .map(|cache| cache.frame)?;
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(frame);
+        element.layout.measured_frame = Some(frame);
+        element.layout.measure_dirty = false;
+    }
+
+    Some(IntrinsicSize {
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 fn intrinsic_measure_cache_key(
