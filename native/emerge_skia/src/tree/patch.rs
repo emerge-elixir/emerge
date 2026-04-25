@@ -272,40 +272,44 @@ fn apply_patch(
 ) -> Result<TreeInvalidation, String> {
     let invalidation = match patch {
         Patch::SetAttrs { id, attrs_raw } => {
-            let element = tree
-                .get_mut(&id)
-                .ok_or_else(|| "SetAttrs: node not found".to_string())?;
-            let before_attrs = element.spec.declared.clone();
-            let before_patch_content = element.runtime.patch_content.clone();
-            let before_content_origin = element.runtime.text_input_content_origin;
+            let invalidation = {
+                let element = tree
+                    .get_mut(&id)
+                    .ok_or_else(|| "SetAttrs: node not found".to_string())?;
+                let before_attrs = element.spec.declared.clone();
+                let before_patch_content = element.runtime.patch_content.clone();
+                let before_content_origin = element.runtime.text_input_content_origin;
 
-            element.spec.attrs_raw = attrs_raw.clone();
-            let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
-            let content_is_from_patch =
-                element.spec.kind.is_text_input_family() && decoded.content.is_some();
-            let text_input_is_focused =
-                element.spec.kind.is_text_input_family() && element.runtime.text_input_focused;
+                element.spec.attrs_raw = attrs_raw.clone();
+                let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+                let content_is_from_patch =
+                    element.spec.kind.is_text_input_family() && decoded.content.is_some();
+                let text_input_is_focused =
+                    element.spec.kind.is_text_input_family() && element.runtime.text_input_focused;
 
-            if content_is_from_patch && text_input_is_focused {
-                element.runtime.patch_content = decoded.content.clone();
-                decoded.content = element.spec.declared.content.clone();
-            } else if element.spec.kind.is_text_input_family() && !text_input_is_focused {
-                element.runtime.patch_content = None;
-            }
+                if content_is_from_patch && text_input_is_focused {
+                    element.runtime.patch_content = decoded.content.clone();
+                    decoded.content = element.spec.declared.content.clone();
+                } else if element.spec.kind.is_text_input_family() && !text_input_is_focused {
+                    element.runtime.patch_content = None;
+                }
 
-            element.spec.declared = decoded.clone();
-            element.layout.effective = decoded;
-            element.normalize_extracted_state();
-            if content_is_from_patch && !text_input_is_focused {
-                element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
-            }
+                element.spec.declared = decoded.clone();
+                element.layout.effective = decoded;
+                element.normalize_extracted_state();
+                if content_is_from_patch && !text_input_is_focused {
+                    element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
+                }
 
-            let mut invalidation = classify_attrs_change(&before_attrs, &element.spec.declared);
-            if before_patch_content != element.runtime.patch_content
-                || before_content_origin != element.runtime.text_input_content_origin
-            {
-                invalidation.add(TreeInvalidation::Registry);
-            }
+                let mut invalidation = classify_attrs_change(&before_attrs, &element.spec.declared);
+                if before_patch_content != element.runtime.patch_content
+                    || before_content_origin != element.runtime.text_input_content_origin
+                {
+                    invalidation.add(TreeInvalidation::Registry);
+                }
+                invalidation
+            };
+            tree.mark_measure_dirty_for_invalidation(&id, invalidation);
             invalidation
         }
 
@@ -731,6 +735,8 @@ fn clone_as_ghost(
             scroll_y_max: old.layout.scroll_y_max,
             paragraph_fragments: old.layout.paragraph_fragments.clone(),
             intrinsic_measure_cache: None,
+            subtree_measure_cache: None,
+            measure_dirty: true,
         },
         lifecycle: crate::tree::element::NodeLifecycle {
             mounted_at_revision: old.lifecycle.mounted_at_revision,
