@@ -4,8 +4,8 @@ use super::animation::AnimationSpec;
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
 use super::attrs::{
-    Attrs, BorderWidth, Font, FontStyle, FontWeight, ImageFit, ImageSource, Length, Padding,
-    ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
+    AlignX, AlignY, Attrs, BorderWidth, Font, FontStyle, FontWeight, ImageFit, ImageSource, Length,
+    Padding, ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
 #[cfg(test)]
@@ -98,7 +98,7 @@ impl ElementKind {
 }
 
 /// Frame representing the computed layout bounds.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Frame {
     /// X position relative to parent.
     pub x: f32,
@@ -124,6 +124,73 @@ pub struct IntrinsicMeasureCache {
 pub struct SubtreeMeasureCache {
     pub key: SubtreeMeasureCacheKey,
     pub frame: Frame,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolveCache {
+    pub key: ResolveCacheKey,
+    pub frame: Frame,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolveCacheKey {
+    pub kind: ElementKind,
+    pub attrs: ResolveAttrs,
+    pub inherited: InheritedMeasureFontKey,
+    pub measured_frame: Option<Frame>,
+    pub constraint: ResolveConstraintKey,
+    pub x: f32,
+    pub y: f32,
+    pub children: Vec<NodeId>,
+    pub nearby: Vec<NearbyMount>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolveConstraintKey {
+    pub width: ResolveAvailableSpaceKey,
+    pub height: ResolveAvailableSpaceKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolveAvailableSpaceKey {
+    Definite(f32),
+    MinContent,
+    MaxContent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolveAttrs {
+    pub width: Option<Length>,
+    pub height: Option<Length>,
+    pub padding: Option<Padding>,
+    pub border_width: Option<BorderWidth>,
+    pub spacing: Option<f64>,
+    pub spacing_x: Option<f64>,
+    pub spacing_y: Option<f64>,
+    pub align_x: Option<AlignX>,
+    pub align_y: Option<AlignY>,
+    pub scrollbar_y: Option<bool>,
+    pub scrollbar_x: Option<bool>,
+    pub ghost_scrollbar_y: Option<bool>,
+    pub ghost_scrollbar_x: Option<bool>,
+    pub scroll_x: Option<f64>,
+    pub scroll_y: Option<f64>,
+    pub clip_nearby: Option<bool>,
+    pub content: Option<String>,
+    pub font_size: Option<f64>,
+    pub font: Option<Font>,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
+    pub font_letter_spacing: Option<f64>,
+    pub font_word_spacing: Option<f64>,
+    pub image_src: Option<ImageSource>,
+    pub image_fit: Option<ImageFit>,
+    pub image_size: Option<(f64, f64)>,
+    pub text_align: Option<TextAlign>,
+    pub snap_layout: Option<bool>,
+    pub snap_text_metrics: Option<bool>,
+    pub space_evenly: Option<bool>,
+    pub has_animation_attrs: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,6 +563,8 @@ pub struct NodeLayoutState {
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
     pub subtree_measure_cache: Option<SubtreeMeasureCache>,
     pub measure_dirty: bool,
+    pub resolve_cache: Option<ResolveCache>,
+    pub resolve_dirty: bool,
 }
 
 impl Default for NodeLayoutState {
@@ -512,6 +581,8 @@ impl Default for NodeLayoutState {
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,
+            resolve_cache: None,
+            resolve_dirty: true,
         }
     }
 }
@@ -619,6 +690,8 @@ impl Element {
                 intrinsic_measure_cache: None,
                 subtree_measure_cache: None,
                 measure_dirty: true,
+                resolve_cache: None,
+                resolve_dirty: true,
             },
             lifecycle: NodeLifecycle {
                 mounted_at_revision: 0,
@@ -1251,20 +1324,46 @@ impl ElementTree {
     ) {
         if invalidation.requires_measure() {
             self.mark_measure_dirty(id);
+        } else if invalidation.requires_resolve() {
+            self.mark_resolve_dirty(id);
+        }
+    }
+
+    pub fn mark_resolve_dirty(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_resolve_dirty_ix(ix);
         }
     }
 
     pub fn mark_all_measure_dirty(&mut self) {
+        self.iter_nodes_mut().for_each(|element| {
+            element.layout.measure_dirty = true;
+            element.layout.resolve_dirty = true;
+        });
+    }
+
+    pub fn mark_all_resolve_dirty(&mut self) {
         self.iter_nodes_mut()
-            .for_each(|element| element.layout.measure_dirty = true);
+            .for_each(|element| element.layout.resolve_dirty = true);
     }
 
     fn mark_measure_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_dirty_ix(ix, true);
+    }
+
+    fn mark_resolve_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_dirty_ix(ix, false);
+    }
+
+    fn mark_dirty_ix(&mut self, ix: NodeIx, measure_dirty: bool) {
         let mut current_ix = Some(ix);
 
         while let Some(ix) = current_ix {
             if let Some(element) = self.get_ix_mut(ix) {
-                element.layout.measure_dirty = true;
+                if measure_dirty {
+                    element.layout.measure_dirty = true;
+                }
+                element.layout.resolve_dirty = true;
             }
 
             current_ix = self

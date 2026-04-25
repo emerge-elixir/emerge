@@ -737,6 +737,8 @@ fn clone_as_ghost(
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,
+            resolve_cache: None,
+            resolve_dirty: true,
         },
         lifecycle: crate::tree::element::NodeLifecycle {
             mounted_at_revision: old.lifecycle.mounted_at_revision,

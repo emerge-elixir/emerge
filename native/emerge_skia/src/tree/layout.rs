@@ -12,7 +12,8 @@ use super::attrs::{
 };
 use super::element::{
     Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
-    IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId,
+    IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId, ResolveAttrs,
+    ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey,
     SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey,
 };
 use super::render::DEFAULT_TEXT_COLOR;
@@ -62,7 +63,7 @@ impl From<f32> for AvailableSpace {
 }
 
 /// Constraint passed down during layout resolution.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Constraint {
     pub width: AvailableSpace,
     pub height: AvailableSpace,
@@ -460,8 +461,21 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
     measure_element(tree, &root_id, measurer, inherited, !animations_active);
 
+    if animations_active {
+        tree.mark_all_resolve_dirty();
+    }
+
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(tree, &root_id, constraint, 0.0, 0.0, inherited, measurer);
+    resolve_element(
+        tree,
+        &root_id,
+        constraint,
+        0.0,
+        0.0,
+        inherited,
+        measurer,
+        !animations_active,
+    );
 
     animations_active
 }
@@ -1491,6 +1505,7 @@ struct ResolvePassParams<'a> {
     align_y: AlignY,
     available_width: AvailableSpace,
     available_height: AvailableSpace,
+    use_resolve_cache: bool,
 }
 
 fn resolve_el_kind<M: TextMeasurer>(
@@ -1515,6 +1530,7 @@ fn resolve_el_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_ch > params.content.height && !params.is_scrollable {
@@ -1548,6 +1564,7 @@ fn resolve_row_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_ch > params.content.height
@@ -1577,6 +1594,7 @@ fn resolve_wrapped_row_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        false,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1606,6 +1624,7 @@ fn resolve_column_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1630,6 +1649,7 @@ fn resolve_column_kind<M: TextMeasurer>(
                 },
                 element_context,
                 measurer,
+                params.use_resolve_cache,
             );
         }
 
@@ -1761,6 +1781,7 @@ fn resolve_element<M: TextMeasurer>(
     y: f32,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) {
     let Some(element) = tree.get(id) else {
         return;
@@ -1769,7 +1790,10 @@ fn resolve_element<M: TextMeasurer>(
     // Read from pre-scaled attrs
     let attrs = element.layout.effective.clone();
     let kind = element.spec.kind;
+    let measured_frame = element.layout.measured_frame;
+    let resolve_dirty = element.layout.resolve_dirty;
     let child_ids = tree.child_ids(id);
+    let nearby_mounts = tree.nearby_mounts_for(id);
     let intrinsic = element
         .layout
         .frame
@@ -1781,6 +1805,28 @@ fn resolve_element<M: TextMeasurer>(
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(&attrs);
+
+    let resolve_cache_key = use_resolve_cache.then(|| {
+        resolve_cache_key(
+            kind,
+            &attrs,
+            inherited,
+            measured_frame,
+            constraint,
+            x,
+            y,
+            &child_ids,
+            &nearby_mounts,
+        )
+    });
+
+    if use_resolve_cache
+        && !resolve_dirty
+        && let Some(key) = resolve_cache_key.as_ref()
+        && try_reuse_resolve_cache(tree, id, key)
+    {
+        return;
+    }
 
     let insets = LayoutInsets::from_attrs(&attrs);
     let spacing_x = spacing_x(&attrs);
@@ -1848,6 +1894,7 @@ fn resolve_element<M: TextMeasurer>(
         align_y,
         available_width,
         available_height,
+        use_resolve_cache,
     };
 
     match kind {
@@ -1871,7 +1918,152 @@ fn resolve_element<M: TextMeasurer>(
 
     update_paint_children(tree, id, kind);
     update_scroll_state(tree, id);
-    resolve_nearby_mounts(tree, id, &element_context, measurer);
+    resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
+
+    if use_resolve_cache
+        && let Some(key) = resolve_cache_key
+        && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
+        && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+        && let Some(element) = tree.get_mut(id)
+    {
+        element.layout.resolve_cache = Some(ResolveCache { key, frame });
+        element.layout.resolve_dirty = false;
+    }
+}
+
+fn resolve_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+    measured_frame: Option<Frame>,
+    constraint: Constraint,
+    x: f32,
+    y: f32,
+    children: &[NodeId],
+    nearby: &[NearbyMount],
+) -> ResolveCacheKey {
+    ResolveCacheKey {
+        kind,
+        attrs: resolve_attrs(attrs),
+        inherited: inherited_measure_font_key(inherited),
+        measured_frame,
+        constraint: resolve_constraint_key(constraint),
+        x,
+        y,
+        children: children.to_vec(),
+        nearby: nearby.to_vec(),
+    }
+}
+
+fn resolve_attrs(attrs: &Attrs) -> ResolveAttrs {
+    ResolveAttrs {
+        width: attrs.width.clone(),
+        height: attrs.height.clone(),
+        padding: attrs.padding.clone(),
+        border_width: attrs.border_width.clone(),
+        spacing: attrs.spacing,
+        spacing_x: attrs.spacing_x,
+        spacing_y: attrs.spacing_y,
+        align_x: attrs.align_x,
+        align_y: attrs.align_y,
+        scrollbar_y: attrs.scrollbar_y,
+        scrollbar_x: attrs.scrollbar_x,
+        ghost_scrollbar_y: attrs.ghost_scrollbar_y,
+        ghost_scrollbar_x: attrs.ghost_scrollbar_x,
+        scroll_x: attrs.scroll_x,
+        scroll_y: attrs.scroll_y,
+        clip_nearby: attrs.clip_nearby,
+        content: attrs.content.clone(),
+        font_size: attrs.font_size,
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
+        font_letter_spacing: attrs.font_letter_spacing,
+        font_word_spacing: attrs.font_word_spacing,
+        image_src: attrs.image_src.clone(),
+        image_fit: attrs.image_fit,
+        image_size: attrs.image_size,
+        text_align: attrs.text_align,
+        snap_layout: attrs.snap_layout,
+        snap_text_metrics: attrs.snap_text_metrics,
+        space_evenly: attrs.space_evenly,
+        has_animation_attrs: attrs.animate.is_some()
+            || attrs.animate_enter.is_some()
+            || attrs.animate_exit.is_some(),
+    }
+}
+
+fn resolve_constraint_key(constraint: Constraint) -> ResolveConstraintKey {
+    ResolveConstraintKey {
+        width: resolve_available_space_key(constraint.width),
+        height: resolve_available_space_key(constraint.height),
+    }
+}
+
+fn resolve_available_space_key(space: AvailableSpace) -> ResolveAvailableSpaceKey {
+    match space {
+        AvailableSpace::Definite(value) => ResolveAvailableSpaceKey::Definite(value),
+        AvailableSpace::MinContent => ResolveAvailableSpaceKey::MinContent,
+        AvailableSpace::MaxContent => ResolveAvailableSpaceKey::MaxContent,
+    }
+}
+
+fn try_reuse_resolve_cache(tree: &mut ElementTree, id: &NodeId, key: &ResolveCacheKey) -> bool {
+    let Some(frame) = tree
+        .get(id)
+        .and_then(|element| element.layout.resolve_cache.as_ref())
+        .filter(|cache| &cache.key == key)
+        .map(|cache| cache.frame)
+    else {
+        return false;
+    };
+
+    if let Some(current_frame) = tree.get(id).and_then(|element| element.layout.frame) {
+        shift_subtree(
+            tree,
+            id,
+            frame.x - current_frame.x,
+            frame.y - current_frame.y,
+        );
+    }
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(frame);
+        element.layout.resolve_dirty = false;
+    }
+
+    true
+}
+
+fn can_store_resolve_cache(
+    tree: &ElementTree,
+    kind: ElementKind,
+    child_ids: &[NodeId],
+    nearby: &[NearbyMount],
+) -> bool {
+    resolve_cache_kind_eligible(kind)
+        && child_ids.iter().all(|child_id| {
+            tree.get(child_id)
+                .is_some_and(|child| child.layout.resolve_cache.is_some())
+        })
+        && nearby.iter().all(|mount| {
+            tree.get(&mount.id)
+                .is_some_and(|child| child.layout.resolve_cache.is_some())
+        })
+}
+
+fn resolve_cache_kind_eligible(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Text
+            | ElementKind::TextInput
+            | ElementKind::Image
+            | ElementKind::Video
+            | ElementKind::None
+            | ElementKind::El
+            | ElementKind::Row
+            | ElementKind::Column
+    )
 }
 
 fn update_paint_children(tree: &mut ElementTree, id: &NodeId, kind: ElementKind) {
@@ -1961,6 +2153,7 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
     host_id: &NodeId,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) {
     let Some(host_frame) = tree.get(host_id).and_then(|element| element.layout.frame) else {
         return;
@@ -1982,6 +2175,7 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
             host_frame.y,
             inherited,
             measurer,
+            use_resolve_cache,
         );
 
         let Some((nearby_frame, align_x, align_y)) = tree.get(&nearby_id).and_then(|element| {
@@ -2144,6 +2338,7 @@ struct ChildPlacement<'a> {
     x: f32,
     y: f32,
     inherited: &'a FontContext,
+    use_resolve_cache: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2182,6 +2377,7 @@ fn resolve_child_with_placement<M: TextMeasurer>(
         placement.y,
         placement.inherited,
         measurer,
+        placement.use_resolve_cache,
     );
     child_frame_snapshot(tree, child_id)
 }
@@ -2286,6 +2482,7 @@ fn resolve_el_children<M: TextMeasurer>(
     options: ElChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     let mut max_child_width = 0.0_f32;
     let mut max_child_height = 0.0_f32;
@@ -2317,6 +2514,7 @@ fn resolve_el_children<M: TextMeasurer>(
                 x: 0.0,
                 y: 0.0,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) else {
@@ -2518,6 +2716,7 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
     plan: &RowLayoutPlan,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let left_spacing = spacing_for_count(plan.left_children.len(), spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), spacing);
@@ -2541,6 +2740,7 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2563,6 +2763,7 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
                 x: right_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2590,6 +2791,7 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
                     x: center_x,
                     y: content.y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             ) {
@@ -2610,6 +2812,7 @@ fn resolve_row_space_evenly<M: TextMeasurer>(
     child_widths: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     let mut max_child_height = 0.0_f32;
     let mut current_x = content.x;
@@ -2633,6 +2836,7 @@ fn resolve_row_space_evenly<M: TextMeasurer>(
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2660,6 +2864,7 @@ fn resolve_row_grouped<M: TextMeasurer>(
     plan: &RowLayoutPlan,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     let left_spacing = spacing_for_count(plan.left_children.len(), options.spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
@@ -2685,6 +2890,7 @@ fn resolve_row_grouped<M: TextMeasurer>(
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2710,6 +2916,7 @@ fn resolve_row_grouped<M: TextMeasurer>(
                 x: right_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2740,6 +2947,7 @@ fn resolve_row_grouped<M: TextMeasurer>(
                     x: center_x,
                     y: content.y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             ) {
@@ -2771,6 +2979,7 @@ fn resolve_row_children<M: TextMeasurer>(
     options: RowChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     if child_ids.is_empty() {
         return (0.0, 0.0);
@@ -2786,10 +2995,18 @@ fn resolve_row_children<M: TextMeasurer>(
             &plan.child_widths,
             inherited,
             measurer,
+            use_resolve_cache,
         )
     } else {
         resolve_row_grouped(
-            tree, child_ids, content, options, &plan, inherited, measurer,
+            tree,
+            child_ids,
+            content,
+            options,
+            &plan,
+            inherited,
+            measurer,
+            use_resolve_cache,
         )
     }
 }
@@ -2913,6 +3130,7 @@ fn resolve_column_space_evenly<M: TextMeasurer>(
     child_heights: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let mut current_y = content.y;
     let gap_count = child_ids.len().saturating_sub(1) as f32;
@@ -2936,6 +3154,7 @@ fn resolve_column_space_evenly<M: TextMeasurer>(
                 x: content.x,
                 y: current_y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         );
@@ -2963,6 +3182,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
     plan: &ColumnLayoutPlan,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let top_spacing = spacing_for_count(plan.top_children.len(), options.spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
@@ -2985,6 +3205,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
                 x: content.x,
                 y: current_y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         );
@@ -3018,6 +3239,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
                     x: content.x,
                     y: current_bottom_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -3048,6 +3270,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
                     x: content.x,
                     y: bottom_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -3096,6 +3319,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
                     x: content.x,
                     y: center_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -3138,6 +3362,7 @@ fn resolve_column_children<M: TextMeasurer>(
     options: ColumnChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -3153,9 +3378,18 @@ fn resolve_column_children<M: TextMeasurer>(
             &plan.child_heights,
             inherited,
             measurer,
+            use_resolve_cache,
         )
     } else {
-        resolve_column_grouped(tree, content, options, &plan, inherited, measurer)
+        resolve_column_grouped(
+            tree,
+            content,
+            options,
+            &plan,
+            inherited,
+            measurer,
+            use_resolve_cache,
+        )
     }
 }
 
@@ -3308,6 +3542,7 @@ fn place_flow_float<M: TextMeasurer>(
         float_y,
         context.inherited,
         measurer,
+        false,
     );
 
     let mut frame = tree.get(child_id).and_then(|child| child.layout.frame)?;
@@ -3361,6 +3596,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         y,
         layout.inherited,
         measurer,
+        false,
     );
 
     let (child_ids, attrs, frame) = {
@@ -3501,6 +3737,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
                 child_y,
                 inherited,
                 measurer,
+                false,
             );
         }
 
@@ -3559,6 +3796,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     options: WrappedRowChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -3635,6 +3873,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             &plan,
             inherited,
             measurer,
+            use_resolve_cache,
         );
 
         for (child_id, align_y) in &line_children {
