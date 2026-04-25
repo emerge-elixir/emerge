@@ -878,7 +878,8 @@ mod tests {
     use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
     use crate::tree::attrs::Attrs;
     use crate::tree::element::{
-        Element, ElementKind, Frame, NearbySlot, NodeId, TextInputContentOrigin,
+        Element, ElementKind, Frame, NearbyMountIx, NearbySlot, NodeId, NodeIx, ParentLink,
+        TextInputContentOrigin,
     };
 
     fn exit_alpha_spec() -> AnimationSpec {
@@ -918,6 +919,700 @@ mod tests {
         );
         element.layout.frame = Some(text_frame(0.0, 0.0, 64.0, 24.0));
         element
+    }
+
+    fn plain_element(id: u8) -> Element {
+        Element::with_attrs(
+            NodeId::from_term_bytes(vec![id]),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        )
+    }
+
+    fn node_ix(tree: &ElementTree, id: &NodeId) -> NodeIx {
+        tree.ix_of(id).expect("node id should resolve to an ix")
+    }
+
+    fn mount_revision(tree: &ElementTree, id: &NodeId) -> u64 {
+        tree.get(id)
+            .expect("node should exist")
+            .lifecycle
+            .mounted_at_revision
+    }
+
+    #[test]
+    fn test_set_attrs_preserves_node_ix_and_mount_revision() {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let mut element = plain_element(1);
+        element.lifecycle.mounted_at_revision = 7;
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id.clone());
+        tree.insert(element);
+
+        let before_ix = node_ix(&tree, &id);
+        let before_revision = mount_revision(&tree, &id);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: id.clone(),
+                attrs_raw: vec![0, 1, 12, 0, 1, 255, 0, 0, 255],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Paint);
+        assert_eq!(node_ix(&tree, &id), before_ix);
+        assert_eq!(mount_revision(&tree, &id), before_revision);
+    }
+
+    #[test]
+    fn test_set_children_reorder_preserves_existing_child_ixs() {
+        let parent_id = NodeId::from_term_bytes(vec![2]);
+        let first_id = NodeId::from_term_bytes(vec![3]);
+        let second_id = NodeId::from_term_bytes(vec![4]);
+        let third_id = NodeId::from_term_bytes(vec![5]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(2));
+        tree.insert(plain_element(3));
+        tree.insert(plain_element(4));
+        tree.insert(plain_element(5));
+        tree.set_children(
+            &parent_id,
+            vec![first_id.clone(), second_id.clone(), third_id.clone()],
+        )
+        .unwrap();
+
+        let parent_ix = node_ix(&tree, &parent_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let second_ix = node_ix(&tree, &second_id);
+        let third_ix = node_ix(&tree, &third_id);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetChildren {
+                id: parent_id.clone(),
+                children: vec![third_id.clone(), first_id.clone(), second_id.clone()],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &second_id), second_ix);
+        assert_eq!(node_ix(&tree, &third_id), third_ix);
+        assert_eq!(
+            tree.child_ixs(parent_ix),
+            vec![third_ix, first_ix, second_ix]
+        );
+        assert_eq!(
+            tree.parent_link_of(first_ix),
+            Some(ParentLink::Child { parent: parent_ix })
+        );
+        assert_eq!(
+            tree.parent_link_of(second_ix),
+            Some(ParentLink::Child { parent: parent_ix })
+        );
+        assert_eq!(
+            tree.parent_link_of(third_ix),
+            Some(ParentLink::Child { parent: parent_ix })
+        );
+    }
+
+    #[test]
+    fn test_set_nearby_mounts_reorder_preserves_existing_mount_ixs() {
+        let host_id = NodeId::from_term_bytes(vec![6]);
+        let first_id = NodeId::from_term_bytes(vec![7]);
+        let second_id = NodeId::from_term_bytes(vec![8]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id.clone());
+        tree.insert(plain_element(6));
+        tree.insert(plain_element(7));
+        tree.insert(plain_element(8));
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![
+                NearbyMount {
+                    slot: NearbySlot::Above,
+                    id: first_id.clone(),
+                },
+                NearbyMount {
+                    slot: NearbySlot::Below,
+                    id: second_id.clone(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let host_ix = node_ix(&tree, &host_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let second_ix = node_ix(&tree, &second_id);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetNearbyMounts {
+                host_id: host_id.clone(),
+                mounts: vec![
+                    NearbyMount {
+                        slot: NearbySlot::Below,
+                        id: second_id.clone(),
+                    },
+                    NearbyMount {
+                        slot: NearbySlot::Above,
+                        id: first_id.clone(),
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &second_id), second_ix);
+        assert_eq!(
+            tree.nearby_ixs(host_ix),
+            vec![
+                NearbyMountIx {
+                    slot: NearbySlot::Below,
+                    ix: second_ix,
+                },
+                NearbyMountIx {
+                    slot: NearbySlot::Above,
+                    ix: first_ix,
+                },
+            ]
+        );
+        assert_eq!(
+            tree.parent_link_of(first_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::Above,
+            })
+        );
+        assert_eq!(
+            tree.parent_link_of(second_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::Below,
+            })
+        );
+    }
+
+    #[test]
+    fn test_set_nearby_mounts_slot_change_preserves_node_ix() {
+        let host_id = NodeId::from_term_bytes(vec![9]);
+        let tip_id = NodeId::from_term_bytes(vec![10]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id.clone());
+        tree.insert(plain_element(9));
+        tree.insert(plain_element(10));
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Above,
+                id: tip_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        let host_ix = node_ix(&tree, &host_id);
+        let tip_ix = node_ix(&tree, &tip_id);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::SetNearbyMounts {
+                host_id: host_id.clone(),
+                mounts: vec![NearbyMount {
+                    slot: NearbySlot::Below,
+                    id: tip_id.clone(),
+                }],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(node_ix(&tree, &tip_id), tip_ix);
+        assert_eq!(
+            tree.nearby_ixs(host_ix),
+            vec![NearbyMountIx {
+                slot: NearbySlot::Below,
+                ix: tip_ix,
+            }]
+        );
+        assert_eq!(
+            tree.parent_link_of(tip_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::Below,
+            })
+        );
+    }
+
+    #[test]
+    fn test_insert_subtree_preserves_existing_ixs_and_stamps_new_nodes() {
+        let parent_id = NodeId::from_term_bytes(vec![11]);
+        let first_id = NodeId::from_term_bytes(vec![12]);
+        let second_id = NodeId::from_term_bytes(vec![13]);
+        let new_root_id = NodeId::from_term_bytes(vec![14]);
+        let new_leaf_id = NodeId::from_term_bytes(vec![15]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(11));
+        tree.insert(plain_element(12));
+        tree.insert(plain_element(13));
+        tree.set_children(&parent_id, vec![first_id.clone(), second_id.clone()])
+            .unwrap();
+
+        let parent_ix = node_ix(&tree, &parent_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let second_ix = node_ix(&tree, &second_id);
+        let first_revision = mount_revision(&tree, &first_id);
+        let second_revision = mount_revision(&tree, &second_id);
+
+        let mut subtree = ElementTree::new();
+        subtree.set_root_id(new_root_id.clone());
+        subtree.insert(plain_element(14));
+        subtree.insert(text_element(15, "new"));
+        subtree
+            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::InsertSubtree {
+                parent_id: Some(parent_id.clone()),
+                index: 1,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        let new_root_ix = node_ix(&tree, &new_root_id);
+        let new_leaf_ix = node_ix(&tree, &new_leaf_id);
+        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &second_id), second_ix);
+        assert_eq!(mount_revision(&tree, &first_id), first_revision);
+        assert_eq!(mount_revision(&tree, &second_id), second_revision);
+        assert_eq!(mount_revision(&tree, &new_root_id), tree.revision());
+        assert_eq!(mount_revision(&tree, &new_leaf_id), tree.revision());
+        assert_eq!(
+            tree.child_ixs(parent_ix),
+            vec![first_ix, new_root_ix, second_ix]
+        );
+        assert_eq!(tree.child_ixs(new_root_ix), vec![new_leaf_ix]);
+    }
+
+    #[test]
+    fn test_insert_nearby_subtree_preserves_existing_ixs_and_stamps_new_nodes() {
+        let host_id = NodeId::from_term_bytes(vec![56]);
+        let first_id = NodeId::from_term_bytes(vec![57]);
+        let second_id = NodeId::from_term_bytes(vec![58]);
+        let new_root_id = NodeId::from_term_bytes(vec![59]);
+        let new_leaf_id = NodeId::from_term_bytes(vec![60]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id.clone());
+        tree.insert(plain_element(56));
+        tree.insert(plain_element(57));
+        tree.insert(plain_element(58));
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![
+                NearbyMount {
+                    slot: NearbySlot::Above,
+                    id: first_id.clone(),
+                },
+                NearbyMount {
+                    slot: NearbySlot::Below,
+                    id: second_id.clone(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let host_ix = node_ix(&tree, &host_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let second_ix = node_ix(&tree, &second_id);
+        let first_revision = mount_revision(&tree, &first_id);
+        let second_revision = mount_revision(&tree, &second_id);
+
+        let mut subtree = ElementTree::new();
+        subtree.set_root_id(new_root_id.clone());
+        subtree.insert(plain_element(59));
+        subtree.insert(text_element(60, "new nearby"));
+        subtree
+            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::InsertNearbySubtree {
+                host_id: host_id.clone(),
+                index: 1,
+                slot: NearbySlot::OnRight,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        let new_root_ix = node_ix(&tree, &new_root_id);
+        let new_leaf_ix = node_ix(&tree, &new_leaf_id);
+        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(node_ix(&tree, &host_id), host_ix);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &second_id), second_ix);
+        assert_eq!(mount_revision(&tree, &first_id), first_revision);
+        assert_eq!(mount_revision(&tree, &second_id), second_revision);
+        assert_eq!(mount_revision(&tree, &new_root_id), tree.revision());
+        assert_eq!(mount_revision(&tree, &new_leaf_id), tree.revision());
+        assert_eq!(
+            tree.nearby_ixs(host_ix),
+            vec![
+                NearbyMountIx {
+                    slot: NearbySlot::Above,
+                    ix: first_ix,
+                },
+                NearbyMountIx {
+                    slot: NearbySlot::OnRight,
+                    ix: new_root_ix,
+                },
+                NearbyMountIx {
+                    slot: NearbySlot::Below,
+                    ix: second_ix,
+                },
+            ]
+        );
+        assert_eq!(tree.child_ixs(new_root_ix), vec![new_leaf_ix]);
+        assert_eq!(
+            tree.parent_link_of(new_root_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::OnRight,
+            })
+        );
+        assert_eq!(
+            tree.parent_link_of(new_leaf_ix),
+            Some(ParentLink::Child {
+                parent: new_root_ix
+            })
+        );
+    }
+
+    #[test]
+    fn test_remove_prunes_old_id_mapping_before_slot_reuse() {
+        let parent_id = NodeId::from_term_bytes(vec![16]);
+        let old_id = NodeId::from_term_bytes(vec![17]);
+        let new_id = NodeId::from_term_bytes(vec![18]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(16));
+        tree.insert(plain_element(17));
+        tree.set_children(&parent_id, vec![old_id.clone()]).unwrap();
+
+        let old_ix = node_ix(&tree, &old_id);
+
+        apply_patches(&mut tree, vec![Patch::Remove { id: old_id.clone() }]).unwrap();
+
+        assert_eq!(tree.ix_of(&old_id), None);
+        assert_eq!(tree.id_of(old_ix), None);
+
+        let mut subtree = ElementTree::new();
+        subtree.set_root_id(new_id.clone());
+        subtree.insert(plain_element(18));
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::InsertSubtree {
+                parent_id: Some(parent_id.clone()),
+                index: 0,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.ix_of(&old_id), None);
+        assert_eq!(tree.ix_of(&new_id), Some(old_ix));
+        assert_eq!(tree.id_of(old_ix), Some(new_id));
+    }
+
+    #[test]
+    fn test_remove_recursively_prunes_descendant_id_mappings() {
+        let parent_id = NodeId::from_term_bytes(vec![61]);
+        let removed_id = NodeId::from_term_bytes(vec![62]);
+        let child_id = NodeId::from_term_bytes(vec![63]);
+        let nearby_id = NodeId::from_term_bytes(vec![64]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(61));
+        tree.insert(plain_element(62));
+        tree.insert(plain_element(63));
+        tree.insert(plain_element(64));
+        tree.set_children(&parent_id, vec![removed_id.clone()])
+            .unwrap();
+        tree.set_children(&removed_id, vec![child_id.clone()])
+            .unwrap();
+        tree.set_nearby_mounts(
+            &removed_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Above,
+                id: nearby_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        let parent_ix = node_ix(&tree, &parent_id);
+        let removed_ix = node_ix(&tree, &removed_id);
+        let child_ix = node_ix(&tree, &child_id);
+        let nearby_ix = node_ix(&tree, &nearby_id);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::Remove {
+                id: removed_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.child_ixs(parent_ix), Vec::<NodeIx>::new());
+        assert_eq!(tree.ix_of(&removed_id), None);
+        assert_eq!(tree.ix_of(&child_id), None);
+        assert_eq!(tree.ix_of(&nearby_id), None);
+        assert_eq!(tree.id_of(removed_ix), None);
+        assert_eq!(tree.id_of(child_ix), None);
+        assert_eq!(tree.id_of(nearby_ix), None);
+    }
+
+    #[test]
+    fn test_remove_then_insert_batch_preserves_sibling_ixs_and_stamps_new_nodes() {
+        let parent_id = NodeId::from_term_bytes(vec![65]);
+        let first_id = NodeId::from_term_bytes(vec![66]);
+        let removed_id = NodeId::from_term_bytes(vec![67]);
+        let third_id = NodeId::from_term_bytes(vec![68]);
+        let new_root_id = NodeId::from_term_bytes(vec![69]);
+        let new_leaf_id = NodeId::from_term_bytes(vec![70]);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(65));
+        tree.insert(text_element(66, "first"));
+        tree.insert(text_element(67, "removed"));
+        tree.insert(text_element(68, "third"));
+        tree.set_children(
+            &parent_id,
+            vec![first_id.clone(), removed_id.clone(), third_id.clone()],
+        )
+        .unwrap();
+
+        let parent_ix = node_ix(&tree, &parent_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let third_ix = node_ix(&tree, &third_id);
+        let first_revision = mount_revision(&tree, &first_id);
+        let third_revision = mount_revision(&tree, &third_id);
+
+        let mut subtree = ElementTree::new();
+        subtree.set_root_id(new_root_id.clone());
+        subtree.insert(plain_element(69));
+        subtree.insert(text_element(70, "new"));
+        subtree
+            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![
+                Patch::Remove {
+                    id: removed_id.clone(),
+                },
+                Patch::InsertSubtree {
+                    parent_id: Some(parent_id.clone()),
+                    index: 1,
+                    subtree,
+                },
+            ],
+        )
+        .unwrap();
+
+        let new_root_ix = node_ix(&tree, &new_root_id);
+        let new_leaf_ix = node_ix(&tree, &new_leaf_id);
+        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(tree.ix_of(&removed_id), None);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &third_id), third_ix);
+        assert_eq!(mount_revision(&tree, &first_id), first_revision);
+        assert_eq!(mount_revision(&tree, &third_id), third_revision);
+        assert_eq!(mount_revision(&tree, &new_root_id), tree.revision());
+        assert_eq!(mount_revision(&tree, &new_leaf_id), tree.revision());
+        assert_eq!(
+            tree.child_ixs(parent_ix),
+            vec![first_ix, new_root_ix, third_ix]
+        );
+        assert_eq!(tree.child_ixs(new_root_ix), vec![new_leaf_ix]);
+    }
+
+    #[test]
+    fn test_animated_remove_keeps_live_ixs_stable_while_adding_ghost() {
+        let parent_id = NodeId::from_term_bytes(vec![19]);
+        let first_id = NodeId::from_term_bytes(vec![20]);
+        let removed_id = NodeId::from_term_bytes(vec![21]);
+        let third_id = NodeId::from_term_bytes(vec![22]);
+
+        let mut removed = text_element(21, "removed");
+        removed.layout.effective.animate_exit = Some(exit_alpha_spec());
+        removed.spec.declared.animate_exit = Some(exit_alpha_spec());
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(plain_element(19));
+        tree.insert(text_element(20, "first"));
+        tree.insert(removed);
+        tree.insert(text_element(22, "third"));
+        tree.set_children(
+            &parent_id,
+            vec![first_id.clone(), removed_id.clone(), third_id.clone()],
+        )
+        .unwrap();
+
+        let parent_ix = node_ix(&tree, &parent_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let third_ix = node_ix(&tree, &third_id);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::Remove {
+                id: removed_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.ix_of(&removed_id), None);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &third_id), third_ix);
+
+        let child_ids = tree.child_ids(&parent_id);
+        assert_eq!(child_ids.len(), 3);
+        assert_eq!(child_ids[0], first_id);
+        assert_eq!(child_ids[2], third_id);
+
+        let ghost_id = child_ids[1];
+        let ghost_ix = node_ix(&tree, &ghost_id);
+        assert!(tree.get(&ghost_id).unwrap().is_ghost_root());
+        assert_eq!(
+            tree.child_ixs(parent_ix),
+            vec![first_ix, ghost_ix, third_ix]
+        );
+        assert_eq!(
+            tree.parent_link_of(first_ix),
+            Some(ParentLink::Child { parent: parent_ix })
+        );
+        assert_eq!(
+            tree.parent_link_of(third_ix),
+            Some(ParentLink::Child { parent: parent_ix })
+        );
+    }
+
+    #[test]
+    fn test_animated_nearby_remove_keeps_live_ixs_stable_while_adding_ghost() {
+        let host_id = NodeId::from_term_bytes(vec![71]);
+        let first_id = NodeId::from_term_bytes(vec![72]);
+        let removed_id = NodeId::from_term_bytes(vec![73]);
+        let third_id = NodeId::from_term_bytes(vec![74]);
+
+        let mut removed = text_element(73, "removed nearby");
+        removed.layout.effective.animate_exit = Some(exit_alpha_spec());
+        removed.spec.declared.animate_exit = Some(exit_alpha_spec());
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id.clone());
+        tree.insert(plain_element(71));
+        tree.insert(text_element(72, "first"));
+        tree.insert(removed);
+        tree.insert(text_element(74, "third"));
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![
+                NearbyMount {
+                    slot: NearbySlot::Above,
+                    id: first_id.clone(),
+                },
+                NearbyMount {
+                    slot: NearbySlot::Below,
+                    id: removed_id.clone(),
+                },
+                NearbyMount {
+                    slot: NearbySlot::InFront,
+                    id: third_id.clone(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let host_ix = node_ix(&tree, &host_id);
+        let first_ix = node_ix(&tree, &first_id);
+        let third_ix = node_ix(&tree, &third_id);
+
+        apply_patches(
+            &mut tree,
+            vec![Patch::Remove {
+                id: removed_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(tree.ix_of(&removed_id), None);
+        assert_eq!(node_ix(&tree, &first_id), first_ix);
+        assert_eq!(node_ix(&tree, &third_id), third_ix);
+
+        let mount_ids = tree.nearby_mounts_for(&host_id);
+        assert_eq!(mount_ids.len(), 3);
+        assert_eq!(mount_ids[0].id, first_id);
+        assert_eq!(mount_ids[0].slot, NearbySlot::Above);
+        assert_eq!(mount_ids[2].id, third_id);
+        assert_eq!(mount_ids[2].slot, NearbySlot::InFront);
+
+        let ghost_id = mount_ids[1].id;
+        let ghost_ix = node_ix(&tree, &ghost_id);
+        assert_eq!(mount_ids[1].slot, NearbySlot::Below);
+        assert!(tree.get(&ghost_id).unwrap().is_ghost_root());
+        assert_eq!(
+            tree.nearby_ixs(host_ix),
+            vec![
+                NearbyMountIx {
+                    slot: NearbySlot::Above,
+                    ix: first_ix,
+                },
+                NearbyMountIx {
+                    slot: NearbySlot::Below,
+                    ix: ghost_ix,
+                },
+                NearbyMountIx {
+                    slot: NearbySlot::InFront,
+                    ix: third_ix,
+                },
+            ]
+        );
+        assert_eq!(
+            tree.parent_link_of(first_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::Above,
+            })
+        );
+        assert_eq!(
+            tree.parent_link_of(third_ix),
+            Some(ParentLink::Nearby {
+                host: host_ix,
+                slot: NearbySlot::InFront,
+            })
+        );
     }
 
     #[test]
