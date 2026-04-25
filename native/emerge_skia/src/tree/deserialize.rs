@@ -149,9 +149,7 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
     let mut tree = ElementTree::new();
 
     // First node is the root
-    if let Some(first) = raw_nodes.first() {
-        tree.set_root_id(first.id);
-    }
+    let root_id = raw_nodes.first().map(|first| first.id);
 
     // Insert all nodes first so child/nearby references can resolve in a second pass.
     let mut topology_updates = Vec::with_capacity(raw_nodes.len());
@@ -168,6 +166,10 @@ pub fn decode_tree(data: &[u8]) -> Result<ElementTree, DecodeError> {
             .map_err(DecodeError::InvalidStructure)?;
         tree.set_nearby_mounts(&id, nearby_mounts)
             .map_err(DecodeError::InvalidStructure)?;
+    }
+
+    if let Some(root_id) = root_id {
+        tree.set_root_id(root_id);
     }
 
     Ok(tree)
@@ -276,9 +278,9 @@ mod tests {
         let tree = decode_tree(&data).unwrap();
         assert_eq!(tree.len(), 1);
 
-        let root_id = tree.root.as_ref().unwrap();
-        let root = tree.get(root_id).unwrap();
-        assert_eq!(root.kind, ElementKind::El);
+        let root_id = tree.root_id().unwrap();
+        let root = tree.get(&root_id).unwrap();
+        assert_eq!(root.spec.kind, ElementKind::El);
         assert!(root.children.is_empty());
     }
 
@@ -307,10 +309,10 @@ mod tests {
         data.extend_from_slice(&0u16.to_be_bytes());
 
         let tree = decode_tree(&data).unwrap();
-        let root_id = tree.root.as_ref().unwrap();
-        let root = tree.get(root_id).unwrap();
+        let root_id = tree.root_id().unwrap();
+        let root = tree.get(&root_id).unwrap();
 
-        assert_eq!(root.kind, ElementKind::Column);
-        assert_eq!(root.attrs.spacing, Some(10.0));
+        assert_eq!(root.spec.kind, ElementKind::Column);
+        assert_eq!(root.layout.effective.spacing, Some(10.0));
     }
 }

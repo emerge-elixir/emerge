@@ -229,11 +229,11 @@ fn build_element_subtree(
     let Some(element) = tree.get_ix(ix) else {
         return RenderSubtree::default();
     };
-    let Some(frame) = element.frame else {
+    let Some(frame) = element.layout.frame else {
         return RenderSubtree::default();
     };
 
-    let attrs = &element.attrs;
+    let attrs = &element.layout.effective;
     let radius = attrs.border_radius.as_ref();
     let scene_state = resolve_node_state(element, traversal.scene_ctx.clone());
     let render_frame = scene_state
@@ -271,7 +271,7 @@ fn build_element_subtree(
     let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
     let inherited_self_clip = traversal.render_ctx.nearest_self_clip();
 
-    if matches!(element.kind, ElementKind::Image | ElementKind::Video) {
+    if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video) {
         let mut decorative_nodes = Vec::new();
         decorative_nodes.extend(background_nodes);
         decorative_nodes.extend(inset_shadow_nodes);
@@ -324,7 +324,7 @@ fn build_host_content_subtree(
     traversal: RenderTraversal<'_>,
     scene_state: Option<ResolvedNodeState>,
 ) -> RenderSubtree {
-    let attrs = &element.attrs;
+    let attrs = &element.layout.effective;
     let current_host_clip = HostClipDescriptor {
         clip: scene_state
             .as_ref()
@@ -345,7 +345,7 @@ fn build_host_content_subtree(
 
     let mut subtree = RenderSubtree::default();
 
-    if element.kind == ElementKind::Paragraph {
+    if element.spec.kind == ElementKind::Paragraph {
         for mount in tree.local_nearby_mounts_ix(element_ix) {
             let branch_subtree = build_nearby_mount_subtree(
                 tree,
@@ -412,11 +412,11 @@ fn build_host_content_subtree(
             outputs.text_input_cursor_area,
         ),
         attrs,
-        element.kind,
+        element.spec.kind,
         current_host_clip.clip,
     ));
 
-    if element.kind == ElementKind::Paragraph {
+    if element.spec.kind == ElementKind::Paragraph {
         let paragraph_subtree = build_paragraph_subtree(
             tree,
             element,
@@ -518,7 +518,7 @@ fn build_paragraph_subtree(
     });
 
     let mut fragment_nodes = Vec::new();
-    if let Some(fragments) = &element.attrs.paragraph_fragments {
+    if let Some(fragments) = &element.layout.paragraph_fragments {
         for frag in fragments {
             let x = frag.x + fragment_offset.0;
             let baseline_y = frag.y + fragment_offset.1 + frag.ascent;
@@ -573,30 +573,42 @@ fn build_own_content_nodes(
 ) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
 
-    match element.kind {
+    match element.spec.kind {
         ElementKind::Text => nodes.extend(render_text_items(frame, attrs, inherited)),
         ElementKind::TextInput => {
-            if attrs.text_input_focused.unwrap_or(false) {
+            if element.runtime.text_input_focused {
                 *text_input_focused = true;
             }
 
             if text_input_cursor_area.is_none() {
                 *text_input_cursor_area =
-                    render_text_input_items(&mut nodes, frame, attrs, inherited);
+                    render_text_input_items(&mut nodes, frame, attrs, &element.runtime, inherited);
             } else {
-                let _ = render_text_input_items(&mut nodes, frame, attrs, inherited);
+                let _ =
+                    render_text_input_items(&mut nodes, frame, attrs, &element.runtime, inherited);
             }
         }
         ElementKind::Multiline => {
-            if attrs.text_input_focused.unwrap_or(false) {
+            if element.runtime.text_input_focused {
                 *text_input_focused = true;
             }
 
             if text_input_cursor_area.is_none() {
-                *text_input_cursor_area =
-                    render_multiline_text_input_items(&mut nodes, frame, attrs, inherited);
+                *text_input_cursor_area = render_multiline_text_input_items(
+                    &mut nodes,
+                    frame,
+                    attrs,
+                    &element.runtime,
+                    inherited,
+                );
             } else {
-                let _ = render_multiline_text_input_items(&mut nodes, frame, attrs, inherited);
+                let _ = render_multiline_text_input_items(
+                    &mut nodes,
+                    frame,
+                    attrs,
+                    &element.runtime,
+                    inherited,
+                );
             }
         }
         ElementKind::Image => nodes.extend(render_image_nodes(frame, attrs)),
@@ -712,7 +724,7 @@ fn wrap_with_alpha(nodes: Vec<RenderNode>, alpha: f32) -> Vec<RenderNode> {
 
 fn scene_bounds_for_root(tree: &ElementTree, root: NodeIx) -> Rect {
     tree.get_ix(root)
-        .and_then(|element| element.frame)
+        .and_then(|element| element.layout.frame)
         .map(Rect::from_frame)
         .unwrap_or_default()
 }

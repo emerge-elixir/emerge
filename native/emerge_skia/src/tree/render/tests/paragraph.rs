@@ -103,7 +103,7 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
         para_attrs,
     );
     paragraph.children = vec![float_id.clone()];
-    paragraph.frame = Some(Frame {
+    paragraph.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -117,7 +117,7 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     float_attrs.background = Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 }));
     let mut float_el =
         Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
-    float_el.frame = Some(Frame {
+    float_el.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -127,7 +127,7 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id.clone());
     tree.insert(paragraph);
     tree.insert(float_el);
 
@@ -176,7 +176,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         para_attrs,
     );
     paragraph.children = vec![inline_id.clone(), float_id.clone()];
-    paragraph.frame = Some(Frame {
+    paragraph.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -190,7 +190,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     float_attrs.on_mouse_down = Some(true);
     let mut float_el =
         Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
-    float_el.frame = Some(Frame {
+    float_el.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -207,7 +207,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         Vec::new(),
         inline_attrs,
     );
-    inline_el.frame = Some(Frame {
+    inline_el.layout.frame = Some(Frame {
         x: 24.0,
         y: 8.0,
         width: 32.0,
@@ -219,7 +219,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     let direct_elements = vec![paragraph.clone(), float_el.clone(), inline_el.clone()];
 
     let mut tree = ElementTree::new();
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id.clone());
     tree.insert(paragraph);
     tree.insert(float_el);
     tree.insert(inline_el);

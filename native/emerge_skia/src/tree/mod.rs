@@ -12,6 +12,7 @@ pub mod attrs;
 pub mod deserialize;
 pub mod element;
 pub mod geometry;
+pub mod invalidation;
 pub mod layout;
 pub mod patch;
 pub mod render;

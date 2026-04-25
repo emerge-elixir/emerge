@@ -18,7 +18,7 @@ fn test_layout_preserves_scroll_offsets() {
     let child_id = child.id.clone();
     root.children = vec![child_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(child);
 
@@ -28,8 +28,8 @@ fn test_layout_preserves_scroll_offsets() {
         1.0,
         &MockTextMeasurer,
     );
-    let first = tree.get(&root_id).unwrap().attrs.scroll_y;
-    assert_eq!(first, Some(40.0));
+    let first = tree.get(&root_id).unwrap().layout.scroll_y;
+    assert_eq!(first, 40.0);
 
     layout_tree(
         &mut tree,
@@ -37,8 +37,8 @@ fn test_layout_preserves_scroll_offsets() {
         1.0,
         &MockTextMeasurer,
     );
-    let second = tree.get(&root_id).unwrap().attrs.scroll_y;
-    assert_eq!(second, Some(40.0));
+    let second = tree.get(&root_id).unwrap().layout.scroll_y;
+    assert_eq!(second, 40.0);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn test_layout_scroll_offset_clamps_when_max_shrinks() {
     let child_id = child.id.clone();
     root.children = vec![child_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(child);
 
@@ -73,8 +73,8 @@ fn test_layout_scroll_offset_clamps_when_max_shrinks() {
         &MockTextMeasurer,
     );
     let first = tree.get(&root_id).unwrap();
-    assert_eq!(first.attrs.scroll_x_max, Some(100.0));
-    assert_eq!(first.attrs.scroll_x, Some(60.0));
+    assert_eq!(first.layout.scroll_x_max, 100.0);
+    assert_eq!(first.layout.scroll_x, 60.0);
 
     layout_tree(
         &mut tree,
@@ -83,8 +83,8 @@ fn test_layout_scroll_offset_clamps_when_max_shrinks() {
         &MockTextMeasurer,
     );
     let second = tree.get(&root_id).unwrap();
-    assert_eq!(second.attrs.scroll_x_max, Some(0.0));
-    assert_eq!(second.attrs.scroll_x, Some(0.0));
+    assert_eq!(second.layout.scroll_x_max, 0.0);
+    assert_eq!(second.layout.scroll_x, 0.0);
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
     let child_id = child.id.clone();
     root.children = vec![child_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(child);
 
@@ -119,8 +119,8 @@ fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
         &MockTextMeasurer,
     );
     let first = tree.get(&root_id).unwrap();
-    assert_eq!(first.attrs.scroll_x_max, Some(0.0));
-    assert_eq!(first.attrs.scroll_x, Some(0.0));
+    assert_eq!(first.layout.scroll_x_max, 0.0);
+    assert_eq!(first.layout.scroll_x, 0.0);
 
     layout_tree(
         &mut tree,
@@ -129,8 +129,8 @@ fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
         &MockTextMeasurer,
     );
     let second = tree.get(&root_id).unwrap();
-    assert_eq!(second.attrs.scroll_x_max, Some(100.0));
-    assert_eq!(second.attrs.scroll_x, Some(0.0));
+    assert_eq!(second.layout.scroll_x_max, 100.0);
+    assert_eq!(second.layout.scroll_x, 0.0);
 }
 
 #[test]
@@ -140,13 +140,12 @@ fn test_layout_clears_scroll_when_scrollbar_disabled() {
     let mut attrs = Attrs::default();
     attrs.scrollbar_x = Some(false);
     attrs.scroll_x = Some(30.0);
-    attrs.scroll_x_max = Some(80.0);
     attrs.width = Some(Length::Px(100.0));
     attrs.height = Some(Length::Px(100.0));
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id.clone();
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
 
     layout_tree(
@@ -156,8 +155,8 @@ fn test_layout_clears_scroll_when_scrollbar_disabled() {
         &MockTextMeasurer,
     );
     let root = tree.get(&root_id).unwrap();
-    assert_eq!(root.attrs.scroll_x, None);
-    assert_eq!(root.attrs.scroll_x_max, None);
+    assert_eq!(root.layout.scroll_x, 0.0);
+    assert_eq!(root.layout.scroll_x_max, 0.0);
 }
 
 #[test]
@@ -199,7 +198,7 @@ fn test_scrollable_el_uses_child_frame_height_for_content() {
     col.children = vec![top_id.clone(), bottom_id.clone()];
     el.children = vec![col_id.clone()];
 
-    tree.root = Some(el_id.clone());
+    tree.set_root_id(el_id.clone());
     tree.insert(el);
     tree.insert(col);
     tree.insert(top);
@@ -212,8 +211,8 @@ fn test_scrollable_el_uses_child_frame_height_for_content() {
         &MockTextMeasurer,
     );
 
-    let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let el_frame = tree.get(&el_id).unwrap().layout.frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
 
     // Column includes spacing between top and bottom alignment zones.
     assert_eq!(col_frame.height, 50.0);
@@ -222,8 +221,8 @@ fn test_scrollable_el_uses_child_frame_height_for_content() {
     // Scrollable parent should size content from child frame height.
     assert_eq!(el_frame.content_height, 50.0);
 
-    let el_attrs = &tree.get(&el_id).unwrap().attrs;
-    assert_eq!(el_attrs.scroll_y_max, Some(20.0));
+    let el_layout = &tree.get(&el_id).unwrap().layout;
+    assert_eq!(el_layout.scroll_y_max, 20.0);
 }
 
 #[test]
@@ -236,9 +235,7 @@ fn test_layout_clears_only_disabled_scroll_axis() {
     attrs.scrollbar_x = Some(true);
     attrs.scrollbar_y = Some(false);
     attrs.scroll_x = Some(12.0);
-    attrs.scroll_x_max = Some(200.0);
     attrs.scroll_y = Some(15.0);
-    attrs.scroll_y_max = Some(99.0);
 
     let mut root = make_element("root", ElementKind::El, attrs);
     let child = make_element("child", ElementKind::El, {
@@ -252,7 +249,7 @@ fn test_layout_clears_only_disabled_scroll_axis() {
     let child_id = child.id.clone();
     root.children = vec![child_id.clone()];
 
-    tree.root = Some(root_id.clone());
+    tree.set_root_id(root_id.clone());
     tree.insert(root);
     tree.insert(child);
 
@@ -263,13 +260,13 @@ fn test_layout_clears_only_disabled_scroll_axis() {
         &MockTextMeasurer,
     );
 
-    let attrs = &tree.get(&root_id).unwrap().attrs;
+    let layout = &tree.get(&root_id).unwrap().layout;
 
     // X axis stays active and clamped.
-    assert_eq!(attrs.scroll_x, Some(12.0));
-    assert_eq!(attrs.scroll_x_max, Some(200.0));
+    assert_eq!(layout.scroll_x, 12.0);
+    assert_eq!(layout.scroll_x_max, 200.0);
 
     // Disabled Y axis is cleared.
-    assert_eq!(attrs.scroll_y, None);
-    assert_eq!(attrs.scroll_y_max, None);
+    assert_eq!(layout.scroll_y, 0.0);
+    assert_eq!(layout.scroll_y_max, 0.0);
 }

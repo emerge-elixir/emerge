@@ -73,10 +73,10 @@ fn build_scroll_panel_with_cards(
 ) -> ElementTree {
     let panel_id = NodeId::from_term_bytes(vec![90]);
     let mut panel = Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
-    panel.frame = Some(panel_frame);
+    panel.layout.frame = Some(panel_frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(panel_id.clone());
+    tree.set_root_id(panel_id.clone());
 
     let child_ids = cards
         .iter()
@@ -87,7 +87,7 @@ fn build_scroll_panel_with_cards(
 
     for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids.into_iter()) {
         let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), attrs);
-        child.frame = Some(frame);
+        child.layout.frame = Some(frame);
         tree.insert(child);
         let _ = id_byte;
     }
@@ -213,7 +213,7 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     attrs.image_fit = Some(ImageFit::Contain);
 
     let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -223,7 +223,7 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -735,7 +735,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     });
 
     let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -745,7 +745,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -771,7 +771,7 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     attrs.svg_expected = Some(true);
 
     let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -781,7 +781,7 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -1405,7 +1405,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
 
         let mut panel =
             Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
-        panel.frame = Some(panel_frame);
+        panel.layout.frame = Some(panel_frame);
         panel.children = vec![column_id.clone()];
 
         let mut column = Element::with_attrs(
@@ -1414,7 +1414,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             Vec::new(),
             column_attrs,
         );
-        column.frame = Some(column_frame);
+        column.layout.frame = Some(column_frame);
         column.children = vec![glow_row_id.clone(), combined_row_id.clone()];
 
         let mut glow_row = Element::with_attrs(
@@ -1423,7 +1423,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             Vec::new(),
             glow_row_attrs,
         );
-        glow_row.frame = Some(glow_row_frame);
+        glow_row.layout.frame = Some(glow_row_frame);
         glow_row.children = glow_cards
             .iter()
             .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
@@ -1435,14 +1435,14 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             Vec::new(),
             combined_row_attrs,
         );
-        combined_row.frame = Some(combined_row_frame);
+        combined_row.layout.frame = Some(combined_row_frame);
         combined_row.children = combined_cards
             .iter()
             .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
             .collect();
 
         let mut tree = ElementTree::new();
-        tree.root = Some(panel_id);
+        tree.set_root_id(panel_id);
         tree.insert(panel);
         tree.insert(column);
         tree.insert(glow_row);
@@ -1451,7 +1451,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
             let id = NodeId::from_term_bytes(vec![id]);
             let mut child = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-            child.frame = Some(frame);
+            child.layout.frame = Some(frame);
             tree.insert(child);
         }
 

@@ -33,10 +33,10 @@ fn encode_header(node_count: u32) -> Vec<u8> {
 fn encode_node(out: &mut Vec<u8>, tree: &ElementTree, element: &Element) {
     encode_id(out, &element.id);
 
-    let tag = kind_tag(element.kind);
+    let tag = kind_tag(element.spec.kind);
     out.push(tag);
 
-    encode_attrs(out, &element.attrs_raw);
+    encode_attrs(out, &element.spec.attrs_raw);
     let live_children = tree.live_child_ids(&element.id);
     encode_children(out, &live_children);
     encode_nearby(out, tree, element);

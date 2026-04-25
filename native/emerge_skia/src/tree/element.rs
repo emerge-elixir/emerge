@@ -3,7 +3,9 @@
 use super::animation::AnimationSpec;
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
-use super::attrs::{Attrs, ScrollbarHoverAxis, supports_mouse_over_tracking};
+use super::attrs::{Attrs, ScrollbarHoverAxis, TextFragment, supports_mouse_over_tracking};
+use super::invalidation::{TreeInvalidation, classify_interaction_style};
+#[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -328,23 +330,10 @@ pub struct Element {
     /// Unique identifier for this element.
     pub id: NodeId,
 
-    /// The type of element (row, column, el, text, etc).
-    pub kind: ElementKind,
-
-    /// Raw attributes as binary (EMRG format).
-    pub attrs_raw: Vec<u8>,
-
-    /// Original unscaled attributes (as received from Elixir).
-    pub base_attrs: Attrs,
-
-    /// Scaled attributes (populated by layout pass, used by render).
-    pub attrs: Attrs,
-
-    /// Runtime-only origin label for current text-input content.
-    pub text_input_content_origin: TextInputContentOrigin,
-
-    /// Runtime-only pending patch content for focused text inputs.
-    pub patch_content: Option<String>,
+    pub spec: NodeSpec,
+    pub runtime: NodeRuntime,
+    pub layout: NodeLayoutState,
+    pub lifecycle: NodeLifecycle,
 
     /// Child element IDs (order matters).
     #[cfg(test)]
@@ -357,6 +346,46 @@ pub struct Element {
     /// Host-owned nearby mount roots.
     #[cfg(test)]
     pub nearby: NearbyMounts,
+}
+
+pub type NodeRecord = Element;
+
+#[derive(Clone, Debug)]
+pub struct NodeSpec {
+    /// The type of element (row, column, el, text, etc).
+    pub kind: ElementKind,
+
+    /// Raw attributes as binary (EMRG format).
+    pub attrs_raw: Vec<u8>,
+
+    /// Original unscaled attributes (as received from Elixir).
+    pub declared: Attrs,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NodeRuntime {
+    /// Runtime-only origin label for current text-input content.
+    pub text_input_content_origin: TextInputContentOrigin,
+
+    /// Runtime-only pending patch content for focused text inputs.
+    pub patch_content: Option<String>,
+
+    pub text_input_focused: bool,
+    pub text_input_cursor: Option<u32>,
+    pub text_input_selection_anchor: Option<u32>,
+    pub text_input_preedit: Option<String>,
+    pub text_input_preedit_cursor: Option<(u32, u32)>,
+
+    pub mouse_over_active: bool,
+    pub mouse_down_active: bool,
+    pub focused_active: bool,
+    pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NodeLayoutState {
+    /// Scaled attributes (populated by layout pass, used by render).
+    pub effective: Attrs,
 
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
@@ -364,6 +393,15 @@ pub struct Element {
     /// Intrinsic frame captured during measurement pass before resolution mutates `frame`.
     pub measured_frame: Option<Frame>,
 
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+    pub scroll_x_max: f32,
+    pub scroll_y_max: f32,
+    pub paragraph_fragments: Option<Vec<TextFragment>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NodeLifecycle {
     /// Tree revision when this element was last mounted into the tree.
     pub mounted_at_revision: u64,
 
@@ -381,11 +419,16 @@ pub struct Element {
 }
 
 #[derive(Clone, Debug, Default)]
+struct NodeTopology {
+    parent: Option<ParentLink>,
+    children: Vec<NodeIx>,
+    paint_children: Vec<NodeIx>,
+    nearby: Vec<NearbyMountIx>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct TreeTopology {
-    parents: Vec<Option<ParentLink>>,
-    children: Vec<Vec<NodeIx>>,
-    paint_children: Vec<Vec<NodeIx>>,
-    nearby: Vec<Vec<NearbyMountIx>>,
+    nodes: Vec<NodeTopology>,
 }
 
 impl Element {
@@ -394,38 +437,198 @@ impl Element {
     pub fn with_attrs(id: NodeId, kind: ElementKind, attrs_raw: Vec<u8>, attrs: Attrs) -> Self {
         Self {
             id,
-            kind,
-            attrs_raw,
-            base_attrs: attrs.clone(),
-            attrs,
-            text_input_content_origin: TextInputContentOrigin::TreePatch,
-            patch_content: None,
+            spec: NodeSpec {
+                kind,
+                attrs_raw,
+                declared: attrs.clone(),
+            },
+            runtime: NodeRuntime {
+                text_input_content_origin: TextInputContentOrigin::TreePatch,
+                patch_content: None,
+                #[cfg(test)]
+                text_input_focused: attrs.text_input_focused.unwrap_or(false),
+                #[cfg(not(test))]
+                text_input_focused: false,
+                #[cfg(test)]
+                text_input_cursor: attrs.text_input_cursor,
+                #[cfg(not(test))]
+                text_input_cursor: None,
+                #[cfg(test)]
+                text_input_selection_anchor: attrs.text_input_selection_anchor,
+                #[cfg(not(test))]
+                text_input_selection_anchor: None,
+                #[cfg(test)]
+                text_input_preedit: attrs.text_input_preedit.clone(),
+                #[cfg(not(test))]
+                text_input_preedit: None,
+                #[cfg(test)]
+                text_input_preedit_cursor: attrs.text_input_preedit_cursor,
+                #[cfg(not(test))]
+                text_input_preedit_cursor: None,
+                #[cfg(test)]
+                mouse_over_active: attrs.mouse_over_active.unwrap_or(false),
+                #[cfg(not(test))]
+                mouse_over_active: false,
+                #[cfg(test)]
+                mouse_down_active: attrs.mouse_down_active.unwrap_or(false),
+                #[cfg(not(test))]
+                mouse_down_active: false,
+                #[cfg(test)]
+                focused_active: attrs.focused_active.unwrap_or(false),
+                #[cfg(not(test))]
+                focused_active: false,
+                #[cfg(test)]
+                scrollbar_hover_axis: attrs.scrollbar_hover_axis,
+                #[cfg(not(test))]
+                scrollbar_hover_axis: None,
+            },
+            layout: NodeLayoutState {
+                scroll_x: attrs.scroll_x.unwrap_or(0.0) as f32,
+                scroll_y: attrs.scroll_y.unwrap_or(0.0) as f32,
+                #[cfg(test)]
+                scroll_x_max: attrs.scroll_x_max.unwrap_or(0.0) as f32,
+                #[cfg(not(test))]
+                scroll_x_max: 0.0,
+                #[cfg(test)]
+                scroll_y_max: attrs.scroll_y_max.unwrap_or(0.0) as f32,
+                #[cfg(not(test))]
+                scroll_y_max: 0.0,
+                #[cfg(test)]
+                paragraph_fragments: attrs.paragraph_fragments.clone(),
+                #[cfg(not(test))]
+                paragraph_fragments: None,
+                effective: attrs,
+                frame: None,
+                measured_frame: None,
+            },
+            lifecycle: NodeLifecycle {
+                mounted_at_revision: 0,
+                residency: NodeResidency::Live,
+                ghost_attachment: None,
+                ghost_capture_scale: None,
+                ghost_exit_animation: None,
+            },
             #[cfg(test)]
             children: Vec::new(),
             #[cfg(test)]
             paint_children: Vec::new(),
             #[cfg(test)]
             nearby: NearbyMounts::default(),
-            frame: None,
-            measured_frame: None,
-            mounted_at_revision: 0,
-            residency: NodeResidency::Live,
-            ghost_attachment: None,
-            ghost_capture_scale: None,
-            ghost_exit_animation: None,
         }
     }
 
     pub fn is_live(&self) -> bool {
-        matches!(self.residency, NodeResidency::Live)
+        matches!(self.lifecycle.residency, NodeResidency::Live)
     }
 
     pub fn is_ghost(&self) -> bool {
-        matches!(self.residency, NodeResidency::Ghost)
+        matches!(self.lifecycle.residency, NodeResidency::Ghost)
     }
 
     pub fn is_ghost_root(&self) -> bool {
-        self.is_ghost() && self.ghost_attachment.is_some()
+        self.is_ghost() && self.lifecycle.ghost_attachment.is_some()
+    }
+
+    pub fn normalize_extracted_state(&mut self) {
+        let attrs = &mut self.layout.effective;
+
+        if self.spec.kind.is_text_input_family() {
+            let content_len = attrs
+                .content
+                .as_ref()
+                .map(|content| text_char_len(content))
+                .unwrap_or(0);
+
+            if let Some(cursor) = self.runtime.text_input_cursor {
+                self.runtime.text_input_cursor = Some(cursor.min(content_len));
+            } else if self.runtime.text_input_focused {
+                self.runtime.text_input_cursor = Some(content_len);
+            }
+
+            let cursor = self.runtime.text_input_cursor.unwrap_or(content_len);
+
+            if let Some(anchor) = self.runtime.text_input_selection_anchor {
+                let clamped = anchor.min(content_len);
+                self.runtime.text_input_selection_anchor =
+                    if !self.runtime.text_input_focused || clamped == cursor {
+                        None
+                    } else {
+                        Some(clamped)
+                    };
+            } else if !self.runtime.text_input_focused {
+                self.runtime.text_input_selection_anchor = None;
+            }
+
+            if !self.runtime.text_input_focused {
+                self.runtime.text_input_preedit = None;
+                self.runtime.text_input_preedit_cursor = None;
+            } else {
+                self.runtime.text_input_preedit = self
+                    .runtime
+                    .text_input_preedit
+                    .take()
+                    .filter(|value| !value.is_empty());
+                self.runtime.text_input_preedit_cursor = normalize_preedit_cursor(
+                    self.runtime.text_input_preedit.as_deref(),
+                    self.runtime.text_input_preedit_cursor,
+                );
+            }
+        } else {
+            self.runtime.text_input_focused = false;
+            self.runtime.text_input_cursor = None;
+            self.runtime.text_input_selection_anchor = None;
+            self.runtime.text_input_preedit = None;
+            self.runtime.text_input_preedit_cursor = None;
+        }
+
+        self.runtime.scrollbar_hover_axis = match self.runtime.scrollbar_hover_axis {
+            Some(ScrollbarHoverAxis::X) if attrs.scrollbar_x.unwrap_or(false) => {
+                Some(ScrollbarHoverAxis::X)
+            }
+            Some(ScrollbarHoverAxis::Y) if attrs.scrollbar_y.unwrap_or(false) => {
+                Some(ScrollbarHoverAxis::Y)
+            }
+            _ => None,
+        };
+
+        if let Some(scroll_x) = attrs.scroll_x {
+            self.layout.scroll_x = scroll_x as f32;
+        }
+        if let Some(scroll_y) = attrs.scroll_y {
+            self.layout.scroll_y = scroll_y as f32;
+        }
+
+        if !supports_mouse_over_tracking(attrs) {
+            self.runtime.mouse_over_active = false;
+        }
+
+        if attrs.mouse_down.is_none() {
+            self.runtime.mouse_down_active = false;
+        }
+
+        #[cfg(test)]
+        {
+            if self.spec.kind.is_text_input_family() {
+                attrs.text_input_focused = Some(self.runtime.text_input_focused);
+                attrs.text_input_cursor = self.runtime.text_input_cursor;
+                attrs.text_input_selection_anchor = self.runtime.text_input_selection_anchor;
+                attrs.text_input_preedit = self.runtime.text_input_preedit.clone();
+                attrs.text_input_preedit_cursor = self.runtime.text_input_preedit_cursor;
+            } else {
+                attrs.text_input_focused = None;
+                attrs.text_input_cursor = None;
+                attrs.text_input_selection_anchor = None;
+                attrs.text_input_preedit = None;
+                attrs.text_input_preedit_cursor = None;
+            }
+            attrs.scrollbar_hover_axis = self.runtime.scrollbar_hover_axis;
+            attrs.scroll_x_max = Some(self.layout.scroll_x_max as f64);
+            attrs.scroll_y_max = Some(self.layout.scroll_y_max as f64);
+            attrs.mouse_over_active = Some(self.runtime.mouse_over_active);
+            attrs.mouse_down_active = Some(self.runtime.mouse_down_active);
+            attrs.focused_active = Some(self.runtime.focused_active);
+            attrs.paragraph_fragments = self.layout.paragraph_fragments.clone();
+        }
     }
 
     #[cfg(test)]
@@ -456,7 +659,7 @@ impl Element {
             return;
         };
 
-        if self.kind == ElementKind::Paragraph {
+        if self.spec.kind == ElementKind::Paragraph {
             for child_ix in tree.child_ixs(ix) {
                 if paragraph_child_mode(tree, child_ix) == RetainedChildMode::Scope {
                     if let Some(id) = tree.id_of(child_ix) {
@@ -519,7 +722,7 @@ impl Element {
 fn paragraph_child_mode(tree: &ElementTree, child_ix: NodeIx) -> RetainedChildMode {
     let is_float_child = tree.get_ix(child_ix).is_some_and(|child| {
         matches!(
-            child.attrs.align_x,
+            child.layout.effective.align_x,
             Some(super::attrs::AlignX::Left | super::attrs::AlignX::Right)
         )
     });
@@ -543,11 +746,11 @@ pub struct ElementTree {
     /// Last layout scale applied to the tree.
     pub current_scale: f32,
 
-    /// Root element ID (if tree is non-empty).
-    pub root: Option<NodeId>,
+    /// Root element index (if tree is non-empty).
+    root: Option<NodeIx>,
 
     /// Dense node storage indexed by NodeIx.
-    pub nodes: Vec<Option<Element>>,
+    pub nodes: Vec<Option<NodeRecord>>,
 
     /// Shared node-id to internal index map.
     pub id_to_ix: HashMap<NodeId, NodeIx>,
@@ -555,7 +758,14 @@ pub struct ElementTree {
     /// Reusable free slots in the arena.
     pub free_list: Vec<NodeIx>,
 
+    pending_root_id: Option<NodeId>,
+
+    #[cfg(test)]
     topology: RefCell<TreeTopology>,
+    #[cfg(not(test))]
+    topology: TreeTopology,
+
+    #[cfg(test)]
     topology_dirty: Cell<bool>,
 }
 
@@ -569,7 +779,12 @@ impl Default for ElementTree {
             nodes: Vec::new(),
             id_to_ix: HashMap::new(),
             free_list: Vec::new(),
+            pending_root_id: None,
+            #[cfg(test)]
             topology: RefCell::new(TreeTopology::default()),
+            #[cfg(not(test))]
+            topology: TreeTopology::default(),
+            #[cfg(test)]
             topology_dirty: Cell::new(false),
         }
     }
@@ -597,12 +812,10 @@ impl ElementTree {
             return;
         }
 
-        let mut topology = TreeTopology {
-            parents: vec![None; self.nodes.len()],
-            children: vec![Vec::new(); self.nodes.len()],
-            paint_children: vec![Vec::new(); self.nodes.len()],
-            nearby: vec![Vec::new(); self.nodes.len()],
-        };
+        let mut topology = TreeTopology::default();
+        topology
+            .nodes
+            .resize(self.nodes.len(), NodeTopology::default());
 
         for (parent_ix, node) in self
             .nodes
@@ -615,10 +828,10 @@ impl ElementTree {
                 .iter()
                 .filter_map(|child_id| self.id_to_ix.get(child_id).copied())
                 .collect();
-            topology.children[parent_ix] = child_ixs.clone();
+            topology.nodes[parent_ix].children = child_ixs.clone();
 
             if !node.paint_children.is_empty() {
-                topology.paint_children[parent_ix] = node
+                topology.nodes[parent_ix].paint_children = node
                     .paint_children
                     .iter()
                     .filter_map(|child_id| self.id_to_ix.get(child_id).copied())
@@ -638,14 +851,14 @@ impl ElementTree {
                         })
                 })
                 .collect();
-            topology.nearby[parent_ix] = nearby_ixs.clone();
+            topology.nodes[parent_ix].nearby = nearby_ixs.clone();
 
             for child_ix in child_ixs {
-                topology.parents[child_ix] = Some(ParentLink::Child { parent: parent_ix });
+                topology.nodes[child_ix].parent = Some(ParentLink::Child { parent: parent_ix });
             }
 
             for mount in nearby_ixs {
-                topology.parents[mount.ix] = Some(ParentLink::Nearby {
+                topology.nodes[mount.ix].parent = Some(ParentLink::Nearby {
                     host: parent_ix,
                     slot: mount.slot,
                 });
@@ -660,11 +873,22 @@ impl ElementTree {
     pub fn ensure_topology(&self) {}
 
     pub fn root_ix(&self) -> Option<NodeIx> {
-        #[cfg(test)]
-        self.ensure_topology();
         self.root
-            .as_ref()
-            .and_then(|id| self.id_to_ix.get(id).copied())
+    }
+
+    pub fn root_id(&self) -> Option<NodeId> {
+        self.root
+            .and_then(|ix| self.id_of(ix))
+            .or(self.pending_root_id)
+    }
+
+    pub fn set_root_ix(&mut self, ix: NodeIx) {
+        assert!(self.get_ix(ix).is_some(), "root node not found at ix {ix}");
+        self.root = Some(ix);
+        self.pending_root_id = None;
+
+        #[cfg(test)]
+        self.mark_topology_dirty();
     }
 
     pub fn ix_of(&self, id: &NodeId) -> Option<NodeIx> {
@@ -685,28 +909,62 @@ impl ElementTree {
 
     pub fn parent_link_of(&self, ix: NodeIx) -> Option<ParentLink> {
         #[cfg(test)]
-        self.ensure_topology();
-        self.topology.borrow().parents.get(ix).copied().flatten()
+        {
+            self.ensure_topology();
+            self.topology
+                .borrow()
+                .nodes
+                .get(ix)
+                .and_then(|node| node.parent)
+        }
+        #[cfg(not(test))]
+        {
+            self.topology.nodes.get(ix).and_then(|node| node.parent)
+        }
     }
 
     pub fn child_ixs(&self, ix: NodeIx) -> Vec<NodeIx> {
         #[cfg(test)]
-        self.ensure_topology();
-        self.topology
-            .borrow()
-            .children
-            .get(ix)
-            .cloned()
-            .unwrap_or_default()
+        {
+            self.ensure_topology();
+            self.topology
+                .borrow()
+                .nodes
+                .get(ix)
+                .map(|node| node.children.clone())
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        {
+            self.topology
+                .nodes
+                .get(ix)
+                .map(|node| node.children.clone())
+                .unwrap_or_default()
+        }
     }
 
     pub fn paint_child_ixs(&self, ix: NodeIx) -> Vec<NodeIx> {
         #[cfg(test)]
-        self.ensure_topology();
-        let topology = self.topology.borrow();
-        let paint = topology.paint_children.get(ix).cloned().unwrap_or_default();
+        let paint = {
+            self.ensure_topology();
+            self.topology
+                .borrow()
+                .nodes
+                .get(ix)
+                .map(|node| node.paint_children.clone())
+                .unwrap_or_default()
+        };
+        #[cfg(not(test))]
+        let paint = self
+            .topology
+            .nodes
+            .get(ix)
+            .map(|node| node.paint_children.clone())
+            .unwrap_or_default();
+
         if paint.is_empty() {
-            topology.children.get(ix).cloned().unwrap_or_default()
+            self.child_ixs(ix)
         } else {
             paint
         }
@@ -714,13 +972,23 @@ impl ElementTree {
 
     pub fn nearby_ixs(&self, ix: NodeIx) -> Vec<NearbyMountIx> {
         #[cfg(test)]
-        self.ensure_topology();
-        self.topology
-            .borrow()
-            .nearby
-            .get(ix)
-            .cloned()
-            .unwrap_or_default()
+        {
+            self.ensure_topology();
+            self.topology
+                .borrow()
+                .nodes
+                .get(ix)
+                .map(|node| node.nearby.clone())
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        {
+            self.topology
+                .nodes
+                .get(ix)
+                .map(|node| node.nearby.clone())
+                .unwrap_or_default()
+        }
     }
 
     pub fn local_nearby_mounts_ix(&self, ix: NodeIx) -> Vec<NearbyMountIx> {
@@ -766,6 +1034,7 @@ impl ElementTree {
 
     /// Insert or update an element.
     pub fn insert(&mut self, element: Element) {
+        let element_id = element.id;
         if let Some(&ix) = self.id_to_ix.get(&element.id) {
             self.nodes[ix] = Some(element);
         } else if let Some(ix) = self.free_list.pop() {
@@ -779,6 +1048,14 @@ impl ElementTree {
             self.ensure_topology_capacity(ix);
         }
 
+        if self.pending_root_id == Some(element_id) {
+            let ix = self
+                .ix_of(&element_id)
+                .expect("newly inserted root id should resolve to ix");
+            self.root = Some(ix);
+            self.pending_root_id = None;
+        }
+
         #[cfg(test)]
         self.mark_topology_dirty();
     }
@@ -788,18 +1065,14 @@ impl ElementTree {
         let removed = self.nodes.get_mut(ix).and_then(|slot| slot.take());
         self.free_list.push(ix);
 
-        let topology = self.topology.get_mut();
-        if let Some(parent) = topology.parents.get_mut(ix) {
-            *parent = None;
+        #[cfg(test)]
+        if let Some(node) = self.topology.get_mut().nodes.get_mut(ix) {
+            *node = NodeTopology::default();
         }
-        if let Some(children) = topology.children.get_mut(ix) {
-            children.clear();
-        }
-        if let Some(children) = topology.paint_children.get_mut(ix) {
-            children.clear();
-        }
-        if let Some(nearby) = topology.nearby.get_mut(ix) {
-            nearby.clear();
+
+        #[cfg(not(test))]
+        if let Some(node) = self.topology.nodes.get_mut(ix) {
+            *node = NodeTopology::default();
         }
 
         #[cfg(test)]
@@ -845,7 +1118,7 @@ impl ElementTree {
     /// Stamp every live node as mounted at the provided revision.
     pub fn stamp_all_mounted_at_revision(&mut self, revision: u64) {
         self.iter_nodes_mut()
-            .for_each(|element| element.mounted_at_revision = revision);
+            .for_each(|element| element.lifecycle.mounted_at_revision = revision);
     }
 
     /// Replace this tree with a fully uploaded tree, advancing revision once.
@@ -856,6 +1129,7 @@ impl ElementTree {
         uploaded.current_scale = self.current_scale;
         uploaded.stamp_all_mounted_at_revision(revision);
         *self = uploaded;
+
         #[cfg(test)]
         self.mark_topology_dirty();
     }
@@ -863,7 +1137,7 @@ impl ElementTree {
     /// Returns true when the element was mounted after the provided revision.
     pub fn was_mounted_after(&self, id: &NodeId, revision: u64) -> bool {
         self.get(id)
-            .is_some_and(|element| element.mounted_at_revision > revision)
+            .is_some_and(|element| element.lifecycle.mounted_at_revision > revision)
     }
 
     /// Check if tree is empty.
@@ -880,18 +1154,29 @@ impl ElementTree {
     pub fn clear(&mut self) {
         self.bump_revision();
         self.root = None;
+        self.pending_root_id = None;
         self.id_to_ix.clear();
         self.nodes.clear();
         self.free_list.clear();
-        *self.topology.borrow_mut() = TreeTopology::default();
-        self.topology_dirty.set(false);
+        self.reset_topology();
+    }
+
+    pub fn clear_root(&mut self) {
+        self.root = None;
+        self.pending_root_id = None;
     }
 
     pub fn set_root_id(&mut self, id: NodeId) {
-        self.root = Some(id);
+        match self.ix_of(&id) {
+            Some(ix) => self.set_root_ix(ix),
+            None => {
+                self.root = None;
+                self.pending_root_id = Some(id);
 
-        #[cfg(test)]
-        self.mark_topology_dirty();
+                #[cfg(test)]
+                self.mark_topology_dirty();
+            }
+        }
     }
 
     pub fn child_ids(&self, parent_id: &NodeId) -> Vec<NodeId> {
@@ -1032,7 +1317,7 @@ impl ElementTree {
                     .into_iter()
                     .filter_map(|child_ix| {
                         let child = self.get_ix(child_ix)?;
-                        match child.ghost_attachment.as_ref() {
+                        match child.lifecycle.ghost_attachment.as_ref() {
                             Some(GhostAttachment::Child {
                                 parent_id: ghost_parent_id,
                                 live_index,
@@ -1101,7 +1386,7 @@ impl ElementTree {
                     .into_iter()
                     .filter_map(|mount| {
                         let nearby = self.get_ix(mount.ix)?;
-                        match nearby.ghost_attachment.as_ref() {
+                        match nearby.lifecycle.ghost_attachment.as_ref() {
                             Some(GhostAttachment::Nearby {
                                 host_id: ghost_host_id,
                                 mount_index,
@@ -1147,13 +1432,29 @@ impl ElementTree {
     }
 
     fn ensure_topology_capacity(&mut self, ix: NodeIx) {
-        let topology = self.topology.get_mut();
-        while topology.parents.len() <= ix {
-            topology.parents.push(None);
-            topology.children.push(Vec::new());
-            topology.paint_children.push(Vec::new());
-            topology.nearby.push(Vec::new());
+        #[cfg(test)]
+        {
+            let topology = self.topology.get_mut();
+            while topology.nodes.len() <= ix {
+                topology.nodes.push(NodeTopology::default());
+            }
         }
+
+        #[cfg(not(test))]
+        while self.topology.nodes.len() <= ix {
+            self.topology.nodes.push(NodeTopology::default());
+        }
+    }
+
+    #[cfg(test)]
+    fn reset_topology(&mut self) {
+        *self.topology.borrow_mut() = TreeTopology::default();
+        self.topology_dirty.set(false);
+    }
+
+    #[cfg(not(test))]
+    fn reset_topology(&mut self) {
+        self.topology = TreeTopology::default();
     }
 
     fn resolve_child_ixs(&self, child_ids: &[NodeId]) -> Result<Vec<NodeIx>, String> {
@@ -1168,194 +1469,220 @@ impl ElementTree {
 
     fn set_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
         self.ensure_topology_capacity(parent_ix);
-        let topology = self.topology.get_mut();
+        for &child_ix in &child_ixs {
+            self.ensure_topology_capacity(child_ix);
+        }
 
-        for old_child_ix in topology.children[parent_ix].drain(..) {
-            if matches!(topology.parents[old_child_ix], Some(ParentLink::Child { parent }) if parent == parent_ix)
+        #[cfg(test)]
+        let topology = self.topology.get_mut();
+        #[cfg(not(test))]
+        let topology = &mut self.topology;
+
+        for old_child_ix in std::mem::take(&mut topology.nodes[parent_ix].children) {
+            if matches!(topology.nodes[old_child_ix].parent, Some(ParentLink::Child { parent }) if parent == parent_ix)
             {
-                topology.parents[old_child_ix] = None;
+                topology.nodes[old_child_ix].parent = None;
             }
         }
 
         for &child_ix in &child_ixs {
-            topology.parents[child_ix] = Some(ParentLink::Child { parent: parent_ix });
+            topology.nodes[child_ix].parent = Some(ParentLink::Child { parent: parent_ix });
         }
 
-        topology.children[parent_ix] = child_ixs;
+        topology.nodes[parent_ix].children = child_ixs;
     }
 
     fn set_paint_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
         self.ensure_topology_capacity(parent_ix);
-        self.topology.get_mut().paint_children[parent_ix] = child_ixs;
+
+        #[cfg(test)]
+        {
+            self.topology.get_mut().nodes[parent_ix].paint_children = child_ixs;
+        }
+
+        #[cfg(not(test))]
+        {
+            self.topology.nodes[parent_ix].paint_children = child_ixs;
+        }
     }
 
     fn set_nearby_ixs(&mut self, host_ix: NodeIx, mounts: Vec<NearbyMountIx>) {
         self.ensure_topology_capacity(host_ix);
-        let topology = self.topology.get_mut();
+        for mount in &mounts {
+            self.ensure_topology_capacity(mount.ix);
+        }
 
-        for old_mount in topology.nearby[host_ix].drain(..) {
-            if matches!(topology.parents[old_mount.ix], Some(ParentLink::Nearby { host, .. }) if host == host_ix)
+        #[cfg(test)]
+        let topology = self.topology.get_mut();
+        #[cfg(not(test))]
+        let topology = &mut self.topology;
+
+        for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
+            if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
             {
-                topology.parents[old_mount.ix] = None;
+                topology.nodes[old_mount.ix].parent = None;
             }
         }
 
         for mount in &mounts {
-            topology.parents[mount.ix] = Some(ParentLink::Nearby {
+            topology.nodes[mount.ix].parent = Some(ParentLink::Nearby {
                 host: host_ix,
                 slot: mount.slot,
             });
         }
 
-        topology.nearby[host_ix] = mounts;
+        topology.nodes[host_ix].nearby = mounts;
     }
 
-    /// Apply scroll delta to an element. Returns true if scroll changed.
-    pub fn apply_scroll(&mut self, id: &NodeId, dx: f32, dy: f32) -> bool {
-        let mut changed = false;
+    /// Apply scroll delta to an element. Returns the required invalidation.
+    pub fn apply_scroll(&mut self, id: &NodeId, dx: f32, dy: f32) -> TreeInvalidation {
+        let mut invalidation = TreeInvalidation::None;
         if dx != 0.0 {
-            changed |= self.apply_scroll_x(id, dx);
+            invalidation.add(self.apply_scroll_x(id, dx));
         }
         if dy != 0.0 {
-            changed |= self.apply_scroll_y(id, dy);
+            invalidation.add(self.apply_scroll_y(id, dy));
         }
-        changed
+        invalidation
     }
 
-    /// Apply horizontal scroll delta to an element. Returns true if scroll changed.
-    pub fn apply_scroll_x(&mut self, id: &NodeId, dx: f32) -> bool {
+    /// Apply horizontal scroll delta to an element. Returns the required invalidation.
+    pub fn apply_scroll_x(&mut self, id: &NodeId, dx: f32) -> TreeInvalidation {
         self.apply_scroll_axis(id, dx, ScrollAxis::X)
     }
 
-    /// Apply vertical scroll delta to an element. Returns true if scroll changed.
-    pub fn apply_scroll_y(&mut self, id: &NodeId, dy: f32) -> bool {
+    /// Apply vertical scroll delta to an element. Returns the required invalidation.
+    pub fn apply_scroll_y(&mut self, id: &NodeId, dy: f32) -> TreeInvalidation {
         self.apply_scroll_axis(id, dy, ScrollAxis::Y)
     }
 
-    /// Set horizontal scrollbar thumb hover state. Returns true when state changes.
-    pub fn set_scrollbar_x_hover(&mut self, id: &NodeId, hovered: bool) -> bool {
+    /// Set horizontal scrollbar thumb hover state. Returns the required invalidation.
+    pub fn set_scrollbar_x_hover(&mut self, id: &NodeId, hovered: bool) -> TreeInvalidation {
         self.set_scrollbar_hover_axis(id, ScrollbarHoverAxis::X, hovered)
     }
 
-    /// Set vertical scrollbar thumb hover state. Returns true when state changes.
-    pub fn set_scrollbar_y_hover(&mut self, id: &NodeId, hovered: bool) -> bool {
+    /// Set vertical scrollbar thumb hover state. Returns the required invalidation.
+    pub fn set_scrollbar_y_hover(&mut self, id: &NodeId, hovered: bool) -> TreeInvalidation {
         self.set_scrollbar_hover_axis(id, ScrollbarHoverAxis::Y, hovered)
     }
 
-    /// Set mouse_over active state. Returns true when state changes.
-    pub fn set_mouse_over_active(&mut self, id: &NodeId, active: bool) -> bool {
+    /// Set mouse_over active state. Returns the required invalidation.
+    pub fn set_mouse_over_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        if !supports_mouse_over_tracking(&element.attrs) {
-            if element.attrs.mouse_over_active.take().is_some() {
-                return true;
-            }
-            return false;
+        if !supports_mouse_over_tracking(&element.layout.effective) {
+            let changed = element.runtime.mouse_over_active;
+            element.runtime.mouse_over_active = false;
+            return TreeInvalidation::when_changed(changed, TreeInvalidation::Registry);
         }
 
-        let current = element.attrs.mouse_over_active.unwrap_or(false);
+        let current = element.runtime.mouse_over_active;
         if current == active {
-            return false;
+            return TreeInvalidation::None;
         }
 
-        element.attrs.mouse_over_active = Some(active);
-        true
+        element.runtime.mouse_over_active = active;
+        classify_interaction_style(element.layout.effective.mouse_over.as_ref())
+            .join(TreeInvalidation::Registry)
     }
 
-    /// Set mouse_down active state. Returns true when state changes.
-    pub fn set_mouse_down_active(&mut self, id: &NodeId, active: bool) -> bool {
+    /// Set mouse_down active state. Returns the required invalidation.
+    pub fn set_mouse_down_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        if element.attrs.mouse_down.is_none() {
-            if element.attrs.mouse_down_active.take().is_some() {
-                return true;
-            }
-            return false;
+        if element.layout.effective.mouse_down.is_none() {
+            let changed = element.runtime.mouse_down_active;
+            element.runtime.mouse_down_active = false;
+            return TreeInvalidation::when_changed(changed, TreeInvalidation::Registry);
         }
 
-        let current = element.attrs.mouse_down_active.unwrap_or(false);
+        let current = element.runtime.mouse_down_active;
         if current == active {
-            return false;
+            return TreeInvalidation::None;
         }
 
-        element.attrs.mouse_down_active = Some(active);
-        true
+        element.runtime.mouse_down_active = active;
+        classify_interaction_style(element.layout.effective.mouse_down.as_ref())
+            .join(TreeInvalidation::Registry)
     }
 
-    /// Set focused active state. Returns true when state changes.
-    pub fn set_focused_active(&mut self, id: &NodeId, active: bool) -> bool {
+    /// Set focused active state. Returns the required invalidation.
+    pub fn set_focused_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        let current = element.attrs.focused_active.unwrap_or(false);
+        let current = element.runtime.focused_active;
         if current == active {
-            return false;
+            return TreeInvalidation::None;
         }
 
-        element.attrs.focused_active = Some(active);
-        true
+        element.runtime.focused_active = active;
+        classify_interaction_style(element.layout.effective.focused.as_ref())
+            .join(TreeInvalidation::Registry)
     }
 
-    pub fn set_text_input_content(&mut self, id: &NodeId, content: String) -> bool {
+    pub fn set_text_input_content(&mut self, id: &NodeId, content: String) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        if !element.kind.is_text_input_family() {
-            return false;
+        if !element.spec.kind.is_text_input_family() {
+            return TreeInvalidation::None;
         }
 
-        let prev_base = element.base_attrs.content.as_deref().unwrap_or("");
-        let prev_attrs = element.attrs.content.as_deref().unwrap_or("");
+        let prev_base = element.spec.declared.content.as_deref().unwrap_or("");
+        let prev_attrs = element.layout.effective.content.as_deref().unwrap_or("");
         let mut changed = prev_base != content || prev_attrs != content;
 
-        element.base_attrs.content = Some(content.clone());
-        element.attrs.content = Some(content.clone());
+        element.spec.declared.content = Some(content.clone());
+        element.layout.effective.content = Some(content.clone());
 
-        if element.patch_content.take().is_some() {
+        if element.runtime.patch_content.take().is_some() {
             changed = true;
         }
 
-        if element.text_input_content_origin != TextInputContentOrigin::Event {
-            element.text_input_content_origin = TextInputContentOrigin::Event;
+        if element.runtime.text_input_content_origin != TextInputContentOrigin::Event {
+            element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
             changed = true;
         }
 
         let len = text_char_len(&content);
-        if let Some(cursor) = element.attrs.text_input_cursor {
+        if let Some(cursor) = element.runtime.text_input_cursor {
             let clamped = cursor.min(len);
             if clamped != cursor {
-                element.attrs.text_input_cursor = Some(clamped);
+                element.runtime.text_input_cursor = Some(clamped);
                 changed = true;
             }
         }
 
-        if let Some(anchor) = element.attrs.text_input_selection_anchor {
+        if let Some(anchor) = element.runtime.text_input_selection_anchor {
             let clamped = anchor.min(len);
-            let cursor = element.attrs.text_input_cursor.unwrap_or(len);
+            let cursor = element.runtime.text_input_cursor.unwrap_or(len);
             let next = if clamped == cursor {
                 None
             } else {
                 Some(clamped)
             };
-            if next != element.attrs.text_input_selection_anchor {
-                element.attrs.text_input_selection_anchor = next;
+            if next != element.runtime.text_input_selection_anchor {
+                element.runtime.text_input_selection_anchor = next;
                 changed = true;
             }
         }
 
-        let had_preedit = element.attrs.text_input_preedit.take().is_some();
-        let had_preedit_cursor = element.attrs.text_input_preedit_cursor.take().is_some();
+        let had_preedit = element.runtime.text_input_preedit.take().is_some();
+        let had_preedit_cursor = element.runtime.text_input_preedit_cursor.take().is_some();
         if had_preedit || had_preedit_cursor {
             changed = true;
         }
 
-        changed
+        element.normalize_extracted_state();
+
+        TreeInvalidation::when_changed(changed, TreeInvalidation::Measure)
     }
 
     pub fn set_text_input_runtime(
@@ -1366,19 +1693,19 @@ impl ElementTree {
         selection_anchor: Option<u32>,
         preedit: Option<String>,
         preedit_cursor: Option<(u32, u32)>,
-    ) -> bool {
+    ) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        if !element.kind.is_text_input_family() {
-            return false;
+        if !element.spec.kind.is_text_input_family() {
+            return TreeInvalidation::None;
         }
 
-        let content = element.base_attrs.content.as_deref().unwrap_or("");
+        let content = element.spec.declared.content.as_deref().unwrap_or("");
         let len = text_char_len(content);
 
-        let mut next_cursor = cursor.or(element.attrs.text_input_cursor);
+        let mut next_cursor = cursor.or(element.runtime.text_input_cursor);
         if focused {
             next_cursor = Some(next_cursor.unwrap_or(len).min(len));
         } else {
@@ -1408,63 +1735,65 @@ impl ElementTree {
 
         let mut changed = false;
 
-        if element.attrs.text_input_focused != Some(focused) {
-            element.attrs.text_input_focused = Some(focused);
+        if element.runtime.text_input_focused != focused {
+            element.runtime.text_input_focused = focused;
             changed = true;
         }
 
-        if element.attrs.text_input_cursor != next_cursor {
-            element.attrs.text_input_cursor = next_cursor;
+        if element.runtime.text_input_cursor != next_cursor {
+            element.runtime.text_input_cursor = next_cursor;
             changed = true;
         }
 
-        if element.attrs.text_input_selection_anchor != next_anchor {
-            element.attrs.text_input_selection_anchor = next_anchor;
+        if element.runtime.text_input_selection_anchor != next_anchor {
+            element.runtime.text_input_selection_anchor = next_anchor;
             changed = true;
         }
 
-        if element.attrs.text_input_preedit != next_preedit {
-            element.attrs.text_input_preedit = next_preedit;
+        if element.runtime.text_input_preedit != next_preedit {
+            element.runtime.text_input_preedit = next_preedit;
             changed = true;
         }
 
-        if element.attrs.text_input_preedit_cursor != next_preedit_cursor {
-            element.attrs.text_input_preedit_cursor = next_preedit_cursor;
+        if element.runtime.text_input_preedit_cursor != next_preedit_cursor {
+            element.runtime.text_input_preedit_cursor = next_preedit_cursor;
             changed = true;
         }
 
-        changed
+        element.normalize_extracted_state();
+
+        TreeInvalidation::when_changed(changed, TreeInvalidation::Paint)
     }
 
-    fn apply_scroll_axis(&mut self, id: &NodeId, delta: f32, axis: ScrollAxis) -> bool {
+    fn apply_scroll_axis(&mut self, id: &NodeId, delta: f32, axis: ScrollAxis) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
-        let Some(frame) = element.frame else {
-            return false;
+        let Some(frame) = element.layout.frame else {
+            return TreeInvalidation::None;
         };
 
         let (current, max) = match axis {
             ScrollAxis::X => (
-                element.attrs.scroll_x.unwrap_or(0.0) as f32,
+                element.layout.scroll_x,
                 (frame.content_width - frame.width).max(0.0),
             ),
             ScrollAxis::Y => (
-                element.attrs.scroll_y.unwrap_or(0.0) as f32,
+                element.layout.scroll_y,
                 (frame.content_height - frame.height).max(0.0),
             ),
         };
         let next = (current - delta).clamp(0.0, max);
 
         if (next - current).abs() < f32::EPSILON {
-            return false;
+            return TreeInvalidation::None;
         }
 
         match axis {
-            ScrollAxis::X => element.attrs.scroll_x = Some(next as f64),
-            ScrollAxis::Y => element.attrs.scroll_y = Some(next as f64),
+            ScrollAxis::X => element.layout.scroll_x = next,
+            ScrollAxis::Y => element.layout.scroll_y = next,
         }
-        true
+        TreeInvalidation::Paint
     }
 
     fn set_scrollbar_hover_axis(
@@ -1472,31 +1801,31 @@ impl ElementTree {
         id: &NodeId,
         axis: ScrollbarHoverAxis,
         hovered: bool,
-    ) -> bool {
+    ) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
-            return false;
+            return TreeInvalidation::None;
         };
 
-        let current = element.attrs.scrollbar_hover_axis;
+        let current = element.runtime.scrollbar_hover_axis;
         let axis_enabled = match axis {
-            ScrollbarHoverAxis::X => element.attrs.scrollbar_x.unwrap_or(false),
-            ScrollbarHoverAxis::Y => element.attrs.scrollbar_y.unwrap_or(false),
+            ScrollbarHoverAxis::X => element.layout.effective.scrollbar_x.unwrap_or(false),
+            ScrollbarHoverAxis::Y => element.layout.effective.scrollbar_y.unwrap_or(false),
         };
 
         if hovered {
             if !axis_enabled || current == Some(axis) {
-                return false;
+                return TreeInvalidation::None;
             }
-            element.attrs.scrollbar_hover_axis = Some(axis);
-            return true;
+            element.runtime.scrollbar_hover_axis = Some(axis);
+            return TreeInvalidation::Paint;
         }
 
         if current == Some(axis) {
-            element.attrs.scrollbar_hover_axis = None;
-            return true;
+            element.runtime.scrollbar_hover_axis = None;
+            return TreeInvalidation::Paint;
         }
 
-        false
+        TreeInvalidation::None
     }
 }
 
@@ -1543,7 +1872,7 @@ mod tests {
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1553,24 +1882,24 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.set_scrollbar_x_hover(&id, true));
+        assert!(tree.set_scrollbar_x_hover(&id, true).is_dirty());
         assert_eq!(
-            tree.get(&id).unwrap().attrs.scrollbar_hover_axis,
+            tree.get(&id).unwrap().runtime.scrollbar_hover_axis,
             Some(ScrollbarHoverAxis::X)
         );
 
-        assert!(tree.set_scrollbar_y_hover(&id, true));
+        assert!(tree.set_scrollbar_y_hover(&id, true).is_dirty());
         assert_eq!(
-            tree.get(&id).unwrap().attrs.scrollbar_hover_axis,
+            tree.get(&id).unwrap().runtime.scrollbar_hover_axis,
             Some(ScrollbarHoverAxis::Y)
         );
 
-        assert!(!tree.set_scrollbar_x_hover(&id, false));
-        assert!(tree.set_scrollbar_y_hover(&id, false));
-        assert_eq!(tree.get(&id).unwrap().attrs.scrollbar_hover_axis, None);
+        assert!(tree.set_scrollbar_x_hover(&id, false).is_none());
+        assert!(tree.set_scrollbar_y_hover(&id, false).is_dirty());
+        assert_eq!(tree.get(&id).unwrap().runtime.scrollbar_hover_axis, None);
     }
 
     #[test]
@@ -1580,7 +1909,7 @@ mod tests {
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1590,17 +1919,17 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.apply_scroll_x(&id, -30.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(30.0));
+        assert!(tree.apply_scroll_x(&id, -30.0).is_dirty());
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_x, 30.0);
 
-        assert!(tree.apply_scroll_y(&id, -25.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(25.0));
+        assert!(tree.apply_scroll_y(&id, -25.0).is_dirty());
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_y, 25.0);
 
-        assert!(!tree.apply_scroll_x(&id, 0.0));
-        assert!(!tree.apply_scroll_y(&id, 0.0));
+        assert!(tree.apply_scroll_x(&id, 0.0).is_none());
+        assert!(tree.apply_scroll_y(&id, 0.0).is_none());
     }
 
     #[test]
@@ -1610,7 +1939,7 @@ mod tests {
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1620,18 +1949,18 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.apply_scroll_x(&id, -500.0));
-        assert!(tree.apply_scroll_y(&id, -500.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(80.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(70.0));
+        assert!(tree.apply_scroll_x(&id, -500.0).is_dirty());
+        assert!(tree.apply_scroll_y(&id, -500.0).is_dirty());
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_x, 80.0);
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_y, 70.0);
 
-        assert!(tree.apply_scroll_x(&id, 500.0));
-        assert!(tree.apply_scroll_y(&id, 500.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_x, Some(0.0));
-        assert_eq!(tree.get(&id).unwrap().attrs.scroll_y, Some(0.0));
+        assert!(tree.apply_scroll_x(&id, 500.0).is_dirty());
+        assert!(tree.apply_scroll_y(&id, 500.0).is_dirty());
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_x, 0.0);
+        assert_eq!(tree.get(&id).unwrap().layout.scroll_y, 0.0);
     }
 
     #[test]
@@ -1639,7 +1968,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![1]);
         let attrs = Attrs::default();
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1649,12 +1978,12 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(!tree.set_scrollbar_x_hover(&id, true));
-        assert!(!tree.set_scrollbar_y_hover(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.scrollbar_hover_axis, None);
+        assert!(tree.set_scrollbar_x_hover(&id, true).is_none());
+        assert!(tree.set_scrollbar_y_hover(&id, true).is_none());
+        assert_eq!(tree.get(&id).unwrap().runtime.scrollbar_hover_axis, None);
     }
 
     #[test]
@@ -1662,7 +1991,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![1]);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1672,11 +2001,11 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(!tree.set_mouse_over_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, None);
+        assert!(tree.set_mouse_over_active(&id, true).is_none());
+        assert!(!tree.get(&id).unwrap().runtime.mouse_over_active);
     }
 
     #[test]
@@ -1688,7 +2017,7 @@ mod tests {
             ..Default::default()
         });
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1698,16 +2027,16 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.set_mouse_over_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(true));
+        assert!(tree.set_mouse_over_active(&id, true).is_dirty());
+        assert!(tree.get(&id).unwrap().runtime.mouse_over_active);
 
-        assert!(!tree.set_mouse_over_active(&id, true));
+        assert!(tree.set_mouse_over_active(&id, true).is_none());
 
-        assert!(tree.set_mouse_over_active(&id, false));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(false));
+        assert!(tree.set_mouse_over_active(&id, false).is_dirty());
+        assert!(!tree.get(&id).unwrap().runtime.mouse_over_active);
     }
 
     #[test]
@@ -1717,7 +2046,7 @@ mod tests {
         attrs.on_mouse_enter = Some(true);
         attrs.on_mouse_leave = Some(true);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1727,16 +2056,16 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.set_mouse_over_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(true));
+        assert!(tree.set_mouse_over_active(&id, true).is_dirty());
+        assert!(tree.get(&id).unwrap().runtime.mouse_over_active);
 
-        assert!(!tree.set_mouse_over_active(&id, true));
+        assert!(tree.set_mouse_over_active(&id, true).is_none());
 
-        assert!(tree.set_mouse_over_active(&id, false));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_over_active, Some(false));
+        assert!(tree.set_mouse_over_active(&id, false).is_dirty());
+        assert!(!tree.get(&id).unwrap().runtime.mouse_over_active);
     }
 
     #[test]
@@ -1744,7 +2073,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![11]);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1754,11 +2083,11 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(!tree.set_mouse_down_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_down_active, None);
+        assert!(tree.set_mouse_down_active(&id, true).is_none());
+        assert!(!tree.get(&id).unwrap().runtime.mouse_down_active);
     }
 
     #[test]
@@ -1770,7 +2099,7 @@ mod tests {
             ..Default::default()
         });
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1780,16 +2109,16 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id.clone());
 
-        assert!(tree.set_mouse_down_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_down_active, Some(true));
+        assert!(tree.set_mouse_down_active(&id, true).is_dirty());
+        assert!(tree.get(&id).unwrap().runtime.mouse_down_active);
 
-        assert!(!tree.set_mouse_down_active(&id, true));
+        assert!(tree.set_mouse_down_active(&id, true).is_none());
 
-        assert!(tree.set_mouse_down_active(&id, false));
-        assert_eq!(tree.get(&id).unwrap().attrs.mouse_down_active, Some(false));
+        assert!(tree.set_mouse_down_active(&id, false).is_dirty());
+        assert!(!tree.get(&id).unwrap().runtime.mouse_down_active);
     }
 
     #[test]
@@ -1797,7 +2126,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![13]);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1807,16 +2136,16 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id.clone());
 
-        assert!(tree.set_focused_active(&id, true));
-        assert_eq!(tree.get(&id).unwrap().attrs.focused_active, Some(true));
+        assert!(tree.set_focused_active(&id, true).is_dirty());
+        assert!(tree.get(&id).unwrap().runtime.focused_active);
 
-        assert!(!tree.set_focused_active(&id, true));
+        assert!(tree.set_focused_active(&id, true).is_none());
 
-        assert!(tree.set_focused_active(&id, false));
-        assert_eq!(tree.get(&id).unwrap().attrs.focused_active, Some(false));
+        assert!(tree.set_focused_active(&id, false).is_dirty());
+        assert!(!tree.get(&id).unwrap().runtime.focused_active);
     }
 
     #[test]
@@ -1830,7 +2159,7 @@ mod tests {
         attrs.text_input_preedit_cursor = Some((2, 2));
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 120.0,
@@ -1840,23 +2169,29 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id.clone());
 
-        assert!(tree.set_text_input_content(&id, "hey".to_string()));
+        assert!(
+            tree.set_text_input_content(&id, "hey".to_string())
+                .is_dirty()
+        );
         let node = tree.get(&id).unwrap();
-        assert_eq!(node.base_attrs.content.as_deref(), Some("hey"));
-        assert_eq!(node.attrs.content.as_deref(), Some("hey"));
+        assert_eq!(node.spec.declared.content.as_deref(), Some("hey"));
+        assert_eq!(node.layout.effective.content.as_deref(), Some("hey"));
         assert_eq!(
-            node.text_input_content_origin,
+            node.runtime.text_input_content_origin,
             TextInputContentOrigin::Event
         );
-        assert_eq!(node.attrs.text_input_cursor, Some(3));
-        assert_eq!(node.attrs.text_input_selection_anchor, None);
-        assert_eq!(node.attrs.text_input_preedit, None);
-        assert_eq!(node.attrs.text_input_preedit_cursor, None);
+        assert_eq!(node.layout.effective.text_input_cursor, Some(3));
+        assert_eq!(node.layout.effective.text_input_selection_anchor, None);
+        assert_eq!(node.layout.effective.text_input_preedit, None);
+        assert_eq!(node.layout.effective.text_input_preedit_cursor, None);
 
-        assert!(!tree.set_text_input_content(&id, "hey".to_string()));
+        assert!(
+            tree.set_text_input_content(&id, "hey".to_string())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1867,15 +2202,21 @@ mod tests {
         let element = Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.set_text_input_content(&id, "same".to_string()));
+        assert!(
+            tree.set_text_input_content(&id, "same".to_string())
+                .is_dirty()
+        );
         assert_eq!(
-            tree.get(&id).unwrap().text_input_content_origin,
+            tree.get(&id).unwrap().runtime.text_input_content_origin,
             TextInputContentOrigin::Event
         );
-        assert!(!tree.set_text_input_content(&id, "same".to_string()));
+        assert!(
+            tree.set_text_input_content(&id, "same".to_string())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1885,7 +2226,7 @@ mod tests {
         attrs.content = Some("abcd".to_string());
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 120.0,
@@ -1895,40 +2236,55 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(tree.set_text_input_runtime(
-            &id,
-            true,
-            Some(99),
-            Some(1),
-            Some("ka".to_string()),
-            Some((7, 2)),
-        ));
+        assert!(
+            tree.set_text_input_runtime(
+                &id,
+                true,
+                Some(99),
+                Some(1),
+                Some("ka".to_string()),
+                Some((7, 2)),
+            )
+            .is_dirty()
+        );
 
         let focused = tree.get(&id).unwrap();
-        assert_eq!(focused.attrs.text_input_focused, Some(true));
-        assert_eq!(focused.attrs.text_input_cursor, Some(4));
-        assert_eq!(focused.attrs.text_input_selection_anchor, Some(1));
-        assert_eq!(focused.attrs.text_input_preedit.as_deref(), Some("ka"));
-        assert_eq!(focused.attrs.text_input_preedit_cursor, Some((2, 2)));
+        assert_eq!(focused.layout.effective.text_input_focused, Some(true));
+        assert_eq!(focused.layout.effective.text_input_cursor, Some(4));
+        assert_eq!(
+            focused.layout.effective.text_input_selection_anchor,
+            Some(1)
+        );
+        assert_eq!(
+            focused.layout.effective.text_input_preedit.as_deref(),
+            Some("ka")
+        );
+        assert_eq!(
+            focused.layout.effective.text_input_preedit_cursor,
+            Some((2, 2))
+        );
 
-        assert!(tree.set_text_input_runtime(
-            &id,
-            false,
-            Some(2),
-            Some(0),
-            Some("ignored".to_string()),
-            Some((1, 1)),
-        ));
+        assert!(
+            tree.set_text_input_runtime(
+                &id,
+                false,
+                Some(2),
+                Some(0),
+                Some("ignored".to_string()),
+                Some((1, 1)),
+            )
+            .is_dirty()
+        );
 
         let blurred = tree.get(&id).unwrap();
-        assert_eq!(blurred.attrs.text_input_focused, Some(false));
-        assert_eq!(blurred.attrs.text_input_cursor, Some(2));
-        assert_eq!(blurred.attrs.text_input_selection_anchor, None);
-        assert_eq!(blurred.attrs.text_input_preedit, None);
-        assert_eq!(blurred.attrs.text_input_preedit_cursor, None);
+        assert_eq!(blurred.layout.effective.text_input_focused, Some(false));
+        assert_eq!(blurred.layout.effective.text_input_cursor, Some(2));
+        assert_eq!(blurred.layout.effective.text_input_selection_anchor, None);
+        assert_eq!(blurred.layout.effective.text_input_preedit, None);
+        assert_eq!(blurred.layout.effective.text_input_preedit_cursor, None);
     }
 
     #[test]
@@ -1936,7 +2292,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![4]);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 50.0,
@@ -1946,18 +2302,17 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
 
-        assert!(!tree.set_text_input_content(&id, "nope".to_string()));
-        assert!(!tree.set_text_input_runtime(
-            &id,
-            true,
-            Some(0),
-            None,
-            Some("x".to_string()),
-            None,
-        ));
+        assert!(
+            tree.set_text_input_content(&id, "nope".to_string())
+                .is_none()
+        );
+        assert!(
+            tree.set_text_input_runtime(&id, true, Some(0), None, Some("x".to_string()), None,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1986,10 +2341,10 @@ mod tests {
         let float = Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
 
         let mut tree = ElementTree::new();
-        tree.root = Some(paragraph_id.clone());
         tree.insert(paragraph);
         tree.insert(inline);
         tree.insert(float);
+        tree.set_root_id(paragraph_id.clone());
 
         let mut visited = Vec::new();
         tree.get(&paragraph_id)
@@ -2033,10 +2388,10 @@ mod tests {
         );
 
         let mut tree = ElementTree::new();
-        tree.root = Some(row_id.clone());
         tree.insert(row);
         tree.insert(first);
         tree.insert(second);
+        tree.set_root_id(row_id.clone());
 
         let mut visited = Vec::new();
         tree.get(&row_id)
@@ -2067,13 +2422,13 @@ mod tests {
 
         let uploaded_id = NodeId::from_term_bytes(vec![2]);
         let mut uploaded = ElementTree::new();
-        uploaded.root = Some(uploaded_id.clone());
         uploaded.insert(Element::with_attrs(
             uploaded_id.clone(),
             ElementKind::El,
             Vec::new(),
             Attrs::default(),
         ));
+        uploaded.set_root_id(uploaded_id.clone());
 
         tree.replace_with_uploaded(uploaded);
 
@@ -2081,6 +2436,7 @@ mod tests {
         assert_eq!(
             tree.get(&uploaded_id)
                 .expect("uploaded node should exist")
+                .lifecycle
                 .mounted_at_revision,
             tree.revision()
         );
@@ -2101,13 +2457,13 @@ mod tests {
     fn test_was_mounted_after_uses_node_mount_revision() {
         let id = NodeId::from_term_bytes(vec![3]);
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(Element::with_attrs(
             id.clone(),
             ElementKind::El,
             Vec::new(),
             Attrs::default(),
         ));
+        tree.set_root_id(id.clone());
 
         let revision = tree.bump_revision();
         tree.stamp_all_mounted_at_revision(revision);

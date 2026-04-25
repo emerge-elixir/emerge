@@ -19,7 +19,11 @@ use crate::{
     tree::{
         animation::AnimationRuntime,
         element::ElementTree,
-        layout::{layout_and_refresh_default, layout_and_refresh_default_with_animation},
+        invalidation::{RefreshDecision, TreeInvalidation, decide_refresh_action},
+        layout::{
+            LayoutOutput, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+            refresh,
+        },
     },
 };
 
@@ -35,13 +39,6 @@ pub(crate) struct TreeActorConfig {
     pub(crate) window_wake: BackendWakeHandle,
     pub(crate) initial_width: u32,
     pub(crate) initial_height: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RefreshDecision {
-    Skip,
-    UseCachedRebuild,
-    Recompute,
 }
 
 #[cfg_attr(
@@ -116,7 +113,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut focused_active_state = std::collections::HashMap::new();
             let mut patch_processing_started_ats = Vec::new();
-            let mut tree_changed = false;
+            let mut invalidation = TreeInvalidation::None;
             let mut registry_requested = false;
             let mut animation_sample_time = latest_animation_sample_time;
 
@@ -130,7 +127,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         match crate::tree::deserialize::decode_tree(&bytes) {
                             Ok(decoded) => {
                                 tree.replace_with_uploaded(decoded);
-                                tree_changed = true;
+                                invalidation.add(TreeInvalidation::Structure);
                             }
                             Err(err) => {
                                 eprintln!("tree upload failed: {err}");
@@ -149,15 +146,19 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                                 continue;
                             }
                         };
-                        if let Err(err) = crate::tree::patch::apply_patches(&mut tree, patches) {
-                            if let Some(stats) = stats.as_ref() {
-                                stats.record_patch_tree_process(patch_started_at.elapsed());
+                        match crate::tree::patch::apply_patches(&mut tree, patches) {
+                            Ok(patch_invalidation) => {
+                                invalidation.add(patch_invalidation);
                             }
-                            eprintln!("tree patch apply failed: {err}");
-                            continue;
+                            Err(err) => {
+                                if let Some(stats) = stats.as_ref() {
+                                    stats.record_patch_tree_process(patch_started_at.elapsed());
+                                }
+                                eprintln!("tree patch apply failed: {err}");
+                                continue;
+                            }
                         }
                         patch_processing_started_ats.push(patch_started_at);
-                        tree_changed = true;
                     }
                     TreeMsg::Resize {
                         width: w,
@@ -167,7 +168,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         width = w.max(1.0);
                         height = h.max(1.0);
                         scale = s;
-                        tree_changed = true;
+                        invalidation.add(TreeInvalidation::Measure);
                     }
                     TreeMsg::ScrollRequest { element_id, dx, dy } => {
                         let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
@@ -213,8 +214,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         element_id,
                         content,
                     } => {
-                        let changed = tree.set_text_input_content(&element_id, content);
-                        tree_changed |= changed;
+                        invalidation.add(tree.set_text_input_content(&element_id, content));
                     }
                     TreeMsg::SetTextInputRuntime {
                         element_id,
@@ -224,15 +224,14 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         preedit,
                         preedit_cursor,
                     } => {
-                        let changed = tree.set_text_input_runtime(
+                        invalidation.add(tree.set_text_input_runtime(
                             &element_id,
                             focused,
                             cursor,
                             selection_anchor,
                             preedit,
                             preedit_cursor,
-                        );
-                        tree_changed |= changed;
+                        ));
                     }
                     TreeMsg::AnimationPulse {
                         presented_at,
@@ -245,54 +244,55 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             predicted_next_present_at
                         );
                         animation_sample_time = Some(predicted_next_present_at.max(presented_at));
-                        tree_changed = true;
+                        invalidation.add(TreeInvalidation::Measure);
                     }
                     TreeMsg::RebuildRegistry => {
                         registry_requested = true;
                     }
                     TreeMsg::AssetStateChanged => {
-                        tree_changed = true;
+                        invalidation.add(TreeInvalidation::Measure);
                     }
                 }
             }
 
             for (id, (dx, dy)) in scroll_acc {
-                let changed = tree.apply_scroll(&id, dx, dy);
-                tree_changed |= changed;
+                invalidation.add(tree.apply_scroll(&id, dx, dy));
             }
 
             for (id, dx) in thumb_drag_x_acc {
-                let changed = tree.apply_scroll_x(&id, dx);
-                tree_changed |= changed;
+                invalidation.add(tree.apply_scroll_x(&id, dx));
             }
 
             for (id, dy) in thumb_drag_y_acc {
-                let changed = tree.apply_scroll_y(&id, dy);
-                tree_changed |= changed;
+                invalidation.add(tree.apply_scroll_y(&id, dy));
             }
 
             for (id, hovered) in hover_x_state {
-                tree_changed |= tree.set_scrollbar_x_hover(&id, hovered);
+                invalidation.add(tree.set_scrollbar_x_hover(&id, hovered));
             }
 
             for (id, hovered) in hover_y_state {
-                tree_changed |= tree.set_scrollbar_y_hover(&id, hovered);
+                invalidation.add(tree.set_scrollbar_y_hover(&id, hovered));
             }
 
             for (id, active) in &mouse_over_active_state {
-                tree_changed |= tree.set_mouse_over_active(id, *active);
+                invalidation.add(tree.set_mouse_over_active(id, *active));
             }
 
             for (id, active) in mouse_down_active_state {
-                tree_changed |= tree.set_mouse_down_active(&id, active);
+                invalidation.add(tree.set_mouse_down_active(&id, active));
             }
 
             for (id, active) in focused_active_state {
-                tree_changed |= tree.set_focused_active(&id, active);
+                invalidation.add(tree.set_focused_active(&id, active));
             }
 
-            match decide_refresh_action(tree_changed, registry_requested, cached_rebuild.is_some())
-            {
+            match decide_refresh_action(
+                invalidation,
+                registry_requested,
+                cached_rebuild.is_some(),
+                !animation_runtime.is_empty(),
+            ) {
                 RefreshDecision::Skip => {
                     if let Some(stats) = stats.as_ref() {
                         patch_processing_started_ats
@@ -316,6 +316,32 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     }
                     continue;
                 }
+                RefreshDecision::RefreshOnly => {
+                    assets::ensure_tree_sources(&tree);
+                    let refresh_started_at = Instant::now();
+                    let output = refresh(&mut tree);
+                    if let Some(stats) = stats.as_ref() {
+                        stats.record_refresh(refresh_started_at.elapsed());
+                    }
+
+                    publish_layout_output(
+                        &event_tx,
+                        &render_sender,
+                        &render_counter,
+                        &window_wake,
+                        &mut cached_rebuild,
+                        output,
+                        log_input,
+                    );
+
+                    if let Some(stats) = stats.as_ref() {
+                        patch_processing_started_ats
+                            .into_iter()
+                            .for_each(|started_at| {
+                                stats.record_patch_tree_process(started_at.elapsed())
+                            });
+                    }
+                }
                 RefreshDecision::Recompute => {
                     assets::ensure_tree_sources(&tree);
 
@@ -324,10 +350,10 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     latest_animation_sample_time = Some(sample_time);
                     crate::debug_trace::hover_trace!(
                         "tree_recompute",
-                        "sample_time={:?} cached_rebuild={} tree_changed={} registry_requested={}",
+                        "sample_time={:?} cached_rebuild={} invalidation={:?} registry_requested={}",
                         sample_time,
                         cached_rebuild.is_some(),
-                        tree_changed,
+                        invalidation,
                         registry_requested
                     );
                     animation_runtime.sync_with_tree(&tree, sample_time);
@@ -348,20 +374,16 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     if let Some(stats) = stats.as_ref() {
                         stats.record_layout(layout_started_at.elapsed());
                     }
-                    cached_rebuild = Some(output.event_rebuild.clone());
-                    send_registry_update(&event_tx, output.event_rebuild, log_input);
-
-                    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    render_sender.send_latest(RenderMsg::Scene {
-                        scene: Box::new(output.scene),
-                        version,
-                        animate: output.animations_active,
-                        ime_enabled: output.ime_enabled,
-                        ime_cursor_area: output.ime_cursor_area,
-                        ime_text_state: Box::new(output.ime_text_state),
-                    });
-
-                    window_wake.request_redraw();
+                    let animations_active = output.animations_active;
+                    publish_layout_output(
+                        &event_tx,
+                        &render_sender,
+                        &render_counter,
+                        &window_wake,
+                        &mut cached_rebuild,
+                        output,
+                        log_input,
+                    );
 
                     #[cfg(feature = "hover-trace")]
                     {
@@ -376,7 +398,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         }
                     }
 
-                    if animation_runtime.is_empty() || !output.animations_active {
+                    if animation_runtime.is_empty() || !animations_active {
                         latest_animation_sample_time = None;
                     }
 
@@ -413,6 +435,31 @@ pub(crate) fn send_registry_update(
     }
 }
 
+fn publish_layout_output(
+    event_tx: &Sender<EventMsg>,
+    render_sender: &RenderSender,
+    render_counter: &Arc<AtomicU64>,
+    window_wake: &BackendWakeHandle,
+    cached_rebuild: &mut Option<RegistryRebuildPayload>,
+    output: LayoutOutput,
+    log_input: bool,
+) {
+    cached_rebuild.replace(output.event_rebuild.clone());
+    send_registry_update(event_tx, output.event_rebuild, log_input);
+
+    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    render_sender.send_latest(RenderMsg::Scene {
+        scene: Box::new(output.scene),
+        version,
+        animate: output.animations_active,
+        ime_enabled: output.ime_enabled,
+        ime_cursor_area: output.ime_cursor_area,
+        ime_text_state: Box::new(output.ime_text_state),
+    });
+
+    window_wake.request_redraw();
+}
+
 pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
     match msg {
         TreeMsg::Batch(messages) => messages
@@ -430,40 +477,24 @@ fn batch_is_animation_only(messages: &[TreeMsg]) -> bool {
     !messages.is_empty() && messages.iter().all(is_animation_pulse)
 }
 
-fn decide_refresh_action(
-    tree_changed: bool,
-    registry_requested: bool,
-    has_cached_rebuild: bool,
-) -> RefreshDecision {
-    if tree_changed {
-        RefreshDecision::Recompute
-    } else if registry_requested && has_cached_rebuild {
-        RefreshDecision::UseCachedRebuild
-    } else if registry_requested {
-        RefreshDecision::Recompute
-    } else {
-        RefreshDecision::Skip
-    }
-}
-
 #[cfg(feature = "hover-trace")]
 fn trace_element_snapshots(tree: &ElementTree) -> Vec<(NodeId, f32, f32, f32, f32, Option<f64>)> {
     tree.nodes
         .values()
         .filter(|element| {
-            element.attrs.on_mouse_move.unwrap_or(false)
-                || element.attrs.mouse_over.is_some()
-                || element.attrs.mouse_over_active.unwrap_or(false)
+            element.layout.effective.on_mouse_move.unwrap_or(false)
+                || element.layout.effective.mouse_over.is_some()
+                || element.runtime.mouse_over_active
         })
         .filter_map(|element| {
-            element.frame.map(|frame| {
+            element.layout.frame.map(|frame| {
                 (
                     element.id.clone(),
                     frame.x,
                     frame.y,
                     frame.width,
                     frame.height,
-                    element.attrs.move_x,
+                    element.layout.effective.move_x,
                 )
             })
         })

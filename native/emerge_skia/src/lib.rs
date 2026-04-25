@@ -1362,7 +1362,7 @@ fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a
                 return None;
             }
 
-            element.frame.map(|frame| {
+            element.layout.frame.map(|frame| {
                 let id_bytes = id.to_be_bytes();
                 let mut id_binary = NewBinary::new(env, id_bytes.len());
                 id_binary.as_mut_slice().copy_from_slice(&id_bytes);

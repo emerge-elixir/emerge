@@ -355,7 +355,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     root_attrs.scrollbar_y = Some(true);
     let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![column_id.clone()];
-    root.frame = Some(Frame {
+    root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 240.0,
@@ -371,7 +371,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         Attrs::default(),
     );
     column.children = vec![row1_id.clone(), row2_id.clone()];
-    column.frame = Some(Frame {
+    column.layout.frame = Some(Frame {
         x: 10.0,
         y: 10.0,
         width: 220.0,
@@ -387,7 +387,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         Attrs::default(),
     );
     row1.children = vec![row1_text_id.clone()];
-    row1.frame = Some(Frame {
+    row1.layout.frame = Some(Frame {
         x: 10.0,
         y: 10.0,
         width: 220.0,
@@ -402,7 +402,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     row1_text_attrs.font_color = Some(Color::Named("white".to_string()));
     let mut row1_text =
         Element::with_attrs(row1_text_id, ElementKind::Text, Vec::new(), row1_text_attrs);
-    row1_text.frame = Some(Frame {
+    row1_text.layout.frame = Some(Frame {
         x: 10.0,
         y: 10.0,
         width: 110.0,
@@ -418,7 +418,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         Attrs::default(),
     );
     row2.children = vec![row2_text_id.clone()];
-    row2.frame = Some(Frame {
+    row2.layout.frame = Some(Frame {
         x: 10.0,
         y: 36.0,
         width: 220.0,
@@ -433,7 +433,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     row2_text_attrs.font_color = Some(Color::Named("white".to_string()));
     let mut row2_text =
         Element::with_attrs(row2_text_id, ElementKind::Text, Vec::new(), row2_text_attrs);
-    row2_text.frame = Some(Frame {
+    row2_text.layout.frame = Some(Frame {
         x: 10.0,
         y: 36.0,
         width: 110.0,
@@ -443,7 +443,7 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(root_id);
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(column);
     tree.insert(row1);
@@ -480,7 +480,7 @@ fn test_nearby_text_inherits_parent_font_context() {
             content_height: 50.0,
         },
     );
-    let host_id = tree.root.clone().unwrap();
+    let host_id = tree.root_id().unwrap();
     let mut nearby_attrs = Attrs::default();
     nearby_attrs.content = Some("Hi".to_string());
     mount_nearby(

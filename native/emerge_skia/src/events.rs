@@ -1023,33 +1023,34 @@ fn text_input_state(
     adjusted_rect: Rect,
     screen_to_local: Option<Affine2>,
 ) -> TextInputState {
-    let content = element.base_attrs.content.clone().unwrap_or_default();
+    let content = element.spec.declared.content.clone().unwrap_or_default();
     let content_len = content.chars().count() as u32;
     let cursor = element
-        .attrs
+        .runtime
         .text_input_cursor
         .unwrap_or(content_len)
         .min(content_len);
     let selection_anchor = element
-        .attrs
+        .runtime
         .text_input_selection_anchor
         .map(|anchor| anchor.min(content_len))
         .filter(|anchor| *anchor != cursor);
-    let (inset_top, inset_right, inset_bottom, inset_left) = text_content_insets(&element.attrs);
-    let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.attrs);
+    let (inset_top, inset_right, inset_bottom, inset_left) =
+        text_content_insets(&element.layout.effective);
+    let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.layout.effective);
 
     TextInputState {
         content,
-        patch_content: element.patch_content.clone(),
-        content_origin: element.text_input_content_origin,
+        patch_content: element.runtime.patch_content.clone(),
+        content_origin: element.runtime.text_input_content_origin,
         content_len,
         cursor,
         selection_anchor,
-        preedit: element.attrs.text_input_preedit.clone(),
-        preedit_cursor: element.attrs.text_input_preedit_cursor,
-        focused: element.attrs.text_input_focused.unwrap_or(false),
-        emit_change: element.attrs.on_change.unwrap_or(false),
-        multiline: element.kind == crate::tree::element::ElementKind::Multiline,
+        preedit: element.runtime.text_input_preedit.clone(),
+        preedit_cursor: element.runtime.text_input_preedit_cursor,
+        focused: element.runtime.text_input_focused,
+        emit_change: element.layout.effective.on_change.unwrap_or(false),
+        multiline: element.spec.kind == crate::tree::element::ElementKind::Multiline,
         frame_x: adjusted_rect.x,
         frame_y: adjusted_rect.y,
         frame_width: adjusted_rect.width,
@@ -1059,13 +1060,13 @@ fn text_input_state(
         inset_bottom,
         inset_right,
         screen_to_local,
-        text_align: element.attrs.text_align.unwrap_or_default(),
+        text_align: element.layout.effective.text_align.unwrap_or_default(),
         font_family,
-        font_size: element.attrs.font_size.unwrap_or(16.0) as f32,
+        font_size: element.layout.effective.font_size.unwrap_or(16.0) as f32,
         font_weight,
         font_italic,
-        letter_spacing: element.attrs.font_letter_spacing.unwrap_or(0.0) as f32,
-        word_spacing: element.attrs.font_word_spacing.unwrap_or(0.0) as f32,
+        letter_spacing: element.layout.effective.font_letter_spacing.unwrap_or(0.0) as f32,
+        word_spacing: element.layout.effective.font_word_spacing.unwrap_or(0.0) as f32,
     }
 }
 
@@ -1340,7 +1341,7 @@ mod tests {
 
         let mut root = make_element(1, ElementKind::Column, Attrs::default());
         root.children = vec![NodeId::from_term_bytes(vec![2])];
-        root.frame = Some(Frame {
+        root.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1356,7 +1357,7 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(10.0);
         let mut child = make_element(2, ElementKind::TextInput, attrs);
-        child.frame = Some(Frame {
+        child.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1365,9 +1366,9 @@ mod tests {
             content_height: 120.0,
         });
 
-        tree.root = Some(root.id.clone());
         tree.insert(root);
         tree.insert(child);
+        tree.set_root_id(NodeId::from_term_bytes(vec![1]));
 
         let rebuild = render_tree(&tree).event_rebuild;
         assert_eq!(rebuild.focused_id, Some(NodeId::from_term_bytes(vec![2])));

@@ -2566,7 +2566,7 @@ mod tests {
         width: f32,
         height: f32,
     ) -> Element {
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x,
             y,
             width,
@@ -2582,7 +2582,7 @@ mod tests {
     }
 
     fn with_frame(mut element: Element, frame: Frame) -> Element {
-        element.frame = Some(frame);
+        element.layout.frame = Some(frame);
         element
     }
 
@@ -2627,9 +2627,9 @@ mod tests {
 
         let overlay = make_element(131, ElementKind::El, overlay_attrs);
 
-        tree.root = Some(host_id);
         tree.insert(host);
         tree.insert(overlay);
+        tree.set_root_id(host_id);
 
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -3812,8 +3812,8 @@ mod tests {
             },
         );
         let mut tree = ElementTree::new();
-        tree.root = Some(NodeId::from_term_bytes(vec![79]));
         tree.insert(element);
+        tree.set_root_id(NodeId::from_term_bytes(vec![79]));
         let rebuild = render_tree(&tree).event_rebuild;
 
         let (tree_tx, tree_rx) = bounded(32);

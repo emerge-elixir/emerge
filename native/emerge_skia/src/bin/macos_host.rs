@@ -32,8 +32,10 @@ mod app {
             animation::AnimationRuntime,
             deserialize,
             element::ElementTree,
+            invalidation::{RefreshDecision, TreeInvalidation, decide_refresh_action},
             layout::{
-                Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+                Constraint, LayoutOutput, layout_and_refresh_default,
+                layout_and_refresh_default_with_animation, refresh,
             },
             patch,
         },
@@ -1867,8 +1869,10 @@ mod app {
                     return;
                 }
 
-                if apply_tree_messages(session, runtime_messages).unwrap_or(false) {
-                    let _ = rerender_session(session);
+                if let Err(err) = apply_tree_messages(session, runtime_messages)
+                    .and_then(|invalidation| render_session_for_invalidation(session, invalidation))
+                {
+                    eprintln!("macOS runtime tick render failed: {err}");
                 }
             });
     }
@@ -1893,16 +1897,16 @@ mod app {
                     return;
                 };
 
-                if apply_tree_messages(
+                if let Err(err) = apply_tree_messages(
                     session,
                     vec![emerge_skia::actors::TreeMsg::AnimationPulse {
                         presented_at,
                         predicted_next_present_at,
                     }],
                 )
-                .unwrap_or(false)
+                .and_then(|invalidation| render_session_for_invalidation(session, invalidation))
                 {
-                    let _ = rerender_session(session);
+                    eprintln!("macOS animation tick render failed: {err}");
                 }
             });
     }
@@ -2300,15 +2304,81 @@ mod app {
     fn upload_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
         let decoded = deserialize::decode_tree(bytes).map_err(|err| err.to_string())?;
         session.tree.replace_with_uploaded(decoded);
-        rerender_session(session)?;
-        Ok(())
+        render_session_for_invalidation(session, TreeInvalidation::Structure)
     }
 
     fn patch_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
         let patches = patch::decode_patches(bytes).map_err(|err| err.to_string())?;
-        patch::apply_patches(&mut session.tree, patches).map_err(|err| err.to_string())?;
-        rerender_session(session)?;
-        Ok(())
+        let invalidation =
+            patch::apply_patches(&mut session.tree, patches).map_err(|err| err.to_string())?;
+        render_session_for_invalidation(session, invalidation)
+    }
+
+    fn render_session_for_invalidation(
+        session: &mut HostSession,
+        invalidation: TreeInvalidation,
+    ) -> Result<(), String> {
+        match decide_refresh_action(
+            invalidation,
+            false,
+            false,
+            session_has_active_animations(session),
+        ) {
+            RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => Ok(()),
+            RefreshDecision::RefreshOnly => refresh_session(session),
+            RefreshDecision::Recompute => rerender_session(session),
+        }
+    }
+
+    fn session_has_active_animations(session: &HostSession) -> bool {
+        session.render_state.animate || !session.animation_runtime.is_empty()
+    }
+
+    fn install_layout_output(session: &mut HostSession, output: LayoutOutput) {
+        session.render_state.scene = output.scene;
+        session.render_state.render_version = session.render_state.render_version.wrapping_add(1);
+        session.render_state.animate = output.animations_active;
+        session.dirty = true;
+        session.event_runtime.install_rebuild(output.event_rebuild);
+    }
+
+    fn refresh_session(session: &mut HostSession) -> Result<(), String> {
+        let mut iterations = 0;
+
+        loop {
+            assets::ensure_tree_sources(&session.tree);
+            let refresh_started_at = std::time::Instant::now();
+            let output = refresh(&mut session.tree);
+
+            if let Some(stats) = session.stats.as_ref() {
+                stats.record_refresh(refresh_started_at.elapsed());
+            }
+
+            install_layout_output(session, output);
+            let runtime_messages = session.event_runtime.drain_tree_messages();
+
+            if runtime_messages.is_empty() {
+                return Ok(());
+            }
+
+            let invalidation = apply_tree_messages(session, runtime_messages)?;
+            iterations += 1;
+
+            if invalidation.is_none() || iterations >= 8 {
+                return Ok(());
+            }
+
+            match decide_refresh_action(
+                invalidation,
+                false,
+                false,
+                session_has_active_animations(session),
+            ) {
+                RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => return Ok(()),
+                RefreshDecision::RefreshOnly => {}
+                RefreshDecision::Recompute => return rerender_session(session),
+            }
+        }
     }
 
     fn rerender_session(session: &mut HostSession) -> Result<(), String> {
@@ -2346,30 +2416,38 @@ mod app {
                 stats.record_layout(layout_started_at.elapsed());
             }
 
-            session.render_state.scene = output.scene;
-            session.render_state.render_version =
-                session.render_state.render_version.wrapping_add(1);
-            session.render_state.animate = output.animations_active;
-            session.dirty = true;
+            let animations_active = output.animations_active;
+            install_layout_output(session, output);
 
-            if session.animation_runtime.is_empty() || !output.animations_active {
+            if session.animation_runtime.is_empty() || !animations_active {
                 session.latest_animation_sample_time = None;
             } else {
                 session.latest_animation_sample_time = Some(sample_time);
             }
 
-            session.event_runtime.install_rebuild(output.event_rebuild);
             let runtime_messages = session.event_runtime.drain_tree_messages();
 
             if runtime_messages.is_empty() {
                 return Ok(());
             }
 
-            let changed = apply_tree_messages(session, runtime_messages)?;
+            let invalidation = apply_tree_messages(session, runtime_messages)?;
             iterations += 1;
 
-            if !changed || iterations >= 8 {
+            if invalidation.is_none() || iterations >= 8 {
                 return Ok(());
+            }
+
+            if matches!(
+                decide_refresh_action(
+                    invalidation,
+                    false,
+                    false,
+                    session_has_active_animations(session),
+                ),
+                RefreshDecision::RefreshOnly
+            ) {
+                return refresh_session(session);
             }
         }
     }
@@ -2382,11 +2460,8 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn handle_runtime_text_input_command(
@@ -2403,11 +2478,8 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn handle_runtime_text_input_edit(
@@ -2424,17 +2496,14 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn apply_tree_messages(
         session: &mut HostSession,
         messages: Vec<emerge_skia::actors::TreeMsg>,
-    ) -> Result<bool, String> {
+    ) -> Result<TreeInvalidation, String> {
         let mut scroll_acc = HashMap::new();
         let mut thumb_drag_x_acc = HashMap::new();
         let mut thumb_drag_y_acc = HashMap::new();
@@ -2443,7 +2512,7 @@ mod app {
         let mut mouse_over_state = HashMap::new();
         let mut mouse_down_state = HashMap::new();
         let mut focused_state = HashMap::new();
-        let mut tree_changed = false;
+        let mut invalidation = TreeInvalidation::None;
 
         for message in flatten_tree_messages(messages) {
             match message {
@@ -2453,13 +2522,14 @@ mod app {
                     let decoded =
                         deserialize::decode_tree(&bytes).map_err(|err| err.to_string())?;
                     session.tree.replace_with_uploaded(decoded);
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Structure);
                 }
                 emerge_skia::actors::TreeMsg::PatchTree { bytes, .. } => {
                     let patches = patch::decode_patches(&bytes).map_err(|err| err.to_string())?;
-                    patch::apply_patches(&mut session.tree, patches)
-                        .map_err(|err| err.to_string())?;
-                    tree_changed = true;
+                    invalidation.add(
+                        patch::apply_patches(&mut session.tree, patches)
+                            .map_err(|err| err.to_string())?,
+                    );
                 }
                 emerge_skia::actors::TreeMsg::Resize {
                     width,
@@ -2476,7 +2546,7 @@ mod app {
                         scale_factor: session.scale_factor,
                     };
                     resize_surface(session, &metrics);
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Measure);
                 }
                 emerge_skia::actors::TreeMsg::ScrollRequest { element_id, dx, dy } => {
                     let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
@@ -2516,7 +2586,7 @@ mod app {
                     element_id,
                     content,
                 } => {
-                    tree_changed |= session.tree.set_text_input_content(&element_id, content);
+                    invalidation.add(session.tree.set_text_input_content(&element_id, content));
                 }
                 emerge_skia::actors::TreeMsg::SetTextInputRuntime {
                     element_id,
@@ -2526,14 +2596,14 @@ mod app {
                     preedit,
                     preedit_cursor,
                 } => {
-                    tree_changed |= session.tree.set_text_input_runtime(
+                    invalidation.add(session.tree.set_text_input_runtime(
                         &element_id,
                         focused,
                         cursor,
                         selection_anchor,
                         preedit,
                         preedit_cursor,
-                    );
+                    ));
                 }
                 emerge_skia::actors::TreeMsg::AnimationPulse {
                     presented_at,
@@ -2541,41 +2611,43 @@ mod app {
                 } => {
                     session.latest_animation_sample_time =
                         Some(predicted_next_present_at.max(presented_at));
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Measure);
                 }
-                emerge_skia::actors::TreeMsg::RebuildRegistry
-                | emerge_skia::actors::TreeMsg::AssetStateChanged => {
-                    tree_changed = true;
+                emerge_skia::actors::TreeMsg::RebuildRegistry => {
+                    invalidation.add(TreeInvalidation::Registry);
+                }
+                emerge_skia::actors::TreeMsg::AssetStateChanged => {
+                    invalidation.add(TreeInvalidation::Measure);
                 }
             }
         }
 
         for (id, (dx, dy)) in scroll_acc {
-            tree_changed |= session.tree.apply_scroll(&id, dx, dy);
+            invalidation.add(session.tree.apply_scroll(&id, dx, dy));
         }
         for (id, dx) in thumb_drag_x_acc {
-            tree_changed |= session.tree.apply_scroll_x(&id, dx);
+            invalidation.add(session.tree.apply_scroll_x(&id, dx));
         }
         for (id, dy) in thumb_drag_y_acc {
-            tree_changed |= session.tree.apply_scroll_y(&id, dy);
+            invalidation.add(session.tree.apply_scroll_y(&id, dy));
         }
         for (id, hovered) in hover_x_state {
-            tree_changed |= session.tree.set_scrollbar_x_hover(&id, hovered);
+            invalidation.add(session.tree.set_scrollbar_x_hover(&id, hovered));
         }
         for (id, hovered) in hover_y_state {
-            tree_changed |= session.tree.set_scrollbar_y_hover(&id, hovered);
+            invalidation.add(session.tree.set_scrollbar_y_hover(&id, hovered));
         }
         for (id, active) in mouse_over_state {
-            tree_changed |= session.tree.set_mouse_over_active(&id, active);
+            invalidation.add(session.tree.set_mouse_over_active(&id, active));
         }
         for (id, active) in mouse_down_state {
-            tree_changed |= session.tree.set_mouse_down_active(&id, active);
+            invalidation.add(session.tree.set_mouse_down_active(&id, active));
         }
         for (id, active) in focused_state {
-            tree_changed |= session.tree.set_focused_active(&id, active);
+            invalidation.add(session.tree.set_focused_active(&id, active));
         }
 
-        Ok(tree_changed)
+        Ok(invalidation)
     }
 
     fn flatten_tree_messages(

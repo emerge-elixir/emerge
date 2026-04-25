@@ -376,7 +376,7 @@ pub(super) fn build_tree_with_attrs(mut attrs: Attrs) -> ElementTree {
 
     let id = NodeId::from_term_bytes(vec![1]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 100.0,
@@ -386,7 +386,7 @@ pub(super) fn build_tree_with_attrs(mut attrs: Attrs) -> ElementTree {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -398,10 +398,10 @@ pub(super) fn build_tree_with_frame(mut attrs: Attrs, frame: Frame) -> ElementTr
 
     let id = NodeId::from_term_bytes(vec![1]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -409,10 +409,10 @@ pub(super) fn build_tree_with_frame(mut attrs: Attrs, frame: Frame) -> ElementTr
 pub(super) fn build_text_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
     let id = NodeId::from_term_bytes(vec![2]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::Text, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -420,10 +420,10 @@ pub(super) fn build_text_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementT
 pub(super) fn build_image_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
     let id = NodeId::from_term_bytes(vec![4]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -431,10 +431,10 @@ pub(super) fn build_image_tree_with_frame(attrs: Attrs, frame: Frame) -> Element
 pub(super) fn build_text_input_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
     let id = NodeId::from_term_bytes(vec![3]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -442,10 +442,10 @@ pub(super) fn build_text_input_tree_with_frame(attrs: Attrs, frame: Frame) -> El
 pub(super) fn build_multiline_tree_with_frame(attrs: Attrs, frame: Frame) -> ElementTree {
     let id = NodeId::from_term_bytes(vec![31]);
     let mut element = Element::with_attrs(id.clone(), ElementKind::Multiline, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }
@@ -474,13 +474,13 @@ pub(super) fn build_tree_with_child_frame(
     let mut parent =
         Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
     parent.children = vec![child_id.clone()];
-    parent.frame = Some(parent_frame);
+    parent.layout.frame = Some(parent_frame);
 
     let mut child = Element::with_attrs(child_id.clone(), ElementKind::El, Vec::new(), child_attrs);
-    child.frame = Some(child_frame);
+    child.layout.frame = Some(child_frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(parent_id);
+    tree.set_root_id(parent_id);
     tree.insert(parent);
     tree.insert(child);
     tree
@@ -502,7 +502,7 @@ pub(super) fn build_tree_with_image_child_frame(
     let mut parent =
         Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
     parent.children = vec![child_id.clone()];
-    parent.frame = Some(parent_frame);
+    parent.layout.frame = Some(parent_frame);
 
     let mut child = Element::with_attrs(
         child_id.clone(),
@@ -510,10 +510,10 @@ pub(super) fn build_tree_with_image_child_frame(
         Vec::new(),
         child_attrs,
     );
-    child.frame = Some(child_frame);
+    child.layout.frame = Some(child_frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(parent_id);
+    tree.set_root_id(parent_id);
     tree.insert(parent);
     tree.insert(child);
     tree
@@ -530,7 +530,7 @@ pub(super) fn mount_nearby(
 ) {
     let nearby_id = NodeId::from_term_bytes(vec![id_byte]);
     let mut nearby = Element::with_attrs(nearby_id.clone(), kind, Vec::new(), attrs);
-    nearby.frame = Some(frame);
+    nearby.layout.frame = Some(frame);
     tree.insert(nearby);
     tree.get_mut(host_id)
         .expect("host should exist")
@@ -587,10 +587,10 @@ pub(super) fn build_paragraph_tree(mut attrs: Attrs, frame: Frame) -> ElementTre
     let id = NodeId::from_term_bytes(vec![10]);
     attrs.background = attrs.background.take();
     let mut element = Element::with_attrs(id.clone(), ElementKind::Paragraph, Vec::new(), attrs);
-    element.frame = Some(frame);
+    element.layout.frame = Some(frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
     tree
 }

@@ -67,25 +67,25 @@ impl AnimationRuntime {
     pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
         self.animate_entries.retain(|id, _| {
             tree.get(id)
-                .is_some_and(|element| element.is_live() && element.base_attrs.animate.is_some())
+                .is_some_and(|element| element.is_live() && element.spec.declared.animate.is_some())
         });
         self.enter_entries
             .retain(|id, _| tree.get(id).is_some_and(|element| element.is_live()));
         self.exit_entries.retain(|id, _| {
             tree.get(id).is_some_and(|element| {
-                element.is_ghost_root() && element.ghost_exit_animation.is_some()
+                element.is_ghost_root() && element.lifecycle.ghost_exit_animation.is_some()
             })
         });
 
         for (id, element) in tree.iter_node_pairs() {
             if element.is_ghost_root() {
-                if let Some(spec) = element.ghost_exit_animation.as_ref() {
+                if let Some(spec) = element.lifecycle.ghost_exit_animation.as_ref() {
                     self.exit_entries
                         .entry(id)
                         .or_insert_with(|| ExitAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
-                            capture_scale: element.ghost_capture_scale.unwrap_or(1.0),
+                            capture_scale: element.lifecycle.ghost_capture_scale.unwrap_or(1.0),
                         });
                 }
                 continue;
@@ -98,7 +98,7 @@ impl AnimationRuntime {
             if tree.was_mounted_after(&id, self.last_seen_revision) {
                 self.animate_entries.remove(&id);
 
-                if let Some(spec) = element.base_attrs.animate_enter.as_ref() {
+                if let Some(spec) = element.spec.declared.animate_enter.as_ref() {
                     self.enter_entries.insert(
                         id,
                         EnterAnimationRuntimeEntry {
@@ -126,7 +126,7 @@ impl AnimationRuntime {
                 continue;
             }
 
-            let Some(spec) = element.base_attrs.animate.as_ref() else {
+            let Some(spec) = element.spec.declared.animate.as_ref() else {
                 self.animate_entries.remove(&id);
                 continue;
             };
@@ -225,7 +225,7 @@ pub fn apply_animation_overlays(
             .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
             .filter(|sample| sample.active)
         {
-            apply_sample_attrs(&mut element.attrs, &sample.attrs);
+            apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
             return active_any || sample.active;
         }
 
@@ -234,11 +234,11 @@ pub fn apply_animation_overlays(
             .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
             .filter(|sample| sample.active)
         {
-            apply_sample_attrs(&mut element.attrs, &sample.attrs);
+            apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
             return active_any || sample.active;
         }
 
-        let Some(spec) = element.attrs.animate.as_ref() else {
+        let Some(spec) = element.layout.effective.animate.as_ref() else {
             return active_any;
         };
 
@@ -247,7 +247,7 @@ pub fn apply_animation_overlays(
             runtime.and_then(|state| state.animate_entry(&element.id)),
             sample_time,
         );
-        apply_sample_attrs(&mut element.attrs, &sample.attrs);
+        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
         active_any || sample.active
     })
 }
@@ -922,11 +922,11 @@ mod tests {
     ) -> (ElementTree, NodeId) {
         let id = NodeId::from_term_bytes(vec![1]);
         let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.mounted_at_revision = mounted_at_revision;
+        element.lifecycle.mounted_at_revision = mounted_at_revision;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id.clone());
         tree.set_revision(tree_revision);
         (tree, id)
     }
@@ -951,20 +951,20 @@ mod tests {
             Vec::new(),
             ghost_attrs.clone(),
         );
-        ghost.base_attrs = ghost_attrs;
-        ghost.residency = NodeResidency::Ghost;
-        ghost.ghost_attachment = Some(GhostAttachment::Child {
+        ghost.spec.declared = ghost_attrs;
+        ghost.lifecycle.residency = NodeResidency::Ghost;
+        ghost.lifecycle.ghost_attachment = Some(GhostAttachment::Child {
             parent_id: root_id.clone(),
             live_index: 0,
             seq: 0,
         });
-        ghost.ghost_capture_scale = Some(1.0);
-        ghost.ghost_exit_animation = Some(alpha_spec(1.0, 0.0, 100.0));
+        ghost.lifecycle.ghost_capture_scale = Some(1.0);
+        ghost.lifecycle.ghost_exit_animation = Some(alpha_spec(1.0, 0.0, 100.0));
 
         let mut tree = ElementTree::new();
-        tree.root = Some(root_id.clone());
         tree.insert(root);
         tree.insert(ghost);
+        tree.set_root_id(root_id.clone());
         (tree, root_id, ghost_id)
     }
 
@@ -1053,8 +1053,8 @@ mod tests {
 
         tree.set_revision(2);
         let element = tree.get_mut(&id).expect("element should exist");
-        element.base_attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
-        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+        element.spec.declared.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        element.layout.effective.animate_enter = element.spec.declared.animate_enter.clone();
 
         runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(16));
 
@@ -1072,9 +1072,9 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         let element = tree.get_mut(&id).expect("element should exist");
-        element.base_attrs.animate_enter =
+        element.spec.declared.animate_enter =
             Some(move_x_spec(0.0, 200.0, 100.0, AnimationRepeat::Once));
-        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+        element.layout.effective.animate_enter = element.spec.declared.animate_enter.clone();
 
         let sample = sample_enter_animation_spec(
             runtime.enter_entry(&id).expect("enter entry should exist"),
@@ -1107,7 +1107,7 @@ mod tests {
         );
 
         assert!(!active);
-        assert_eq!(tree.get(&id).unwrap().attrs.move_x, None);
+        assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, None);
     }
 
     #[test]
@@ -1133,7 +1133,7 @@ mod tests {
         );
 
         assert!(active);
-        assert_eq!(tree.get(&id).unwrap().attrs.move_x, Some(10.0));
+        assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, Some(10.0));
     }
 
     #[test]
