@@ -3,7 +3,10 @@
 use super::animation::AnimationSpec;
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
-use super::attrs::{Attrs, ScrollbarHoverAxis, TextFragment, supports_mouse_over_tracking};
+use super::attrs::{
+    Attrs, BorderWidth, ImageSource, Length, Padding, ScrollbarHoverAxis, TextFragment,
+    supports_mouse_over_tracking,
+};
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -109,6 +112,40 @@ pub struct Frame {
     pub content_width: f32,
     /// Actual content height (for scroll extent calculation).
     pub content_height: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct IntrinsicMeasureCache {
+    pub key: IntrinsicMeasureCacheKey,
+    pub frame: Frame,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum IntrinsicMeasureCacheKey {
+    Text {
+        kind: ElementKind,
+        content: Option<String>,
+        width: Option<Length>,
+        height: Option<Length>,
+        padding: Option<Padding>,
+        border_width: Option<BorderWidth>,
+        family: String,
+        weight: u16,
+        italic: bool,
+        font_size: f32,
+        letter_spacing: f32,
+        word_spacing: f32,
+    },
+    Media {
+        kind: ElementKind,
+        width: Option<Length>,
+        height: Option<Length>,
+        padding: Option<Padding>,
+        border_width: Option<BorderWidth>,
+        image_src: Option<ImageSource>,
+        image_size: Option<(f64, f64)>,
+        resolved_source_size: Option<(u32, u32)>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -398,6 +435,7 @@ pub struct NodeLayoutState {
     pub scroll_x_max: f32,
     pub scroll_y_max: f32,
     pub paragraph_fragments: Option<Vec<TextFragment>>,
+    pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -500,6 +538,7 @@ impl Element {
                 effective: attrs,
                 frame: None,
                 measured_frame: None,
+                intrinsic_measure_cache: None,
             },
             lifecycle: NodeLifecycle {
                 mounted_at_revision: 0,

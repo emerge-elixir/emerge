@@ -11,7 +11,8 @@ use super::attrs::{
     TextFragment, effective_scrollbar_x, effective_scrollbar_y,
 };
 use super::element::{
-    Element, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot, NodeId,
+    Element, ElementKind, ElementTree, Frame, IntrinsicMeasureCache, IntrinsicMeasureCacheKey,
+    NearbyConstraintKind, NearbySlot, NodeId,
 };
 use super::render::DEFAULT_TEXT_COLOR;
 use super::text_layout::{TextLayoutStyle, layout_text_lines};
@@ -876,17 +877,26 @@ fn measure_element<M: TextMeasurer>(
     }
 
     // Now measure this element
-    let Some(element) = tree.get(id) else {
+    let Some((kind, attrs)) = tree
+        .get(id)
+        .map(|element| (element.spec.kind, element.layout.effective.clone()))
+    else {
         return IntrinsicSize::default();
     };
 
     // Read from pre-scaled attrs
-    let attrs = &element.layout.effective;
-    let insets = LayoutInsets::from_attrs(attrs);
-    let spacing_x = spacing_x(attrs);
-    let spacing_y = spacing_y(attrs);
+    let insets = LayoutInsets::from_attrs(&attrs);
+    let spacing_x = spacing_x(&attrs);
+    let spacing_y = spacing_y(&attrs);
+    let cache_key = intrinsic_measure_cache_key(kind, &attrs, inherited);
 
-    let intrinsic = match element.spec.kind {
+    if let Some(key) = cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_intrinsic_measure_cache(tree, id, key)
+    {
+        return intrinsic;
+    }
+
+    let intrinsic = match kind {
         ElementKind::Text | ElementKind::TextInput => {
             let content = attrs.content.as_deref().unwrap_or("");
             // Use inherited font context for missing values
@@ -895,7 +905,7 @@ fn measure_element<M: TextMeasurer>(
                 .map(|s| s as f32)
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
-            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let (family, weight, italic) = font_info_with_inheritance(&attrs, inherited);
             let letter_spacing = attrs
                 .font_letter_spacing
                 .map(|s| s as f32)
@@ -938,7 +948,7 @@ fn measure_element<M: TextMeasurer>(
                 .map(|s| s as f32)
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
-            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let (family, weight, italic) = font_info_with_inheritance(&attrs, inherited);
             let letter_spacing = attrs
                 .font_letter_spacing
                 .map(|s| s as f32)
@@ -1101,9 +1111,99 @@ fn measure_element<M: TextMeasurer>(
         };
         element.layout.frame = Some(measured_frame);
         element.layout.measured_frame = Some(measured_frame);
+        element.layout.intrinsic_measure_cache = cache_key.map(|key| IntrinsicMeasureCache {
+            key,
+            frame: measured_frame,
+        });
     }
 
     intrinsic
+}
+
+fn intrinsic_measure_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) -> Option<IntrinsicMeasureCacheKey> {
+    match kind {
+        ElementKind::Text | ElementKind::TextInput | ElementKind::Multiline => {
+            let font_size = attrs
+                .font_size
+                .map(|s| s as f32)
+                .or(inherited.font_size)
+                .unwrap_or(16.0);
+            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let letter_spacing = attrs
+                .font_letter_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_letter_spacing)
+                .unwrap_or(0.0);
+            let word_spacing = attrs
+                .font_word_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_word_spacing)
+                .unwrap_or(0.0);
+
+            Some(IntrinsicMeasureCacheKey::Text {
+                kind,
+                content: attrs.content.clone(),
+                width: attrs.width.clone(),
+                height: attrs.height.clone(),
+                padding: attrs.padding.clone(),
+                border_width: attrs.border_width.clone(),
+                family,
+                weight,
+                italic,
+                font_size,
+                letter_spacing,
+                word_spacing,
+            })
+        }
+        ElementKind::Image | ElementKind::Video => {
+            let resolved_source_size = if attrs.image_size.is_none() {
+                attrs.image_src.as_ref().and_then(|source| {
+                    assets::ensure_source(source);
+                    assets::source_dimensions(source)
+                })
+            } else {
+                None
+            };
+
+            Some(IntrinsicMeasureCacheKey::Media {
+                kind,
+                width: attrs.width.clone(),
+                height: attrs.height.clone(),
+                padding: attrs.padding.clone(),
+                border_width: attrs.border_width.clone(),
+                image_src: attrs.image_src.clone(),
+                image_size: attrs.image_size,
+                resolved_source_size,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn try_reuse_intrinsic_measure_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &IntrinsicMeasureCacheKey,
+) -> Option<IntrinsicSize> {
+    let frame = tree
+        .get(id)
+        .and_then(|element| element.layout.intrinsic_measure_cache.as_ref())
+        .filter(|cache| &cache.key == key)
+        .map(|cache| cache.frame)?;
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(frame);
+        element.layout.measured_frame = Some(frame);
+    }
+
+    Some(IntrinsicSize {
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 /// Resolve intrinsic length from attribute.
