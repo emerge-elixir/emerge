@@ -444,6 +444,297 @@ fn test_scale_change_misses_subtree_measurement_cache() {
     );
 }
 
+#[test]
+fn test_resolve_cache_stores_for_simple_subtree() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    for id in [root_id, text_id] {
+        let layout = &tree.get(&id).unwrap().layout;
+        assert!(layout.resolve_cache.is_some());
+        assert!(!layout.resolve_dirty);
+    }
+}
+
+#[test]
+fn test_paint_only_patch_keeps_resolve_cache_hot() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_background_attrs("Hello"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(!tree.get(&root_id).unwrap().layout.resolve_dirty);
+    assert!(!tree.get(&text_id).unwrap().layout.resolve_dirty);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert!(tree.get(&root_id).unwrap().layout.resolve_cache.is_some());
+    assert!(tree.get(&text_id).unwrap().layout.resolve_cache.is_some());
+}
+
+#[test]
+fn test_event_only_patch_keeps_resolve_cache_hot() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_event_attrs("Hello"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Registry);
+    assert!(!tree.get(&root_id).unwrap().layout.resolve_dirty);
+    assert!(!tree.get(&text_id).unwrap().layout.resolve_dirty);
+}
+
+#[test]
+fn test_align_patch_dirties_resolve_not_measure() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_align_attrs("Hello", AlignX::Center),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert!(!tree.get(&text_id).unwrap().layout.measure_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&text_id).unwrap().layout.resolve_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.resolve_dirty);
+}
+
+#[test]
+fn test_text_patch_dirties_measure_and_resolve() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_attrs("Hello!"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+    assert!(tree.get(&text_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&text_id).unwrap().layout.resolve_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.resolve_dirty);
+}
+
+#[test]
+fn test_keyed_reorder_dirties_container_resolve_only() {
+    let mut tree = ElementTree::new();
+    let row = make_element("row", ElementKind::Row, Attrs::default());
+    let row_id = row.id;
+    let first = make_element("first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(row_id);
+    tree.insert(row);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&row_id, vec![first_id, second_id])
+        .unwrap();
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    tree.set_children(&row_id, vec![second_id, first_id])
+        .unwrap();
+
+    assert!(tree.get(&row_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&row_id).unwrap().layout.resolve_dirty);
+    assert!(!tree.get(&first_id).unwrap().layout.measure_dirty);
+    assert!(!tree.get(&first_id).unwrap().layout.resolve_dirty);
+    assert!(!tree.get(&second_id).unwrap().layout.measure_dirty);
+    assert!(!tree.get(&second_id).unwrap().layout.resolve_dirty);
+}
+
+#[test]
+fn test_unsupported_kind_does_not_store_resolve_cache() {
+    let mut tree = ElementTree::new();
+    let paragraph = make_element("paragraph", ElementKind::Paragraph, Attrs::default());
+    let paragraph_id = paragraph.id;
+
+    tree.set_root_id(paragraph_id);
+    tree.insert(paragraph);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert!(
+        tree.get(&paragraph_id)
+            .unwrap()
+            .layout
+            .resolve_cache
+            .is_none()
+    );
+}
+
+#[test]
+fn test_cached_and_uncached_frames_match_for_simple_tree() {
+    let mut cached = nested_simple_tree();
+    let mut uncached = cached.clone();
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    for id in cached
+        .iter_node_pairs()
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>()
+    {
+        assert_eq!(
+            cached.get(&id).unwrap().layout.frame,
+            uncached.get(&id).unwrap().layout.frame
+        );
+    }
+}
+
+#[test]
+fn test_resolve_cache_restores_shifted_subtree_before_parent_realignment() {
+    let mut cached = aligned_nested_tree(AlignX::Center);
+    let root_id = cached.root_id().unwrap();
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_aligned_root_attrs(AlignX::Right),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let mut uncached = aligned_nested_tree(AlignX::Right);
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    for id in cached
+        .iter_node_pairs()
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>()
+    {
+        assert_eq!(
+            cached.get(&id).unwrap().layout.frame,
+            uncached.get(&id).unwrap().layout.frame
+        );
+    }
+
+    let row_id = cached.child_ids(&root_id)[0];
+    let text_id = cached.child_ids(&row_id)[0];
+    assert_eq!(cached.get(&text_id).unwrap().layout.frame.unwrap().x, 84.0);
+}
+
 fn text_child_tree(content: &str) -> ElementTree {
     let mut tree = ElementTree::new();
     let root = make_element("root", ElementKind::Column, Attrs::default());
@@ -455,6 +746,51 @@ fn text_child_tree(content: &str) -> ElementTree {
     tree.insert(root);
     tree.insert(text);
     tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn nested_simple_tree() -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element("root", ElementKind::Column, Attrs::default());
+    let root_id = root.id;
+    let row = make_element("row", ElementKind::Row, Attrs::default());
+    let row_id = row.id;
+    let first = make_element("first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(row);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&row_id, vec![first_id, second_id])
+        .unwrap();
+    tree.set_children(&root_id, vec![row_id]).unwrap();
+    tree
+}
+
+fn aligned_nested_tree(align_x: AlignX) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Px(100.0));
+    root_attrs.align_x = Some(align_x);
+
+    let root = make_element("root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+    let row = make_element("row", ElementKind::Row, Attrs::default());
+    let row_id = row.id;
+    let text = make_element("text", ElementKind::Text, text_attrs("Hi"));
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(row);
+    tree.insert(text);
+    tree.set_children(&row_id, vec![text_id]).unwrap();
+    tree.set_children(&root_id, vec![row_id]).unwrap();
     tree
 }
 
@@ -481,6 +817,22 @@ fn raw_text_event_attrs(content: &str) -> Vec<u8> {
     data
 }
 
+fn raw_text_align_attrs(content: &str, align_x: AlignX) -> Vec<u8> {
+    let mut data = vec![0, 3];
+    push_content_attr(&mut data, content);
+    push_font_size_attr(&mut data, 16.0);
+    push_align_x_attr(&mut data, align_x);
+    data
+}
+
+fn raw_aligned_root_attrs(align_x: AlignX) -> Vec<u8> {
+    let mut data = vec![0, 3];
+    push_px_length_attr(&mut data, 1, 100.0);
+    push_px_length_attr(&mut data, 2, 100.0);
+    push_align_x_attr(&mut data, align_x);
+    data
+}
+
 fn raw_font_size_attrs(size: f64) -> Vec<u8> {
     let mut data = vec![0, 1];
     push_font_size_attr(&mut data, size);
@@ -496,4 +848,19 @@ fn push_content_attr(data: &mut Vec<u8>, content: &str) {
 fn push_font_size_attr(data: &mut Vec<u8>, size: f64) {
     data.push(16);
     data.extend_from_slice(&size.to_be_bytes());
+}
+
+fn push_px_length_attr(data: &mut Vec<u8>, tag: u8, value: f64) {
+    data.push(tag);
+    data.push(2);
+    data.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {
+    data.push(5);
+    data.push(match align_x {
+        AlignX::Left => 0,
+        AlignX::Center => 1,
+        AlignX::Right => 2,
+    });
 }

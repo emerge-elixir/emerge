@@ -51,6 +51,10 @@ impl TreeInvalidation {
     pub fn requires_measure(self) -> bool {
         matches!(self, Self::Measure | Self::Structure)
     }
+
+    pub fn requires_resolve(self) -> bool {
+        matches!(self, Self::Resolve | Self::Measure | Self::Structure)
+    }
 }
 
 pub fn decide_refresh_action(
