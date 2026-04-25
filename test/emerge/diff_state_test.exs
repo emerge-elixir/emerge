@@ -267,6 +267,117 @@ defmodule Emerge.Engine.DiffStateTest do
     refute ids1[:item] == ids2[:item]
   end
 
+  test "removed keyed child reinserted in a later update gets a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:item)], text("Item"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 = column([key(:root)], [])
+
+    {_bin2, state, _assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    layout3 =
+      column([key(:root)], [
+        el([key(:item)], text("Item"))
+      ])
+
+    {_bin3, _state, assigned3} = Emerge.Engine.diff_state_update(state, layout3)
+
+    ids1 = key_node_id_map(assigned1)
+    ids3 = key_node_id_map(assigned3)
+
+    refute ids1[:item] == ids3[:item]
+  end
+
+  test "removed keyed nearby reinserted in a later update gets a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host)], text("Host"))
+      ])
+
+    {_bin2, state, _assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    layout3 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin3, _state, assigned3} = Emerge.Engine.diff_state_update(state, layout3)
+
+    ids1 = key_node_id_map(assigned1)
+    ids3 = key_node_id_map(assigned3)
+
+    assert ids1[:host] == ids3[:host]
+    refute ids1[:tip] == ids3[:tip]
+  end
+
+  test "reparenting a keyed nearby node to another host allocates a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      row([key(:root)], [
+        el([key(:left), Nearby.above(el([key(:tip)], text("Tip")))], text("Left")),
+        el([key(:right)], text("Right"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      row([key(:root)], [
+        el([key(:left)], text("Left")),
+        el([key(:right), Nearby.above(el([key(:tip)], text("Tip")))], text("Right"))
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    ids1 = key_node_id_map(assigned1)
+    ids2 = key_node_id_map(assigned2)
+
+    assert ids1[:left] == ids2[:left]
+    assert ids1[:right] == ids2[:right]
+    refute ids1[:tip] == ids2[:tip]
+  end
+
+  test "reparenting a keyed nearby node to children allocates a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        column([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], [])
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        column([key(:host)], [
+          el([key(:tip)], text("Tip"))
+        ])
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    ids1 = key_node_id_map(assigned1)
+    ids2 = key_node_id_map(assigned2)
+
+    assert ids1[:host] == ids2[:host]
+    refute ids1[:tip] == ids2[:tip]
+  end
+
   test "mixed insert with keys and unkeyed raises" do
     state = Emerge.Engine.diff_state_new()
 
