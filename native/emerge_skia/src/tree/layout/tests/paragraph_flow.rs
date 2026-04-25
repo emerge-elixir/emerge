@@ -20,7 +20,7 @@ fn build_paragraph(
     }
 
     para.children = child_ids.clone();
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id.clone());
     tree.insert(para);
 
     (tree, para_id, child_ids)
@@ -58,7 +58,7 @@ fn test_line_spacing_row_pushes_following_heading() {
     row.children = vec![para_id.clone()];
     col.children = vec![row_id.clone(), heading_id.clone()];
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id.clone());
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -72,11 +72,11 @@ fn test_line_spacing_row_pushes_following_heading() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     // Two lines with spacing(8): 16 + 8 + 16 = 40
     assert_eq!(row_frame.height, 40.0);
 
-    let heading_frame = tree.get(&heading_id).unwrap().frame.unwrap();
+    let heading_frame = tree.get(&heading_id).unwrap().layout.frame.unwrap();
     // heading y = row height (40) + column spacing (12)
     assert_eq!(heading_frame.y, 52.0);
 }
@@ -101,7 +101,7 @@ fn test_paragraph_single_text_no_wrap() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0].text, "Hello");
     assert_eq!(fragments[0].x, 0.0);
@@ -132,7 +132,7 @@ fn test_paragraph_wraps_words() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 3);
 
     // Line 1: "AA" at x=0, "BB" at x=24 (16+8)
@@ -180,14 +180,14 @@ fn test_paragraph_align_left_float_wraps_then_releases_width() {
         &MockTextMeasurer,
     );
 
-    let float_frame = tree.get(&child_ids[0]).unwrap().frame.unwrap();
+    let float_frame = tree.get(&child_ids[0]).unwrap().layout.frame.unwrap();
     assert_eq!(float_frame.x, 0.0);
     assert_eq!(float_frame.y, 0.0);
     assert_eq!(float_frame.width, 24.0);
     assert_eq!(float_frame.height, 40.0);
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert!(!fragments.is_empty());
 
     let first_fragment = &fragments[0];
@@ -242,7 +242,7 @@ fn test_text_column_non_paragraph_child_clears_below_active_floats() {
     para.children = vec![para_text_id.clone()];
     text_col.children = vec![float_id.clone(), para_id.clone(), below_id.clone()];
 
-    tree.root = Some(text_col_id.clone());
+    tree.set_root_id(text_col_id.clone());
     tree.insert(text_col);
     tree.insert(float_el);
     tree.insert(para);
@@ -256,19 +256,19 @@ fn test_text_column_non_paragraph_child_clears_below_active_floats() {
         &MockTextMeasurer,
     );
 
-    let float_frame = tree.get(&float_id).unwrap().frame.unwrap();
+    let float_frame = tree.get(&float_id).unwrap().layout.frame.unwrap();
     assert_eq!(float_frame.y, 0.0);
     assert_eq!(float_frame.height, 40.0);
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments[0].x, 24.0);
     assert_eq!(fragments[0].y, 8.0);
 
-    let below_frame = tree.get(&below_id).unwrap().frame.unwrap();
+    let below_frame = tree.get(&below_id).unwrap().layout.frame.unwrap();
     assert_eq!(below_frame.y, 40.0);
 
-    let text_col_frame = tree.get(&text_col_id).unwrap().frame.unwrap();
+    let text_col_frame = tree.get(&text_col_id).unwrap().layout.frame.unwrap();
     assert_eq!(text_col_frame.content_height, 50.0);
 }
 
@@ -295,7 +295,7 @@ fn test_paragraph_multiple_text_children() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     // "Hello " -> word "Hello", trailing space
     // "World" -> word "World"
     assert_eq!(fragments.len(), 2);
@@ -327,7 +327,7 @@ fn test_paragraph_line_spacing() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 2);
 
     // Line 1: "AA" at y=0
@@ -357,7 +357,7 @@ fn test_paragraph_expands_height() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let frame = para.frame.unwrap();
+    let frame = para.layout.frame.unwrap();
     // 2 lines * 16px = 32px
     assert_eq!(frame.height, 32.0);
 }
@@ -383,7 +383,7 @@ fn test_paragraph_with_padding() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     // Fragment at content_x = 0 + 10 (padding_left)
     assert_eq!(fragments[0].x, 10.0);
@@ -413,7 +413,7 @@ fn test_paragraph_el_wrapped_text() {
     let plain_id = plain_text.id.clone();
 
     para.children = vec![plain_id.clone(), el_id.clone()];
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id.clone());
     tree.insert(para);
     tree.insert(plain_text);
     tree.insert(el_child);
@@ -427,7 +427,7 @@ fn test_paragraph_el_wrapped_text() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 2);
     assert_eq!(fragments[0].text, "Hi");
     assert_eq!(fragments[1].text, "Bold");
@@ -465,7 +465,7 @@ fn test_paragraph_skips_non_text_children() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     // Row child should be skipped, only "Hi" and "There"
     assert_eq!(fragments.len(), 2);
     assert_eq!(fragments[0].text, "Hi");
@@ -494,7 +494,7 @@ fn test_paragraph_empty_text_skipped() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0].text, "Hello");
     assert_eq!(fragments[0].x, 0.0);
@@ -519,7 +519,7 @@ fn test_paragraph_no_children() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert!(fragments.is_empty());
 }
 
@@ -549,7 +549,7 @@ fn test_paragraph_inherits_font_context() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0].font_size, 20.0);
 }
@@ -573,7 +573,7 @@ fn test_paragraph_intrinsic_width_is_sum_of_children() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let frame = para.frame.unwrap();
+    let frame = para.layout.frame.unwrap();
     // 16 + 32 = 48, constrained to 800 but intrinsic should be 48
     assert_eq!(frame.width, 48.0);
 }
@@ -603,7 +603,7 @@ fn test_paragraph_fragment_colors_from_children() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0].color, 0xFF0000FF);
 }
@@ -627,7 +627,7 @@ fn test_paragraph_fragment_defaults_to_black() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0].color, 0x000000FF);
 }
@@ -661,7 +661,7 @@ fn test_paragraph_inside_el_shifts_fragments() {
     para.children = vec![text_id.clone()];
     parent_el.children = vec![para_id.clone()];
 
-    tree.root = Some(parent_id.clone());
+    tree.set_root_id(parent_id.clone());
     tree.insert(text_child);
     tree.insert(para);
     tree.insert(parent_el);
@@ -674,12 +674,12 @@ fn test_paragraph_inside_el_shifts_fragments() {
     );
 
     let para_el = tree.get(&para_id).unwrap();
-    let para_frame = para_el.frame.unwrap();
+    let para_frame = para_el.layout.frame.unwrap();
     // Paragraph frame should be at (12, 12) due to parent padding
     assert_eq!(para_frame.x, 12.0);
     assert_eq!(para_frame.y, 12.0);
 
-    let fragments = para_el.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para_el.layout.paragraph_fragments.as_ref().unwrap();
     assert!(!fragments.is_empty(), "paragraph should have fragments");
     // Fragment positions should also be offset by the parent padding
     assert_eq!(fragments[0].x, 12.0);
@@ -717,7 +717,7 @@ fn test_paragraph_wraps_to_parent_constraint() {
     para.children = vec![text_id.clone()];
     parent_el.children = vec![para_id.clone()];
 
-    tree.root = Some(parent_id.clone());
+    tree.set_root_id(parent_id.clone());
     tree.insert(text_child);
     tree.insert(para);
     tree.insert(parent_el);
@@ -730,7 +730,7 @@ fn test_paragraph_wraps_to_parent_constraint() {
     );
 
     let para_el = tree.get(&para_id).unwrap();
-    let fragments = para_el.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para_el.layout.paragraph_fragments.as_ref().unwrap();
 
     // Should wrap into 2 lines, not be a single line
     assert!(
@@ -779,7 +779,7 @@ fn test_paragraph_preserves_leading_space_between_nodes() {
     );
 
     let para = tree.get(&para_id).unwrap();
-    let fragments = para.attrs.paragraph_fragments.as_ref().unwrap();
+    let fragments = para.layout.paragraph_fragments.as_ref().unwrap();
     assert_eq!(fragments.len(), 3);
     assert_eq!(fragments[0].text, "Hello");
     assert_eq!(fragments[0].x, 0.0);
@@ -827,7 +827,7 @@ fn test_paragraph_left_and_right_floats_constrain_first_line_bounds() {
 
     let para = tree.get(&para_id).unwrap();
     let fragments = para
-        .attrs
+        .layout
         .paragraph_fragments
         .as_ref()
         .expect("paragraph fragments should exist");

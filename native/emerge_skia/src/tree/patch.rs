@@ -9,18 +9,16 @@
 //!   - 5: set_nearby_mounts - host_id(u64) + count(2) + [slot(1) + id(u64)]...
 //!   - 6: insert_nearby_subtree - host_id(u64) + index(2) + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{scale_animation_spec, AnimationSpec};
-use super::attrs::{
-    decode_attrs, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
-    Attrs,
-};
-use super::deserialize::{decode_tree, DecodeError};
+use super::animation::{AnimationSpec, scale_animation_spec};
+use super::attrs::{Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y};
+use super::deserialize::{DecodeError, decode_tree};
 #[cfg(test)]
 use super::element::NearbyMounts;
 use super::element::{
     Element, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbySlot, NodeId,
     NodeResidency, ParentLink, TextInputContentOrigin,
 };
+use super::invalidation::{TreeInvalidation, classify_attrs_change};
 use std::collections::{HashMap, HashSet};
 
 /// A single patch operation.
@@ -247,59 +245,80 @@ fn decode_insert_nearby_subtree(cursor: &mut Cursor) -> Result<Patch, DecodeErro
 }
 
 /// Apply a list of patches to an element tree.
-pub fn apply_patches(tree: &mut ElementTree, patches: Vec<Patch>) -> Result<(), String> {
+pub fn apply_patches(
+    tree: &mut ElementTree,
+    patches: Vec<Patch>,
+) -> Result<TreeInvalidation, String> {
     if patches.is_empty() {
-        return Ok(());
+        return Ok(TreeInvalidation::None);
     }
 
     let patches = filter_descendant_remove_patches(tree, patches);
 
     let batch_revision = tree.bump_revision();
+    let mut invalidation = TreeInvalidation::None;
 
     for patch in patches {
-        apply_patch(tree, patch, batch_revision)?;
+        invalidation.add(apply_patch(tree, patch, batch_revision)?);
     }
-    Ok(())
+    Ok(invalidation)
 }
 
 /// Apply a single patch to the tree.
-fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Result<(), String> {
-    match patch {
+fn apply_patch(
+    tree: &mut ElementTree,
+    patch: Patch,
+    batch_revision: u64,
+) -> Result<TreeInvalidation, String> {
+    let invalidation = match patch {
         Patch::SetAttrs { id, attrs_raw } => {
             let element = tree
                 .get_mut(&id)
                 .ok_or_else(|| "SetAttrs: node not found".to_string())?;
-            element.attrs_raw = attrs_raw.clone();
+            let before_attrs = element.spec.declared.clone();
+            let before_patch_content = element.runtime.patch_content.clone();
+            let before_content_origin = element.runtime.text_input_content_origin;
+
+            element.spec.attrs_raw = attrs_raw.clone();
             let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
             let content_is_from_patch =
-                element.kind.is_text_input_family() && decoded.content.is_some();
-            let text_input_is_focused = element.kind.is_text_input_family()
-                && element.attrs.text_input_focused == Some(true);
+                element.spec.kind.is_text_input_family() && decoded.content.is_some();
+            let text_input_is_focused =
+                element.spec.kind.is_text_input_family() && element.runtime.text_input_focused;
 
             if content_is_from_patch && text_input_is_focused {
-                element.patch_content = decoded.content.clone();
-                decoded.content = element.base_attrs.content.clone();
-            } else if element.kind.is_text_input_family() && !text_input_is_focused {
-                element.patch_content = None;
+                element.runtime.patch_content = decoded.content.clone();
+                decoded.content = element.spec.declared.content.clone();
+            } else if element.spec.kind.is_text_input_family() && !text_input_is_focused {
+                element.runtime.patch_content = None;
             }
 
-            element.base_attrs = decoded.clone();
-            let mut merged = decoded;
-            preserve_runtime_scroll_attrs(&element.attrs, &mut merged);
-            element.attrs = merged;
+            element.spec.declared = decoded.clone();
+            element.layout.effective = decoded;
+            element.normalize_extracted_state();
             if content_is_from_patch && !text_input_is_focused {
-                element.text_input_content_origin = TextInputContentOrigin::TreePatch;
+                element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
             }
+
+            let mut invalidation = classify_attrs_change(&before_attrs, &element.spec.declared);
+            if before_patch_content != element.runtime.patch_content
+                || before_content_origin != element.runtime.text_input_content_origin
+            {
+                invalidation.add(TreeInvalidation::Registry);
+            }
+            invalidation
         }
 
         Patch::SetChildren { id, children } => {
             let merged_children = tree.merge_live_children_with_ghosts(&id, children);
             tree.set_children(&id, merged_children)?;
+            TreeInvalidation::Structure
         }
 
         Patch::SetNearbyMounts { host_id, mounts } => {
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
+            TreeInvalidation::Structure
         }
 
         Patch::InsertSubtree {
@@ -309,8 +328,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
         } => {
             // Get the root of the subtree
             let subtree_root_id = subtree
-                .root
-                .clone()
+                .root_id()
                 .ok_or_else(|| "InsertSubtree: subtree has no root".to_string())?;
 
             let subtree_topology: Vec<_> = subtree
@@ -355,6 +373,8 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
                     tree.set_root_id(subtree_root_id);
                 }
             }
+
+            TreeInvalidation::Structure
         }
 
         Patch::InsertNearbySubtree {
@@ -364,8 +384,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
             mut subtree,
         } => {
             let subtree_root_id = subtree
-                .root
-                .clone()
+                .root_id()
                 .ok_or_else(|| "InsertNearbySubtree: subtree has no root".to_string())?;
 
             let subtree_topology: Vec<_> = subtree
@@ -406,6 +425,7 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
 
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
+            TreeInvalidation::Structure
         }
 
         Patch::Remove { id } => {
@@ -414,10 +434,11 @@ fn apply_patch(tree: &mut ElementTree, patch: Patch, batch_revision: u64) -> Res
             }
 
             remove_subtree(tree, &id);
+            TreeInvalidation::Structure
         }
-    }
+    };
 
-    Ok(())
+    Ok(invalidation)
 }
 
 fn filter_descendant_remove_patches(tree: &ElementTree, patches: Vec<Patch>) -> Vec<Patch> {
@@ -560,7 +581,7 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
 fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &NodeId) -> Result<(), String> {
     let attachment = tree
         .get(ghost_root_id)
-        .and_then(|ghost| ghost.ghost_attachment.clone())
+        .and_then(|ghost| ghost.lifecycle.ghost_attachment.clone())
         .ok_or_else(|| "attach_ghost_root: ghost root missing attachment".to_string())?;
 
     match attachment {
@@ -597,9 +618,10 @@ fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &NodeId) -> Result<(
 }
 
 fn captured_exit_spec(element: &Element, capture_scale: f32) -> Option<AnimationSpec> {
-    element.attrs.animate_exit.clone().or_else(|| {
+    element.layout.effective.animate_exit.clone().or_else(|| {
         element
-            .base_attrs
+            .spec
+            .declared
             .animate_exit
             .as_ref()
             .map(|spec| scale_animation_spec(spec, capture_scale as f64))
@@ -607,7 +629,7 @@ fn captured_exit_spec(element: &Element, capture_scale: f32) -> Option<Animation
 }
 
 fn locate_attachment(tree: &ElementTree, id: &NodeId) -> Option<AttachmentPoint> {
-    if tree.root.as_ref() == Some(id) {
+    if tree.root_id() == Some(*id) {
         return Some(AttachmentPoint::Root);
     }
 
@@ -670,7 +692,7 @@ fn clone_as_ghost(
         .get(&old.id)
         .cloned()
         .expect("ghost id should exist for every cloned node");
-    let (kind, attrs) = sanitize_ghost_visual(old.kind, &old.attrs);
+    let (kind, attrs) = sanitize_ghost_visual(old.spec.kind, &old.layout.effective);
     #[cfg(test)]
     let old_child_ids = tree.child_ids(&old.id);
     #[cfg(test)]
@@ -681,12 +703,41 @@ fn clone_as_ghost(
 
     let mut cloned = Element {
         id: new_id.clone(),
-        kind,
-        attrs_raw: Vec::new(),
-        base_attrs: attrs.clone(),
-        attrs,
-        text_input_content_origin: old.text_input_content_origin,
-        patch_content: old.patch_content.clone(),
+        spec: crate::tree::element::NodeSpec {
+            kind,
+            attrs_raw: Vec::new(),
+            declared: attrs.clone(),
+        },
+        runtime: crate::tree::element::NodeRuntime {
+            text_input_content_origin: old.runtime.text_input_content_origin,
+            patch_content: old.runtime.patch_content.clone(),
+            text_input_focused: false,
+            text_input_cursor: None,
+            text_input_selection_anchor: None,
+            text_input_preedit: None,
+            text_input_preedit_cursor: None,
+            mouse_over_active: false,
+            mouse_down_active: false,
+            focused_active: false,
+            scrollbar_hover_axis: None,
+        },
+        layout: crate::tree::element::NodeLayoutState {
+            effective: attrs,
+            frame: old.layout.frame,
+            measured_frame: old.layout.measured_frame,
+            scroll_x: old.layout.scroll_x,
+            scroll_y: old.layout.scroll_y,
+            scroll_x_max: old.layout.scroll_x_max,
+            scroll_y_max: old.layout.scroll_y_max,
+            paragraph_fragments: old.layout.paragraph_fragments.clone(),
+        },
+        lifecycle: crate::tree::element::NodeLifecycle {
+            mounted_at_revision: old.lifecycle.mounted_at_revision,
+            residency: NodeResidency::Ghost,
+            ghost_attachment: None,
+            ghost_capture_scale: Some(capture_scale),
+            ghost_exit_animation: None,
+        },
         #[cfg(test)]
         children: old_child_ids
             .iter()
@@ -701,19 +752,14 @@ fn clone_as_ghost(
         nearby: NearbyMounts {
             mounts: remap_nearby_mounts(&old_nearby, id_map),
         },
-        frame: old.frame,
-        measured_frame: old.measured_frame,
-        mounted_at_revision: old.mounted_at_revision,
-        residency: NodeResidency::Ghost,
-        ghost_attachment: None,
-        ghost_capture_scale: Some(capture_scale),
-        ghost_exit_animation: None,
     };
 
     if new_id == *ghost_root_id {
-        cloned.ghost_attachment = Some(ghost_attachment.clone());
-        cloned.ghost_exit_animation = Some(exit_spec.clone());
+        cloned.lifecycle.ghost_attachment = Some(ghost_attachment.clone());
+        cloned.lifecycle.ghost_exit_animation = Some(exit_spec.clone());
     }
+
+    cloned.normalize_extracted_state();
 
     cloned
 }
@@ -756,11 +802,6 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.mouse_over = None;
     attrs.focused = None;
     attrs.mouse_down = None;
-    attrs.mouse_over_active = None;
-    attrs.mouse_down_active = None;
-    attrs.focused_active = None;
-
-    attrs.scrollbar_hover_axis = None;
     attrs.ghost_scrollbar_x = effective_scrollbar_x(&attrs).then_some(true);
     attrs.ghost_scrollbar_y = effective_scrollbar_y(&attrs).then_some(true);
     attrs.scrollbar_x = None;
@@ -769,12 +810,6 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.animate = None;
     attrs.animate_enter = None;
     attrs.animate_exit = None;
-
-    attrs.text_input_focused = None;
-    attrs.text_input_cursor = None;
-    attrs.text_input_selection_anchor = None;
-    attrs.text_input_preedit = None;
-    attrs.text_input_preedit_cursor = None;
 
     let ghost_kind = if kind.is_text_input_family() {
         ElementKind::Text
@@ -818,8 +853,8 @@ pub(crate) fn remove_subtree(tree: &mut ElementTree, id: &NodeId) {
     }
 
     // If this was the root, clear it
-    if tree.root.as_ref() == Some(id) {
-        tree.root = None;
+    if tree.root_id() == Some(*id) {
+        tree.clear_root();
     }
 }
 
@@ -881,7 +916,7 @@ mod tests {
             Vec::new(),
             attrs,
         );
-        element.frame = Some(text_frame(0.0, 0.0, 64.0, 24.0));
+        element.layout.frame = Some(text_frame(0.0, 0.0, 64.0, 24.0));
         element
     }
 
@@ -898,7 +933,7 @@ mod tests {
 
         let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
@@ -909,11 +944,11 @@ mod tests {
         apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.attrs.scroll_x, Some(12.0));
-        assert_eq!(updated.attrs.scroll_y, Some(34.0));
-        assert_eq!(updated.attrs.scroll_x_max, Some(50.0));
-        assert_eq!(updated.attrs.scroll_y_max, Some(60.0));
-        assert_eq!(updated.attrs.scrollbar_hover_axis, None);
+        assert_eq!(updated.layout.scroll_x, 12.0);
+        assert_eq!(updated.layout.scroll_y, 34.0);
+        assert_eq!(updated.layout.scroll_x_max, 50.0);
+        assert_eq!(updated.layout.scroll_y_max, 60.0);
+        assert_eq!(updated.runtime.scrollbar_hover_axis, None);
     }
 
     #[test]
@@ -929,7 +964,7 @@ mod tests {
 
         let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
@@ -940,9 +975,9 @@ mod tests {
         apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.attrs.scrollbar_y, Some(true));
+        assert_eq!(updated.layout.effective.scrollbar_y, Some(true));
         assert_eq!(
-            updated.attrs.scrollbar_hover_axis,
+            updated.layout.effective.scrollbar_hover_axis,
             Some(crate::tree::attrs::ScrollbarHoverAxis::Y)
         );
     }
@@ -956,7 +991,7 @@ mod tests {
 
         let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
@@ -967,8 +1002,8 @@ mod tests {
         apply_patch(&mut tree, patch, 1).unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.attrs.mouse_over, None);
-        assert_eq!(updated.attrs.mouse_over_active, None);
+        assert_eq!(updated.layout.effective.mouse_over, None);
+        assert!(!updated.runtime.mouse_over_active);
     }
 
     #[test]
@@ -977,7 +1012,7 @@ mod tests {
         let element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -990,6 +1025,102 @@ mod tests {
         .unwrap();
 
         assert_eq!(tree.revision(), 1);
+    }
+
+    #[test]
+    fn test_apply_patches_classifies_event_attr_as_registry() {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id.clone());
+        tree.insert(element);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: vec![0, 1, 40, 1],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Registry);
+    }
+
+    #[test]
+    fn test_apply_patches_classifies_visual_attr_as_paint() {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let element =
+            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id.clone());
+        tree.insert(element);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: vec![0, 1, 12, 0, 1, 255, 0, 0, 255],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Paint);
+    }
+
+    #[test]
+    fn test_apply_patches_classifies_content_attr_as_measure() {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let element =
+            Element::with_attrs(id.clone(), ElementKind::Text, Vec::new(), Attrs::default());
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id.clone());
+        tree.insert(element);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: vec![0, 1, 21, 0, 3, b'a', b'b', b'c'],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+    }
+
+    #[test]
+    fn test_apply_patches_classifies_child_changes_as_structure() {
+        let parent_id = NodeId::from_term_bytes(vec![1]);
+        let child_id = NodeId::from_term_bytes(vec![2]);
+        let parent = Element::with_attrs(
+            parent_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        let child = Element::with_attrs(
+            child_id.clone(),
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        );
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id.clone());
+        tree.insert(parent);
+        tree.insert(child);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetChildren {
+                id: parent_id,
+                children: vec![child_id],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Structure);
     }
 
     #[test]
@@ -1012,11 +1143,11 @@ mod tests {
         );
 
         let mut subtree = ElementTree::new();
-        subtree.root = Some(child_id.clone());
+        subtree.set_root_id(child_id.clone());
         subtree.insert(child);
 
         let mut tree = ElementTree::new();
-        tree.root = Some(parent_id.clone());
+        tree.set_root_id(parent_id.clone());
         tree.insert(parent);
 
         apply_patches(
@@ -1030,7 +1161,7 @@ mod tests {
         .unwrap();
 
         let inserted = tree.get(&child_id).expect("inserted child should exist");
-        assert_eq!(inserted.mounted_at_revision, tree.revision());
+        assert_eq!(inserted.lifecycle.mounted_at_revision, tree.revision());
     }
 
     #[test]
@@ -1038,10 +1169,10 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![7]);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
-        element.mounted_at_revision = 4;
+        element.lifecycle.mounted_at_revision = 4;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -1053,7 +1184,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(tree.get(&id).unwrap().mounted_at_revision, 4);
+        assert_eq!(tree.get(&id).unwrap().lifecycle.mounted_at_revision, 4);
     }
 
     #[test]
@@ -1063,10 +1194,10 @@ mod tests {
         attrs.content = Some("before".to_string());
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.text_input_content_origin = TextInputContentOrigin::Event;
+        element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -1079,9 +1210,9 @@ mod tests {
         .unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.base_attrs.content.as_deref(), Some("after"));
+        assert_eq!(updated.spec.declared.content.as_deref(), Some("after"));
         assert_eq!(
-            updated.text_input_content_origin,
+            updated.runtime.text_input_content_origin,
             TextInputContentOrigin::TreePatch
         );
     }
@@ -1093,10 +1224,10 @@ mod tests {
         attrs.content = Some("before".to_string());
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.text_input_content_origin = TextInputContentOrigin::Event;
+        element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -1109,7 +1240,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            tree.get(&id).unwrap().text_input_content_origin,
+            tree.get(&id).unwrap().runtime.text_input_content_origin,
             TextInputContentOrigin::Event
         );
     }
@@ -1122,10 +1253,10 @@ mod tests {
         attrs.text_input_focused = Some(true);
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.text_input_content_origin = TextInputContentOrigin::Event;
+        element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -1138,11 +1269,11 @@ mod tests {
         .unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.base_attrs.content.as_deref(), Some("before"));
-        assert_eq!(updated.attrs.content.as_deref(), Some("before"));
-        assert_eq!(updated.patch_content.as_deref(), Some("after"));
+        assert_eq!(updated.spec.declared.content.as_deref(), Some("before"));
+        assert_eq!(updated.layout.effective.content.as_deref(), Some("before"));
+        assert_eq!(updated.runtime.patch_content.as_deref(), Some("after"));
         assert_eq!(
-            updated.text_input_content_origin,
+            updated.runtime.text_input_content_origin,
             TextInputContentOrigin::Event
         );
     }
@@ -1154,10 +1285,10 @@ mod tests {
         attrs.content = Some("before".to_string());
         let mut element =
             Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
-        element.patch_content = Some("stale".to_string());
+        element.runtime.patch_content = Some("stale".to_string());
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
+        tree.set_root_id(id.clone());
         tree.insert(element);
 
         apply_patches(
@@ -1170,10 +1301,10 @@ mod tests {
         .unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.base_attrs.content.as_deref(), Some("after"));
-        assert_eq!(updated.patch_content, None);
+        assert_eq!(updated.spec.declared.content.as_deref(), Some("after"));
+        assert_eq!(updated.runtime.patch_content, None);
         assert_eq!(
-            updated.text_input_content_origin,
+            updated.runtime.text_input_content_origin,
             TextInputContentOrigin::TreePatch
         );
     }
@@ -1191,7 +1322,7 @@ mod tests {
             Attrs::default(),
         );
         parent.children = vec![first_id.clone(), second_id.clone()];
-        parent.mounted_at_revision = 2;
+        parent.lifecycle.mounted_at_revision = 2;
 
         let mut first = Element::with_attrs(
             first_id.clone(),
@@ -1199,7 +1330,7 @@ mod tests {
             Vec::new(),
             Attrs::default(),
         );
-        first.mounted_at_revision = 2;
+        first.lifecycle.mounted_at_revision = 2;
 
         let mut second = Element::with_attrs(
             second_id.clone(),
@@ -1207,10 +1338,10 @@ mod tests {
             Vec::new(),
             Attrs::default(),
         );
-        second.mounted_at_revision = 3;
+        second.lifecycle.mounted_at_revision = 3;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(parent_id.clone());
+        tree.set_root_id(parent_id.clone());
         tree.insert(parent);
         tree.insert(first);
         tree.insert(second);
@@ -1224,8 +1355,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(tree.get(&first_id).unwrap().mounted_at_revision, 2);
-        assert_eq!(tree.get(&second_id).unwrap().mounted_at_revision, 3);
+        assert_eq!(
+            tree.get(&first_id).unwrap().lifecycle.mounted_at_revision,
+            2
+        );
+        assert_eq!(
+            tree.get(&second_id).unwrap().lifecycle.mounted_at_revision,
+            3
+        );
     }
 
     #[test]
@@ -1247,10 +1384,10 @@ mod tests {
             Vec::new(),
             Attrs::default(),
         );
-        child.mounted_at_revision = 1;
+        child.lifecycle.mounted_at_revision = 1;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(parent_id.clone());
+        tree.set_root_id(parent_id.clone());
         tree.insert(parent);
         tree.insert(child);
         tree.set_revision(1);
@@ -1265,7 +1402,7 @@ mod tests {
         let removed_revision = tree.revision();
 
         let mut subtree = ElementTree::new();
-        subtree.root = Some(child_id.clone());
+        subtree.set_root_id(child_id.clone());
         subtree.insert(Element::with_attrs(
             child_id.clone(),
             ElementKind::El,
@@ -1283,7 +1420,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(tree.get(&child_id).unwrap().mounted_at_revision > removed_revision);
+        assert!(tree.get(&child_id).unwrap().lifecycle.mounted_at_revision > removed_revision);
     }
 
     #[test]
@@ -1317,7 +1454,7 @@ mod tests {
             Vec::new(),
             child_attrs,
         );
-        child.frame = Some(Frame {
+        child.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 80.0,
@@ -1327,7 +1464,7 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.root = Some(parent_id.clone());
+        tree.set_root_id(parent_id.clone());
         tree.insert(parent);
         tree.insert(child);
 
@@ -1348,15 +1485,15 @@ mod tests {
 
         let ghost = tree.get(&ghost_id).expect("ghost root should exist");
         assert!(ghost.is_ghost_root());
-        assert_eq!(ghost.kind, ElementKind::Text);
-        assert_eq!(ghost.attrs.on_click, None);
-        assert_eq!(ghost.attrs.mouse_over, None);
-        assert_eq!(ghost.attrs.mouse_over_active, None);
-        assert_eq!(ghost.attrs.scrollbar_y, None);
-        assert_eq!(ghost.attrs.ghost_scrollbar_y, Some(true));
-        assert_eq!(ghost.attrs.scroll_y, Some(12.0));
-        assert_eq!(ghost.attrs.text_input_focused, None);
-        assert!(ghost.ghost_exit_animation.is_some());
+        assert_eq!(ghost.spec.kind, ElementKind::Text);
+        assert_eq!(ghost.layout.effective.on_click, None);
+        assert_eq!(ghost.layout.effective.mouse_over, None);
+        assert!(!ghost.runtime.mouse_over_active);
+        assert_eq!(ghost.layout.effective.scrollbar_y, None);
+        assert_eq!(ghost.layout.effective.ghost_scrollbar_y, Some(true));
+        assert_eq!(ghost.layout.scroll_y, 12.0);
+        assert_eq!(ghost.layout.effective.text_input_focused, None);
+        assert!(ghost.lifecycle.ghost_exit_animation.is_some());
     }
 
     #[test]
@@ -1371,17 +1508,17 @@ mod tests {
             Attrs::default(),
         );
         root.children = vec![child_id.clone()];
-        root.frame = Some(text_frame(0.0, 0.0, 120.0, 40.0));
+        root.layout.frame = Some(text_frame(0.0, 0.0, 120.0, 40.0));
 
         let mut child = text_element(31, "bye");
-        child.attrs.on_click = Some(true);
-        child.base_attrs.on_click = Some(true);
-        child.attrs.animate_exit = Some(exit_alpha_spec());
-        child.base_attrs.animate_exit = Some(exit_alpha_spec());
-        child.frame = Some(text_frame(8.0, 8.0, 48.0, 20.0));
+        child.layout.effective.on_click = Some(true);
+        child.spec.declared.on_click = Some(true);
+        child.layout.effective.animate_exit = Some(exit_alpha_spec());
+        child.spec.declared.animate_exit = Some(exit_alpha_spec());
+        child.layout.frame = Some(text_frame(8.0, 8.0, 48.0, 20.0));
 
         let mut tree = ElementTree::new();
-        tree.root = Some(root_id.clone());
+        tree.set_root_id(root_id.clone());
         tree.insert(root);
         tree.insert(child);
 
@@ -1428,20 +1565,20 @@ mod tests {
         let first = text_element(41, "a");
 
         let mut removed = text_element(42, "b");
-        removed.attrs.animate_exit = Some(exit_alpha_spec());
-        removed.base_attrs.animate_exit = Some(exit_alpha_spec());
+        removed.layout.effective.animate_exit = Some(exit_alpha_spec());
+        removed.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let third = text_element(43, "c");
 
         let mut tree = ElementTree::new();
-        tree.root = Some(parent_id.clone());
+        tree.set_root_id(parent_id.clone());
         tree.insert(parent);
         tree.insert(first);
         tree.insert(removed);
         tree.insert(third);
 
         let mut subtree = ElementTree::new();
-        subtree.root = Some(new_id.clone());
+        subtree.set_root_id(new_id.clone());
         subtree.insert(text_element(44, "d"));
 
         apply_patches(
@@ -1483,16 +1620,16 @@ mod tests {
             .set(NearbySlot::OnRight, Some(old_nearby_id.clone()));
 
         let mut old_nearby = text_element(51, "old");
-        old_nearby.attrs.animate_exit = Some(exit_alpha_spec());
-        old_nearby.base_attrs.animate_exit = Some(exit_alpha_spec());
+        old_nearby.layout.effective.animate_exit = Some(exit_alpha_spec());
+        old_nearby.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.root = Some(host_id.clone());
+        tree.set_root_id(host_id.clone());
         tree.insert(host);
         tree.insert(old_nearby);
 
         let mut subtree = ElementTree::new();
-        subtree.root = Some(new_nearby_id.clone());
+        subtree.set_root_id(new_nearby_id.clone());
         subtree.insert(text_element(52, "new"));
 
         apply_patches(
@@ -1534,16 +1671,16 @@ mod tests {
             .set(NearbySlot::InFront, Some(old_nearby_id.clone()));
 
         let mut old_nearby = text_element(54, "old");
-        old_nearby.attrs.animate_exit = Some(exit_alpha_spec());
-        old_nearby.base_attrs.animate_exit = Some(exit_alpha_spec());
+        old_nearby.layout.effective.animate_exit = Some(exit_alpha_spec());
+        old_nearby.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.root = Some(host_id.clone());
+        tree.set_root_id(host_id.clone());
         tree.insert(host);
         tree.insert(old_nearby);
 
         let mut subtree = ElementTree::new();
-        subtree.root = Some(new_nearby_id.clone());
+        subtree.set_root_id(new_nearby_id.clone());
         subtree.insert(text_element(55, "new"));
 
         apply_patches(

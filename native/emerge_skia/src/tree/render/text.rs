@@ -3,7 +3,7 @@ use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
 use crate::render_scene::{DrawPrimitive, RenderNode};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics};
 use crate::tree::attrs::{Attrs, TextAlign};
-use crate::tree::element::Frame;
+use crate::tree::element::{Frame, NodeRuntime};
 use crate::tree::layout::{FontContext, font_info_with_inheritance};
 use crate::tree::text_layout::{TextLayoutStyle, layout_text_lines};
 
@@ -158,13 +158,11 @@ pub(super) fn render_text_input_items(
     items: &mut Vec<RenderNode>,
     frame: Frame,
     attrs: &Attrs,
+    runtime: &NodeRuntime,
     inherited: &FontContext,
 ) -> Option<(f32, f32, f32, f32)> {
     let content = attrs.content.as_deref().unwrap_or("");
-    let preedit = attrs
-        .text_input_preedit
-        .as_deref()
-        .filter(|value| !value.is_empty());
+    let preedit = runtime.text_input_preedit.as_deref();
 
     let font_size = attrs
         .font_size
@@ -208,12 +206,16 @@ pub(super) fn render_text_input_items(
     let inset_right = insets.right;
     let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
     let content_char_count = content.chars().count() as u32;
-    let cursor = attrs
+    let cursor = runtime
         .text_input_cursor
         .unwrap_or(content_char_count)
         .min(content_char_count);
-    let (replace_start, replace_end, displayed_text) =
-        text_input_display_state(content, cursor, attrs.text_input_selection_anchor, preedit);
+    let (replace_start, replace_end, displayed_text) = text_input_display_state(
+        content,
+        cursor,
+        runtime.text_input_selection_anchor,
+        preedit,
+    );
 
     let (text_left_overhang, text_width) = text_alignment_metrics(&displayed_text, style);
     let content_width = frame.width - inset_left - inset_right;
@@ -230,7 +232,7 @@ pub(super) fn render_text_input_items(
     };
     let baseline_y = frame.y + inset_top + ascent;
 
-    if let Some(anchor) = attrs.text_input_selection_anchor {
+    if let Some(anchor) = runtime.text_input_selection_anchor {
         let anchor = anchor.min(content_char_count);
         if anchor != cursor && !(preedit.is_some() && replace_end > replace_start) {
             let preedit_len = preedit
@@ -300,11 +302,11 @@ pub(super) fn render_text_input_items(
         }));
     }
 
-    if attrs.text_input_focused.unwrap_or(false) {
+    if runtime.text_input_focused {
         let displayed_char_count = displayed_text.chars().count() as u32;
         let caret_char_index = if let Some(preedit_text) = preedit {
             let preedit_len = preedit_text.chars().count() as u32;
-            let preedit_cursor_end = attrs
+            let preedit_cursor_end = runtime
                 .text_input_preedit_cursor
                 .map(|(_start, end)| end.min(preedit_len))
                 .unwrap_or(preedit_len);
@@ -338,13 +340,11 @@ pub(super) fn render_multiline_text_input_items(
     items: &mut Vec<RenderNode>,
     frame: Frame,
     attrs: &Attrs,
+    runtime: &NodeRuntime,
     inherited: &FontContext,
 ) -> Option<(f32, f32, f32, f32)> {
     let content = attrs.content.as_deref().unwrap_or("");
-    let preedit = attrs
-        .text_input_preedit
-        .as_deref()
-        .filter(|value| !value.is_empty());
+    let preedit = runtime.text_input_preedit.as_deref();
 
     let font_size = attrs
         .font_size
@@ -394,12 +394,16 @@ pub(super) fn render_multiline_text_input_items(
     let (ascent, descent) = text_metrics_with_font(font_size, &family, weight, italic);
     let font = make_font_with_style(&family, weight, italic, font_size);
     let content_char_count = content.chars().count() as u32;
-    let cursor = attrs
+    let cursor = runtime
         .text_input_cursor
         .unwrap_or(content_char_count)
         .min(content_char_count);
-    let (replace_start, replace_end, displayed_text) =
-        text_input_display_state(content, cursor, attrs.text_input_selection_anchor, preedit);
+    let (replace_start, replace_end, displayed_text) = text_input_display_state(
+        content,
+        cursor,
+        runtime.text_input_selection_anchor,
+        preedit,
+    );
     let layout = layout_text_lines(
         &displayed_text,
         Some(content_width),
@@ -425,7 +429,7 @@ pub(super) fn render_multiline_text_input_items(
         .map(|value| value.chars().count() as u32)
         .unwrap_or(0);
 
-    if let Some(anchor) = attrs.text_input_selection_anchor {
+    if let Some(anchor) = runtime.text_input_selection_anchor {
         let anchor = anchor.min(content_char_count);
         if anchor != cursor && !(preedit.is_some() && replace_end > replace_start) {
             let displayed_start = map_committed_to_displayed(
@@ -504,11 +508,11 @@ pub(super) fn render_multiline_text_input_items(
         }
     }
 
-    if attrs.text_input_focused.unwrap_or(false) {
+    if runtime.text_input_focused {
         let displayed_char_count = displayed_text.chars().count() as u32;
         let caret_char_index = if let Some(preedit_text) = preedit {
             let preedit_len = preedit_text.chars().count() as u32;
-            let preedit_cursor_end = attrs
+            let preedit_cursor_end = runtime
                 .text_input_preedit_cursor
                 .map(|(_start, end)| end.min(preedit_len))
                 .unwrap_or(preedit_len);
