@@ -1,0 +1,133 @@
+Code.require_file("support/benchee_config.exs", __DIR__)
+Code.require_file("support/native_helpers.exs", __DIR__)
+Code.require_file("support/scenarios.exs", __DIR__)
+
+defmodule Emerge.Bench.NativeRetainedLayout do
+  @moduledoc false
+
+  alias Emerge.Bench.NativeHelpers
+  alias Emerge.Bench.Scenarios
+  alias EmergeSkia.Native
+
+  @default_scenarios [:list_text, :text_rich, :layout_matrix, :paint_rich, :nearby_rich]
+  @retained_mutations [
+    :noop,
+    :paint_attr,
+    :event_attr,
+    :layout_attr,
+    :text_content,
+    :keyed_reorder,
+    :insert_tail,
+    :remove_tail,
+    :nearby_slot_change,
+    :nearby_reorder
+  ]
+
+  def base_inputs do
+    Scenarios.inputs(Scenarios.sizes(), scenario_ids())
+  end
+
+  def retained_inputs(inputs) do
+    Map.new(inputs, fn {label, input} ->
+      {label, Map.put(input, :tree, upload_warm_tree!(input))}
+    end)
+  end
+
+  def mutation_inputs(inputs) do
+    for {label, input} <- inputs, mutation <- @retained_mutations, into: %{} do
+      {"#{label}/#{mutation}", Map.put(input, :mutation, mutation)}
+    end
+  end
+
+  def prepare_after_patch_input(input) do
+    tree = upload_warm_tree!(input)
+
+    tree
+    |> Native.tree_patch(Map.fetch!(input.patch_bins, input.mutation))
+    |> NativeHelpers.ok!()
+
+    Map.put(input, :tree, tree)
+  end
+
+  def prepare_patch_layout_input(input) do
+    input
+    |> Map.put(:tree, upload_warm_tree!(input))
+    |> Map.put(:patch_bin, Map.fetch!(input.patch_bins, input.mutation))
+  end
+
+  def layout!(tree, constraint) do
+    tree
+    |> Native.tree_layout(constraint.width, constraint.height, constraint.scale)
+    |> NativeHelpers.unwrap!()
+  end
+
+  def upload_warm_tree!(input) do
+    tree = NativeHelpers.upload_tree!(input.full_bin)
+    layout!(tree, input.constraint)
+    tree
+  end
+
+  defp scenario_ids do
+    case System.get_env("EMERGE_BENCH_SCENARIOS") do
+      nil -> @default_scenarios
+      _value -> Scenarios.scenario_ids()
+    end
+  end
+end
+
+alias Emerge.Bench.Config
+alias Emerge.Bench.NativeHelpers
+alias Emerge.Bench.NativeRetainedLayout
+alias Emerge.Bench.Scenarios
+alias EmergeSkia.Native
+
+inputs = NativeRetainedLayout.base_inputs()
+mutation_inputs = NativeRetainedLayout.mutation_inputs(inputs)
+Scenarios.print_metadata(inputs)
+
+Benchee.run(
+  %{
+    "native/tree_layout_retained/warm_cache" => fn %{tree: tree, constraint: constraint} ->
+      NativeRetainedLayout.layout!(tree, constraint)
+    end
+  },
+  Config.options(
+    inputs: NativeRetainedLayout.retained_inputs(inputs),
+    parallel: 1
+  )
+)
+
+# Rebuild a warmed tree per invocation so the measured call is the first layout after patching.
+Benchee.run(
+  %{
+    "native/tree_layout_retained_after_patch/layout_only" => fn %{
+                                                                  tree: tree,
+                                                                  constraint: constraint
+                                                                } ->
+      NativeRetainedLayout.layout!(tree, constraint)
+    end
+  },
+  Config.options(
+    inputs: mutation_inputs,
+    before_each: &NativeRetainedLayout.prepare_after_patch_input/1,
+    parallel: 1
+  )
+)
+
+Benchee.run(
+  %{
+    "native/tree_patch_layout_retained/apply_patch_then_layout" => fn %{
+                                                                        tree: tree,
+                                                                        patch_bin: patch_bin,
+                                                                        constraint: constraint
+                                                                      } ->
+      tree |> Native.tree_patch(patch_bin) |> NativeHelpers.ok!()
+      NativeRetainedLayout.layout!(tree, constraint)
+    end
+  },
+  Config.options(
+    inputs: mutation_inputs,
+    before_each: &NativeRetainedLayout.prepare_patch_layout_input/1,
+    parallel: 1
+  )
+)
