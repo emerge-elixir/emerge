@@ -631,6 +631,182 @@ defmodule Emerge.Engine.PatchTest do
            end)
   end
 
+  test "adding keyed nearby emits insert_nearby_subtree without set_nearby_mounts" do
+    state = Emerge.Engine.DiffState.new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host)], text("Host"))
+      ])
+
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+    patches = Patch.decode(bin2)
+
+    host1 = hd(tree1.children)
+    host2 = hd(tree2.children)
+    [{:above, tip2}] = host2.nearby
+
+    assert Enum.any?(patches, fn
+             {:insert_nearby_subtree, id, 0, :above, subtree} when id == host1.id ->
+               subtree.id == tip2.id
+
+             _ ->
+               false
+           end)
+
+    refute Enum.any?(patches, fn
+             {:set_nearby_mounts, id, _mounts} when id == host1.id -> true
+             {:insert_subtree, _, _, _} -> true
+             {:remove, _} -> true
+             _ -> false
+           end)
+  end
+
+  test "removing keyed nearby emits remove without set_nearby_mounts" do
+    state = Emerge.Engine.DiffState.new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host)], text("Host"))
+      ])
+
+    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+    patches = Patch.decode(bin2)
+
+    host1 = hd(tree1.children)
+    [{:above, tip1}] = host1.nearby
+
+    assert Enum.any?(patches, fn
+             {:remove, id} when id == tip1.id -> true
+             _ -> false
+           end)
+
+    refute Enum.any?(patches, fn
+             {:set_nearby_mounts, id, _mounts} when id == host1.id -> true
+             {:insert_nearby_subtree, _, _, _, _} -> true
+             _ -> false
+           end)
+  end
+
+  test "nearby keyed reorder emits set_nearby_mounts without inserts or removes" do
+    state = Emerge.Engine.DiffState.new()
+
+    layout1 =
+      column([key(:root)], [
+        el(
+          [
+            key(:host),
+            Nearby.above(el([key(:above)], text("Above"))),
+            Nearby.below(el([key(:below)], text("Below")))
+          ],
+          text("Host")
+        )
+      ])
+
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el(
+          [
+            key(:host),
+            Nearby.below(el([key(:below)], text("Below"))),
+            Nearby.above(el([key(:above)], text("Above")))
+          ],
+          text("Host")
+        )
+      ])
+
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+    patches = Patch.decode(bin2)
+
+    host1 = hd(tree1.children)
+    host2 = hd(tree2.children)
+    [{:above, above1}, {:below, below1}] = host1.nearby
+    [{:below, below2}, {:above, above2}] = host2.nearby
+
+    assert above1.id == above2.id
+    assert below1.id == below2.id
+
+    assert Enum.any?(patches, fn
+             {:set_nearby_mounts, id, mounts} when id == host1.id ->
+               mounts == [{:below, below2.id}, {:above, above2.id}]
+
+             _ ->
+               false
+           end)
+
+    removed_ids = [above1.id, below1.id]
+
+    refute Enum.any?(patches, fn
+             {:insert_nearby_subtree, _, _, _, _} -> true
+             {:remove, id} -> id in removed_ids
+             _ -> false
+           end)
+  end
+
+  test "attr-only update keeps all assigned ids stable" do
+    state = Emerge.Engine.DiffState.new()
+
+    layout1 =
+      column([key(:root)], [
+        el(
+          [key(:host), Nearby.above(el([key(:tip)], text("Tip")))],
+          el([key(:child)], text("Child"))
+        )
+      ])
+
+    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el(
+          [key(:host), padding(8), Nearby.above(el([key(:tip)], text("Tip")))],
+          el([key(:child)], text("Child"))
+        )
+      ])
+
+    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+    patches = Patch.decode(bin2)
+
+    ids1 = key_node_id_map(tree1)
+    ids2 = key_node_id_map(tree2)
+
+    assert ids1 == ids2
+
+    set_attrs =
+      Enum.filter(patches, fn
+        {:set_attrs, _, _} -> true
+        _ -> false
+      end)
+
+    assert [{:set_attrs, id, _attrs}] = set_attrs
+    assert id == ids1[:host]
+
+    refute Enum.any?(patches, fn
+             {:set_children, _, _} -> true
+             {:set_nearby_mounts, _, _} -> true
+             {:insert_subtree, _, _, _} -> true
+             {:insert_nearby_subtree, _, _, _, _} -> true
+             {:remove, _} -> true
+             _ -> false
+           end)
+  end
+
   defp content_id_map(%Emerge.Engine.Element{children: children}) do
     children
     |> Enum.map(fn child ->
@@ -638,6 +814,19 @@ defmodule Emerge.Engine.PatchTest do
       {text, child.id}
     end)
     |> Map.new()
+  end
+
+  defp key_node_id_map(%Emerge.Engine.Element{} = element) do
+    key_entries = if is_nil(element.key), do: [], else: [{element.key, element.id}]
+
+    child_entries = Enum.flat_map(element.children, &key_node_id_map/1)
+
+    nearby_entries =
+      Enum.flat_map(element.nearby, fn {_slot, child} ->
+        key_node_id_map(child)
+      end)
+
+    Map.new(key_entries ++ child_entries ++ nearby_entries)
   end
 
   defp normalize_patches(patches) do
