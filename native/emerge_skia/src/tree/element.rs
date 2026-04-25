@@ -4,8 +4,8 @@ use super::animation::AnimationSpec;
 #[cfg(test)]
 use super::attrs::MouseOverAttrs;
 use super::attrs::{
-    Attrs, BorderWidth, ImageSource, Length, Padding, ScrollbarHoverAxis, TextFragment,
-    supports_mouse_over_tracking,
+    Attrs, BorderWidth, Font, FontStyle, FontWeight, ImageFit, ImageSource, Length, Padding,
+    ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
 #[cfg(test)]
@@ -118,6 +118,64 @@ pub struct Frame {
 pub struct IntrinsicMeasureCache {
     pub key: IntrinsicMeasureCacheKey,
     pub frame: Frame,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubtreeMeasureCache {
+    pub key: SubtreeMeasureCacheKey,
+    pub frame: Frame,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubtreeMeasureCacheKey {
+    pub kind: ElementKind,
+    pub attrs: SubtreeMeasureAttrs,
+    pub inherited: InheritedMeasureFontKey,
+    pub children: Vec<NodeId>,
+    pub nearby: Vec<NearbyMount>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubtreeMeasureAttrs {
+    pub width: Option<Length>,
+    pub height: Option<Length>,
+    pub padding: Option<Padding>,
+    pub border_width: Option<BorderWidth>,
+    pub spacing: Option<f64>,
+    pub spacing_x: Option<f64>,
+    pub spacing_y: Option<f64>,
+    pub scrollbar_y: Option<bool>,
+    pub scrollbar_x: Option<bool>,
+    pub ghost_scrollbar_y: Option<bool>,
+    pub ghost_scrollbar_x: Option<bool>,
+    pub scroll_x: Option<f64>,
+    pub scroll_y: Option<f64>,
+    pub clip_nearby: Option<bool>,
+    pub content: Option<String>,
+    pub font_size: Option<f64>,
+    pub font: Option<Font>,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
+    pub font_letter_spacing: Option<f64>,
+    pub font_word_spacing: Option<f64>,
+    pub image_src: Option<ImageSource>,
+    pub image_fit: Option<ImageFit>,
+    pub image_size: Option<(f64, f64)>,
+    pub text_align: Option<TextAlign>,
+    pub snap_layout: Option<bool>,
+    pub snap_text_metrics: Option<bool>,
+    pub space_evenly: Option<bool>,
+    pub has_animation_attrs: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InheritedMeasureFontKey {
+    pub family: Option<String>,
+    pub weight: Option<u16>,
+    pub italic: Option<bool>,
+    pub font_size: Option<f32>,
+    pub letter_spacing: Option<f32>,
+    pub word_spacing: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -419,7 +477,7 @@ pub struct NodeRuntime {
     pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NodeLayoutState {
     /// Scaled attributes (populated by layout pass, used by render).
     pub effective: Attrs,
@@ -436,6 +494,26 @@ pub struct NodeLayoutState {
     pub scroll_y_max: f32,
     pub paragraph_fragments: Option<Vec<TextFragment>>,
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
+    pub subtree_measure_cache: Option<SubtreeMeasureCache>,
+    pub measure_dirty: bool,
+}
+
+impl Default for NodeLayoutState {
+    fn default() -> Self {
+        Self {
+            effective: Attrs::default(),
+            frame: None,
+            measured_frame: None,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+            scroll_x_max: 0.0,
+            scroll_y_max: 0.0,
+            paragraph_fragments: None,
+            intrinsic_measure_cache: None,
+            subtree_measure_cache: None,
+            measure_dirty: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -539,6 +617,8 @@ impl Element {
                 frame: None,
                 measured_frame: None,
                 intrinsic_measure_cache: None,
+                subtree_measure_cache: None,
+                measure_dirty: true,
             },
             lifecycle: NodeLifecycle {
                 mounted_at_revision: 0,
@@ -1076,6 +1156,7 @@ impl ElementTree {
         let element_id = element.id;
         if let Some(&ix) = self.id_to_ix.get(&element.id) {
             self.nodes[ix] = Some(element);
+            self.mark_measure_dirty_ix(ix);
         } else if let Some(ix) = self.free_list.pop() {
             self.id_to_ix.insert(element.id, ix);
             self.nodes[ix] = Some(element);
@@ -1101,6 +1182,12 @@ impl ElementTree {
 
     pub fn remove_node(&mut self, id: &NodeId) -> Option<Element> {
         let ix = self.id_to_ix.remove(id)?;
+        let dirty_parent = self
+            .parent_link_of(ix)
+            .map(|parent_link| match parent_link {
+                ParentLink::Child { parent } => parent,
+                ParentLink::Nearby { host, .. } => host,
+            });
         let removed = self.nodes.get_mut(ix).and_then(|slot| slot.take());
         self.free_list.push(ix);
 
@@ -1116,6 +1203,10 @@ impl ElementTree {
 
         #[cfg(test)]
         self.mark_topology_dirty();
+
+        if let Some(parent_ix) = dirty_parent {
+            self.mark_measure_dirty_ix(parent_ix);
+        }
         removed
     }
 
@@ -1140,7 +1231,49 @@ impl ElementTree {
     }
 
     pub fn set_current_scale(&mut self, scale: f32) {
-        self.current_scale = scale.max(f32::EPSILON);
+        let next = scale.max(f32::EPSILON);
+        if (self.current_scale - next).abs() > f32::EPSILON {
+            self.mark_all_measure_dirty();
+        }
+        self.current_scale = next;
+    }
+
+    pub fn mark_measure_dirty(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_measure_dirty_ix(ix);
+        }
+    }
+
+    pub fn mark_measure_dirty_for_invalidation(
+        &mut self,
+        id: &NodeId,
+        invalidation: TreeInvalidation,
+    ) {
+        if invalidation.requires_measure() {
+            self.mark_measure_dirty(id);
+        }
+    }
+
+    pub fn mark_all_measure_dirty(&mut self) {
+        self.iter_nodes_mut()
+            .for_each(|element| element.layout.measure_dirty = true);
+    }
+
+    fn mark_measure_dirty_ix(&mut self, ix: NodeIx) {
+        let mut current_ix = Some(ix);
+
+        while let Some(ix) = current_ix {
+            if let Some(element) = self.get_ix_mut(ix) {
+                element.layout.measure_dirty = true;
+            }
+
+            current_ix = self
+                .parent_link_of(ix)
+                .map(|parent_link| match parent_link {
+                    ParentLink::Child { parent } => parent,
+                    ParentLink::Nearby { host, .. } => host,
+                });
+        }
     }
 
     pub fn next_ghost_seq(&mut self) -> u64 {
@@ -1266,14 +1399,14 @@ impl ElementTree {
             .ok_or_else(|| format!("parent not found: {:?}", parent_id.0))?;
         let child_ixs = self.resolve_child_ixs(&child_ids)?;
 
-        self.set_children_ix(parent_ix, child_ixs.clone());
-        self.set_paint_children_ix(parent_ix, child_ixs);
-
         #[cfg(test)]
         if let Some(parent) = self.get_mut(parent_id) {
             parent.children = child_ids.clone();
             parent.paint_children = child_ids;
         }
+
+        self.set_children_ix(parent_ix, child_ixs.clone());
+        self.set_paint_children_ix(parent_ix, child_ixs);
 
         Ok(())
     }
@@ -1288,12 +1421,12 @@ impl ElementTree {
             .ok_or_else(|| format!("parent not found: {:?}", parent_id.0))?;
         let child_ixs = self.resolve_child_ixs(&child_ids)?;
 
-        self.set_paint_children_ix(parent_ix, child_ixs);
-
         #[cfg(test)]
         if let Some(parent) = self.get_mut(parent_id) {
             parent.paint_children = child_ids;
         }
+
+        self.set_paint_children_ix(parent_ix, child_ixs);
 
         Ok(())
     }
@@ -1319,12 +1452,12 @@ impl ElementTree {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        self.set_nearby_ixs(host_ix, nearby_ixs);
-
         #[cfg(test)]
         if let Some(host) = self.get_mut(host_id) {
             host.nearby.set_mounts(mounts);
         }
+
+        self.set_nearby_ixs(host_ix, nearby_ixs);
 
         Ok(())
     }
@@ -1512,23 +1645,27 @@ impl ElementTree {
             self.ensure_topology_capacity(child_ix);
         }
 
-        #[cfg(test)]
-        let topology = self.topology.get_mut();
-        #[cfg(not(test))]
-        let topology = &mut self.topology;
+        {
+            #[cfg(test)]
+            let topology = self.topology.get_mut();
+            #[cfg(not(test))]
+            let topology = &mut self.topology;
 
-        for old_child_ix in std::mem::take(&mut topology.nodes[parent_ix].children) {
-            if matches!(topology.nodes[old_child_ix].parent, Some(ParentLink::Child { parent }) if parent == parent_ix)
-            {
-                topology.nodes[old_child_ix].parent = None;
+            for old_child_ix in std::mem::take(&mut topology.nodes[parent_ix].children) {
+                if matches!(topology.nodes[old_child_ix].parent, Some(ParentLink::Child { parent }) if parent == parent_ix)
+                {
+                    topology.nodes[old_child_ix].parent = None;
+                }
             }
+
+            for &child_ix in &child_ixs {
+                topology.nodes[child_ix].parent = Some(ParentLink::Child { parent: parent_ix });
+            }
+
+            topology.nodes[parent_ix].children = child_ixs;
         }
 
-        for &child_ix in &child_ixs {
-            topology.nodes[child_ix].parent = Some(ParentLink::Child { parent: parent_ix });
-        }
-
-        topology.nodes[parent_ix].children = child_ixs;
+        self.mark_measure_dirty_ix(parent_ix);
     }
 
     fn set_paint_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
@@ -1551,26 +1688,30 @@ impl ElementTree {
             self.ensure_topology_capacity(mount.ix);
         }
 
-        #[cfg(test)]
-        let topology = self.topology.get_mut();
-        #[cfg(not(test))]
-        let topology = &mut self.topology;
+        {
+            #[cfg(test)]
+            let topology = self.topology.get_mut();
+            #[cfg(not(test))]
+            let topology = &mut self.topology;
 
-        for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
-            if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
-            {
-                topology.nodes[old_mount.ix].parent = None;
+            for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
+                if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
+                {
+                    topology.nodes[old_mount.ix].parent = None;
+                }
             }
+
+            for mount in &mounts {
+                topology.nodes[mount.ix].parent = Some(ParentLink::Nearby {
+                    host: host_ix,
+                    slot: mount.slot,
+                });
+            }
+
+            topology.nodes[host_ix].nearby = mounts;
         }
 
-        for mount in &mounts {
-            topology.nodes[mount.ix].parent = Some(ParentLink::Nearby {
-                host: host_ix,
-                slot: mount.slot,
-            });
-        }
-
-        topology.nodes[host_ix].nearby = mounts;
+        self.mark_measure_dirty_ix(host_ix);
     }
 
     /// Apply scroll delta to an element. Returns the required invalidation.
@@ -1607,121 +1748,145 @@ impl ElementTree {
 
     /// Set mouse_over active state. Returns the required invalidation.
     pub fn set_mouse_over_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
-        let Some(element) = self.get_mut(id) else {
-            return TreeInvalidation::None;
+        let invalidation = {
+            let Some(element) = self.get_mut(id) else {
+                return TreeInvalidation::None;
+            };
+
+            if !supports_mouse_over_tracking(&element.layout.effective) {
+                let changed = element.runtime.mouse_over_active;
+                element.runtime.mouse_over_active = false;
+                TreeInvalidation::when_changed(changed, TreeInvalidation::Registry)
+            } else {
+                let current = element.runtime.mouse_over_active;
+                if current == active {
+                    TreeInvalidation::None
+                } else {
+                    element.runtime.mouse_over_active = active;
+                    classify_interaction_style(element.layout.effective.mouse_over.as_ref())
+                        .join(TreeInvalidation::Registry)
+                }
+            }
         };
 
-        if !supports_mouse_over_tracking(&element.layout.effective) {
-            let changed = element.runtime.mouse_over_active;
-            element.runtime.mouse_over_active = false;
-            return TreeInvalidation::when_changed(changed, TreeInvalidation::Registry);
-        }
-
-        let current = element.runtime.mouse_over_active;
-        if current == active {
-            return TreeInvalidation::None;
-        }
-
-        element.runtime.mouse_over_active = active;
-        classify_interaction_style(element.layout.effective.mouse_over.as_ref())
-            .join(TreeInvalidation::Registry)
+        self.mark_measure_dirty_for_invalidation(id, invalidation);
+        invalidation
     }
 
     /// Set mouse_down active state. Returns the required invalidation.
     pub fn set_mouse_down_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
-        let Some(element) = self.get_mut(id) else {
-            return TreeInvalidation::None;
+        let invalidation = {
+            let Some(element) = self.get_mut(id) else {
+                return TreeInvalidation::None;
+            };
+
+            if element.layout.effective.mouse_down.is_none() {
+                let changed = element.runtime.mouse_down_active;
+                element.runtime.mouse_down_active = false;
+                TreeInvalidation::when_changed(changed, TreeInvalidation::Registry)
+            } else {
+                let current = element.runtime.mouse_down_active;
+                if current == active {
+                    TreeInvalidation::None
+                } else {
+                    element.runtime.mouse_down_active = active;
+                    classify_interaction_style(element.layout.effective.mouse_down.as_ref())
+                        .join(TreeInvalidation::Registry)
+                }
+            }
         };
 
-        if element.layout.effective.mouse_down.is_none() {
-            let changed = element.runtime.mouse_down_active;
-            element.runtime.mouse_down_active = false;
-            return TreeInvalidation::when_changed(changed, TreeInvalidation::Registry);
-        }
-
-        let current = element.runtime.mouse_down_active;
-        if current == active {
-            return TreeInvalidation::None;
-        }
-
-        element.runtime.mouse_down_active = active;
-        classify_interaction_style(element.layout.effective.mouse_down.as_ref())
-            .join(TreeInvalidation::Registry)
+        self.mark_measure_dirty_for_invalidation(id, invalidation);
+        invalidation
     }
 
     /// Set focused active state. Returns the required invalidation.
     pub fn set_focused_active(&mut self, id: &NodeId, active: bool) -> TreeInvalidation {
-        let Some(element) = self.get_mut(id) else {
-            return TreeInvalidation::None;
+        let invalidation = {
+            let Some(element) = self.get_mut(id) else {
+                return TreeInvalidation::None;
+            };
+
+            let current = element.runtime.focused_active;
+            if current == active {
+                TreeInvalidation::None
+            } else {
+                element.runtime.focused_active = active;
+                classify_interaction_style(element.layout.effective.focused.as_ref())
+                    .join(TreeInvalidation::Registry)
+            }
         };
 
-        let current = element.runtime.focused_active;
-        if current == active {
-            return TreeInvalidation::None;
-        }
-
-        element.runtime.focused_active = active;
-        classify_interaction_style(element.layout.effective.focused.as_ref())
-            .join(TreeInvalidation::Registry)
+        self.mark_measure_dirty_for_invalidation(id, invalidation);
+        invalidation
     }
 
     pub fn set_text_input_content(&mut self, id: &NodeId, content: String) -> TreeInvalidation {
-        let Some(element) = self.get_mut(id) else {
-            return TreeInvalidation::None;
+        let changed = {
+            let Some(element) = self.get_mut(id) else {
+                return TreeInvalidation::None;
+            };
+
+            if !element.spec.kind.is_text_input_family() {
+                return TreeInvalidation::None;
+            }
+
+            let prev_base = element.spec.declared.content.as_deref().unwrap_or("");
+            let prev_attrs = element.layout.effective.content.as_deref().unwrap_or("");
+            let mut changed = prev_base != content || prev_attrs != content;
+
+            element.spec.declared.content = Some(content.clone());
+            element.layout.effective.content = Some(content.clone());
+
+            if element.runtime.patch_content.take().is_some() {
+                changed = true;
+            }
+
+            if element.runtime.text_input_content_origin != TextInputContentOrigin::Event {
+                element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
+                changed = true;
+            }
+
+            let len = text_char_len(&content);
+            if let Some(cursor) = element.runtime.text_input_cursor {
+                let clamped = cursor.min(len);
+                if clamped != cursor {
+                    element.runtime.text_input_cursor = Some(clamped);
+                    changed = true;
+                }
+            }
+
+            if let Some(anchor) = element.runtime.text_input_selection_anchor {
+                let clamped = anchor.min(len);
+                let cursor = element.runtime.text_input_cursor.unwrap_or(len);
+                let next = if clamped == cursor {
+                    None
+                } else {
+                    Some(clamped)
+                };
+                if next != element.runtime.text_input_selection_anchor {
+                    element.runtime.text_input_selection_anchor = next;
+                    changed = true;
+                }
+            }
+
+            let had_preedit = element.runtime.text_input_preedit.take().is_some();
+            let had_preedit_cursor = element.runtime.text_input_preedit_cursor.take().is_some();
+            if had_preedit || had_preedit_cursor {
+                changed = true;
+            }
+
+            element.normalize_extracted_state();
+
+            changed
         };
 
-        if !element.spec.kind.is_text_input_family() {
-            return TreeInvalidation::None;
+        if changed {
+            self.mark_measure_dirty(id);
+            TreeInvalidation::Measure
+        } else {
+            TreeInvalidation::None
         }
-
-        let prev_base = element.spec.declared.content.as_deref().unwrap_or("");
-        let prev_attrs = element.layout.effective.content.as_deref().unwrap_or("");
-        let mut changed = prev_base != content || prev_attrs != content;
-
-        element.spec.declared.content = Some(content.clone());
-        element.layout.effective.content = Some(content.clone());
-
-        if element.runtime.patch_content.take().is_some() {
-            changed = true;
-        }
-
-        if element.runtime.text_input_content_origin != TextInputContentOrigin::Event {
-            element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
-            changed = true;
-        }
-
-        let len = text_char_len(&content);
-        if let Some(cursor) = element.runtime.text_input_cursor {
-            let clamped = cursor.min(len);
-            if clamped != cursor {
-                element.runtime.text_input_cursor = Some(clamped);
-                changed = true;
-            }
-        }
-
-        if let Some(anchor) = element.runtime.text_input_selection_anchor {
-            let clamped = anchor.min(len);
-            let cursor = element.runtime.text_input_cursor.unwrap_or(len);
-            let next = if clamped == cursor {
-                None
-            } else {
-                Some(clamped)
-            };
-            if next != element.runtime.text_input_selection_anchor {
-                element.runtime.text_input_selection_anchor = next;
-                changed = true;
-            }
-        }
-
-        let had_preedit = element.runtime.text_input_preedit.take().is_some();
-        let had_preedit_cursor = element.runtime.text_input_preedit_cursor.take().is_some();
-        if had_preedit || had_preedit_cursor {
-            changed = true;
-        }
-
-        element.normalize_extracted_state();
-
-        TreeInvalidation::when_changed(changed, TreeInvalidation::Measure)
     }
 
     pub fn set_text_input_runtime(
