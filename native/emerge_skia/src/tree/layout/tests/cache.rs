@@ -1830,39 +1830,37 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
     let root_id = tree.root_id().unwrap();
     let host_id = tree.child_ids(&root_id)[0];
 
-    layout_tree(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 
-    replace_nearby_root(
-        &mut tree,
-        host_id,
-        nearby_code_subtree("first", &["Code", "Border.width(2)", "Border.dashed()"]),
+    assert_eq!(
+        replace_nearby_root(
+            &mut tree,
+            host_id,
+            nearby_code_subtree("first", &["Code", "Border.width(2)", "Border.dashed()"]),
+        ),
+        TreeInvalidation::Resolve
     );
-    layout_tree(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 
-    replace_nearby_root(&mut tree, host_id, nearby_none_subtree("detached_hidden"));
-    layout_tree(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
+    assert_eq!(
+        replace_nearby_root(&mut tree, host_id, nearby_none_subtree("detached_hidden")),
+        TreeInvalidation::Paint
     );
+    assert!(tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
+    refresh(&mut tree);
 
     tree.set_layout_cache_stats_enabled(true);
-    replace_nearby_root(
-        &mut tree,
-        host_id,
-        nearby_code_subtree("second", &["Code", "Border.width(2)", "Border.dashed()"]),
+    assert_eq!(
+        replace_nearby_root(
+            &mut tree,
+            host_id,
+            nearby_code_subtree("second", &["Code", "Border.width(2)", "Border.dashed()"]),
+        ),
+        TreeInvalidation::Paint
     );
+    assert!(tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
     layout_tree(
         &mut tree,
         Constraint::new(800.0, 600.0),
@@ -1876,6 +1874,27 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
     assert_eq!(stats.resolve_misses, 0);
     assert!(stats.subtree_measure_hits > 0);
     assert!(stats.resolve_hits > 0);
+}
+
+#[test]
+fn test_nearby_registry_subtree_removal_keeps_registry_invalidation() {
+    let mut tree = nearby_placeholder_tree("detached_registry_initial");
+    let root_id = tree.root_id().unwrap();
+    let host_id = tree.child_ids(&root_id)[0];
+
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    assert_eq!(
+        replace_nearby_root(&mut tree, host_id, nearby_event_subtree("event_first")),
+        TreeInvalidation::Resolve
+    );
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+
+    assert_eq!(
+        replace_nearby_root(&mut tree, host_id, nearby_none_subtree("event_hidden")),
+        TreeInvalidation::Paint
+    );
+    assert!(tree.has_render_refresh_damage());
+    assert!(tree.has_registry_refresh_damage());
 }
 
 #[test]
@@ -2538,6 +2557,17 @@ fn nearby_none_subtree(seed: &str) -> ElementTree {
     tree
 }
 
+fn nearby_event_subtree(seed: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut attrs = fixed_box_attrs(96.0, 24.0);
+    attrs.on_mouse_enter = Some(true);
+    let root = make_element(&format!("{seed}_event_root"), ElementKind::El, attrs);
+    let root_id = root.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree
+}
+
 fn nearby_code_subtree(seed: &str, lines: &[&str]) -> ElementTree {
     let mut tree = ElementTree::new();
     let mut root_attrs = Attrs::default();
@@ -2571,9 +2601,13 @@ fn nearby_code_subtree(seed: &str, lines: &[&str]) -> ElementTree {
     tree
 }
 
-fn replace_nearby_root(tree: &mut ElementTree, host_id: NodeId, subtree: ElementTree) {
+fn replace_nearby_root(
+    tree: &mut ElementTree,
+    host_id: NodeId,
+    subtree: ElementTree,
+) -> TreeInvalidation {
     let old_id = tree.nearby_mounts_for(&host_id)[0].id;
-    let invalidation = apply_patches(
+    apply_patches(
         tree,
         vec![
             Patch::Remove { id: old_id },
@@ -2585,8 +2619,7 @@ fn replace_nearby_root(tree: &mut ElementTree, host_id: NodeId, subtree: Element
             },
         ],
     )
-    .unwrap();
-    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    .unwrap()
 }
 
 fn fixed_el_text_tree(content: &str, align_x: AlignX, align_y: AlignY) -> ElementTree {

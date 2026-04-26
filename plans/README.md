@@ -71,6 +71,9 @@ The native layout-caching foundation is in place:
 - recently removed small nearby subtrees can restore detached layout state when
   the same animation-free structural signature is reinserted, avoiding repeated
   cold code-block layout on hover toggles
+- non-registry nearby remove/restored-show changes classify as paint/render
+  damage so warmed code-preview hover toggles can use refresh-only scheduling
+  and cached registry reuse
 - subtree-measure cache keys use compact child topology dependency versions and
   intentionally ignore nearby topology; resolve/cache-render keys still include
   nearby topology where output can depend on ordering/placement

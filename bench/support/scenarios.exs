@@ -980,7 +980,16 @@ defmodule Emerge.Bench.Scenarios do
   defp expected_invalidation(:keyed_reorder, _patches), do: :structure
   defp expected_invalidation(:insert_tail, _patches), do: :structure
   defp expected_invalidation(:remove_tail, _patches), do: :structure
-  defp expected_invalidation(:nearby_slot_change, _patches), do: :resolve
+
+  defp expected_invalidation(:nearby_slot_change, patches) do
+    operations = Enum.map(patches, &patch_operation/1)
+
+    cond do
+      operations != [] and Enum.all?(operations, &(&1 == :remove)) -> :paint
+      true -> :resolve
+    end
+  end
+
   defp expected_invalidation(:nearby_reorder, _patches), do: :resolve
 
   defp format_counts(counts) do

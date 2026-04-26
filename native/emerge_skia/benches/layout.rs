@@ -8,8 +8,12 @@ use emerge_skia::events::{
     },
 };
 use emerge_skia::tree::animation::AnimationRuntime;
+use emerge_skia::tree::attrs::{Attrs, Length, Padding};
 use emerge_skia::tree::deserialize::decode_tree;
-use emerge_skia::tree::element::ElementTree;
+use emerge_skia::tree::element::{
+    Element, ElementKind, ElementTree, NearbyMount, NearbySlot, NodeId,
+};
+use emerge_skia::tree::invalidation::TreeInvalidation;
 use emerge_skia::tree::layout::{
     Constraint, layout_and_refresh_default, layout_and_refresh_default_uncached_for_benchmark,
     layout_and_refresh_default_with_animation, layout_or_refresh_default_with_animation,
@@ -982,6 +986,267 @@ fn consume_layout_output(output: emerge_skia::tree::layout::LayoutOutput) {
     ));
 }
 
+fn bench_nearby_hover_toggle_refresh(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/nearby_hover_toggle_refresh/borders_like");
+    let constraint = Constraint::new(960.0, 4_000.0);
+    let host_id = NodeId::from_u64(2);
+
+    let (hidden_with_detached, cached_rebuild) = prepared_hidden_nearby_hover_tree(constraint);
+    group.bench_function("restored_show_refresh_only", |b| {
+        b.iter_batched(
+            || (hidden_with_detached.clone(), cached_rebuild.clone()),
+            |(mut tree, cached_rebuild)| {
+                let hidden_id = current_nearby_id(&tree, host_id);
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![
+                        Patch::Remove { id: hidden_id },
+                        Patch::InsertNearbySubtree {
+                            host_id,
+                            index: 0,
+                            slot: NearbySlot::Above,
+                            subtree: nearby_code_block_subtree(50_000),
+                        },
+                    ],
+                )
+                .expect("restored nearby show patch should apply");
+                debug_assert_eq!(invalidation, TreeInvalidation::Paint);
+                let output =
+                    refresh_reusing_clean_registry_for_benchmark(&mut tree, Some(&cached_rebuild));
+                consume_layout_output(output)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let (cold_hidden, cold_cached_rebuild) = cold_hidden_nearby_hover_tree(constraint);
+    group.bench_function("cold_show_layout_refresh", |b| {
+        b.iter_batched(
+            || (cold_hidden.clone(), cold_cached_rebuild.clone()),
+            |(mut tree, _cached_rebuild)| {
+                let hidden_id = current_nearby_id(&tree, host_id);
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![
+                        Patch::Remove { id: hidden_id },
+                        Patch::InsertNearbySubtree {
+                            host_id,
+                            index: 0,
+                            slot: NearbySlot::Above,
+                            subtree: nearby_code_block_subtree(60_000),
+                        },
+                    ],
+                )
+                .expect("cold nearby show patch should apply");
+                debug_assert_eq!(invalidation, TreeInvalidation::Resolve);
+                let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+                consume_layout_output(output)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn prepared_hidden_nearby_hover_tree(
+    constraint: Constraint,
+) -> (ElementTree, RegistryRebuildPayload) {
+    let (mut tree, host_id) = cold_hidden_nearby_hover_tree_base(10_000);
+    let _ = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    let mut cached_rebuild;
+
+    let hidden_id = current_nearby_id(&tree, host_id);
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![
+            Patch::Remove { id: hidden_id },
+            Patch::InsertNearbySubtree {
+                host_id,
+                index: 0,
+                slot: NearbySlot::Above,
+                subtree: nearby_code_block_subtree(20_000),
+            },
+        ],
+    )
+    .expect("cold show should apply");
+    debug_assert_eq!(invalidation, TreeInvalidation::Resolve);
+    let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    cached_rebuild = output.event_rebuild;
+
+    let code_id = current_nearby_id(&tree, host_id);
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![
+            Patch::Remove { id: code_id },
+            Patch::InsertNearbySubtree {
+                host_id,
+                index: 0,
+                slot: NearbySlot::Above,
+                subtree: nearby_none_subtree(30_000),
+            },
+        ],
+    )
+    .expect("hide should apply");
+    debug_assert_eq!(invalidation, TreeInvalidation::Paint);
+    let output = refresh_reusing_clean_registry_for_benchmark(&mut tree, Some(&cached_rebuild));
+    if output.event_rebuild_changed {
+        cached_rebuild = output.event_rebuild;
+    }
+
+    (tree, cached_rebuild)
+}
+
+fn cold_hidden_nearby_hover_tree(constraint: Constraint) -> (ElementTree, RegistryRebuildPayload) {
+    let (mut tree, _host_id) = cold_hidden_nearby_hover_tree_base(40_000);
+    let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    (tree, output.event_rebuild)
+}
+
+fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId) {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(1);
+    let host_id = NodeId::from_u64(2);
+    let hidden_id = NodeId::from_u64(hidden_seed);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(920.0));
+    root_attrs.spacing = Some(8.0);
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        root_attrs,
+    ));
+
+    let child_ids: Vec<NodeId> = std::iter::once(host_id)
+        .chain((0..72).map(|index| {
+            let card_id = NodeId::from_u64(1_000 + index as u64);
+            let text_id = NodeId::from_u64(2_000 + index as u64);
+
+            let mut card_attrs = Attrs::default();
+            card_attrs.width = Some(Length::Px(280.0));
+            card_attrs.padding = Some(Padding::Uniform(10.0));
+            let mut text_attrs = Attrs::default();
+            text_attrs.content = Some(format!("Border recipe card {index}"));
+            text_attrs.font_size = Some(13.0);
+
+            tree.insert(Element::with_attrs(
+                card_id,
+                ElementKind::El,
+                Vec::new(),
+                card_attrs,
+            ));
+            tree.insert(Element::with_attrs(
+                text_id,
+                ElementKind::Text,
+                Vec::new(),
+                text_attrs,
+            ));
+            tree.set_children(&card_id, vec![text_id])
+                .expect("card text should exist");
+            card_id
+        }))
+        .collect();
+
+    let mut host_attrs = Attrs::default();
+    host_attrs.width = Some(Length::Px(360.0));
+    host_attrs.padding = Some(Padding::Uniform(12.0));
+    host_attrs.on_mouse_enter = Some(true);
+    host_attrs.on_mouse_leave = Some(true);
+    tree.insert(Element::with_attrs(
+        host_id,
+        ElementKind::El,
+        Vec::new(),
+        host_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        hidden_id,
+        ElementKind::None,
+        Vec::new(),
+        Attrs::default(),
+    ));
+    tree.set_nearby_mounts(
+        &host_id,
+        vec![NearbyMount {
+            slot: NearbySlot::Above,
+            id: hidden_id,
+        }],
+    )
+    .expect("hidden nearby should attach");
+    tree.set_children(&root_id, child_ids)
+        .expect("root children should exist");
+
+    (tree, host_id)
+}
+
+fn nearby_code_block_subtree(seed: u64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(seed);
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(460.0));
+    root_attrs.padding = Some(Padding::Uniform(12.0));
+    root_attrs.spacing = Some(4.0);
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        root_attrs,
+    ));
+
+    let lines = [
+        "Code",
+        "el([",
+        "  Border.rounded(8),",
+        "  Border.width(2),",
+        "  Border.color(:orange),",
+        "  Border.dashed()",
+        "], text(\"Dashed medium round\"))",
+    ];
+    let child_ids: Vec<NodeId> = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let id = NodeId::from_u64(seed + 1 + index as u64);
+            let mut attrs = Attrs::default();
+            attrs.content = Some((*line).to_string());
+            attrs.font_size = Some(if index == 0 { 11.0 } else { 12.0 });
+            tree.insert(Element::with_attrs(
+                id,
+                ElementKind::Text,
+                Vec::new(),
+                attrs,
+            ));
+            id
+        })
+        .collect();
+    tree.set_children(&root_id, child_ids)
+        .expect("code lines should attach");
+    tree
+}
+
+fn nearby_none_subtree(seed: u64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(seed);
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::None,
+        Vec::new(),
+        Attrs::default(),
+    ));
+    tree
+}
+
+fn current_nearby_id(tree: &ElementTree, host_id: NodeId) -> NodeId {
+    tree.nearby_mounts_for(&host_id)
+        .first()
+        .expect("host should have a nearby mount")
+        .id
+}
+
 criterion_group!(
     benches,
     bench_large_text_column,
@@ -993,6 +1258,7 @@ criterion_group!(
     bench_fixture_retained_layout_after_patch,
     bench_fixture_retained_patch_layout,
     bench_render_refresh_cache_regression,
-    bench_registry_refresh_cache_regression
+    bench_registry_refresh_cache_regression,
+    bench_nearby_hover_toggle_refresh
 );
 criterion_main!(benches);

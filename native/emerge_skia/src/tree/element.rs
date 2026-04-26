@@ -1635,6 +1635,133 @@ impl ElementTree {
         }
     }
 
+    pub(crate) fn subtree_affects_registry(&self, id: &NodeId) -> bool {
+        self.ix_of(id)
+            .is_some_and(|ix| self.subtree_affects_registry_ix(ix))
+    }
+
+    pub(crate) fn nearby_subtree_can_skip_layout(&self, id: &NodeId) -> bool {
+        self.ix_of(id).is_some_and(|ix| {
+            let Some(element) = self.get_ix(ix) else {
+                return false;
+            };
+
+            element.spec.kind == ElementKind::None
+                && self.child_ixs(ix).is_empty()
+                && self.nearby_ixs(ix).is_empty()
+                && !element_affects_registry(element)
+        })
+    }
+
+    pub(crate) fn mark_nearby_subtree_layout_clean_for_refresh_only(&mut self, id: &NodeId) {
+        let Some(ix) = self.ix_of(id) else {
+            return;
+        };
+
+        if let Some(element) = self.get_ix_mut(ix) {
+            element
+                .layout
+                .measured_frame
+                .get_or_insert_with(Frame::default);
+            element.layout.frame.get_or_insert_with(Frame::default);
+            element.layout.measure_dirty = false;
+            element.layout.measure_descendant_dirty = false;
+            element.layout.resolve_dirty = false;
+            element.layout.resolve_descendant_dirty = false;
+        }
+    }
+
+    pub(crate) fn clear_registry_refresh_dirty_for_subtree(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.clear_registry_refresh_dirty_for_subtree_ix(ix);
+        }
+    }
+
+    fn clear_registry_refresh_dirty_for_subtree_ix(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.refresh.clear_registry();
+        }
+
+        for child_ix in self.child_ixs(ix) {
+            self.clear_registry_refresh_dirty_for_subtree_ix(child_ix);
+        }
+        for mount in self.nearby_ixs(ix) {
+            self.clear_registry_refresh_dirty_for_subtree_ix(mount.ix);
+        }
+    }
+
+    pub(crate) fn recompute_layout_descendant_dirty(&mut self) {
+        if let Some(root_ix) = self.root_ix() {
+            self.recompute_layout_descendant_dirty_ix(root_ix);
+        }
+    }
+
+    fn recompute_layout_descendant_dirty_ix(&mut self, ix: NodeIx) -> (bool, bool) {
+        let child_ixs = self.child_ixs(ix);
+        let nearby_ixs: Vec<NodeIx> = self
+            .nearby_ixs(ix)
+            .into_iter()
+            .map(|mount| mount.ix)
+            .collect();
+
+        let (child_measure_dirty, child_resolve_dirty) = child_ixs
+            .into_iter()
+            .chain(nearby_ixs)
+            .map(|child_ix| self.recompute_layout_descendant_dirty_ix(child_ix))
+            .fold(
+                (false, false),
+                |(measure_acc, resolve_acc), (measure, resolve)| {
+                    (measure_acc || measure, resolve_acc || resolve)
+                },
+            );
+
+        let Some(element) = self.get_ix_mut(ix) else {
+            return (child_measure_dirty, child_resolve_dirty);
+        };
+
+        if element.layout.measure_dirty {
+            element.layout.measure_descendant_dirty = false;
+        } else {
+            element.layout.measure_descendant_dirty = child_measure_dirty;
+        }
+
+        if element.layout.resolve_dirty {
+            element.layout.resolve_descendant_dirty = false;
+        } else {
+            element.layout.resolve_descendant_dirty = child_resolve_dirty;
+        }
+
+        (
+            element.layout.measure_dirty || element.layout.measure_descendant_dirty,
+            element.layout.resolve_dirty || element.layout.resolve_descendant_dirty,
+        )
+    }
+
+    fn subtree_affects_registry_ix(&self, ix: NodeIx) -> bool {
+        let Some(element) = self.get_ix(ix) else {
+            return false;
+        };
+
+        element_affects_registry(element)
+            || self
+                .child_ixs(ix)
+                .into_iter()
+                .any(|child_ix| self.subtree_affects_registry_ix(child_ix))
+            || self.nearby_ixs(ix).into_iter().any(|mount| {
+                mount.slot == NearbySlot::InFront || self.subtree_affects_registry_ix(mount.ix)
+            })
+    }
+
+    fn nearby_registry_dirty_for_change(
+        &self,
+        old_mounts: &[NearbyMountIx],
+        new_mounts: &[NearbyMountIx],
+    ) -> bool {
+        old_mounts.iter().chain(new_mounts.iter()).any(|mount| {
+            mount.slot == NearbySlot::InFront || self.subtree_affects_registry_ix(mount.ix)
+        })
+    }
+
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Element> {
         self.nodes.iter().filter_map(|slot| slot.as_ref())
     }
@@ -1865,12 +1992,25 @@ impl ElementTree {
         }
     }
 
-    fn mark_nearby_topology_dirty_ix(&mut self, host_ix: NodeIx, newly_attached_mounts: &[NodeIx]) {
-        self.mark_render_and_registry_refresh_dirty_ix(host_ix);
+    fn mark_nearby_topology_dirty_ix(
+        &mut self,
+        host_ix: NodeIx,
+        newly_attached_mounts: &[NodeIx],
+        registry_dirty: bool,
+    ) {
+        if registry_dirty {
+            self.mark_render_and_registry_refresh_dirty_ix(host_ix);
+        } else {
+            self.mark_render_refresh_dirty_ix(host_ix);
+        }
 
         for &mount_ix in newly_attached_mounts {
             self.mark_measure_dirty_local_ix(mount_ix);
-            self.mark_render_and_registry_refresh_dirty_ix(mount_ix);
+            if registry_dirty {
+                self.mark_render_and_registry_refresh_dirty_ix(mount_ix);
+            } else {
+                self.mark_render_refresh_dirty_ix(mount_ix);
+            }
         }
 
         let mut current_ix = Some(host_ix);
@@ -2384,19 +2524,20 @@ impl ElementTree {
             self.ensure_topology_capacity(mount.ix);
         }
 
-        let (changed, newly_attached_mounts) = {
+        let old_mounts = self.nearby_ixs(host_ix);
+        let changed = old_mounts != mounts;
+        let registry_dirty = changed && self.nearby_registry_dirty_for_change(&old_mounts, &mounts);
+        let newly_attached_mounts: Vec<NodeIx> = mounts
+            .iter()
+            .filter(|mount| !old_mounts.iter().any(|old| old.ix == mount.ix))
+            .map(|mount| mount.ix)
+            .collect();
+
+        {
             #[cfg(test)]
             let topology = self.topology.get_mut();
             #[cfg(not(test))]
             let topology = &mut self.topology;
-
-            let old_mounts = topology.nodes[host_ix].nearby.clone();
-            let changed = old_mounts != mounts;
-            let newly_attached_mounts: Vec<NodeIx> = mounts
-                .iter()
-                .filter(|mount| !old_mounts.iter().any(|old| old.ix == mount.ix))
-                .map(|mount| mount.ix)
-                .collect();
 
             for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
                 if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
@@ -2413,12 +2554,11 @@ impl ElementTree {
             }
 
             topology.nodes[host_ix].nearby = mounts;
-            (changed, newly_attached_mounts)
-        };
+        }
 
         if changed {
             self.bump_nearby_version(host_ix);
-            self.mark_nearby_topology_dirty_ix(host_ix, &newly_attached_mounts);
+            self.mark_nearby_topology_dirty_ix(host_ix, &newly_attached_mounts, registry_dirty);
         }
     }
 
@@ -2888,6 +3028,41 @@ fn parent_ix_from_link(parent_link: Option<ParentLink>) -> Option<NodeIx> {
         ParentLink::Child { parent } => parent,
         ParentLink::Nearby { host, .. } => host,
     })
+}
+
+fn element_affects_registry(element: &Element) -> bool {
+    let attrs = &element.spec.declared;
+    element.spec.kind.is_text_input_family()
+        || element.runtime.text_input_focused
+        || element.runtime.mouse_over_active
+        || element.runtime.mouse_down_active
+        || element.runtime.focused_active
+        || element.runtime.scrollbar_hover_axis.is_some()
+        || attrs.on_click.unwrap_or(false)
+        || attrs.on_mouse_down.unwrap_or(false)
+        || attrs.on_mouse_up.unwrap_or(false)
+        || attrs.on_mouse_enter.unwrap_or(false)
+        || attrs.on_mouse_leave.unwrap_or(false)
+        || attrs.on_mouse_move.unwrap_or(false)
+        || attrs.on_press.unwrap_or(false)
+        || attrs.on_swipe_up.unwrap_or(false)
+        || attrs.on_swipe_down.unwrap_or(false)
+        || attrs.on_swipe_left.unwrap_or(false)
+        || attrs.on_swipe_right.unwrap_or(false)
+        || attrs.on_change.unwrap_or(false)
+        || attrs.on_focus.unwrap_or(false)
+        || attrs.on_blur.unwrap_or(false)
+        || attrs.focus_on_mount.unwrap_or(false)
+        || attrs.on_key_down.is_some()
+        || attrs.on_key_up.is_some()
+        || attrs.on_key_press.is_some()
+        || attrs.virtual_key.is_some()
+        || attrs.mouse_over.is_some()
+        || attrs.mouse_down.is_some()
+        || attrs.scrollbar_x.unwrap_or(false)
+        || attrs.scrollbar_y.unwrap_or(false)
+        || attrs.ghost_scrollbar_x.unwrap_or(false)
+        || attrs.ghost_scrollbar_y.unwrap_or(false)
 }
 
 fn parent_measure_depends_on_child_measure(parent: &Element) -> bool {
