@@ -33,8 +33,8 @@ work:
 - resolve-cache eligibility for text-flow kinds (`Multiline`, `WrappedRow`,
   `TextColumn`, and `Paragraph`)
 - targeted dirty propagation for layout-affecting animation samples
-- compact child/nearby topology dependency versions in subtree-measure and
-  resolve cache keys
+- compact child/nearby topology dependency versions in resolve cache keys, and
+  compact child-only topology dependency versions in subtree-measure keys
 - gated native stats snapshots/logging through one unified stats path
 - retained-layout benchmark cache-counter output
 
@@ -52,9 +52,9 @@ Relevant files:
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
-- relayout/dependency boundaries currently cover only fixed-size `El`/`None`
-  parents; row/column, scrollable, nearby, and text-flow boundaries remain
-  conservative
+- relayout/dependency boundaries currently cover fixed-size `El`/`None`
+  parents and nearby overlay measurement; row/column, scrollable, broader nearby
+  resolve traversal, and text-flow boundaries remain conservative
 - cache keys no longer clone child/nearby identity lists, and render subtree
   keys no longer allocate joined debug strings, but attrs and some traversal
   helpers still allocate/clone in hot paths
@@ -86,11 +86,11 @@ Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
 layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
-boundary is implemented, child/nearby topology dependencies now use compact
-version keys, render refresh can skip clean retained subtrees, and registry
-refresh has conservative chunk-cache infrastructure. Broader boundaries,
-additional typed version keys, and cheaper registry chunk seeding remain future
-work.
+boundary is implemented, nearby topology no longer invalidates host/ancestor
+subtree measurement, topology dependencies now use compact version keys, render
+refresh can skip clean retained subtrees, and registry refresh has conservative
+chunk-cache infrastructure. Broader resolve traversal boundaries, additional
+typed version keys, and cheaper registry chunk seeding remain future work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -322,6 +322,11 @@ Temporary active plan: `active-nearby-relayout-boundary-plan.md`.
 Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
 instead of dirtying broad host/ancestor measurement and resolve paths.
 
+Status: benchmark guard, invalidation classification, and subtree-measure
+boundary are implemented. Resolve remains conservative: dirty nearby descendants
+are reachable, but large trees may still visit clean siblings/ancestors during
+resolve until a later traversal boundary is added.
+
 Observed motivation from the Borders page hover/unhover code-block case:
 
 ```text
@@ -332,22 +337,27 @@ subtree measure hits=176 misses=496 stores=496
 resolve hits=176 misses=496 stores=496
 ```
 
-The likely issue is conservative nearby structural invalidation, not broken cache
-lookup. `SetNearbyMounts`/nearby insert/remove currently behave like broad
-structure changes even though host measured size is independent of nearby mount
+The likely issue was conservative nearby structural invalidation, not broken
+cache lookup. `SetNearbyMounts`/nearby insert/remove now classify as resolve-like
+nearby topology changes instead of broad structure, and subtree measurement keys
+ignore nearby topology because host measured size is independent of nearby mount
 sizes.
 
-Planned direction:
+Implemented direction:
 
-- add a benchmark/test guard for nearby overlay show/hide before changing
-  invalidation
-- distinguish nearby topology invalidation from normal child structure
-- keep host measurement clean when only nearby topology changes and the host size
+- benchmark/test guard for nearby overlay show/hide before invalidation changes
+- nearby topology invalidation is distinguished from normal child structure
+- host measurement stays clean when only nearby topology changes and host size
   does not depend on nearby mounts
-- add traversal dirtiness as needed so dirty nearby descendants are not hidden by
-  cached clean ancestors
-- keep render/registry damage conservative for paint ordering and event
+- traversal dirtiness keeps dirty nearby descendants reachable below cached
+  measurement ancestors
+- render/registry damage remains conservative for paint ordering and event
   precedence
+
+Remaining nearby direction:
+
+- reduce conservative resolve traversal so dirty nearby changes do not require
+  visiting unrelated clean siblings in large trees
 
 ## Later slice: broaden other relayout/dependency boundaries
 

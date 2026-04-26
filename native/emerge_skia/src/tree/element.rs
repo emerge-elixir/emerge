@@ -669,6 +669,7 @@ pub struct NodeLayoutState {
     pub measure_descendant_dirty: bool,
     pub resolve_cache: Option<ResolveCache>,
     pub resolve_dirty: bool,
+    pub resolve_descendant_dirty: bool,
 }
 
 impl Default for NodeLayoutState {
@@ -689,6 +690,7 @@ impl Default for NodeLayoutState {
             measure_descendant_dirty: false,
             resolve_cache: None,
             resolve_dirty: true,
+            resolve_descendant_dirty: false,
         }
     }
 }
@@ -800,6 +802,7 @@ impl Element {
                 measure_descendant_dirty: false,
                 resolve_cache: None,
                 resolve_dirty: true,
+                resolve_descendant_dirty: false,
             },
             refresh: NodeRefreshState::default(),
             lifecycle: NodeLifecycle {
@@ -839,6 +842,7 @@ impl Element {
                 measure_descendant_dirty: self.layout.measure_descendant_dirty,
                 resolve_cache: None,
                 resolve_dirty: self.layout.resolve_dirty,
+                resolve_descendant_dirty: self.layout.resolve_descendant_dirty,
             },
             refresh: NodeRefreshState {
                 render_dirty: self.refresh.render_dirty,
@@ -1620,6 +1624,7 @@ impl ElementTree {
             element.layout.measure_dirty = true;
             element.layout.measure_descendant_dirty = false;
             element.layout.resolve_dirty = true;
+            element.layout.resolve_descendant_dirty = false;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
             element.refresh.render_cache = None;
@@ -1632,6 +1637,7 @@ impl ElementTree {
     pub fn mark_all_resolve_dirty(&mut self) {
         self.iter_nodes_mut().for_each(|element| {
             element.layout.resolve_dirty = true;
+            element.layout.resolve_descendant_dirty = false;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
             element.refresh.render_cache = None;
@@ -1701,6 +1707,39 @@ impl ElementTree {
         }
     }
 
+    fn mark_nearby_topology_dirty_ix(&mut self, host_ix: NodeIx, newly_attached_mounts: &[NodeIx]) {
+        self.mark_render_and_registry_refresh_dirty_ix(host_ix);
+
+        for &mount_ix in newly_attached_mounts {
+            self.mark_measure_dirty_local_ix(mount_ix);
+            self.mark_render_and_registry_refresh_dirty_ix(mount_ix);
+        }
+
+        let mut current_ix = Some(host_ix);
+        while let Some(ix) = current_ix {
+            if let Some(element) = self.get_ix_mut(ix) {
+                if !element.layout.measure_dirty {
+                    element.layout.measure_descendant_dirty = true;
+                }
+
+                if !element.layout.resolve_dirty {
+                    element.layout.resolve_descendant_dirty = true;
+                }
+            }
+
+            current_ix = parent_ix_from_link(self.parent_link_of(ix));
+        }
+    }
+
+    fn mark_measure_dirty_local_ix(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.measure_dirty = true;
+            element.layout.measure_descendant_dirty = false;
+            element.layout.resolve_dirty = true;
+            element.layout.resolve_descendant_dirty = false;
+        }
+    }
+
     fn mark_dirty_ix(&mut self, ix: NodeIx, measure_dirty: bool) {
         let mut current_ix = Some(ix);
 
@@ -1711,6 +1750,7 @@ impl ElementTree {
                     element.layout.measure_descendant_dirty = false;
                 }
                 element.layout.resolve_dirty = true;
+                element.layout.resolve_descendant_dirty = false;
             }
 
             current_ix = parent_ix_from_link(self.parent_link_of(ix));
@@ -1722,6 +1762,7 @@ impl ElementTree {
             element.layout.measure_dirty = true;
             element.layout.measure_descendant_dirty = false;
             element.layout.resolve_dirty = true;
+            element.layout.resolve_descendant_dirty = false;
         }
 
         let mut current_link = self.parent_link_of(ix);
@@ -1747,6 +1788,7 @@ impl ElementTree {
                     parent.layout.measure_descendant_dirty = true;
                 }
                 parent.layout.resolve_dirty = true;
+                parent.layout.resolve_descendant_dirty = false;
             }
 
             measure_propagates = mark_parent_measure_dirty;
@@ -2184,13 +2226,19 @@ impl ElementTree {
             self.ensure_topology_capacity(mount.ix);
         }
 
-        let changed = {
+        let (changed, newly_attached_mounts) = {
             #[cfg(test)]
             let topology = self.topology.get_mut();
             #[cfg(not(test))]
             let topology = &mut self.topology;
 
-            let changed = topology.nodes[host_ix].nearby != mounts;
+            let old_mounts = topology.nodes[host_ix].nearby.clone();
+            let changed = old_mounts != mounts;
+            let newly_attached_mounts: Vec<NodeIx> = mounts
+                .iter()
+                .filter(|mount| !old_mounts.iter().any(|old| old.ix == mount.ix))
+                .map(|mount| mount.ix)
+                .collect();
 
             for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
                 if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
@@ -2207,14 +2255,13 @@ impl ElementTree {
             }
 
             topology.nodes[host_ix].nearby = mounts;
-            changed
+            (changed, newly_attached_mounts)
         };
 
         if changed {
             self.bump_nearby_version(host_ix);
+            self.mark_nearby_topology_dirty_ix(host_ix, &newly_attached_mounts);
         }
-
-        self.mark_measure_dirty_ix(host_ix);
     }
 
     pub fn topology_dependency_key_for(&self, id: &NodeId) -> TopologyDependencyKey {
@@ -2238,6 +2285,29 @@ impl ElementTree {
             nearby_version: versions.nearby,
             child_count,
             nearby_count,
+        }
+    }
+
+    pub fn measure_topology_dependency_key_for(&self, id: &NodeId) -> TopologyDependencyKey {
+        self.ix_of(id)
+            .map(|ix| self.measure_topology_dependency_key_ix(ix))
+            .unwrap_or_default()
+    }
+
+    pub fn measure_topology_dependency_key_ix(&self, ix: NodeIx) -> TopologyDependencyKey {
+        self.ensure_topology();
+
+        let versions = self
+            .get_ix(ix)
+            .map(|element| element.layout.topology_versions)
+            .unwrap_or_default();
+        let (child_count, _, _) = self.topology_dependency_counts(ix);
+
+        TopologyDependencyKey {
+            children_version: versions.children,
+            nearby_version: 0,
+            child_count,
+            nearby_count: 0,
         }
     }
 

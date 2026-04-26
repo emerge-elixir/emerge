@@ -9,11 +9,10 @@ investigation that led to the current implementation.
 
 ### `active-nearby-relayout-boundary-plan.md`
 
-The current temporary active implementation plan. It targets the next layout
-caching slice: making nearby overlay mount/unmount work proportional to the
-nearby subtree instead of dirtying broad host/ancestor layout paths. The plan
-starts with a benchmark/test guard for the Borders hover/unhover code-block
-shape before changing invalidation.
+The current temporary active implementation plan. It targets nearby overlay
+mount/unmount work. The benchmark/test guard and measurement boundary are in
+place; remaining active work is conservative resolve traversal so nearby changes
+avoid visiting more clean siblings/ancestors than necessary.
 
 ### `layout-caching-roadmap.md`
 
@@ -23,9 +22,9 @@ Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
 targeted layout-affecting animation invalidation, text-flow resolve-cache
 eligibility, the first relayout/dependency boundary, compact topology version
-cache keys, and refresh subtree skipping are done. The next work is nearby
-relayout/dependency boundaries, broader boundaries, and viewport/repeater-aware
-caching.
+cache keys, refresh subtree skipping, and the nearby measurement boundary are
+done. The next work is nearby resolve traversal, broader boundaries, and
+viewport/repeater-aware caching.
 
 ### `layout-caching-engine-insights.md`
 
@@ -66,8 +65,12 @@ The native layout-caching foundation is in place:
 - measure/resolve dirtiness propagates upward through parent links
 - measure dirtiness can stop at the first fixed-size `El`/`None` boundary while
   traversal dirtiness keeps dirty descendants reachable
-- subtree-measure and resolve cache keys use compact child/nearby topology
-  dependency versions instead of cloned child/nearby identity lists
+- nearby topology changes mark nearby traversal/refresh work without forcing
+  host/ancestor measurement dirtiness when host size is independent of the
+  nearby overlay
+- subtree-measure cache keys use compact child topology dependency versions and
+  intentionally ignore nearby topology; resolve/cache-render keys still include
+  nearby topology where output can depend on ordering/placement
 - native stats collection is gated/default-off and exposed through one unified
   stats path:
   - `stats: true` enables collection without periodic logs
@@ -89,12 +92,12 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Add a nearby relayout/dependency boundary
+### 1. Finish nearby resolve traversal
 
-Refresh subtree skipping is validated conservatively. The next active slice is
-nearby overlay topology: `SetNearbyMounts`/nearby subtree changes should not
-force broad host/ancestor measurement and resolve misses when the host's measured
-size is independent of the nearby overlay.
+Nearby overlay topology no longer forces broad host/ancestor measurement misses.
+The remaining nearby work is to reduce conservative resolve traversal so large
+nearby show/hide updates avoid visiting unrelated clean siblings while still
+keeping changed nearby descendants reachable.
 
 ### 2. Broaden other relayout/dependency boundaries
 

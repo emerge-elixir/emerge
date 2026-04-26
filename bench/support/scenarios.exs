@@ -980,8 +980,8 @@ defmodule Emerge.Bench.Scenarios do
   defp expected_invalidation(:keyed_reorder, _patches), do: :structure
   defp expected_invalidation(:insert_tail, _patches), do: :structure
   defp expected_invalidation(:remove_tail, _patches), do: :structure
-  defp expected_invalidation(:nearby_slot_change, _patches), do: :structure
-  defp expected_invalidation(:nearby_reorder, _patches), do: :structure
+  defp expected_invalidation(:nearby_slot_change, _patches), do: :resolve
+  defp expected_invalidation(:nearby_reorder, _patches), do: :resolve
 
   defp format_counts(counts) do
     counts

@@ -964,7 +964,7 @@ fn measure_element<M: TextMeasurer>(
     let element_context = inherited.merge_with_attrs(&attrs);
     let child_ids = tree.child_ids(id);
     let nearby_mounts = tree.nearby_mounts_for(id);
-    let topology_key = tree.topology_dependency_key_for(id);
+    let topology_key = tree.measure_topology_dependency_key_for(id);
     let subtree_cache_key =
         use_subtree_cache.then(|| subtree_measure_cache_key(kind, &attrs, inherited, topology_key));
 
@@ -1912,6 +1912,7 @@ fn resolve_element<M: TextMeasurer>(
     let kind = element.spec.kind;
     let measured_frame = element.layout.measured_frame;
     let resolve_dirty = element.layout.resolve_dirty;
+    let resolve_descendant_dirty = element.layout.resolve_descendant_dirty;
     let intrinsic = element
         .layout
         .measured_frame
@@ -1930,7 +1931,7 @@ fn resolve_element<M: TextMeasurer>(
     let resolve_kind_eligible = resolve_cache_kind_eligible(kind);
     let cache_eligible = use_resolve_cache && resolve_kind_eligible;
 
-    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty {
+    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty || resolve_descendant_dirty {
         tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
     } else if cache_eligible {
         let key = resolve_cache_key(
@@ -2060,6 +2061,7 @@ fn resolve_element<M: TextMeasurer>(
                     extent: resolve_extent(frame),
                 });
                 element.layout.resolve_dirty = false;
+                element.layout.resolve_descendant_dirty = false;
             }
         }
     }
@@ -2192,6 +2194,7 @@ fn try_reuse_resolve_cache(
     if let Some(element) = tree.get_mut(id) {
         element.layout.frame = Some(target_frame);
         element.layout.resolve_dirty = false;
+        element.layout.resolve_descendant_dirty = false;
     }
 
     true
