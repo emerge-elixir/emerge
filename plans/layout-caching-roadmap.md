@@ -321,17 +321,15 @@ Refresh skipping remains separate from layout-cache stats. Paint-only refreshes
 should still consult no measurement/resolve caches and therefore move no
 layout-cache counters.
 
-## Current slice: nearby relayout boundary
-
-Temporary active plan: `active-nearby-relayout-boundary-plan.md`.
+## Completed slice: nearby relayout boundary
 
 Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
 instead of dirtying broad host/ancestor measurement and resolve paths.
 
 Status: benchmark guard, invalidation classification, subtree-measure boundary,
 resolve traversal through dirty nearby descendants, detached reuse for
-reinserted nearby subtrees, and refresh-only classification for warmed
-non-registry nearby toggles are implemented and locally validated.
+reinserted nearby subtrees, refresh-only classification for warmed non-registry
+nearby toggles, and render-refresh culling are implemented and demo-validated.
 
 Observed motivation from the Borders page hover/unhover code-block case:
 
