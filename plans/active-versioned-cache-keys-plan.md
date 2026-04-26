@@ -5,6 +5,9 @@ Last updated: 2026-04-26.
 This is the active implementation plan for the next layout-caching slice after
 text-flow resolve caching and the first relayout/dependency boundary.
 
+Status: implemented and validated for compact topology dependency keys. Keep
+this temporary active plan until the user confirms deletion.
+
 ## Motivation
 
 The current cache keys are conservative and correct, but they still clone child
@@ -108,7 +111,7 @@ struct TopologyDependencyKey {
 Counts are not a substitute for versions, but they make debug assertions and
 collision reasoning easier.
 
-## Slice 1: add topology/dependency versions without changing cache keys
+## Slice 1: add topology/dependency versions without changing cache keys — done
 
 Goal: introduce version state and bumping rules with no behavior change.
 
@@ -121,7 +124,7 @@ Tasks:
   paint order or membership
 - bump nearby topology version when `set_nearby_ixs(...)` changes slot/order or
   membership
-- preserve current `NodeId` list cache keys for this slice
+- initially preserve current `NodeId` list cache keys for this slice
 - add tests proving versions bump on real topology changes and do not bump on
   no-op writes where practical
 
@@ -131,7 +134,7 @@ Acceptance:
 - existing layout/cache tests pass
 - version bump rules are covered by focused tests
 
-## Slice 2: replace subtree-measure child/nearby list keys
+## Slice 2: replace subtree-measure child/nearby list keys — done
 
 Goal: make `SubtreeMeasureCacheKey` use compact dependency versions instead of
 cloned `Vec<NodeId>` / `Vec<NearbyMount>`.
@@ -155,7 +158,7 @@ Acceptance:
 - fewer list clones in subtree cache-key construction
 - no regressions in text-flow, nearby, or animation dirty-path tests
 
-## Slice 3: replace resolve child/nearby list keys
+## Slice 3: replace resolve child/nearby list keys — done
 
 Goal: make `ResolveCacheKey` use compact dependency versions instead of cloned
 identity lists.
@@ -181,10 +184,13 @@ Acceptance:
 - cache hits stay correct after child/nearby mutations
 - fewer list clones in resolve cache-key construction
 
-## Slice 4: ix-native traversal cleanup where it naturally falls out
+## Slice 4: ix-native traversal cleanup where it naturally falls out — partial
 
 Goal: reduce repeated `NodeId -> NodeIx` lookups in measure/resolve hot paths
 without rewriting everything at once.
+
+This slice added ix-aware topology dependency extraction. Broader measurement and
+resolve traversal still uses id-facing compatibility helpers and is deferred.
 
 Tasks:
 
@@ -242,6 +248,22 @@ mix bench.native.retained_layout
 Use `layout_cache_stats` to confirm cache behavior stays correct. Use profiles or
 allocation-sensitive benchmarks to justify further ix-native cleanup.
 
+Focused smoke after implementation:
+
+```text
+layout_matrix_50 warm_cache: resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+nearby_rich_50 warm_cache:  resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+text_rich_50 warm_cache:    resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+layout_matrix_50/keyed_reorder after_patch: subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=13 resolve_misses=2
+nearby_rich_50/keyed_reorder after_patch:  subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=13 resolve_misses=2
+text_rich_50/keyed_reorder after_patch:    subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=3 resolve_misses=12
+nearby_rich_50/nearby_slot_change after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=5 resolve_misses=2
+```
+
+The `text_rich_50/keyed_reorder` case remains a future text-flow/keyed-reorder
+optimization target; correctness is preserved and cache outcomes remain
+hit/miss/store.
+
 ## Validation
 
 Run:
@@ -254,6 +276,16 @@ cargo test --manifest-path native/emerge_skia/Cargo.toml
 mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
+
+Validation status: full validation has passed:
+
+- `cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check`
+- `mix format --check-formatted`
+- `git diff --check`
+- `cargo test --manifest-path native/emerge_skia/Cargo.toml`
+- `mix test`
+- `cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run`
+- focused retained-layout benchmark smoke above
 
 ## Completion protocol
 
