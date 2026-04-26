@@ -1,5 +1,9 @@
 use super::super::*;
 use super::common::*;
+use crate::events::registry_builder::{
+    assert_registry_rebuild_payloads_equivalent, build_registry_rebuild,
+    build_registry_rebuild_cached,
+};
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
 use crate::tree::attrs::{Background, BoxShadow};
 use crate::tree::invalidation::{
@@ -1157,6 +1161,59 @@ fn test_scroll_refresh_does_not_store_scroll_container_render_cache() {
 
     assert_eq!(output.scene, render_tree_scene(&tree).scene);
     assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+}
+
+#[test]
+fn test_registry_chunked_rebuild_matches_full_after_registry_patch() {
+    let mut tree = ElementTree::new();
+    let root = make_element("registry_root", ElementKind::Row, Attrs::default());
+    let root_id = root.id;
+    let first = make_element("registry_first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("registry_second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+
+    let mut chunked_tree = tree.clone();
+    build_registry_rebuild_cached(&mut chunked_tree);
+    assert!(chunked_tree.has_registry_subtree_cache());
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: first_id,
+            attrs_raw: raw_text_event_attrs("One"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Registry);
+
+    let full_rebuild = build_registry_rebuild(&tree);
+    let mut unseeded_chunked_tree = tree.clone();
+    let unseeded_chunked_rebuild = build_registry_rebuild_cached(&mut unseeded_chunked_tree);
+    assert_registry_rebuild_payloads_equivalent(&full_rebuild, &unseeded_chunked_rebuild);
+
+    let chunked_invalidation = apply_patches(
+        &mut chunked_tree,
+        vec![Patch::SetAttrs {
+            id: first_id,
+            attrs_raw: raw_text_event_attrs("One"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(chunked_invalidation, TreeInvalidation::Registry);
+    let chunked_rebuild = build_registry_rebuild_cached(&mut chunked_tree);
+
+    assert_registry_rebuild_payloads_equivalent(&full_rebuild, &chunked_rebuild);
+    assert!(tree.has_registry_refresh_damage());
 }
 
 #[test]

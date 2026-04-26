@@ -36,9 +36,12 @@
 //! example, `on_mouse_down` and `mouse_down` style activation both contribute to
 //! the same left-press listener slot.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
@@ -48,12 +51,15 @@ use crate::input::{
 };
 use crate::keys::CanonicalKey;
 use crate::tree::attrs::{
-    KeyBindingMatch, KeyBindingSpec, VirtualKeyHoldMode, VirtualKeyTapAction,
+    BorderRadius, KeyBindingMatch, KeyBindingSpec, Padding, VirtualKeyHoldMode, VirtualKeyTapAction,
 };
 use crate::tree::element::{
-    Element, ElementKind, ElementTree, NodeId, RetainedChildMode, RetainedPaintPhase,
+    Element, ElementKind, ElementTree, Frame, NodeId, NodeIx, RenderTopologyDependencyKey,
+    RetainedChildMode, RetainedPaintPhase,
 };
-use crate::tree::geometry::{CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape};
+use crate::tree::geometry::{
+    ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape,
+};
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
@@ -68,6 +74,7 @@ use super::{
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
 const GESTURE_AXIS_DOMINANCE_RATIO: f32 = 1.25;
 const GESTURE_AXIS_MIN_LEAD: f32 = 6.0;
+const REGISTRY_SUBTREE_CACHE_BUDGET: usize = 4;
 
 /// Listener registry consumed by the event actor.
 ///
@@ -374,7 +381,30 @@ pub struct KeyPressTracker {
     pub followups: Vec<KeyPressFollowup>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq)]
+struct RegistrySubtreeKey {
+    kind: ElementKind,
+    attrs_hash: u64,
+    runtime_hash: u64,
+    frame_hash: u64,
+    scene_context_hash: u64,
+    scroll_contexts_hash: u64,
+    topology: RenderTopologyDependencyKey,
+}
+
+#[derive(Clone, Debug)]
+struct RegistrySubtreeChunk {
+    acc: RegistryBuildAcc,
+    deferred: Vec<DeferredSubtree>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RegistrySubtreeCache {
+    key: RegistrySubtreeKey,
+    chunk: RegistrySubtreeChunk,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RegistryBuildAcc {
     current_revision: u64,
     registry: Registry,
@@ -390,6 +420,53 @@ impl RegistryBuildAcc {
         Self {
             current_revision: tree.revision(),
             ..Self::default()
+        }
+    }
+
+    fn for_revision(current_revision: u64) -> Self {
+        Self {
+            current_revision,
+            ..Self::default()
+        }
+    }
+
+    fn merge_chunk(&mut self, chunk: RegistrySubtreeChunk) {
+        self.merge_acc(chunk.acc);
+    }
+
+    fn merge_acc(&mut self, acc: RegistryBuildAcc) {
+        self.registry.extend_storage_from(&acc.registry);
+
+        for (id, state) in acc.text_inputs {
+            let previous = self.text_inputs.insert(id, state);
+            debug_assert!(previous.is_none(), "duplicate text input rebuild state");
+        }
+
+        for (key, scrollbar) in acc.scrollbars {
+            let previous = self.scrollbars.insert(key, scrollbar);
+            debug_assert!(previous.is_none(), "duplicate scrollbar rebuild state");
+        }
+
+        if self.focused_id.is_none() {
+            self.focused_id = acc.focused_id;
+        }
+
+        self.focus_entries.extend(acc.focus_entries);
+        self.merge_focus_on_mount(acc.focus_on_mount);
+    }
+
+    fn merge_focus_on_mount(&mut self, candidate: Option<FocusOnMountTarget>) {
+        let Some(candidate) = candidate else {
+            return;
+        };
+
+        let should_replace = match self.focus_on_mount.as_ref() {
+            None => true,
+            Some(existing) => candidate.mounted_at_revision > existing.mounted_at_revision,
+        };
+
+        if should_replace {
+            self.focus_on_mount = Some(candidate);
         }
     }
 }
@@ -5204,6 +5281,410 @@ fn drain_deferred_subtrees(
     }
 }
 
+fn drain_deferred_subtrees_cached(
+    tree: &mut ElementTree,
+    acc: &mut RegistryBuildAcc,
+    deferred: Vec<DeferredSubtree>,
+    cache_budget: &Cell<usize>,
+) {
+    for subtree in deferred {
+        let child_deferred = accumulate_subtree_rebuild_local_cached(
+            tree,
+            &subtree.element_id,
+            acc,
+            &subtree.scroll_contexts,
+            subtree.scene_ctx,
+            cache_budget,
+        );
+        drain_deferred_subtrees_cached(tree, acc, child_deferred, cache_budget);
+    }
+}
+
+fn accumulate_subtree_rebuild_local_cached(
+    tree: &mut ElementTree,
+    element_id: &NodeId,
+    acc: &mut RegistryBuildAcc,
+    scroll_contexts: &[ScrollContext],
+    scene_ctx: crate::tree::scene::SceneContext,
+    cache_budget: &Cell<usize>,
+) -> Vec<DeferredSubtree> {
+    let Some(ix) = tree.ix_of(element_id) else {
+        return Vec::new();
+    };
+    let registry_damage = tree.get_ix(ix).is_some_and(|element| {
+        element.refresh.registry_dirty || element.refresh.registry_descendant_dirty
+    });
+
+    let cache_eligible = registry_subtree_cache_eligible(tree, ix);
+    let has_existing_cache = tree
+        .get_ix(ix)
+        .is_some_and(|element| element.refresh.registry_cache.is_some());
+    if !registry_damage
+        && cache_eligible
+        && has_existing_cache
+        && try_take_registry_cache_budget(cache_budget)
+    {
+        let cache_hit = tree
+            .get_ix(ix)
+            .and_then(|element| element.refresh.registry_cache.as_ref())
+            .and_then(|cache| {
+                let element = tree.get_ix(ix)?;
+                let key = registry_subtree_key(tree, ix, element, scroll_contexts, &scene_ctx);
+                (cache.key == key).then(|| cache.chunk.clone())
+            });
+
+        if let Some(chunk) = cache_hit {
+            let deferred = chunk.deferred.clone();
+            acc.merge_chunk(chunk);
+            return deferred;
+        }
+    }
+
+    if !registry_damage && cache_eligible && try_take_registry_cache_budget(cache_budget) {
+        let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
+            return Vec::new();
+        };
+        let key = registry_subtree_key(tree, ix, &element, scroll_contexts, &scene_ctx);
+        let mut local_acc = RegistryBuildAcc::for_revision(acc.current_revision);
+        let deferred = accumulate_subtree_rebuild_local_cached_uncached(
+            tree,
+            &element,
+            &mut local_acc,
+            scroll_contexts,
+            scene_ctx,
+            cache_budget,
+        );
+        let chunk = RegistrySubtreeChunk {
+            acc: local_acc,
+            deferred: deferred.clone(),
+        };
+        acc.merge_chunk(chunk.clone());
+        if let Some(element) = tree.get_ix_mut(ix) {
+            element.refresh.registry_cache = Some(RegistrySubtreeCache { key, chunk });
+        }
+        return deferred;
+    }
+
+    let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
+        return Vec::new();
+    };
+    accumulate_subtree_rebuild_local_cached_uncached(
+        tree,
+        &element,
+        acc,
+        scroll_contexts,
+        scene_ctx,
+        cache_budget,
+    )
+}
+
+fn accumulate_subtree_rebuild_local_cached_uncached(
+    tree: &mut ElementTree,
+    element: &Element,
+    acc: &mut RegistryBuildAcc,
+    scroll_contexts: &[ScrollContext],
+    scene_ctx: crate::tree::scene::SceneContext,
+    cache_budget: &Cell<usize>,
+) -> Vec<DeferredSubtree> {
+    let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
+    let next_scroll_contexts =
+        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts);
+
+    let mut deferred = Vec::new();
+
+    let Some(element_ix) = tree.ix_of(&element.id) else {
+        return deferred;
+    };
+
+    for mount in tree.local_nearby_mounts_ix(element_ix) {
+        let Some(mount_id) = tree.id_of(mount.ix) else {
+            continue;
+        };
+        deferred.extend(accumulate_subtree_rebuild_local_cached(
+            tree,
+            &mount_id,
+            acc,
+            scroll_contexts,
+            state
+                .clone()
+                .map(|resolved| {
+                    crate::tree::scene::child_context(resolved, RetainedPaintPhase::BehindContent)
+                })
+                .unwrap_or_default(),
+            cache_budget,
+        ));
+    }
+
+    let child_scene_ctx = state
+        .clone()
+        .map(|resolved| crate::tree::scene::child_context(resolved, RetainedPaintPhase::Children))
+        .unwrap_or_default();
+    let mut children = Vec::new();
+    element.for_each_retained_child(tree, |child| children.push(child));
+    for child in children {
+        match child.mode {
+            RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
+                deferred.extend(accumulate_subtree_rebuild_local_cached(
+                    tree,
+                    &child.id,
+                    acc,
+                    &next_scroll_contexts,
+                    child_scene_ctx.clone(),
+                    cache_budget,
+                ));
+            }
+        }
+    }
+
+    for mount in tree.escape_nearby_mounts_ix(element_ix) {
+        let Some(mount_id) = tree.id_of(mount.ix) else {
+            continue;
+        };
+        deferred.push(DeferredSubtree {
+            element_id: mount_id,
+            scroll_contexts: scroll_contexts.to_vec(),
+            scene_ctx: state
+                .clone()
+                .map(|resolved| {
+                    crate::tree::scene::child_context(
+                        resolved,
+                        RetainedPaintPhase::Overlay(mount.slot),
+                    )
+                })
+                .unwrap_or_default(),
+        });
+    }
+
+    deferred
+}
+
+fn try_take_registry_cache_budget(cache_budget: &Cell<usize>) -> bool {
+    let remaining = cache_budget.get();
+    if remaining == 0 {
+        return false;
+    }
+    cache_budget.set(remaining - 1);
+    true
+}
+
+fn registry_subtree_cache_eligible(tree: &ElementTree, ix: NodeIx) -> bool {
+    tree.escape_nearby_mounts_ix(ix).is_empty()
+}
+
+fn registry_subtree_key(
+    tree: &ElementTree,
+    ix: crate::tree::element::NodeIx,
+    element: &Element,
+    scroll_contexts: &[ScrollContext],
+    scene_ctx: &crate::tree::scene::SceneContext,
+) -> RegistrySubtreeKey {
+    RegistrySubtreeKey {
+        kind: element.spec.kind,
+        attrs_hash: registry_attrs_hash(element),
+        runtime_hash: hash_value(&element.runtime),
+        frame_hash: registry_frame_hash(element),
+        scene_context_hash: hash_scene_context(scene_ctx),
+        scroll_contexts_hash: hash_scroll_contexts(scroll_contexts),
+        topology: tree.render_topology_dependency_key_ix(ix),
+    }
+}
+
+fn hash_value(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_f64(hasher: &mut DefaultHasher, value: f64) {
+    value.to_bits().hash(hasher);
+}
+
+fn hash_opt_f64(hasher: &mut DefaultHasher, value: Option<f64>) {
+    match value {
+        Some(value) => {
+            true.hash(hasher);
+            hash_f64(hasher, value);
+        }
+        None => false.hash(hasher),
+    }
+}
+
+fn hash_padding(hasher: &mut DefaultHasher, padding: &Option<Padding>) {
+    match padding {
+        Some(Padding::Uniform(value)) => {
+            0_u8.hash(hasher);
+            hash_f64(hasher, *value);
+        }
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => {
+            1_u8.hash(hasher);
+            hash_f64(hasher, *top);
+            hash_f64(hasher, *right);
+            hash_f64(hasher, *bottom);
+            hash_f64(hasher, *left);
+        }
+        None => 2_u8.hash(hasher),
+    }
+}
+
+fn hash_border_radius(hasher: &mut DefaultHasher, radius: &Option<BorderRadius>) {
+    match radius {
+        Some(BorderRadius::Uniform(value)) => {
+            0_u8.hash(hasher);
+            hash_f64(hasher, *value);
+        }
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            1_u8.hash(hasher);
+            hash_f64(hasher, *tl);
+            hash_f64(hasher, *tr);
+            hash_f64(hasher, *br);
+            hash_f64(hasher, *bl);
+        }
+        None => 2_u8.hash(hasher),
+    }
+}
+
+fn registry_attrs_hash(element: &Element) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    element.spec.attrs_raw.hash(&mut hasher);
+    let attrs = &element.layout.effective;
+    hash_padding(&mut hasher, &attrs.padding);
+    hash_border_radius(&mut hasher, &attrs.border_radius);
+    attrs.scrollbar_x.hash(&mut hasher);
+    attrs.scrollbar_y.hash(&mut hasher);
+    attrs.ghost_scrollbar_x.hash(&mut hasher);
+    attrs.ghost_scrollbar_y.hash(&mut hasher);
+    attrs.clip_nearby.hash(&mut hasher);
+    hash_opt_f64(&mut hasher, attrs.move_x);
+    hash_opt_f64(&mut hasher, attrs.move_y);
+    hash_opt_f64(&mut hasher, attrs.rotate);
+    hash_opt_f64(&mut hasher, attrs.scale);
+    hash_opt_f64(&mut hasher, attrs.alpha);
+    hasher.finish()
+}
+
+fn hash_f32(hasher: &mut DefaultHasher, value: f32) {
+    value.to_bits().hash(hasher);
+}
+
+fn hash_frame(hasher: &mut DefaultHasher, frame: Frame) {
+    hash_f32(hasher, frame.x);
+    hash_f32(hasher, frame.y);
+    hash_f32(hasher, frame.width);
+    hash_f32(hasher, frame.height);
+    hash_f32(hasher, frame.content_width);
+    hash_f32(hasher, frame.content_height);
+}
+
+fn hash_rect(hasher: &mut DefaultHasher, rect: Rect) {
+    hash_f32(hasher, rect.x);
+    hash_f32(hasher, rect.y);
+    hash_f32(hasher, rect.width);
+    hash_f32(hasher, rect.height);
+}
+
+fn hash_corner_radii(hasher: &mut DefaultHasher, radii: CornerRadii) {
+    hash_f32(hasher, radii.tl);
+    hash_f32(hasher, radii.tr);
+    hash_f32(hasher, radii.br);
+    hash_f32(hasher, radii.bl);
+}
+
+fn hash_clip_shape(hasher: &mut DefaultHasher, clip: ClipShape) {
+    hash_rect(hasher, clip.rect);
+    match clip.radii {
+        Some(radii) => {
+            true.hash(hasher);
+            hash_corner_radii(hasher, radii);
+        }
+        None => false.hash(hasher),
+    }
+}
+
+fn hash_affine(hasher: &mut DefaultHasher, affine: Affine2) {
+    hash_f32(hasher, affine.xx);
+    hash_f32(hasher, affine.yx);
+    hash_f32(hasher, affine.xy);
+    hash_f32(hasher, affine.yy);
+    hash_f32(hasher, affine.tx);
+    hash_f32(hasher, affine.ty);
+}
+
+fn hash_interaction_clip(hasher: &mut DefaultHasher, clip: &InteractionClip) {
+    hash_clip_shape(hasher, clip.local_clip);
+    hash_rect(hasher, clip.screen_bounds);
+    match clip.screen_to_local {
+        Some(transform) => {
+            true.hash(hasher);
+            hash_affine(hasher, transform);
+        }
+        None => false.hash(hasher),
+    }
+}
+
+fn hash_scene_context(scene_ctx: &crate::tree::scene::SceneContext) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_f32(&mut hasher, scene_ctx.scroll_dx);
+    hash_f32(&mut hasher, scene_ctx.scroll_dy);
+    match scene_ctx.visible_clip {
+        Some(clip) => {
+            true.hash(&mut hasher);
+            hash_clip_shape(&mut hasher, clip);
+        }
+        None => false.hash(&mut hasher),
+    }
+    match scene_ctx.nearby_visible_clip {
+        Some(clip) => {
+            true.hash(&mut hasher);
+            hash_clip_shape(&mut hasher, clip);
+        }
+        None => false.hash(&mut hasher),
+    }
+    scene_ctx.front_nearby_subtree.hash(&mut hasher);
+    scene_ctx.front_nearby_root.hash(&mut hasher);
+    hash_affine(&mut hasher, scene_ctx.interaction_transform);
+    scene_ctx.interaction_clips.len().hash(&mut hasher);
+    for clip in &scene_ctx.interaction_clips {
+        hash_interaction_clip(&mut hasher, clip);
+    }
+    scene_ctx.nearby_interaction_clips.len().hash(&mut hasher);
+    for clip in &scene_ctx.nearby_interaction_clips {
+        hash_interaction_clip(&mut hasher, clip);
+    }
+    hasher.finish()
+}
+
+fn hash_scroll_contexts(scroll_contexts: &[ScrollContext]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    scroll_contexts.len().hash(&mut hasher);
+    for context in scroll_contexts {
+        context.id.hash(&mut hasher);
+        hash_rect(&mut hasher, context.viewport);
+        hash_f32(&mut hasher, context.scroll_x);
+        hash_f32(&mut hasher, context.scroll_y);
+        hash_f32(&mut hasher, context.max_x);
+        hash_f32(&mut hasher, context.max_y);
+    }
+    hasher.finish()
+}
+
+fn registry_frame_hash(element: &Element) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    element.layout.frame.is_some().hash(&mut hasher);
+    if let Some(frame) = element.layout.frame {
+        hash_frame(&mut hasher, frame);
+    }
+    hash_f32(&mut hasher, element.layout.scroll_x);
+    hash_f32(&mut hasher, element.layout.scroll_y);
+    hash_f32(&mut hasher, element.layout.scroll_x_max);
+    hash_f32(&mut hasher, element.layout.scroll_y_max);
+    hasher.finish()
+}
+
 pub(crate) fn accumulate_subtree_rebuild(
     tree: &ElementTree,
     element_id: &NodeId,
@@ -5216,9 +5697,87 @@ pub(crate) fn accumulate_subtree_rebuild(
     drain_deferred_subtrees(tree, acc, deferred);
 }
 
+fn accumulate_subtree_rebuild_cached(
+    tree: &mut ElementTree,
+    element_id: &NodeId,
+    acc: &mut RegistryBuildAcc,
+    scroll_contexts: &[ScrollContext],
+    scene_ctx: crate::tree::scene::SceneContext,
+    cache_budget: &Cell<usize>,
+) {
+    let deferred = accumulate_subtree_rebuild_local_cached(
+        tree,
+        element_id,
+        acc,
+        scroll_contexts,
+        scene_ctx,
+        cache_budget,
+    );
+    drain_deferred_subtrees_cached(tree, acc, deferred, cache_budget);
+}
+
 #[doc(hidden)]
 pub fn build_registry_rebuild_for_benchmark(tree: &ElementTree) -> RegistryRebuildPayload {
     build_registry_rebuild(tree)
+}
+
+#[doc(hidden)]
+pub fn build_registry_rebuild_cached_for_benchmark(
+    tree: &mut ElementTree,
+) -> RegistryRebuildPayload {
+    build_registry_rebuild_cached(tree)
+}
+
+#[cfg(test)]
+pub(crate) fn assert_registry_rebuild_payloads_equivalent(
+    left: &RegistryRebuildPayload,
+    right: &RegistryRebuildPayload,
+) {
+    let left_listeners: Vec<_> = left
+        .base_registry
+        .precedence_listeners()
+        .into_iter()
+        .map(|listener| format!("{listener:?}"))
+        .collect();
+    let right_listeners: Vec<_> = right
+        .base_registry
+        .precedence_listeners()
+        .into_iter()
+        .map(|listener| format!("{listener:?}"))
+        .collect();
+
+    assert_eq!(left_listeners, right_listeners);
+    assert_eq!(left.text_inputs, right.text_inputs);
+    assert_eq!(left.scrollbars, right.scrollbars);
+    assert_eq!(left.focused_id, right.focused_id);
+    assert_eq!(
+        format!("{:?}", left.focus_on_mount),
+        format!("{:?}", right.focus_on_mount)
+    );
+}
+
+pub(crate) fn build_registry_rebuild_cached(tree: &mut ElementTree) -> RegistryRebuildPayload {
+    if tree.has_escape_nearby_mounts()
+        || (tree.has_registry_refresh_damage() && !tree.has_registry_subtree_cache())
+    {
+        return build_registry_rebuild(tree);
+    }
+
+    let mut acc = RegistryBuildAcc::for_tree(tree);
+    let cache_budget = Cell::new(REGISTRY_SUBTREE_CACHE_BUDGET);
+
+    if let Some(root) = tree.root_id() {
+        accumulate_subtree_rebuild_cached(
+            tree,
+            &root,
+            &mut acc,
+            &[],
+            crate::tree::scene::SceneContext::default(),
+            &cache_budget,
+        );
+    }
+
+    finalize_registry_rebuild(acc)
 }
 
 pub(crate) fn build_registry_rebuild(tree: &ElementTree) -> RegistryRebuildPayload {

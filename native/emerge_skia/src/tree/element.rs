@@ -8,6 +8,7 @@ use super::attrs::{
     Padding, ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
+use crate::events::registry_builder::RegistrySubtreeCache;
 use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
@@ -50,7 +51,7 @@ impl NodeId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextInputContentOrigin {
     Event,
     #[default]
@@ -582,7 +583,7 @@ pub struct NodeSpec {
     pub declared: Attrs,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 pub struct NodeRuntime {
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
@@ -609,6 +610,7 @@ pub struct NodeRefreshState {
     pub registry_dirty: bool,
     pub registry_descendant_dirty: bool,
     pub render_cache: Option<RenderSubtreeCache>,
+    pub registry_cache: Option<RegistrySubtreeCache>,
 }
 
 impl Default for NodeRefreshState {
@@ -619,6 +621,7 @@ impl Default for NodeRefreshState {
             registry_dirty: true,
             registry_descendant_dirty: false,
             render_cache: None,
+            registry_cache: None,
         }
     }
 }
@@ -843,6 +846,7 @@ impl Element {
                 registry_dirty: self.refresh.registry_dirty,
                 registry_descendant_dirty: self.refresh.registry_descendant_dirty,
                 render_cache: None,
+                registry_cache: None,
             },
             lifecycle: self.lifecycle.clone(),
             #[cfg(test)]
@@ -1223,6 +1227,11 @@ impl ElementTree {
             .any(|element| element.refresh.render_cache.is_some())
     }
 
+    pub fn has_registry_subtree_cache(&self) -> bool {
+        self.iter_nodes()
+            .any(|element| element.refresh.registry_cache.is_some())
+    }
+
     pub fn clear_render_refresh_dirty(&mut self) {
         self.iter_nodes_mut()
             .for_each(|element| element.refresh.clear_render());
@@ -1444,6 +1453,26 @@ impl ElementTree {
             .collect()
     }
 
+    pub fn has_escape_nearby_mounts(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.ensure_topology();
+            self.topology.borrow().nodes.iter().any(|node| {
+                node.nearby
+                    .iter()
+                    .any(|mount| mount.slot != NearbySlot::BehindContent)
+            })
+        }
+        #[cfg(not(test))]
+        {
+            self.topology.nodes.iter().any(|node| {
+                node.nearby
+                    .iter()
+                    .any(|mount| mount.slot != NearbySlot::BehindContent)
+            })
+        }
+    }
+
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Element> {
         self.nodes.iter().filter_map(|slot| slot.as_ref())
     }
@@ -1596,6 +1625,7 @@ impl ElementTree {
             element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
+            element.refresh.registry_cache = None;
         });
     }
 
@@ -1607,6 +1637,7 @@ impl ElementTree {
             element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
+            element.refresh.registry_cache = None;
         });
     }
 
@@ -1655,6 +1686,7 @@ impl ElementTree {
                 }
 
                 if registry {
+                    element.refresh.registry_cache = None;
                     if origin {
                         element.refresh.registry_dirty = true;
                         element.refresh.registry_descendant_dirty = false;
