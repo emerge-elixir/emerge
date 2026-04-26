@@ -7,12 +7,12 @@ investigation that led to the current implementation.
 
 ## Files
 
-### `active-relayout-dependency-boundaries-plan.md`
+### `active-versioned-cache-keys-plan.md`
 
-The current temporary active implementation plan. The code slice has been
-implemented and validated for traversal dirtiness plus the first safe
-`El`/`None` measure boundary; keep the file until deletion is explicitly
-confirmed.
+The current temporary active implementation plan. It focuses on replacing cloned
+child/nearby identity lists in layout cache keys with compact native dependency
+versions, then doing narrow ix-native traversal cleanup where it naturally
+follows.
 
 ### `layout-caching-roadmap.md`
 
