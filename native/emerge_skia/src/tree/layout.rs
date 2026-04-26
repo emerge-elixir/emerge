@@ -6,7 +6,8 @@
 //! 2. Resolution (top-down): Assign frames with constraints
 
 use super::animation::{
-    AnimationOverlayResult, AnimationRuntime, apply_animation_overlays, scale_animation_spec,
+    AnimationOverlayResult, AnimationRuntime, apply_animation_overlays,
+    apply_animation_overlays_to_active, scale_animation_spec,
 };
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
@@ -487,6 +488,39 @@ pub(crate) fn prepare_frame_attrs_for_update(
     }
 }
 
+pub(crate) fn prepare_animation_frame_attrs_for_update(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: &AnimationRuntime,
+    sample_time: Option<Instant>,
+) -> FrameAttrsPreparation {
+    tree.reset_layout_cache_stats();
+    tree.ensure_topology();
+    tree.set_current_scale(scale);
+
+    let active_ids = animation_runtime.active_node_ids();
+    for id in &active_ids {
+        if let Some(element) = tree.get_mut(id) {
+            let scale_factor = match element.lifecycle.ghost_capture_scale {
+                Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
+                None => scale,
+            };
+            element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+            element.normalize_extracted_state();
+        }
+    }
+
+    let animation_result =
+        apply_animation_overlays_to_active(tree, animation_runtime, sample_time, scale);
+    mark_animation_refresh_effects_dirty(tree, &animation_result);
+    apply_interaction_styles_for_ids(tree, &active_ids);
+
+    FrameAttrsPreparation {
+        root_id: tree.root_id(),
+        animation_result,
+    }
+}
+
 pub(crate) fn prepared_root_has_frame(
     tree: &ElementTree,
     preparation: &FrameAttrsPreparation,
@@ -774,23 +808,35 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
 
 fn apply_interaction_styles(tree: &mut ElementTree) {
     for element in tree.iter_nodes_mut() {
-        if element.runtime.mouse_over_active
-            && let Some(mouse_over) = element.layout.effective.mouse_over.clone()
-        {
-            apply_decorative_style(&mut element.layout.effective, &mouse_over);
-        }
+        apply_interaction_style_to_element(element);
+    }
+}
 
-        if element.runtime.focused_active
-            && let Some(focused) = element.layout.effective.focused.clone()
-        {
-            apply_decorative_style(&mut element.layout.effective, &focused);
+fn apply_interaction_styles_for_ids(tree: &mut ElementTree, ids: &[NodeId]) {
+    for id in ids {
+        if let Some(element) = tree.get_mut(id) {
+            apply_interaction_style_to_element(element);
         }
+    }
+}
 
-        if element.runtime.mouse_down_active
-            && let Some(mouse_down) = element.layout.effective.mouse_down.clone()
-        {
-            apply_decorative_style(&mut element.layout.effective, &mouse_down);
-        }
+fn apply_interaction_style_to_element(element: &mut Element) {
+    if element.runtime.mouse_over_active
+        && let Some(mouse_over) = element.layout.effective.mouse_over.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &mouse_over);
+    }
+
+    if element.runtime.focused_active
+        && let Some(focused) = element.layout.effective.focused.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &focused);
+    }
+
+    if element.runtime.mouse_down_active
+        && let Some(mouse_down) = element.layout.effective.mouse_down.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &mouse_down);
     }
 }
 
@@ -4988,16 +5034,13 @@ pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
     }
 
     let render_output = render_tree_scene(tree);
-    let event_rebuild = cached_rebuild
-        .cloned()
-        .expect("cached rebuild should be present when registry can be reused");
-    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+    let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
 
     tree.clear_render_refresh_dirty();
 
     LayoutOutput {
         scene: render_output.scene,
-        event_rebuild,
+        event_rebuild: RegistryRebuildPayload::default(),
         event_rebuild_changed: false,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
@@ -5017,16 +5060,13 @@ pub(crate) fn refresh_reusing_clean_registry(
     }
 
     let render_output = render_tree_scene_cached(tree);
-    let event_rebuild = cached_rebuild
-        .cloned()
-        .expect("cached rebuild should be present when registry can be reused");
-    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+    let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
 
     tree.clear_render_refresh_dirty();
 
     LayoutOutput {
         scene: render_output.scene,
-        event_rebuild,
+        event_rebuild: RegistryRebuildPayload::default(),
         event_rebuild_changed: false,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
@@ -5096,7 +5136,17 @@ pub fn layout_or_refresh_default_with_animation(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutUpdateOutput {
-    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    let can_prepare_incrementally = !runtime.is_empty()
+        && !runtime.has_transient_entries()
+        && tree
+            .root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some();
+    let preparation = if can_prepare_incrementally {
+        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
+    } else {
+        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+    };
     let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
         && prepared_root_has_frame(tree, &preparation);
 
@@ -5115,7 +5165,17 @@ pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutUpdateOutput {
-    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    let can_prepare_incrementally = !runtime.is_empty()
+        && !runtime.has_transient_entries()
+        && tree
+            .root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some();
+    let preparation = if can_prepare_incrementally {
+        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
+    } else {
+        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+    };
     let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
         && prepared_root_has_frame(tree, &preparation);
 
