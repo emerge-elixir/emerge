@@ -186,6 +186,25 @@ impl AnimationRuntime {
             && self.exit_entries.is_empty()
     }
 
+    pub fn has_transient_entries(&self) -> bool {
+        !self.enter_entries.is_empty() || !self.exit_entries.is_empty()
+    }
+
+    pub fn active_node_ids(&self) -> Vec<NodeId> {
+        let mut ids = Vec::new();
+        for id in self
+            .animate_entries
+            .keys()
+            .chain(self.enter_entries.keys())
+            .chain(self.exit_entries.keys())
+        {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+
     pub fn animate_entry(&self, id: &NodeId) -> Option<&AnimationRuntimeEntry> {
         self.animate_entries.get(id)
     }
@@ -252,39 +271,72 @@ pub fn apply_animation_overlays(
 ) -> AnimationOverlayResult {
     tree.iter_nodes_mut()
         .fold(AnimationOverlayResult::default(), |mut result, element| {
-            if let Some(sample) = runtime
-                .and_then(|state| state.exit_entry(&element.id))
-                .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
-                .filter(|sample| sample.active)
-            {
-                apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-                result.record_sample(element.id, &sample);
-                return result;
-            }
-
-            if let Some(sample) = runtime
-                .and_then(|state| state.enter_entry(&element.id))
-                .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
-                .filter(|sample| sample.active)
-            {
-                apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-                result.record_sample(element.id, &sample);
-                return result;
-            }
-
-            let Some(spec) = element.layout.effective.animate.as_ref() else {
-                return result;
-            };
-
-            let sample = sample_animation_spec(
-                spec,
-                runtime.and_then(|state| state.animate_entry(&element.id)),
-                sample_time,
-            );
-            apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-            result.record_sample(element.id, &sample);
+            apply_animation_overlay_to_element(&mut result, element, runtime, sample_time, scale);
             result
         })
+}
+
+pub fn apply_animation_overlays_to_active(
+    tree: &mut ElementTree,
+    runtime: &AnimationRuntime,
+    sample_time: Option<Instant>,
+    scale: f32,
+) -> AnimationOverlayResult {
+    runtime.active_node_ids().into_iter().fold(
+        AnimationOverlayResult::default(),
+        |mut result, id| {
+            if let Some(element) = tree.get_mut(&id) {
+                apply_animation_overlay_to_element(
+                    &mut result,
+                    element,
+                    Some(runtime),
+                    sample_time,
+                    scale,
+                );
+            }
+            result
+        },
+    )
+}
+
+fn apply_animation_overlay_to_element(
+    result: &mut AnimationOverlayResult,
+    element: &mut super::element::Element,
+    runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+    scale: f32,
+) {
+    if let Some(sample) = runtime
+        .and_then(|state| state.exit_entry(&element.id))
+        .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
+        .filter(|sample| sample.active)
+    {
+        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+        result.record_sample(element.id, &sample);
+        return;
+    }
+
+    if let Some(sample) = runtime
+        .and_then(|state| state.enter_entry(&element.id))
+        .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
+        .filter(|sample| sample.active)
+    {
+        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+        result.record_sample(element.id, &sample);
+        return;
+    }
+
+    let Some(spec) = element.layout.effective.animate.as_ref() else {
+        return;
+    };
+
+    let sample = sample_animation_spec(
+        spec,
+        runtime.and_then(|state| state.animate_entry(&element.id)),
+        sample_time,
+    );
+    apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+    result.record_sample(element.id, &sample);
 }
 
 pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {

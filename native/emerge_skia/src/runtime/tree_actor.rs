@@ -24,9 +24,9 @@ use crate::{
         },
         layout::{
             FrameAttrsPreparation, LayoutOutput, layout_and_refresh_default,
-            layout_and_refresh_prepared_default, prepare_frame_attrs_for_update,
-            prepared_root_has_frame, refresh_prepared_default_reusing_clean_registry,
-            refresh_reusing_clean_registry,
+            layout_and_refresh_prepared_default, prepare_animation_frame_attrs_for_update,
+            prepare_frame_attrs_for_update, prepared_root_has_frame,
+            refresh_prepared_default_reusing_clean_registry, refresh_reusing_clean_registry,
         },
     },
 };
@@ -287,6 +287,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             let sample_time =
                 should_sync_animations.then(|| animation_sample_time.unwrap_or_else(Instant::now));
             let had_animation_runtime = !animation_runtime.is_empty();
+            let had_transient_animations = animation_runtime.has_transient_entries();
 
             if let Some(sample_time) = sample_time {
                 latest_animation_sample_time = Some(sample_time);
@@ -314,12 +315,25 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         .as_ref()
                         .is_some_and(|stats| stats.layout_cache_enabled()),
                 );
-                let preparation = prepare_frame_attrs_for_update(
-                    &mut tree,
-                    scale,
-                    (!animation_runtime.is_empty()).then_some(&animation_runtime),
-                    sample_time,
-                );
+                let preparation = if animation_sample_requested
+                    && !plan.invalidation.is_dirty()
+                    && !animation_runtime.is_empty()
+                    && !had_transient_animations
+                {
+                    prepare_animation_frame_attrs_for_update(
+                        &mut tree,
+                        scale,
+                        &animation_runtime,
+                        sample_time,
+                    )
+                } else {
+                    prepare_frame_attrs_for_update(
+                        &mut tree,
+                        scale,
+                        (!animation_runtime.is_empty()).then_some(&animation_runtime),
+                        sample_time,
+                    )
+                };
                 let dynamic_invalidation = preparation.animation_result.invalidation;
                 plan.animations_active = preparation.animation_result.active;
                 plan.invalidation.add(dynamic_invalidation);

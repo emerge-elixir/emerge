@@ -85,6 +85,10 @@ The native layout-caching foundation is in place:
 - retained-layout benchmarks print grep-friendly layout-cache counters
 - refresh-specific dirty state tracks render vs registry damage separately from
   layout-cache outcomes
+- animation-only refresh frames can update effective attrs for active animation
+  nodes without re-preparing every node once root geometry exists
+- cached-registry refresh avoids cloning the full registry payload when the
+  registry did not change
 - refresh-only frames can reuse the cached full event registry when registry
   damage is clean
 - refresh scene rendering can reuse clean retained render subtrees

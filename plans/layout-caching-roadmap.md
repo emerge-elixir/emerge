@@ -38,6 +38,8 @@ work:
   compact child-only topology dependency versions in subtree-measure keys
 - gated native stats snapshots/logging through one unified stats path
 - retained-layout benchmark cache-counter output
+- incremental effective-attrs preparation for animation-only refresh frames
+- no full registry-payload clone on unchanged cached-registry refresh
 
 Relevant files:
 
@@ -364,6 +366,32 @@ Implemented direction:
 - registry damage remains conservative when the changed nearby subtree or slot
   can affect event listeners, text input, scrollbars, focus, or front-nearby
   blockers
+
+## Completed follow-up: first refresh-path cleanup for hover/animation
+
+After nearby hover no longer produced layout samples, the remaining refresh cost
+was traced to refresh-only work: continuous paint-only shadow animations still
+prepared effective attrs for every node, and cached-registry refresh cloned the
+full registry payload even when the registry did not change.
+
+Implemented shape:
+
+- animation-only refresh frames update effective attrs only for active animation
+  nodes once root geometry exists
+- patch/resize/runtime-state batches keep the full preparation path
+- cached-registry refresh computes IME state from the cached registry reference
+  and returns an ignored empty payload when `event_rebuild_changed=false`
+- a generic render-cache seeding attempt for damaged/no-cache refreshes was
+  benchmarked and rejected because it regressed focused animation/hover guards
+
+Focused local signal:
+
+```text
+native/layout_animation_paint_only/shadow_showcase/paint_only_refresh_each_frame
+  ~539 µs -> ~499 µs
+native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
+  ~165 µs
+```
 
 ## Later slice: broaden other relayout/dependency boundaries
 

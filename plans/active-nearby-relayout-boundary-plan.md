@@ -3,9 +3,10 @@
 Last updated: 2026-04-26.
 
 Status: implemented and locally validated. Nearby topology classification,
-measurement boundaries, resolve traversal through dirty nearby descendants, and
-small detached-layout reuse for reinserted nearby subtrees are in place. Focused
-demo validation remains useful before deleting this active plan file.
+measurement boundaries, resolve traversal through dirty nearby descendants,
+small detached-layout reuse for reinserted nearby subtrees, and the first refresh
+path follow-up are in place. Focused demo validation remains useful before
+deleting this active plan file.
 
 ## Motivation
 
@@ -416,7 +417,55 @@ Implemented shape:
   different node ids and verifies zero intrinsic/subtree/resolve misses on the
   repeated show plus no registry refresh damage on render-only nearby changes
 
-## Slice 6: focused demo smoke and docs — done locally; focused app smoke still useful
+## Slice 6: refresh path investigation — done
+
+Hover-only Borders samples after layout skipping still showed refresh around
+1 ms and max around 2.2 ms:
+
+```text
+layout: no samples (count=0)
+refresh: avg=1.013 ms min=0.823 ms max=2.232 ms count=360
+patch tree actor: avg=1.248 ms min=0.988 ms max=1.971 ms count=30
+layout cache: all zero
+```
+
+Interpretation:
+
+- the remaining work was not measurement/resolve cache misses
+- the page still has continuous paint-only shadow animations, so most refresh
+  samples are animation frames rather than hover patches
+- the refresh timing includes frame attr preparation before the scene refresh
+- full effective-attrs preparation was still scaling/resetting every node on
+  animation-only frames
+- cached-registry refresh also cloned the full registry payload even when
+  `event_rebuild_changed=false`
+
+Implemented shape:
+
+- animation-only refresh helpers now prepare only active animation nodes after a
+  root frame exists
+- tree actor uses the incremental animation preparation path only when the batch
+  has no external invalidation; patch/resize/runtime-state batches keep the full
+  preparation path
+- refresh-only cached-registry output no longer clones the full cached registry
+  payload when the registry is unchanged; it computes IME state from the cached
+  reference and returns an empty ignored payload with `event_rebuild_changed=false`
+- attempted generic render-cache seeding during damaged/no-cache refresh was
+  benchmarked and rejected because it regressed both animation and hover refresh
+  guards
+
+Focused benchmark signal:
+
+```text
+native/layout_animation_paint_only/shadow_showcase/paint_only_refresh_each_frame
+  before incremental animation prep: ~539 µs (local pre-change short run)
+  after incremental animation prep:  ~499 µs
+
+native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
+  ~165 µs
+```
+
+## Slice 7: focused demo smoke and docs — done locally; focused app smoke still useful
 
 Tasks:
 
