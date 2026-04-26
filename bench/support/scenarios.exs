@@ -16,6 +16,8 @@ defmodule Emerge.Bench.Scenarios do
     :paint_rich,
     :interactive_rich,
     :nearby_rich,
+    :nearby_code_show,
+    :nearby_code_hide,
     :media_rich,
     :animation_rich,
     :scroll_rich
@@ -238,6 +240,8 @@ defmodule Emerge.Bench.Scenarios do
   defp item_count(:paint_rich, size), do: rich_count(size)
   defp item_count(:interactive_rich, size), do: rich_count(size)
   defp item_count(:nearby_rich, size), do: rich_count(size)
+  defp item_count(:nearby_code_show, size), do: rich_count(size)
+  defp item_count(:nearby_code_hide, size), do: rich_count(size)
   defp item_count(:media_rich, size), do: rich_count(size)
   defp item_count(:animation_rich, size), do: rich_count(size)
   defp item_count(:scroll_rich, size), do: rich_count(size)
@@ -257,26 +261,31 @@ defmodule Emerge.Bench.Scenarios do
 
   defp mutation_control(scenario_id, opts) do
     attrs =
-      [
-        key({scenario_id, :mutation_target}),
-        width(fill()),
-        padding(if(Keyword.get(opts, :layout_variant, false), do: 10, else: 6)),
-        Background.color(
-          if Keyword.get(opts, :paint_variant, false),
-            do: color(:rose, 500),
-            else: color(:slate, 100)
-        ),
-        Border.rounded(8),
-        Border.color(color(:slate, 300)),
-        Border.width(1),
-        control_nearby_attr(scenario_id, opts)
-      ]
+      ([
+         key({scenario_id, :mutation_target}),
+         width(fill()),
+         padding(if(Keyword.get(opts, :layout_variant, false), do: 10, else: 6)),
+         Background.color(
+           if Keyword.get(opts, :paint_variant, false),
+             do: color(:rose, 500),
+             else: color(:slate, 100)
+         ),
+         Border.rounded(8),
+         Border.color(color(:slate, 300)),
+         Border.width(1)
+       ] ++ control_nearby_attrs(scenario_id, opts))
       |> maybe_add_event(opts, scenario_id)
       |> maybe_add_animation(opts)
 
     text_suffix = if Keyword.get(opts, :text_variant, false), do: " changed", else: ""
     el(attrs, text("Mutation target #{scenario_id}#{text_suffix}"))
   end
+
+  defp control_nearby_attrs(scenario_id, _opts)
+       when scenario_id in [:nearby_code_show, :nearby_code_hide],
+       do: []
+
+  defp control_nearby_attrs(scenario_id, opts), do: [control_nearby_attr(scenario_id, opts)]
 
   defp control_nearby_attr(scenario_id, opts) do
     case Keyword.get(opts, :nearby_slot, :above) do
@@ -358,6 +367,20 @@ defmodule Emerge.Bench.Scenarios do
     wrapped_row(
       [key({:nearby_rich, :body}), width(px(940)), spacing_xy(18, 18)],
       nearby_hosts(count, opts)
+    )
+  end
+
+  defp scenario_body(:nearby_code_show, count, opts) do
+    column(
+      [key({:nearby_code_show, :body}), width(px(920)), spacing(8)],
+      nearby_code_rows(:nearby_code_show, count, opts)
+    )
+  end
+
+  defp scenario_body(:nearby_code_hide, count, opts) do
+    column(
+      [key({:nearby_code_hide, :body}), width(px(920)), spacing(8)],
+      nearby_code_rows(:nearby_code_hide, count, opts)
     )
   end
 
@@ -636,6 +659,65 @@ defmodule Emerge.Bench.Scenarios do
         Font.size(11)
       ],
       text("#{rem(index, 99)}")
+    )
+  end
+
+  defp nearby_code_rows(scenario_id, count, opts) do
+    show_code? = nearby_code_visible?(scenario_id, opts)
+
+    count
+    |> ordered_indexes(opts)
+    |> Enum.map(fn index -> nearby_code_row(scenario_id, index, show_code? && index == 1) end)
+  end
+
+  defp nearby_code_visible?(:nearby_code_show, opts),
+    do: Keyword.has_key?(opts, :nearby_slot)
+
+  defp nearby_code_visible?(:nearby_code_hide, opts),
+    do: not Keyword.has_key?(opts, :nearby_slot)
+
+  defp nearby_code_row(scenario_id, index, show_code?) do
+    attrs =
+      [
+        key({scenario_id, :row, index}),
+        width(fill()),
+        height(px(58)),
+        padding_xy(10, 8),
+        Background.color(if(rem(index, 2) == 0, do: color(:slate, 50), else: color(:white))),
+        Border.rounded(10),
+        Border.width(1),
+        Border.color(color(:slate, 200)),
+        Border.shadow(offset: {0, 2}, blur: 8, size: 1, color: color_rgba(15, 23, 42, 0.12))
+      ] ++ if(show_code?, do: [Nearby.below(nearby_code_block(scenario_id))], else: [])
+
+    el(
+      attrs,
+      row([width(fill()), spacing(8)], [
+        el([width(fill()), Font.weight(600)], text("Orbiting shadows #{index}")),
+        el([Font.color(color(:slate, 500)), Font.size(12)], text("hover target"))
+      ])
+    )
+  end
+
+  defp nearby_code_block(scenario_id) do
+    column(
+      [
+        key({scenario_id, :code_block}),
+        width(px(360)),
+        padding(10),
+        spacing(4),
+        Background.color(color(:slate, 900)),
+        Border.rounded(10),
+        Border.width(1),
+        Border.color(color(:slate, 700)),
+        Font.color(color(:slate, 50)),
+        Font.size(13)
+      ],
+      [
+        text("Border.shadow(offset: {0, 2}, blur: 8)"),
+        text("Animation.animate([...], 900, :ease_in_out, :loop)"),
+        text("Nearby.below(code_block)")
+      ]
     )
   end
 
