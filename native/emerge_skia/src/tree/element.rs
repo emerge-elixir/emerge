@@ -1218,6 +1218,11 @@ impl ElementTree {
             .any(|element| element.refresh.has_registry_damage())
     }
 
+    pub fn has_render_subtree_cache(&self) -> bool {
+        self.iter_nodes()
+            .any(|element| element.refresh.render_cache.is_some())
+    }
+
     pub fn clear_render_refresh_dirty(&mut self) {
         self.iter_nodes_mut()
             .for_each(|element| element.refresh.clear_render());

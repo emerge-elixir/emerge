@@ -79,8 +79,9 @@ The native layout-caching foundation is in place:
 - refresh scene rendering can reuse clean retained render subtrees
 - render-cache regression benchmarks compare cached and uncached refresh paths,
   including cold full layout+refresh after upload/switch; dirty/full rebuilds do
-  not seed render caches, scroll-offset subtrees bypass render-cache lookup, and
-  dirty scroll containers do not store large immediately-stale render caches
+  not seed render caches, damaged refreshes with no existing caches use the
+  uncached renderer, scroll-offset subtrees bypass render-cache lookup, and dirty
+  scroll containers do not store large immediately-stale render caches
 
 ## Next recommended implementation order
 

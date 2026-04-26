@@ -207,7 +207,9 @@ without poisoning render/layout state.
 Render refresh caches must not clone layout cache entries or build broad
 allocation-heavy keys in hot paths. Dirty render paths should rebuild before
 constructing cache lookup keys, and dirty/full rebuilds should not seed retained
-render caches. Cache entries are seeded lazily from clean refreshes, capped by
+render caches. If a damaged refresh has no existing render caches, use the
+uncached renderer rather than walking the cache path. Cache entries are seeded
+lazily from clean refreshes under a small per-refresh store budget, capped by
 render-node count, and volatile scene contexts such as scrolling should bypass
 render subtree lookup/storage when the cached subtree would be immediately
 stale.

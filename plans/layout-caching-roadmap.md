@@ -304,10 +304,11 @@ Implemented so far:
   cold upload/switch, paint-rich, nearby-rich, layout-matrix, animated-shadow,
   and scrolling-shadow cases
 - render snapshots omit retained layout cache entries, dirty/full rebuilds avoid
-  cache seeding, dirty paths avoid lookup key construction before rebuilding,
-  stored render subtrees are capped by render-node count, and scroll-offset
-  subtrees bypass render cache lookup to avoid cloning immediately-stale render
-  scenes
+  cache seeding, damaged refreshes with no existing caches use the uncached
+  renderer, dirty paths avoid lookup key construction before rebuilding, stored
+  render subtrees are limited by a small per-refresh store budget and
+  render-node-count cap, and scroll-offset subtrees bypass render cache lookup to
+  avoid cloning immediately-stale render scenes
 
 Next within this slice:
 
