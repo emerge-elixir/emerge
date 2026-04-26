@@ -64,17 +64,29 @@ pub struct AnimationSample {
     pub active: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AnimationOverlayResult {
-    pub active: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationLayoutEffect {
+    pub id: NodeId,
     pub invalidation: TreeInvalidation,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnimationOverlayResult {
+    pub active: bool,
+    pub invalidation: TreeInvalidation,
+    pub effects: Vec<AnimationLayoutEffect>,
+}
+
 impl AnimationOverlayResult {
-    fn record_sample(&mut self, sample: &AnimationSample) {
+    fn record_sample(&mut self, id: NodeId, sample: &AnimationSample) {
+        let invalidation = classify_animation_sample_attrs(&sample.attrs);
         self.active |= sample.active;
-        self.invalidation
-            .add(classify_animation_sample_attrs(&sample.attrs));
+        self.invalidation.add(invalidation);
+
+        if invalidation.is_dirty() {
+            self.effects
+                .push(AnimationLayoutEffect { id, invalidation });
+        }
     }
 }
 
@@ -242,7 +254,7 @@ pub fn apply_animation_overlays(
                 .filter(|sample| sample.active)
             {
                 apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-                result.record_sample(&sample);
+                result.record_sample(element.id, &sample);
                 return result;
             }
 
@@ -252,7 +264,7 @@ pub fn apply_animation_overlays(
                 .filter(|sample| sample.active)
             {
                 apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-                result.record_sample(&sample);
+                result.record_sample(element.id, &sample);
                 return result;
             }
 
@@ -266,7 +278,7 @@ pub fn apply_animation_overlays(
                 sample_time,
             );
             apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-            result.record_sample(&sample);
+            result.record_sample(element.id, &sample);
             result
         })
 }
@@ -468,6 +480,8 @@ fn scale_animation_keyframe(attrs: &Attrs, scale: f64) -> Attrs {
         spacing: attrs.spacing.map(|value| value * scale),
         spacing_x: attrs.spacing_x.map(|value| value * scale),
         spacing_y: attrs.spacing_y.map(|value| value * scale),
+        align_x: attrs.align_x,
+        align_y: attrs.align_y,
         background: attrs.background.clone(),
         border_radius: attrs
             .border_radius
@@ -528,6 +542,8 @@ fn interpolate_attrs(from: &Attrs, to: &Attrs, t: f64) -> Attrs {
         spacing: interpolate_opt_copy(from.spacing, to.spacing, t, lerp_f64),
         spacing_x: interpolate_opt_copy(from.spacing_x, to.spacing_x, t, lerp_f64),
         spacing_y: interpolate_opt_copy(from.spacing_y, to.spacing_y, t, lerp_f64),
+        align_x: interpolate_opt_copy(from.align_x, to.align_x, t, interpolate_discrete),
+        align_y: interpolate_opt_copy(from.align_y, to.align_y, t, interpolate_discrete),
         background: interpolate_opt_ref(
             from.background.as_ref(),
             to.background.as_ref(),
@@ -611,6 +627,12 @@ fn apply_sample_attrs(attrs: &mut Attrs, sample: &Attrs) {
     if let Some(value) = sample.spacing_y {
         attrs.spacing_y = Some(value);
     }
+    if let Some(value) = sample.align_x {
+        attrs.align_x = Some(value);
+    }
+    if let Some(value) = sample.align_y {
+        attrs.align_y = Some(value);
+    }
     if let Some(value) = sample.background.clone() {
         attrs.background = Some(value);
     }
@@ -686,6 +708,10 @@ where
         (Some(from), Some(to)) => Some(interpolate(from, to, t)),
         _ => None,
     }
+}
+
+fn interpolate_discrete<T: Copy>(from: T, to: T, t: f64) -> T {
+    if t < 0.5 { from } else { to }
 }
 
 fn lerp_f64(from: f64, to: f64, t: f64) -> f64 {
