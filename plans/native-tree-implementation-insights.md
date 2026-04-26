@@ -239,6 +239,28 @@ resolve_dirty: bool,
 This design keeps cache lifetime tied to retained node lifetime and lets patches
 preserve cache state when identity is reused.
 
+## Text-flow resolve-cache insight
+
+Text-flow containers can use the same coordinate-invariant resolve cache when a
+cache hit can restore all retained layout state by shifting the subtree.
+
+Implemented shape:
+
+- `Multiline`, `WrappedRow`, `TextColumn`, and `Paragraph` are resolve-cache
+  eligible
+- wrapped rows and text columns pass resolve-cache usage through to children
+  where child layout is independent and cacheable
+- paragraph inline text is parent-owned fragment layout, so inline children do
+  not need independent resolve cache entries before a paragraph can store
+- text columns may own paragraph child flow layout, so a text-column cache entry
+  can restore that retained child state even when the paragraph child does not
+  have a standalone resolve cache for the text-column flow context
+- paragraph fragment positions are shifted by `shift_subtree(...)` alongside
+  frames on resolve-cache hits
+
+Future key/version work should preserve this distinction between independently
+cacheable child layout and parent-owned derived flow layout.
+
 ## Boundary APIs can stay id-based
 
 Not every function must expose `NodeIx`. It is fine, and often clearer, for
@@ -361,10 +383,9 @@ combined invalidation is paint-only.
 
 The native tree now supports the next layout-caching stages:
 
-1. text-flow/paragraph resolve cache refinement
-2. relayout/dependency boundaries
-3. versioned cache keys plus more ix-native layout traversal where useful
-4. refresh subtree skipping
-5. viewport/repeater-aware cache preservation
+1. relayout/dependency boundaries
+2. versioned cache keys plus more ix-native layout traversal where useful
+3. refresh subtree skipping
+4. viewport/repeater-aware cache preservation
 
 See `layout-caching-roadmap.md` for the active implementation order.

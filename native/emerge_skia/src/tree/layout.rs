@@ -1682,7 +1682,7 @@ fn resolve_wrapped_row_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
-        false,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1763,6 +1763,7 @@ fn resolve_text_column_kind<M: TextMeasurer>(
             inherited: element_context,
         },
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1790,6 +1791,7 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
         },
         measurer,
         &mut paragraph_floats,
+        params.use_resolve_cache,
     );
 
     if let Some(element) = tree.get_mut(params.id) {
@@ -2175,14 +2177,40 @@ fn can_store_resolve_cache(
     nearby: &[NearbyMount],
 ) -> bool {
     resolve_cache_kind_eligible(kind)
-        && child_ids.iter().all(|child_id| {
-            tree.get(child_id)
-                .is_some_and(|child| child.layout.resolve_cache.is_some())
-        })
+        && child_ids
+            .iter()
+            .all(|child_id| child_can_be_restored_by_parent_resolve_cache(tree, kind, child_id))
         && nearby.iter().all(|mount| {
             tree.get(&mount.id)
                 .is_some_and(|child| child.layout.resolve_cache.is_some())
         })
+}
+
+fn child_can_be_restored_by_parent_resolve_cache(
+    tree: &ElementTree,
+    parent_kind: ElementKind,
+    child_id: &NodeId,
+) -> bool {
+    let Some(child) = tree.get(child_id) else {
+        return false;
+    };
+
+    if parent_kind == ElementKind::Paragraph && paragraph_owns_inline_child_layout(child) {
+        return true;
+    }
+
+    if parent_kind == ElementKind::TextColumn && child.spec.kind == ElementKind::Paragraph {
+        return true;
+    }
+
+    child.layout.resolve_cache.is_some()
+}
+
+fn paragraph_owns_inline_child_layout(child: &Element) -> bool {
+    !matches!(
+        child.layout.effective.align_x,
+        Some(AlignX::Left | AlignX::Right)
+    )
 }
 
 fn resolve_cache_kind_eligible(kind: ElementKind) -> bool {
@@ -2196,6 +2224,10 @@ fn resolve_cache_kind_eligible(kind: ElementKind) -> bool {
             | ElementKind::El
             | ElementKind::Row
             | ElementKind::Column
+            | ElementKind::Multiline
+            | ElementKind::WrappedRow
+            | ElementKind::TextColumn
+            | ElementKind::Paragraph
     )
 }
 
@@ -3613,6 +3645,7 @@ fn place_flow_float<M: TextMeasurer>(
     desired_y: f32,
     context: FlowPlacementContext<'_>,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> Option<FlowFloat> {
     let (desired_width, desired_height) = {
         let child = tree.get(child_id)?;
@@ -3676,7 +3709,7 @@ fn place_flow_float<M: TextMeasurer>(
         float_y,
         context.inherited,
         measurer,
-        false,
+        use_resolve_cache,
     );
 
     let mut frame = tree.get(child_id).and_then(|child| child.layout.frame)?;
@@ -3720,6 +3753,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     y: f32,
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
+    use_resolve_cache: bool,
 ) {
     let child_constraint = Constraint::new(layout.content.width, f32::MAX);
     resolve_element(
@@ -3771,6 +3805,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         },
         measurer,
         active_floats,
+        use_resolve_cache,
     );
 
     if let Some(element) = tree.get_mut(child_id) {
@@ -3789,6 +3824,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
     child_ids: &[NodeId],
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -3837,6 +3873,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
                     active_floats: &active_floats,
                 },
                 measurer,
+                use_resolve_cache,
             ) {
                 max_bottom = max_bottom.max(flow_float.bottom);
                 active_floats.push(flow_float);
@@ -3860,6 +3897,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
                 child_y,
                 measurer,
                 &mut active_floats,
+                use_resolve_cache,
             );
         } else {
             let child_constraint = Constraint::new(content_width, f32::MAX);
@@ -3871,7 +3909,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
                 child_y,
                 inherited,
                 measurer,
-                false,
+                use_resolve_cache,
             );
         }
 
@@ -4070,6 +4108,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
+    use_resolve_cache: bool,
 ) -> (Vec<TextFragment>, f32) {
     let content_x = layout.content.x;
     let content_y = layout.content.y;
@@ -4131,6 +4170,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     active_floats,
                 },
                 measurer,
+                use_resolve_cache,
             ) {
                 local_float_bottom = local_float_bottom.max(flow_float.bottom);
                 active_floats.push(flow_float);

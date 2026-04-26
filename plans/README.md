@@ -7,6 +7,12 @@ investigation that led to the current implementation.
 
 ## Files
 
+### `active-text-flow-resolve-cache-plan.md`
+
+The current temporary active implementation plan. The code slice has been
+implemented and validated for `Multiline`, `WrappedRow`, `TextColumn`, and
+`Paragraph`; keep the file until deletion is explicitly confirmed.
+
 ### `layout-caching-roadmap.md`
 
 The active implementation roadmap.

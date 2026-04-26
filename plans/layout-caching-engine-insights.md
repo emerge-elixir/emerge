@@ -49,10 +49,10 @@ Already implemented:
 - gated layout-cache stats
 - origin-agnostic invalidation/work scheduling for paint-only refresh vs layout
 - targeted dirty propagation for layout-affecting animation samples
+- broader resolve-cache reuse for text-flow-heavy layouts
 
 Still open:
 
-- broader resolve-cache reuse for text-flow-heavy layouts
 - relayout/dependency boundaries
 - version-based cache keys
 - downstream refresh subtree skipping
