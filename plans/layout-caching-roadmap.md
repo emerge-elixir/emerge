@@ -25,6 +25,8 @@ work:
 - refresh decisions that distinguish skip, cached rebuild, refresh-only, and
   recompute from invalidation plus cached output availability
 - upward propagation for measure/resolve dirtiness
+- traversal dirtiness for dirty descendants below reusable measurement caches
+- first measure dependency boundary for fixed-size `El`/`None` parents
 - per-node intrinsic measurement cache
 - per-node subtree measurement cache
 - coordinate-invariant resolve cache
@@ -48,7 +50,9 @@ Relevant files:
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
-- upward dirty propagation does not yet stop at dependency/relayout boundaries
+- relayout/dependency boundaries currently cover only fixed-size `El`/`None`
+  parents; row/column, scrollable, nearby, and text-flow boundaries remain
+  conservative
 - cache keys still clone child/nearby identity lists
 - measure/resolve traversal still uses some id-facing compatibility helpers even though topology is ix-based
 - `refresh(tree)` does not yet skip clean subtrees
@@ -76,8 +80,9 @@ text_rich_50/layout_attr after_patch:    resolve_hits=4 resolve_misses=3 resolve
 Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
-layout caches enabled elsewhere. Relayout boundaries and cheaper cache keys
-remain future work.
+layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
+boundary is implemented; broader boundaries and cheaper cache keys remain future
+work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -197,36 +202,44 @@ Remaining text/layout-rich misses should now be investigated through relayout
 boundaries, key construction costs, nearby placement, or refresh-output reuse
 rather than blanket kind ineligibility.
 
-## Next slice 1: relayout/dependency boundaries
+## Completed slice: first relayout/dependency boundary
 
-Goal: stop upward dirty propagation when a parent does not depend on the changed
-child layout.
+Dirty propagation now distinguishes a node's own measurement dirtiness from
+measurement traversal needed by dirty descendants. This lets a parent keep its
+own measurement cache hot while still descending to update a dirty child.
 
-Borrowed idea: Flutter's `parentUsesSize`.
+Implemented shape:
 
-Potential dependency cases:
+- `NodeLayoutState` has `measure_descendant_dirty` in addition to
+  `measure_dirty`
+- measure invalidation from patches/runtime/animation marks the changed node
+  dirty, marks ancestors for traversal, and keeps resolve dirtiness conservative
+- structure invalidation remains fully conservative
+- `measure_element(...)` will not let a clean ancestor subtree cache hide dirty
+  descendants; it traverses first, then can reuse the ancestor's cached measured
+  frame when the ancestor itself stayed clean
+- first safe boundary: `El`/`None` parents with child-independent explicit width
+  and height (`Px` or `Minimum`/`Maximum` wrappers around child-independent
+  lengths)
+- content-sized `El`/`None`, row/column, text-flow, scrollable, and nearby cases
+  remain conservative until separately proven safe
 
-- parent depends on child intrinsic size
-- parent depends only on child resolved placement
-- parent does not depend on child layout, but child still needs paint/registry
-  refresh
-- nearby overlay depends on host geometry but should not necessarily dirty host
-  measurement
+Focused tests cover fixed-size `El` text changes, content-sized `El`
+conservatism, fixed-size `El` animation, traversal through a cached parent, and
+continued resolve alignment correctness.
 
-Implementation direction:
+Focused smoke after this slice:
 
-- record dependency information during measure/resolve
-- update dirty propagation to stop at safe boundaries
-- add counters for relayout-boundary stops
-- add tests where a child change does not dirty the root
+```text
+layout_matrix_50 warm_cache: resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+text_rich_50 warm_cache:    resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+layout_matrix_50/layout_attr after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=4 resolve_misses=3
+layout_matrix_50/text_content after_patch: subtree_measure_hits=2 subtree_measure_misses=3 resolve_hits=4 resolve_misses=3
+text_rich_50/layout_attr after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=4 resolve_misses=3
+text_rich_50/text_content after_patch: subtree_measure_hits=2 subtree_measure_misses=3 resolve_hits=4 resolve_misses=3
+```
 
-Acceptance criteria:
-
-- fewer root-level dirty cascades for isolated changes
-- cache correctness maintained for rows/columns/paragraph/nearby
-- relayout-boundary counters visible through stats
-
-## Next slice 2: versioned cache keys and ix-native traversal cleanup
+## Next slice 1: versioned cache keys and ix-native traversal cleanup
 
 Goal: reduce hot-path allocation/cloning in cache keys and make parent cache
 validation cheaper.
@@ -265,7 +278,7 @@ Acceptance criteria:
 - fewer repeated `NodeId -> NodeIx` lookups in measure/resolve hot paths where practical
 - cache hit behavior unchanged or improved
 
-## Next slice 3: refresh subtree skipping
+## Next slice 2: refresh subtree skipping
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
@@ -289,6 +302,21 @@ Acceptance criteria:
 - lower refresh time in steady-state / paint-only / registry-only cases
 - no event hit-test regressions
 - no stale scene output
+
+## Later slice: broaden relayout/dependency boundaries
+
+The first boundary is intentionally narrow. Future boundaries should be added
+one at a time with correctness tests for measured frames, resolved frames,
+scroll extents, nearby placement, and paragraph fragments.
+
+Candidates:
+
+- fixed-size `Row` / `Column` cases where parent measured size is independent of
+  the changed child
+- scrollable fixed-size containers where content extents change but parent
+  measured size does not
+- nearby overlays that should not dirty host measurement
+- text-flow containers once wrapping/floats/fragments are fully covered
 
 ## Later slice: viewport/repeater-aware caching
 

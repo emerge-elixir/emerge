@@ -50,10 +50,11 @@ Already implemented:
 - origin-agnostic invalidation/work scheduling for paint-only refresh vs layout
 - targeted dirty propagation for layout-affecting animation samples
 - broader resolve-cache reuse for text-flow-heavy layouts
+- first relayout/dependency boundary for fixed-size `El`/`None` parents
 
 Still open:
 
-- relayout/dependency boundaries
+- broader relayout/dependency boundaries
 - version-based cache keys
 - downstream refresh subtree skipping
 - viewport/repeater-aware cache preservation

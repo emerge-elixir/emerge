@@ -737,6 +737,7 @@ fn clone_as_ghost(
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,
+            measure_descendant_dirty: false,
             resolve_cache: None,
             resolve_dirty: true,
         },
