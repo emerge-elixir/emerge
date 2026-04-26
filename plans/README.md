@@ -7,13 +7,7 @@ investigation that led to the current implementation.
 
 ## Files
 
-### `active-nearby-relayout-boundary-plan.md`
-
-The current temporary active implementation plan. It targets nearby overlay
-mount/unmount work. The benchmark/test guard, measurement boundary, nearby
-resolve traversal, and detached reuse for reinserted nearby subtrees are
-implemented and locally validated; focused app smoke is still useful before
-deleting the temporary plan file.
+No temporary active plan is currently open.
 
 ### `layout-caching-roadmap.md`
 
