@@ -45,6 +45,11 @@ defmodule EmergeSkia.Transport.Native do
   end
 
   @impl true
+  def stats(renderer, command) do
+    Native.stats(renderer, command)
+  end
+
+  @impl true
   def set_input_mask(renderer, mask) do
     Native.set_input_mask(renderer, mask)
   end
