@@ -5216,6 +5216,11 @@ pub(crate) fn accumulate_subtree_rebuild(
     drain_deferred_subtrees(tree, acc, deferred);
 }
 
+#[doc(hidden)]
+pub fn build_registry_rebuild_for_benchmark(tree: &ElementTree) -> RegistryRebuildPayload {
+    build_registry_rebuild(tree)
+}
+
 pub(crate) fn build_registry_rebuild(tree: &ElementTree) -> RegistryRebuildPayload {
     let mut acc = RegistryBuildAcc::for_tree(tree);
 
