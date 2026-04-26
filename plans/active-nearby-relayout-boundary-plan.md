@@ -2,9 +2,11 @@
 
 Last updated: 2026-04-26.
 
-Status: planned. This is the next active slice after refresh subtree skipping.
-The goal is to make nearby overlay mount/unmount work proportional to the
-nearby subtree instead of dirtying broad host/ancestor layout paths.
+Status: partially implemented. The benchmark guard, nearby topology
+classification, and measurement boundary are implemented. Resolve traversal is
+safe but still conservative: ancestor resolve caches are not allowed to hide
+dirty nearby descendants, but broader work remains to avoid visiting clean
+siblings/ancestors in large trees.
 
 ## Motivation
 
@@ -88,7 +90,7 @@ Likely implementation direction:
 - keep render/registry damage conservative because paint order and event
   precedence do depend on nearby topology
 
-## Slice 1: benchmark and deterministic guard first
+## Slice 1: benchmark and deterministic guard first — done
 
 Do not change invalidation until the regression surface is captured.
 
@@ -150,7 +152,48 @@ nearby_code_show_50/nearby_slot_change after_patch:
   patch_then_layout median ~= 48.0 µs
 ```
 
-## Slice 2: classify nearby topology invalidation
+Post-implementation guard shape with the same command:
+
+```text
+nearby_code_hide_50/nearby_slot_change after_patch:
+  intrinsic misses=0 stores=0
+  subtree hits=14 misses=0 stores=0
+  resolve hits=11 misses=3 stores=3
+  layout_only median ~= 21.7 µs
+  patch_then_layout median ~= 28.7 µs  # short-run timing remained noisy
+
+nearby_code_show_50/nearby_slot_change after_patch:
+  intrinsic misses=3 stores=3
+  subtree hits=14 misses=4 stores=4
+  resolve hits=11 misses=7 stores=7
+  layout_only median ~= 26.4 µs
+  patch_then_layout median ~= 54.4 µs  # short-run timing remained noisy
+```
+
+Focused retained-layout smoke after implementation:
+
+```text
+layout_matrix_50/nearby_slot_change after_patch:
+  intrinsic misses=0 stores=0
+  subtree hits=5 misses=0 stores=0
+  resolve hits=5 misses=2 stores=2
+
+nearby_rich_50/nearby_slot_change after_patch:
+  intrinsic misses=0 stores=0
+  subtree hits=5 misses=0 stores=0
+  resolve hits=5 misses=2 stores=2
+
+text_rich_50/nearby_slot_change after_patch:
+  intrinsic misses=0 stores=0
+  subtree hits=5 misses=0 stores=0
+  resolve hits=5 misses=2 stores=2
+```
+
+The primary improvement in this slice is the counter shape: nearby hide no
+longer causes host/ancestor subtree-measure misses, and nearby show only stores
+measurement for the newly inserted nearby subtree.
+
+## Slice 2: classify nearby topology invalidation — done
 
 Tasks:
 
@@ -168,6 +211,18 @@ Tasks:
 - preserve ghost/exit-animation nearby behavior
 - keep source-agnostic scheduling: this is about dependency class, not hover
 
+Implemented shape:
+
+- `SetNearbyMounts` and `InsertNearbySubtree` now classify as
+  `TreeInvalidation::Resolve` instead of broad structure.
+- Removing a nearby-mounted subtree classifies as resolve; removing normal child
+  subtrees remains structure.
+- `set_nearby_ixs(...)` no longer calls broad `mark_measure_dirty_ix(host)`.
+  It marks nearby topology traversal dirtiness and render/registry refresh
+  damage instead.
+- Newly attached nearby roots are marked measure/resolve dirty locally, without
+  forcing host measurement dirtiness.
+
 Acceptance:
 
 - nearby mount changes no longer force host/ancestor measurement dirtiness when
@@ -176,7 +231,7 @@ Acceptance:
   visual ordering and event precedence
 - existing patch/ghost tests continue to pass
 
-## Slice 3: measure dependency key and traversal cleanup
+## Slice 3: measure dependency key and traversal cleanup — done
 
 Tasks:
 
@@ -200,6 +255,15 @@ struct MeasureTopologyDependencyKey {
 or reuse `TopologyDependencyKey` with a measurement-specific constructor that
 sets nearby fields only for cases that truly depend on nearby topology.
 
+Implemented shape:
+
+- subtree measurement cache keys now use a measurement-specific topology key that
+  includes normal child topology but ignores nearby topology
+- nearby topology changes mark host/ancestor measurement traversal dirtiness, not
+  host/ancestor measurement dirtiness
+- deterministic tests cover slot changes and inserted nearby subtrees preserving
+  host measured frames while reusing host/root measurement caches
+
 Acceptance:
 
 - adding/removing an escape-nearby overlay can traverse to the nearby subtree and
@@ -207,7 +271,7 @@ Acceptance:
 - unrelated siblings are not measured again
 - layout-cache counters show localized misses for the nearby path
 
-## Slice 4: resolve traversal boundary for nearby changes
+## Slice 4: resolve traversal boundary for nearby changes — partially done
 
 Tasks:
 
@@ -224,13 +288,27 @@ Tasks:
   - `InFront`
 - preserve scroll extents, transforms, clips, and paragraph fragments
 
+Implemented so far:
+
+- `NodeLayoutState` now has `resolve_descendant_dirty`
+- clean ancestor resolve-cache hits are blocked when a dirty nearby descendant
+  must be reached
+- resolve dirty state is cleared after successful resolve-cache hits/stores
+
+Remaining work:
+
+- avoid visiting clean siblings/ancestors in large trees when only nearby overlay
+  topology changed
+- add broader cached-vs-uncached resolved-frame tests for all nearby slots if the
+  resolve traversal is optimized further
+
 Acceptance:
 
 - cached and uncached resolved frames match for representative nearby trees
 - nearby overlay show/hide updates only affected placement/output
 - focus/event registry and render scene remain correct after resolve reuse
 
-## Slice 5: focused demo smoke and docs
+## Slice 5: focused demo smoke and docs — partially done
 
 Tasks:
 
@@ -239,7 +317,7 @@ Tasks:
 - update stable roadmap/insights with the boundary rules that are proven safe
 - delete this active plan only after confirmation
 
-Suggested validation:
+Validation run for the measurement-boundary implementation:
 
 ```bash
 cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check

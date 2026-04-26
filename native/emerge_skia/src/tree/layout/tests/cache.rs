@@ -1639,6 +1639,131 @@ fn test_text_patch_inside_fixed_size_el_stops_parent_measure_dirty_but_keeps_tra
 }
 
 #[test]
+fn test_nearby_slot_change_reuses_host_measure_cache() {
+    let mut tree = fixed_host_with_nearby_tree(true);
+    let root_id = tree.root_id().unwrap();
+    let host_id = tree.child_ids(&root_id)[0];
+    let nearby_id = tree.nearby_mounts_for(&host_id)[0].id;
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let host_measured = tree.get(&host_id).unwrap().layout.measured_frame;
+    tree.set_layout_cache_stats_enabled(true);
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetNearbyMounts {
+            host_id,
+            mounts: vec![NearbyMount {
+                slot: NearbySlot::Below,
+                id: nearby_id,
+            }],
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(
+        tree.get(&host_id).unwrap().layout.measured_frame,
+        host_measured
+    );
+    assert_eq!(stats.intrinsic_measure_misses, 0);
+    assert_eq!(stats.subtree_measure_misses, 0);
+    assert!(stats.subtree_measure_hits >= 2);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+}
+
+#[test]
+fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
+    let mut tree = fixed_host_with_nearby_tree(false);
+    let root_id = tree.root_id().unwrap();
+    let host_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let host_measured = tree.get(&host_id).unwrap().layout.measured_frame;
+    let sibling_id = tree.child_ids(&root_id)[1];
+    let sibling_frame = tree.get(&sibling_id).unwrap().layout.frame;
+    tree.set_layout_cache_stats_enabled(true);
+
+    let mut subtree = ElementTree::new();
+    let nearby = make_element(
+        "inserted_nearby",
+        ElementKind::El,
+        fixed_box_attrs(120.0, 40.0),
+    );
+    let nearby_id = nearby.id;
+    let text = make_element(
+        "inserted_nearby_text",
+        ElementKind::Text,
+        text_attrs("Code"),
+    );
+    let text_id = text.id;
+    subtree.set_root_id(nearby_id);
+    subtree.insert(nearby);
+    subtree.insert(text);
+    subtree.set_children(&nearby_id, vec![text_id]).unwrap();
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::InsertNearbySubtree {
+            host_id,
+            index: 0,
+            slot: NearbySlot::Below,
+            subtree,
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+    assert!(tree.get(&nearby_id).unwrap().layout.measure_dirty);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(
+        tree.get(&host_id).unwrap().layout.measured_frame,
+        host_measured
+    );
+    assert_eq!(tree.get(&sibling_id).unwrap().layout.frame, sibling_frame);
+    assert!(stats.subtree_measure_hits >= 2);
+    assert!(stats.subtree_measure_misses <= 2);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+}
+
+#[test]
 fn test_text_patch_inside_content_sized_el_still_dirties_parent_measurement() {
     let mut tree = content_el_text_tree("Hi");
     let root_id = tree.root_id().unwrap();
@@ -2193,6 +2318,62 @@ fn text_child_tree(content: &str) -> ElementTree {
     tree.insert(root);
     tree.insert(text);
     tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(width));
+    attrs.height = Some(Length::Px(height));
+    attrs
+}
+
+fn fixed_host_with_nearby_tree(include_nearby: bool) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        "nearby_boundary_root",
+        ElementKind::Column,
+        Attrs::default(),
+    );
+    let root_id = root.id;
+    let host = make_element(
+        "nearby_boundary_host",
+        ElementKind::El,
+        fixed_box_attrs(100.0, 40.0),
+    );
+    let host_id = host.id;
+    let sibling = make_element(
+        "nearby_boundary_sibling",
+        ElementKind::Text,
+        text_attrs("Sibling"),
+    );
+    let sibling_id = sibling.id;
+    let nearby = make_element(
+        "nearby_boundary_existing_nearby",
+        ElementKind::El,
+        fixed_box_attrs(80.0, 24.0),
+    );
+    let nearby_id = nearby.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(host);
+    tree.insert(sibling);
+    tree.insert(nearby);
+    tree.set_children(&root_id, vec![host_id, sibling_id])
+        .unwrap();
+
+    if include_nearby {
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Above,
+                id: nearby_id,
+            }],
+        )
+        .unwrap();
+    }
+
     tree
 }
 
