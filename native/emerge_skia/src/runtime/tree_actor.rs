@@ -19,10 +19,13 @@ use crate::{
     tree::{
         animation::AnimationRuntime,
         element::ElementTree,
-        invalidation::{RefreshDecision, TreeInvalidation, decide_refresh_action},
+        invalidation::{
+            RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
+        },
         layout::{
-            LayoutOutput, layout_and_refresh_default, layout_and_refresh_default_with_animation,
-            refresh,
+            FrameAttrsPreparation, LayoutOutput, layout_and_refresh_default,
+            layout_and_refresh_prepared_default, prepare_frame_attrs_for_update,
+            prepared_root_has_frame, refresh, refresh_prepared_default,
         },
     },
 };
@@ -79,29 +82,16 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
         let mut cached_rebuild: Option<RegistryRebuildPayload> = None;
         let mut animation_runtime = AnimationRuntime::default();
         let mut latest_animation_sample_time: Option<Instant> = None;
-        let mut pending_msg: Option<TreeMsg> = None;
 
         loop {
-            let msg = match pending_msg.take() {
-                Some(msg) => msg,
-                None => match tree_rx.recv() {
-                    Ok(msg) => msg,
-                    Err(_) => return,
-                },
+            let msg = match tree_rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => return,
             };
             let mut messages = Vec::new();
             push_tree_message_flat(msg, &mut messages);
-            let animation_only_batch = batch_is_animation_only(&messages);
             while let Ok(next) = tree_rx.try_recv() {
-                let mut next_messages = Vec::new();
-                push_tree_message_flat(next, &mut next_messages);
-
-                if batch_is_animation_only(&next_messages) != animation_only_batch {
-                    pending_msg = Some(TreeMsg::Batch(next_messages));
-                    break;
-                }
-
-                messages.extend(next_messages);
+                push_tree_message_flat(next, &mut messages);
             }
 
             let mut scroll_acc = std::collections::HashMap::new();
@@ -116,6 +106,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             let mut invalidation = TreeInvalidation::None;
             let mut registry_requested = false;
             let mut animation_sample_time = latest_animation_sample_time;
+            let mut animation_sample_requested = false;
 
             for message in messages.iter().cloned() {
                 match message {
@@ -244,7 +235,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             predicted_next_present_at
                         );
                         animation_sample_time = Some(predicted_next_present_at.max(presented_at));
-                        invalidation.add(TreeInvalidation::Measure);
+                        animation_sample_requested = true;
                     }
                     TreeMsg::RebuildRegistry => {
                         registry_requested = true;
@@ -287,138 +278,218 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 invalidation.add(tree.set_focused_active(&id, active));
             }
 
-            match decide_refresh_action(
-                invalidation,
+            let update_started_at = Instant::now();
+            let mut plan = FrameUpdatePlan::new(invalidation);
+            let should_sync_animations = animation_sample_requested
+                || !animation_runtime.is_empty()
+                || plan.invalidation.requires_recompute();
+            let sample_time =
+                should_sync_animations.then(|| animation_sample_time.unwrap_or_else(Instant::now));
+            let had_animation_runtime = !animation_runtime.is_empty();
+
+            if let Some(sample_time) = sample_time {
+                latest_animation_sample_time = Some(sample_time);
+                crate::debug_trace::hover_trace!(
+                    "tree_plan",
+                    "sample_time={:?} cached_rebuild={} invalidation={:?} registry_requested={}",
+                    sample_time,
+                    cached_rebuild.is_some(),
+                    plan.invalidation,
+                    registry_requested
+                );
+                animation_runtime.sync_with_tree(&tree, sample_time);
+                if animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time)) {
+                    plan.invalidation.add(TreeInvalidation::Structure);
+                }
+            }
+
+            let should_prepare_frame = plan.invalidation.is_dirty()
+                || animation_sample_requested
+                || !animation_runtime.is_empty();
+
+            if should_prepare_frame {
+                tree.set_layout_cache_stats_enabled(
+                    stats
+                        .as_ref()
+                        .is_some_and(|stats| stats.layout_cache_enabled()),
+                );
+                let preparation = prepare_frame_attrs_for_update(
+                    &mut tree,
+                    scale,
+                    (!animation_runtime.is_empty()).then_some(&animation_runtime),
+                    sample_time,
+                );
+                let dynamic_invalidation = preparation.animation_result.invalidation;
+                plan.animations_active = preparation.animation_result.active;
+                plan.invalidation.add(dynamic_invalidation);
+
+                if animation_sample_requested
+                    && had_animation_runtime
+                    && !plan.animations_active
+                    && dynamic_invalidation.is_none()
+                {
+                    plan.invalidation.add(TreeInvalidation::Paint);
+                }
+
+                plan.preparation = Some(preparation);
+            }
+
+            plan.action = decide_refresh_action(
+                plan.invalidation,
                 registry_requested,
-                cached_rebuild.is_some(),
-                !animation_runtime.is_empty(),
-            ) {
+                RefreshAvailability {
+                    has_cached_rebuild: cached_rebuild.is_some(),
+                    has_root_frame: plan.preparation.map_or_else(
+                        || tree_has_root_frame(&tree),
+                        |preparation| prepared_root_has_frame(&tree, preparation),
+                    ),
+                },
+            );
+
+            match plan.action {
                 RefreshDecision::Skip => {
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
+                    if animation_runtime.is_empty() || !plan.animations_active {
+                        latest_animation_sample_time = None;
                     }
+                    record_patch_process_stats(stats.as_ref(), patch_processing_started_ats);
                     continue;
                 }
                 RefreshDecision::UseCachedRebuild => {
                     if let Some(rebuild) = cached_rebuild.clone() {
                         send_registry_update(&event_tx, rebuild, log_input);
                     }
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
+                    if animation_runtime.is_empty() || !plan.animations_active {
+                        latest_animation_sample_time = None;
                     }
+                    record_patch_process_stats(stats.as_ref(), patch_processing_started_ats);
                     continue;
                 }
                 RefreshDecision::RefreshOnly => {
                     assets::ensure_tree_sources(&tree);
-                    let refresh_started_at = Instant::now();
-                    let output = refresh(&mut tree);
-                    if let Some(stats) = stats.as_ref() {
-                        stats.record_refresh(refresh_started_at.elapsed());
-                    }
-
-                    publish_layout_output(
-                        &event_tx,
-                        &render_sender,
-                        &render_counter,
-                        &window_wake,
-                        &mut cached_rebuild,
-                        output,
-                        log_input,
-                    );
-
-                    if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
-                    }
-                }
-                RefreshDecision::Recompute => {
-                    assets::ensure_tree_sources(&tree);
-
-                    let constraint = crate::tree::layout::Constraint::new(width, height);
-                    let sample_time = animation_sample_time.unwrap_or_else(Instant::now);
-                    latest_animation_sample_time = Some(sample_time);
-                    crate::debug_trace::hover_trace!(
-                        "tree_recompute",
-                        "sample_time={:?} cached_rebuild={} invalidation={:?} registry_requested={}",
-                        sample_time,
-                        cached_rebuild.is_some(),
-                        invalidation,
-                        registry_requested
-                    );
-                    animation_runtime.sync_with_tree(&tree, sample_time);
-                    let _ =
-                        animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
-                    tree.set_layout_cache_stats_enabled(
-                        stats
-                            .as_ref()
-                            .is_some_and(|stats| stats.layout_cache_enabled()),
-                    );
-                    let layout_started_at = Instant::now();
-                    let output = if animation_runtime.is_empty() {
-                        layout_and_refresh_default(&mut tree, constraint, scale)
+                    let update = if let Some(preparation) = plan.preparation {
+                        refresh_prepared_default(&mut tree, preparation)
                     } else {
-                        layout_and_refresh_default_with_animation(
-                            &mut tree,
-                            constraint,
-                            scale,
-                            &animation_runtime,
-                            sample_time,
-                        )
+                        tree.set_layout_cache_stats_enabled(
+                            stats
+                                .as_ref()
+                                .is_some_and(|stats| stats.layout_cache_enabled()),
+                        );
+                        tree.reset_layout_cache_stats();
+                        let output = refresh(&mut tree);
+                        crate::tree::layout::LayoutUpdateOutput {
+                            output,
+                            layout_performed: false,
+                        }
                     };
+
                     if let Some(stats) = stats.as_ref() {
-                        stats.record_layout(layout_started_at.elapsed());
-                        stats.record_layout_cache(tree.layout_cache_stats());
+                        stats.record_refresh(update_started_at.elapsed());
                     }
-                    let animations_active = output.animations_active;
+
+                    let animations_active = update.output.animations_active;
                     publish_layout_output(
                         &event_tx,
                         &render_sender,
                         &render_counter,
                         &window_wake,
                         &mut cached_rebuild,
-                        output,
+                        update.output,
                         log_input,
                     );
 
-                    #[cfg(feature = "hover-trace")]
-                    {
-                        for (id, x, y, w, h, move_x) in trace_element_snapshots(&tree) {
-                            crate::debug_trace::hover_trace!(
-                                "tree_snapshot",
-                                "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
-                                id.0,
-                                move_x.unwrap_or(0.0),
-                                x + move_x.unwrap_or(0.0) as f32
-                            );
-                        }
-                    }
+                    trace_tree_snapshots(&tree);
 
                     if animation_runtime.is_empty() || !animations_active {
                         latest_animation_sample_time = None;
                     }
 
+                    record_patch_process_stats(stats.as_ref(), patch_processing_started_ats);
+                }
+                RefreshDecision::Recompute => {
+                    assets::ensure_tree_sources(&tree);
+
+                    let constraint = crate::tree::layout::Constraint::new(width, height);
+                    let update = if let Some(preparation) = plan.preparation {
+                        layout_and_refresh_prepared_default(&mut tree, constraint, preparation)
+                    } else {
+                        tree.set_layout_cache_stats_enabled(
+                            stats
+                                .as_ref()
+                                .is_some_and(|stats| stats.layout_cache_enabled()),
+                        );
+                        let output = layout_and_refresh_default(&mut tree, constraint, scale);
+                        crate::tree::layout::LayoutUpdateOutput {
+                            output,
+                            layout_performed: true,
+                        }
+                    };
+
                     if let Some(stats) = stats.as_ref() {
-                        patch_processing_started_ats
-                            .into_iter()
-                            .for_each(|started_at| {
-                                stats.record_patch_tree_process(started_at.elapsed())
-                            });
+                        if update.layout_performed {
+                            stats.record_layout(update_started_at.elapsed());
+                            stats.record_layout_cache(tree.layout_cache_stats());
+                        } else {
+                            stats.record_refresh(update_started_at.elapsed());
+                        }
                     }
+                    let animations_active = update.output.animations_active;
+                    publish_layout_output(
+                        &event_tx,
+                        &render_sender,
+                        &render_counter,
+                        &window_wake,
+                        &mut cached_rebuild,
+                        update.output,
+                        log_input,
+                    );
+
+                    trace_tree_snapshots(&tree);
+
+                    if animation_runtime.is_empty() || !animations_active {
+                        latest_animation_sample_time = None;
+                    }
+
+                    record_patch_process_stats(stats.as_ref(), patch_processing_started_ats);
                 }
             }
         }
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FrameUpdatePlan {
+    invalidation: TreeInvalidation,
+    animations_active: bool,
+    action: RefreshDecision,
+    preparation: Option<FrameAttrsPreparation>,
+}
+
+impl FrameUpdatePlan {
+    fn new(invalidation: TreeInvalidation) -> Self {
+        Self {
+            invalidation,
+            animations_active: false,
+            action: RefreshDecision::Skip,
+            preparation: None,
+        }
+    }
+}
+
+fn tree_has_root_frame(tree: &ElementTree) -> bool {
+    tree.root_id()
+        .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+        .is_some()
+}
+
+fn record_patch_process_stats(
+    stats: Option<&Arc<RendererStatsCollector>>,
+    patch_processing_started_ats: Vec<Instant>,
+) {
+    if let Some(stats) = stats {
+        patch_processing_started_ats
+            .into_iter()
+            .for_each(|started_at| stats.record_patch_tree_process(started_at.elapsed()));
+    }
 }
 
 pub(crate) fn send_registry_update(
@@ -475,13 +546,21 @@ pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
     }
 }
 
-fn is_animation_pulse(msg: &TreeMsg) -> bool {
-    matches!(msg, TreeMsg::AnimationPulse { .. })
+#[cfg(feature = "hover-trace")]
+fn trace_tree_snapshots(tree: &ElementTree) {
+    for (id, x, y, w, h, move_x) in trace_element_snapshots(tree) {
+        crate::debug_trace::hover_trace!(
+            "tree_snapshot",
+            "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
+            id.0,
+            move_x.unwrap_or(0.0),
+            x + move_x.unwrap_or(0.0) as f32
+        );
+    }
 }
 
-fn batch_is_animation_only(messages: &[TreeMsg]) -> bool {
-    !messages.is_empty() && messages.iter().all(is_animation_pulse)
-}
+#[cfg(not(feature = "hover-trace"))]
+fn trace_tree_snapshots(_tree: &ElementTree) {}
 
 #[cfg(feature = "hover-trace")]
 fn trace_element_snapshots(tree: &ElementTree) -> Vec<(NodeId, f32, f32, f32, f32, Option<f64>)> {

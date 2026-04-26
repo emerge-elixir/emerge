@@ -19,6 +19,12 @@ pub enum RefreshDecision {
     Recompute,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefreshAvailability {
+    pub has_cached_rebuild: bool,
+    pub has_root_frame: bool,
+}
+
 impl TreeInvalidation {
     pub fn add(&mut self, other: Self) {
         *self = self.join(other);
@@ -60,19 +66,24 @@ impl TreeInvalidation {
 pub fn decide_refresh_action(
     invalidation: TreeInvalidation,
     registry_requested: bool,
-    has_cached_rebuild: bool,
-    has_active_animations: bool,
+    availability: RefreshAvailability,
 ) -> RefreshDecision {
-    if invalidation.requires_recompute()
-        || (invalidation.can_refresh_only() && has_active_animations)
-    {
+    if invalidation.requires_recompute() {
         RefreshDecision::Recompute
     } else if invalidation.can_refresh_only() {
-        RefreshDecision::RefreshOnly
-    } else if registry_requested && has_cached_rebuild {
+        if availability.has_root_frame {
+            RefreshDecision::RefreshOnly
+        } else {
+            RefreshDecision::Recompute
+        }
+    } else if registry_requested && availability.has_cached_rebuild {
         RefreshDecision::UseCachedRebuild
     } else if registry_requested {
-        RefreshDecision::Recompute
+        if availability.has_root_frame {
+            RefreshDecision::RefreshOnly
+        } else {
+            RefreshDecision::Recompute
+        }
     } else {
         RefreshDecision::Skip
     }
@@ -285,17 +296,31 @@ mod tests {
     }
 
     #[test]
-    fn paint_invalidation_uses_refresh_only_without_active_animations() {
+    fn paint_invalidation_uses_refresh_only_when_geometry_exists() {
         assert_eq!(
-            decide_refresh_action(TreeInvalidation::Paint, false, false, false),
+            decide_refresh_action(
+                TreeInvalidation::Paint,
+                false,
+                RefreshAvailability {
+                    has_cached_rebuild: false,
+                    has_root_frame: true,
+                },
+            ),
             RefreshDecision::RefreshOnly
         );
     }
 
     #[test]
-    fn paint_invalidation_recomputes_with_active_animations() {
+    fn paint_invalidation_recomputes_without_geometry() {
         assert_eq!(
-            decide_refresh_action(TreeInvalidation::Paint, false, false, true),
+            decide_refresh_action(
+                TreeInvalidation::Paint,
+                false,
+                RefreshAvailability {
+                    has_cached_rebuild: false,
+                    has_root_frame: false,
+                },
+            ),
             RefreshDecision::Recompute
         );
     }
@@ -303,15 +328,44 @@ mod tests {
     #[test]
     fn registry_request_reuses_cached_rebuild_without_invalidation() {
         assert_eq!(
-            decide_refresh_action(TreeInvalidation::None, true, true, false),
+            decide_refresh_action(
+                TreeInvalidation::None,
+                true,
+                RefreshAvailability {
+                    has_cached_rebuild: true,
+                    has_root_frame: false,
+                },
+            ),
             RefreshDecision::UseCachedRebuild
         );
     }
 
     #[test]
-    fn registry_request_recomputes_without_cached_rebuild() {
+    fn registry_request_refreshes_without_cached_rebuild_when_geometry_exists() {
         assert_eq!(
-            decide_refresh_action(TreeInvalidation::None, true, false, false),
+            decide_refresh_action(
+                TreeInvalidation::None,
+                true,
+                RefreshAvailability {
+                    has_cached_rebuild: false,
+                    has_root_frame: true,
+                },
+            ),
+            RefreshDecision::RefreshOnly
+        );
+    }
+
+    #[test]
+    fn registry_request_recomputes_without_cached_rebuild_or_geometry() {
+        assert_eq!(
+            decide_refresh_action(
+                TreeInvalidation::None,
+                true,
+                RefreshAvailability {
+                    has_cached_rebuild: false,
+                    has_root_frame: false,
+                },
+            ),
             RefreshDecision::Recompute
         );
     }

@@ -32,7 +32,9 @@ mod app {
             animation::AnimationRuntime,
             deserialize,
             element::ElementTree,
-            invalidation::{RefreshDecision, TreeInvalidation, decide_refresh_action},
+            invalidation::{
+                RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
+            },
             layout::{
                 Constraint, LayoutOutput, layout_and_refresh_default,
                 layout_and_refresh_default_with_animation, refresh,
@@ -2318,20 +2320,24 @@ mod app {
         session: &mut HostSession,
         invalidation: TreeInvalidation,
     ) -> Result<(), String> {
-        match decide_refresh_action(
-            invalidation,
-            false,
-            false,
-            session_has_active_animations(session),
-        ) {
+        match decide_refresh_action(invalidation, false, session_refresh_availability(session)) {
             RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => Ok(()),
             RefreshDecision::RefreshOnly => refresh_session(session),
             RefreshDecision::Recompute => rerender_session(session),
         }
     }
 
-    fn session_has_active_animations(session: &HostSession) -> bool {
-        session.render_state.animate || !session.animation_runtime.is_empty()
+    fn session_refresh_availability(session: &HostSession) -> RefreshAvailability {
+        RefreshAvailability {
+            has_cached_rebuild: false,
+            has_root_frame: tree_has_root_frame(&session.tree),
+        }
+    }
+
+    fn tree_has_root_frame(tree: &ElementTree) -> bool {
+        tree.root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some()
     }
 
     fn install_layout_output(session: &mut HostSession, output: LayoutOutput) {
@@ -2368,12 +2374,8 @@ mod app {
                 return Ok(());
             }
 
-            match decide_refresh_action(
-                invalidation,
-                false,
-                false,
-                session_has_active_animations(session),
-            ) {
+            match decide_refresh_action(invalidation, false, session_refresh_availability(session))
+            {
                 RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => return Ok(()),
                 RefreshDecision::RefreshOnly => {}
                 RefreshDecision::Recompute => return rerender_session(session),
@@ -2446,12 +2448,7 @@ mod app {
             }
 
             if matches!(
-                decide_refresh_action(
-                    invalidation,
-                    false,
-                    false,
-                    session_has_active_animations(session),
-                ),
+                decide_refresh_action(invalidation, false, session_refresh_availability(session)),
                 RefreshDecision::RefreshOnly
             ) {
                 return refresh_session(session);
