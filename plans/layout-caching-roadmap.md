@@ -325,8 +325,9 @@ Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
 instead of dirtying broad host/ancestor measurement and resolve paths.
 
 Status: benchmark guard, invalidation classification, subtree-measure boundary,
-resolve traversal through dirty nearby descendants, and detached reuse for
-reinserted nearby subtrees are implemented and locally validated.
+resolve traversal through dirty nearby descendants, detached reuse for
+reinserted nearby subtrees, and refresh-only classification for warmed
+non-registry nearby toggles are implemented and locally validated.
 
 Observed motivation from the Borders page hover/unhover code-block case:
 
@@ -358,8 +359,11 @@ Implemented direction:
   snapshot keyed by structural signature/raw attrs/runtime state/scale, so
   repeated `none()`/code-block hover toggles can restore layout caches even when
   the reinserted subtree has fresh node ids
-- render/registry damage remains conservative for paint ordering and event
-  precedence
+- non-registry nearby remove/restored-show changes classify as paint/render
+  damage, allowing refresh-only work selection and cached full-registry reuse
+- registry damage remains conservative when the changed nearby subtree or slot
+  can affect event listeners, text input, scrollbars, focus, or front-nearby
+  blockers
 
 ## Later slice: broaden other relayout/dependency boundaries
 
