@@ -54,12 +54,13 @@ Already implemented:
 - compact child/nearby topology dependency versions in layout cache keys
 - refresh-specific render/registry damage tracking with cached full-registry
   reuse when registry damage is clean
+- retained render subtree caching/skipping for clean render subtrees
 
 Still open:
 
 - broader relayout/dependency boundaries
 - further version/key work for attrs or measured/resolve dependency generations if profiles justify it
-- render subtree and registry chunk skipping
+- registry chunk skipping
 - viewport/repeater-aware cache preservation
 
 ## Engine findings

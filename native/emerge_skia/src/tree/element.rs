@@ -8,6 +8,7 @@ use super::attrs::{
     Padding, ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
+use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -220,6 +221,42 @@ pub struct TopologyDependencyKey {
     pub nearby_version: u64,
     pub child_count: usize,
     pub nearby_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderTopologyDependencyKey {
+    pub children_version: u64,
+    pub paint_children_version: u64,
+    pub nearby_version: u64,
+    pub child_count: usize,
+    pub paint_child_count: usize,
+    pub nearby_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderSubtreeKey {
+    pub kind: ElementKind,
+    pub attrs: String,
+    pub runtime: String,
+    pub frame: Option<Frame>,
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+    pub scroll_x_max: f32,
+    pub scroll_y_max: f32,
+    pub inherited: String,
+    pub scene_context: String,
+    pub render_context: String,
+    pub topology: RenderTopologyDependencyKey,
+    pub paragraph_fragments: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderSubtreeCache {
+    pub key: RenderSubtreeKey,
+    pub local: Vec<RenderNode>,
+    pub escapes: Vec<RenderNode>,
+    pub text_input_focused: bool,
+    pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -565,12 +602,13 @@ pub struct NodeRuntime {
     pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct NodeRefreshState {
     pub render_dirty: bool,
     pub render_descendant_dirty: bool,
     pub registry_dirty: bool,
     pub registry_descendant_dirty: bool,
+    pub render_cache: Option<RenderSubtreeCache>,
 }
 
 impl Default for NodeRefreshState {
@@ -580,6 +618,7 @@ impl Default for NodeRefreshState {
             render_descendant_dirty: false,
             registry_dirty: true,
             registry_descendant_dirty: false,
+            render_cache: None,
         }
     }
 }
@@ -773,6 +812,29 @@ impl Element {
             paint_children: Vec::new(),
             #[cfg(test)]
             nearby: NearbyMounts::default(),
+        }
+    }
+
+    pub(crate) fn render_snapshot(&self) -> Self {
+        Self {
+            id: self.id,
+            spec: self.spec.clone(),
+            runtime: self.runtime.clone(),
+            layout: self.layout.clone(),
+            refresh: NodeRefreshState {
+                render_dirty: self.refresh.render_dirty,
+                render_descendant_dirty: self.refresh.render_descendant_dirty,
+                registry_dirty: self.refresh.registry_dirty,
+                registry_descendant_dirty: self.refresh.registry_descendant_dirty,
+                render_cache: None,
+            },
+            lifecycle: self.lifecycle.clone(),
+            #[cfg(test)]
+            children: self.children.clone(),
+            #[cfg(test)]
+            paint_children: self.paint_children.clone(),
+            #[cfg(test)]
+            nearby: self.nearby.clone(),
         }
     }
 
@@ -2113,7 +2175,7 @@ impl ElementTree {
             .map(|element| element.layout.topology_versions)
             .unwrap_or_default();
 
-        let (child_count, nearby_count) = self.topology_dependency_counts(ix);
+        let (child_count, _, nearby_count) = self.topology_dependency_counts(ix);
 
         TopologyDependencyKey {
             children_version: versions.children,
@@ -2123,14 +2185,39 @@ impl ElementTree {
         }
     }
 
-    fn topology_dependency_counts(&self, ix: NodeIx) -> (usize, usize) {
+    pub fn render_topology_dependency_key_ix(&self, ix: NodeIx) -> RenderTopologyDependencyKey {
+        self.ensure_topology();
+
+        let versions = self
+            .get_ix(ix)
+            .map(|element| element.layout.topology_versions)
+            .unwrap_or_default();
+        let (child_count, paint_child_count, nearby_count) = self.topology_dependency_counts(ix);
+
+        RenderTopologyDependencyKey {
+            children_version: versions.children,
+            paint_children_version: versions.paint_children,
+            nearby_version: versions.nearby,
+            child_count,
+            paint_child_count,
+            nearby_count,
+        }
+    }
+
+    fn topology_dependency_counts(&self, ix: NodeIx) -> (usize, usize, usize) {
         #[cfg(test)]
         {
             let topology = self.topology.borrow();
             topology
                 .nodes
                 .get(ix)
-                .map(|node| (node.children.len(), node.nearby.len()))
+                .map(|node| {
+                    (
+                        node.children.len(),
+                        node.paint_children.len(),
+                        node.nearby.len(),
+                    )
+                })
                 .unwrap_or_default()
         }
 
@@ -2139,7 +2226,13 @@ impl ElementTree {
             self.topology
                 .nodes
                 .get(ix)
-                .map(|node| (node.children.len(), node.nearby.len()))
+                .map(|node| {
+                    (
+                        node.children.len(),
+                        node.paint_children.len(),
+                        node.nearby.len(),
+                    )
+                })
                 .unwrap_or_default()
         }
     }
