@@ -34,7 +34,7 @@ defmodule Emerge.Bench.NativeRetainedLayout do
   end
 
   def mutation_inputs(inputs) do
-    for {label, input} <- inputs, mutation <- @retained_mutations, into: %{} do
+    for {label, input} <- inputs, mutation <- retained_mutations(), into: %{} do
       {"#{label}/#{mutation}", Map.put(input, :mutation, mutation)}
     end
   end
@@ -71,6 +71,23 @@ defmodule Emerge.Bench.NativeRetainedLayout do
     case System.get_env("EMERGE_BENCH_SCENARIOS") do
       nil -> @default_scenarios
       _value -> Scenarios.scenario_ids()
+    end
+  end
+
+  defp retained_mutations do
+    case System.get_env("EMERGE_BENCH_MUTATIONS") do
+      nil ->
+        @retained_mutations
+
+      value ->
+        requested = String.split(value, ",", trim: true)
+        selected = Enum.filter(@retained_mutations, &(Atom.to_string(&1) in requested))
+
+        if selected == [] do
+          raise "no retained benchmark mutations matched EMERGE_BENCH_MUTATIONS=#{value}"
+        end
+
+        selected
     end
   end
 end
