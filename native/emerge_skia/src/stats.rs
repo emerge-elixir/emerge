@@ -385,58 +385,39 @@ impl RendererStatsCollector {
 pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSnapshot) -> String {
     format!(
         concat!(
-            "backend={} ",
-            "window_ms={} ",
-            "fps={:.1} ",
-            "display_fps={:.1} ",
-            "display_frame_ms={:.3} ",
-            "frame_count={} ",
-            "render_ms_avg={:.3} render_ms_min={:.3} render_ms_max={:.3} render_ms_count={} ",
-            "present_submit_ms_avg={:.3} present_submit_ms_min={:.3} ",
-            "present_submit_ms_max={:.3} present_submit_ms_count={} ",
-            "layout_ms_avg={:.3} layout_ms_min={:.3} layout_ms_max={:.3} layout_ms_count={} ",
-            "refresh_ms_avg={:.3} refresh_ms_min={:.3} refresh_ms_max={:.3} refresh_ms_count={} ",
-            "event_resolve_ms_avg={:.3} event_resolve_ms_min={:.3} ",
-            "event_resolve_ms_max={:.3} event_resolve_ms_count={} ",
-            "patch_tree_actor_process_ms_avg={:.3} patch_tree_actor_process_ms_min={:.3} ",
-            "patch_tree_actor_process_ms_max={:.3} patch_tree_actor_process_ms_count={} ",
-            "layout_cache_intrinsic_measure_hits={} layout_cache_intrinsic_measure_misses={} ",
-            "layout_cache_intrinsic_measure_stores={} ",
-            "layout_cache_subtree_measure_hits={} layout_cache_subtree_measure_misses={} ",
-            "layout_cache_subtree_measure_stores={} ",
-            "layout_cache_resolve_hits={} layout_cache_resolve_misses={} ",
-            "layout_cache_resolve_stores={}"
+            "renderer stats\n",
+            "  window\n",
+            "    backend: {}\n",
+            "    duration: {} ms\n",
+            "    frames: {}\n",
+            "    fps: {:.1}\n",
+            "    display: {:.1} fps ({:.3} ms/frame)\n",
+            "\n",
+            "  timings\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "\n",
+            "  layout cache\n",
+            "    intrinsic measure: hits={} misses={} stores={}\n",
+            "    subtree measure:   hits={} misses={} stores={}\n",
+            "    resolve:           hits={} misses={} stores={}"
         ),
         backend_label,
         snapshot.window.as_millis(),
+        snapshot.frame_count,
         snapshot.fps,
         snapshot.display_fps,
         snapshot.display_frame_ms,
-        snapshot.frame_count,
-        snapshot.render.avg_ms,
-        snapshot.render.min_ms,
-        snapshot.render.max_ms,
-        snapshot.render.count,
-        snapshot.present_submit.avg_ms,
-        snapshot.present_submit.min_ms,
-        snapshot.present_submit.max_ms,
-        snapshot.present_submit.count,
-        snapshot.layout.avg_ms,
-        snapshot.layout.min_ms,
-        snapshot.layout.max_ms,
-        snapshot.layout.count,
-        snapshot.refresh.avg_ms,
-        snapshot.refresh.min_ms,
-        snapshot.refresh.max_ms,
-        snapshot.refresh.count,
-        snapshot.event_resolve.avg_ms,
-        snapshot.event_resolve.min_ms,
-        snapshot.event_resolve.max_ms,
-        snapshot.event_resolve.count,
-        snapshot.patch_tree_process.avg_ms,
-        snapshot.patch_tree_process.min_ms,
-        snapshot.patch_tree_process.max_ms,
-        snapshot.patch_tree_process.count,
+        format_duration_stat_line("render", &snapshot.render),
+        format_duration_stat_line("present submit", &snapshot.present_submit),
+        format_duration_stat_line("layout", &snapshot.layout),
+        format_duration_stat_line("refresh", &snapshot.refresh),
+        format_duration_stat_line("event resolve", &snapshot.event_resolve),
+        format_duration_stat_line("patch tree actor", &snapshot.patch_tree_process),
         snapshot.layout_cache.intrinsic_measure_hits,
         snapshot.layout_cache.intrinsic_measure_misses,
         snapshot.layout_cache.intrinsic_measure_stores,
@@ -447,6 +428,17 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout_cache.resolve_misses,
         snapshot.layout_cache.resolve_stores,
     )
+}
+
+fn format_duration_stat_line(label: &str, stats: &DurationStatsSnapshot) -> String {
+    if stats.count == 0 {
+        format!("    {label}: no samples (count=0)")
+    } else {
+        format!(
+            "    {label}: avg={:.3} ms min={:.3} ms max={:.3} ms count={}",
+            stats.avg_ms, stats.min_ms, stats.max_ms, stats.count
+        )
+    }
 }
 
 #[cfg(test)]
@@ -529,26 +521,22 @@ mod tests {
 
         let message = format_renderer_stats_log("wayland", &stats.snapshot());
 
-        assert!(message.contains("backend=wayland"));
-        assert!(message.contains("fps="));
-        assert!(message.contains("display_fps="));
-        assert!(message.contains("display_frame_ms="));
-        assert!(message.contains("frame_count=1"));
-        assert!(message.contains("render_ms_avg="));
-        assert!(message.contains("render_ms_count=1"));
-        assert!(message.contains("present_submit_ms_avg="));
-        assert!(message.contains("present_submit_ms_count=1"));
-        assert!(message.contains("layout_ms_avg="));
-        assert!(message.contains("layout_ms_min="));
-        assert!(message.contains("layout_ms_max="));
-        assert!(message.contains("layout_ms_count=1"));
-        assert!(message.contains("refresh_ms_avg="));
-        assert!(message.contains("refresh_ms_min="));
-        assert!(message.contains("refresh_ms_max="));
-        assert!(message.contains("refresh_ms_count=1"));
-        assert!(message.contains("event_resolve_ms_count=1"));
-        assert!(message.contains("patch_tree_actor_process_ms_count=1"));
-        assert!(message.contains("layout_cache_resolve_hits=11"));
-        assert!(message.contains("layout_cache_subtree_measure_hits="));
+        assert!(message.starts_with("renderer stats\n"));
+        assert!(message.contains("  window\n"));
+        assert!(message.contains("    backend: wayland\n"));
+        assert!(message.contains("    frames: 1\n"));
+        assert!(message.contains("    fps: "));
+        assert!(message.contains("    display: "));
+        assert!(message.contains("  timings\n"));
+        assert!(message.contains("    render: avg=3.000 ms min=3.000 ms max=3.000 ms count=1"));
+        assert!(message.contains("    present submit: avg=1.000 ms"));
+        assert!(message.contains("    layout: avg=3.000 ms"));
+        assert!(message.contains("    refresh: avg=1.000 ms"));
+        assert!(message.contains("    event resolve: avg=2.000 ms"));
+        assert!(message.contains("    patch tree actor: avg=7.000 ms"));
+        assert!(message.contains("  layout cache\n"));
+        assert!(message.contains("    intrinsic measure: hits=0 misses=0 stores=0"));
+        assert!(message.contains("    subtree measure:   hits=0 misses=0 stores=0"));
+        assert!(message.contains("    resolve:           hits=11 misses=0 stores=0"));
     }
 }
