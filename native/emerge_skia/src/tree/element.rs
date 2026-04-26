@@ -129,7 +129,15 @@ pub struct SubtreeMeasureCache {
 #[derive(Clone, Debug)]
 pub struct ResolveCache {
     pub key: ResolveCacheKey,
-    pub frame: Frame,
+    pub extent: ResolveExtent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolveExtent {
+    pub width: f32,
+    pub height: f32,
+    pub content_width: f32,
+    pub content_height: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,8 +147,6 @@ pub struct ResolveCacheKey {
     pub inherited: InheritedMeasureFontKey,
     pub measured_frame: Option<Frame>,
     pub constraint: ResolveConstraintKey,
-    pub x: f32,
-    pub y: f32,
     pub children: Vec<NodeId>,
     pub nearby: Vec<NearbyMount>,
 }

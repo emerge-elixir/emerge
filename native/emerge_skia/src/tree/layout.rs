@@ -13,7 +13,7 @@ use super::attrs::{
 use super::element::{
     Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
     IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId, ResolveAttrs,
-    ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey,
+    ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey, ResolveExtent,
     SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey,
 };
 use super::render::DEFAULT_TEXT_COLOR;
@@ -1132,7 +1132,7 @@ fn measure_element<M: TextMeasurer>(
         }
     };
 
-    // Store intrinsic size in frame temporarily (will be replaced in resolve pass)
+    // Store intrinsic size separately; resolve owns the retained frame positions.
     if let Some(element) = tree.get_mut(id) {
         let measured_frame = Frame {
             x: 0.0,
@@ -1142,7 +1142,6 @@ fn measure_element<M: TextMeasurer>(
             content_width: intrinsic.width,
             content_height: intrinsic.height,
         };
-        element.layout.frame = Some(measured_frame);
         element.layout.measured_frame = Some(measured_frame);
         element.layout.intrinsic_measure_cache = cache_key.map(|key| IntrinsicMeasureCache {
             key,
@@ -1236,7 +1235,6 @@ fn try_reuse_subtree_measure_cache(
         .map(|cache| cache.frame)?;
 
     if let Some(element) = tree.get_mut(id) {
-        element.layout.frame = Some(frame);
         element.layout.measured_frame = Some(frame);
         element.layout.measure_dirty = false;
     }
@@ -1323,7 +1321,6 @@ fn try_reuse_intrinsic_measure_cache(
         .map(|cache| cache.frame)?;
 
     if let Some(element) = tree.get_mut(id) {
-        element.layout.frame = Some(frame);
         element.layout.measured_frame = Some(frame);
     }
 
@@ -1792,40 +1789,36 @@ fn resolve_element<M: TextMeasurer>(
     let kind = element.spec.kind;
     let measured_frame = element.layout.measured_frame;
     let resolve_dirty = element.layout.resolve_dirty;
-    let child_ids = tree.child_ids(id);
-    let nearby_mounts = tree.nearby_mounts_for(id);
     let intrinsic = element
         .layout
-        .frame
+        .measured_frame
+        .or(element.layout.frame)
         .map(|f| IntrinsicSize {
             width: f.width,
             height: f.height,
         })
         .unwrap_or_default();
+    let child_ids = tree.child_ids(id);
+    let nearby_mounts = tree.nearby_mounts_for(id);
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(&attrs);
+    let cache_eligible = use_resolve_cache && resolve_cache_kind_eligible(kind);
 
-    let resolve_cache_key = use_resolve_cache.then(|| {
-        resolve_cache_key(
+    if cache_eligible && !resolve_dirty {
+        let key = resolve_cache_key(
             kind,
             &attrs,
             inherited,
             measured_frame,
             constraint,
-            x,
-            y,
             &child_ids,
             &nearby_mounts,
-        )
-    });
+        );
 
-    if use_resolve_cache
-        && !resolve_dirty
-        && let Some(key) = resolve_cache_key.as_ref()
-        && try_reuse_resolve_cache(tree, id, key)
-    {
-        return;
+        if try_reuse_resolve_cache(tree, id, &key, x, y) {
+            return;
+        }
     }
 
     let insets = LayoutInsets::from_attrs(&attrs);
@@ -1921,13 +1914,26 @@ fn resolve_element<M: TextMeasurer>(
     resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
 
     if use_resolve_cache
-        && let Some(key) = resolve_cache_key
         && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
         && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
-        && let Some(element) = tree.get_mut(id)
     {
-        element.layout.resolve_cache = Some(ResolveCache { key, frame });
-        element.layout.resolve_dirty = false;
+        let key = resolve_cache_key(
+            kind,
+            &attrs,
+            inherited,
+            measured_frame,
+            constraint,
+            &child_ids,
+            &nearby_mounts,
+        );
+
+        if let Some(element) = tree.get_mut(id) {
+            element.layout.resolve_cache = Some(ResolveCache {
+                key,
+                extent: resolve_extent(frame),
+            });
+            element.layout.resolve_dirty = false;
+        }
     }
 }
 
@@ -1937,8 +1943,6 @@ fn resolve_cache_key(
     inherited: &FontContext,
     measured_frame: Option<Frame>,
     constraint: Constraint,
-    x: f32,
-    y: f32,
     children: &[NodeId],
     nearby: &[NearbyMount],
 ) -> ResolveCacheKey {
@@ -1948,10 +1952,28 @@ fn resolve_cache_key(
         inherited: inherited_measure_font_key(inherited),
         measured_frame,
         constraint: resolve_constraint_key(constraint),
-        x,
-        y,
         children: children.to_vec(),
         nearby: nearby.to_vec(),
+    }
+}
+
+fn resolve_extent(frame: Frame) -> ResolveExtent {
+    ResolveExtent {
+        width: frame.width,
+        height: frame.height,
+        content_width: frame.content_width,
+        content_height: frame.content_height,
+    }
+}
+
+fn frame_from_resolve_extent(extent: ResolveExtent, x: f32, y: f32) -> Frame {
+    Frame {
+        x,
+        y,
+        width: extent.width,
+        height: extent.height,
+        content_width: extent.content_width,
+        content_height: extent.content_height,
     }
 }
 
@@ -2008,27 +2030,36 @@ fn resolve_available_space_key(space: AvailableSpace) -> ResolveAvailableSpaceKe
     }
 }
 
-fn try_reuse_resolve_cache(tree: &mut ElementTree, id: &NodeId, key: &ResolveCacheKey) -> bool {
-    let Some(frame) = tree
-        .get(id)
-        .and_then(|element| element.layout.resolve_cache.as_ref())
-        .filter(|cache| &cache.key == key)
-        .map(|cache| cache.frame)
-    else {
+fn try_reuse_resolve_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &ResolveCacheKey,
+    x: f32,
+    y: f32,
+) -> bool {
+    let Some((target_frame, current_frame)) = tree.get(id).and_then(|element| {
+        let cache = element.layout.resolve_cache.as_ref()?;
+        if &cache.key != key {
+            return None;
+        }
+
+        Some((
+            frame_from_resolve_extent(cache.extent, x, y),
+            element.layout.frame?,
+        ))
+    }) else {
         return false;
     };
 
-    if let Some(current_frame) = tree.get(id).and_then(|element| element.layout.frame) {
-        shift_subtree(
-            tree,
-            id,
-            frame.x - current_frame.x,
-            frame.y - current_frame.y,
-        );
-    }
+    shift_subtree(
+        tree,
+        id,
+        target_frame.x - current_frame.x,
+        target_frame.y - current_frame.y,
+    );
 
     if let Some(element) = tree.get_mut(id) {
-        element.layout.frame = Some(frame);
+        element.layout.frame = Some(target_frame);
         element.layout.resolve_dirty = false;
     }
 
@@ -3483,8 +3514,9 @@ fn place_flow_float<M: TextMeasurer>(
 ) -> Option<FlowFloat> {
     let (desired_width, desired_height) = {
         let child = tree.get(child_id)?;
-        let intrinsic_width = child.layout.frame.map(|frame| frame.width).unwrap_or(0.0);
-        let intrinsic_height = child.layout.frame.map(|frame| frame.height).unwrap_or(0.0);
+        let intrinsic_frame = child.layout.measured_frame.or(child.layout.frame);
+        let intrinsic_width = intrinsic_frame.map(|frame| frame.width).unwrap_or(0.0);
+        let intrinsic_height = intrinsic_frame.map(|frame| frame.height).unwrap_or(0.0);
 
         let width =
             resolve_intrinsic_length(child.layout.effective.width.as_ref(), intrinsic_width)
