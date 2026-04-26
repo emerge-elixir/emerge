@@ -28,6 +28,8 @@ work:
 - per-node intrinsic measurement cache
 - per-node subtree measurement cache
 - coordinate-invariant resolve cache
+- resolve-cache eligibility for text-flow kinds (`Multiline`, `WrappedRow`,
+  `TextColumn`, and `Paragraph`)
 - targeted dirty propagation for layout-affecting animation samples
 - gated native stats snapshots/logging through one unified stats path
 - retained-layout benchmark cache-counter output
@@ -46,7 +48,6 @@ Relevant files:
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
-- text-flow-heavy layouts still miss resolve caching heavily
 - upward dirty propagation does not yet stop at dependency/relayout boundaries
 - cache keys still clone child/nearby identity lists
 - measure/resolve traversal still uses some id-facing compatibility helpers even though topology is ix-based
@@ -60,13 +61,23 @@ Small retained-layout benchmark smokes show:
 - measurement cache reuse is healthy
 - subtree measurement misses are low in common retained scenarios
 - simple list resolve reuse is good
-- text/layout/nearby-rich cases still produce many resolve-cache misses
+- text-flow warm-cache scenarios now produce resolve hits with zero resolve
+  misses after the text-flow eligibility slice
+
+Focused smoke after text-flow resolve caching:
+
+```text
+layout_matrix_50 warm_cache: resolve_hits=1 resolve_misses=0 resolve_stores=0
+text_rich_50 warm_cache:    resolve_hits=1 resolve_misses=0 resolve_stores=0
+layout_matrix_50/layout_attr after_patch: resolve_hits=4 resolve_misses=3 resolve_stores=3
+text_rich_50/layout_attr after_patch:    resolve_hits=4 resolve_misses=3 resolve_stores=3
+```
 
 Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
-layout caches enabled elsewhere, but broader text-flow resolve reuse and relayout
-boundaries remain future work.
+layout caches enabled elsewhere. Relayout boundaries and cheaper cache keys
+remain future work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -157,41 +168,36 @@ Implemented shape:
 - tests cover sibling measurement-cache reuse during width animation and no text
   remeasure during align animation
 
-## Next slice 1: improve text-flow resolve caching
+## Completed slice: text-flow resolve caching
 
-Goal: reduce resolve-cache misses in text/layout-rich scenes.
+Text-flow-heavy kinds are now eligible for coordinate-invariant resolve-cache
+reuse:
 
-Candidate order:
+- `Multiline`
+- `WrappedRow`
+- `TextColumn`
+- `Paragraph`
 
-1. `Multiline`
-2. `WrappedRow`
-3. `TextColumn`
-4. `Paragraph`
+Implementation notes:
 
-Do not blindly mark every kind as resolve-cache eligible. For each kind, define
-what must be restored or remain valid on cache hit:
+- wrapped rows now pass the normal resolve-cache flag through child resolution
+  instead of forcing child resolve misses
+- text columns pass cache eligibility to normal and floating children
+- paragraphs can store even when inline children do not have independent resolve
+  caches, because the paragraph owns the inline fragment layout
+- text columns can store paragraph child layout that is owned by the text-flow
+  parent
+- paragraph fragment positions are shifted with the subtree on cache hits
 
-- frame extent
-- content extent
-- scroll maxes
-- child positions
-- paint order
-- paragraph fragments, if applicable
-- nearby root placement, if applicable
+Tests cover unchanged warm hits, width/font changes that miss and match uncached
+layout, text columns with paragraph children, wrapped rows with changed wrapping
+width, and paragraph fragment shifting after parent alignment changes.
 
-Paragraph is likely hardest because useful reuse may need cached flow/fragments,
-not just an origin-free frame extent.
+Remaining text/layout-rich misses should now be investigated through relayout
+boundaries, key construction costs, nearby placement, or refresh-output reuse
+rather than blanket kind ineligibility.
 
-Acceptance criteria:
-
-- lower resolve-cache misses in text-flow-heavy cases
-- no regressions in paragraph wrapping/floats
-- no regressions in nearby placement
-- no regressions in scrolling extents
-- focused benchmark smoke shows improvement in `text_rich`, `layout_matrix`, or
-  `nearby_rich`
-
-## Next slice 2: relayout/dependency boundaries
+## Next slice 1: relayout/dependency boundaries
 
 Goal: stop upward dirty propagation when a parent does not depend on the changed
 child layout.
@@ -220,7 +226,7 @@ Acceptance criteria:
 - cache correctness maintained for rows/columns/paragraph/nearby
 - relayout-boundary counters visible through stats
 
-## Next slice 3: versioned cache keys and ix-native traversal cleanup
+## Next slice 2: versioned cache keys and ix-native traversal cleanup
 
 Goal: reduce hot-path allocation/cloning in cache keys and make parent cache
 validation cheaper.
@@ -259,7 +265,7 @@ Acceptance criteria:
 - fewer repeated `NodeId -> NodeIx` lookups in measure/resolve hot paths where practical
 - cache hit behavior unchanged or improved
 
-## Next slice 4: refresh subtree skipping
+## Next slice 3: refresh subtree skipping
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
