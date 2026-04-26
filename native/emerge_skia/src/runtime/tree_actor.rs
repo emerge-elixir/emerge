@@ -25,7 +25,8 @@ use crate::{
         layout::{
             FrameAttrsPreparation, LayoutOutput, layout_and_refresh_default,
             layout_and_refresh_prepared_default, prepare_frame_attrs_for_update,
-            prepared_root_has_frame, refresh, refresh_prepared_default,
+            prepared_root_has_frame, refresh_prepared_default_reusing_clean_registry,
+            refresh_reusing_clean_registry,
         },
     },
 };
@@ -367,7 +368,11 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 RefreshDecision::RefreshOnly => {
                     assets::ensure_tree_sources(&tree);
                     let update = if let Some(preparation) = plan.preparation {
-                        refresh_prepared_default(&mut tree, preparation)
+                        refresh_prepared_default_reusing_clean_registry(
+                            &mut tree,
+                            preparation,
+                            cached_rebuild.as_ref(),
+                        )
                     } else {
                         tree.set_layout_cache_stats_enabled(
                             stats
@@ -375,7 +380,8 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                                 .is_some_and(|stats| stats.layout_cache_enabled()),
                         );
                         tree.reset_layout_cache_stats();
-                        let output = refresh(&mut tree);
+                        let output =
+                            refresh_reusing_clean_registry(&mut tree, cached_rebuild.as_ref());
                         crate::tree::layout::LayoutUpdateOutput {
                             output,
                             layout_performed: false,
@@ -521,8 +527,10 @@ fn publish_layout_output(
     output: LayoutOutput,
     log_input: bool,
 ) {
-    cached_rebuild.replace(output.event_rebuild.clone());
-    send_registry_update(event_tx, output.event_rebuild, log_input);
+    if output.event_rebuild_changed {
+        cached_rebuild.replace(output.event_rebuild.clone());
+        send_registry_update(event_tx, output.event_rebuild, log_input);
+    }
 
     let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
     render_sender.send_latest(RenderMsg::Scene {

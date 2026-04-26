@@ -6,7 +6,7 @@ use super::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
 };
 use super::element::{ElementTree, NodeId};
-use super::invalidation::TreeInvalidation;
+use super::invalidation::{TreeInvalidation, animation_attrs_affect_registry_refresh};
 
 #[derive(Clone, Debug)]
 pub enum AnimationCurve {
@@ -68,6 +68,7 @@ pub struct AnimationSample {
 pub struct AnimationLayoutEffect {
     pub id: NodeId,
     pub invalidation: TreeInvalidation,
+    pub registry_refresh: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,8 +85,11 @@ impl AnimationOverlayResult {
         self.invalidation.add(invalidation);
 
         if invalidation.is_dirty() {
-            self.effects
-                .push(AnimationLayoutEffect { id, invalidation });
+            self.effects.push(AnimationLayoutEffect {
+                id,
+                invalidation,
+                registry_refresh: animation_attrs_affect_registry_refresh(&sample.attrs),
+            });
         }
     }
 }

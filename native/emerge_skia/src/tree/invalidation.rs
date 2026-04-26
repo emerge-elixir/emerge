@@ -198,6 +198,52 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
     invalidation
 }
 
+pub fn attrs_change_affects_registry_refresh(before: &Attrs, after: &Attrs) -> bool {
+    registry_attrs_changed(before, after)
+        || paint_attrs_affect_registry_refresh_changed(before, after)
+}
+
+pub fn animation_attrs_affect_registry_refresh(attrs: &Attrs) -> bool {
+    attrs.border_radius.is_some()
+        || attrs.move_x.is_some()
+        || attrs.move_y.is_some()
+        || attrs.rotate.is_some()
+        || attrs.scale.is_some()
+}
+
+fn registry_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
+    before.on_click != after.on_click
+        || before.on_mouse_down != after.on_mouse_down
+        || before.on_mouse_up != after.on_mouse_up
+        || before.on_mouse_enter != after.on_mouse_enter
+        || before.on_mouse_leave != after.on_mouse_leave
+        || before.on_mouse_move != after.on_mouse_move
+        || before.on_press != after.on_press
+        || before.on_swipe_up != after.on_swipe_up
+        || before.on_swipe_down != after.on_swipe_down
+        || before.on_swipe_left != after.on_swipe_left
+        || before.on_swipe_right != after.on_swipe_right
+        || before.on_change != after.on_change
+        || before.on_focus != after.on_focus
+        || before.on_blur != after.on_blur
+        || before.focus_on_mount != after.focus_on_mount
+        || before.on_key_down != after.on_key_down
+        || before.on_key_up != after.on_key_up
+        || before.on_key_press != after.on_key_press
+        || before.virtual_key != after.virtual_key
+        || before.mouse_over != after.mouse_over
+        || before.focused != after.focused
+        || before.mouse_down != after.mouse_down
+}
+
+fn paint_attrs_affect_registry_refresh_changed(before: &Attrs, after: &Attrs) -> bool {
+    before.border_radius != after.border_radius
+        || before.move_x != after.move_x
+        || before.move_y != after.move_y
+        || before.rotate != after.rotate
+        || before.scale != after.scale
+}
+
 pub fn classify_interaction_style(style: Option<&MouseOverAttrs>) -> TreeInvalidation {
     let Some(style) = style else {
         return TreeInvalidation::Registry;

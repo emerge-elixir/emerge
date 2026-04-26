@@ -191,6 +191,18 @@ Layout-derived state:
 
 This is the current home for layout cache state.
 
+### `NodeRefreshState`
+
+Refresh-derived state:
+
+- render dirty and render descendant-dirty bits
+- registry dirty and registry descendant-dirty bits
+
+This state is intentionally separate from `NodeLayoutState` cache outcomes. A
+paint-only update can dirty render refresh output without asking a measurement
+or resolve-cache question, and a registry-only update can dirty event output
+without poisoning render/layout state.
+
 ### `NodeLifecycle`
 
 Lifecycle/residency data:
@@ -302,6 +314,30 @@ versions because those are the dependencies the old keys represented.
 
 Future ix-native traversal cleanup should build on these compact dependency
 helpers rather than reintroducing cloned identity lists.
+
+## Refresh damage insight
+
+Refresh output has its own damage model. Render scene work and event registry
+work are downstream of layout, but they should not be hidden inside layout-cache
+entries.
+
+Implemented shape:
+
+- `Element` owns `NodeRefreshState` beside `NodeLayoutState`
+- patch, runtime, scroll, and animation changes mark render and/or registry
+  refresh damage according to the dependency they affect
+- decorative paint changes mark render damage only
+- registry attrs, text-input runtime metadata, scroll/scrollbar state, and
+  transform-like paint changes mark registry damage
+- full `refresh(tree)` clears render and registry refresh damage after building
+  both outputs
+- refresh-only frames can reuse the tree actor's cached full
+  `RegistryRebuildPayload` when registry damage is clean
+
+This keeps layout-cache stats simple: a paint-only refresh still records no
+layout-cache hit/miss/store activity because no layout cache was consulted.
+Future render subtree and registry chunk caches should add separate gated
+refresh counters if needed, not new layout-cache bypass categories.
 
 ## Boundary APIs can stay id-based
 

@@ -52,12 +52,14 @@ Already implemented:
 - broader resolve-cache reuse for text-flow-heavy layouts
 - first relayout/dependency boundary for fixed-size `El`/`None` parents
 - compact child/nearby topology dependency versions in layout cache keys
+- refresh-specific render/registry damage tracking with cached full-registry
+  reuse when registry damage is clean
 
 Still open:
 
 - broader relayout/dependency boundaries
 - further version/key work for attrs or measured/resolve dependency generations if profiles justify it
-- downstream refresh subtree skipping
+- render subtree and registry chunk skipping
 - viewport/repeater-aware cache preservation
 
 ## Engine findings

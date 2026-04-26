@@ -281,12 +281,27 @@ nearby_rich_50/nearby_slot_change after_patch: subtree_measure_hits=3 subtree_me
 `text_rich_50/keyed_reorder` remains a future optimization target; correctness is
 preserved and cache outcomes remain hit/miss/store.
 
-## Next slice 1: refresh subtree skipping
+## Current slice: refresh subtree skipping
 
 Temporary active plan: `active-refresh-subtree-skipping-plan.md`.
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
+
+Implemented so far:
+
+- refresh-specific dirty/descendant-dirty state for render vs registry damage
+- patch/runtime/scroll/animation sources mark refresh damage separately from
+  layout-cache dirtiness
+- refresh-only frames can reuse the cached full event registry when registry
+  damage is clean
+- duplicate registry updates are avoided when the cached registry payload is
+  reused
+
+Next within this slice:
+
+- render subtree cache/skip
+- registry subtree chunk cache/skip
 
 `refresh(tree)` should be able to skip a subtree when:
 
@@ -307,6 +322,7 @@ Acceptance criteria:
 - lower refresh time in steady-state / paint-only / registry-only cases
 - no event hit-test regressions
 - no stale scene output
+- layout-cache stats remain hit / miss / store only
 
 ## Later slice: broaden relayout/dependency boundaries
 

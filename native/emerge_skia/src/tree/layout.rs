@@ -508,6 +508,7 @@ fn prepare_frame_attrs(
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
     let animation_result = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
+    mark_animation_refresh_effects_dirty(tree, &animation_result);
     apply_interaction_styles(tree);
 
     animation_result
@@ -530,6 +531,19 @@ fn run_layout_passes<M: TextMeasurer>(
     resolve_element(
         tree, root_id, constraint, 0.0, 0.0, inherited, measurer, true,
     );
+}
+
+fn mark_animation_refresh_effects_dirty(
+    tree: &mut ElementTree,
+    animation_result: &AnimationOverlayResult,
+) {
+    for effect in &animation_result.effects {
+        tree.mark_refresh_dirty_for_invalidation(&effect.id, effect.invalidation);
+
+        if effect.registry_refresh {
+            tree.mark_registry_refresh_dirty(&effect.id);
+        }
+    }
 }
 
 fn mark_animation_layout_effects_dirty(
@@ -4704,7 +4718,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree;
+use super::render::{render_tree, render_tree_scene};
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -4712,6 +4726,7 @@ use crate::render_scene::RenderScene;
 pub struct LayoutOutput {
     pub scene: RenderScene,
     pub event_rebuild: RegistryRebuildPayload,
+    pub event_rebuild_changed: bool,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
     pub ime_text_state: Option<TextInputState>,
@@ -4727,26 +4742,55 @@ pub struct LayoutUpdateOutput {
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     let render_output = render_tree(tree);
-    let ime_text_state = render_output
-        .event_rebuild
-        .focused_id
-        .as_ref()
-        .and_then(|focused_id| {
-            render_output
-                .event_rebuild
-                .text_inputs
-                .get(focused_id)
-                .cloned()
-        });
+    let ime_text_state = ime_text_state_from_rebuild(&render_output.event_rebuild);
+
+    tree.clear_refresh_dirty();
 
     LayoutOutput {
         scene: render_output.scene,
         event_rebuild: render_output.event_rebuild,
+        event_rebuild_changed: true,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
         ime_text_state,
         animations_active: false,
     }
+}
+
+pub(crate) fn refresh_reusing_clean_registry(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+
+    if !can_reuse_registry {
+        return refresh(tree);
+    }
+
+    let render_output = render_tree_scene(tree);
+    let event_rebuild = cached_rebuild
+        .cloned()
+        .expect("cached rebuild should be present when registry can be reused");
+    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+
+    tree.clear_render_refresh_dirty();
+
+    LayoutOutput {
+        scene: render_output.scene,
+        event_rebuild,
+        event_rebuild_changed: false,
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
+        animations_active: false,
+    }
+}
+
+fn ime_text_state_from_rebuild(rebuild: &RegistryRebuildPayload) -> Option<TextInputState> {
+    rebuild
+        .focused_id
+        .as_ref()
+        .and_then(|focused_id| rebuild.text_inputs.get(focused_id).cloned())
 }
 
 /// Full layout with default Skia text measurer, followed by refresh.
@@ -4829,6 +4873,20 @@ pub(crate) fn refresh_prepared_default(
     preparation: FrameAttrsPreparation,
 ) -> LayoutUpdateOutput {
     let mut output = refresh(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
+    }
+}
+
+pub(crate) fn refresh_prepared_default_reusing_clean_registry(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutUpdateOutput {
+    let mut output = refresh_reusing_clean_registry(tree, cached_rebuild);
     output.animations_active = preparation.animation_result.active;
 
     LayoutUpdateOutput {
