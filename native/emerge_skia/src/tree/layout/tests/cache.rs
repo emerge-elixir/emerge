@@ -735,6 +735,56 @@ fn test_resolve_cache_restores_shifted_subtree_before_parent_realignment() {
     assert_eq!(cached.get(&text_id).unwrap().layout.frame.unwrap().x, 84.0);
 }
 
+#[test]
+fn test_resolve_cache_translates_clean_sibling_after_previous_sibling_layout_change() {
+    let mut cached = shifted_sibling_tree(10.0);
+    let root_id = cached.root_id().unwrap();
+    let control_id = cached.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetAttrs {
+            id: control_id,
+            attrs_raw: raw_control_height_attrs(20.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let mut uncached = shifted_sibling_tree(20.0);
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    for id in cached
+        .iter_node_pairs()
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>()
+    {
+        assert_eq!(
+            cached.get(&id).unwrap().layout.frame,
+            uncached.get(&id).unwrap().layout.frame
+        );
+    }
+}
+
 fn text_child_tree(content: &str) -> ElementTree {
     let mut tree = ElementTree::new();
     let root = make_element("root", ElementKind::Column, Attrs::default());
@@ -794,6 +844,32 @@ fn aligned_nested_tree(align_x: AlignX) -> ElementTree {
     tree
 }
 
+fn shifted_sibling_tree(control_height: f64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element("root", ElementKind::Column, Attrs::default());
+    let root_id = root.id;
+
+    let mut control_attrs = Attrs::default();
+    control_attrs.height = Some(Length::Px(control_height));
+    let control = make_element("control", ElementKind::El, control_attrs);
+    let control_id = control.id;
+
+    let body = make_element("body", ElementKind::Column, Attrs::default());
+    let body_id = body.id;
+    let text = make_element("text", ElementKind::Text, text_attrs("Body"));
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(control);
+    tree.insert(body);
+    tree.insert(text);
+    tree.set_children(&body_id, vec![text_id]).unwrap();
+    tree.set_children(&root_id, vec![control_id, body_id])
+        .unwrap();
+    tree
+}
+
 fn raw_text_attrs(content: &str) -> Vec<u8> {
     let mut data = vec![0, 2];
     push_content_attr(&mut data, content);
@@ -830,6 +906,12 @@ fn raw_aligned_root_attrs(align_x: AlignX) -> Vec<u8> {
     push_px_length_attr(&mut data, 1, 100.0);
     push_px_length_attr(&mut data, 2, 100.0);
     push_align_x_attr(&mut data, align_x);
+    data
+}
+
+fn raw_control_height_attrs(height: f64) -> Vec<u8> {
+    let mut data = vec![0, 1];
+    push_px_length_attr(&mut data, 2, height);
     data
 }
 
