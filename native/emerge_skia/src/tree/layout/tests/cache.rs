@@ -563,14 +563,10 @@ fn test_layout_cache_stats_report_shifted_sibling_reuse() {
 }
 
 #[test]
-fn test_layout_cache_stats_report_resolve_misses_for_ineligible_nodes() {
-    let mut tree = ElementTree::new();
+fn test_layout_cache_stats_report_cold_paragraph_resolve_store() {
+    let mut tree = paragraph_inline_tree("Hello paragraph cache", 120.0);
     tree.set_layout_cache_stats_enabled(true);
-    let paragraph = make_element("paragraph", ElementKind::Paragraph, Attrs::default());
-    let paragraph_id = paragraph.id;
-
-    tree.set_root_id(paragraph_id);
-    tree.insert(paragraph);
+    let paragraph_id = tree.root_id().unwrap();
 
     layout_tree(
         &mut tree,
@@ -580,8 +576,15 @@ fn test_layout_cache_stats_report_resolve_misses_for_ineligible_nodes() {
     );
     let stats = tree.layout_cache_stats();
 
-    assert_eq!(stats.resolve_stores, 0);
     assert!(stats.resolve_misses > 0);
+    assert!(stats.resolve_stores > 0);
+    assert!(
+        tree.get(&paragraph_id)
+            .unwrap()
+            .layout
+            .resolve_cache
+            .is_some()
+    );
 }
 
 #[test]
@@ -1292,13 +1295,9 @@ fn test_keyed_reorder_dirties_container_resolve_only() {
 }
 
 #[test]
-fn test_unsupported_kind_does_not_store_resolve_cache() {
-    let mut tree = ElementTree::new();
-    let paragraph = make_element("paragraph", ElementKind::Paragraph, Attrs::default());
-    let paragraph_id = paragraph.id;
-
-    tree.set_root_id(paragraph_id);
-    tree.insert(paragraph);
+fn test_paragraph_inline_text_stores_resolve_cache() {
+    let mut tree = paragraph_inline_tree("Paragraph inline text stores fragments", 120.0);
+    let paragraph_id = tree.root_id().unwrap();
 
     layout_tree(
         &mut tree,
@@ -1307,13 +1306,223 @@ fn test_unsupported_kind_does_not_store_resolve_cache() {
         &MockTextMeasurer,
     );
 
+    let paragraph = tree.get(&paragraph_id).unwrap();
+    assert!(paragraph.layout.resolve_cache.is_some());
+    assert!(paragraph.layout.paragraph_fragments.is_some());
+}
+
+#[test]
+fn test_multiline_resolve_cache_hits_after_warm_layout() {
+    let mut tree = multiline_tree("alpha beta gamma delta", 72.0, 16.0);
+    tree.set_layout_cache_stats_enabled(true);
+    let multiline_id = tree.root_id().unwrap();
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
     assert!(
-        tree.get(&paragraph_id)
+        tree.get(&multiline_id)
             .unwrap()
             .layout
             .resolve_cache
-            .is_none()
+            .is_some()
     );
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert!(stats.resolve_hits > 0);
+    assert_eq!(stats.resolve_misses, 0);
+    assert_eq!(stats.resolve_stores, 0);
+}
+
+#[test]
+fn test_multiline_width_and_font_change_misses_and_matches_uncached_layout() {
+    let mut cached = multiline_tree("alpha beta gamma delta", 120.0, 16.0);
+    let multiline_id = cached.root_id().unwrap();
+    cached.set_layout_cache_stats_enabled(true);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetAttrs {
+            id: multiline_id,
+            attrs_raw: raw_multiline_attrs("alpha beta gamma delta", 56.0, 20.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = cached.layout_cache_stats();
+    assert!(stats.resolve_misses > 0);
+    assert!(stats.resolve_stores > 0);
+
+    let mut uncached = multiline_tree("alpha beta gamma delta", 56.0, 20.0);
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+}
+
+#[test]
+fn test_text_column_resolve_cache_hits_with_paragraph_child() {
+    let mut cached = text_column_flow_tree();
+    cached.set_layout_cache_stats_enabled(true);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let root_id = cached.root_id().unwrap();
+    assert!(cached.get(&root_id).unwrap().layout.resolve_cache.is_some());
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = cached.layout_cache_stats();
+    assert!(stats.resolve_hits > 0);
+    assert_eq!(stats.resolve_misses, 0);
+
+    let mut uncached = text_column_flow_tree();
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+}
+
+#[test]
+fn test_wrapped_row_resolve_cache_hits_and_width_change_misses() {
+    let mut cached = wrapped_row_tree(160.0);
+    cached.set_layout_cache_stats_enabled(true);
+    let root_id = cached.root_id().unwrap();
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert!(cached.get(&root_id).unwrap().layout.resolve_cache.is_some());
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let warm_stats = cached.layout_cache_stats();
+    assert!(warm_stats.resolve_hits > 0);
+    assert_eq!(warm_stats.resolve_misses, 0);
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_wrapped_row_attrs(72.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let changed_stats = cached.layout_cache_stats();
+    assert!(changed_stats.resolve_misses > 0);
+    assert!(changed_stats.resolve_stores > 0);
+
+    let mut uncached = wrapped_row_tree(72.0);
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+}
+
+#[test]
+fn test_paragraph_resolve_cache_shifts_fragments_after_parent_alignment_change() {
+    let mut cached = aligned_paragraph_tree(AlignX::Left);
+    cached.set_layout_cache_stats_enabled(true);
+    let root_id = cached.root_id().unwrap();
+    let paragraph_id = cached.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let before_fragments = fragment_snapshot(&cached, &paragraph_id);
+    assert!(!before_fragments.is_empty());
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_aligned_root_attrs(AlignX::Right),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = cached.layout_cache_stats();
+    assert!(stats.resolve_hits > 0);
+
+    let mut uncached = aligned_paragraph_tree(AlignX::Right);
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+    assert_ne!(before_fragments, fragment_snapshot(&cached, &paragraph_id));
 }
 
 #[test]
@@ -1455,6 +1664,33 @@ fn test_resolve_cache_translates_clean_sibling_after_previous_sibling_layout_cha
     }
 }
 
+fn assert_layout_matches(left: &ElementTree, right: &ElementTree) {
+    for id in left.iter_node_pairs().map(|(id, _)| id).collect::<Vec<_>>() {
+        assert_eq!(
+            left.get(&id).unwrap().layout.frame,
+            right.get(&id).unwrap().layout.frame,
+            "frame mismatch for {id:?}"
+        );
+        assert_eq!(
+            fragment_snapshot(left, &id),
+            fragment_snapshot(right, &id),
+            "fragment mismatch for {id:?}"
+        );
+    }
+}
+
+fn fragment_snapshot(tree: &ElementTree, id: &NodeId) -> Vec<(f32, f32, String)> {
+    tree.get(id)
+        .and_then(|element| element.layout.paragraph_fragments.as_ref())
+        .map(|fragments| {
+            fragments
+                .iter()
+                .map(|fragment| (fragment.x, fragment.y, fragment.text.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn test_shadow(offset_x: f64, offset_y: f64) -> BoxShadow {
     BoxShadow {
         offset_x,
@@ -1482,6 +1718,124 @@ fn text_child_tree(content: &str) -> ElementTree {
     tree.insert(root);
     tree.insert(text);
     tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn multiline_tree(content: &str, width: f64, font_size: f64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut attrs = text_attrs(content);
+    attrs.width = Some(Length::Px(width));
+    attrs.font_size = Some(font_size);
+    let multiline = make_element("multiline", ElementKind::Multiline, attrs);
+    let multiline_id = multiline.id;
+
+    tree.set_root_id(multiline_id);
+    tree.insert(multiline);
+    tree
+}
+
+fn paragraph_inline_tree(content: &str, width: f64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut paragraph_attrs = Attrs::default();
+    paragraph_attrs.width = Some(Length::Px(width));
+    let paragraph = make_element("paragraph", ElementKind::Paragraph, paragraph_attrs);
+    let paragraph_id = paragraph.id;
+    let text = make_element("paragraph_text", ElementKind::Text, text_attrs(content));
+    let text_id = text.id;
+
+    tree.set_root_id(paragraph_id);
+    tree.insert(paragraph);
+    tree.insert(text);
+    tree.set_children(&paragraph_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn text_column_flow_tree() -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(128.0));
+    root_attrs.spacing_y = Some(4.0);
+    let root = make_element("text_column", ElementKind::TextColumn, root_attrs);
+    let root_id = root.id;
+
+    let mut paragraph_attrs = Attrs::default();
+    paragraph_attrs.width = Some(Length::Content);
+    let paragraph = make_element("flow_paragraph", ElementKind::Paragraph, paragraph_attrs);
+    let paragraph_id = paragraph.id;
+    let paragraph_text = make_element(
+        "flow_paragraph_text",
+        ElementKind::Text,
+        text_attrs("alpha beta gamma delta"),
+    );
+    let paragraph_text_id = paragraph_text.id;
+
+    let tail = make_element("flow_tail", ElementKind::Text, text_attrs("tail"));
+    let tail_id = tail.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(paragraph);
+    tree.insert(paragraph_text);
+    tree.insert(tail);
+    tree.set_children(&paragraph_id, vec![paragraph_text_id])
+        .unwrap();
+    tree.set_children(&root_id, vec![paragraph_id, tail_id])
+        .unwrap();
+    tree
+}
+
+fn wrapped_row_tree(width: f64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(width));
+    root_attrs.spacing_x = Some(4.0);
+    root_attrs.spacing_y = Some(6.0);
+    let root = make_element("wrapped_row", ElementKind::WrappedRow, root_attrs);
+    let root_id = root.id;
+
+    let first = make_element("wrapped_first", ElementKind::Text, text_attrs("alpha"));
+    let first_id = first.id;
+    let second = make_element("wrapped_second", ElementKind::Text, text_attrs("beta"));
+    let second_id = second.id;
+    let third = make_element("wrapped_third", ElementKind::Text, text_attrs("gamma"));
+    let third_id = third.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.insert(third);
+    tree.set_children(&root_id, vec![first_id, second_id, third_id])
+        .unwrap();
+    tree
+}
+
+fn aligned_paragraph_tree(align_x: AlignX) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Px(100.0));
+    root_attrs.align_x = Some(align_x);
+    let root = make_element("aligned_paragraph_root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+
+    let mut paragraph_attrs = Attrs::default();
+    paragraph_attrs.width = Some(Length::Px(96.0));
+    let paragraph = make_element("aligned_paragraph", ElementKind::Paragraph, paragraph_attrs);
+    let paragraph_id = paragraph.id;
+    let text = make_element(
+        "aligned_paragraph_text",
+        ElementKind::Text,
+        text_attrs("one two three four"),
+    );
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(paragraph);
+    tree.insert(text);
+    tree.set_children(&paragraph_id, vec![text_id]).unwrap();
+    tree.set_children(&root_id, vec![paragraph_id]).unwrap();
     tree
 }
 
@@ -1563,6 +1917,21 @@ fn raw_text_attrs(content: &str) -> Vec<u8> {
     data
 }
 
+fn raw_multiline_attrs(content: &str, width: f64, font_size: f64) -> Vec<u8> {
+    let mut data = vec![0, 3];
+    push_px_length_attr(&mut data, 1, width);
+    push_content_attr(&mut data, content);
+    push_font_size_attr(&mut data, font_size);
+    data
+}
+
+fn raw_wrapped_row_attrs(width: f64) -> Vec<u8> {
+    let mut data = vec![0, 2];
+    push_px_length_attr(&mut data, 1, width);
+    push_spacing_xy_attr(&mut data, 4.0, 6.0);
+    data
+}
+
 fn raw_text_background_attrs(content: &str) -> Vec<u8> {
     let mut data = vec![0, 3];
     push_content_attr(&mut data, content);
@@ -1630,6 +1999,12 @@ fn push_px_length_attr(data: &mut Vec<u8>, tag: u8, value: f64) {
     data.push(tag);
     data.push(2);
     data.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_spacing_xy_attr(data: &mut Vec<u8>, spacing_x: f64, spacing_y: f64) {
+    data.push(36);
+    data.extend_from_slice(&spacing_x.to_be_bytes());
+    data.extend_from_slice(&spacing_y.to_be_bytes());
 }
 
 fn push_box_shadow_attr(data: &mut Vec<u8>, offset_x: f64) {
