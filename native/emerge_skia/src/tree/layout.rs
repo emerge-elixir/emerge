@@ -16,7 +16,7 @@ use super::element::{
     Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
     IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId, ResolveAttrs,
     ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey, ResolveExtent,
-    SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey,
+    SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey, TopologyDependencyKey,
 };
 use super::render::DEFAULT_TEXT_COLOR;
 use super::text_layout::{TextLayoutStyle, layout_text_lines};
@@ -950,8 +950,9 @@ fn measure_element<M: TextMeasurer>(
     let element_context = inherited.merge_with_attrs(&attrs);
     let child_ids = tree.child_ids(id);
     let nearby_mounts = tree.nearby_mounts_for(id);
-    let subtree_cache_key = use_subtree_cache
-        .then(|| subtree_measure_cache_key(kind, &attrs, inherited, &child_ids, &nearby_mounts));
+    let topology_key = tree.topology_dependency_key_for(id);
+    let subtree_cache_key =
+        use_subtree_cache.then(|| subtree_measure_cache_key(kind, &attrs, inherited, topology_key));
 
     if !use_subtree_cache || measure_dirty {
         tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
@@ -1255,15 +1256,13 @@ fn subtree_measure_cache_key(
     kind: ElementKind,
     attrs: &Attrs,
     inherited: &FontContext,
-    children: &[NodeId],
-    nearby: &[NearbyMount],
+    topology: TopologyDependencyKey,
 ) -> SubtreeMeasureCacheKey {
     SubtreeMeasureCacheKey {
         kind,
         attrs: subtree_measure_attrs(attrs),
         inherited: inherited_measure_font_key(inherited),
-        children: children.to_vec(),
-        nearby: nearby.to_vec(),
+        topology,
     }
 }
 
@@ -1910,6 +1909,7 @@ fn resolve_element<M: TextMeasurer>(
         .unwrap_or_default();
     let child_ids = tree.child_ids(id);
     let nearby_mounts = tree.nearby_mounts_for(id);
+    let topology_key = tree.topology_dependency_key_for(id);
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(&attrs);
@@ -1925,8 +1925,7 @@ fn resolve_element<M: TextMeasurer>(
             inherited,
             measured_frame,
             constraint,
-            &child_ids,
-            &nearby_mounts,
+            topology_key,
         );
 
         if try_reuse_resolve_cache(tree, id, &key, x, y) {
@@ -2036,8 +2035,7 @@ fn resolve_element<M: TextMeasurer>(
                 inherited,
                 measured_frame,
                 constraint,
-                &child_ids,
-                &nearby_mounts,
+                topology_key,
             );
 
             tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
@@ -2059,8 +2057,7 @@ fn resolve_cache_key(
     inherited: &FontContext,
     measured_frame: Option<Frame>,
     constraint: Constraint,
-    children: &[NodeId],
-    nearby: &[NearbyMount],
+    topology: TopologyDependencyKey,
 ) -> ResolveCacheKey {
     ResolveCacheKey {
         kind,
@@ -2068,8 +2065,7 @@ fn resolve_cache_key(
         inherited: inherited_measure_font_key(inherited),
         measured_frame,
         constraint: resolve_constraint_key(constraint),
-        children: children.to_vec(),
-        nearby: nearby.to_vec(),
+        topology,
     }
 }
 

@@ -33,6 +33,8 @@ work:
 - resolve-cache eligibility for text-flow kinds (`Multiline`, `WrappedRow`,
   `TextColumn`, and `Paragraph`)
 - targeted dirty propagation for layout-affecting animation samples
+- compact child/nearby topology dependency versions in subtree-measure and
+  resolve cache keys
 - gated native stats snapshots/logging through one unified stats path
 - retained-layout benchmark cache-counter output
 
@@ -53,7 +55,8 @@ The remaining work is about making reuse broader, cheaper, and more precise:
 - relayout/dependency boundaries currently cover only fixed-size `El`/`None`
   parents; row/column, scrollable, nearby, and text-flow boundaries remain
   conservative
-- cache keys still clone child/nearby identity lists
+- cache keys no longer clone child/nearby identity lists, but attrs and some
+  traversal helpers still allocate/clone in hot paths
 - measure/resolve traversal still uses some id-facing compatibility helpers even though topology is ix-based
 - `refresh(tree)` does not yet skip clean subtrees
 - dynamic list / viewport cache preservation is not specialized yet
@@ -81,8 +84,9 @@ Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
 layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
-boundary is implemented; broader boundaries and cheaper cache keys remain future
-work.
+boundary is implemented, and child/nearby topology dependencies now use compact
+version keys. Broader boundaries, attr-key allocation reductions, and refresh
+skipping remain future work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -239,46 +243,45 @@ text_rich_50/layout_attr after_patch: subtree_measure_hits=3 subtree_measure_mis
 text_rich_50/text_content after_patch: subtree_measure_hits=2 subtree_measure_misses=3 resolve_hits=4 resolve_misses=3
 ```
 
-## Next slice 1: versioned cache keys and ix-native traversal cleanup
+## Completed slice: compact topology dependency cache keys
 
-Goal: reduce hot-path allocation/cloning in cache keys and make parent cache
-validation cheaper.
+Subtree-measure and resolve cache keys now use compact child/nearby topology
+versions instead of cloning child `NodeId` and nearby mount lists.
 
-Current conservative keys include child and nearby identity lists. That is
-correct and easy to reason about, but list cloning is not the long-term shape.
-The code also still has measure/resolve paths that call id-facing helpers such
-as `child_ids(...)`, `nearby_mounts_for(...)`, and `get(&NodeId)` after topology
-has already resolved to `NodeIx`. That compatibility shape is acceptable today,
-but it should be revisited when changing cache-key construction.
+Implemented shape:
 
-Future version fields may include:
+- `NodeLayoutState` owns `LayoutTopologyVersions`
+- `set_children_ix(...)`, `set_paint_children_ix(...)`, and `set_nearby_ixs(...)`
+  bump per-node topology versions only when order/membership/slot data changes
+- `TopologyDependencyKey` captures child and nearby versions plus counts
+- `SubtreeMeasureCacheKey` stores `TopologyDependencyKey` instead of
+  `children: Vec<NodeId>` and `nearby: Vec<NearbyMount>`
+- `ResolveCacheKey` stores the same compact dependency key
+- cache hit/miss/store behavior remains centralized in existing measure/resolve
+  cache lookup paths
+- ix-aware dependency-key extraction was added, while broader measure/resolve
+  traversal cleanup remains future work
 
-```rust
-struct NodeVersions {
-    spec_rev: u64,
-    runtime_layout_rev: u64,
-    measure_rev: u64,
-    resolve_rev: u64,
-    subtree_rev: u64,
-    topology_rev: u64,
-    nearby_rev: u64,
-}
+Focused tests cover child and nearby version bumps plus no-op writes. Existing
+cache tests cover keyed reorder, nearby changes, text-flow resolve caching, and
+relayout-boundary behavior with the new keys.
+
+Focused smoke after this slice:
+
+```text
+layout_matrix_50 warm_cache: resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+nearby_rich_50 warm_cache:  resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+text_rich_50 warm_cache:    resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+layout_matrix_50/keyed_reorder after_patch: subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=13 resolve_misses=2
+nearby_rich_50/keyed_reorder after_patch:  subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=13 resolve_misses=2
+text_rich_50/keyed_reorder after_patch:    subtree_measure_hits=11 subtree_measure_misses=2 resolve_hits=3 resolve_misses=12
+nearby_rich_50/nearby_slot_change after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=5 resolve_misses=2
 ```
 
-Guidelines:
+`text_rich_50/keyed_reorder` remains a future optimization target; correctness is
+preserved and cache outcomes remain hit/miss/store.
 
-- only replace list keys where a version captures the same dependency
-- keep explicit topology/order keys where order itself is the dependency
-- use stats/benchmarks to prove the allocation reduction matters
-
-Acceptance criteria:
-
-- no correctness regressions
-- less key construction/cloning in profiles
-- fewer repeated `NodeId -> NodeIx` lookups in measure/resolve hot paths where practical
-- cache hit behavior unchanged or improved
-
-## Next slice 2: refresh subtree skipping
+## Next slice 1: refresh subtree skipping
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.

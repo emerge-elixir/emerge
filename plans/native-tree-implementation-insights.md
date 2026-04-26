@@ -187,6 +187,7 @@ Layout-derived state:
 - resolve cache
 - measure/resolve dirty bits
 - descendant measurement traversal dirty bit
+- child/paint-child/nearby topology dependency versions
 
 This is the current home for layout cache state.
 
@@ -239,6 +240,7 @@ intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
 subtree_measure_cache: Option<SubtreeMeasureCache>,
 measure_dirty: bool,
 measure_descendant_dirty: bool,
+topology_versions: LayoutTopologyVersions,
 resolve_cache: Option<ResolveCache>,
 resolve_dirty: bool,
 ```
@@ -273,6 +275,33 @@ Implemented shape:
 
 Future key/version work should preserve this distinction between independently
 cacheable child layout and parent-owned derived flow layout.
+
+## Topology dependency key insight
+
+Child and nearby topology are cache dependencies, but cache keys do not need to
+clone child `NodeId` lists or nearby mount lists to express that dependency.
+The retained native tree now keeps compact per-node topology versions:
+
+```rust
+LayoutTopologyVersions {
+    children: u64,
+    paint_children: u64,
+    nearby: u64,
+}
+```
+
+`SubtreeMeasureCacheKey` and `ResolveCacheKey` store a `TopologyDependencyKey`
+containing child/nearby versions and counts. The versions bump when
+`set_children_ix(...)` or `set_nearby_ixs(...)` changes membership, order, or
+nearby slot data. No-op topology writes avoid version bumps where practical.
+
+This preserves the same cache dependency as the older list keys while reducing
+hot-path key cloning. Paint-child versions are tracked for future render/order
+work, but subtree/resolve layout keys currently use child and nearby topology
+versions because those are the dependencies the old keys represented.
+
+Future ix-native traversal cleanup should build on these compact dependency
+helpers rather than reintroducing cloned identity lists.
 
 ## Boundary APIs can stay id-based
 
@@ -396,9 +425,9 @@ combined invalidation is paint-only.
 
 The native tree now supports the next layout-caching stages:
 
-1. versioned cache keys plus more ix-native layout traversal where useful
-2. refresh subtree skipping
-3. broader relayout/dependency boundaries beyond fixed-size `El`/`None`
+1. refresh subtree skipping
+2. broader relayout/dependency boundaries beyond fixed-size `El`/`None`
+3. additional ix-native measure/resolve traversal cleanup where profiles justify it
 4. viewport/repeater-aware cache preservation
 
 See `layout-caching-roadmap.md` for the active implementation order.
