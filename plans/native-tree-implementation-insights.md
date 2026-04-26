@@ -398,6 +398,17 @@ layout-cache hit/miss/store activity because no layout cache was consulted.
 Registry chunk caches and any future refresh counters should stay separate and
 gated, not become layout-cache bypass categories.
 
+Refresh-only animation frames should avoid rebuilding effective attrs for the
+whole tree when no external invalidation is present. The safe incremental shape
+is to reset/scale only active animation nodes, apply the animation sample, and
+then apply interaction styling for those nodes. Patch, resize, runtime-state, and
+other externally dirty batches should keep the full preparation path.
+
+When registry damage is clean and a cached full registry exists, refresh output
+must not clone that full payload just to set `event_rebuild_changed=false`. The
+publisher ignores `event_rebuild` in that case, so refresh can compute IME state
+from the cached reference and return an empty placeholder payload.
+
 ## Boundary APIs can stay id-based
 
 Not every function must expose `NodeIx`. It is fine, and often clearer, for
