@@ -998,13 +998,16 @@ fn test_render_subtree_cache_matches_uncached_scene_after_sibling_paint_patch() 
 
     let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
     let cached_rebuild = initial_output.event_rebuild;
+    assert!(tree.get(&second_id).unwrap().refresh.render_cache.is_none());
+
+    refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
     let second_cache_before = tree
         .get(&second_id)
         .unwrap()
         .refresh
         .render_cache
         .clone()
-        .expect("warm refresh should store second child render cache");
+        .expect("clean refresh should seed second child render cache");
 
     let invalidation = apply_patches(
         &mut tree,
@@ -1015,6 +1018,12 @@ fn test_render_subtree_cache_matches_uncached_scene_after_sibling_paint_patch() 
     )
     .unwrap();
     assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+    assert!(tree.get(&first_id).unwrap().refresh.render_cache.is_none());
+    assert_eq!(
+        tree.get(&second_id).unwrap().refresh.render_cache.as_ref(),
+        Some(&second_cache_before)
+    );
 
     let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
     let uncached_scene = render_tree_scene(&tree).scene;
@@ -1073,6 +1082,9 @@ fn test_dirty_render_refresh_skips_lookup_key_builds_for_dirty_path() {
 
     let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
     let cached_rebuild = initial_output.event_rebuild;
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+    assert!(tree.get(&first_id).unwrap().refresh.render_cache.is_none());
+    assert!(tree.get(&second_id).unwrap().refresh.render_cache.is_none());
 
     let invalidation = apply_patches(
         &mut tree,
@@ -1092,6 +1104,24 @@ fn test_dirty_render_refresh_skips_lookup_key_builds_for_dirty_path() {
 
     assert_eq!(output.scene, render_tree_scene(&tree).scene);
     assert_eq!(render_subtree_cache_lookup_key_builds(), 1);
+}
+
+#[test]
+fn test_clean_refresh_seeds_small_render_cache_after_cold_layout() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+    assert!(tree.get(&text_id).unwrap().refresh.render_cache.is_none());
+
+    refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_some());
+    assert!(tree.get(&text_id).unwrap().refresh.render_cache.is_some());
 }
 
 #[test]
@@ -1136,13 +1166,15 @@ fn test_registry_only_root_refresh_reuses_render_cache() {
 
     let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
     let cached_rebuild = initial_output.event_rebuild;
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+    refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
     let root_cache_before = tree
         .get(&root_id)
         .unwrap()
         .refresh
         .render_cache
         .clone()
-        .expect("warm refresh should store root render cache");
+        .expect("clean refresh should seed root render cache");
 
     let invalidation = apply_patches(
         &mut tree,
