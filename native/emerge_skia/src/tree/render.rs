@@ -31,13 +31,13 @@ use super::transform::element_transform;
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
-#[cfg(test)]
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{self, Write};
 use std::hash::{Hash, Hasher};
 
 const RENDER_SUBTREE_CACHE_MAX_RENDER_NODES: usize = 128;
+const RENDER_SUBTREE_CACHE_STORE_BUDGET: usize = 32;
 
 #[cfg(test)]
 thread_local! {
@@ -186,6 +186,7 @@ impl<'a> RenderOutputs<'a> {
 struct RenderTraversal<'a> {
     scene_ctx: SceneContext,
     render_ctx: &'a RenderBuildContext,
+    cache_store_budget: &'a Cell<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -280,6 +281,7 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
         text_input_focused: &mut text_input_focused,
         text_input_cursor_area: &mut text_input_cursor_area,
     };
+    let cache_store_budget = Cell::new(0);
     let subtree = build_element_subtree(
         tree,
         root_ix,
@@ -288,6 +290,7 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
         RenderTraversal {
             scene_ctx: SceneContext::default(),
             render_ctx: &render_ctx,
+            cache_store_budget: &cache_store_budget,
         },
     );
 
@@ -301,6 +304,10 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
 }
 
 pub(crate) fn render_tree_scene_cached(tree: &mut ElementTree) -> RenderSceneOutput {
+    if tree.has_render_refresh_damage() && !tree.has_render_subtree_cache() {
+        return render_tree_scene(tree);
+    }
+
     let Some(root_ix) = tree.root_ix() else {
         return RenderSceneOutput {
             scene: RenderScene::default(),
@@ -313,6 +320,11 @@ pub(crate) fn render_tree_scene_cached(tree: &mut ElementTree) -> RenderSceneOut
         scene_bounds: scene_bounds_for_root(tree, root_ix),
         ..RenderBuildContext::default()
     };
+    let cache_store_budget = Cell::new(if tree.has_render_refresh_damage() {
+        0
+    } else {
+        RENDER_SUBTREE_CACHE_STORE_BUDGET
+    });
     let subtree = build_element_subtree_cached(
         tree,
         root_ix,
@@ -320,6 +332,7 @@ pub(crate) fn render_tree_scene_cached(tree: &mut ElementTree) -> RenderSceneOut
         RenderTraversal {
             scene_ctx: SceneContext::default(),
             render_ctx: &render_ctx,
+            cache_store_budget: &cache_store_budget,
         },
     );
 
@@ -394,6 +407,7 @@ fn build_element_subtree(
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
             render_ctx: traversal.render_ctx,
+            cache_store_budget: traversal.cache_store_budget,
         },
         scene_state.clone(),
     );
@@ -464,14 +478,17 @@ fn build_element_subtree_cached(
     };
 
     let render_damage = element.refresh.render_dirty || element.refresh.render_descendant_dirty;
-    let lookup_key = if render_damage {
-        None
-    } else {
+    let has_existing_cache = tree
+        .get_ix(ix)
+        .is_some_and(|element| element.refresh.render_cache.is_some());
+    let lookup_key = if !render_damage && has_existing_cache {
         #[cfg(test)]
         record_render_subtree_cache_lookup_key_build();
         Some(render_subtree_key(
             tree, ix, &element, inherited, &traversal,
         ))
+    } else {
+        None
     };
 
     if let Some(key) = lookup_key.as_ref()
@@ -514,6 +531,7 @@ fn build_element_subtree_cached(
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
             render_ctx: traversal.render_ctx,
+            cache_store_budget: traversal.cache_store_budget,
         },
         scene_state.clone(),
     );
@@ -611,10 +629,20 @@ fn should_store_render_subtree_cache(
     traversal: &RenderTraversal<'_>,
     subtree: &RenderSubtree,
 ) -> bool {
-    !render_damage
-        && !scene_context_has_scroll_offset(&traversal.scene_ctx)
-        && !is_scroll_container(element)
-        && subtree.render_node_count() <= RENDER_SUBTREE_CACHE_MAX_RENDER_NODES
+    if render_damage
+        || scene_context_has_scroll_offset(&traversal.scene_ctx)
+        || is_scroll_container(element)
+    {
+        return false;
+    }
+
+    let remaining = traversal.cache_store_budget.get();
+    if remaining == 0 || subtree.render_node_count() > RENDER_SUBTREE_CACHE_MAX_RENDER_NODES {
+        return false;
+    }
+
+    traversal.cache_store_budget.set(remaining - 1);
+    true
 }
 
 fn scene_context_has_scroll_offset(scene_ctx: &SceneContext) -> bool {
@@ -785,6 +813,7 @@ fn build_host_content_subtree_cached(
                 RenderTraversal {
                     scene_ctx: traversal.scene_ctx.clone(),
                     render_ctx: &child_render_ctx,
+                    cache_store_budget: traversal.cache_store_budget,
                 },
                 scene_state.clone(),
             );
@@ -811,6 +840,7 @@ fn build_host_content_subtree_cached(
                         RenderTraversal {
                             scene_ctx: traversal.scene_ctx.clone(),
                             render_ctx: &child_render_ctx,
+                            cache_store_budget: traversal.cache_store_budget,
                         },
                         scene_state.clone(),
                     );
@@ -824,6 +854,7 @@ fn build_host_content_subtree_cached(
                         RenderTraversal {
                             scene_ctx: child_scene_ctx.clone(),
                             render_ctx: &child_render_ctx,
+                            cache_store_budget: traversal.cache_store_budget,
                         },
                     );
                     subtree.extend_local(branch_subtree);
@@ -857,6 +888,7 @@ fn build_host_content_subtree_cached(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx,
+                cache_store_budget: traversal.cache_store_budget,
             },
             scene_state.clone(),
             current_host_clip.clip,
@@ -878,6 +910,7 @@ fn build_host_content_subtree_cached(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx.without_host_clips(),
+                cache_store_budget: traversal.cache_store_budget,
             },
             scene_state.clone(),
         ));
@@ -903,6 +936,7 @@ fn build_nearby_mount_subtree_cached(
                 .map(|state| next_scene_context(state, slot.spec().phase))
                 .unwrap_or_default(),
             render_ctx: traversal.render_ctx,
+            cache_store_budget: traversal.cache_store_budget,
         },
     )
 }
@@ -939,6 +973,7 @@ fn build_paragraph_subtree_cached(
                     RenderTraversal {
                         scene_ctx: child_scene_ctx.clone(),
                         render_ctx: traversal.render_ctx,
+                        cache_store_budget: traversal.cache_store_budget,
                     },
                 );
                 subtree.extend_local(child_subtree);
@@ -1029,6 +1064,7 @@ fn build_host_content_subtree(
                 RenderTraversal {
                     scene_ctx: traversal.scene_ctx.clone(),
                     render_ctx: &child_render_ctx,
+                    cache_store_budget: traversal.cache_store_budget,
                 },
                 scene_state.clone(),
             );
@@ -1046,6 +1082,7 @@ fn build_host_content_subtree(
                     RenderTraversal {
                         scene_ctx: traversal.scene_ctx.clone(),
                         render_ctx: &child_render_ctx,
+                        cache_store_budget: traversal.cache_store_budget,
                     },
                     scene_state.clone(),
                 );
@@ -1068,6 +1105,7 @@ fn build_host_content_subtree(
                             })
                             .unwrap_or_default(),
                         render_ctx: &child_render_ctx,
+                        cache_store_budget: traversal.cache_store_budget,
                     },
                 );
                 subtree.extend_local(branch_subtree);
@@ -1098,6 +1136,7 @@ fn build_host_content_subtree(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx,
+                cache_store_budget: traversal.cache_store_budget,
             },
             scene_state.clone(),
             current_host_clip.clip,
@@ -1121,6 +1160,7 @@ fn build_host_content_subtree(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx.without_host_clips(),
+                cache_store_budget: traversal.cache_store_budget,
             },
             scene_state.clone(),
         ));
@@ -1148,6 +1188,7 @@ fn build_nearby_mount_subtree(
                 .map(|state| next_scene_context(state, slot.spec().phase))
                 .unwrap_or_default(),
             render_ctx: traversal.render_ctx,
+            cache_store_budget: traversal.cache_store_budget,
         },
     )
 }
@@ -1183,6 +1224,7 @@ fn build_paragraph_subtree(
                 RenderTraversal {
                     scene_ctx: child_scene_ctx.clone(),
                     render_ctx: traversal.render_ctx,
+                    cache_store_budget: traversal.cache_store_budget,
                 },
             );
             subtree.extend_local(child_subtree);

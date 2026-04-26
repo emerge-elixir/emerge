@@ -1103,7 +1103,7 @@ fn test_dirty_render_refresh_skips_lookup_key_builds_for_dirty_path() {
     let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
 
     assert_eq!(output.scene, render_tree_scene(&tree).scene);
-    assert_eq!(render_subtree_cache_lookup_key_builds(), 1);
+    assert_eq!(render_subtree_cache_lookup_key_builds(), 0);
 }
 
 #[test]

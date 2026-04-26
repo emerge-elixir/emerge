@@ -57,8 +57,8 @@ Already implemented:
 - retained render subtree caching/skipping for clean render subtrees
 - render-cache regression guards comparing cached and uncached refresh paths,
   including cold upload/switch paths, with dirty/full rebuild cache-store
-  deferral and scroll-offset cache bypass to avoid immediately stale retained
-  scenes
+  deferral, damaged-no-cache fallback to the uncached renderer, and scroll-offset
+  cache bypass to avoid immediately stale retained scenes
 
 Still open:
 
