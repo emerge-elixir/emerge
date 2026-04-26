@@ -4863,6 +4863,24 @@ pub fn layout_and_refresh_default(
     output
 }
 
+#[doc(hidden)]
+pub fn layout_and_refresh_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+) -> LayoutOutput {
+    let animations_active = layout_tree_default_with_animation(
+        tree,
+        constraint,
+        scale,
+        &AnimationRuntime::default(),
+        Instant::now(),
+    );
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = animations_active;
+    output
+}
+
 pub fn layout_and_refresh_default_with_animation(
     tree: &mut ElementTree,
     constraint: Constraint,

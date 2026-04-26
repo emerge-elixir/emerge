@@ -1588,6 +1588,7 @@ impl ElementTree {
             element.layout.resolve_dirty = true;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
+            element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
         });
@@ -1598,6 +1599,7 @@ impl ElementTree {
             element.layout.resolve_dirty = true;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
+            element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
         });
@@ -1638,6 +1640,7 @@ impl ElementTree {
         while let Some(ix) = current_ix {
             if let Some(element) = self.get_ix_mut(ix) {
                 if render {
+                    element.refresh.render_cache = None;
                     if origin {
                         element.refresh.render_dirty = true;
                         element.refresh.render_descendant_dirty = false;
