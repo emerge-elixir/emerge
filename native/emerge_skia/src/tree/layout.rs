@@ -461,13 +461,13 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
         constraint,
         measurer,
         inherited,
-        animation_result,
+        &animation_result,
     );
 
     animation_result.active
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FrameAttrsPreparation {
     pub(crate) root_id: Option<NodeId>,
     pub(crate) animation_result: AnimationOverlayResult,
@@ -489,7 +489,7 @@ pub(crate) fn prepare_frame_attrs_for_update(
 
 pub(crate) fn prepared_root_has_frame(
     tree: &ElementTree,
-    preparation: FrameAttrsPreparation,
+    preparation: &FrameAttrsPreparation,
 ) -> bool {
     preparation
         .root_id
@@ -519,37 +519,30 @@ fn run_layout_passes<M: TextMeasurer>(
     constraint: Constraint,
     measurer: &M,
     inherited: &FontContext,
-    animation_result: AnimationOverlayResult,
+    animation_result: &AnimationOverlayResult,
 ) {
-    let use_measure_cache = use_measure_cache_for_animation(animation_result);
-    let use_resolve_cache = use_resolve_cache_for_animation(animation_result);
+    mark_animation_layout_effects_dirty(tree, animation_result);
 
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, root_id, measurer, inherited, use_measure_cache);
-
-    if !use_resolve_cache {
-        tree.mark_all_resolve_dirty();
-    }
+    measure_element(tree, root_id, measurer, inherited, true);
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(
-        tree,
-        root_id,
-        constraint,
-        0.0,
-        0.0,
-        inherited,
-        measurer,
-        use_resolve_cache,
+        tree, root_id, constraint, 0.0, 0.0, inherited, measurer, true,
     );
 }
 
-fn use_measure_cache_for_animation(animation_result: AnimationOverlayResult) -> bool {
-    !animation_result.active || !animation_result.invalidation.requires_measure()
-}
-
-fn use_resolve_cache_for_animation(animation_result: AnimationOverlayResult) -> bool {
-    !animation_result.active || !animation_result.invalidation.requires_resolve()
+fn mark_animation_layout_effects_dirty(
+    tree: &mut ElementTree,
+    animation_result: &AnimationOverlayResult,
+) {
+    animation_result
+        .effects
+        .iter()
+        .filter(|effect| effect.invalidation.requires_recompute())
+        .for_each(|effect| {
+            tree.mark_measure_dirty_for_invalidation(&effect.id, effect.invalidation)
+        });
 }
 
 /// Layout with default Skia text measurer.
@@ -4741,7 +4734,7 @@ pub fn layout_or_refresh_default_with_animation(
 ) -> LayoutUpdateOutput {
     let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
     let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
-        && prepared_root_has_frame(tree, preparation);
+        && prepared_root_has_frame(tree, &preparation);
 
     if can_refresh_without_layout {
         refresh_prepared_default(tree, preparation)
@@ -4762,7 +4755,7 @@ pub(crate) fn layout_and_refresh_prepared_default(
             constraint,
             &SkiaTextMeasurer,
             &FontContext::default(),
-            preparation.animation_result,
+            &preparation.animation_result,
         );
         true
     } else {

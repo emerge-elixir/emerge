@@ -339,7 +339,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 registry_requested,
                 RefreshAvailability {
                     has_cached_rebuild: cached_rebuild.is_some(),
-                    has_root_frame: plan.preparation.map_or_else(
+                    has_root_frame: plan.preparation.as_ref().map_or_else(
                         || tree_has_root_frame(&tree),
                         |preparation| prepared_root_has_frame(&tree, preparation),
                     ),
@@ -456,7 +456,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
     })
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct FrameUpdatePlan {
     invalidation: TreeInvalidation,
     animations_active: bool,

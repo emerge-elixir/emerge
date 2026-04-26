@@ -623,8 +623,143 @@ fn test_layout_cache_stats_report_layout_affecting_animation_cache_misses() {
     assert!(animations_active);
     assert!(stats.subtree_measure_misses > 0);
     assert!(stats.resolve_misses > 0);
-    assert_eq!(stats.subtree_measure_stores, 0);
-    assert_eq!(stats.resolve_stores, 0);
+    assert!(stats.subtree_measure_stores > 0);
+    assert!(stats.resolve_stores > 0);
+}
+
+#[test]
+fn test_measure_affecting_animation_preserves_unrelated_sibling_cache_reuse() {
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+
+    let root = make_element("root", ElementKind::Row, Attrs::default());
+    let root_id = root.id;
+
+    let mut animated_attrs = Attrs::default();
+    animated_attrs.height = Some(Length::Px(20.0));
+    let mut start_attrs = Attrs::default();
+    start_attrs.width = Some(Length::Px(20.0));
+    let mut end_attrs = Attrs::default();
+    end_attrs.width = Some(Length::Px(60.0));
+    animated_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+    let animated = make_element("animated", ElementKind::El, animated_attrs);
+    let animated_id = animated.id;
+
+    let text = make_element("text", ElementKind::Text, text_attrs("Sibling"));
+    let text_id = text.id;
+    let measurer = CountingTextMeasurer::default();
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(animated);
+    tree.insert(text);
+    tree.set_children(&root_id, vec![animated_id, text_id])
+        .unwrap();
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &measurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start),
+    ));
+    let first_calls = measurer.total_calls();
+    assert!(first_calls > 0);
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &measurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start + Duration::from_millis(25)),
+    ));
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(measurer.total_calls(), first_calls);
+    assert!(stats.subtree_measure_misses > 0);
+    assert!(stats.subtree_measure_hits > 0);
+    assert!(stats.subtree_measure_stores > 0);
+}
+
+#[test]
+fn test_resolve_affecting_animation_does_not_remeasure_text() {
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(200.0));
+    root_attrs.height = Some(Length::Px(60.0));
+    let root = make_element("root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+
+    let mut text_element_attrs = text_attrs("Aligned");
+    let mut start_attrs = Attrs::default();
+    start_attrs.align_x = Some(AlignX::Left);
+    let mut end_attrs = Attrs::default();
+    end_attrs.align_x = Some(AlignX::Right);
+    text_element_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+    let text = make_element("text", ElementKind::Text, text_element_attrs);
+    let text_id = text.id;
+    let measurer = CountingTextMeasurer::default();
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(text);
+    tree.set_children(&root_id, vec![text_id]).unwrap();
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &measurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start),
+    ));
+    let first_calls = measurer.total_calls();
+    assert!(first_calls > 0);
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &measurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start + Duration::from_millis(75)),
+    ));
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(measurer.total_calls(), first_calls);
+    assert!(stats.subtree_measure_hits > 0);
+    assert_eq!(stats.intrinsic_measure_misses, 0);
+    assert!(stats.resolve_misses > 0);
+    assert_eq!(
+        tree.get(&text_id).unwrap().layout.effective.align_x,
+        Some(AlignX::Right)
+    );
 }
 
 #[test]
@@ -807,7 +942,7 @@ fn test_paint_only_shadow_patch_refresh_skips_layout() {
             false,
             RefreshAvailability {
                 has_cached_rebuild: false,
-                has_root_frame: prepared_root_has_frame(&tree, preparation),
+                has_root_frame: prepared_root_has_frame(&tree, &preparation),
             },
         ),
         RefreshDecision::RefreshOnly
@@ -902,7 +1037,7 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
             false,
             RefreshAvailability {
                 has_cached_rebuild: false,
-                has_root_frame: prepared_root_has_frame(&tree, preparation),
+                has_root_frame: prepared_root_has_frame(&tree, &preparation),
             },
         ),
         RefreshDecision::RefreshOnly
