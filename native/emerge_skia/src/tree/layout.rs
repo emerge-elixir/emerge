@@ -1931,19 +1931,38 @@ fn resolve_element<M: TextMeasurer>(
     let resolve_kind_eligible = resolve_cache_kind_eligible(kind);
     let cache_eligible = use_resolve_cache && resolve_kind_eligible;
 
-    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty || resolve_descendant_dirty {
-        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
-    } else if cache_eligible {
-        let key = resolve_cache_key(
+    let cache_key = cache_eligible.then(|| {
+        resolve_cache_key(
             kind,
             &attrs,
             inherited,
             measured_frame,
             constraint,
             topology_key,
-        );
+        )
+    });
 
-        if try_reuse_resolve_cache(tree, id, &key, x, y) {
+    if resolve_descendant_dirty
+        && !resolve_dirty
+        && let Some(key) = cache_key.as_ref()
+        && try_reuse_resolve_cache_with_dirty_descendants(
+            tree,
+            id,
+            key,
+            x,
+            y,
+            inherited,
+            measurer,
+            use_resolve_cache,
+        )
+    {
+        return;
+    }
+
+    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty || resolve_descendant_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
+    } else if let Some(key) = cache_key.as_ref() {
+        if try_reuse_resolve_cache(tree, id, key, x, y) {
             return;
         }
     }
@@ -2198,6 +2217,181 @@ fn try_reuse_resolve_cache(
     }
 
     true
+}
+
+fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &ResolveCacheKey,
+    x: f32,
+    y: f32,
+    inherited: &FontContext,
+    measurer: &M,
+    use_resolve_cache: bool,
+) -> bool {
+    let snapshot = tree.get(id).and_then(|element| {
+        Some((
+            element.layout.resolve_cache.as_ref()?.clone(),
+            element.layout.frame?,
+            element.layout.effective.clone(),
+            element.spec.kind,
+            element.layout.measured_frame,
+            element.layout.resolve_dirty,
+            element.layout.resolve_descendant_dirty,
+            tree.child_ids(id),
+            tree.nearby_mounts_for(id),
+        ))
+    });
+
+    let Some((
+        cache,
+        current_frame,
+        attrs,
+        kind,
+        _measured_frame,
+        resolve_dirty,
+        resolve_descendant_dirty,
+        child_ids,
+        nearby_mounts,
+    )) = snapshot
+    else {
+        return false;
+    };
+
+    if resolve_dirty
+        || !resolve_descendant_dirty
+        || !resolve_cache_key_matches_with_nearby_boundary(&cache.key, key)
+    {
+        return false;
+    }
+
+    let full_key_match = cache.key == *key;
+    let target_frame = frame_from_resolve_extent(cache.extent, x, y);
+    tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
+    shift_subtree(
+        tree,
+        id,
+        target_frame.x - current_frame.x,
+        target_frame.y - current_frame.y,
+    );
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(target_frame);
+        element.layout.resolve_dirty = false;
+    }
+
+    let element_context = inherited.merge_with_attrs(&attrs);
+    let dirty_child_ids: Vec<NodeId> = child_ids
+        .iter()
+        .filter(|child_id| node_needs_resolve_traversal(tree, child_id))
+        .copied()
+        .collect();
+
+    for child_id in &dirty_child_ids {
+        let Some((child_key, child_x, child_y)) =
+            resolve_cache_key_for_existing_frame(tree, child_id, &element_context)
+        else {
+            return false;
+        };
+
+        if !try_reuse_resolve_cache_with_dirty_descendants(
+            tree,
+            child_id,
+            &child_key,
+            child_x,
+            child_y,
+            &element_context,
+            measurer,
+            use_resolve_cache,
+        ) {
+            return false;
+        }
+    }
+
+    let nearby_needs_traversal = !full_key_match
+        || nearby_mounts
+            .iter()
+            .any(|mount| node_needs_resolve_traversal(tree, &mount.id));
+
+    if nearby_needs_traversal {
+        resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
+    }
+
+    if use_resolve_cache
+        && !full_key_match
+        && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
+    {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
+        if let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+            && let Some(element) = tree.get_mut(id)
+        {
+            element.layout.resolve_cache = Some(ResolveCache {
+                key: key.clone(),
+                extent: resolve_extent(frame),
+            });
+        }
+    }
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.resolve_dirty = false;
+        element.layout.resolve_descendant_dirty = false;
+    }
+
+    true
+}
+
+fn resolve_cache_key_for_existing_frame(
+    tree: &ElementTree,
+    id: &NodeId,
+    inherited: &FontContext,
+) -> Option<(ResolveCacheKey, f32, f32)> {
+    let element = tree.get(id)?;
+    let frame = element.layout.frame?;
+    let cached_constraint = element.layout.resolve_cache.as_ref()?.key.constraint;
+    let key = resolve_cache_key(
+        element.spec.kind,
+        &element.layout.effective,
+        inherited,
+        element.layout.measured_frame,
+        constraint_from_resolve_constraint_key(cached_constraint),
+        tree.topology_dependency_key_for(id),
+    );
+
+    Some((key, frame.x, frame.y))
+}
+
+fn constraint_from_resolve_constraint_key(key: ResolveConstraintKey) -> Constraint {
+    Constraint {
+        width: available_space_from_resolve_key(key.width),
+        height: available_space_from_resolve_key(key.height),
+    }
+}
+
+fn available_space_from_resolve_key(key: ResolveAvailableSpaceKey) -> AvailableSpace {
+    match key {
+        ResolveAvailableSpaceKey::Definite(value) => AvailableSpace::Definite(value),
+        ResolveAvailableSpaceKey::MinContent => AvailableSpace::MinContent,
+        ResolveAvailableSpaceKey::MaxContent => AvailableSpace::MaxContent,
+    }
+}
+
+fn node_needs_resolve_traversal(tree: &ElementTree, id: &NodeId) -> bool {
+    tree.get(id).is_some_and(|element| {
+        element.layout.resolve_dirty || element.layout.resolve_descendant_dirty
+    })
+}
+
+fn resolve_cache_key_matches_with_nearby_boundary(
+    cached: &ResolveCacheKey,
+    current: &ResolveCacheKey,
+) -> bool {
+    cached.kind == current.kind
+        && cached.attrs == current.attrs
+        && cached.inherited == current.inherited
+        && cached.measured_frame == current.measured_frame
+        && cached.constraint == current.constraint
+        && cached.topology.children_version == current.topology.children_version
+        && cached.topology.child_count == current.topology.child_count
 }
 
 fn can_store_resolve_cache(

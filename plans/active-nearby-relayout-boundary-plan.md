@@ -2,11 +2,10 @@
 
 Last updated: 2026-04-26.
 
-Status: partially implemented. The benchmark guard, nearby topology
-classification, and measurement boundary are implemented. Resolve traversal is
-safe but still conservative: ancestor resolve caches are not allowed to hide
-dirty nearby descendants, but broader work remains to avoid visiting clean
-siblings/ancestors in large trees.
+Status: implemented and locally validated. Nearby topology classification,
+measurement boundaries, and resolve traversal through dirty nearby descendants
+are in place. Focused demo validation remains useful before deleting this active
+plan file.
 
 ## Motivation
 
@@ -158,16 +157,16 @@ Post-implementation guard shape with the same command:
 nearby_code_hide_50/nearby_slot_change after_patch:
   intrinsic misses=0 stores=0
   subtree hits=14 misses=0 stores=0
-  resolve hits=11 misses=3 stores=3
-  layout_only median ~= 21.7 µs
-  patch_then_layout median ~= 28.7 µs  # short-run timing remained noisy
+  resolve hits=3 misses=0 stores=1
+  layout_only median ~= 13.7 µs
+  patch_then_layout median ~= 32.7 µs  # short-run timing remained noisy
 
 nearby_code_show_50/nearby_slot_change after_patch:
   intrinsic misses=3 stores=3
   subtree hits=14 misses=4 stores=4
-  resolve hits=11 misses=7 stores=7
-  layout_only median ~= 26.4 µs
-  patch_then_layout median ~= 54.4 µs  # short-run timing remained noisy
+  resolve hits=3 misses=4 stores=5
+  layout_only median ~= 27.1 µs
+  patch_then_layout median ~= 52.5 µs  # short-run timing remained noisy
 ```
 
 Focused retained-layout smoke after implementation:
@@ -176,22 +175,23 @@ Focused retained-layout smoke after implementation:
 layout_matrix_50/nearby_slot_change after_patch:
   intrinsic misses=0 stores=0
   subtree hits=5 misses=0 stores=0
-  resolve hits=5 misses=2 stores=2
+  resolve hits=3 misses=0 stores=1
 
 nearby_rich_50/nearby_slot_change after_patch:
   intrinsic misses=0 stores=0
   subtree hits=5 misses=0 stores=0
-  resolve hits=5 misses=2 stores=2
+  resolve hits=3 misses=0 stores=1
 
 text_rich_50/nearby_slot_change after_patch:
   intrinsic misses=0 stores=0
   subtree hits=5 misses=0 stores=0
-  resolve hits=5 misses=2 stores=2
+  resolve hits=3 misses=0 stores=1
 ```
 
 The primary improvement in this slice is the counter shape: nearby hide no
-longer causes host/ancestor subtree-measure misses, and nearby show only stores
-measurement for the newly inserted nearby subtree.
+longer causes host/ancestor subtree-measure or resolve misses, and nearby show
+only stores measurement/resolve entries for the newly inserted nearby subtree
+plus the host's updated nearby topology key.
 
 ## Slice 2: classify nearby topology invalidation — done
 
@@ -271,7 +271,7 @@ Acceptance:
 - unrelated siblings are not measured again
 - layout-cache counters show localized misses for the nearby path
 
-## Slice 4: resolve traversal boundary for nearby changes — partially done
+## Slice 4: resolve traversal boundary for nearby changes — done
 
 Tasks:
 
@@ -288,19 +288,22 @@ Tasks:
   - `InFront`
 - preserve scroll extents, transforms, clips, and paragraph fragments
 
-Implemented so far:
+Implemented shape:
 
 - `NodeLayoutState` now has `resolve_descendant_dirty`
-- clean ancestor resolve-cache hits are blocked when a dirty nearby descendant
-  must be reached
-- resolve dirty state is cleared after successful resolve-cache hits/stores
+- clean ancestor resolve-cache hits are allowed to restore ancestor geometry
+  while still traversing dirty descendant paths
+- nearby topology changes can reuse host/ancestor resolve geometry while
+  resolving updated nearby mounts and storing the host's updated nearby topology
+  key
+- clean siblings are not visited only to record resolve-cache hits
+- cached-vs-uncached resolved-frame coverage was added for a representative
+  nearby slot change
 
-Remaining work:
+Future broadening:
 
-- avoid visiting clean siblings/ancestors in large trees when only nearby overlay
-  topology changed
 - add broader cached-vs-uncached resolved-frame tests for all nearby slots if the
-  resolve traversal is optimized further
+  resolve traversal is generalized beyond nearby topology changes
 
 Acceptance:
 
@@ -308,7 +311,7 @@ Acceptance:
 - nearby overlay show/hide updates only affected placement/output
 - focus/event registry and render scene remain correct after resolve reuse
 
-## Slice 5: focused demo smoke and docs — partially done
+## Slice 5: focused demo smoke and docs — done locally; focused app smoke still useful
 
 Tasks:
 

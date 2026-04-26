@@ -53,8 +53,8 @@ Relevant files:
 The remaining work is about making reuse broader, cheaper, and more precise:
 
 - relayout/dependency boundaries currently cover fixed-size `El`/`None`
-  parents and nearby overlay measurement; row/column, scrollable, broader nearby
-  resolve traversal, and text-flow boundaries remain conservative
+  parents and nearby overlay topology; row/column, scrollable, and text-flow
+  boundaries remain conservative
 - cache keys no longer clone child/nearby identity lists, and render subtree
   keys no longer allocate joined debug strings, but attrs and some traversal
   helpers still allocate/clone in hot paths
@@ -87,10 +87,11 @@ refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
 layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
 boundary is implemented, nearby topology no longer invalidates host/ancestor
-subtree measurement, topology dependencies now use compact version keys, render
-refresh can skip clean retained subtrees, and registry refresh has conservative
-chunk-cache infrastructure. Broader resolve traversal boundaries, additional
-typed version keys, and cheaper registry chunk seeding remain future work.
+subtree measurement or resolve geometry, topology dependencies now use compact
+version keys, render refresh can skip clean retained subtrees, and registry
+refresh has conservative chunk-cache infrastructure. Broader layout boundaries,
+additional typed version keys, and cheaper registry chunk seeding remain future
+work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -322,10 +323,9 @@ Temporary active plan: `active-nearby-relayout-boundary-plan.md`.
 Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
 instead of dirtying broad host/ancestor measurement and resolve paths.
 
-Status: benchmark guard, invalidation classification, and subtree-measure
-boundary are implemented. Resolve remains conservative: dirty nearby descendants
-are reachable, but large trees may still visit clean siblings/ancestors during
-resolve until a later traversal boundary is added.
+Status: benchmark guard, invalidation classification, subtree-measure boundary,
+and resolve traversal through dirty nearby descendants are implemented and
+locally validated.
 
 Observed motivation from the Borders page hover/unhover code-block case:
 
@@ -351,13 +351,10 @@ Implemented direction:
   does not depend on nearby mounts
 - traversal dirtiness keeps dirty nearby descendants reachable below cached
   measurement ancestors
+- resolve-cache hits can restore clean ancestor geometry while traversing the
+  dirty nearby path, avoiding visits to unrelated clean siblings
 - render/registry damage remains conservative for paint ordering and event
   precedence
-
-Remaining nearby direction:
-
-- reduce conservative resolve traversal so dirty nearby changes do not require
-  visiting unrelated clean siblings in large trees
 
 ## Later slice: broaden other relayout/dependency boundaries
 
