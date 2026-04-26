@@ -1,7 +1,9 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use emerge_skia::events::RegistryRebuildPayload;
+use emerge_skia::events::{
+    RegistryRebuildPayload, registry_builder::build_registry_rebuild_for_benchmark,
+};
 use emerge_skia::tree::animation::AnimationRuntime;
 use emerge_skia::tree::deserialize::decode_tree;
 use emerge_skia::tree::element::ElementTree;
@@ -46,6 +48,14 @@ const RENDER_REFRESH_REGRESSION_FIXTURE_CASES: &[(&str, &str)] = &[
     ("nearby_rich_500", "paint_attr"),
     ("nearby_rich_500", "nearby_slot_change"),
     ("layout_matrix_500", "paint_attr"),
+];
+
+const REGISTRY_REFRESH_REGRESSION_FIXTURE_CASES: &[(&str, &str)] = &[
+    ("interactive_rich_500", "event_attr"),
+    ("nearby_rich_500", "event_attr"),
+    ("nearby_rich_500", "nearby_slot_change"),
+    ("scroll_rich_500", "event_attr"),
+    ("text_rich_500", "event_attr"),
 ];
 
 fn bench_large_text_column(c: &mut Criterion) {
@@ -761,6 +771,121 @@ fn bench_animation_refresh_regression_pair(
     });
 }
 
+fn bench_registry_refresh_cache_regression(c: &mut Criterion) {
+    let constraint = Constraint::new(960.0, 4_000.0);
+    let mut group = c.benchmark_group("native/registry_refresh_cache_regression");
+
+    for (fixture_id, mutation) in REGISTRY_REFRESH_REGRESSION_FIXTURE_CASES {
+        let fixture = load_fixture(fixture_id);
+        let base_tree = decode_tree(&fixture.full_emrg).expect("fixture tree should decode");
+        let node_count = base_tree.len() as u64;
+        let mut warmed_base = base_tree;
+        let warm_output = layout_and_refresh_default(&mut warmed_base, constraint, 1.0);
+        let cached_rebuild = warm_output.event_rebuild;
+        let decoded_patches =
+            decode_patches(fixture.patch_bytes(mutation)).expect("fixture patch should decode");
+        let patch_bytes = fixture.patch_bytes(mutation).to_vec();
+        let case = format!("{fixture_id}/{mutation}");
+
+        group.throughput(Throughput::Elements(node_count));
+        bench_registry_full_rebuild(&mut group, &case, warmed_base.clone());
+        bench_registry_clean_reuse(
+            &mut group,
+            &case,
+            warmed_base.clone(),
+            cached_rebuild.clone(),
+        );
+        bench_registry_after_patch_full_rebuild(
+            &mut group,
+            &case,
+            warmed_base.clone(),
+            decoded_patches,
+            constraint,
+        );
+        bench_registry_patch_full_rebuild(&mut group, &case, warmed_base, patch_bytes, constraint);
+    }
+
+    group.finish();
+}
+
+fn bench_registry_full_rebuild(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: &str,
+    warmed_base: ElementTree,
+) {
+    group.bench_function(format!("{case}/full_registry_rebuild"), move |b| {
+        b.iter(|| {
+            let rebuild = build_registry_rebuild_for_benchmark(&warmed_base);
+            consume_registry_rebuild(rebuild)
+        });
+    });
+}
+
+fn bench_registry_clean_reuse(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: &str,
+    warmed_base: ElementTree,
+    cached_rebuild: RegistryRebuildPayload,
+) {
+    let mut tree = warmed_base;
+    group.bench_function(format!("{case}/clean_registry_reuse"), move |b| {
+        b.iter(|| {
+            let output =
+                refresh_reusing_clean_registry_for_benchmark(&mut tree, Some(&cached_rebuild));
+            consume_layout_output(output)
+        });
+    });
+}
+
+fn bench_registry_after_patch_full_rebuild(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: &str,
+    warmed_base: ElementTree,
+    decoded_patches: Vec<Patch>,
+    constraint: Constraint,
+) {
+    group.bench_function(format!("{case}/after_patch_full_registry"), move |b| {
+        b.iter_batched(
+            || prepare_after_patch_refresh_tree(&warmed_base, &decoded_patches, constraint),
+            |tree| {
+                let rebuild = build_registry_rebuild_for_benchmark(&tree);
+                consume_registry_rebuild(rebuild)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_registry_patch_full_rebuild(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: &str,
+    warmed_base: ElementTree,
+    patch_bytes: Vec<u8>,
+    constraint: Constraint,
+) {
+    group.bench_function(format!("{case}/patch_full_registry"), move |b| {
+        b.iter_batched(
+            || (warmed_base.clone(), patch_bytes.clone()),
+            |(mut tree, bytes)| {
+                apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
+                let rebuild = build_registry_rebuild_for_benchmark(&tree);
+                consume_registry_rebuild(rebuild)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn consume_registry_rebuild(rebuild: RegistryRebuildPayload) {
+    black_box((
+        rebuild.text_inputs.len(),
+        rebuild.scrollbars.len(),
+        rebuild.focused_id.is_some(),
+        rebuild.focus_on_mount.is_some(),
+    ));
+    black_box(rebuild.base_registry);
+}
+
 fn consume_layout_update_output(output: emerge_skia::tree::layout::LayoutUpdateOutput) {
     black_box((
         output.output.scene.nodes.len(),
@@ -790,6 +915,7 @@ criterion_group!(
     bench_scrolling_animated_shadow_showcase,
     bench_fixture_retained_layout_after_patch,
     bench_fixture_retained_patch_layout,
-    bench_render_refresh_cache_regression
+    bench_render_refresh_cache_regression,
+    bench_registry_refresh_cache_regression
 );
 criterion_main!(benches);

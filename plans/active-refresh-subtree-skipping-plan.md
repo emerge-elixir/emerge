@@ -429,7 +429,7 @@ Implementation acceptance:
 
 Goal: make event registry rebuild proportional to registry damage, not tree size.
 
-### Slice 5a: registry regression guard — first
+### Slice 5a: registry regression guard — done
 
 Do not start the registry chunk implementation until this guard exists and has a
 recorded baseline. This is the lesson from the render-cache regression: the
@@ -491,7 +491,31 @@ Regression guard acceptance:
   relying on timing assertions.
 - Normal `cargo test` / `mix test` do not execute timing benchmarks.
 
-### Slice 5b: registry chunk implementation
+Implemented baseline command:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout -- registry_refresh_cache_regression --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
+Baseline smoke before registry chunking:
+
+```text
+interactive_rich_500/event_attr/full_registry_rebuild:         ~0.59 ms
+interactive_rich_500/event_attr/after_patch_full_registry:     ~0.69 ms
+nearby_rich_500/event_attr/full_registry_rebuild:              ~1.42 ms
+nearby_rich_500/event_attr/after_patch_full_registry:          ~1.64 ms
+nearby_rich_500/nearby_slot_change/full_registry_rebuild:      ~1.40 ms
+nearby_rich_500/nearby_slot_change/after_patch_full_registry:  ~1.58 ms
+scroll_rich_500/event_attr/full_registry_rebuild:              ~1.28 ms
+scroll_rich_500/event_attr/after_patch_full_registry:          ~1.89 ms
+text_rich_500/event_attr/full_registry_rebuild:                ~0.26 ms
+text_rich_500/event_attr/after_patch_full_registry:            ~0.48 ms
+```
+
+Chunked variants must compare against these stable full-rebuild baselines and
+must not regress cold/no-cache or damaged/no-cache cases.
+
+### Slice 5b: registry chunk implementation — next
 
 Tasks:
 
