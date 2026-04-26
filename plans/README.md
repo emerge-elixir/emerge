@@ -7,11 +7,11 @@ investigation that led to the current implementation.
 
 ## Files
 
-### `active-text-flow-resolve-cache-plan.md`
+### `active-relayout-dependency-boundaries-plan.md`
 
-The current temporary active implementation plan. The code slice has been
-implemented and validated for `Multiline`, `WrappedRow`, `TextColumn`, and
-`Paragraph`; keep the file until deletion is explicitly confirmed.
+The current temporary active implementation plan. It focuses on adding safe
+relayout/dependency boundaries so child layout changes can update dirty
+subtrees without forcing every ancestor's own measurement cache cold.
 
 ### `layout-caching-roadmap.md`
 
@@ -19,9 +19,9 @@ The active implementation roadmap.
 
 Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
-and targeted layout-affecting animation invalidation are done. The next work is
-about broader resolve reuse, relayout boundaries, cheaper cache keys, and
-refresh skipping.
+targeted layout-affecting animation invalidation, and text-flow resolve-cache
+eligibility are done. The next work is about relayout boundaries, cheaper cache
+keys, and refresh skipping.
 
 ### `layout-caching-engine-insights.md`
 
@@ -69,20 +69,7 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Improve text-flow/paragraph resolve caching
-
-Recent cache counters show measurement caching is working well, while resolve
-caching still misses heavily in text/layout/nearby-rich scenes.
-
-Target areas:
-
-- `Multiline`
-- `WrappedRow`
-- `TextColumn`
-- `Paragraph`
-- paragraph flow helpers that currently disable resolve-cache use
-
-### 2. Add relayout/dependency boundaries
+### 1. Add relayout/dependency boundaries
 
 Introduce explicit dependency edges similar to Flutter's `parentUsesSize` idea:
 
@@ -90,7 +77,7 @@ Introduce explicit dependency edges similar to Flutter's `parentUsesSize` idea:
 - stop upward invalidation where parent geometry is isolated from child layout
 - record relayout-boundary stop counters
 
-### 3. Replace cloned child/nearby lists in cache keys with versions
+### 2. Replace cloned child/nearby lists in cache keys with versions
 
 Current cache keys still include child/nearby identity lists. That is simple and
 correct, but it allocates/clones in hot layout paths. Measure/resolve traversal
@@ -104,12 +91,12 @@ Future direction:
 - keep explicit list keys only where topology ordering itself is the dependency
 - make hot measure/resolve traversal more directly ix-native where useful
 
-### 4. Add downstream refresh skipping
+### 3. Add downstream refresh skipping
 
 After layout reuse improves, make `refresh(tree)` skip subtrees with no relevant
 layout/paint/registry changes.
 
-### 5. Repeater/viewport-aware caching
+### 4. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.
