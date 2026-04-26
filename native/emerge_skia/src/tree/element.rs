@@ -13,9 +13,13 @@ use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 
 pub type NodeIx = usize;
+
+const DETACHED_LAYOUT_CACHE_LIMIT: usize = 16;
+const DETACHED_LAYOUT_CACHE_MAX_NODES: usize = 128;
 
 /// Unique identifier for an element.
 /// Stored as the numeric runtime node id shared with Elixir.
@@ -721,6 +725,13 @@ struct NodeTopology {
     nearby: Vec<NearbyMountIx>,
 }
 
+#[derive(Clone, Debug)]
+struct DetachedLayoutSubtreeCache {
+    signature: u64,
+    scale_bits: u32,
+    states: Vec<NodeLayoutState>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct TreeTopology {
     nodes: Vec<NodeTopology>,
@@ -1105,6 +1116,7 @@ pub struct ElementTree {
 
     layout_cache_stats: LayoutCacheStats,
     layout_cache_stats_enabled: bool,
+    detached_layout_cache: Vec<DetachedLayoutSubtreeCache>,
 
     pending_root_id: Option<NodeId>,
 
@@ -1129,6 +1141,7 @@ impl Default for ElementTree {
             free_list: Vec::new(),
             layout_cache_stats: LayoutCacheStats::default(),
             layout_cache_stats_enabled: false,
+            detached_layout_cache: Vec::new(),
             pending_root_id: None,
             #[cfg(test)]
             topology: RefCell::new(TreeTopology::default()),
@@ -1182,6 +1195,151 @@ impl ElementTree {
     pub fn record_layout_cache_stats(&mut self, record: impl FnOnce(&mut LayoutCacheStats)) {
         if self.layout_cache_stats_enabled {
             record(&mut self.layout_cache_stats);
+        }
+    }
+
+    pub(crate) fn store_detached_layout_subtree_cache(&mut self, id: &NodeId) {
+        let Some(root_ix) = self.ix_of(id) else {
+            return;
+        };
+        let Some(signature) = self.detached_layout_signature_ix(root_ix) else {
+            return;
+        };
+        let ixs = self.detached_layout_ixs(root_ix);
+
+        if ixs.is_empty() || ixs.len() > DETACHED_LAYOUT_CACHE_MAX_NODES {
+            return;
+        }
+
+        let states: Vec<NodeLayoutState> = ixs
+            .iter()
+            .filter_map(|&ix| self.get_ix(ix).map(|element| element.layout.clone()))
+            .collect();
+
+        if states.len() != ixs.len() {
+            return;
+        }
+
+        let scale_bits = self.current_scale.to_bits();
+        self.detached_layout_cache
+            .retain(|cache| cache.signature != signature || cache.scale_bits != scale_bits);
+        self.detached_layout_cache.push(DetachedLayoutSubtreeCache {
+            signature,
+            scale_bits,
+            states,
+        });
+
+        if self.detached_layout_cache.len() > DETACHED_LAYOUT_CACHE_LIMIT {
+            let overflow = self.detached_layout_cache.len() - DETACHED_LAYOUT_CACHE_LIMIT;
+            self.detached_layout_cache.drain(0..overflow);
+        }
+    }
+
+    pub(crate) fn restore_detached_layout_subtree_cache(&mut self, id: &NodeId) -> bool {
+        let Some(root_ix) = self.ix_of(id) else {
+            return false;
+        };
+        let Some(signature) = self.detached_layout_signature_ix(root_ix) else {
+            return false;
+        };
+        let scale_bits = self.current_scale.to_bits();
+        let Some(position) = self
+            .detached_layout_cache
+            .iter()
+            .position(|cache| cache.signature == signature && cache.scale_bits == scale_bits)
+        else {
+            return false;
+        };
+
+        let cache = self.detached_layout_cache.remove(position);
+        let ixs = self.detached_layout_ixs(root_ix);
+        if ixs.len() != cache.states.len() {
+            return false;
+        }
+
+        let restore_plan: Vec<_> = ixs
+            .iter()
+            .zip(cache.states.iter())
+            .filter_map(|(&ix, state)| {
+                let versions = self.get_ix(ix)?.layout.topology_versions;
+                Some((
+                    ix,
+                    state.clone(),
+                    versions,
+                    self.measure_topology_dependency_key_ix(ix),
+                    self.topology_dependency_key_ix(ix),
+                ))
+            })
+            .collect();
+
+        if restore_plan.len() != cache.states.len() {
+            return false;
+        }
+
+        for (ix, mut layout, versions, measure_topology, resolve_topology) in restore_plan {
+            layout.topology_versions = versions;
+            if let Some(cache) = layout.subtree_measure_cache.as_mut() {
+                cache.key.topology = measure_topology;
+            }
+            if let Some(cache) = layout.resolve_cache.as_mut() {
+                cache.key.topology = resolve_topology;
+            }
+            if let Some(element) = self.get_ix_mut(ix) {
+                element.layout = layout;
+            }
+        }
+
+        true
+    }
+
+    fn detached_layout_signature_ix(&self, ix: NodeIx) -> Option<u64> {
+        let mut hasher = DefaultHasher::new();
+        self.hash_detached_layout_signature_ix(ix, &mut hasher)?;
+        Some(hasher.finish())
+    }
+
+    fn hash_detached_layout_signature_ix(&self, ix: NodeIx, state: &mut impl Hasher) -> Option<()> {
+        let element = self.get_ix(ix)?;
+        if element.spec.declared.animate.is_some()
+            || element.spec.declared.animate_enter.is_some()
+            || element.spec.declared.animate_exit.is_some()
+        {
+            return None;
+        }
+
+        std::mem::discriminant(&element.spec.kind).hash(state);
+        element.spec.attrs_raw.hash(state);
+        element.runtime.hash(state);
+
+        let child_ixs = self.child_ixs(ix);
+        child_ixs.len().hash(state);
+        for child_ix in child_ixs {
+            self.hash_detached_layout_signature_ix(child_ix, state)?;
+        }
+
+        let nearby_ixs = self.nearby_ixs(ix);
+        nearby_ixs.len().hash(state);
+        for mount in nearby_ixs {
+            mount.slot.hash(state);
+            self.hash_detached_layout_signature_ix(mount.ix, state)?;
+        }
+
+        Some(())
+    }
+
+    fn detached_layout_ixs(&self, root_ix: NodeIx) -> Vec<NodeIx> {
+        let mut ixs = Vec::new();
+        self.collect_detached_layout_ixs(root_ix, &mut ixs);
+        ixs
+    }
+
+    fn collect_detached_layout_ixs(&self, ix: NodeIx, ixs: &mut Vec<NodeIx>) {
+        ixs.push(ix);
+        for child_ix in self.child_ixs(ix) {
+            self.collect_detached_layout_ixs(child_ix, ixs);
+        }
+        for mount in self.nearby_ixs(ix) {
+            self.collect_detached_layout_ixs(mount.ix, ixs);
         }
     }
 

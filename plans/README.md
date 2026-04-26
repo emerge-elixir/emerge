@@ -10,9 +10,10 @@ investigation that led to the current implementation.
 ### `active-nearby-relayout-boundary-plan.md`
 
 The current temporary active implementation plan. It targets nearby overlay
-mount/unmount work. The benchmark/test guard, measurement boundary, and nearby
-resolve traversal are implemented and locally validated; focused app smoke is
-still useful before deleting the temporary plan file.
+mount/unmount work. The benchmark/test guard, measurement boundary, nearby
+resolve traversal, and detached reuse for reinserted nearby subtrees are
+implemented and locally validated; focused app smoke is still useful before
+deleting the temporary plan file.
 
 ### `layout-caching-roadmap.md`
 
@@ -67,6 +68,9 @@ The native layout-caching foundation is in place:
 - nearby topology changes mark nearby traversal/refresh work without forcing
   host/ancestor measurement dirtiness when host size is independent of the
   nearby overlay
+- recently removed small nearby subtrees can restore detached layout state when
+  the same animation-free structural signature is reinserted, avoiding repeated
+  cold code-block layout on hover toggles
 - subtree-measure cache keys use compact child topology dependency versions and
   intentionally ignore nearby topology; resolve/cache-render keys still include
   nearby topology where output can depend on ordering/placement
