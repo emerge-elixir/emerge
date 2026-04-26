@@ -206,9 +206,11 @@ without poisoning render/layout state.
 
 Render refresh caches must not clone layout cache entries or build broad
 allocation-heavy keys in hot paths. Dirty render paths should rebuild before
-constructing cache lookup keys, and volatile scene contexts such as scrolling
-should bypass render subtree lookup/storage when the cached subtree would be
-immediately stale.
+constructing cache lookup keys, and dirty/full rebuilds should not seed retained
+render caches. Cache entries are seeded lazily from clean refreshes, capped by
+render-node count, and volatile scene contexts such as scrolling should bypass
+render subtree lookup/storage when the cached subtree would be immediately
+stale.
 
 ### `NodeLifecycle`
 

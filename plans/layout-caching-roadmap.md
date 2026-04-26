@@ -301,11 +301,13 @@ Implemented so far:
   reused
 - render scene refresh can reuse clean retained render subtrees
 - render-cache regression guards compare cached and uncached refresh paths for
-  paint-rich, nearby-rich, layout-matrix, animated-shadow, and scrolling-shadow
-  cases
-- render snapshots omit retained layout cache entries, dirty paths avoid lookup
-  key construction before rebuilding, and scroll-offset subtrees bypass render
-  cache lookup to avoid cloning immediately-stale render scenes
+  cold upload/switch, paint-rich, nearby-rich, layout-matrix, animated-shadow,
+  and scrolling-shadow cases
+- render snapshots omit retained layout cache entries, dirty/full rebuilds avoid
+  cache seeding, dirty paths avoid lookup key construction before rebuilding,
+  stored render subtrees are capped by render-node count, and scroll-offset
+  subtrees bypass render cache lookup to avoid cloning immediately-stale render
+  scenes
 
 Next within this slice:
 

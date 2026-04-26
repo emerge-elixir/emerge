@@ -6,8 +6,8 @@ use emerge_skia::tree::animation::AnimationRuntime;
 use emerge_skia::tree::deserialize::decode_tree;
 use emerge_skia::tree::element::ElementTree;
 use emerge_skia::tree::layout::{
-    Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
-    layout_or_refresh_default_with_animation,
+    Constraint, layout_and_refresh_default, layout_and_refresh_default_uncached_for_benchmark,
+    layout_and_refresh_default_with_animation, layout_or_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_uncached_for_benchmark, layout_tree,
     layout_tree_default, refresh, refresh_reusing_clean_registry_for_benchmark,
     refresh_uncached_reusing_clean_registry_for_benchmark,
@@ -477,6 +477,7 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
         let case = format!("{fixture_id}/{mutation}");
 
         group.throughput(Throughput::Elements(node_count));
+        bench_cold_layout_refresh_pair(&mut group, &case, &fixture.full_emrg, constraint);
         bench_warm_refresh_pair(
             &mut group,
             &case,
@@ -517,6 +518,38 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
     );
 
     group.finish();
+}
+
+fn bench_cold_layout_refresh_pair(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: &str,
+    full_emrg: &[u8],
+    constraint: Constraint,
+) {
+    let full_bytes = full_emrg.to_vec();
+    group.bench_function(format!("{case}/cold_cached_layout_refresh"), move |b| {
+        b.iter_batched(
+            || decode_tree(&full_bytes).expect("fixture tree should decode"),
+            |mut tree| {
+                let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+                consume_layout_output(output)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let full_bytes = full_emrg.to_vec();
+    group.bench_function(format!("{case}/cold_uncached_layout_refresh"), move |b| {
+        b.iter_batched(
+            || decode_tree(&full_bytes).expect("fixture tree should decode"),
+            |mut tree| {
+                let output =
+                    layout_and_refresh_default_uncached_for_benchmark(&mut tree, constraint, 1.0);
+                consume_layout_output(output)
+            },
+            BatchSize::SmallInput,
+        );
+    });
 }
 
 fn bench_warm_refresh_pair(

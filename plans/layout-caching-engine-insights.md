@@ -56,7 +56,9 @@ Already implemented:
   reuse when registry damage is clean
 - retained render subtree caching/skipping for clean render subtrees
 - render-cache regression guards comparing cached and uncached refresh paths,
-  with scroll-offset cache bypass to avoid immediately stale retained scenes
+  including cold upload/switch paths, with dirty/full rebuild cache-store
+  deferral and scroll-offset cache bypass to avoid immediately stale retained
+  scenes
 
 Still open:
 

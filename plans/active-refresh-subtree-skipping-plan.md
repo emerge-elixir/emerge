@@ -300,6 +300,13 @@ Implemented mitigation:
   storing large render caches on scroll containers during dirty refreshes. This
   prevents scroll-only frames from cloning large, immediately-stale scene
   subtrees.
+- Avoided seeding render subtree caches on dirty/full rebuilds. Render caches are
+  now a lazy clean-refresh optimization instead of extra work during app switch
+  or full upload.
+- Added a render-node-count cap for stored subtrees so cache storage cannot clone
+  very large scene chunks.
+- Bypassed the cache path entirely for nodes with their own render dirty bit;
+  descendant-dirty ancestors can still use cached clean siblings.
 
 This is still a conservative design. Future work should replace broad debug-hash
 fields with typed versions where profiles justify it.
@@ -310,9 +317,9 @@ Tasks:
    - a Criterion or Benchee benchmark that measures refresh-producing work, not
      layout-only work
    - include at least `paint_rich`, `nearby_rich`, and animated-shadow cases
-   - cover warm cached refresh, first refresh after `paint_attr`, first refresh
-     after `nearby_slot_change`, and patch-plus-refresh/actor-like paths where
-     practical
+   - cover cold full layout+refresh after upload/switch, warm cached refresh,
+     first refresh after `paint_attr`, first refresh after `nearby_slot_change`,
+     and patch-plus-refresh/actor-like paths where practical
    - compare the production cached path against a safe uncached or
      cache-disabled path so the benchmark can prove the optimization is a win
      rather than just measuring the current implementation
@@ -364,6 +371,10 @@ Concrete guard shape:
   - `animated_shadow_showcase/paint_only_refresh_each_frame`
   - `scroll_shadow_showcase/paint_only_refresh_scroll_frame`
 - Suggested measured variants:
+  - `cold_cached_layout_refresh`: decode/upload-like cold tree, layout, and
+    refresh through production cached path
+  - `cold_uncached_layout_refresh`: same cold tree with render subtree cache
+    bypassed
   - `cached_refresh`: warmed tree, render cache seeded, call refresh-producing
     path
   - `uncached_refresh` or `cache_disabled_refresh`: same tree/update with render
@@ -558,7 +569,8 @@ Validation status for implemented slices 1–4:
   nearby-rich, layout-matrix, animated shadow, and scrolling animated shadow
   cases. It caught the scroll-container regression, which was fixed by bypassing
   render subtree cache lookup under scrolling scene offsets and not storing dirty
-  scroll-container render caches.
+  scroll-container render caches. It was then extended with cold
+  layout+refresh variants for app-switch/upload regressions.
 
 Run focused benchmark smoke after future behavior changes that should reduce
 refresh work. For the render-cache performance slice, compare renderer stats and

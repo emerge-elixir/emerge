@@ -37,6 +37,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::{self, Write};
 use std::hash::{Hash, Hasher};
 
+const RENDER_SUBTREE_CACHE_MAX_RENDER_NODES: usize = 128;
+
 #[cfg(test)]
 thread_local! {
     static RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS: Cell<usize> = const { Cell::new(0) };
@@ -212,6 +214,10 @@ impl RenderSubtree {
             text_input_focused: self.text_input_focused,
             text_input_cursor_area: self.text_input_cursor_area,
         }
+    }
+
+    fn render_node_count(&self) -> usize {
+        render_node_count(&self.local) + render_node_count(&self.escapes)
     }
 
     fn extend_local(&mut self, subtree: RenderSubtree) {
@@ -446,16 +452,8 @@ fn build_element_subtree_cached(
     inherited: &FontContext,
     traversal: RenderTraversal<'_>,
 ) -> RenderSubtree {
-    if render_subtree_cache_lookup_bypassed(&traversal) {
-        let mut text_input_focused = false;
-        let mut text_input_cursor_area = None;
-        let mut outputs = RenderOutputs {
-            text_input_focused: &mut text_input_focused,
-            text_input_cursor_area: &mut text_input_cursor_area,
-        };
-        let mut subtree = build_element_subtree(tree, ix, inherited, &mut outputs, traversal);
-        subtree.merge_output_values(text_input_focused, text_input_cursor_area);
-        return subtree;
+    if render_subtree_cache_bypassed(tree, ix, &traversal) {
+        return build_element_subtree_uncached_in_cached_path(tree, ix, inherited, traversal);
     }
 
     let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
@@ -567,7 +565,7 @@ fn build_element_subtree_cached(
         text_input_cursor_area: host_content.text_input_cursor_area,
     };
 
-    if should_store_render_subtree_cache(&element, render_damage, &traversal) {
+    if should_store_render_subtree_cache(&element, render_damage, &traversal, &subtree) {
         let key = lookup_key
             .unwrap_or_else(|| render_subtree_key(tree, ix, &element, inherited, &traversal));
         if let Some(element) = tree.get_ix_mut(ix) {
@@ -580,17 +578,43 @@ fn build_element_subtree_cached(
     subtree
 }
 
-fn render_subtree_cache_lookup_bypassed(traversal: &RenderTraversal<'_>) -> bool {
-    scene_context_has_scroll_offset(&traversal.scene_ctx)
+fn build_element_subtree_uncached_in_cached_path(
+    tree: &ElementTree,
+    ix: NodeIx,
+    inherited: &FontContext,
+    traversal: RenderTraversal<'_>,
+) -> RenderSubtree {
+    let mut text_input_focused = false;
+    let mut text_input_cursor_area = None;
+    let mut outputs = RenderOutputs {
+        text_input_focused: &mut text_input_focused,
+        text_input_cursor_area: &mut text_input_cursor_area,
+    };
+    let mut subtree = build_element_subtree(tree, ix, inherited, &mut outputs, traversal);
+    subtree.merge_output_values(text_input_focused, text_input_cursor_area);
+    subtree
+}
+
+fn render_subtree_cache_bypassed(
+    tree: &ElementTree,
+    ix: NodeIx,
+    traversal: &RenderTraversal<'_>,
+) -> bool {
+    tree.get_ix(ix)
+        .is_some_and(|element| element.refresh.render_dirty)
+        || scene_context_has_scroll_offset(&traversal.scene_ctx)
 }
 
 fn should_store_render_subtree_cache(
     element: &Element,
     render_damage: bool,
     traversal: &RenderTraversal<'_>,
+    subtree: &RenderSubtree,
 ) -> bool {
     !render_damage
-        || (!scene_context_has_scroll_offset(&traversal.scene_ctx) && !is_scroll_container(element))
+        && !scene_context_has_scroll_offset(&traversal.scene_ctx)
+        && !is_scroll_container(element)
+        && subtree.render_node_count() <= RENDER_SUBTREE_CACHE_MAX_RENDER_NODES
 }
 
 fn scene_context_has_scroll_offset(scene_ctx: &SceneContext) -> bool {
@@ -604,6 +628,20 @@ fn is_scroll_container(element: &Element) -> bool {
         || element.layout.scroll_y_max > 0.0
         || effective_scrollbar_x(&element.layout.effective)
         || effective_scrollbar_y(&element.layout.effective)
+}
+
+fn render_node_count(nodes: &[RenderNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| match node {
+            RenderNode::ShadowPass { children }
+            | RenderNode::Clip { children, .. }
+            | RenderNode::RelaxedClip { children, .. }
+            | RenderNode::Transform { children, .. }
+            | RenderNode::Alpha { children, .. } => 1 + render_node_count(children),
+            RenderNode::Primitive(_) => 1,
+        })
+        .sum()
 }
 
 fn render_subtree_key(
