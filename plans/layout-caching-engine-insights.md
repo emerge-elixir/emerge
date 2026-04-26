@@ -55,12 +55,16 @@ Already implemented:
 - refresh-specific render/registry damage tracking with cached full-registry
   reuse when registry damage is clean
 - retained render subtree caching/skipping for clean render subtrees
+- render-cache regression guards comparing cached and uncached refresh paths,
+  with scroll-offset cache bypass to avoid immediately stale retained scenes
 
 Still open:
 
 - broader relayout/dependency boundaries
 - further version/key work for attrs or measured/resolve dependency generations if profiles justify it
 - registry chunk skipping
+- replacing remaining broad debug-hash render key fields with typed dependency
+  versions if profiles justify it
 - viewport/repeater-aware cache preservation
 
 ## Engine findings

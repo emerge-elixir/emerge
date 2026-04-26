@@ -197,11 +197,18 @@ Refresh-derived state:
 
 - render dirty and render descendant-dirty bits
 - registry dirty and registry descendant-dirty bits
+- optional retained render subtree cache
 
 This state is intentionally separate from `NodeLayoutState` cache outcomes. A
 paint-only update can dirty render refresh output without asking a measurement
 or resolve-cache question, and a registry-only update can dirty event output
 without poisoning render/layout state.
+
+Render refresh caches must not clone layout cache entries or build broad
+allocation-heavy keys in hot paths. Dirty render paths should rebuild before
+constructing cache lookup keys, and volatile scene contexts such as scrolling
+should bypass render subtree lookup/storage when the cached subtree would be
+immediately stale.
 
 ### `NodeLifecycle`
 

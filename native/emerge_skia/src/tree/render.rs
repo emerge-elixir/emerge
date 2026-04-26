@@ -31,6 +31,31 @@ use super::transform::element_transform;
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::fmt::{self, Write};
+use std::hash::{Hash, Hasher};
+
+#[cfg(test)]
+thread_local! {
+    static RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_render_subtree_cache_lookup_key_builds() {
+    RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS.with(|builds| builds.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn render_subtree_cache_lookup_key_builds() -> usize {
+    RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_render_subtree_cache_lookup_key_build() {
+    RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS.with(|builds| builds.set(builds.get() + 1));
+}
 
 #[cfg(test)]
 pub(crate) struct RenderOutput {
@@ -138,13 +163,11 @@ impl RenderBuildContext {
     }
 }
 
-#[cfg(test)]
 struct RenderOutputs<'a> {
     text_input_focused: &'a mut bool,
     text_input_cursor_area: &'a mut Option<(f32, f32, f32, f32)>,
 }
 
-#[cfg(test)]
 impl<'a> RenderOutputs<'a> {
     fn reborrow(&mut self) -> RenderOutputs<'_> {
         let text_input_focused = &mut *self.text_input_focused;
@@ -227,9 +250,11 @@ impl RenderSubtree {
     }
 }
 
-/// Render the tree without rebuilding event registry metadata.
-/// Reads from pre-scaled attrs (layout pass must run first).
-#[cfg(test)]
+/// Render the tree without rebuilding event registry metadata and without using
+/// retained render subtree caches.
+///
+/// Reads from pre-scaled attrs (layout pass must run first). This is kept as a
+/// safe baseline for correctness tests and performance regression benchmarks.
 pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
     let Some(root_ix) = tree.root_ix() else {
         return RenderSceneOutput {
@@ -318,7 +343,6 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     }
 }
 
-#[cfg(test)]
 fn build_element_subtree(
     tree: &ElementTree,
     ix: NodeIx,
@@ -422,6 +446,18 @@ fn build_element_subtree_cached(
     inherited: &FontContext,
     traversal: RenderTraversal<'_>,
 ) -> RenderSubtree {
+    if render_subtree_cache_lookup_bypassed(&traversal) {
+        let mut text_input_focused = false;
+        let mut text_input_cursor_area = None;
+        let mut outputs = RenderOutputs {
+            text_input_focused: &mut text_input_focused,
+            text_input_cursor_area: &mut text_input_cursor_area,
+        };
+        let mut subtree = build_element_subtree(tree, ix, inherited, &mut outputs, traversal);
+        subtree.merge_output_values(text_input_focused, text_input_cursor_area);
+        return subtree;
+    }
+
     let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
         return RenderSubtree::default();
     };
@@ -429,13 +465,22 @@ fn build_element_subtree_cached(
         return RenderSubtree::default();
     };
 
-    let key = render_subtree_key(tree, ix, &element, inherited, &traversal);
     let render_damage = element.refresh.render_dirty || element.refresh.render_descendant_dirty;
-    if !render_damage
+    let lookup_key = if render_damage {
+        None
+    } else {
+        #[cfg(test)]
+        record_render_subtree_cache_lookup_key_build();
+        Some(render_subtree_key(
+            tree, ix, &element, inherited, &traversal,
+        ))
+    };
+
+    if let Some(key) = lookup_key.as_ref()
         && let Some(cache) = tree
             .get_ix(ix)
             .and_then(|element| element.refresh.render_cache.as_ref())
-            .filter(|cache| cache.key == key)
+            .filter(|cache| &cache.key == key)
             .cloned()
     {
         return RenderSubtree::from_cache(cache);
@@ -522,11 +567,43 @@ fn build_element_subtree_cached(
         text_input_cursor_area: host_content.text_input_cursor_area,
     };
 
-    if let Some(element) = tree.get_ix_mut(ix) {
-        element.refresh.render_cache = Some(subtree.to_cache(key));
+    if should_store_render_subtree_cache(&element, render_damage, &traversal) {
+        let key = lookup_key
+            .unwrap_or_else(|| render_subtree_key(tree, ix, &element, inherited, &traversal));
+        if let Some(element) = tree.get_ix_mut(ix) {
+            element.refresh.render_cache = Some(subtree.to_cache(key));
+        }
+    } else if let Some(element) = tree.get_ix_mut(ix) {
+        element.refresh.render_cache = None;
     }
 
     subtree
+}
+
+fn render_subtree_cache_lookup_bypassed(traversal: &RenderTraversal<'_>) -> bool {
+    scene_context_has_scroll_offset(&traversal.scene_ctx)
+}
+
+fn should_store_render_subtree_cache(
+    element: &Element,
+    render_damage: bool,
+    traversal: &RenderTraversal<'_>,
+) -> bool {
+    !render_damage
+        || (!scene_context_has_scroll_offset(&traversal.scene_ctx) && !is_scroll_container(element))
+}
+
+fn scene_context_has_scroll_offset(scene_ctx: &SceneContext) -> bool {
+    scene_ctx.scroll_dx != 0.0 || scene_ctx.scroll_dy != 0.0
+}
+
+fn is_scroll_container(element: &Element) -> bool {
+    element.layout.scroll_x != 0.0
+        || element.layout.scroll_y != 0.0
+        || element.layout.scroll_x_max > 0.0
+        || element.layout.scroll_y_max > 0.0
+        || effective_scrollbar_x(&element.layout.effective)
+        || effective_scrollbar_y(&element.layout.effective)
 }
 
 fn render_subtree_key(
@@ -538,70 +615,96 @@ fn render_subtree_key(
 ) -> RenderSubtreeKey {
     RenderSubtreeKey {
         kind: element.spec.kind,
-        attrs: render_attrs_key(&element.layout.effective),
-        runtime: format!("{:?}", element.runtime),
+        attrs_hash: render_attrs_hash(&element.layout.effective),
+        runtime_hash: debug_hash(&element.runtime),
         frame: element.layout.frame,
         scroll_x: element.layout.scroll_x,
         scroll_y: element.layout.scroll_y,
         scroll_x_max: element.layout.scroll_x_max,
         scroll_y_max: element.layout.scroll_y_max,
-        inherited: format!("{inherited:?}"),
-        scene_context: format!("{:?}", traversal.scene_ctx),
-        render_context: format!("{:?}", traversal.render_ctx),
+        inherited_hash: debug_hash(inherited),
+        scene_context_hash: debug_hash(&traversal.scene_ctx),
+        render_context_hash: debug_hash(traversal.render_ctx),
         topology: tree.render_topology_dependency_key_ix(ix),
-        paragraph_fragments: format!("{:?}", element.layout.paragraph_fragments),
+        paragraph_fragments_hash: debug_hash(&element.layout.paragraph_fragments),
     }
 }
 
-fn render_attrs_key(attrs: &Attrs) -> String {
-    [
-        format!("{:?}", &attrs.width),
-        format!("{:?}", &attrs.height),
-        format!("{:?}", &attrs.padding),
-        format!("{:?}", &attrs.spacing),
-        format!("{:?}", &attrs.spacing_x),
-        format!("{:?}", &attrs.spacing_y),
-        format!("{:?}", &attrs.align_x),
-        format!("{:?}", &attrs.align_y),
-        format!("{:?}", &attrs.scrollbar_y),
-        format!("{:?}", &attrs.scrollbar_x),
-        format!("{:?}", &attrs.ghost_scrollbar_y),
-        format!("{:?}", &attrs.ghost_scrollbar_x),
-        format!("{:?}", &attrs.scroll_x),
-        format!("{:?}", &attrs.scroll_y),
-        format!("{:?}", &attrs.clip_nearby),
-        format!("{:?}", &attrs.border_width),
-        format!("{:?}", &attrs.background),
-        format!("{:?}", &attrs.border_radius),
-        format!("{:?}", &attrs.border_style),
-        format!("{:?}", &attrs.border_color),
-        format!("{:?}", &attrs.box_shadows),
-        format!("{:?}", &attrs.font),
-        format!("{:?}", &attrs.font_weight),
-        format!("{:?}", &attrs.font_style),
-        format!("{:?}", &attrs.font_size),
-        format!("{:?}", &attrs.font_color),
-        format!("{:?}", &attrs.svg_color),
-        format!("{:?}", &attrs.font_underline),
-        format!("{:?}", &attrs.font_strike),
-        format!("{:?}", &attrs.font_letter_spacing),
-        format!("{:?}", &attrs.font_word_spacing),
-        format!("{:?}", &attrs.image_src),
-        format!("{:?}", &attrs.image_fit),
-        format!("{:?}", &attrs.image_size),
-        format!("{:?}", &attrs.text_align),
-        format!("{:?}", &attrs.content),
-        format!("{:?}", &attrs.snap_layout),
-        format!("{:?}", &attrs.snap_text_metrics),
-        format!("{:?}", &attrs.space_evenly),
-        format!("{:?}", &attrs.move_x),
-        format!("{:?}", &attrs.move_y),
-        format!("{:?}", &attrs.rotate),
-        format!("{:?}", &attrs.scale),
-        format!("{:?}", &attrs.alpha),
-        format!("{:?}", &attrs.video_target),
-    ]
-    .join("|")
+struct HashWriter<'a> {
+    hasher: &'a mut DefaultHasher,
+}
+
+impl Write for HashWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        s.hash(self.hasher);
+        Ok(())
+    }
+}
+
+fn debug_hash(value: &impl fmt::Debug) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    write!(
+        &mut HashWriter {
+            hasher: &mut hasher
+        },
+        "{value:?}"
+    )
+    .expect("hash writer should not fail");
+    hasher.finish()
+}
+
+fn render_attrs_hash(attrs: &Attrs) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    debug_hash_into(&mut hasher, &attrs.width);
+    debug_hash_into(&mut hasher, &attrs.height);
+    debug_hash_into(&mut hasher, &attrs.padding);
+    debug_hash_into(&mut hasher, &attrs.spacing);
+    debug_hash_into(&mut hasher, &attrs.spacing_x);
+    debug_hash_into(&mut hasher, &attrs.spacing_y);
+    debug_hash_into(&mut hasher, &attrs.align_x);
+    debug_hash_into(&mut hasher, &attrs.align_y);
+    debug_hash_into(&mut hasher, &attrs.scrollbar_y);
+    debug_hash_into(&mut hasher, &attrs.scrollbar_x);
+    debug_hash_into(&mut hasher, &attrs.ghost_scrollbar_y);
+    debug_hash_into(&mut hasher, &attrs.ghost_scrollbar_x);
+    debug_hash_into(&mut hasher, &attrs.scroll_x);
+    debug_hash_into(&mut hasher, &attrs.scroll_y);
+    debug_hash_into(&mut hasher, &attrs.clip_nearby);
+    debug_hash_into(&mut hasher, &attrs.border_width);
+    debug_hash_into(&mut hasher, &attrs.background);
+    debug_hash_into(&mut hasher, &attrs.border_radius);
+    debug_hash_into(&mut hasher, &attrs.border_style);
+    debug_hash_into(&mut hasher, &attrs.border_color);
+    debug_hash_into(&mut hasher, &attrs.box_shadows);
+    debug_hash_into(&mut hasher, &attrs.font);
+    debug_hash_into(&mut hasher, &attrs.font_weight);
+    debug_hash_into(&mut hasher, &attrs.font_style);
+    debug_hash_into(&mut hasher, &attrs.font_size);
+    debug_hash_into(&mut hasher, &attrs.font_color);
+    debug_hash_into(&mut hasher, &attrs.svg_color);
+    debug_hash_into(&mut hasher, &attrs.font_underline);
+    debug_hash_into(&mut hasher, &attrs.font_strike);
+    debug_hash_into(&mut hasher, &attrs.font_letter_spacing);
+    debug_hash_into(&mut hasher, &attrs.font_word_spacing);
+    debug_hash_into(&mut hasher, &attrs.image_src);
+    debug_hash_into(&mut hasher, &attrs.image_fit);
+    debug_hash_into(&mut hasher, &attrs.image_size);
+    debug_hash_into(&mut hasher, &attrs.text_align);
+    debug_hash_into(&mut hasher, &attrs.content);
+    debug_hash_into(&mut hasher, &attrs.snap_layout);
+    debug_hash_into(&mut hasher, &attrs.snap_text_metrics);
+    debug_hash_into(&mut hasher, &attrs.space_evenly);
+    debug_hash_into(&mut hasher, &attrs.move_x);
+    debug_hash_into(&mut hasher, &attrs.move_y);
+    debug_hash_into(&mut hasher, &attrs.rotate);
+    debug_hash_into(&mut hasher, &attrs.scale);
+    debug_hash_into(&mut hasher, &attrs.alpha);
+    debug_hash_into(&mut hasher, &attrs.video_target);
+    hasher.finish()
+}
+
+fn debug_hash_into(hasher: &mut DefaultHasher, value: &impl fmt::Debug) {
+    write!(HashWriter { hasher }, "{value:?}").expect("hash writer should not fail");
 }
 
 fn build_host_content_subtree_cached(
@@ -846,7 +949,6 @@ fn build_paragraph_subtree_cached(
     subtree
 }
 
-#[cfg(test)]
 fn build_host_content_subtree(
     tree: &ElementTree,
     element: &Element,
@@ -989,7 +1091,6 @@ fn build_host_content_subtree(
     subtree
 }
 
-#[cfg(test)]
 fn build_nearby_mount_subtree(
     tree: &ElementTree,
     nearby_ix: NodeIx,
@@ -1013,7 +1114,6 @@ fn build_nearby_mount_subtree(
     )
 }
 
-#[cfg(test)]
 fn build_paragraph_subtree(
     tree: &ElementTree,
     element: &Element,

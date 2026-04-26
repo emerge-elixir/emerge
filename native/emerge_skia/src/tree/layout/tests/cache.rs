@@ -6,7 +6,10 @@ use crate::tree::invalidation::{
     RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
 };
 use crate::tree::patch::{Patch, apply_patches};
-use crate::tree::render::render_tree_scene;
+use crate::tree::render::{
+    render_subtree_cache_lookup_key_builds, render_tree_scene,
+    reset_render_subtree_cache_lookup_key_builds,
+};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -1021,6 +1024,109 @@ fn test_render_subtree_cache_matches_uncached_scene_after_sibling_paint_patch() 
         tree.get(&second_id).unwrap().refresh.render_cache.as_ref(),
         Some(&second_cache_before)
     );
+}
+
+#[test]
+fn test_render_snapshot_omits_layout_cache_entries() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+
+    let root_snapshot = {
+        let root = tree.get(&root_id).unwrap();
+        assert!(root.layout.subtree_measure_cache.is_some());
+        assert!(root.layout.resolve_cache.is_some());
+        root.render_snapshot()
+    };
+    assert!(root_snapshot.layout.intrinsic_measure_cache.is_none());
+    assert!(root_snapshot.layout.subtree_measure_cache.is_none());
+    assert!(root_snapshot.layout.resolve_cache.is_none());
+
+    let text_snapshot = {
+        let text = tree.get(&text_id).unwrap();
+        assert!(text.layout.intrinsic_measure_cache.is_some());
+        text.render_snapshot()
+    };
+    assert!(text_snapshot.layout.intrinsic_measure_cache.is_none());
+    assert!(text_snapshot.layout.subtree_measure_cache.is_none());
+    assert!(text_snapshot.layout.resolve_cache.is_none());
+}
+
+#[test]
+fn test_dirty_render_refresh_skips_lookup_key_builds_for_dirty_path() {
+    let mut tree = ElementTree::new();
+    let root = make_element("root", ElementKind::Row, Attrs::default());
+    let root_id = root.id;
+    let first = make_element("first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: first_id,
+            attrs_raw: raw_text_background_attrs("One"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(tree.get(&root_id).unwrap().refresh.render_descendant_dirty);
+    assert!(tree.get(&first_id).unwrap().refresh.render_dirty);
+    assert!(!tree.get(&second_id).unwrap().refresh.render_dirty);
+
+    reset_render_subtree_cache_lookup_key_builds();
+    let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+
+    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert_eq!(render_subtree_cache_lookup_key_builds(), 1);
+}
+
+#[test]
+fn test_scroll_refresh_does_not_store_scroll_container_render_cache() {
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(100.0));
+    attrs.height = Some(Length::Px(64.0));
+    attrs.scrollbar_y = Some(true);
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.width = Some(Length::Px(80.0));
+    child_attrs.height = Some(Length::Px(200.0));
+
+    let mut tree = ElementTree::new();
+    let root = make_element("scroll_root", ElementKind::El, attrs);
+    let root_id = root.id;
+    let child = make_element("scroll_child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.set_children(&root_id, vec![child_id]).unwrap();
+
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
+
+    assert_eq!(
+        tree.apply_scroll_y(&root_id, -24.0),
+        TreeInvalidation::Paint
+    );
+    let output = refresh(&mut tree);
+
+    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
 }
 
 #[test]
