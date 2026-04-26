@@ -9,10 +9,9 @@ investigation that led to the current implementation.
 
 ### `active-versioned-cache-keys-plan.md`
 
-The current temporary active implementation plan. It focuses on replacing cloned
-child/nearby identity lists in layout cache keys with compact native dependency
-versions, then doing narrow ix-native traversal cleanup where it naturally
-follows.
+The current temporary active implementation plan. The code slice has been
+implemented and validated for compact topology dependency keys; keep the file
+until deletion is explicitly confirmed.
 
 ### `layout-caching-roadmap.md`
 
@@ -21,9 +20,9 @@ The active implementation roadmap.
 Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
 targeted layout-affecting animation invalidation, text-flow resolve-cache
-eligibility, and the first relayout/dependency boundary are done. The next work
-is about cheaper cache keys, broader dependency boundaries, and refresh
-skipping.
+eligibility, the first relayout/dependency boundary, and compact topology
+version cache keys are done. The next work is about refresh skipping, broader
+dependency boundaries, and viewport/repeater-aware caching.
 
 ### `layout-caching-engine-insights.md`
 
@@ -64,6 +63,8 @@ The native layout-caching foundation is in place:
 - measure/resolve dirtiness propagates upward through parent links
 - measure dirtiness can stop at the first fixed-size `El`/`None` boundary while
   traversal dirtiness keeps dirty descendants reachable
+- subtree-measure and resolve cache keys use compact child/nearby topology
+  dependency versions instead of cloned child/nearby identity lists
 - native stats collection is gated/default-off and exposed through one unified
   stats path:
   - `stats: true` enables collection without periodic logs
@@ -73,32 +74,18 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Replace cloned child/nearby lists in cache keys with versions
-
-Current cache keys still include child/nearby identity lists. That is simple and
-correct, but it allocates/clones in hot layout paths. Measure/resolve traversal
-also still uses some id-facing compatibility helpers even though production
-topology is ix-based.
-
-Future direction:
-
-- add per-node spec/runtime/measure/resolve/subtree versions
-- use dependency versions in cache keys
-- keep explicit list keys only where topology ordering itself is the dependency
-- make hot measure/resolve traversal more directly ix-native where useful
-
-### 2. Add downstream refresh skipping
+### 1. Add downstream refresh skipping
 
 After layout reuse improves, make `refresh(tree)` skip subtrees with no relevant
 layout/paint/registry changes.
 
-### 3. Broaden relayout/dependency boundaries
+### 2. Broaden relayout/dependency boundaries
 
 The first boundary covers fixed-size `El`/`None`. Broader row/column,
 scrollable, nearby, and text-flow boundaries should be added only with focused
 correctness tests.
 
-### 4. Repeater/viewport-aware caching
+### 3. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.

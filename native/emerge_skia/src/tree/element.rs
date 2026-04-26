@@ -148,8 +148,7 @@ pub struct ResolveCacheKey {
     pub inherited: InheritedMeasureFontKey,
     pub measured_frame: Option<Frame>,
     pub constraint: ResolveConstraintKey,
-    pub children: Vec<NodeId>,
-    pub nearby: Vec<NearbyMount>,
+    pub topology: TopologyDependencyKey,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -205,8 +204,22 @@ pub struct SubtreeMeasureCacheKey {
     pub kind: ElementKind,
     pub attrs: SubtreeMeasureAttrs,
     pub inherited: InheritedMeasureFontKey,
-    pub children: Vec<NodeId>,
-    pub nearby: Vec<NearbyMount>,
+    pub topology: TopologyDependencyKey,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutTopologyVersions {
+    pub children: u64,
+    pub paint_children: u64,
+    pub nearby: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopologyDependencyKey {
+    pub children_version: u64,
+    pub nearby_version: u64,
+    pub child_count: usize,
+    pub nearby_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -567,6 +580,7 @@ pub struct NodeLayoutState {
     pub scroll_x_max: f32,
     pub scroll_y_max: f32,
     pub paragraph_fragments: Option<Vec<TextFragment>>,
+    pub topology_versions: LayoutTopologyVersions,
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
     pub subtree_measure_cache: Option<SubtreeMeasureCache>,
     pub measure_dirty: bool,
@@ -586,6 +600,7 @@ impl Default for NodeLayoutState {
             scroll_x_max: 0.0,
             scroll_y_max: 0.0,
             paragraph_fragments: None,
+            topology_versions: LayoutTopologyVersions::default(),
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,
@@ -693,6 +708,7 @@ impl Element {
                 paragraph_fragments: attrs.paragraph_fragments.clone(),
                 #[cfg(not(test))]
                 paragraph_fragments: None,
+                topology_versions: LayoutTopologyVersions::default(),
                 effective: attrs,
                 frame: None,
                 measured_frame: None,
@@ -1591,6 +1607,7 @@ impl ElementTree {
             .ix_of(parent_id)
             .ok_or_else(|| format!("parent not found: {:?}", parent_id.0))?;
         let child_ixs = self.resolve_child_ixs(&child_ids)?;
+        self.ensure_topology();
 
         #[cfg(test)]
         if let Some(parent) = self.get_mut(parent_id) {
@@ -1613,6 +1630,7 @@ impl ElementTree {
             .ix_of(parent_id)
             .ok_or_else(|| format!("parent not found: {:?}", parent_id.0))?;
         let child_ixs = self.resolve_child_ixs(&child_ids)?;
+        self.ensure_topology();
 
         #[cfg(test)]
         if let Some(parent) = self.get_mut(parent_id) {
@@ -1644,6 +1662,7 @@ impl ElementTree {
                     .ok_or_else(|| format!("nearby mount not found: {:?}", mount.id.0))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        self.ensure_topology();
 
         #[cfg(test)]
         if let Some(host) = self.get_mut(host_id) {
@@ -1838,11 +1857,13 @@ impl ElementTree {
             self.ensure_topology_capacity(child_ix);
         }
 
-        {
+        let changed = {
             #[cfg(test)]
             let topology = self.topology.get_mut();
             #[cfg(not(test))]
             let topology = &mut self.topology;
+
+            let changed = topology.nodes[parent_ix].children != child_ixs;
 
             for old_child_ix in std::mem::take(&mut topology.nodes[parent_ix].children) {
                 if matches!(topology.nodes[old_child_ix].parent, Some(ParentLink::Child { parent }) if parent == parent_ix)
@@ -1856,6 +1877,11 @@ impl ElementTree {
             }
 
             topology.nodes[parent_ix].children = child_ixs;
+            changed
+        };
+
+        if changed {
+            self.bump_children_version(parent_ix);
         }
 
         self.mark_measure_dirty_ix(parent_ix);
@@ -1864,14 +1890,19 @@ impl ElementTree {
     fn set_paint_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
         self.ensure_topology_capacity(parent_ix);
 
-        #[cfg(test)]
-        {
-            self.topology.get_mut().nodes[parent_ix].paint_children = child_ixs;
-        }
+        let changed = {
+            #[cfg(test)]
+            let topology = self.topology.get_mut();
+            #[cfg(not(test))]
+            let topology = &mut self.topology;
 
-        #[cfg(not(test))]
-        {
-            self.topology.nodes[parent_ix].paint_children = child_ixs;
+            let changed = topology.nodes[parent_ix].paint_children != child_ixs;
+            topology.nodes[parent_ix].paint_children = child_ixs;
+            changed
+        };
+
+        if changed {
+            self.bump_paint_children_version(parent_ix);
         }
     }
 
@@ -1881,11 +1912,13 @@ impl ElementTree {
             self.ensure_topology_capacity(mount.ix);
         }
 
-        {
+        let changed = {
             #[cfg(test)]
             let topology = self.topology.get_mut();
             #[cfg(not(test))]
             let topology = &mut self.topology;
+
+            let changed = topology.nodes[host_ix].nearby != mounts;
 
             for old_mount in std::mem::take(&mut topology.nodes[host_ix].nearby) {
                 if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == host_ix)
@@ -1902,9 +1935,83 @@ impl ElementTree {
             }
 
             topology.nodes[host_ix].nearby = mounts;
+            changed
+        };
+
+        if changed {
+            self.bump_nearby_version(host_ix);
         }
 
         self.mark_measure_dirty_ix(host_ix);
+    }
+
+    pub fn topology_dependency_key_for(&self, id: &NodeId) -> TopologyDependencyKey {
+        self.ix_of(id)
+            .map(|ix| self.topology_dependency_key_ix(ix))
+            .unwrap_or_default()
+    }
+
+    pub fn topology_dependency_key_ix(&self, ix: NodeIx) -> TopologyDependencyKey {
+        self.ensure_topology();
+
+        let versions = self
+            .get_ix(ix)
+            .map(|element| element.layout.topology_versions)
+            .unwrap_or_default();
+
+        let (child_count, nearby_count) = self.topology_dependency_counts(ix);
+
+        TopologyDependencyKey {
+            children_version: versions.children,
+            nearby_version: versions.nearby,
+            child_count,
+            nearby_count,
+        }
+    }
+
+    fn topology_dependency_counts(&self, ix: NodeIx) -> (usize, usize) {
+        #[cfg(test)]
+        {
+            let topology = self.topology.borrow();
+            topology
+                .nodes
+                .get(ix)
+                .map(|node| (node.children.len(), node.nearby.len()))
+                .unwrap_or_default()
+        }
+
+        #[cfg(not(test))]
+        {
+            self.topology
+                .nodes
+                .get(ix)
+                .map(|node| (node.children.len(), node.nearby.len()))
+                .unwrap_or_default()
+        }
+    }
+
+    fn bump_children_version(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.topology_versions.children =
+                element.layout.topology_versions.children.saturating_add(1);
+        }
+    }
+
+    fn bump_paint_children_version(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.topology_versions.paint_children = element
+                .layout
+                .topology_versions
+                .paint_children
+                .saturating_add(1);
+        }
+    }
+
+    fn bump_nearby_version(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.topology_versions.nearby =
+                element.layout.topology_versions.nearby.saturating_add(1);
+        }
     }
 
     /// Apply scroll delta to an element. Returns the required invalidation.
@@ -2283,6 +2390,105 @@ mod tests {
         assert_eq!(ElementKind::from_tag(10), Some(ElementKind::TextInput));
         assert_eq!(ElementKind::from_tag(11), Some(ElementKind::Video));
         assert_eq!(ElementKind::from_tag(12), Some(ElementKind::Multiline));
+    }
+
+    #[test]
+    fn topology_versions_bump_for_child_order_changes_but_not_noop_writes() {
+        let parent_id = NodeId::from_term_bytes(vec![1]);
+        let first_id = NodeId::from_term_bytes(vec![2]);
+        let second_id = NodeId::from_term_bytes(vec![3]);
+
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            parent_id,
+            ElementKind::Column,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            first_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            second_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.set_root_id(parent_id);
+
+        tree.set_children(&parent_id, vec![first_id, second_id])
+            .unwrap();
+        let first_key = tree.topology_dependency_key_for(&parent_id);
+        assert_eq!(first_key.child_count, 2);
+        assert_eq!(first_key.nearby_count, 0);
+
+        tree.set_children(&parent_id, vec![first_id, second_id])
+            .unwrap();
+        assert_eq!(tree.topology_dependency_key_for(&parent_id), first_key);
+
+        tree.set_children(&parent_id, vec![second_id, first_id])
+            .unwrap();
+        let reordered_key = tree.topology_dependency_key_for(&parent_id);
+        assert_eq!(reordered_key.child_count, 2);
+        assert!(reordered_key.children_version > first_key.children_version);
+    }
+
+    #[test]
+    fn topology_versions_bump_for_nearby_slot_changes_but_not_noop_writes() {
+        let host_id = NodeId::from_term_bytes(vec![11]);
+        let nearby_id = NodeId::from_term_bytes(vec![12]);
+
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            host_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            nearby_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.set_root_id(host_id);
+
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Below,
+                id: nearby_id,
+            }],
+        )
+        .unwrap();
+        let first_key = tree.topology_dependency_key_for(&host_id);
+        assert_eq!(first_key.child_count, 0);
+        assert_eq!(first_key.nearby_count, 1);
+
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Below,
+                id: nearby_id,
+            }],
+        )
+        .unwrap();
+        assert_eq!(tree.topology_dependency_key_for(&host_id), first_key);
+
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Above,
+                id: nearby_id,
+            }],
+        )
+        .unwrap();
+        let changed_key = tree.topology_dependency_key_for(&host_id);
+        assert_eq!(changed_key.nearby_count, 1);
+        assert!(changed_key.nearby_version > first_key.nearby_version);
     }
 
     #[test]

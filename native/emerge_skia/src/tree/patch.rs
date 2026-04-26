@@ -734,6 +734,7 @@ fn clone_as_ghost(
             scroll_x_max: old.layout.scroll_x_max,
             scroll_y_max: old.layout.scroll_y_max,
             paragraph_fragments: old.layout.paragraph_fragments.clone(),
+            topology_versions: Default::default(),
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,

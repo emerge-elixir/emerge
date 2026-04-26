@@ -51,11 +51,12 @@ Already implemented:
 - targeted dirty propagation for layout-affecting animation samples
 - broader resolve-cache reuse for text-flow-heavy layouts
 - first relayout/dependency boundary for fixed-size `El`/`None` parents
+- compact child/nearby topology dependency versions in layout cache keys
 
 Still open:
 
 - broader relayout/dependency boundaries
-- version-based cache keys
+- further version/key work for attrs or measured/resolve dependency generations if profiles justify it
 - downstream refresh subtree skipping
 - viewport/repeater-aware cache preservation
 
