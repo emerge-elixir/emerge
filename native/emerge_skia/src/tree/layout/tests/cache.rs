@@ -6,6 +6,7 @@ use crate::tree::invalidation::{
     RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
 };
 use crate::tree::patch::{Patch, apply_patches};
+use crate::tree::render::render_tree_scene;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -972,6 +973,90 @@ fn test_paint_only_shadow_patch_refresh_skips_layout() {
             .unwrap()[0]
             .offset_x,
         5.0
+    );
+}
+
+#[test]
+fn test_render_subtree_cache_matches_uncached_scene_after_sibling_paint_patch() {
+    let mut tree = ElementTree::new();
+    let root = make_element("root", ElementKind::Row, Attrs::default());
+    let root_id = root.id;
+    let first = make_element("first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+    let second_cache_before = tree
+        .get(&second_id)
+        .unwrap()
+        .refresh
+        .render_cache
+        .clone()
+        .expect("warm refresh should store second child render cache");
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: first_id,
+            attrs_raw: raw_text_background_attrs("One"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+
+    let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let uncached_scene = render_tree_scene(&tree).scene;
+
+    assert_eq!(output.scene, uncached_scene);
+    assert_eq!(
+        tree.get(&second_id).unwrap().refresh.render_cache.as_ref(),
+        Some(&second_cache_before)
+    );
+}
+
+#[test]
+fn test_registry_only_root_refresh_reuses_render_cache() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+    let root_cache_before = tree
+        .get(&root_id)
+        .unwrap()
+        .refresh
+        .render_cache
+        .clone()
+        .expect("warm refresh should store root render cache");
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_event_only_attrs(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Registry);
+    assert!(!tree.has_render_refresh_damage());
+    assert!(tree.has_registry_refresh_damage());
+
+    let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+
+    assert!(output.event_rebuild_changed);
+    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert_eq!(
+        tree.get(&root_id).unwrap().refresh.render_cache.as_ref(),
+        Some(&root_cache_before)
     );
 }
 
@@ -2190,6 +2275,10 @@ fn raw_text_event_attrs(content: &str) -> Vec<u8> {
     push_font_size_attr(&mut data, 16.0);
     data.extend_from_slice(&[40, 1]);
     data
+}
+
+fn raw_event_only_attrs() -> Vec<u8> {
+    vec![0, 1, 40, 1]
 }
 
 fn raw_text_align_attrs(content: &str, align_x: AlignX) -> Vec<u8> {

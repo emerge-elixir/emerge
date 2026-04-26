@@ -9,9 +9,9 @@ investigation that led to the current implementation.
 
 ### `active-refresh-subtree-skipping-plan.md`
 
-The current temporary active implementation plan. Refresh damage bookkeeping and
-clean-registry reuse are implemented; the next slice in this file is render
-subtree caching/skipping.
+The current temporary active implementation plan. Refresh damage bookkeeping,
+clean-registry reuse, and render subtree caching/skipping are implemented; the
+next slice in this file is registry subtree chunk caching/skipping.
 
 ### `layout-caching-roadmap.md`
 
@@ -75,26 +75,22 @@ The native layout-caching foundation is in place:
   layout-cache outcomes
 - refresh-only frames can reuse the cached full event registry when registry
   damage is clean
+- refresh scene rendering can reuse clean retained render subtrees
 
 ## Next recommended implementation order
 
-### 1. Add render subtree skipping
+### 1. Add registry subtree chunk skipping
 
-Refresh damage bookkeeping and cached full-registry reuse are in place. Next,
-make render scene refresh skip clean subtrees.
+Refresh damage bookkeeping, cached full-registry reuse, and render subtree
+skipping are in place. Next, make registry rebuilds reuse clean subtree chunks.
 
-### 2. Add registry subtree chunk skipping
-
-After render subtree reuse, make registry rebuilds proportional to registry
-damage instead of tree size.
-
-### 3. Broaden relayout/dependency boundaries
+### 2. Broaden relayout/dependency boundaries
 
 The first boundary covers fixed-size `El`/`None`. Broader row/column,
 scrollable, nearby, and text-flow boundaries should be added only with focused
 correctness tests.
 
-### 4. Repeater/viewport-aware caching
+### 3. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.

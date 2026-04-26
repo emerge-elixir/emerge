@@ -297,10 +297,10 @@ Implemented so far:
   damage is clean
 - duplicate registry updates are avoided when the cached registry payload is
   reused
+- render scene refresh can reuse clean retained render subtrees
 
 Next within this slice:
 
-- render subtree cache/skip
 - registry subtree chunk cache/skip
 
 `refresh(tree)` should be able to skip a subtree when:
@@ -314,8 +314,8 @@ Potential stats:
 
 - refresh subtrees visited
 - refresh subtrees skipped
-- scene nodes rebuilt
-- registry nodes rebuilt
+- render subtrees visited/reused/stored
+- registry subtrees visited/reused/stored
 
 Acceptance criteria:
 

@@ -333,11 +333,18 @@ Implemented shape:
   both outputs
 - refresh-only frames can reuse the tree actor's cached full
   `RegistryRebuildPayload` when registry damage is clean
+- `NodeRefreshState` owns an optional render subtree cache for downstream scene
+  refresh reuse
+- render subtree caches store local render nodes, escape render nodes, and
+  text-input IME metadata
+- render subtree keys include render-relevant effective attrs, runtime render
+  state, frame/scroll state, inherited font context, scene/render context,
+  child/paint-child/nearby topology versions/counts, and paragraph fragments
 
 This keeps layout-cache stats simple: a paint-only refresh still records no
 layout-cache hit/miss/store activity because no layout cache was consulted.
-Future render subtree and registry chunk caches should add separate gated
-refresh counters if needed, not new layout-cache bypass categories.
+Future registry chunk caches or refresh counters should stay separate and gated,
+not become layout-cache bypass categories.
 
 ## Boundary APIs can stay id-based
 

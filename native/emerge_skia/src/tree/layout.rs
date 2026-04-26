@@ -4718,7 +4718,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::{render_tree, render_tree_scene};
+use super::render::render_tree_scene_cached;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -4741,14 +4741,15 @@ pub struct LayoutUpdateOutput {
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree(tree);
-    let ime_text_state = ime_text_state_from_rebuild(&render_output.event_rebuild);
+    let render_output = render_tree_scene_cached(tree);
+    let event_rebuild = crate::events::registry_builder::build_registry_rebuild(tree);
+    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
 
     tree.clear_refresh_dirty();
 
     LayoutOutput {
         scene: render_output.scene,
-        event_rebuild: render_output.event_rebuild,
+        event_rebuild,
         event_rebuild_changed: true,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
@@ -4767,7 +4768,7 @@ pub(crate) fn refresh_reusing_clean_registry(
         return refresh(tree);
     }
 
-    let render_output = render_tree_scene(tree);
+    let render_output = render_tree_scene_cached(tree);
     let event_rebuild = cached_rebuild
         .cloned()
         .expect("cached rebuild should be present when registry can be reused");
