@@ -283,6 +283,8 @@ preserved and cache outcomes remain hit/miss/store.
 
 ## Next slice 1: refresh subtree skipping
 
+Temporary active plan: `active-refresh-subtree-skipping-plan.md`.
+
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
 

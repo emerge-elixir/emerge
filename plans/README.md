@@ -7,11 +7,11 @@ investigation that led to the current implementation.
 
 ## Files
 
-### `active-versioned-cache-keys-plan.md`
+### `active-refresh-subtree-skipping-plan.md`
 
-The current temporary active implementation plan. The code slice has been
-implemented and validated for compact topology dependency keys; keep the file
-until deletion is explicitly confirmed.
+The current temporary active implementation plan. It focuses on making the
+refresh phase reuse clean render/event output after layout work has already been
+skipped or reused.
 
 ### `layout-caching-roadmap.md`
 
