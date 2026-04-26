@@ -439,6 +439,7 @@ Interpretation:
   animation-only frames
 - cached-registry refresh also cloned the full registry payload even when
   `event_rebuild_changed=false`
+- long scrollable pages still built render nodes for clipped/offscreen subtrees
 
 Implemented shape:
 
@@ -453,6 +454,9 @@ Implemented shape:
 - attempted generic render-cache seeding during damaged/no-cache refresh was
   benchmarked and rejected because it regressed both animation and hover refresh
   guards
+- render scene construction now culls subtrees whose conservative visual bounds
+  are fully outside the inherited clip; the bounds include outer shadow overflow
+  and transformed rects, and hosts with nearby mounts are kept conservative
 
 Focused benchmark signal:
 
@@ -460,9 +464,14 @@ Focused benchmark signal:
 native/layout_animation_paint_only/shadow_showcase/paint_only_refresh_each_frame
   before incremental animation prep: ~539 µs (local pre-change short run)
   after incremental animation prep:  ~499 µs
+  after render culling:              ~503-512 µs when the whole showcase is visible
+
+native/layout_scroll_paint_only_animation/shadow_showcase/paint_only_refresh_scroll_frame
+  before render culling: ~801 µs
+  after render culling:  ~355 µs
 
 native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
-  ~165 µs
+  ~169 µs
 ```
 
 ## Slice 7: focused demo smoke and docs — done locally; focused app smoke still useful

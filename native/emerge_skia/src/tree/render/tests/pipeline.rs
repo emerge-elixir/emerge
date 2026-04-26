@@ -82,6 +82,119 @@ fn build_nested_child_tree(
 }
 
 #[test]
+fn test_render_skips_child_fully_outside_inherited_clip() {
+    let tree = build_tree_with_child_frame(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 120.0,
+        },
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 80.0,
+            width: 20.0,
+            height: 10.0,
+            content_width: 20.0,
+            content_height: 10.0,
+        },
+    );
+
+    let draws = observe_tree(&tree);
+    assert_eq!(
+        matching_draws(&draws, |draw| matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 80.0, 20.0, 10.0, 0xFF0000FF)
+        ))
+        .len(),
+        0,
+        "fully clipped child should not contribute render primitives"
+    );
+}
+
+#[test]
+fn test_render_keeps_shadow_overflow_that_reaches_inherited_clip() {
+    let mut child_attrs = solid_fill_attrs((255, 255, 255));
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: -20.0,
+        blur: 0.0,
+        size: 0.0,
+        color: Color::Rgb { r: 255, g: 0, b: 0 },
+        inset: false,
+    }]);
+
+    let tree = build_tree_with_child_frame(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 120.0,
+        },
+        child_attrs,
+        Frame {
+            x: 0.0,
+            y: 60.0,
+            width: 20.0,
+            height: 10.0,
+            content_width: 20.0,
+            content_height: 10.0,
+        },
+    );
+
+    let draws = observe_tree(&tree);
+    only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Shadow(0.0, 60.0, 20.0, 10.0, 0.0, -20.0, 0.0, 0.0, 0.0, 0xFF0000FF)
+        )
+    });
+}
+
+#[test]
+fn test_render_keeps_transformed_child_that_reaches_inherited_clip() {
+    let mut child_attrs = solid_fill_attrs((0, 255, 0));
+    child_attrs.move_y = Some(-40.0);
+
+    let tree = build_tree_with_child_frame(
+        solid_fill_attrs((0, 0, 0)),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+            content_width: 100.0,
+            content_height: 120.0,
+        },
+        child_attrs,
+        Frame {
+            x: 0.0,
+            y: 80.0,
+            width: 20.0,
+            height: 10.0,
+            content_width: 20.0,
+            content_height: 10.0,
+        },
+    );
+
+    let draws = observe_tree(&tree);
+    let child = only_draw(&draws, |draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(0.0, 80.0, 20.0, 10.0, 0x00FF00FF)
+        )
+    });
+    assert_eq!(child.cumulative_transform, Affine2::translation(0.0, -40.0));
+}
+
+#[test]
 fn test_render_nested_wrapper_children_use_host_clips() {
     let root_id = NodeId::from_term_bytes(vec![40]);
     let column_id = NodeId::from_term_bytes(vec![41]);

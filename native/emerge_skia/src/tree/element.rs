@@ -1601,6 +1601,25 @@ impl ElementTree {
         }
     }
 
+    pub fn has_nearby_mounts_ix(&self, ix: NodeIx) -> bool {
+        #[cfg(test)]
+        {
+            self.ensure_topology();
+            self.topology
+                .borrow()
+                .nodes
+                .get(ix)
+                .is_some_and(|node| !node.nearby.is_empty())
+        }
+        #[cfg(not(test))]
+        {
+            self.topology
+                .nodes
+                .get(ix)
+                .is_some_and(|node| !node.nearby.is_empty())
+        }
+    }
+
     pub fn local_nearby_mounts_ix(&self, ix: NodeIx) -> Vec<NearbyMountIx> {
         self.nearby_ixs(ix)
             .into_iter()
