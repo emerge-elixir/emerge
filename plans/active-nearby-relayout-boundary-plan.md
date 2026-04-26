@@ -3,9 +3,9 @@
 Last updated: 2026-04-26.
 
 Status: implemented and locally validated. Nearby topology classification,
-measurement boundaries, and resolve traversal through dirty nearby descendants
-are in place. Focused demo validation remains useful before deleting this active
-plan file.
+measurement boundaries, resolve traversal through dirty nearby descendants, and
+small detached-layout reuse for reinserted nearby subtrees are in place. Focused
+demo validation remains useful before deleting this active plan file.
 
 ## Motivation
 
@@ -193,6 +193,25 @@ longer causes host/ancestor subtree-measure or resolve misses, and nearby show
 only stores measurement/resolve entries for the newly inserted nearby subtree
 plus the host's updated nearby topology key.
 
+Post-slice Borders hover stats still showed substantial misses:
+
+```text
+layout: avg=1.486 ms min=1.296 ms max=2.063 ms count=27
+patch tree actor: avg=1.669 ms min=1.404 ms max=2.346 ms count=27
+intrinsic measure: hits=0 misses=294 stores=294
+subtree measure: hits=513 misses=643 stores=643
+resolve: hits=216 misses=643 stores=670
+```
+
+Interpretation: the broad host/ancestor nearby invalidation was improved, but
+`View.hover_example/3` uses `Nearby.above(code_preview(...))` where the inactive
+preview is `none()`. Each show/hide swaps a nearby root between `none` and a
+fresh code-block subtree, so the first show of a code block still has to measure
+and resolve that newly inserted subtree. A follow-up detached-layout cache now
+keeps a small bounded layout-state snapshot when a nearby subtree is removed and
+restores it when the same subtree shape is reinserted, preserving hit/miss/store
+semantics while avoiding repeated cold code-block layout on later toggles.
+
 ## Slice 2: classify nearby topology invalidation — done
 
 Tasks:
@@ -311,7 +330,31 @@ Acceptance:
 - nearby overlay show/hide updates only affected placement/output
 - focus/event registry and render scene remain correct after resolve reuse
 
-## Slice 5: focused demo smoke and docs — done locally; focused app smoke still useful
+## Slice 5: detached reuse for reinserted nearby subtrees — done
+
+Tasks:
+
+- keep the cache model to hit / miss / store only
+- avoid broad subtree-cache seeding for ordinary dirty work
+- preserve exact-subtree safety: only restore layout state when a removed nearby
+  subtree with the same structural signature, raw attrs, runtime layout state,
+  and scale is reinserted
+- bound memory and subtree size
+
+Implemented shape:
+
+- `ElementTree` keeps a small bounded detached nearby layout cache
+- removing a nearby subtree stores cloned `NodeLayoutState` snapshots when the
+  subtree is small enough and animation-free
+- inserting a nearby subtree restores the snapshot only when the structural
+  signature and scale match
+- restored subtree/resolve cache keys are retargeted to the new topology version
+  counters before use
+- focused test covers `none()` -> code block -> `none()` -> same code block with
+  different node ids and verifies zero intrinsic/subtree/resolve misses on the
+  repeated show
+
+## Slice 6: focused demo smoke and docs — done locally; focused app smoke still useful
 
 Tasks:
 
@@ -320,7 +363,7 @@ Tasks:
 - update stable roadmap/insights with the boundary rules that are proven safe
 - delete this active plan only after confirmation
 
-Validation run for the measurement-boundary implementation:
+Validation run for the nearby boundary and detached-reuse implementation:
 
 ```bash
 cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check

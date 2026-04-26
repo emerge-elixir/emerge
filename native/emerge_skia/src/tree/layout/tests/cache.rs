@@ -1825,6 +1825,60 @@ fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
 }
 
 #[test]
+fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
+    let mut tree = nearby_placeholder_tree("detached_initial");
+    let root_id = tree.root_id().unwrap();
+    let host_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    replace_nearby_root(
+        &mut tree,
+        host_id,
+        nearby_code_subtree("first", &["Code", "Border.width(2)", "Border.dashed()"]),
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    replace_nearby_root(&mut tree, host_id, nearby_none_subtree("detached_hidden"));
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    tree.set_layout_cache_stats_enabled(true);
+    replace_nearby_root(
+        &mut tree,
+        host_id,
+        nearby_code_subtree("second", &["Code", "Border.width(2)", "Border.dashed()"]),
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(stats.intrinsic_measure_misses, 0);
+    assert_eq!(stats.subtree_measure_misses, 0);
+    assert_eq!(stats.resolve_misses, 0);
+    assert!(stats.subtree_measure_hits > 0);
+    assert!(stats.resolve_hits > 0);
+}
+
+#[test]
 fn test_text_patch_inside_content_sized_el_still_dirties_parent_measurement() {
     let mut tree = content_el_text_tree("Hi");
     let root_id = tree.root_id().unwrap();
@@ -2436,6 +2490,103 @@ fn fixed_host_with_nearby_tree(include_nearby: bool) -> ElementTree {
     }
 
     tree
+}
+
+fn nearby_placeholder_tree(seed: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        &format!("{seed}_root"),
+        ElementKind::Column,
+        Attrs::default(),
+    );
+    let root_id = root.id;
+    let host = make_element(
+        &format!("{seed}_host"),
+        ElementKind::El,
+        fixed_box_attrs(120.0, 48.0),
+    );
+    let host_id = host.id;
+    let hidden = make_element(
+        &format!("{seed}_hidden"),
+        ElementKind::None,
+        Attrs::default(),
+    );
+    let hidden_id = hidden.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(host);
+    tree.insert(hidden);
+    tree.set_children(&root_id, vec![host_id]).unwrap();
+    tree.set_nearby_mounts(
+        &host_id,
+        vec![NearbyMount {
+            slot: NearbySlot::Above,
+            id: hidden_id,
+        }],
+    )
+    .unwrap();
+    tree
+}
+
+fn nearby_none_subtree(seed: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let hidden = make_element(&format!("{seed}_none"), ElementKind::None, Attrs::default());
+    let hidden_id = hidden.id;
+    tree.set_root_id(hidden_id);
+    tree.insert(hidden);
+    tree
+}
+
+fn nearby_code_subtree(seed: &str, lines: &[&str]) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(320.0));
+    root_attrs.padding = Some(Padding::Uniform(8.0));
+    root_attrs.spacing = Some(4.0);
+    let root = make_element(
+        &format!("{seed}_code_root"),
+        ElementKind::Column,
+        root_attrs,
+    );
+    let root_id = root.id;
+    let children: Vec<NodeId> = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let text = make_element(
+                &format!("{seed}_code_line_{index}"),
+                ElementKind::Text,
+                text_attrs(line),
+            );
+            let text_id = text.id;
+            tree.insert(text);
+            text_id
+        })
+        .collect();
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.set_children(&root_id, children).unwrap();
+    tree
+}
+
+fn replace_nearby_root(tree: &mut ElementTree, host_id: NodeId, subtree: ElementTree) {
+    let old_id = tree.nearby_mounts_for(&host_id)[0].id;
+    let invalidation = apply_patches(
+        tree,
+        vec![
+            Patch::Remove { id: old_id },
+            Patch::InsertNearbySubtree {
+                host_id,
+                index: 0,
+                slot: NearbySlot::Above,
+                subtree,
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
 }
 
 fn fixed_el_text_tree(content: &str, align_x: AlignX, align_y: AlignY) -> ElementTree {

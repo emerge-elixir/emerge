@@ -436,6 +436,7 @@ fn apply_patch(
 
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
+            tree.restore_detached_layout_subtree_cache(&subtree_root_id);
             TreeInvalidation::Resolve
         }
 
@@ -852,6 +853,10 @@ pub(crate) fn remove_subtree(tree: &mut ElementTree, id: &NodeId) {
     collect_descendants(tree, id, &mut to_remove);
 
     let parent_link = tree.ix_of(id).and_then(|ix| tree.parent_link_of(ix));
+
+    if matches!(parent_link, Some(ParentLink::Nearby { .. })) {
+        tree.store_detached_layout_subtree_cache(id);
+    }
 
     if let Some(parent_link) = parent_link {
         match parent_link {

@@ -284,7 +284,13 @@ resolve_descendant_dirty: bool,
 ```
 
 This design keeps cache lifetime tied to retained node lifetime and lets patches
-preserve cache state when identity is reused.
+preserve cache state when identity is reused. A narrow exception exists for
+nearby hover overlays: `ElementTree` keeps a small bounded detached layout cache
+for recently removed nearby subtrees. It stores cloned `NodeLayoutState`
+snapshots only for small animation-free subtrees and restores them only when the
+same structural signature/raw attrs/runtime layout state/scale is reinserted.
+This handles `none()`/code-block nearby toggles where node ids are fresh but the
+subtree is exactly the same.
 
 `measure_descendant_dirty` and `resolve_descendant_dirty` are traversal signals,
 not cache outcomes. The measurement bit exists so a clean ancestor can avoid
@@ -347,8 +353,10 @@ measured size. During nearby-only resolve traversal, a cached host key may be
 reused for the host's own geometry while ignoring only the nearby portion of the
 key; the host then resolves nearby mounts and stores an updated full resolve key.
 
-Future ix-native traversal cleanup should build on these compact dependency
-helpers rather than reintroducing cloned identity lists.
+Detached nearby layout restore retargets copied subtree/resolve cache keys to
+the new node's current compact topology versions before reuse. Future ix-native
+traversal cleanup should build on these compact dependency helpers rather than
+reintroducing cloned identity lists.
 
 ## Refresh damage insight
 

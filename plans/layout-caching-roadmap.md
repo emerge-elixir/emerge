@@ -30,6 +30,7 @@ work:
 - per-node intrinsic measurement cache
 - per-node subtree measurement cache
 - coordinate-invariant resolve cache
+- small bounded detached-layout reuse for removed/reinserted nearby subtrees
 - resolve-cache eligibility for text-flow kinds (`Multiline`, `WrappedRow`,
   `TextColumn`, and `Paragraph`)
 - targeted dirty propagation for layout-affecting animation samples
@@ -324,8 +325,8 @@ Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
 instead of dirtying broad host/ancestor measurement and resolve paths.
 
 Status: benchmark guard, invalidation classification, subtree-measure boundary,
-and resolve traversal through dirty nearby descendants are implemented and
-locally validated.
+resolve traversal through dirty nearby descendants, and detached reuse for
+reinserted nearby subtrees are implemented and locally validated.
 
 Observed motivation from the Borders page hover/unhover code-block case:
 
@@ -353,6 +354,10 @@ Implemented direction:
   measurement ancestors
 - resolve-cache hits can restore clean ancestor geometry while traversing the
   dirty nearby path, avoiding visits to unrelated clean siblings
+- removed small animation-free nearby subtrees keep a bounded detached layout
+  snapshot keyed by structural signature/raw attrs/runtime state/scale, so
+  repeated `none()`/code-block hover toggles can restore layout caches even when
+  the reinserted subtree has fresh node ids
 - render/registry damage remains conservative for paint ordering and event
   precedence
 
