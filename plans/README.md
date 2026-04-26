@@ -7,14 +7,13 @@ investigation that led to the current implementation.
 
 ## Files
 
-### `active-refresh-subtree-skipping-plan.md`
+### `active-nearby-relayout-boundary-plan.md`
 
-The current temporary active implementation plan. Refresh damage bookkeeping,
-clean-registry reuse, render subtree caching/skipping, render-cache performance
-regression guards, registry regression guards, conservative registry chunk-cache
-infrastructure, and Slice 6 smoke validation are implemented. The file can be
-removed after confirmation; follow-up nearby relayout-boundary work belongs in a
-new future plan.
+The current temporary active implementation plan. It targets the next layout
+caching slice: making nearby overlay mount/unmount work proportional to the
+nearby subtree instead of dirtying broad host/ancestor layout paths. The plan
+starts with a benchmark/test guard for the Borders hover/unhover code-block
+shape before changing invalidation.
 
 ### `layout-caching-roadmap.md`
 
@@ -23,9 +22,10 @@ The active implementation roadmap.
 Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
 targeted layout-affecting animation invalidation, text-flow resolve-cache
-eligibility, the first relayout/dependency boundary, and compact topology
-version cache keys are done. The next work is about refresh skipping, broader
-dependency boundaries, and viewport/repeater-aware caching.
+eligibility, the first relayout/dependency boundary, compact topology version
+cache keys, and refresh subtree skipping are done. The next work is nearby
+relayout/dependency boundaries, broader boundaries, and viewport/repeater-aware
+caching.
 
 ### `layout-caching-engine-insights.md`
 
@@ -89,21 +89,26 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Refine registry chunk seeding or keep it guarded
+### 1. Add a nearby relayout/dependency boundary
 
-Refresh damage bookkeeping, cached full-registry reuse, render subtree skipping,
-render-cache regression guards, and conservative registry chunk infrastructure
-are in place. The next registry-specific decision is whether to add a cheap
-production seeding strategy plus broader precedence tests, or to leave the chunk
-path guarded and move on.
+Refresh subtree skipping is validated conservatively. The next active slice is
+nearby overlay topology: `SetNearbyMounts`/nearby subtree changes should not
+force broad host/ancestor measurement and resolve misses when the host's measured
+size is independent of the nearby overlay.
 
-### 2. Broaden relayout/dependency boundaries
+### 2. Broaden other relayout/dependency boundaries
 
-The first boundary covers fixed-size `El`/`None`. Broader row/column,
-scrollable, nearby, and text-flow boundaries should be added only with focused
-correctness tests.
+The first boundary covers fixed-size `El`/`None`, and the active slice targets
+nearby overlays. Broader row/column, scrollable, and text-flow boundaries should
+be added only with focused correctness tests.
 
-### 3. Repeater/viewport-aware caching
+### 3. Revisit registry chunk seeding if profiles justify it
+
+The guarded registry chunk infrastructure is in place. Leave damaged/no-cache
+and escape-nearby cases on the full-rebuild fallback unless a future profile
+shows registry rebuilds are the dominant cost and cheap seeding is proven safe.
+
+### 4. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.

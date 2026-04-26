@@ -492,7 +492,7 @@ combined invalidation is paint-only.
 
 The native tree now supports the next layout-caching stages:
 
-1. refresh subtree skipping
+1. nearby relayout/dependency boundaries for overlay mount/unmount changes
 2. broader relayout/dependency boundaries beyond fixed-size `El`/`None`
 3. additional ix-native measure/resolve traversal cleanup where profiles justify it
 4. viewport/repeater-aware cache preservation
