@@ -198,6 +198,7 @@ Refresh-derived state:
 - render dirty and render descendant-dirty bits
 - registry dirty and registry descendant-dirty bits
 - optional retained render subtree cache
+- optional retained registry subtree cache
 
 This state is intentionally separate from `NodeLayoutState` cache outcomes. A
 paint-only update can dirty render refresh output without asking a measurement
@@ -213,6 +214,12 @@ lazily from clean refreshes under a small per-refresh store budget, capped by
 render-node count, and volatile scene contexts such as scrolling should bypass
 render subtree lookup/storage when the cached subtree would be immediately
 stale.
+
+Registry refresh chunks follow the same safety rule: do not turn a cold or dirty
+full rebuild into cache-seeding work unless it is proven cheap. The current
+registry chunk path falls back to the full builder when a damaged rebuild has no
+retained chunks, and it also falls back for escape-nearby trees until overlay
+precedence can be tested and optimized more narrowly.
 
 ### `NodeLifecycle`
 
@@ -344,18 +351,24 @@ Implemented shape:
   both outputs
 - refresh-only frames can reuse the tree actor's cached full
   `RegistryRebuildPayload` when registry damage is clean
-- `NodeRefreshState` owns an optional render subtree cache for downstream scene
-  refresh reuse
+- `NodeRefreshState` owns optional render and registry subtree caches for
+  downstream scene/event refresh reuse
 - render subtree caches store local render nodes, escape render nodes, and
   text-input IME metadata
 - render subtree keys include render-relevant effective attrs, runtime render
   state, frame/scroll state, inherited font context, scene/render context,
   child/paint-child/nearby topology versions/counts, and paragraph fragments
+- registry subtree caches store local registry contributions and retained
+  metadata before final window/focus-cycle listeners are assembled
+- registry chunk keys include raw/registry-relevant attrs, runtime interaction
+  state, frame/scroll state, scene and scroll contexts, and topology dependency
+  versions/counts; dirty/no-retained-cache and escape-nearby cases currently
+  fall back to a full rebuild
 
 This keeps layout-cache stats simple: a paint-only refresh still records no
 layout-cache hit/miss/store activity because no layout cache was consulted.
-Future registry chunk caches or refresh counters should stay separate and gated,
-not become layout-cache bypass categories.
+Registry chunk caches and any future refresh counters should stay separate and
+gated, not become layout-cache bypass categories.
 
 ## Boundary APIs can stay id-based
 

@@ -4755,7 +4755,7 @@ fn refresh_from_render_output(
     tree: &mut ElementTree,
     render_output: super::render::RenderSceneOutput,
 ) -> LayoutOutput {
-    let event_rebuild = crate::events::registry_builder::build_registry_rebuild(tree);
+    let event_rebuild = crate::events::registry_builder::build_registry_rebuild_cached(tree);
     let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
 
     tree.clear_refresh_dirty();

@@ -3,8 +3,11 @@
 Last updated: 2026-04-26.
 
 Status: partially implemented. Refresh damage bookkeeping, clean-registry reuse,
-render subtree caching/skipping, and the render-cache performance regression
-slice are implemented. The next slice is registry subtree chunk caching/skipping.
+render subtree caching/skipping, render-cache performance regression guards, and
+registry chunk-cache infrastructure are implemented. The registry cache path is
+conservative: damaged/no-retained-cache cases fall back to full registry rebuilds
+to avoid cold-path regressions, and escape-nearby trees currently stay on the
+full rebuild path.
 
 ## Motivation
 
@@ -60,13 +63,15 @@ refresh(tree)
        -> reuse clean render subtrees when cheap/safe
        -> bypass render subtree lookup in volatile scrolling scene contexts
        -> do not store dirty scroll-container render caches
-       -> build_registry_rebuild(tree)
-            -> full event-registry traversal unless clean-registry reuse is used
+       -> build_registry_rebuild_cached(tree)
+            -> full event-registry traversal unless clean-registry reuse or a
+               retained registry chunk can be used safely
 ```
 
 The render scene and registry traversals are separate today. Treat them as
 separate cache/skip problems even if they share damage metadata. Render subtree
-skipping is implemented; registry subtree chunk skipping remains next.
+skipping is implemented, and registry subtree chunks now exist behind
+conservative safety fallbacks.
 
 ## Target behavior
 
@@ -425,7 +430,7 @@ Implementation acceptance:
   caching is gated/disabled and the active plan returns to registry/full-refresh
   improvements from a safe baseline.
 
-## Slice 5: registry subtree chunk cache/skip — next
+## Slice 5: registry subtree chunk cache/skip — implemented conservatively
 
 Goal: make event registry rebuild proportional to registry damage, not tree size.
 
@@ -515,34 +520,80 @@ text_rich_500/event_attr/after_patch_full_registry:            ~0.48 ms
 Chunked variants must compare against these stable full-rebuild baselines and
 must not regress cold/no-cache or damaged/no-cache cases.
 
-### Slice 5b: registry chunk implementation — next
+### Slice 5b: registry chunk implementation — implemented conservatively
 
 Tasks:
 
-- factor registry traversal into cacheable per-subtree chunks before final window
-  and focus-cycle listeners are added
-- define a conservative `RegistrySubtreeKey`
-- include dependencies used by listener construction:
+- [x] factor registry traversal into cacheable per-subtree chunks before final
+  window and focus-cycle listeners are added
+- [x] define a conservative `RegistrySubtreeKey`
+- [x] include dependencies used by listener construction:
   - event/focus/scrollbar/text-input attrs
   - runtime interaction state that affects listeners or retained metadata
   - frame, scene context, interaction transform, and scroll contexts
   - child/paint-child/nearby topology that affects precedence/focus order
-- cache local registry contributions plus retained metadata needed by
+- [x] cache local registry contributions plus retained metadata needed by
   `finalize_registry_rebuild(...)`
-- merge cached chunks in the same precedence order as the current full traversal
-- preserve focused text input, focus-on-mount, scrollbars, hover/press ordering,
-  overlay precedence, and window listeners
-- add targeted registry tests for nested scroll, nearby overlays, focus order,
-  text input, and scrollbar hit areas
+- [x] merge cached chunks in the same precedence order as the current full
+  traversal
+- [x] preserve focused text input, focus-on-mount, scrollbars, hover/press
+  ordering, overlay precedence, and window listeners in the full-vs-chunked
+  equivalence test
+- [ ] add broader targeted registry tests for nested scroll, nearby overlays,
+  focus order, text input, and scrollbar hit areas if/when the guarded cache path
+  is broadened
 
-Implementation acceptance:
+Implemented shape:
 
-- registry output matches full rebuild for all focused tests
-- registry-only updates avoid rebuilding unrelated sibling chunks
-- event dispatch precedence remains unchanged
-- benchmark variants show chunked registry refresh is not worse than full rebuild
-  for cold/no-cache or damaged/no-cache cases, and is better for clean-sibling
-  registry updates
+- `NodeRefreshState` owns an optional `RegistrySubtreeCache` beside the render
+  cache.
+- `build_registry_rebuild_cached(tree)` is now the production registry builder
+  used by refresh.
+- Chunks store local registry contributions, text-input metadata, scrollbar
+  metadata, focus entries, focus-on-mount candidates, focused id state, and
+  deferred escape-nearby subtrees before final window/focus-cycle listeners are
+  assembled.
+- Chunk keys use compact hashes of raw/registry-relevant attrs, runtime state,
+  frame/scroll state, scene context, scroll contexts, and render-topology
+  dependency versions/counts.
+- Cache lookup/store is bounded by a small per-rebuild budget.
+- Damaged registry rebuilds with no retained registry chunks fall back to the
+  full builder. This preserves cold/no-cache and first-damage behavior and avoids
+  repeating the render-cache seeding regression.
+- Trees with escape-nearby mounts currently fall back to the full builder because
+  their overlay/deferred traversal costs and precedence risks need a narrower
+  follow-up design.
+- Registry-only patches clear stale chunks on dirty paths; clean chunks can be
+  reused when a retained chunk already exists and the key matches.
+- Benchmark variants now include `chunked_registry_rebuild`,
+  `after_patch_chunked_registry`, `patch_chunked_registry`, and seeded chunk
+  variants for measuring retained-cache behavior separately from no-cache
+  fallback behavior.
+
+Focused smoke after implementation:
+
+```text
+interactive_rich_500/event_attr/after_patch_full_registry:       ~0.68 ms
+interactive_rich_500/event_attr/after_patch_chunked_registry:    ~0.74-0.82 ms (no-cache/no-op patch noise)
+interactive_rich_500/event_attr/patch_seeded_chunked_registry:   ~0.70 ms
+nearby_rich_500/nearby_slot_change/after_patch_full_registry:    ~1.68-1.84 ms
+nearby_rich_500/nearby_slot_change/after_patch_chunked_registry: ~1.62-1.68 ms
+scroll_rich_500/event_attr/after_patch_full_registry:            ~1.51-1.57 ms
+scroll_rich_500/event_attr/after_patch_chunked_registry:         ~1.46-1.48 ms
+text_rich_500/event_attr/after_patch_full_registry:              ~0.49-0.53 ms
+text_rich_500/event_attr/after_patch_chunked_registry:           ~0.43-0.45 ms
+```
+
+Implementation acceptance status:
+
+- registry output matches full rebuild in focused seeded and unseeded chunk tests
+- dirty/no-retained-cache cases have a full-builder fallback for safety
+- event dispatch precedence remains covered by existing full-registry tests; more
+  focused precedence tests should be added before broadening escape-nearby
+  caching
+- benchmark variants are in place and show the guarded path is not broadly better
+  yet; future work should either add a cheap production seeding strategy or keep
+  this path conservative
 
 ## Slice 6: stats and benchmark smoke
 
@@ -642,7 +693,7 @@ mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
 
-Validation status for implemented slices 1–4:
+Validation status for implemented slices 1–5:
 
 - `cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check`
 - `mix format --check-formatted`
@@ -666,9 +717,16 @@ Validation status for implemented slices 1–4:
   scroll-container render caches. It was then extended with cold
   layout+refresh variants for app-switch/upload regressions.
 
+Focused registry-refresh benchmark smoke was also run with:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout -- registry_refresh_cache_regression --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
 Run focused benchmark smoke after future behavior changes that should reduce
-refresh work. For the render-cache performance slice, compare renderer stats and
-benchmark output before moving on to registry subtree chunks.
+refresh work. For future registry-cache changes, compare full, chunked, and
+seeded chunk variants and keep damaged/no-cache behavior on a safe full-rebuild
+fallback unless the seeding cost is proven cheap.
 
 ## Completion protocol
 

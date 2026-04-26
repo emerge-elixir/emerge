@@ -59,7 +59,8 @@ The remaining work is about making reuse broader, cheaper, and more precise:
   keys no longer allocate joined debug strings, but attrs and some traversal
   helpers still allocate/clone in hot paths
 - measure/resolve traversal still uses some id-facing compatibility helpers even though topology is ix-based
-- refresh registry traversal does not yet skip clean subtree chunks
+- registry chunk-cache infrastructure exists but stays conservative; damaged
+  no-cache and escape-nearby rebuilds still fall back to the full registry path
 - dynamic list / viewport cache preservation is not specialized yet
 
 ## Current benchmark signal
@@ -86,9 +87,10 @@ refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
 layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
 boundary is implemented, child/nearby topology dependencies now use compact
-version keys, and render refresh can skip clean retained subtrees. Broader
-boundaries, additional typed version keys, and registry chunk skipping remain
-future work.
+version keys, render refresh can skip clean retained subtrees, and registry
+refresh has conservative chunk-cache infrastructure. Broader boundaries,
+additional typed version keys, and cheaper registry chunk seeding remain future
+work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -300,6 +302,8 @@ Implemented so far:
 - duplicate registry updates are avoided when the cached registry payload is
   reused
 - render scene refresh can reuse clean retained render subtrees
+- registry rebuilds have a conservative retained-chunk path with safe full
+  fallback when no retained chunks exist or escape-nearby precedence is involved
 - render-cache regression guards compare cached and uncached refresh paths for
   cold upload/switch, paint-rich, nearby-rich, layout-matrix, animated-shadow,
   and scrolling-shadow cases
@@ -312,7 +316,9 @@ Implemented so far:
 
 Next within this slice:
 
-- registry subtree chunk cache/skip
+- decide whether to add cheap production registry-chunk seeding and broader
+  precedence tests, or leave registry chunks guarded and move on to relayout
+  boundaries
 
 Render refresh can skip a subtree when:
 
