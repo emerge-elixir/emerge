@@ -68,6 +68,11 @@ defmodule EmergeSkia.OptionsTest do
              Options.build_start_native_opts!(renderer_stats_log: true)
   end
 
+  test "build_start_native_opts! keeps stats option" do
+    assert %{stats_enabled: false} = Options.build_start_native_opts!([])
+    assert %{stats_enabled: true} = Options.build_start_native_opts!(stats: true)
+  end
+
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do
     runtime_path =
       Path.join(System.tmp_dir!(), "emerge_cursor_#{System.unique_integer([:positive])}.svg")

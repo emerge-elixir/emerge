@@ -22,6 +22,24 @@ defmodule Emerge.Bench.NativeRetainedLayout do
     :nearby_slot_change,
     :nearby_reorder
   ]
+  @cache_stat_keys [
+    :intrinsic_measure_hits,
+    :intrinsic_measure_misses,
+    :intrinsic_measure_stores,
+    :intrinsic_measure_ineligible_bypasses,
+    :subtree_measure_hits,
+    :subtree_measure_misses,
+    :subtree_measure_stores,
+    :subtree_measure_dirty_bypasses,
+    :subtree_measure_animation_bypasses,
+    :resolve_hits,
+    :resolve_misses,
+    :resolve_stores,
+    :resolve_dirty_bypasses,
+    :resolve_ineligible_bypasses,
+    :resolve_animation_bypasses,
+    :resolve_store_bypasses
+  ]
 
   def base_inputs do
     Scenarios.inputs(Scenarios.sizes(), scenario_ids())
@@ -67,6 +85,55 @@ defmodule Emerge.Bench.NativeRetainedLayout do
     tree
   end
 
+  def enable_stats!(tree) do
+    tree
+    |> Native.stats({:configure, %{enabled: true}})
+    |> NativeHelpers.unwrap!()
+
+    tree
+  end
+
+  def reset_stats!(tree) do
+    tree
+    |> Native.stats(:reset)
+    |> NativeHelpers.unwrap!()
+
+    tree
+  end
+
+  def print_cache_stats(inputs, mutation_inputs) do
+    inputs
+    |> sorted_inputs()
+    |> Enum.each(fn {label, input} ->
+      tree = upload_warm_tree!(input)
+      enable_stats!(tree)
+      reset_stats!(tree)
+      layout!(tree, input.constraint)
+      print_cache_stats_line(label, :warm_cache, tree)
+    end)
+
+    mutation_inputs
+    |> sorted_inputs()
+    |> Enum.each(fn {label, input} ->
+      prepared = prepare_after_patch_input(input)
+      enable_stats!(prepared.tree)
+      reset_stats!(prepared.tree)
+      layout!(prepared.tree, prepared.constraint)
+      print_cache_stats_line(label, :after_patch, prepared.tree)
+    end)
+
+    mutation_inputs
+    |> sorted_inputs()
+    |> Enum.each(fn {label, input} ->
+      prepared = prepare_patch_layout_input(input)
+      enable_stats!(prepared.tree)
+      reset_stats!(prepared.tree)
+      prepared.tree |> Native.tree_patch(prepared.patch_bin) |> NativeHelpers.ok!()
+      layout!(prepared.tree, prepared.constraint)
+      print_cache_stats_line(label, :patch_layout, prepared.tree)
+    end)
+  end
+
   defp scenario_ids do
     case System.get_env("EMERGE_BENCH_SCENARIOS") do
       nil -> @default_scenarios
@@ -90,6 +157,20 @@ defmodule Emerge.Bench.NativeRetainedLayout do
         selected
     end
   end
+
+  defp sorted_inputs(inputs), do: Enum.sort_by(inputs, fn {label, _input} -> label end)
+
+  defp print_cache_stats_line(label, phase, tree) do
+    stats = tree |> Native.stats(:take) |> NativeHelpers.unwrap!()
+    layout_cache_stats = stats.counters.layout_cache
+
+    formatted_stats =
+      @cache_stat_keys
+      |> Enum.map(fn key -> "#{key}=#{Map.fetch!(layout_cache_stats, key)}" end)
+      |> Enum.join(" ")
+
+    IO.puts("layout_cache_stats case=#{label} phase=#{phase} #{formatted_stats}")
+  end
 end
 
 alias Emerge.Bench.Config
@@ -101,6 +182,7 @@ alias EmergeSkia.Native
 inputs = NativeRetainedLayout.base_inputs()
 mutation_inputs = NativeRetainedLayout.mutation_inputs(inputs)
 Scenarios.print_metadata(inputs)
+NativeRetainedLayout.print_cache_stats(inputs, mutation_inputs)
 
 Benchee.run(
   %{

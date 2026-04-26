@@ -101,6 +101,7 @@ defmodule EmergeSkia.Native do
           required(:input_log) => boolean(),
           required(:render_log) => boolean(),
           required(:close_signal_log) => boolean(),
+          required(:stats_enabled) => boolean(),
           required(:renderer_stats_log) => boolean()
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
@@ -262,6 +263,66 @@ defmodule EmergeSkia.Native do
   """
   @spec set_log_target(reference(), pid() | nil) :: :ok
   def set_log_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+
+  @type stats_command ::
+          :peek | :take | :reset | {:configure, %{required(:enabled) => boolean()}}
+
+  @type duration_stats :: %{
+          required(:count) => non_neg_integer(),
+          required(:avg_ms) => float(),
+          required(:min_ms) => float(),
+          required(:max_ms) => float()
+        }
+
+  @type layout_cache_stats :: %{
+          required(:intrinsic_measure_hits) => non_neg_integer(),
+          required(:intrinsic_measure_misses) => non_neg_integer(),
+          required(:intrinsic_measure_stores) => non_neg_integer(),
+          required(:intrinsic_measure_ineligible_bypasses) => non_neg_integer(),
+          required(:subtree_measure_hits) => non_neg_integer(),
+          required(:subtree_measure_misses) => non_neg_integer(),
+          required(:subtree_measure_stores) => non_neg_integer(),
+          required(:subtree_measure_dirty_bypasses) => non_neg_integer(),
+          required(:subtree_measure_animation_bypasses) => non_neg_integer(),
+          required(:resolve_hits) => non_neg_integer(),
+          required(:resolve_misses) => non_neg_integer(),
+          required(:resolve_stores) => non_neg_integer(),
+          required(:resolve_dirty_bypasses) => non_neg_integer(),
+          required(:resolve_ineligible_bypasses) => non_neg_integer(),
+          required(:resolve_animation_bypasses) => non_neg_integer(),
+          required(:resolve_store_bypasses) => non_neg_integer()
+        }
+
+  @type stats_snapshot :: %{
+          required(:version) => pos_integer(),
+          required(:kind) => String.t(),
+          required(:enabled) => boolean(),
+          required(:window) => %{
+            required(:elapsed_ms) => non_neg_integer(),
+            required(:reset_on_read) => boolean()
+          },
+          required(:frames) => %{
+            required(:fps) => float(),
+            required(:display_fps) => float(),
+            required(:display_frame_ms) => float(),
+            required(:frame_count) => non_neg_integer()
+          },
+          required(:timings) => %{
+            required(:render) => duration_stats(),
+            required(:present_submit) => duration_stats(),
+            required(:layout) => duration_stats(),
+            required(:refresh) => duration_stats(),
+            required(:event_resolve) => duration_stats(),
+            required(:patch_tree_process) => duration_stats()
+          },
+          required(:counters) => %{
+            required(:layout_cache) => layout_cache_stats()
+          }
+        }
+
+  @doc false
+  @spec stats(reference(), stats_command()) :: {:ok, stats_snapshot()} | {:error, String.t()}
+  def stats(_resource, _command), do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
   # Tree Functions (Emerge Integration)

@@ -446,6 +446,8 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> bool {
+    tree.reset_layout_cache_stats();
+
     let Some(root_id) = tree.root_id() else {
         return false;
     };
@@ -885,9 +887,11 @@ fn measure_element<M: TextMeasurer>(
     let subtree_cache_key = use_subtree_cache
         .then(|| subtree_measure_cache_key(kind, &attrs, inherited, &child_ids, &nearby_mounts));
 
-    if use_subtree_cache
-        && !measure_dirty
-        && let Some(key) = subtree_cache_key.as_ref()
+    if !use_subtree_cache {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_animation_bypass());
+    } else if measure_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_dirty_bypass());
+    } else if let Some(key) = subtree_cache_key.as_ref()
         && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
     {
         return intrinsic;
@@ -923,10 +927,12 @@ fn measure_element<M: TextMeasurer>(
     let spacing_y = spacing_y(&attrs);
     let cache_key = intrinsic_measure_cache_key(kind, &attrs, inherited);
 
-    if let Some(key) = cache_key.as_ref()
-        && let Some(intrinsic) = try_reuse_intrinsic_measure_cache(tree, id, key)
-    {
-        return intrinsic;
+    if let Some(key) = cache_key.as_ref() {
+        if let Some(intrinsic) = try_reuse_intrinsic_measure_cache(tree, id, key) {
+            return intrinsic;
+        }
+    } else {
+        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_ineligible_bypass());
     }
 
     let intrinsic = match kind {
@@ -1133,26 +1139,38 @@ fn measure_element<M: TextMeasurer>(
     };
 
     // Store intrinsic size separately; resolve owns the retained frame positions.
-    if let Some(element) = tree.get_mut(id) {
-        let measured_frame = Frame {
-            x: 0.0,
-            y: 0.0,
-            width: intrinsic.width,
-            height: intrinsic.height,
-            content_width: intrinsic.width,
-            content_height: intrinsic.height,
-        };
-        element.layout.measured_frame = Some(measured_frame);
-        element.layout.intrinsic_measure_cache = cache_key.map(|key| IntrinsicMeasureCache {
+    let measured_frame = Frame {
+        x: 0.0,
+        y: 0.0,
+        width: intrinsic.width,
+        height: intrinsic.height,
+        content_width: intrinsic.width,
+        content_height: intrinsic.height,
+    };
+    let intrinsic_measure_cache = cache_key.map(|key| {
+        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_store());
+        IntrinsicMeasureCache {
             key,
             frame: measured_frame,
-        });
+        }
+    });
+    let subtree_measure_cache = if use_subtree_cache {
+        subtree_cache_key.map(|key| {
+            tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_store());
+            SubtreeMeasureCache {
+                key,
+                frame: measured_frame,
+            }
+        })
+    } else {
+        None
+    };
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.measured_frame = Some(measured_frame);
+        element.layout.intrinsic_measure_cache = intrinsic_measure_cache;
         if use_subtree_cache {
-            element.layout.subtree_measure_cache =
-                subtree_cache_key.map(|key| SubtreeMeasureCache {
-                    key,
-                    frame: measured_frame,
-                });
+            element.layout.subtree_measure_cache = subtree_measure_cache;
             element.layout.measure_dirty = false;
         }
     }
@@ -1232,7 +1250,14 @@ fn try_reuse_subtree_measure_cache(
         .get(id)
         .and_then(|element| element.layout.subtree_measure_cache.as_ref())
         .filter(|cache| &cache.key == key)
-        .map(|cache| cache.frame)?;
+        .map(|cache| cache.frame);
+
+    let Some(frame) = frame else {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
+        return None;
+    };
+
+    tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_hit());
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
@@ -1318,7 +1343,14 @@ fn try_reuse_intrinsic_measure_cache(
         .get(id)
         .and_then(|element| element.layout.intrinsic_measure_cache.as_ref())
         .filter(|cache| &cache.key == key)
-        .map(|cache| cache.frame)?;
+        .map(|cache| cache.frame);
+
+    let Some(frame) = frame else {
+        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_miss());
+        return None;
+    };
+
+    tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_hit());
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
@@ -1803,9 +1835,16 @@ fn resolve_element<M: TextMeasurer>(
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(&attrs);
-    let cache_eligible = use_resolve_cache && resolve_cache_kind_eligible(kind);
+    let resolve_kind_eligible = resolve_cache_kind_eligible(kind);
+    let cache_eligible = use_resolve_cache && resolve_kind_eligible;
 
-    if cache_eligible && !resolve_dirty {
+    if !use_resolve_cache {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_animation_bypass());
+    } else if !resolve_kind_eligible {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_ineligible_bypass());
+    } else if resolve_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_dirty_bypass());
+    } else if cache_eligible {
         let key = resolve_cache_key(
             kind,
             &attrs,
@@ -1913,26 +1952,31 @@ fn resolve_element<M: TextMeasurer>(
     update_scroll_state(tree, id);
     resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
 
-    if use_resolve_cache
-        && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
-        && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
-    {
-        let key = resolve_cache_key(
-            kind,
-            &attrs,
-            inherited,
-            measured_frame,
-            constraint,
-            &child_ids,
-            &nearby_mounts,
-        );
+    if use_resolve_cache {
+        if can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
+            && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+        {
+            let key = resolve_cache_key(
+                kind,
+                &attrs,
+                inherited,
+                measured_frame,
+                constraint,
+                &child_ids,
+                &nearby_mounts,
+            );
 
-        if let Some(element) = tree.get_mut(id) {
-            element.layout.resolve_cache = Some(ResolveCache {
-                key,
-                extent: resolve_extent(frame),
-            });
-            element.layout.resolve_dirty = false;
+            tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
+
+            if let Some(element) = tree.get_mut(id) {
+                element.layout.resolve_cache = Some(ResolveCache {
+                    key,
+                    extent: resolve_extent(frame),
+                });
+                element.layout.resolve_dirty = false;
+            }
+        } else {
+            tree.record_layout_cache_stats(|stats| stats.record_resolve_store_bypass());
         }
     }
 }
@@ -2037,7 +2081,7 @@ fn try_reuse_resolve_cache(
     x: f32,
     y: f32,
 ) -> bool {
-    let Some((target_frame, current_frame)) = tree.get(id).and_then(|element| {
+    let cached_frames = tree.get(id).and_then(|element| {
         let cache = element.layout.resolve_cache.as_ref()?;
         if &cache.key != key {
             return None;
@@ -2047,9 +2091,14 @@ fn try_reuse_resolve_cache(
             frame_from_resolve_extent(cache.extent, x, y),
             element.layout.frame?,
         ))
-    }) else {
+    });
+
+    let Some((target_frame, current_frame)) = cached_frames else {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
         return false;
     };
+
+    tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
 
     shift_subtree(
         tree,

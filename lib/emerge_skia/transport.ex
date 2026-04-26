@@ -13,6 +13,8 @@ defmodule EmergeSkia.Transport do
   @callback session_running?(renderer_handle()) :: boolean()
   @callback set_input_target(renderer_handle(), pid() | nil) :: :ok
   @callback set_log_target(renderer_handle(), pid() | nil) :: :ok
+  @callback stats(renderer_handle(), EmergeSkia.Native.stats_command()) ::
+              {:ok, EmergeSkia.Native.stats_snapshot()} | {:error, term()}
   @callback set_input_mask(renderer_handle(), non_neg_integer()) :: :ok
   @callback upload_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
   @callback patch_tree(renderer_handle(), binary()) :: :ok | {:error, term()}

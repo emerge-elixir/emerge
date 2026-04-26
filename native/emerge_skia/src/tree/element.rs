@@ -8,6 +8,7 @@ use super::attrs::{
     Padding, ScrollbarHoverAxis, TextAlign, TextFragment, supports_mouse_over_tracking,
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
+use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -956,6 +957,9 @@ pub struct ElementTree {
     /// Reusable free slots in the arena.
     pub free_list: Vec<NodeIx>,
 
+    layout_cache_stats: LayoutCacheStats,
+    layout_cache_stats_enabled: bool,
+
     pending_root_id: Option<NodeId>,
 
     #[cfg(test)]
@@ -977,6 +981,8 @@ impl Default for ElementTree {
             nodes: Vec::new(),
             id_to_ix: HashMap::new(),
             free_list: Vec::new(),
+            layout_cache_stats: LayoutCacheStats::default(),
+            layout_cache_stats_enabled: false,
             pending_root_id: None,
             #[cfg(test)]
             topology: RefCell::new(TreeTopology::default()),
@@ -997,6 +1003,40 @@ enum ScrollAxis {
 impl ElementTree {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn reset_layout_cache_stats(&mut self) {
+        if self.layout_cache_stats_enabled {
+            self.layout_cache_stats = LayoutCacheStats::default();
+        }
+    }
+
+    #[inline]
+    pub fn set_layout_cache_stats_enabled(&mut self, enabled: bool) {
+        if self.layout_cache_stats_enabled == enabled {
+            return;
+        }
+
+        self.layout_cache_stats_enabled = enabled;
+        if !enabled {
+            self.layout_cache_stats = LayoutCacheStats::default();
+        }
+    }
+
+    #[inline]
+    pub fn layout_cache_stats_enabled(&self) -> bool {
+        self.layout_cache_stats_enabled
+    }
+
+    pub fn layout_cache_stats(&self) -> LayoutCacheStats {
+        self.layout_cache_stats
+    }
+
+    #[inline]
+    pub fn record_layout_cache_stats(&mut self, record: impl FnOnce(&mut LayoutCacheStats)) {
+        if self.layout_cache_stats_enabled {
+            record(&mut self.layout_cache_stats);
+        }
     }
 
     #[cfg(test)]
@@ -1401,9 +1441,11 @@ impl ElementTree {
     /// Replace this tree with a fully uploaded tree, advancing revision once.
     pub fn replace_with_uploaded(&mut self, mut uploaded: ElementTree) {
         let revision = self.revision.saturating_add(1);
+        let layout_cache_stats_enabled = self.layout_cache_stats_enabled;
         uploaded.set_revision(revision);
         uploaded.next_ghost_seq = self.next_ghost_seq;
         uploaded.current_scale = self.current_scale;
+        uploaded.set_layout_cache_stats_enabled(layout_cache_stats_enabled);
         uploaded.stamp_all_mounted_at_revision(revision);
         *self = uploaded;
 
@@ -1435,6 +1477,7 @@ impl ElementTree {
         self.id_to_ix.clear();
         self.nodes.clear();
         self.free_list.clear();
+        self.reset_layout_cache_stats();
         self.reset_topology();
     }
 
