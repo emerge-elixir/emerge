@@ -11,10 +11,10 @@ investigation that led to the current implementation.
 
 The current temporary active implementation plan. Refresh damage bookkeeping,
 clean-registry reuse, render subtree caching/skipping, render-cache performance
-regression guards, and conservative registry chunk-cache infrastructure are
-implemented. The registry cache path currently falls back for damaged/no-cache
-and escape-nearby cases, so follow-up work should either add cheap production
-seeding or keep it guarded.
+regression guards, registry regression guards, conservative registry chunk-cache
+infrastructure, and Slice 6 smoke validation are implemented. The file can be
+removed after confirmation; follow-up nearby relayout-boundary work belongs in a
+new future plan.
 
 ### `layout-caching-roadmap.md`
 

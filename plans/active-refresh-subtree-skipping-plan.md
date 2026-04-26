@@ -2,12 +2,13 @@
 
 Last updated: 2026-04-26.
 
-Status: partially implemented. Refresh damage bookkeeping, clean-registry reuse,
-render subtree caching/skipping, render-cache performance regression guards, and
-registry chunk-cache infrastructure are implemented. The registry cache path is
-conservative: damaged/no-retained-cache cases fall back to full registry rebuilds
-to avoid cold-path regressions, and escape-nearby trees currently stay on the
-full rebuild path.
+Status: implemented and validated conservatively. Refresh damage bookkeeping,
+clean-registry reuse, render subtree caching/skipping, render-cache performance
+regression guards, registry regression guards, and guarded registry chunk-cache
+infrastructure are implemented. The registry cache path is conservative:
+damaged/no-retained-cache cases fall back to full registry rebuilds to avoid
+cold-path regressions, and escape-nearby trees currently stay on the full rebuild
+path. Follow-up nearby relayout-boundary work belongs to a future slice.
 
 ## Motivation
 
@@ -721,6 +722,19 @@ Focused registry-refresh benchmark smoke was also run with:
 
 ```bash
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout -- registry_refresh_cache_regression --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
+Post-slice-5 retained-layout smoke was run with the Slice 6 command above. Key
+cache-counter shape stayed healthy:
+
+```text
+layout_matrix_50/event_attr after_patch: subtree_hits=1 misses=0 resolve_hits=1 misses=0
+nearby_rich_50/event_attr after_patch:   subtree_hits=1 misses=0 resolve_hits=1 misses=0
+text_rich_50/event_attr after_patch:     subtree_hits=1 misses=0 resolve_hits=1 misses=0
+layout_matrix_50/paint_attr after_patch: subtree_hits=1 misses=0 resolve_hits=1 misses=0
+nearby_rich_50/paint_attr after_patch:   subtree_hits=1 misses=0 resolve_hits=1 misses=0
+text_rich_50/paint_attr after_patch:     subtree_hits=1 misses=0 resolve_hits=1 misses=0
+layout_attr/nearby_slot_change cases:    misses remain localized in small fixtures; broader nearby overlay boundaries are future work
 ```
 
 Run focused benchmark smoke after future behavior changes that should reduce
