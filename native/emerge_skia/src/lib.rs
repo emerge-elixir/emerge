@@ -155,19 +155,12 @@ struct LayoutCacheStatsNif {
     intrinsic_measure_hits: u64,
     intrinsic_measure_misses: u64,
     intrinsic_measure_stores: u64,
-    intrinsic_measure_ineligible_bypasses: u64,
     subtree_measure_hits: u64,
     subtree_measure_misses: u64,
     subtree_measure_stores: u64,
-    subtree_measure_dirty_bypasses: u64,
-    subtree_measure_animation_bypasses: u64,
     resolve_hits: u64,
     resolve_misses: u64,
     resolve_stores: u64,
-    resolve_dirty_bypasses: u64,
-    resolve_ineligible_bypasses: u64,
-    resolve_animation_bypasses: u64,
-    resolve_store_bypasses: u64,
 }
 
 impl StatsSnapshotNif {
@@ -182,7 +175,7 @@ impl StatsSnapshotNif {
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         Self {
-            version: 1,
+            version: 2,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -227,19 +220,12 @@ impl From<LayoutCacheStats> for LayoutCacheStatsNif {
             intrinsic_measure_hits: stats.intrinsic_measure_hits,
             intrinsic_measure_misses: stats.intrinsic_measure_misses,
             intrinsic_measure_stores: stats.intrinsic_measure_stores,
-            intrinsic_measure_ineligible_bypasses: stats.intrinsic_measure_ineligible_bypasses,
             subtree_measure_hits: stats.subtree_measure_hits,
             subtree_measure_misses: stats.subtree_measure_misses,
             subtree_measure_stores: stats.subtree_measure_stores,
-            subtree_measure_dirty_bypasses: stats.subtree_measure_dirty_bypasses,
-            subtree_measure_animation_bypasses: stats.subtree_measure_animation_bypasses,
             resolve_hits: stats.resolve_hits,
             resolve_misses: stats.resolve_misses,
             resolve_stores: stats.resolve_stores,
-            resolve_dirty_bypasses: stats.resolve_dirty_bypasses,
-            resolve_ineligible_bypasses: stats.resolve_ineligible_bypasses,
-            resolve_animation_bypasses: stats.resolve_animation_bypasses,
-            resolve_store_bypasses: stats.resolve_store_bypasses,
         }
     }
 }

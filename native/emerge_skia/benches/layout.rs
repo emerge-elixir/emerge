@@ -1,14 +1,18 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use emerge_skia::tree::animation::AnimationRuntime;
 use emerge_skia::tree::deserialize::decode_tree;
 use emerge_skia::tree::layout::{
-    Constraint, layout_and_refresh_default, layout_tree, layout_tree_default, refresh,
+    Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+    layout_or_refresh_default_with_animation, layout_tree, layout_tree_default, refresh,
 };
 use emerge_skia::tree::patch::{apply_patches, decode_patches};
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 use support::{
-    CARD_COUNT, MockTextMeasurer, TEXT_ROW_COUNT, large_text_column, load_fixture, nested_card_grid,
+    CARD_COUNT, MockTextMeasurer, TEXT_ROW_COUNT, animated_shadow_showcase, large_text_column,
+    load_fixture, nested_card_grid, scrollable_animated_shadow_showcase,
 };
 
 const RETAINED_FIXTURE_IDS: &[&str] = &[
@@ -222,6 +226,150 @@ fn bench_nested_card_grid_retained(c: &mut Criterion) {
 }
 
 // Apply each patch during setup so the timed body is the first layout after invalidation.
+fn bench_animated_shadow_showcase(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/layout_animation_paint_only/shadow_showcase");
+    let constraint = Constraint::new(960.0, 4_000.0);
+    let start = Instant::now();
+    let node_count = animated_shadow_showcase().len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    let mut full_tree = animated_shadow_showcase();
+    let mut full_runtime = AnimationRuntime::default();
+    full_runtime.sync_with_tree(&full_tree, start);
+    layout_and_refresh_default_with_animation(
+        &mut full_tree,
+        constraint,
+        1.0,
+        &full_runtime,
+        start,
+    );
+    let mut full_tick = 0_u64;
+    group.bench_function("full_layout_plus_refresh_each_frame", |b| {
+        b.iter(|| {
+            full_tick += 16;
+            let output = layout_and_refresh_default_with_animation(
+                &mut full_tree,
+                constraint,
+                1.0,
+                &full_runtime,
+                start + Duration::from_millis(full_tick),
+            );
+            black_box((
+                output.scene.nodes.len(),
+                output.event_rebuild.text_inputs.len(),
+                true,
+            ))
+        });
+    });
+
+    let mut refresh_tree = animated_shadow_showcase();
+    let mut refresh_runtime = AnimationRuntime::default();
+    refresh_runtime.sync_with_tree(&refresh_tree, start);
+    layout_and_refresh_default_with_animation(
+        &mut refresh_tree,
+        constraint,
+        1.0,
+        &refresh_runtime,
+        start,
+    );
+    let mut refresh_tick = 0_u64;
+    group.bench_function("paint_only_refresh_each_frame", |b| {
+        b.iter(|| {
+            refresh_tick += 16;
+            let update = layout_or_refresh_default_with_animation(
+                &mut refresh_tree,
+                constraint,
+                1.0,
+                &refresh_runtime,
+                start + Duration::from_millis(refresh_tick),
+            );
+            black_box((
+                update.output.scene.nodes.len(),
+                update.output.event_rebuild.text_inputs.len(),
+                update.layout_performed,
+            ))
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/layout_scroll_paint_only_animation/shadow_showcase");
+    let constraint = Constraint::new(960.0, 640.0);
+    let start = Instant::now();
+    let node_count = scrollable_animated_shadow_showcase().len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    let mut full_tree = scrollable_animated_shadow_showcase();
+    let full_root_id = full_tree.root_id().expect("scroll tree should have root");
+    let mut full_runtime = AnimationRuntime::default();
+    full_runtime.sync_with_tree(&full_tree, start);
+    layout_and_refresh_default_with_animation(
+        &mut full_tree,
+        constraint,
+        1.0,
+        &full_runtime,
+        start,
+    );
+    let mut full_tick = 0_u64;
+    group.bench_function("full_layout_plus_refresh_scroll_frame", |b| {
+        b.iter(|| {
+            full_tick += 16;
+            let delta = if full_tick % 32 == 0 { 8.0 } else { -8.0 };
+            black_box(full_tree.apply_scroll_y(&full_root_id, delta));
+            let output = layout_and_refresh_default_with_animation(
+                &mut full_tree,
+                constraint,
+                1.0,
+                &full_runtime,
+                start + Duration::from_millis(full_tick),
+            );
+            black_box((
+                output.scene.nodes.len(),
+                output.event_rebuild.text_inputs.len(),
+                true,
+            ))
+        });
+    });
+
+    let mut refresh_tree = scrollable_animated_shadow_showcase();
+    let refresh_root_id = refresh_tree
+        .root_id()
+        .expect("scroll tree should have root");
+    let mut refresh_runtime = AnimationRuntime::default();
+    refresh_runtime.sync_with_tree(&refresh_tree, start);
+    layout_and_refresh_default_with_animation(
+        &mut refresh_tree,
+        constraint,
+        1.0,
+        &refresh_runtime,
+        start,
+    );
+    let mut refresh_tick = 0_u64;
+    group.bench_function("paint_only_refresh_scroll_frame", |b| {
+        b.iter(|| {
+            refresh_tick += 16;
+            let delta = if refresh_tick % 32 == 0 { 8.0 } else { -8.0 };
+            black_box(refresh_tree.apply_scroll_y(&refresh_root_id, delta));
+            let update = layout_or_refresh_default_with_animation(
+                &mut refresh_tree,
+                constraint,
+                1.0,
+                &refresh_runtime,
+                start + Duration::from_millis(refresh_tick),
+            );
+            black_box((
+                update.output.scene.nodes.len(),
+                update.output.event_rebuild.text_inputs.len(),
+                update.layout_performed,
+            ))
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_fixture_retained_layout_after_patch(c: &mut Criterion) {
     let constraint = Constraint::new(960.0, 4_000.0);
 
@@ -306,6 +454,8 @@ criterion_group!(
     bench_nested_card_grid,
     bench_large_text_column_retained,
     bench_nested_card_grid_retained,
+    bench_animated_shadow_showcase,
+    bench_scrolling_animated_shadow_showcase,
     bench_fixture_retained_layout_after_patch,
     bench_fixture_retained_patch_layout
 );

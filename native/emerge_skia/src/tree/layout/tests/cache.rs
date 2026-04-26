@@ -1,8 +1,10 @@
 use super::super::*;
 use super::common::*;
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
-use crate::tree::attrs::Background;
-use crate::tree::invalidation::TreeInvalidation;
+use crate::tree::attrs::{Background, BoxShadow};
+use crate::tree::invalidation::{
+    RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
+};
 use crate::tree::patch::{Patch, apply_patches};
 use std::time::{Duration, Instant};
 
@@ -554,14 +556,14 @@ fn test_layout_cache_stats_report_shifted_sibling_reuse() {
     );
     let stats = tree.layout_cache_stats();
 
-    assert!(stats.subtree_measure_dirty_bypasses > 0);
+    assert!(stats.subtree_measure_misses > 0);
     assert!(stats.subtree_measure_hits > 0);
-    assert!(stats.resolve_dirty_bypasses > 0);
+    assert!(stats.resolve_misses > 0);
     assert!(stats.resolve_hits > 0);
 }
 
 #[test]
-fn test_layout_cache_stats_report_resolve_ineligible_nodes() {
+fn test_layout_cache_stats_report_resolve_misses_for_ineligible_nodes() {
     let mut tree = ElementTree::new();
     tree.set_layout_cache_stats_enabled(true);
     let paragraph = make_element("paragraph", ElementKind::Paragraph, Attrs::default());
@@ -579,17 +581,16 @@ fn test_layout_cache_stats_report_resolve_ineligible_nodes() {
     let stats = tree.layout_cache_stats();
 
     assert_eq!(stats.resolve_stores, 0);
-    assert!(stats.resolve_ineligible_bypasses > 0);
-    assert!(stats.resolve_store_bypasses > 0);
+    assert!(stats.resolve_misses > 0);
 }
 
 #[test]
-fn test_layout_cache_stats_report_animation_bypasses() {
+fn test_layout_cache_stats_report_layout_affecting_animation_cache_misses() {
     let mut attrs = Attrs::default();
     let mut start_attrs = Attrs::default();
     let mut end_attrs = Attrs::default();
-    start_attrs.move_x = Some(0.0);
-    end_attrs.move_x = Some(10.0);
+    start_attrs.width = Some(Length::Px(10.0));
+    end_attrs.width = Some(Length::Px(20.0));
     attrs.animate = Some(AnimationSpec {
         keyframes: vec![start_attrs, end_attrs],
         duration_ms: 100.0,
@@ -620,10 +621,382 @@ fn test_layout_cache_stats_report_animation_bypasses() {
     let stats = tree.layout_cache_stats();
 
     assert!(animations_active);
-    assert!(stats.subtree_measure_animation_bypasses > 0);
-    assert!(stats.resolve_animation_bypasses > 0);
+    assert!(stats.subtree_measure_misses > 0);
+    assert!(stats.resolve_misses > 0);
     assert_eq!(stats.subtree_measure_stores, 0);
     assert_eq!(stats.resolve_stores, 0);
+}
+
+#[test]
+fn test_paint_only_shadow_animation_refresh_skips_layout_after_warm_frame() {
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(120.0));
+    attrs.height = Some(Length::Px(64.0));
+
+    let mut start_attrs = Attrs::default();
+    start_attrs.box_shadows = Some(vec![test_shadow(0.0, -12.0)]);
+    let mut end_attrs = Attrs::default();
+    end_attrs.box_shadows = Some(vec![test_shadow(12.0, 0.0)]);
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    let initial = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    assert!(initial.layout_performed);
+    let initial_frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
+
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(25),
+    );
+
+    assert!(update.output.animations_active);
+    assert!(!update.layout_performed);
+    assert_eq!(
+        tree.layout_cache_stats(),
+        crate::stats::LayoutCacheStats::default()
+    );
+    assert_eq!(
+        tree.get(&root_id).unwrap().layout.frame.unwrap(),
+        initial_frame
+    );
+    assert_eq!(
+        tree.get(&root_id)
+            .unwrap()
+            .layout
+            .effective
+            .box_shadows
+            .as_ref()
+            .unwrap()[0]
+            .offset_x,
+        3.0
+    );
+}
+
+#[test]
+fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(100.0));
+    attrs.height = Some(Length::Px(64.0));
+    attrs.scrollbar_y = Some(true);
+
+    let mut start_attrs = Attrs::default();
+    start_attrs.box_shadows = Some(vec![test_shadow(0.0, -12.0)]);
+    let mut end_attrs = Attrs::default();
+    end_attrs.box_shadows = Some(vec![test_shadow(12.0, 0.0)]);
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id;
+    let mut child_attrs = Attrs::default();
+    child_attrs.width = Some(Length::Px(80.0));
+    child_attrs.height = Some(Length::Px(200.0));
+    let child = make_element("child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.set_children(&root_id, vec![child_id]).unwrap();
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    let initial = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    assert!(initial.layout_performed);
+    assert_eq!(tree.get(&root_id).unwrap().layout.scroll_y_max, 136.0);
+
+    let scroll_invalidation = tree.apply_scroll_y(&root_id, -24.0);
+    assert_eq!(scroll_invalidation, TreeInvalidation::Paint);
+
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(25),
+    );
+
+    assert!(update.output.animations_active);
+    assert!(!update.layout_performed);
+    assert_eq!(
+        tree.layout_cache_stats(),
+        crate::stats::LayoutCacheStats::default()
+    );
+    assert_eq!(tree.get(&root_id).unwrap().layout.scroll_y, 24.0);
+    assert_eq!(
+        tree.get(&root_id)
+            .unwrap()
+            .layout
+            .effective
+            .box_shadows
+            .as_ref()
+            .unwrap()[0]
+            .offset_x,
+        3.0
+    );
+}
+
+#[test]
+fn test_paint_only_shadow_patch_refresh_skips_layout() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let initial_frame = tree.get(&text_id).unwrap().layout.frame.unwrap();
+    tree.set_layout_cache_stats_enabled(true);
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_shadow_attrs("Hello", 5.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+
+    let preparation = prepare_frame_attrs_for_update(&mut tree, 1.0, None, None);
+    let combined_invalidation = invalidation.join(preparation.animation_result.invalidation);
+    assert_eq!(combined_invalidation, TreeInvalidation::Paint);
+    assert_eq!(
+        decide_refresh_action(
+            combined_invalidation,
+            false,
+            RefreshAvailability {
+                has_cached_rebuild: false,
+                has_root_frame: prepared_root_has_frame(&tree, preparation),
+            },
+        ),
+        RefreshDecision::RefreshOnly
+    );
+
+    let update = refresh_prepared_default(&mut tree, preparation);
+
+    assert!(!update.layout_performed);
+    assert_eq!(
+        tree.layout_cache_stats(),
+        crate::stats::LayoutCacheStats::default()
+    );
+    assert_eq!(
+        tree.get(&text_id).unwrap().layout.frame.unwrap(),
+        initial_frame
+    );
+    assert_eq!(
+        tree.get(&text_id)
+            .unwrap()
+            .layout
+            .effective
+            .box_shadows
+            .as_ref()
+            .unwrap()[0]
+            .offset_x,
+        5.0
+    );
+}
+
+#[test]
+fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(120.0));
+    root_attrs.height = Some(Length::Px(64.0));
+
+    let mut start_attrs = Attrs::default();
+    start_attrs.box_shadows = Some(vec![test_shadow(0.0, -12.0)]);
+    let mut end_attrs = Attrs::default();
+    end_attrs.box_shadows = Some(vec![test_shadow(12.0, 0.0)]);
+    root_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let root = make_element("root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+    let child = make_element("child", ElementKind::Text, text_attrs("Hello"));
+    let child_id = child.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.set_children(&root_id, vec![child_id]).unwrap();
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+    let initial = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    assert!(initial.layout_performed);
+    let initial_child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
+
+    let patch_invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: child_id,
+            attrs_raw: raw_text_shadow_attrs("Hello", 7.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(patch_invalidation, TreeInvalidation::Paint);
+
+    let preparation = prepare_frame_attrs_for_update(
+        &mut tree,
+        1.0,
+        Some(&runtime),
+        Some(start + Duration::from_millis(25)),
+    );
+    let combined_invalidation = patch_invalidation.join(preparation.animation_result.invalidation);
+    assert_eq!(combined_invalidation, TreeInvalidation::Paint);
+    assert_eq!(
+        decide_refresh_action(
+            combined_invalidation,
+            false,
+            RefreshAvailability {
+                has_cached_rebuild: false,
+                has_root_frame: prepared_root_has_frame(&tree, preparation),
+            },
+        ),
+        RefreshDecision::RefreshOnly
+    );
+
+    let update = refresh_prepared_default(&mut tree, preparation);
+
+    assert!(update.output.animations_active);
+    assert!(!update.layout_performed);
+    assert_eq!(
+        tree.layout_cache_stats(),
+        crate::stats::LayoutCacheStats::default()
+    );
+    assert_eq!(
+        tree.get(&child_id).unwrap().layout.frame.unwrap(),
+        initial_child_frame
+    );
+    assert_eq!(
+        tree.get(&root_id)
+            .unwrap()
+            .layout
+            .effective
+            .box_shadows
+            .as_ref()
+            .unwrap()[0]
+            .offset_x,
+        3.0
+    );
+    assert_eq!(
+        tree.get(&child_id)
+            .unwrap()
+            .layout
+            .effective
+            .box_shadows
+            .as_ref()
+            .unwrap()[0]
+            .offset_x,
+        7.0
+    );
+}
+
+#[test]
+fn test_layout_affecting_animation_refresh_still_runs_layout() {
+    let mut attrs = Attrs::default();
+    attrs.height = Some(Length::Px(64.0));
+
+    let mut start_attrs = Attrs::default();
+    start_attrs.width = Some(Length::Px(120.0));
+    let mut end_attrs = Attrs::default();
+    end_attrs.width = Some(Length::Px(160.0));
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    let initial = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    assert!(initial.layout_performed);
+
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(25),
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert!(update.output.animations_active);
+    assert!(update.layout_performed);
+    assert!(stats.subtree_measure_misses > 0);
+    assert!(stats.resolve_misses > 0);
+    assert_eq!(
+        tree.get(&root_id).unwrap().layout.frame.unwrap().width,
+        130.0
+    );
 }
 
 #[test]
@@ -947,6 +1320,22 @@ fn test_resolve_cache_translates_clean_sibling_after_previous_sibling_layout_cha
     }
 }
 
+fn test_shadow(offset_x: f64, offset_y: f64) -> BoxShadow {
+    BoxShadow {
+        offset_x,
+        offset_y,
+        blur: 12.0,
+        size: 2.0,
+        color: Color::Rgba {
+            r: 15,
+            g: 23,
+            b: 42,
+            a: 96,
+        },
+        inset: false,
+    }
+}
+
 fn text_child_tree(content: &str) -> ElementTree {
     let mut tree = ElementTree::new();
     let root = make_element("root", ElementKind::Column, Attrs::default());
@@ -1047,6 +1436,14 @@ fn raw_text_background_attrs(content: &str) -> Vec<u8> {
     data
 }
 
+fn raw_text_shadow_attrs(content: &str, offset_x: f64) -> Vec<u8> {
+    let mut data = vec![0, 3];
+    push_content_attr(&mut data, content);
+    push_font_size_attr(&mut data, 16.0);
+    push_box_shadow_attr(&mut data, offset_x);
+    data
+}
+
 fn raw_text_event_attrs(content: &str) -> Vec<u8> {
     let mut data = vec![0, 3];
     push_content_attr(&mut data, content);
@@ -1098,6 +1495,17 @@ fn push_px_length_attr(data: &mut Vec<u8>, tag: u8, value: f64) {
     data.push(tag);
     data.push(2);
     data.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_box_shadow_attr(data: &mut Vec<u8>, offset_x: f64) {
+    data.push(52);
+    data.push(1);
+    data.extend_from_slice(&offset_x.to_be_bytes());
+    data.extend_from_slice(&3.0_f64.to_be_bytes());
+    data.extend_from_slice(&8.0_f64.to_be_bytes());
+    data.extend_from_slice(&4.0_f64.to_be_bytes());
+    data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
+    data.push(0);
 }
 
 fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {

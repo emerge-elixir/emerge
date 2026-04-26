@@ -307,7 +307,7 @@ defmodule EmergeSkia.TreeTest do
       assert taken_stats.subtree_measure_hits > 0
       assert taken_stats.resolve_hits > 0
       assert taken_stats.resolve_misses == 0
-      assert Map.has_key?(taken_stats, :intrinsic_measure_ineligible_bypasses)
+      assert Map.has_key?(taken_stats, :intrinsic_measure_misses)
       assert taken_snapshot.window.reset_on_read
 
       {:ok, reset_snapshot} = Native.stats(tree, :peek)

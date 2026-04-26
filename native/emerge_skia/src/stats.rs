@@ -8,19 +8,12 @@ pub struct LayoutCacheStats {
     pub intrinsic_measure_hits: u64,
     pub intrinsic_measure_misses: u64,
     pub intrinsic_measure_stores: u64,
-    pub intrinsic_measure_ineligible_bypasses: u64,
     pub subtree_measure_hits: u64,
     pub subtree_measure_misses: u64,
     pub subtree_measure_stores: u64,
-    pub subtree_measure_dirty_bypasses: u64,
-    pub subtree_measure_animation_bypasses: u64,
     pub resolve_hits: u64,
     pub resolve_misses: u64,
     pub resolve_stores: u64,
-    pub resolve_dirty_bypasses: u64,
-    pub resolve_ineligible_bypasses: u64,
-    pub resolve_animation_bypasses: u64,
-    pub resolve_store_bypasses: u64,
 }
 
 impl LayoutCacheStats {
@@ -45,10 +38,6 @@ impl LayoutCacheStats {
             &mut self.intrinsic_measure_stores,
             other.intrinsic_measure_stores,
         );
-        Self::add_counter(
-            &mut self.intrinsic_measure_ineligible_bypasses,
-            other.intrinsic_measure_ineligible_bypasses,
-        );
         Self::add_counter(&mut self.subtree_measure_hits, other.subtree_measure_hits);
         Self::add_counter(
             &mut self.subtree_measure_misses,
@@ -58,33 +47,9 @@ impl LayoutCacheStats {
             &mut self.subtree_measure_stores,
             other.subtree_measure_stores,
         );
-        Self::add_counter(
-            &mut self.subtree_measure_dirty_bypasses,
-            other.subtree_measure_dirty_bypasses,
-        );
-        Self::add_counter(
-            &mut self.subtree_measure_animation_bypasses,
-            other.subtree_measure_animation_bypasses,
-        );
         Self::add_counter(&mut self.resolve_hits, other.resolve_hits);
         Self::add_counter(&mut self.resolve_misses, other.resolve_misses);
         Self::add_counter(&mut self.resolve_stores, other.resolve_stores);
-        Self::add_counter(
-            &mut self.resolve_dirty_bypasses,
-            other.resolve_dirty_bypasses,
-        );
-        Self::add_counter(
-            &mut self.resolve_ineligible_bypasses,
-            other.resolve_ineligible_bypasses,
-        );
-        Self::add_counter(
-            &mut self.resolve_animation_bypasses,
-            other.resolve_animation_bypasses,
-        );
-        Self::add_counter(
-            &mut self.resolve_store_bypasses,
-            other.resolve_store_bypasses,
-        );
     }
 
     pub fn record_intrinsic_measure_hit(&mut self) {
@@ -99,10 +64,6 @@ impl LayoutCacheStats {
         Self::increment(&mut self.intrinsic_measure_stores);
     }
 
-    pub fn record_intrinsic_measure_ineligible_bypass(&mut self) {
-        Self::increment(&mut self.intrinsic_measure_ineligible_bypasses);
-    }
-
     pub fn record_subtree_measure_hit(&mut self) {
         Self::increment(&mut self.subtree_measure_hits);
     }
@@ -115,14 +76,6 @@ impl LayoutCacheStats {
         Self::increment(&mut self.subtree_measure_stores);
     }
 
-    pub fn record_subtree_measure_dirty_bypass(&mut self) {
-        Self::increment(&mut self.subtree_measure_dirty_bypasses);
-    }
-
-    pub fn record_subtree_measure_animation_bypass(&mut self) {
-        Self::increment(&mut self.subtree_measure_animation_bypasses);
-    }
-
     pub fn record_resolve_hit(&mut self) {
         Self::increment(&mut self.resolve_hits);
     }
@@ -133,22 +86,6 @@ impl LayoutCacheStats {
 
     pub fn record_resolve_store(&mut self) {
         Self::increment(&mut self.resolve_stores);
-    }
-
-    pub fn record_resolve_dirty_bypass(&mut self) {
-        Self::increment(&mut self.resolve_dirty_bypasses);
-    }
-
-    pub fn record_resolve_ineligible_bypass(&mut self) {
-        Self::increment(&mut self.resolve_ineligible_bypasses);
-    }
-
-    pub fn record_resolve_animation_bypass(&mut self) {
-        Self::increment(&mut self.resolve_animation_bypasses);
-    }
-
-    pub fn record_resolve_store_bypass(&mut self) {
-        Self::increment(&mut self.resolve_store_bypasses);
     }
 }
 
@@ -465,16 +402,10 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "patch_tree_actor_process_ms_max={:.3} patch_tree_actor_process_ms_count={} ",
             "layout_cache_intrinsic_measure_hits={} layout_cache_intrinsic_measure_misses={} ",
             "layout_cache_intrinsic_measure_stores={} ",
-            "layout_cache_intrinsic_measure_ineligible_bypasses={} ",
             "layout_cache_subtree_measure_hits={} layout_cache_subtree_measure_misses={} ",
             "layout_cache_subtree_measure_stores={} ",
-            "layout_cache_subtree_measure_dirty_bypasses={} ",
-            "layout_cache_subtree_measure_animation_bypasses={} ",
             "layout_cache_resolve_hits={} layout_cache_resolve_misses={} ",
-            "layout_cache_resolve_stores={} layout_cache_resolve_dirty_bypasses={} ",
-            "layout_cache_resolve_ineligible_bypasses={} ",
-            "layout_cache_resolve_animation_bypasses={} ",
-            "layout_cache_resolve_store_bypasses={}"
+            "layout_cache_resolve_stores={}"
         ),
         backend_label,
         snapshot.window.as_millis(),
@@ -509,19 +440,12 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout_cache.intrinsic_measure_hits,
         snapshot.layout_cache.intrinsic_measure_misses,
         snapshot.layout_cache.intrinsic_measure_stores,
-        snapshot.layout_cache.intrinsic_measure_ineligible_bypasses,
         snapshot.layout_cache.subtree_measure_hits,
         snapshot.layout_cache.subtree_measure_misses,
         snapshot.layout_cache.subtree_measure_stores,
-        snapshot.layout_cache.subtree_measure_dirty_bypasses,
-        snapshot.layout_cache.subtree_measure_animation_bypasses,
         snapshot.layout_cache.resolve_hits,
         snapshot.layout_cache.resolve_misses,
         snapshot.layout_cache.resolve_stores,
-        snapshot.layout_cache.resolve_dirty_bypasses,
-        snapshot.layout_cache.resolve_ineligible_bypasses,
-        snapshot.layout_cache.resolve_animation_bypasses,
-        snapshot.layout_cache.resolve_store_bypasses,
     )
 }
 
