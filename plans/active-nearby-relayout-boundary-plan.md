@@ -115,6 +115,41 @@ Acceptance:
 - baseline cache-counter shape is recorded in this plan before implementation
 - deterministic tests can prove correctness without timing assertions
 
+Baseline guard added:
+
+- scenarios:
+  - `nearby_code_show_50/nearby_slot_change` inserts a nearby code block
+  - `nearby_code_hide_50/nearby_slot_change` removes a nearby code block
+- command:
+
+  ```bash
+  EMERGE_BENCH_SCENARIOS=nearby_code_show,nearby_code_hide \
+  EMERGE_BENCH_SIZES=50 \
+  EMERGE_BENCH_MUTATIONS=nearby_slot_change \
+  EMERGE_BENCH_WARMUP=0.1 \
+  EMERGE_BENCH_TIME=0.1 \
+  EMERGE_BENCH_MEMORY_TIME=0 \
+  mix bench.native.retained_layout
+  ```
+
+Baseline before invalidation changes:
+
+```text
+nearby_code_hide_50/nearby_slot_change after_patch:
+  intrinsic misses=0 stores=0
+  subtree hits=11 misses=3 stores=3
+  resolve hits=11 misses=3 stores=3
+  layout_only median ~= 21.8 µs
+  patch_then_layout median ~= 20.2 µs
+
+nearby_code_show_50/nearby_slot_change after_patch:
+  intrinsic misses=3 stores=3
+  subtree hits=11 misses=7 stores=7
+  resolve hits=11 misses=7 stores=7
+  layout_only median ~= 30.9 µs
+  patch_then_layout median ~= 48.0 µs
+```
+
 ## Slice 2: classify nearby topology invalidation
 
 Tasks:
