@@ -336,6 +336,19 @@ patch/scroll/runtime invalidation. The refresh decision then depends on that
 combined invalidation and cached output availability, not on broad active-
 animation state.
 
+### Turn layout-affecting animation into dirty paths
+
+The retained tree should treat sampled layout-affecting animation values like
+other effective layout changes: mark the affected node and dependent ancestors
+dirty, then let normal cache lookup produce hit/miss/store outcomes. This is now
+the layout path behavior. `AnimationOverlayResult` records per-node animation
+effects, and layout preparation converts measure/resolve effects into ordinary
+dirty propagation before measure/resolve runs.
+
+This preserves paint-only animation as refresh-only work and lets unrelated
+clean sibling subtrees keep using measurement/resolve caches during width,
+font-size, or alignment animations elsewhere.
+
 ### Keep render/event refresh separate
 
 Layout cache entries should not own render scene or event registry output.
@@ -348,11 +361,10 @@ combined invalidation is paint-only.
 
 The native tree now supports the next layout-caching stages:
 
-1. precise layout-affecting animation invalidation without global cache disable
-2. text-flow/paragraph resolve cache refinement
-3. relayout/dependency boundaries
-4. versioned cache keys plus more ix-native layout traversal where useful
-5. refresh subtree skipping
-6. viewport/repeater-aware cache preservation
+1. text-flow/paragraph resolve cache refinement
+2. relayout/dependency boundaries
+3. versioned cache keys plus more ix-native layout traversal where useful
+4. refresh subtree skipping
+5. viewport/repeater-aware cache preservation
 
 See `layout-caching-roadmap.md` for the active implementation order.
