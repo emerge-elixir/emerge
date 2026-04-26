@@ -48,6 +48,7 @@ Already implemented:
 - dense native tree storage and parent links
 - gated layout-cache stats
 - origin-agnostic invalidation/work scheduling for paint-only refresh vs layout
+- targeted dirty propagation for layout-affecting animation samples
 
 Still open:
 
@@ -557,7 +558,17 @@ with external patch/scroll/runtime invalidation, and chooses work from the
 combined `TreeInvalidation` plus cached output availability. Broad active-
 animation state no longer forces the refresh decision.
 
-### 9. Refresh/render/event output is downstream work
+### 9. Layout-affecting dynamic state should become ordinary dirty state
+
+Taffy/Yoga/Flutter/Servo all point toward invalidating the affected dependency
+paths, then letting normal cache lookup decide hit/miss/store.
+
+Emerge status: layout-affecting animation samples now record per-node effects.
+Before layout, those effects mark ordinary measure/resolve dirty paths. This
+removes the previous whole-tree animation cache-disable mode while preserving
+paint-only animation refresh skipping.
+
+### 10. Refresh/render/event output is downstream work
 
 Do not conflate geometry caching with scene or event-registry caching.
 
@@ -569,11 +580,10 @@ optimize the downstream phase.
 The current roadmap is not "add caches" anymore. Those are implemented. The
 next work should use the insights above to make reuse broader and more precise:
 
-1. make layout-affecting animation invalidation precise while keeping cache outcomes as hit/miss/store
-2. improve text-flow/paragraph resolve caching
-3. add relayout/dependency boundaries
-4. move from cloned child/nearby lists to versioned dependency keys and make hot layout traversal more ix-native where useful
-5. skip clean subtrees during refresh
-6. preserve cache identity through viewport/repeater movement
+1. improve text-flow/paragraph resolve caching
+2. add relayout/dependency boundaries
+3. move from cloned child/nearby lists to versioned dependency keys and make hot layout traversal more ix-native where useful
+4. skip clean subtrees during refresh
+5. preserve cache identity through viewport/repeater movement
 
 See `layout-caching-roadmap.md` for the implementation order.

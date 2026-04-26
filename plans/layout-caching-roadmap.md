@@ -28,6 +28,7 @@ work:
 - per-node intrinsic measurement cache
 - per-node subtree measurement cache
 - coordinate-invariant resolve cache
+- targeted dirty propagation for layout-affecting animation samples
 - gated native stats snapshots/logging through one unified stats path
 - retained-layout benchmark cache-counter output
 
@@ -45,7 +46,6 @@ Relevant files:
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
-- active animations still disable some layout-cache use globally instead of dirtying only affected paths
 - text-flow-heavy layouts still miss resolve caching heavily
 - upward dirty propagation does not yet stop at dependency/relayout boundaries
 - cache keys still clone child/nearby identity lists
@@ -64,8 +64,9 @@ Small retained-layout benchmark smokes show:
 
 Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
-or runtime state. Layout-affecting animations still use a conservative cache
-mode in the layout root path until targeted dirty/version propagation exists.
+or runtime state. Layout-affecting animations now dirty affected paths and keep
+layout caches enabled elsewhere, but broader text-flow resolve reuse and relayout
+boundaries remain future work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -135,30 +136,28 @@ Implemented shape:
   paint-only animation
 
 Paint-only updates should now have no layout sample and no layout-cache counter
-movement because measure/resolve layout is not asked. Layout-affecting animation
-samples still reach the conservative layout path.
+movement because measure/resolve layout is not asked.
 
-## Next slice 1: make layout-affecting animation invalidation precise
+## Completed slice: precise layout-affecting animation invalidation
 
-Goal: remove the remaining conservative global animation cache disable safely
-after scheduling is origin-agnostic.
+Animation sampling now records per-node layout effects. Before layout runs,
+measure- and resolve-affecting animation effects are converted into ordinary
+dirty state through the same propagation helpers used by patches/runtime state.
+Layout caches stay enabled for the pass, so unrelated clean sibling subtrees can
+hit while the animated path misses/stores as needed.
 
-Implementation direction:
+Implemented shape:
 
-- keep refining sampled animation effects as paint-only, resolve-affecting, or
-  measure-affecting
-- mark only affected nodes/dependent ancestors for layout-affecting animations
-- keep cache lookup as ordinary hit/miss/store
+- `AnimationOverlayResult` records per-node `AnimationLayoutEffect` entries
+- `run_layout_passes(...)` marks only layout-affecting animation effects dirty
+- broad animation cache disabling and `mark_all_resolve_dirty()` fallback were
+  removed from the layout root path
+- discrete `align_x` / `align_y` animation samples are now applied and
+  classified as resolve-affecting
+- tests cover sibling measurement-cache reuse during width animation and no text
+  remeasure during align animation
 
-Acceptance criteria:
-
-- layout-affecting animation invalidates only affected paths where safe
-- unrelated sibling subtrees can still hit during animation
-- parent subtree cache misses when child animated size changes
-- `cargo test --manifest-path native/emerge_skia/Cargo.toml` passes
-- `mix test` passes
-
-## Next slice 2: improve text-flow resolve caching
+## Next slice 1: improve text-flow resolve caching
 
 Goal: reduce resolve-cache misses in text/layout-rich scenes.
 
@@ -192,7 +191,7 @@ Acceptance criteria:
 - focused benchmark smoke shows improvement in `text_rich`, `layout_matrix`, or
   `nearby_rich`
 
-## Next slice 3: relayout/dependency boundaries
+## Next slice 2: relayout/dependency boundaries
 
 Goal: stop upward dirty propagation when a parent does not depend on the changed
 child layout.
@@ -221,7 +220,7 @@ Acceptance criteria:
 - cache correctness maintained for rows/columns/paragraph/nearby
 - relayout-boundary counters visible through stats
 
-## Next slice 4: versioned cache keys and ix-native traversal cleanup
+## Next slice 3: versioned cache keys and ix-native traversal cleanup
 
 Goal: reduce hot-path allocation/cloning in cache keys and make parent cache
 validation cheaper.
@@ -260,7 +259,7 @@ Acceptance criteria:
 - fewer repeated `NodeId -> NodeIx` lookups in measure/resolve hot paths where practical
 - cache hit behavior unchanged or improved
 
-## Next slice 5: refresh subtree skipping
+## Next slice 4: refresh subtree skipping
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
