@@ -40,6 +40,8 @@ work:
 - retained-layout benchmark cache-counter output
 - incremental effective-attrs preparation for animation-only refresh frames
 - no full registry-payload clone on unchanged cached-registry refresh
+- render-scene culling for clipped/offscreen subtrees with conservative shadow
+  and transform bounds
 
 Relevant files:
 
@@ -381,6 +383,9 @@ Implemented shape:
 - patch/resize/runtime-state batches keep the full preparation path
 - cached-registry refresh computes IME state from the cached registry reference
   and returns an ignored empty payload when `event_rebuild_changed=false`
+- render scene construction culls subtrees whose conservative visual bounds are
+  fully outside the inherited clip; the bounds include outer shadow overflow and
+  transforms, and hosts with nearby mounts are kept conservative
 - a generic render-cache seeding attempt for damaged/no-cache refreshes was
   benchmarked and rejected because it regressed focused animation/hover guards
 
@@ -388,9 +393,11 @@ Focused local signal:
 
 ```text
 native/layout_animation_paint_only/shadow_showcase/paint_only_refresh_each_frame
-  ~539 µs -> ~499 µs
+  ~539 µs -> ~499 µs; ~503-512 µs when the whole showcase is visible after render culling
+native/layout_scroll_paint_only_animation/shadow_showcase/paint_only_refresh_scroll_frame
+  ~801 µs -> ~355 µs after render culling
 native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
-  ~165 µs
+  ~169 µs
 ```
 
 ## Later slice: broaden other relayout/dependency boundaries

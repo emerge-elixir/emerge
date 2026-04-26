@@ -26,7 +26,7 @@ use super::layout::FontContext;
 use super::scene::{
     ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
 };
-use super::transform::element_transform;
+use super::transform::{Affine2, element_transform};
 #[cfg(test)]
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
@@ -386,6 +386,17 @@ fn build_element_subtree(
     let transform = element_transform(render_frame, attrs);
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
 
+    if should_cull_render_subtree(
+        tree,
+        ix,
+        attrs,
+        render_frame,
+        transform,
+        &traversal.scene_ctx,
+    ) {
+        return RenderSubtree::default();
+    }
+
     let element_context = inherited.merge_with_attrs(attrs);
     let mut local = Vec::new();
 
@@ -510,6 +521,17 @@ fn build_element_subtree_cached(
         .unwrap_or(frame);
     let transform = element_transform(render_frame, attrs);
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
+
+    if should_cull_render_subtree(
+        tree,
+        ix,
+        attrs,
+        render_frame,
+        transform,
+        &traversal.scene_ctx,
+    ) {
+        return RenderSubtree::default();
+    }
 
     let element_context = inherited.merge_with_attrs(attrs);
     let mut local = Vec::new();
@@ -656,6 +678,66 @@ fn is_scroll_container(element: &Element) -> bool {
         || element.layout.scroll_y_max > 0.0
         || effective_scrollbar_x(&element.layout.effective)
         || effective_scrollbar_y(&element.layout.effective)
+}
+
+fn should_cull_render_subtree(
+    tree: &ElementTree,
+    ix: NodeIx,
+    attrs: &Attrs,
+    render_frame: Frame,
+    transform: Affine2,
+    scene_ctx: &SceneContext,
+) -> bool {
+    let inherited_clip = if scene_ctx.front_nearby_subtree {
+        scene_ctx.nearby_visible_clip
+    } else {
+        scene_ctx.visible_clip
+    };
+    let Some(clip) = inherited_clip else {
+        return false;
+    };
+
+    let visual_bounds = transform.map_rect_aabb(render_visual_bounds(render_frame, attrs));
+    visual_bounds.intersect(clip.rect).is_none() && !tree.has_nearby_mounts_ix(ix)
+}
+
+fn render_visual_bounds(frame: Frame, attrs: &Attrs) -> Rect {
+    let rect = Rect::from_frame(frame);
+    attrs
+        .box_shadows
+        .as_deref()
+        .into_iter()
+        .flatten()
+        .filter(|shadow| !shadow.inset)
+        .fold(rect, |bounds, shadow| {
+            let offset_x = shadow.offset_x as f32;
+            let offset_y = shadow.offset_y as f32;
+            let blur = shadow.blur.abs() as f32;
+            let spread = shadow.size.abs() as f32;
+            let pad = blur * 2.0 + spread;
+            union_rect(
+                bounds,
+                Rect {
+                    x: rect.x + offset_x - pad,
+                    y: rect.y + offset_y - pad,
+                    width: rect.width + pad * 2.0,
+                    height: rect.height + pad * 2.0,
+                },
+            )
+        })
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let min_x = a.x.min(b.x);
+    let min_y = a.y.min(b.y);
+    let max_x = (a.x + a.width).max(b.x + b.width);
+    let max_y = (a.y + a.height).max(b.y + b.height);
+    Rect {
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x,
+        height: max_y - min_y,
+    }
 }
 
 fn render_node_count(nodes: &[RenderNode]) -> usize {

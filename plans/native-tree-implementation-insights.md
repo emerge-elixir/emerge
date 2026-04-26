@@ -409,6 +409,13 @@ must not clone that full payload just to set `event_rebuild_changed=false`. The
 publisher ignores `event_rebuild` in that case, so refresh can compute IME state
 from the cached reference and return an empty placeholder payload.
 
+Render refresh should cull clipped/offscreen subtrees before building their
+render nodes. The culling bounds must be conservative: include outer shadow
+overflow, apply paint transforms, and keep hosts with nearby mounts uncullable
+unless a future pass proves the mounted overlay is also outside the clip. Cache
+lookup should still precede culling for clean nodes with a matching render cache,
+so the culling check does not regress clean cached-refresh paths.
+
 ## Boundary APIs can stay id-based
 
 Not every function must expose `NodeIx`. It is fine, and often clearer, for
