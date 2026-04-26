@@ -6,6 +6,10 @@ This is the active implementation plan for the next layout-caching slice after
 text-flow resolve-cache eligibility. It focuses on making dirty propagation less
 global without losing correctness.
 
+Status: implemented and validated for traversal dirtiness plus the first safe
+measure boundary (`El`/`None` with child-independent explicit width and height).
+Keep this temporary active plan until the user confirms deletion.
+
 ## Motivation
 
 Current dirty propagation is intentionally conservative:
@@ -88,7 +92,7 @@ Names are provisional. The important behavior is:
 - resolve dirtiness should remain conservative until placement/content dependency
   rules are proven safe
 
-## Slice 1: add traversal dirtiness without changing boundaries
+## Slice 1: add traversal dirtiness without changing boundaries — done
 
 Goal: make the state model capable of expressing dirty descendants while keeping
 current behavior equivalent.
@@ -112,7 +116,7 @@ Acceptance:
 - no dirty descendant is skipped by an ancestor subtree cache
 - no cache-stat taxonomy changes
 
-## Slice 2: first safe measure boundary for explicit-size `El`/`None`
+## Slice 2: first safe measure boundary for explicit-size `El`/`None` — done
 
 Goal: stop measure dirtiness at a narrow, easy-to-prove boundary.
 
@@ -154,9 +158,10 @@ Acceptance:
   resolve still runs
 - content-sized `El` remains conservative and dirties parent measurement
 
-## Slice 3: expand only with tests
+## Slice 3: expand only with tests — deferred
 
-After the first boundary is correct, evaluate broader cases one at a time:
+The first boundary is implemented. Broader cases remain future work and should
+be evaluated one at a time:
 
 - fixed-size `Column` / `Row` where the changed axis cannot affect parent
   measured size
@@ -223,6 +228,21 @@ mix bench.native.retained_layout
 Look for fewer subtree-measure misses and unchanged or improved resolve-cache
 behavior in relevant cases.
 
+Focused smoke after implementation:
+
+```text
+layout_matrix_50 warm_cache: resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+text_rich_50 warm_cache:    resolve_hits=1 resolve_misses=0 subtree_measure_hits=1 subtree_measure_misses=0
+layout_matrix_50/layout_attr after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=4 resolve_misses=3
+layout_matrix_50/text_content after_patch: subtree_measure_hits=2 subtree_measure_misses=3 resolve_hits=4 resolve_misses=3
+text_rich_50/layout_attr after_patch: subtree_measure_hits=3 subtree_measure_misses=2 resolve_hits=4 resolve_misses=3
+text_rich_50/text_content after_patch: subtree_measure_hits=2 subtree_measure_misses=3 resolve_hits=4 resolve_misses=3
+```
+
+Focused unit tests additionally verify the intended boundary behavior directly:
+fixed-size `El` parent measurement stays clean while child text/animation changes
+are still traversed and resolved.
+
 ## Validation
 
 Run:
@@ -235,6 +255,9 @@ cargo test --manifest-path native/emerge_skia/Cargo.toml
 mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
+
+Validation status: all commands above passed, plus the focused retained-layout
+benchmark smoke in the benchmark section.
 
 ## Non-goals
 

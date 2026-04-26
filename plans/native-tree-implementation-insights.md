@@ -186,6 +186,7 @@ Layout-derived state:
 - subtree measurement cache
 - resolve cache
 - measure/resolve dirty bits
+- descendant measurement traversal dirty bit
 
 This is the current home for layout cache state.
 
@@ -216,12 +217,17 @@ Current behavior:
 
 - measure dirty implies resolve dirty
 - resolve dirty propagates upward
-- structure changes are classified separately
+- structure changes are classified separately and remain conservative
+- measure invalidation separates a node's own `measure_dirty` from ancestor
+  `measure_descendant_dirty` traversal
+- fixed-size `El`/`None` parents with child-independent explicit width and
+  height can keep their own measurement cache hot while still traversing to a
+  dirty child
 
 Future improvement:
 
-- stop propagation at relayout/dependency boundaries when a parent does not
-  depend on the changed child layout
+- broaden relayout/dependency boundaries one kind at a time when a parent does
+  not depend on the changed child layout
 
 ## Cache ownership insight
 
@@ -232,12 +238,19 @@ Current cache fields are on `NodeLayoutState`:
 intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
 subtree_measure_cache: Option<SubtreeMeasureCache>,
 measure_dirty: bool,
+measure_descendant_dirty: bool,
 resolve_cache: Option<ResolveCache>,
 resolve_dirty: bool,
 ```
 
 This design keeps cache lifetime tied to retained node lifetime and lets patches
 preserve cache state when identity is reused.
+
+`measure_descendant_dirty` is a traversal signal, not a cache outcome. It exists
+so a clean ancestor can avoid remeasuring itself without hiding dirty
+descendants behind its subtree measurement cache. `measure_element(...)`
+traverses dirty descendants first and can then reuse the ancestor's cached
+measured frame when the ancestor itself stayed clean.
 
 ## Text-flow resolve-cache insight
 
@@ -383,9 +396,9 @@ combined invalidation is paint-only.
 
 The native tree now supports the next layout-caching stages:
 
-1. relayout/dependency boundaries
-2. versioned cache keys plus more ix-native layout traversal where useful
-3. refresh subtree skipping
+1. versioned cache keys plus more ix-native layout traversal where useful
+2. refresh subtree skipping
+3. broader relayout/dependency boundaries beyond fixed-size `El`/`None`
 4. viewport/repeater-aware cache preservation
 
 See `layout-caching-roadmap.md` for the active implementation order.

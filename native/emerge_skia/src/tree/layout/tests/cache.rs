@@ -1260,6 +1260,142 @@ fn test_text_patch_dirties_measure_and_resolve() {
 }
 
 #[test]
+fn test_text_patch_inside_fixed_size_el_stops_parent_measure_dirty_but_keeps_traversal() {
+    let mut tree = fixed_el_text_tree("Hi", AlignX::Right, AlignY::Bottom);
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+    let measurer = CountingTextMeasurer::default();
+
+    layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &measurer);
+    let first_calls = measurer.total_calls();
+    assert!(first_calls > 0);
+
+    tree.set_layout_cache_stats_enabled(true);
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_attrs("Hello!"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+    assert!(tree.get(&text_id).unwrap().layout.measure_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.resolve_dirty);
+
+    layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &measurer);
+    let stats = tree.layout_cache_stats();
+
+    assert!(measurer.total_calls() > first_calls);
+    assert!(stats.subtree_measure_hits > 0);
+    assert_eq!(stats.subtree_measure_misses, 1);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+
+    let text_frame = tree.get(&text_id).unwrap().layout.frame.unwrap();
+    assert_eq!(text_frame.x, 52.0);
+    assert_eq!(text_frame.y, 84.0);
+}
+
+#[test]
+fn test_text_patch_inside_content_sized_el_still_dirties_parent_measurement() {
+    let mut tree = content_el_text_tree("Hi");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_attrs("Hello!"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+    assert!(tree.get(&text_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&root_id).unwrap().layout.measure_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+}
+
+#[test]
+fn test_measure_affecting_animation_inside_fixed_size_el_reuses_parent_measure_cache() {
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Px(100.0));
+    let root = make_element("fixed_animation_root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.height = Some(Length::Px(20.0));
+    let mut start_attrs = Attrs::default();
+    start_attrs.width = Some(Length::Px(20.0));
+    let mut end_attrs = Attrs::default();
+    end_attrs.width = Some(Length::Px(60.0));
+    child_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    });
+    let child = make_element("fixed_animation_child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.set_children(&root_id, vec![child_id]).unwrap();
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start),
+    ));
+
+    assert!(layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start + Duration::from_millis(50)),
+    ));
+    let stats = tree.layout_cache_stats();
+
+    assert!(stats.subtree_measure_hits > 0);
+    assert_eq!(stats.subtree_measure_misses, 1);
+    assert_eq!(
+        tree.get(&root_id).unwrap().layout.frame.unwrap().width,
+        100.0
+    );
+    assert_eq!(
+        tree.get(&child_id).unwrap().layout.frame.unwrap().width,
+        40.0
+    );
+}
+
+#[test]
 fn test_keyed_reorder_dirties_container_resolve_only() {
     let mut tree = ElementTree::new();
     let row = make_element("row", ElementKind::Row, Attrs::default());
@@ -1712,6 +1848,39 @@ fn text_child_tree(content: &str) -> ElementTree {
     let root = make_element("root", ElementKind::Column, Attrs::default());
     let root_id = root.id;
     let text = make_element("text", ElementKind::Text, text_attrs(content));
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(text);
+    tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn fixed_el_text_tree(content: &str, align_x: AlignX, align_y: AlignY) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Px(100.0));
+    root_attrs.align_x = Some(align_x);
+    root_attrs.align_y = Some(align_y);
+    let root = make_element("fixed_el_root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+    let text = make_element("fixed_el_text", ElementKind::Text, text_attrs(content));
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(text);
+    tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
+fn content_el_text_tree(content: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element("content_el_root", ElementKind::El, Attrs::default());
+    let root_id = root.id;
+    let text = make_element("content_el_text", ElementKind::Text, text_attrs(content));
     let text_id = text.id;
 
     tree.set_root_id(root_id);
