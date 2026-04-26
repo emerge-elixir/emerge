@@ -285,14 +285,12 @@ nearby_rich_50/nearby_slot_change after_patch: subtree_measure_hits=3 subtree_me
 `text_rich_50/keyed_reorder` remains a future optimization target; correctness is
 preserved and cache outcomes remain hit/miss/store.
 
-## Current slice: refresh subtree skipping
-
-Temporary active plan: `active-refresh-subtree-skipping-plan.md`.
+## Completed slice: refresh subtree skipping
 
 Goal: after layout state is reused, avoid rebuilding render/event output for
 subtrees that did not change.
 
-Implemented so far:
+Implemented shape:
 
 - refresh-specific dirty/descendant-dirty state for render vs registry damage
 - patch/runtime/scroll/animation sources mark refresh damage separately from
@@ -304,9 +302,8 @@ Implemented so far:
 - render scene refresh can reuse clean retained render subtrees
 - registry rebuilds have a conservative retained-chunk path with safe full
   fallback when no retained chunks exist or escape-nearby precedence is involved
-- render-cache regression guards compare cached and uncached refresh paths for
-  cold upload/switch, paint-rich, nearby-rich, layout-matrix, animated-shadow,
-  and scrolling-shadow cases
+- render-cache and registry-cache regression guards compare cached/chunked paths
+  against safe full/uncached baselines
 - render snapshots omit retained layout cache entries, dirty/full rebuilds avoid
   cache seeding, damaged refreshes with no existing caches use the uncached
   renderer, dirty paths avoid lookup key construction before rebuilding, stored
@@ -314,34 +311,45 @@ Implemented so far:
   render-node-count cap, and scroll-offset subtrees bypass render cache lookup to
   avoid cloning immediately-stale render scenes
 
-Next within this slice:
+Refresh skipping remains separate from layout-cache stats. Paint-only refreshes
+should still consult no measurement/resolve caches and therefore move no
+layout-cache counters.
 
-- decide whether to add cheap production registry-chunk seeding and broader
-  precedence tests, or leave registry chunks guarded and move on to relayout
-  boundaries
+## Current slice: nearby relayout boundary
 
-Render refresh can skip a subtree when:
+Temporary active plan: `active-nearby-relayout-boundary-plan.md`.
 
-- geometry did not change
-- paint-relevant attrs did not change
-- registry-relevant attrs did not change
-- descendants have no relevant changes
+Goal: make nearby overlay mount/unmount work proportional to the nearby subtree
+instead of dirtying broad host/ancestor measurement and resolve paths.
 
-Potential stats:
+Observed motivation from the Borders page hover/unhover code-block case:
 
-- refresh subtrees visited
-- refresh subtrees skipped
-- render subtrees visited/reused/stored
-- registry subtrees visited/reused/stored
+```text
+layout: avg=1.802 ms min=1.393 ms max=2.238 ms count=16
+patch tree actor: avg=2.023 ms min=1.506 ms max=2.549 ms count=16
+intrinsic measure misses=168 stores=168
+subtree measure hits=176 misses=496 stores=496
+resolve hits=176 misses=496 stores=496
+```
 
-Acceptance criteria:
+The likely issue is conservative nearby structural invalidation, not broken cache
+lookup. `SetNearbyMounts`/nearby insert/remove currently behave like broad
+structure changes even though host measured size is independent of nearby mount
+sizes.
 
-- lower refresh time in steady-state / paint-only / registry-only cases
-- no event hit-test regressions
-- no stale scene output
-- layout-cache stats remain hit / miss / store only
+Planned direction:
 
-## Later slice: broaden relayout/dependency boundaries
+- add a benchmark/test guard for nearby overlay show/hide before changing
+  invalidation
+- distinguish nearby topology invalidation from normal child structure
+- keep host measurement clean when only nearby topology changes and the host size
+  does not depend on nearby mounts
+- add traversal dirtiness as needed so dirty nearby descendants are not hidden by
+  cached clean ancestors
+- keep render/registry damage conservative for paint ordering and event
+  precedence
+
+## Later slice: broaden other relayout/dependency boundaries
 
 The first boundary is intentionally narrow. Future boundaries should be added
 one at a time with correctness tests for measured frames, resolved frames,
@@ -353,7 +361,6 @@ Candidates:
   the changed child
 - scrollable fixed-size containers where content extents change but parent
   measured size does not
-- nearby overlays that should not dirty host measurement
 - text-flow containers once wrapping/floats/fragments are fully covered
 
 ## Later slice: viewport/repeater-aware caching
