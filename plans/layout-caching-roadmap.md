@@ -400,6 +400,21 @@ native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
   ~169 µs
 ```
 
+Borders demo validation after render culling:
+
+```text
+animation only:
+  refresh avg=0.262 ms count=1200
+  render avg=0.778 ms count=1200
+  layout no samples; patch tree actor no samples; layout cache all zero
+
+constant hover/unhover:
+  refresh avg=0.318 ms count=1260
+  render avg=0.902 ms count=1200
+  patch tree actor avg=0.776 ms count=30
+  layout no samples; layout cache all zero
+```
+
 ## Later slice: broaden other relayout/dependency boundaries
 
 The first boundary is intentionally narrow. Future boundaries should be added

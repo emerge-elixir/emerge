@@ -2,11 +2,11 @@
 
 Last updated: 2026-04-26.
 
-Status: implemented and locally validated. Nearby topology classification,
-measurement boundaries, resolve traversal through dirty nearby descendants,
-small detached-layout reuse for reinserted nearby subtrees, and the first refresh
-path follow-up are in place. Focused demo validation remains useful before
-deleting this active plan file.
+Status: implemented and validated in focused benchmarks plus the Borders demo.
+Nearby topology classification, measurement boundaries, resolve traversal
+through dirty nearby descendants, small detached-layout reuse for reinserted
+nearby subtrees, and the first refresh path follow-up are in place. This active
+plan file is ready for deletion after user confirmation.
 
 ## Motivation
 
@@ -474,7 +474,7 @@ native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only
   ~169 µs
 ```
 
-## Slice 7: focused demo smoke and docs — done locally; focused app smoke still useful
+## Slice 7: focused demo smoke and docs — validated
 
 Tasks:
 
@@ -507,6 +507,32 @@ EMERGE_BENCH_TIME=0.1 \
 EMERGE_BENCH_MEMORY_TIME=0 \
 mix bench.native.retained_layout
 ```
+
+Borders demo validation after render culling:
+
+```text
+animation only:
+  frames=1200 fps=240.0 display=229.5 fps
+  render avg=0.778 ms min=0.635 ms max=1.370 ms count=1200
+  refresh avg=0.262 ms min=0.217 ms max=0.418 ms count=1200
+  layout no samples; patch tree actor no samples; layout cache all zero
+
+constant hover/unhover:
+  frames=1200 fps=240.0 display=243.4 fps
+  render avg=0.902 ms min=0.645 ms max=1.631 ms count=1200
+  refresh avg=0.318 ms min=0.217 ms max=1.851 ms count=1260
+  patch tree actor avg=0.776 ms min=0.494 ms max=1.438 ms count=30
+  layout no samples; layout cache all zero
+```
+
+Interpretation:
+
+- the original layout/cache problem is resolved for this demo path
+- animation-only refresh dropped from roughly 1 ms to roughly 0.26 ms in the
+  demo window after offscreen render culling
+- hover/unhover adds patch work and a small number of extra refresh samples, but
+  it still stays refresh-only with zero layout samples and zero layout-cache
+  counters
 
 ## Completion protocol
 
