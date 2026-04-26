@@ -6,6 +6,7 @@ use super::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
 };
 use super::element::{ElementTree, NodeId};
+use super::invalidation::TreeInvalidation;
 
 #[derive(Clone, Debug)]
 pub enum AnimationCurve {
@@ -61,6 +62,20 @@ pub struct AnimationRuntime {
 pub struct AnimationSample {
     pub attrs: Attrs,
     pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnimationOverlayResult {
+    pub active: bool,
+    pub invalidation: TreeInvalidation,
+}
+
+impl AnimationOverlayResult {
+    fn record_sample(&mut self, sample: &AnimationSample) {
+        self.active |= sample.active;
+        self.invalidation
+            .add(classify_animation_sample_attrs(&sample.attrs));
+    }
 }
 
 impl AnimationRuntime {
@@ -218,38 +233,103 @@ pub fn apply_animation_overlays(
     runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
     scale: f32,
-) -> bool {
-    tree.iter_nodes_mut().fold(false, |active_any, element| {
-        if let Some(sample) = runtime
-            .and_then(|state| state.exit_entry(&element.id))
-            .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
-            .filter(|sample| sample.active)
-        {
+) -> AnimationOverlayResult {
+    tree.iter_nodes_mut()
+        .fold(AnimationOverlayResult::default(), |mut result, element| {
+            if let Some(sample) = runtime
+                .and_then(|state| state.exit_entry(&element.id))
+                .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
+                .filter(|sample| sample.active)
+            {
+                apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+                result.record_sample(&sample);
+                return result;
+            }
+
+            if let Some(sample) = runtime
+                .and_then(|state| state.enter_entry(&element.id))
+                .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
+                .filter(|sample| sample.active)
+            {
+                apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+                result.record_sample(&sample);
+                return result;
+            }
+
+            let Some(spec) = element.layout.effective.animate.as_ref() else {
+                return result;
+            };
+
+            let sample = sample_animation_spec(
+                spec,
+                runtime.and_then(|state| state.animate_entry(&element.id)),
+                sample_time,
+            );
             apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-            return active_any || sample.active;
-        }
+            result.record_sample(&sample);
+            result
+        })
+}
 
-        if let Some(sample) = runtime
-            .and_then(|state| state.enter_entry(&element.id))
-            .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
-            .filter(|sample| sample.active)
-        {
-            apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-            return active_any || sample.active;
-        }
+pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {
+    let mut invalidation = TreeInvalidation::None;
 
-        let Some(spec) = element.layout.effective.animate.as_ref() else {
-            return active_any;
-        };
+    if attrs.background.is_some()
+        || attrs.border_radius.is_some()
+        || attrs.border_style.is_some()
+        || attrs.border_color.is_some()
+        || attrs.box_shadows.is_some()
+        || attrs.font_color.is_some()
+        || attrs.svg_color.is_some()
+        || attrs.font_underline.is_some()
+        || attrs.font_strike.is_some()
+        || attrs.video_target.is_some()
+        || attrs.move_x.is_some()
+        || attrs.move_y.is_some()
+        || attrs.rotate.is_some()
+        || attrs.scale.is_some()
+        || attrs.alpha.is_some()
+    {
+        invalidation.add(TreeInvalidation::Paint);
+    }
 
-        let sample = sample_animation_spec(
-            spec,
-            runtime.and_then(|state| state.animate_entry(&element.id)),
-            sample_time,
-        );
-        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
-        active_any || sample.active
-    })
+    if attrs.align_x.is_some() || attrs.align_y.is_some() {
+        invalidation.add(TreeInvalidation::Resolve);
+    }
+
+    if attrs.width.is_some()
+        || attrs.height.is_some()
+        || attrs.padding.is_some()
+        || attrs.spacing.is_some()
+        || attrs.spacing_x.is_some()
+        || attrs.spacing_y.is_some()
+        || attrs.scrollbar_y.is_some()
+        || attrs.scrollbar_x.is_some()
+        || attrs.ghost_scrollbar_y.is_some()
+        || attrs.ghost_scrollbar_x.is_some()
+        || attrs.scroll_x.is_some()
+        || attrs.scroll_y.is_some()
+        || attrs.clip_nearby.is_some()
+        || attrs.border_width.is_some()
+        || attrs.font_size.is_some()
+        || attrs.font.is_some()
+        || attrs.font_weight.is_some()
+        || attrs.font_style.is_some()
+        || attrs.font_letter_spacing.is_some()
+        || attrs.font_word_spacing.is_some()
+        || attrs.image_src.is_some()
+        || attrs.image_fit.is_some()
+        || attrs.image_size.is_some()
+        || attrs.text_align.is_some()
+        || attrs.content.is_some()
+        || attrs.snap_layout.is_some()
+        || attrs.snap_text_metrics.is_some()
+        || attrs.space_evenly.is_some()
+    {
+        invalidation.add(TreeInvalidation::Measure);
+    }
+
+    invalidation
 }
 
 fn sample_enter_animation_spec(
@@ -1099,14 +1179,14 @@ mod tests {
         assert!(runtime.enter_entry(&id).is_none());
         assert!(runtime.animate_entry(&id).is_none());
 
-        let active = apply_animation_overlays(
+        let result = apply_animation_overlays(
             &mut tree,
             Some(&runtime),
             Some(start + std::time::Duration::from_millis(150)),
             1.0,
         );
 
-        assert!(!active);
+        assert!(!result.active);
         assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, None);
     }
 
@@ -1125,14 +1205,14 @@ mod tests {
         assert!(runtime.enter_entry(&id).is_none());
         assert!(runtime.animate_entry(&id).is_some());
 
-        let active = apply_animation_overlays(
+        let result = apply_animation_overlays(
             &mut tree,
             Some(&runtime),
             Some(start + std::time::Duration::from_millis(150)),
             1.0,
         );
 
-        assert!(active);
+        assert!(result.active);
         assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, Some(10.0));
     }
 

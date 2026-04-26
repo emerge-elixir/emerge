@@ -26,19 +26,12 @@ defmodule Emerge.Bench.NativeRetainedLayout do
     :intrinsic_measure_hits,
     :intrinsic_measure_misses,
     :intrinsic_measure_stores,
-    :intrinsic_measure_ineligible_bypasses,
     :subtree_measure_hits,
     :subtree_measure_misses,
     :subtree_measure_stores,
-    :subtree_measure_dirty_bypasses,
-    :subtree_measure_animation_bypasses,
     :resolve_hits,
     :resolve_misses,
-    :resolve_stores,
-    :resolve_dirty_bypasses,
-    :resolve_ineligible_bypasses,
-    :resolve_animation_bypasses,
-    :resolve_store_bypasses
+    :resolve_stores
   ]
 
   def base_inputs do

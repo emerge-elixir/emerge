@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
+use emerge_skia::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 use emerge_skia::tree::attrs::{
-    Attrs, Background, BorderRadius, BorderWidth, Color, Length, Padding,
+    Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
 };
 use emerge_skia::tree::element::{Element, ElementKind, ElementTree, NodeId};
 use emerge_skia::tree::layout::TextMeasurer;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 
 pub const TEXT_ROW_COUNT: usize = 500;
 pub const CARD_COUNT: usize = 160;
+pub const SHADOW_RECIPE_CARD_COUNT: usize = 84;
 
 pub struct FixtureScenario {
     pub id: String,
@@ -295,6 +297,417 @@ pub fn nested_card_grid(card_count: usize) -> ElementTree {
     tree.set_children(&root_id, card_ids)
         .expect("root children should exist");
     tree
+}
+
+pub fn scrollable_animated_shadow_showcase() -> ElementTree {
+    let mut tree = animated_shadow_showcase();
+    let content_id = tree.root_id().expect("shadow showcase should have a root");
+    let root_id = NodeId::from_u64(2);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(960.0));
+    root_attrs.height = Some(Length::Px(640.0));
+    root_attrs.scrollbar_y = Some(true);
+    root_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 241,
+        g: 244,
+        b: 250,
+    }));
+
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::El,
+        Vec::new(),
+        root_attrs,
+    ));
+    tree.set_children(&root_id, vec![content_id])
+        .expect("scroll wrapper child should exist");
+    tree.set_root_id(root_id);
+    tree
+}
+
+pub fn animated_shadow_showcase() -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(3);
+    let hero_id = NodeId::from_u64(4);
+    let showcase_id = NodeId::from_u64(5);
+    let grid_id = NodeId::from_u64(6);
+    tree.set_root_id(root_id);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(960.0));
+    root_attrs.padding = Some(Padding::Uniform(18.0));
+    root_attrs.spacing = Some(14.0);
+    root_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 241,
+        g: 244,
+        b: 250,
+    }));
+
+    let mut hero_attrs = Attrs::default();
+    hero_attrs.width = Some(Length::Fill);
+    hero_attrs.padding = Some(Padding::Uniform(16.0));
+    hero_attrs.spacing = Some(6.0);
+    hero_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 248,
+        g: 250,
+        b: 253,
+    }));
+    hero_attrs.border_radius = Some(BorderRadius::Uniform(16.0));
+    hero_attrs.border_width = Some(BorderWidth::Uniform(1.0));
+    hero_attrs.border_color = Some(Color::Rgb {
+        r: 223,
+        g: 228,
+        b: 238,
+    });
+
+    let mut showcase_attrs = Attrs::default();
+    showcase_attrs.width = Some(Length::Fill);
+    showcase_attrs.padding = Some(Padding::Uniform(18.0));
+    showcase_attrs.spacing = Some(14.0);
+    showcase_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 248,
+        g: 250,
+        b: 253,
+    }));
+    showcase_attrs.border_radius = Some(BorderRadius::Uniform(18.0));
+    showcase_attrs.box_shadows = Some(vec![shadow(0.0, 16.0, 28.0, 6.0, 46)]);
+
+    let mut grid_attrs = Attrs::default();
+    grid_attrs.width = Some(Length::Fill);
+    grid_attrs.spacing_x = Some(12.0);
+    grid_attrs.spacing_y = Some(12.0);
+
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        root_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        hero_id,
+        ElementKind::Column,
+        Vec::new(),
+        hero_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        showcase_id,
+        ElementKind::Row,
+        Vec::new(),
+        showcase_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        grid_id,
+        ElementKind::WrappedRow,
+        Vec::new(),
+        grid_attrs,
+    ));
+
+    let hero_children = vec![
+        insert_text(
+            &mut tree,
+            10,
+            "Directional, diffuse, and stacked shadows",
+            20.0,
+        ),
+        insert_text(
+            &mut tree,
+            11,
+            "Animated outer shadows are decorative paint and should not force layout.",
+            13.0,
+        ),
+    ];
+    tree.set_children(&hero_id, hero_children)
+        .expect("hero children should exist");
+
+    let showcase_children: Vec<_> = [
+        animated_shadow_card(
+            &mut tree,
+            100,
+            "Stacked",
+            "Counter-rotating",
+            Color::Rgb {
+                r: 244,
+                g: 248,
+                b: 255,
+            },
+            stacked_shadow_animation(),
+        ),
+        animated_shadow_card(
+            &mut tree,
+            200,
+            "Right cast",
+            "Orbiting cast",
+            Color::Rgb {
+                r: 246,
+                g: 243,
+                b: 255,
+            },
+            orbiting_shadow_animation(14.0, 2.0, 14.0, 2400.0, false),
+        ),
+        animated_shadow_card(
+            &mut tree,
+            300,
+            "Soft spread",
+            "Orbiting blur",
+            Color::Rgb {
+                r: 240,
+                g: 249,
+                b: 246,
+            },
+            orbiting_shadow_animation(24.0, 6.0, 12.0, 3400.0, true),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    tree.set_children(&showcase_id, showcase_children)
+        .expect("showcase children should exist");
+
+    let recipe_children: Vec<_> = (0..SHADOW_RECIPE_CARD_COUNT)
+        .map(|index| static_shadow_recipe_card(&mut tree, 1_000 + index as u64 * 10, index))
+        .collect();
+    tree.set_children(&grid_id, recipe_children)
+        .expect("recipe children should exist");
+
+    tree.set_children(&root_id, vec![hero_id, showcase_id, grid_id])
+        .expect("root children should exist");
+    tree
+}
+
+fn animated_shadow_card(
+    tree: &mut ElementTree,
+    base: u64,
+    title: &str,
+    subtitle: &str,
+    background: Color,
+    animation: AnimationSpec,
+) -> NodeId {
+    let card_id = NodeId::from_u64(base);
+    let title_id = NodeId::from_u64(base + 1);
+    let subtitle_id = NodeId::from_u64(base + 2);
+
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::FillWeighted(1.0));
+    attrs.height = Some(Length::Px(94.0));
+    attrs.padding = Some(Padding::Uniform(14.0));
+    attrs.spacing = Some(4.0);
+    attrs.background = Some(Background::Color(background));
+    attrs.border_radius = Some(BorderRadius::Uniform(14.0));
+    attrs.animate = Some(animation);
+
+    tree.insert(Element::with_attrs(
+        card_id,
+        ElementKind::Column,
+        Vec::new(),
+        attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        title_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size(title, 14.0),
+    ));
+    tree.insert(Element::with_attrs(
+        subtitle_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size(subtitle, 11.0),
+    ));
+    tree.set_children(&card_id, vec![title_id, subtitle_id])
+        .expect("animated card children should exist");
+
+    card_id
+}
+
+fn static_shadow_recipe_card(tree: &mut ElementTree, base: u64, index: usize) -> NodeId {
+    let card_id = NodeId::from_u64(base);
+    let sample_id = NodeId::from_u64(base + 1);
+    let title_id = NodeId::from_u64(base + 2);
+    let subtitle_id = NodeId::from_u64(base + 3);
+    let detail_id = NodeId::from_u64(base + 4);
+
+    let mut card_attrs = Attrs::default();
+    card_attrs.width = Some(Length::Px(280.0));
+    card_attrs.padding = Some(Padding::Uniform(12.0));
+    card_attrs.spacing = Some(10.0);
+    card_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 245,
+        g: 247,
+        b: 251,
+    }));
+    card_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
+    card_attrs.border_width = Some(BorderWidth::Uniform(1.0));
+    card_attrs.border_color = Some(Color::Rgb {
+        r: 223,
+        g: 228,
+        b: 238,
+    });
+
+    let mut sample_attrs = Attrs::default();
+    sample_attrs.width = Some(Length::Fill);
+    sample_attrs.height = Some(Length::Px(84.0));
+    sample_attrs.padding = Some(Padding::Uniform(12.0));
+    sample_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 34,
+        g: 38,
+        b: 54,
+    }));
+    sample_attrs.border_radius = Some(BorderRadius::Uniform(10.0));
+    sample_attrs.box_shadows = Some(vec![shadow(
+        (index % 5) as f64 - 2.0,
+        8.0 + (index % 3) as f64,
+        10.0 + (index % 4) as f64 * 2.0,
+        (index % 2) as f64,
+        80,
+    )]);
+
+    tree.insert(Element::with_attrs(
+        card_id,
+        ElementKind::Column,
+        Vec::new(),
+        card_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        sample_id,
+        ElementKind::El,
+        Vec::new(),
+        sample_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        title_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size(&format!("Shadow recipe {index}"), 13.0),
+    ));
+    tree.insert(Element::with_attrs(
+        subtitle_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size("Decorative paint-only shadow", 11.0),
+    ));
+    tree.insert(Element::with_attrs(
+        detail_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size("Border.shadow offset/blur/size/color", 10.0),
+    ));
+    tree.set_children(&card_id, vec![sample_id, title_id, subtitle_id, detail_id])
+        .expect("recipe card children should exist");
+
+    card_id
+}
+
+fn insert_text(tree: &mut ElementTree, id: u64, content: &str, font_size: f64) -> NodeId {
+    let node_id = NodeId::from_u64(id);
+    tree.insert(Element::with_attrs(
+        node_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs_with_size(content, font_size),
+    ));
+    node_id
+}
+
+fn text_attrs_with_size(content: &str, font_size: f64) -> Attrs {
+    let mut attrs = Attrs::default();
+    attrs.content = Some(content.to_string());
+    attrs.font_size = Some(font_size);
+    attrs
+}
+
+fn stacked_shadow_animation() -> AnimationSpec {
+    let primary = orbit_positions(12.0, false);
+    let secondary = [
+        (0.0, 8.0),
+        (0.0, 8.0),
+        (-8.0, 0.0),
+        (-8.0, 0.0),
+        (0.0, -8.0),
+        (0.0, -8.0),
+        (8.0, 0.0),
+        (8.0, 0.0),
+        (0.0, 8.0),
+    ];
+
+    let keyframes = primary
+        .into_iter()
+        .zip(secondary)
+        .map(|((ax, ay), (bx, by))| {
+            let mut attrs = Attrs::default();
+            attrs.box_shadows = Some(vec![
+                shadow(ax, ay, 18.0, 2.0, 41),
+                shadow(bx, by, 10.0, 0.0, 89),
+            ]);
+            attrs
+        })
+        .collect();
+
+    AnimationSpec {
+        keyframes,
+        duration_ms: 2800.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    }
+}
+
+fn orbiting_shadow_animation(
+    blur: f64,
+    size: f64,
+    radius: f64,
+    duration_ms: f64,
+    counterclockwise: bool,
+) -> AnimationSpec {
+    let keyframes = orbit_positions(radius, counterclockwise)
+        .into_iter()
+        .map(|(x, y)| {
+            let mut attrs = Attrs::default();
+            attrs.box_shadows = Some(vec![shadow(x, y, blur, size, 67)]);
+            attrs
+        })
+        .collect();
+
+    AnimationSpec {
+        keyframes,
+        duration_ms,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    }
+}
+
+fn orbit_positions(radius: f64, counterclockwise: bool) -> Vec<(f64, f64)> {
+    let positions = vec![
+        (0.0, -radius),
+        (radius, -radius),
+        (radius, 0.0),
+        (radius, radius),
+        (0.0, radius),
+        (-radius, radius),
+        (-radius, 0.0),
+        (-radius, -radius),
+        (0.0, -radius),
+    ];
+
+    if counterclockwise {
+        positions.into_iter().rev().collect()
+    } else {
+        positions
+    }
+}
+
+fn shadow(offset_x: f64, offset_y: f64, blur: f64, size: f64, alpha: u8) -> BoxShadow {
+    BoxShadow {
+        offset_x,
+        offset_y,
+        blur,
+        size,
+        color: Color::Rgba {
+            r: 15,
+            g: 23,
+            b: 42,
+            a: alpha,
+        },
+        inset: false,
+    }
 }
 
 pub fn reversed_root_children(tree: &ElementTree) -> Vec<NodeId> {

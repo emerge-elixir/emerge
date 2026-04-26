@@ -278,19 +278,12 @@ defmodule EmergeSkia.Native do
           required(:intrinsic_measure_hits) => non_neg_integer(),
           required(:intrinsic_measure_misses) => non_neg_integer(),
           required(:intrinsic_measure_stores) => non_neg_integer(),
-          required(:intrinsic_measure_ineligible_bypasses) => non_neg_integer(),
           required(:subtree_measure_hits) => non_neg_integer(),
           required(:subtree_measure_misses) => non_neg_integer(),
           required(:subtree_measure_stores) => non_neg_integer(),
-          required(:subtree_measure_dirty_bypasses) => non_neg_integer(),
-          required(:subtree_measure_animation_bypasses) => non_neg_integer(),
           required(:resolve_hits) => non_neg_integer(),
           required(:resolve_misses) => non_neg_integer(),
-          required(:resolve_stores) => non_neg_integer(),
-          required(:resolve_dirty_bypasses) => non_neg_integer(),
-          required(:resolve_ineligible_bypasses) => non_neg_integer(),
-          required(:resolve_animation_bypasses) => non_neg_integer(),
-          required(:resolve_store_bypasses) => non_neg_integer()
+          required(:resolve_stores) => non_neg_integer()
         }
 
   @type stats_snapshot :: %{

@@ -5,7 +5,9 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
+use super::animation::{
+    AnimationOverlayResult, AnimationRuntime, apply_animation_overlays, scale_animation_spec,
+};
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
     TextFragment, effective_scrollbar_x, effective_scrollbar_y,
@@ -452,34 +454,102 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
         return false;
     };
 
-    tree.ensure_topology();
+    let animation_result = prepare_frame_attrs(tree, scale, animation_runtime, sample_time);
+    run_layout_passes(
+        tree,
+        &root_id,
+        constraint,
+        measurer,
+        inherited,
+        animation_result,
+    );
 
+    animation_result.active
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameAttrsPreparation {
+    pub(crate) root_id: Option<NodeId>,
+    pub(crate) animation_result: AnimationOverlayResult,
+}
+
+pub(crate) fn prepare_frame_attrs_for_update(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> FrameAttrsPreparation {
+    tree.reset_layout_cache_stats();
+
+    FrameAttrsPreparation {
+        root_id: tree.root_id(),
+        animation_result: prepare_frame_attrs(tree, scale, animation_runtime, sample_time),
+    }
+}
+
+pub(crate) fn prepared_root_has_frame(
+    tree: &ElementTree,
+    preparation: FrameAttrsPreparation,
+) -> bool {
+    preparation
+        .root_id
+        .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+        .is_some()
+}
+
+fn prepare_frame_attrs(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> AnimationOverlayResult {
+    tree.ensure_topology();
     tree.set_current_scale(scale);
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
-    let animations_active = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
+    let animation_result = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
     apply_interaction_styles(tree);
 
-    // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, &root_id, measurer, inherited, !animations_active);
+    animation_result
+}
 
-    if animations_active {
+fn run_layout_passes<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    root_id: &NodeId,
+    constraint: Constraint,
+    measurer: &M,
+    inherited: &FontContext,
+    animation_result: AnimationOverlayResult,
+) {
+    let use_measure_cache = use_measure_cache_for_animation(animation_result);
+    let use_resolve_cache = use_resolve_cache_for_animation(animation_result);
+
+    // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
+    measure_element(tree, root_id, measurer, inherited, use_measure_cache);
+
+    if !use_resolve_cache {
         tree.mark_all_resolve_dirty();
     }
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(
         tree,
-        &root_id,
+        root_id,
         constraint,
         0.0,
         0.0,
         inherited,
         measurer,
-        !animations_active,
+        use_resolve_cache,
     );
+}
 
-    animations_active
+fn use_measure_cache_for_animation(animation_result: AnimationOverlayResult) -> bool {
+    !animation_result.active || !animation_result.invalidation.requires_measure()
+}
+
+fn use_resolve_cache_for_animation(animation_result: AnimationOverlayResult) -> bool {
+    !animation_result.active || !animation_result.invalidation.requires_resolve()
 }
 
 /// Layout with default Skia text measurer.
@@ -497,7 +567,7 @@ fn prepare_attrs_for_frame(
     scale: f32,
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
-) -> bool {
+) -> AnimationOverlayResult {
     for element in tree.iter_nodes_mut() {
         let scale_factor = match element.lifecycle.ghost_capture_scale {
             Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
@@ -887,10 +957,8 @@ fn measure_element<M: TextMeasurer>(
     let subtree_cache_key = use_subtree_cache
         .then(|| subtree_measure_cache_key(kind, &attrs, inherited, &child_ids, &nearby_mounts));
 
-    if !use_subtree_cache {
-        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_animation_bypass());
-    } else if measure_dirty {
-        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_dirty_bypass());
+    if !use_subtree_cache || measure_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
     } else if let Some(key) = subtree_cache_key.as_ref()
         && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
     {
@@ -931,8 +999,6 @@ fn measure_element<M: TextMeasurer>(
         if let Some(intrinsic) = try_reuse_intrinsic_measure_cache(tree, id, key) {
             return intrinsic;
         }
-    } else {
-        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_ineligible_bypass());
     }
 
     let intrinsic = match kind {
@@ -1838,12 +1904,8 @@ fn resolve_element<M: TextMeasurer>(
     let resolve_kind_eligible = resolve_cache_kind_eligible(kind);
     let cache_eligible = use_resolve_cache && resolve_kind_eligible;
 
-    if !use_resolve_cache {
-        tree.record_layout_cache_stats(|stats| stats.record_resolve_animation_bypass());
-    } else if !resolve_kind_eligible {
-        tree.record_layout_cache_stats(|stats| stats.record_resolve_ineligible_bypass());
-    } else if resolve_dirty {
-        tree.record_layout_cache_stats(|stats| stats.record_resolve_dirty_bypass());
+    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
     } else if cache_eligible {
         let key = resolve_cache_key(
             kind,
@@ -1975,8 +2037,6 @@ fn resolve_element<M: TextMeasurer>(
                 });
                 element.layout.resolve_dirty = false;
             }
-        } else {
-            tree.record_layout_cache_stats(|stats| stats.record_resolve_store_bypass());
         }
     }
 }
@@ -4612,6 +4672,11 @@ pub struct LayoutOutput {
     pub animations_active: bool,
 }
 
+pub struct LayoutUpdateOutput {
+    pub output: LayoutOutput,
+    pub layout_performed: bool,
+}
+
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
@@ -4663,11 +4728,67 @@ pub fn layout_and_refresh_default_with_animation(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutOutput {
-    let animations_active =
-        layout_tree_default_with_animation(tree, constraint, scale, runtime, sample_time);
+    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    layout_and_refresh_prepared_default(tree, constraint, preparation).output
+}
+
+pub fn layout_or_refresh_default_with_animation(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> LayoutUpdateOutput {
+    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
+        && prepared_root_has_frame(tree, preparation);
+
+    if can_refresh_without_layout {
+        refresh_prepared_default(tree, preparation)
+    } else {
+        layout_and_refresh_prepared_default(tree, constraint, preparation)
+    }
+}
+
+pub(crate) fn layout_and_refresh_prepared_default(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let layout_performed = if let Some(root_id) = preparation.root_id {
+        run_layout_passes(
+            tree,
+            &root_id,
+            constraint,
+            &SkiaTextMeasurer,
+            &FontContext::default(),
+            preparation.animation_result,
+        );
+        true
+    } else {
+        false
+    };
+
     let mut output = refresh(tree);
-    output.animations_active = animations_active;
-    output
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed,
+    }
+}
+
+pub(crate) fn refresh_prepared_default(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let mut output = refresh(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
+    }
 }
 
 #[cfg(test)]
