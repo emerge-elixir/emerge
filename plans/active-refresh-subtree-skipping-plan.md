@@ -3,8 +3,8 @@
 Last updated: 2026-04-26.
 
 Status: partially implemented. Refresh damage bookkeeping, clean-registry reuse,
-and render subtree caching/skipping are implemented; registry subtree chunks
-remain planned.
+render subtree caching/skipping, and the render-cache performance regression
+slice are implemented. The next slice is registry subtree chunk caching/skipping.
 
 ## Motivation
 
@@ -56,14 +56,17 @@ Current refresh behavior:
 
 ```text
 refresh(tree)
-  -> render_tree(tree)
-       -> full render-scene traversal
+  -> render_tree_scene_cached(tree)
+       -> reuse clean render subtrees when cheap/safe
+       -> bypass render subtree lookup in volatile scrolling scene contexts
+       -> do not store dirty scroll-container render caches
        -> build_registry_rebuild(tree)
-            -> full event-registry traversal
+            -> full event-registry traversal unless clean-registry reuse is used
 ```
 
 The render scene and registry traversals are separate today. Treat them as
-separate cache/skip problems even if they share damage metadata.
+separate cache/skip problems even if they share damage metadata. Render subtree
+skipping is implemented; registry subtree chunk skipping remains next.
 
 ## Target behavior
 
@@ -147,6 +150,25 @@ struct RegistrySubtreeKey {
 Correctness first: it is acceptable for early keys to be conservative and miss
 more often than ideal. Do not add bypass taxonomies. If a cache/skip decision is
 not safe, make the key/damage dependency more precise or rebuild.
+
+Performance guardrail: correctness-first does not allow expensive broad key
+construction in hot refresh paths. Mature engines generally use typed cache
+inputs, dirty/damage flags, relayout/repaint boundaries, or property dependency
+versions rather than debug-string render keys. Prefer damage/version checks that
+make clean/dirty decisions cheap. Avoid `Debug`/string formatting, repeated broad
+hashing, and cloning large retained layout/cache state while deciding whether to
+reuse refresh output.
+
+Cross-engine design notes to preserve:
+
+- Taffy/Yoga: cache layout from small typed constraint inputs; dirty nodes drive
+  recomputation.
+- Servo: explicit damage flags control ancestor/descendant propagation.
+- Flutter: layout, paint, compositing, and semantics dirtiness are separate;
+  repaint/relayout boundaries stop propagation when dependencies allow it.
+- Slint: dependency-tracked dirty properties request redraw lazily.
+- Iced: retained widget/layout state is reused through explicit invalidation
+  flags, not broad per-node render snapshots.
 
 ## Slice 1: refresh damage bookkeeping without behavior change — done
 
@@ -247,7 +269,149 @@ Focused tests cover cached-vs-uncached scene equality after a sibling paint
 patch, registry-only root refresh preserving render cache, clean registry reuse,
 and transform paint changes rebuilding registry output.
 
-## Slice 4: registry subtree chunk cache/skip — next
+## Slice 4: render subtree cache performance/redesign — done
+
+Goal: keep render refresh correctness while removing the long max refresh,
+layout, and patch-tree-actor timings observed after render subtree caching.
+
+Problem statement:
+
+- Renderer stats after render subtree caching showed refresh and patch actor max
+  timings around tens of milliseconds.
+- Native `layout` timing includes layout plus refresh-output generation, so
+  expensive refresh cache work can appear as both `layout` and `refresh` spikes.
+- The likely costs are broad render-key construction, `Debug`/string/hash work,
+  `Element::render_snapshot(...)` cloning retained layout cache entries, and
+  cloning/assembling cached `Vec<RenderNode>` subtrees.
+- Registry subtree chunk work should not proceed while render cache overhead is
+  unresolved.
+
+Implemented mitigation:
+
+- Replaced string fields in `RenderSubtreeKey` with compact hash fields.
+- Streamed debug output into a hasher instead of allocating joined key strings.
+- Avoided cloning measurement/resolve layout cache entries in
+  `Element::render_snapshot(...)`.
+- Changed cache lookup so dirty render paths rebuild first instead of building a
+  lookup key before the rebuild.
+- Added a safe uncached refresh baseline for tests and benchmarks.
+- Added native regression benchmarks comparing cached and uncached refresh paths.
+- Bypassed render subtree cache lookup under scrolling scene offsets and avoided
+  storing large render caches on scroll containers during dirty refreshes. This
+  prevents scroll-only frames from cloning large, immediately-stale scene
+  subtrees.
+
+This is still a conservative design. Future work should replace broad debug-hash
+fields with typed versions where profiles justify it.
+
+Tasks:
+
+1. Add a dedicated regression guard before accepting the performance fix:
+   - a Criterion or Benchee benchmark that measures refresh-producing work, not
+     layout-only work
+   - include at least `paint_rich`, `nearby_rich`, and animated-shadow cases
+   - cover warm cached refresh, first refresh after `paint_attr`, first refresh
+     after `nearby_slot_change`, and patch-plus-refresh/actor-like paths where
+     practical
+   - compare the production cached path against a safe uncached or
+     cache-disabled path so the benchmark can prove the optimization is a win
+     rather than just measuring the current implementation
+   - keep benchmark execution opt-in; normal `cargo test` / `mix test` must not
+     run timing benchmarks
+2. Add deterministic non-timing regression tests for the known failure modes
+   where possible:
+   - cached and uncached render scenes remain equal
+   - render snapshots do not clone retained measurement/resolve layout caches
+   - dirty render paths can avoid broad key construction before rebuilding
+   - paint-only refresh still reports no layout/cache activity
+3. Validate the current mitigation against the new regression guard, focused
+   retained-layout benchmarks, and renderer stats for paint-heavy and
+   nearby-heavy scenarios.
+4. If spikes remain, gate or disable production render subtree caching while
+   keeping refresh dirty bookkeeping and full-registry reuse enabled.
+5. Move cache decisions toward cheap damage/version checks:
+   - test `render_dirty || render_descendant_dirty` before constructing any
+     render key
+   - use topology versions/counts directly
+   - introduce narrow render dependency versions where needed for attrs,
+     runtime render state, paragraph fragments, frame/scroll state, inherited
+     font context, and scene/render context
+   - avoid `Debug`, string formatting, or broad hashing in normal refresh
+     traversal
+6. Reassess whether caching whole `Vec<RenderNode>` subtrees is worthwhile:
+   - measure clone/extend cost
+   - prefer explicit repaint/render boundaries or retained scene chunks if full
+     subtree vector cloning dominates
+   - consider caching only expensive leaf products first, such as paragraph text
+     fragments, images, or shadows, if broad subtree caching is not profitable
+7. Keep refresh diagnostics separate from layout-cache stats. If temporary or
+   permanent counters are needed, add them behind the unified gated `stats` path
+   only.
+8. Preserve correctness tests comparing cached and uncached output while changing
+   the implementation.
+
+Concrete guard shape:
+
+- Add a native benchmark group named something like
+  `native/render_refresh_cache_regression`.
+- Prefer a separate focused bench file if `layout.rs` becomes too broad; either
+  way it must compile under `cargo test --benches --no-run`.
+- Suggested cases:
+  - `paint_rich_500/paint_attr`
+  - `nearby_rich_500/paint_attr`
+  - `nearby_rich_500/nearby_slot_change`
+  - `layout_matrix_500/paint_attr`
+  - `animated_shadow_showcase/paint_only_refresh_each_frame`
+  - `scroll_shadow_showcase/paint_only_refresh_scroll_frame`
+- Suggested measured variants:
+  - `cached_refresh`: warmed tree, render cache seeded, call refresh-producing
+    path
+  - `uncached_refresh` or `cache_disabled_refresh`: same tree/update with render
+    subtree cache bypassed
+  - `patch_cached_refresh`: apply patch then run the actor-equivalent
+    refresh/layout decision
+  - `patch_uncached_refresh`: same patch path with render subtree cache bypassed
+- Suggested deterministic tests:
+  - `render_snapshot_omits_layout_cache_entries`
+  - `dirty_render_refresh_does_not_build_render_key_before_rebuild` if a
+    test-only key-build counter is added
+  - `paint_only_patch_refresh_has_zero_layout_stats`
+- Stable command to document with the implementation:
+
+  ```bash
+  cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout -- render_refresh_cache_regression
+  ```
+
+Regression guard acceptance:
+
+- The benchmark has a stable, documented command and produces grep-friendly case
+  names/output.
+- The benchmark measures the regression surface that was observed in renderer
+  stats: refresh and patch-plus-refresh work, including max/long-tail behavior
+  where the harness can report it.
+- The benchmark includes a safe baseline (`uncached`, `cache_disabled`, or last
+  known-good commit comparison) so it can validate both improvement and
+  regression.
+- Timing assertions are not part of normal tests; CI can compile the benchmark
+  with `cargo test --benches --no-run` and humans/benchmark jobs can run it.
+- Deterministic tests cover correctness and structural failure modes that are
+  not timing-sensitive.
+
+Implementation acceptance:
+
+- Paint-only updates still skip layout entirely:
+  - `layout_ms_count=0`
+  - layout-cache hit/miss/store counters remain zero
+- Cached and uncached render scenes remain identical in focused tests.
+- Focused benchmark/renderer-stats smoke no longer shows the render-cache slice
+  causing long refresh or patch-tree-actor max timings.
+- Render cache decisions do not allocate debug strings or clone layout cache
+  entries in hot refresh paths.
+- If acceptable performance cannot be reached quickly, production render subtree
+  caching is gated/disabled and the active plan returns to registry/full-refresh
+  improvements from a safe baseline.
+
+## Slice 5: registry subtree chunk cache/skip — next
 
 Goal: make event registry rebuild proportional to registry damage, not tree size.
 
@@ -275,7 +439,7 @@ Acceptance:
 - registry-only updates avoid rebuilding unrelated sibling chunks
 - event dispatch precedence remains unchanged
 
-## Slice 5: stats and benchmark smoke
+## Slice 6: stats and benchmark smoke
 
 Goal: validate that refresh work decreases without complicating layout-cache
 stats.
@@ -373,7 +537,7 @@ mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
 
-Validation status for implemented slices 1–3:
+Validation status for implemented slices 1–4:
 
 - `cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check`
 - `mix format --check-formatted`
@@ -384,9 +548,21 @@ Validation status for implemented slices 1–3:
 - focused retained-layout benchmark smoke with `layout_matrix`, `text_rich`, and
   `nearby_rich` for `paint_attr`, `event_attr`, `layout_attr`, and
   `nearby_slot_change`
+- focused render-refresh regression benchmark smoke:
+
+  ```bash
+  cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout -- render_refresh_cache_regression --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+  ```
+
+  The smoke compares cached and uncached refresh paths for paint-rich,
+  nearby-rich, layout-matrix, animated shadow, and scrolling animated shadow
+  cases. It caught the scroll-container regression, which was fixed by bypassing
+  render subtree cache lookup under scrolling scene offsets and not storing dirty
+  scroll-container render caches.
 
 Run focused benchmark smoke after future behavior changes that should reduce
-refresh work.
+refresh work. For the render-cache performance slice, compare renderer stats and
+benchmark output before moving on to registry subtree chunks.
 
 ## Completion protocol
 

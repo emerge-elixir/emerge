@@ -4718,7 +4718,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree_scene_cached;
+use super::render::{render_tree_scene, render_tree_scene_cached};
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -4742,6 +4742,19 @@ pub struct LayoutUpdateOutput {
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     let render_output = render_tree_scene_cached(tree);
+    refresh_from_render_output(tree, render_output)
+}
+
+#[doc(hidden)]
+pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
+    let render_output = render_tree_scene(tree);
+    refresh_from_render_output(tree, render_output)
+}
+
+fn refresh_from_render_output(
+    tree: &mut ElementTree,
+    render_output: super::render::RenderSceneOutput,
+) -> LayoutOutput {
     let event_rebuild = crate::events::registry_builder::build_registry_rebuild(tree);
     let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
 
@@ -4751,6 +4764,44 @@ pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
         scene: render_output.scene,
         event_rebuild,
         event_rebuild_changed: true,
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
+        animations_active: false,
+    }
+}
+
+#[doc(hidden)]
+pub fn refresh_reusing_clean_registry_for_benchmark(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    refresh_reusing_clean_registry(tree, cached_rebuild)
+}
+
+#[doc(hidden)]
+pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+
+    if !can_reuse_registry {
+        return refresh_uncached_for_benchmark(tree);
+    }
+
+    let render_output = render_tree_scene(tree);
+    let event_rebuild = cached_rebuild
+        .cloned()
+        .expect("cached rebuild should be present when registry can be reused");
+    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+
+    tree.clear_render_refresh_dirty();
+
+    LayoutOutput {
+        scene: render_output.scene,
+        event_rebuild,
+        event_rebuild_changed: false,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
         ime_text_state,
@@ -4841,6 +4892,53 @@ pub fn layout_or_refresh_default_with_animation(
     }
 }
 
+#[doc(hidden)]
+pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> LayoutUpdateOutput {
+    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
+        && prepared_root_has_frame(tree, &preparation);
+
+    if can_refresh_without_layout {
+        refresh_prepared_default_uncached_for_benchmark(tree, preparation)
+    } else {
+        layout_and_refresh_prepared_default_uncached_for_benchmark(tree, constraint, preparation)
+    }
+}
+
+fn layout_and_refresh_prepared_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let layout_performed = if let Some(root_id) = preparation.root_id {
+        run_layout_passes(
+            tree,
+            &root_id,
+            constraint,
+            &SkiaTextMeasurer,
+            &FontContext::default(),
+            &preparation.animation_result,
+        );
+        true
+    } else {
+        false
+    };
+
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed,
+    }
+}
+
 pub(crate) fn layout_and_refresh_prepared_default(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -4866,6 +4964,19 @@ pub(crate) fn layout_and_refresh_prepared_default(
     LayoutUpdateOutput {
         output,
         layout_performed,
+    }
+}
+
+fn refresh_prepared_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
     }
 }
 
