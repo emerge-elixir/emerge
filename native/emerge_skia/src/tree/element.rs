@@ -515,6 +515,7 @@ pub struct Element {
     pub spec: NodeSpec,
     pub runtime: NodeRuntime,
     pub layout: NodeLayoutState,
+    pub refresh: NodeRefreshState,
     pub lifecycle: NodeLifecycle,
 
     /// Child element IDs (order matters).
@@ -562,6 +563,45 @@ pub struct NodeRuntime {
     pub mouse_down_active: bool,
     pub focused_active: bool,
     pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeRefreshState {
+    pub render_dirty: bool,
+    pub render_descendant_dirty: bool,
+    pub registry_dirty: bool,
+    pub registry_descendant_dirty: bool,
+}
+
+impl Default for NodeRefreshState {
+    fn default() -> Self {
+        Self {
+            render_dirty: true,
+            render_descendant_dirty: false,
+            registry_dirty: true,
+            registry_descendant_dirty: false,
+        }
+    }
+}
+
+impl NodeRefreshState {
+    fn clear_render(&mut self) {
+        self.render_dirty = false;
+        self.render_descendant_dirty = false;
+    }
+
+    fn clear_registry(&mut self) {
+        self.registry_dirty = false;
+        self.registry_descendant_dirty = false;
+    }
+
+    fn has_render_damage(&self) -> bool {
+        self.render_dirty || self.render_descendant_dirty
+    }
+
+    fn has_registry_damage(&self) -> bool {
+        self.registry_dirty || self.registry_descendant_dirty
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -719,6 +759,7 @@ impl Element {
                 resolve_cache: None,
                 resolve_dirty: true,
             },
+            refresh: NodeRefreshState::default(),
             lifecycle: NodeLifecycle {
                 mounted_at_revision: 0,
                 residency: NodeResidency::Live,
@@ -1058,6 +1099,64 @@ impl ElementTree {
         }
     }
 
+    pub fn mark_refresh_dirty_for_invalidation(
+        &mut self,
+        id: &NodeId,
+        invalidation: TreeInvalidation,
+    ) {
+        let Some(ix) = self.ix_of(id) else {
+            return;
+        };
+
+        match invalidation {
+            TreeInvalidation::None => {}
+            TreeInvalidation::Registry => self.mark_registry_refresh_dirty_ix(ix),
+            TreeInvalidation::Paint => self.mark_render_refresh_dirty_ix(ix),
+            TreeInvalidation::Resolve | TreeInvalidation::Measure | TreeInvalidation::Structure => {
+                self.mark_render_and_registry_refresh_dirty_ix(ix)
+            }
+        }
+    }
+
+    pub fn mark_registry_refresh_dirty(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_registry_refresh_dirty_ix(ix);
+        }
+    }
+
+    pub fn mark_render_and_registry_refresh_dirty(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_render_and_registry_refresh_dirty_ix(ix);
+        }
+    }
+
+    pub fn has_render_refresh_damage(&self) -> bool {
+        self.iter_nodes()
+            .any(|element| element.refresh.has_render_damage())
+    }
+
+    pub fn has_registry_refresh_damage(&self) -> bool {
+        self.iter_nodes()
+            .any(|element| element.refresh.has_registry_damage())
+    }
+
+    pub fn clear_render_refresh_dirty(&mut self) {
+        self.iter_nodes_mut()
+            .for_each(|element| element.refresh.clear_render());
+    }
+
+    pub fn clear_registry_refresh_dirty(&mut self) {
+        self.iter_nodes_mut()
+            .for_each(|element| element.refresh.clear_registry());
+    }
+
+    pub fn clear_refresh_dirty(&mut self) {
+        self.iter_nodes_mut().for_each(|element| {
+            element.refresh.clear_render();
+            element.refresh.clear_registry();
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn mark_topology_dirty(&self) {
         self.topology_dirty.set(true);
@@ -1387,6 +1486,8 @@ impl ElementTree {
         id: &NodeId,
         invalidation: TreeInvalidation,
     ) {
+        self.mark_refresh_dirty_for_invalidation(id, invalidation);
+
         if invalidation == TreeInvalidation::Structure {
             self.mark_measure_dirty(id);
         } else if invalidation.requires_measure() {
@@ -1407,15 +1508,25 @@ impl ElementTree {
             element.layout.measure_dirty = true;
             element.layout.measure_descendant_dirty = false;
             element.layout.resolve_dirty = true;
+            element.refresh.render_dirty = true;
+            element.refresh.render_descendant_dirty = false;
+            element.refresh.registry_dirty = true;
+            element.refresh.registry_descendant_dirty = false;
         });
     }
 
     pub fn mark_all_resolve_dirty(&mut self) {
-        self.iter_nodes_mut()
-            .for_each(|element| element.layout.resolve_dirty = true);
+        self.iter_nodes_mut().for_each(|element| {
+            element.layout.resolve_dirty = true;
+            element.refresh.render_dirty = true;
+            element.refresh.render_descendant_dirty = false;
+            element.refresh.registry_dirty = true;
+            element.refresh.registry_descendant_dirty = false;
+        });
     }
 
     fn mark_measure_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_render_and_registry_refresh_dirty_ix(ix);
         self.mark_dirty_ix(ix, true);
     }
 
@@ -1426,7 +1537,50 @@ impl ElementTree {
     }
 
     fn mark_resolve_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_render_and_registry_refresh_dirty_ix(ix);
         self.mark_dirty_ix(ix, false);
+    }
+
+    fn mark_render_refresh_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_refresh_dirty_ix(ix, true, false);
+    }
+
+    fn mark_registry_refresh_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_refresh_dirty_ix(ix, false, true);
+    }
+
+    fn mark_render_and_registry_refresh_dirty_ix(&mut self, ix: NodeIx) {
+        self.mark_refresh_dirty_ix(ix, true, true);
+    }
+
+    fn mark_refresh_dirty_ix(&mut self, ix: NodeIx, render: bool, registry: bool) {
+        let mut current_ix = Some(ix);
+        let mut origin = true;
+
+        while let Some(ix) = current_ix {
+            if let Some(element) = self.get_ix_mut(ix) {
+                if render {
+                    if origin {
+                        element.refresh.render_dirty = true;
+                        element.refresh.render_descendant_dirty = false;
+                    } else if !element.refresh.render_dirty {
+                        element.refresh.render_descendant_dirty = true;
+                    }
+                }
+
+                if registry {
+                    if origin {
+                        element.refresh.registry_dirty = true;
+                        element.refresh.registry_descendant_dirty = false;
+                    } else if !element.refresh.registry_dirty {
+                        element.refresh.registry_descendant_dirty = true;
+                    }
+                }
+            }
+
+            origin = false;
+            current_ix = parent_ix_from_link(self.parent_link_of(ix));
+        }
     }
 
     fn mark_dirty_ix(&mut self, ix: NodeIx, measure_dirty: bool) {
@@ -2070,6 +2224,9 @@ impl ElementTree {
         };
 
         self.mark_measure_dirty_for_invalidation(id, invalidation);
+        if invalidation.is_dirty() {
+            self.mark_registry_refresh_dirty(id);
+        }
         invalidation
     }
 
@@ -2097,6 +2254,9 @@ impl ElementTree {
         };
 
         self.mark_measure_dirty_for_invalidation(id, invalidation);
+        if invalidation.is_dirty() {
+            self.mark_registry_refresh_dirty(id);
+        }
         invalidation
     }
 
@@ -2118,6 +2278,9 @@ impl ElementTree {
         };
 
         self.mark_measure_dirty_for_invalidation(id, invalidation);
+        if invalidation.is_dirty() {
+            self.mark_registry_refresh_dirty(id);
+        }
         invalidation
     }
 
@@ -2266,7 +2429,11 @@ impl ElementTree {
 
         element.normalize_extracted_state();
 
-        TreeInvalidation::when_changed(changed, TreeInvalidation::Paint)
+        let invalidation = TreeInvalidation::when_changed(changed, TreeInvalidation::Paint);
+        if invalidation.is_dirty() {
+            self.mark_render_and_registry_refresh_dirty(id);
+        }
+        invalidation
     }
 
     fn apply_scroll_axis(&mut self, id: &NodeId, delta: f32, axis: ScrollAxis) -> TreeInvalidation {
@@ -2297,6 +2464,7 @@ impl ElementTree {
             ScrollAxis::X => element.layout.scroll_x = next,
             ScrollAxis::Y => element.layout.scroll_y = next,
         }
+        self.mark_render_and_registry_refresh_dirty(id);
         TreeInvalidation::Paint
     }
 
@@ -2316,20 +2484,25 @@ impl ElementTree {
             ScrollbarHoverAxis::Y => element.layout.effective.scrollbar_y.unwrap_or(false),
         };
 
-        if hovered {
+        let changed = if hovered {
             if !axis_enabled || current == Some(axis) {
-                return TreeInvalidation::None;
+                false
+            } else {
+                element.runtime.scrollbar_hover_axis = Some(axis);
+                true
             }
-            element.runtime.scrollbar_hover_axis = Some(axis);
-            return TreeInvalidation::Paint;
-        }
-
-        if current == Some(axis) {
+        } else if current == Some(axis) {
             element.runtime.scrollbar_hover_axis = None;
-            return TreeInvalidation::Paint;
-        }
+            true
+        } else {
+            false
+        };
 
-        TreeInvalidation::None
+        let invalidation = TreeInvalidation::when_changed(changed, TreeInvalidation::Paint);
+        if invalidation.is_dirty() {
+            self.mark_render_and_registry_refresh_dirty(id);
+        }
+        invalidation
     }
 }
 
@@ -2489,6 +2662,59 @@ mod tests {
         let changed_key = tree.topology_dependency_key_for(&host_id);
         assert_eq!(changed_key.nearby_count, 1);
         assert!(changed_key.nearby_version > first_key.nearby_version);
+    }
+
+    #[test]
+    fn refresh_damage_tracks_render_registry_and_descendant_paths() {
+        let parent_id = NodeId::from_term_bytes(vec![21]);
+        let child_id = NodeId::from_term_bytes(vec![22]);
+
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            parent_id,
+            ElementKind::Column,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            child_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.set_root_id(parent_id);
+        tree.set_children(&parent_id, vec![child_id]).unwrap();
+        tree.clear_refresh_dirty();
+
+        tree.mark_refresh_dirty_for_invalidation(&child_id, TreeInvalidation::Paint);
+        assert!(tree.has_render_refresh_damage());
+        assert!(!tree.has_registry_refresh_damage());
+        assert!(tree.get(&child_id).unwrap().refresh.render_dirty);
+        assert!(
+            tree.get(&parent_id)
+                .unwrap()
+                .refresh
+                .render_descendant_dirty
+        );
+
+        tree.clear_refresh_dirty();
+        tree.mark_refresh_dirty_for_invalidation(&child_id, TreeInvalidation::Registry);
+        assert!(!tree.has_render_refresh_damage());
+        assert!(tree.has_registry_refresh_damage());
+        assert!(tree.get(&child_id).unwrap().refresh.registry_dirty);
+        assert!(
+            tree.get(&parent_id)
+                .unwrap()
+                .refresh
+                .registry_descendant_dirty
+        );
+
+        tree.clear_refresh_dirty();
+        tree.mark_refresh_dirty_for_invalidation(&child_id, TreeInvalidation::Measure);
+        assert!(tree.has_render_refresh_damage());
+        assert!(tree.has_registry_refresh_damage());
+        assert!(tree.get(&child_id).unwrap().refresh.render_dirty);
+        assert!(tree.get(&child_id).unwrap().refresh.registry_dirty);
     }
 
     #[test]

@@ -976,6 +976,65 @@ fn test_paint_only_shadow_patch_refresh_skips_layout() {
 }
 
 #[test]
+fn test_decorative_paint_refresh_reuses_cached_registry() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+    assert!(!tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_shadow_attrs("Hello", 5.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
+
+    let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+
+    assert!(!output.event_rebuild_changed);
+    assert!(!tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
+}
+
+#[test]
+fn test_transform_paint_refresh_rebuilds_registry() {
+    let mut tree = text_child_tree("Hello");
+    let root_id = tree.root_id().unwrap();
+    let text_id = tree.child_ids(&root_id)[0];
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+    assert!(!tree.has_registry_refresh_damage());
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_move_x_attrs("Hello", 12.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(tree.has_render_refresh_damage());
+    assert!(tree.has_registry_refresh_damage());
+
+    let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+
+    assert!(output.event_rebuild_changed);
+    assert!(!tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
+}
+
+#[test]
 fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
     let mut root_attrs = Attrs::default();
     root_attrs.width = Some(Length::Px(120.0));
@@ -2117,6 +2176,14 @@ fn raw_text_shadow_attrs(content: &str, offset_x: f64) -> Vec<u8> {
     data
 }
 
+fn raw_text_move_x_attrs(content: &str, move_x: f64) -> Vec<u8> {
+    let mut data = vec![0, 3];
+    push_content_attr(&mut data, content);
+    push_font_size_attr(&mut data, 16.0);
+    push_move_x_attr(&mut data, move_x);
+    data
+}
+
 fn raw_text_event_attrs(content: &str) -> Vec<u8> {
     let mut data = vec![0, 3];
     push_content_attr(&mut data, content);
@@ -2185,6 +2252,11 @@ fn push_box_shadow_attr(data: &mut Vec<u8>, offset_x: f64) {
     data.extend_from_slice(&4.0_f64.to_be_bytes());
     data.extend_from_slice(&[2, 0, 3, b'r', b'e', b'd']);
     data.push(0);
+}
+
+fn push_move_x_attr(data: &mut Vec<u8>, move_x: f64) {
+    data.push(31);
+    data.extend_from_slice(&move_x.to_be_bytes());
 }
 
 fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {

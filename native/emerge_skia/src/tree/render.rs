@@ -38,6 +38,12 @@ pub(crate) struct RenderOutput {
     pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
+pub(crate) struct RenderSceneOutput {
+    pub scene: RenderScene,
+    pub text_input_focused: bool,
+    pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct HostClipDescriptor {
     clip: ClipShape,
@@ -176,13 +182,12 @@ impl RenderSubtree {
     }
 }
 
-/// Render the tree and collect rebuild metadata.
+/// Render the tree without rebuilding event registry metadata.
 /// Reads from pre-scaled attrs (layout pass must run first).
-pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
+pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
     let Some(root_ix) = tree.root_ix() else {
-        return RenderOutput {
+        return RenderSceneOutput {
             scene: RenderScene::default(),
-            event_rebuild: RegistryRebuildPayload::default(),
             text_input_focused: false,
             text_input_cursor_area: None,
         };
@@ -209,13 +214,25 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
         },
     );
 
-    RenderOutput {
+    RenderSceneOutput {
         scene: RenderScene {
             nodes: subtree.into_nodes(),
         },
-        event_rebuild: registry_builder::build_registry_rebuild(tree),
         text_input_focused,
         text_input_cursor_area,
+    }
+}
+
+/// Render the tree and collect rebuild metadata.
+/// Reads from pre-scaled attrs (layout pass must run first).
+pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
+    let scene_output = render_tree_scene(tree);
+
+    RenderOutput {
+        scene: scene_output.scene,
+        event_rebuild: registry_builder::build_registry_rebuild(tree),
+        text_input_focused: scene_output.text_input_focused,
+        text_input_cursor_area: scene_output.text_input_cursor_area,
     }
 }
 

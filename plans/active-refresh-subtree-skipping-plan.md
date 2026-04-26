@@ -2,8 +2,9 @@
 
 Last updated: 2026-04-26.
 
-Status: planned. This is the active temporary implementation plan after compact
-topology dependency cache keys.
+Status: partially implemented. Refresh damage bookkeeping and clean-registry
+reuse for refresh-only frames are implemented; render subtree caching and
+registry subtree chunks remain planned.
 
 ## Motivation
 
@@ -147,7 +148,7 @@ Correctness first: it is acceptable for early keys to be conservative and miss
 more often than ideal. Do not add bypass taxonomies. If a cache/skip decision is
 not safe, make the key/damage dependency more precise or rebuild.
 
-## Slice 1: refresh damage bookkeeping without behavior change
+## Slice 1: refresh damage bookkeeping without behavior change — done
 
 Goal: track render/registry dirtiness and descendant traversal dirtiness without
 reusing cached refresh output yet.
@@ -173,7 +174,7 @@ Acceptance:
 - dirty propagation is origin-agnostic
 - existing Rust and Elixir tests pass
 
-## Slice 2: reuse cached full registry payload when registry damage is clean
+## Slice 2: reuse cached full registry payload when registry damage is clean — done
 
 Goal: avoid rebuilding/sending a new full registry payload for paint-only refresh
 when registry state did not change.
@@ -197,7 +198,7 @@ Acceptance:
 - explicit registry requests still use cached rebuild or rebuild as today
 - no event hit-test/focus/text-input regressions
 
-## Slice 3: render subtree cache/skip
+## Slice 3: render subtree cache/skip — next
 
 Goal: reuse retained render subtrees when render dependencies are unchanged.
 
@@ -333,6 +334,18 @@ Add focused tests near existing render/registry/layout cache tests:
 
 ## Validation
 
+Implemented notes so far:
+
+- `Element` now owns refresh-specific dirty/descendant-dirty state separate from
+  layout cache state.
+- Existing patch/runtime/scroll/animation sources mark render and/or registry
+  refresh damage according to the changed dependency.
+- Decorative paint changes can reuse the cached full registry payload.
+- Registry-relevant paint changes such as transforms still rebuild registry
+  output.
+- The tree actor no longer sends duplicate registry updates when refresh reuses
+  the cached registry payload.
+
 Before committing implementation slices, run:
 
 ```bash
@@ -344,8 +357,20 @@ mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
 
-Run focused benchmark smoke after behavior changes that should reduce refresh
-work.
+Validation status for implemented slices 1–2:
+
+- `cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check`
+- `mix format --check-formatted`
+- `git diff --check`
+- `cargo test --manifest-path native/emerge_skia/Cargo.toml`
+- `mix test`
+- `cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run`
+- focused retained-layout benchmark smoke with `layout_matrix`, `text_rich`, and
+  `nearby_rich` for `paint_attr`, `event_attr`, `layout_attr`, and
+  `nearby_slot_change`
+
+Run focused benchmark smoke after future behavior changes that should reduce
+refresh work.
 
 ## Completion protocol
 
