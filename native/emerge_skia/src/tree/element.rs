@@ -570,6 +570,7 @@ pub struct NodeLayoutState {
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
     pub subtree_measure_cache: Option<SubtreeMeasureCache>,
     pub measure_dirty: bool,
+    pub measure_descendant_dirty: bool,
     pub resolve_cache: Option<ResolveCache>,
     pub resolve_dirty: bool,
 }
@@ -588,6 +589,7 @@ impl Default for NodeLayoutState {
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
             measure_dirty: true,
+            measure_descendant_dirty: false,
             resolve_cache: None,
             resolve_dirty: true,
         }
@@ -697,6 +699,7 @@ impl Element {
                 intrinsic_measure_cache: None,
                 subtree_measure_cache: None,
                 measure_dirty: true,
+                measure_descendant_dirty: false,
                 resolve_cache: None,
                 resolve_dirty: true,
             },
@@ -1368,8 +1371,10 @@ impl ElementTree {
         id: &NodeId,
         invalidation: TreeInvalidation,
     ) {
-        if invalidation.requires_measure() {
+        if invalidation == TreeInvalidation::Structure {
             self.mark_measure_dirty(id);
+        } else if invalidation.requires_measure() {
+            self.mark_measure_dirty_with_boundaries(id);
         } else if invalidation.requires_resolve() {
             self.mark_resolve_dirty(id);
         }
@@ -1384,6 +1389,7 @@ impl ElementTree {
     pub fn mark_all_measure_dirty(&mut self) {
         self.iter_nodes_mut().for_each(|element| {
             element.layout.measure_dirty = true;
+            element.layout.measure_descendant_dirty = false;
             element.layout.resolve_dirty = true;
         });
     }
@@ -1397,6 +1403,12 @@ impl ElementTree {
         self.mark_dirty_ix(ix, true);
     }
 
+    fn mark_measure_dirty_with_boundaries(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_measure_dirty_with_boundaries_ix(ix);
+        }
+    }
+
     fn mark_resolve_dirty_ix(&mut self, ix: NodeIx) {
         self.mark_dirty_ix(ix, false);
     }
@@ -1408,16 +1420,49 @@ impl ElementTree {
             if let Some(element) = self.get_ix_mut(ix) {
                 if measure_dirty {
                     element.layout.measure_dirty = true;
+                    element.layout.measure_descendant_dirty = false;
                 }
                 element.layout.resolve_dirty = true;
             }
 
-            current_ix = self
-                .parent_link_of(ix)
-                .map(|parent_link| match parent_link {
-                    ParentLink::Child { parent } => parent,
-                    ParentLink::Nearby { host, .. } => host,
-                });
+            current_ix = parent_ix_from_link(self.parent_link_of(ix));
+        }
+    }
+
+    fn mark_measure_dirty_with_boundaries_ix(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.measure_dirty = true;
+            element.layout.measure_descendant_dirty = false;
+            element.layout.resolve_dirty = true;
+        }
+
+        let mut current_link = self.parent_link_of(ix);
+        let mut measure_propagates = true;
+
+        while let Some(parent_link) = current_link {
+            let parent_ix = parent_ix_from_link(Some(parent_link))
+                .expect("parent link should always have a parent ix");
+            let parent_depends_on_child_measure = match parent_link {
+                ParentLink::Child { .. } if measure_propagates => self
+                    .get_ix(parent_ix)
+                    .map_or(true, parent_measure_depends_on_child_measure),
+                ParentLink::Child { .. } => false,
+                ParentLink::Nearby { .. } => true,
+            };
+            let mark_parent_measure_dirty = measure_propagates && parent_depends_on_child_measure;
+
+            if let Some(parent) = self.get_ix_mut(parent_ix) {
+                if mark_parent_measure_dirty {
+                    parent.layout.measure_dirty = true;
+                    parent.layout.measure_descendant_dirty = false;
+                } else if !parent.layout.measure_dirty {
+                    parent.layout.measure_descendant_dirty = true;
+                }
+                parent.layout.resolve_dirty = true;
+            }
+
+            measure_propagates = mark_parent_measure_dirty;
+            current_link = self.parent_link_of(parent_ix);
         }
     }
 
@@ -2178,6 +2223,29 @@ impl ElementTree {
         }
 
         TreeInvalidation::None
+    }
+}
+
+fn parent_ix_from_link(parent_link: Option<ParentLink>) -> Option<NodeIx> {
+    parent_link.map(|parent_link| match parent_link {
+        ParentLink::Child { parent } => parent,
+        ParentLink::Nearby { host, .. } => host,
+    })
+}
+
+fn parent_measure_depends_on_child_measure(parent: &Element) -> bool {
+    !matches!(parent.spec.kind, ElementKind::El | ElementKind::None)
+        || !measure_length_is_child_independent(parent.layout.effective.width.as_ref())
+        || !measure_length_is_child_independent(parent.layout.effective.height.as_ref())
+}
+
+fn measure_length_is_child_independent(length: Option<&Length>) -> bool {
+    match length {
+        Some(Length::Px(_)) => true,
+        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
+            measure_length_is_child_independent(Some(inner))
+        }
+        Some(Length::Content) | Some(Length::Fill) | Some(Length::FillWeighted(_)) | None => false,
     }
 }
 

@@ -934,13 +934,16 @@ fn measure_element<M: TextMeasurer>(
     inherited: &FontContext,
     use_subtree_cache: bool,
 ) -> IntrinsicSize {
-    let Some((kind, attrs, measure_dirty)) = tree.get(id).map(|element| {
-        (
-            element.spec.kind,
-            element.layout.effective.clone(),
-            element.layout.measure_dirty,
-        )
-    }) else {
+    let Some((kind, attrs, measure_dirty, measure_descendant_dirty)) =
+        tree.get(id).map(|element| {
+            (
+                element.spec.kind,
+                element.layout.effective.clone(),
+                element.layout.measure_dirty,
+                element.layout.measure_descendant_dirty,
+            )
+        })
+    else {
         return IntrinsicSize::default();
     };
 
@@ -952,7 +955,8 @@ fn measure_element<M: TextMeasurer>(
 
     if !use_subtree_cache || measure_dirty {
         tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
-    } else if let Some(key) = subtree_cache_key.as_ref()
+    } else if !measure_descendant_dirty
+        && let Some(key) = subtree_cache_key.as_ref()
         && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
     {
         return intrinsic;
@@ -980,6 +984,15 @@ fn measure_element<M: TextMeasurer>(
             &element_context,
             use_subtree_cache,
         );
+    }
+
+    if use_subtree_cache
+        && !measure_dirty
+        && measure_descendant_dirty
+        && let Some(key) = subtree_cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
+    {
+        return intrinsic;
     }
 
     // Read from pre-scaled attrs
@@ -1231,6 +1244,7 @@ fn measure_element<M: TextMeasurer>(
         if use_subtree_cache {
             element.layout.subtree_measure_cache = subtree_measure_cache;
             element.layout.measure_dirty = false;
+            element.layout.measure_descendant_dirty = false;
         }
     }
 
@@ -1321,6 +1335,7 @@ fn try_reuse_subtree_measure_cache(
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
         element.layout.measure_dirty = false;
+        element.layout.measure_descendant_dirty = false;
     }
 
     Some(IntrinsicSize {
@@ -1413,6 +1428,8 @@ fn try_reuse_intrinsic_measure_cache(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
+        element.layout.measure_dirty = false;
+        element.layout.measure_descendant_dirty = false;
     }
 
     Some(IntrinsicSize {
