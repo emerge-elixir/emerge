@@ -186,7 +186,7 @@ Layout-derived state:
 - subtree measurement cache
 - resolve cache
 - measure/resolve dirty bits
-- descendant measurement traversal dirty bit
+- descendant measurement and resolve traversal dirty bits
 - child/paint-child/nearby topology dependency versions
 
 This is the current home for layout cache state.
@@ -251,9 +251,16 @@ Current behavior:
 - structure changes are classified separately and remain conservative
 - measure invalidation separates a node's own `measure_dirty` from ancestor
   `measure_descendant_dirty` traversal
+- nearby topology changes use traversal dirtiness for host/ancestors instead of
+  forcing broad host measurement dirtiness; newly attached nearby roots are
+  dirtied locally
+- resolve invalidation also has descendant traversal state so clean ancestor
+  resolve caches do not hide dirty nearby descendants
 - fixed-size `El`/`None` parents with child-independent explicit width and
   height can keep their own measurement cache hot while still traversing to a
   dirty child
+- nearby overlay hosts can keep their own measurement cache hot because escape
+  nearby mounts are not measured children
 
 Future improvement:
 
@@ -273,16 +280,20 @@ measure_descendant_dirty: bool,
 topology_versions: LayoutTopologyVersions,
 resolve_cache: Option<ResolveCache>,
 resolve_dirty: bool,
+resolve_descendant_dirty: bool,
 ```
 
 This design keeps cache lifetime tied to retained node lifetime and lets patches
 preserve cache state when identity is reused.
 
-`measure_descendant_dirty` is a traversal signal, not a cache outcome. It exists
-so a clean ancestor can avoid remeasuring itself without hiding dirty
-descendants behind its subtree measurement cache. `measure_element(...)`
-traverses dirty descendants first and can then reuse the ancestor's cached
-measured frame when the ancestor itself stayed clean.
+`measure_descendant_dirty` and `resolve_descendant_dirty` are traversal signals,
+not cache outcomes. The measurement bit exists so a clean ancestor can avoid
+remeasuring itself without hiding dirty descendants behind its subtree
+measurement cache. `measure_element(...)` traverses dirty descendants first and
+can then reuse the ancestor's cached measured frame when the ancestor itself
+stayed clean. The resolve bit currently keeps dirty nearby descendants reachable
+by blocking clean ancestor resolve-cache hits; avoiding all clean sibling visits
+is a future traversal-boundary optimization.
 
 ## Text-flow resolve-cache insight
 
@@ -320,15 +331,19 @@ LayoutTopologyVersions {
 }
 ```
 
-`SubtreeMeasureCacheKey` and `ResolveCacheKey` store a `TopologyDependencyKey`
-containing child/nearby versions and counts. The versions bump when
-`set_children_ix(...)` or `set_nearby_ixs(...)` changes membership, order, or
-nearby slot data. No-op topology writes avoid version bumps where practical.
+`ResolveCacheKey` stores a `TopologyDependencyKey` containing child/nearby
+versions and counts. `SubtreeMeasureCacheKey` uses a measurement-specific key
+that keeps normal child topology but intentionally ignores nearby topology,
+because escape nearby mounts are not measured children of the host. The versions
+bump when `set_children_ix(...)` or `set_nearby_ixs(...)` changes membership,
+order, or nearby slot data. No-op topology writes avoid version bumps where
+practical.
 
-This preserves the same cache dependency as the older list keys while reducing
-hot-path key cloning. Paint-child versions are tracked for future render/order
-work, but subtree/resolve layout keys currently use child and nearby topology
-versions because those are the dependencies the old keys represented.
+This preserves the relevant cache dependency while reducing hot-path key cloning.
+Paint-child versions are tracked for future render/order work, resolve keys use
+nearby topology because nearby placement/order affects output, and subtree
+measurement keys exclude nearby topology because it should not affect host
+measured size.
 
 Future ix-native traversal cleanup should build on these compact dependency
 helpers rather than reintroducing cloned identity lists.

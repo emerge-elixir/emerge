@@ -329,7 +329,7 @@ fn apply_patch(
         Patch::SetNearbyMounts { host_id, mounts } => {
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
-            TreeInvalidation::Structure
+            TreeInvalidation::Resolve
         }
 
         Patch::InsertSubtree {
@@ -436,16 +436,21 @@ fn apply_patch(
 
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
-            TreeInvalidation::Structure
+            TreeInvalidation::Resolve
         }
 
         Patch::Remove { id } => {
+            let parent_link = tree.ix_of(&id).and_then(|ix| tree.parent_link_of(ix));
+
             if let Some(ghost_root_id) = maybe_capture_exit_ghost(tree, &id)? {
                 attach_ghost_root(tree, &ghost_root_id)?;
             }
 
             remove_subtree(tree, &id);
-            TreeInvalidation::Structure
+            match parent_link {
+                Some(ParentLink::Nearby { .. }) => TreeInvalidation::Resolve,
+                _ => TreeInvalidation::Structure,
+            }
         }
     };
 
@@ -748,6 +753,7 @@ fn clone_as_ghost(
             measure_descendant_dirty: false,
             resolve_cache: None,
             resolve_dirty: true,
+            resolve_descendant_dirty: false,
         },
         refresh: Default::default(),
         lifecycle: crate::tree::element::NodeLifecycle {
@@ -1090,7 +1096,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(invalidation, TreeInvalidation::Resolve);
         assert_eq!(node_ix(&tree, &first_id), first_ix);
         assert_eq!(node_ix(&tree, &second_id), second_ix);
         assert_eq!(
@@ -1283,7 +1289,7 @@ mod tests {
 
         let new_root_ix = node_ix(&tree, &new_root_id);
         let new_leaf_ix = node_ix(&tree, &new_leaf_id);
-        assert_eq!(invalidation, TreeInvalidation::Structure);
+        assert_eq!(invalidation, TreeInvalidation::Resolve);
         assert_eq!(node_ix(&tree, &host_id), host_ix);
         assert_eq!(node_ix(&tree, &first_id), first_ix);
         assert_eq!(node_ix(&tree, &second_id), second_ix);
