@@ -10,9 +10,11 @@ investigation that led to the current implementation.
 ### `active-refresh-subtree-skipping-plan.md`
 
 The current temporary active implementation plan. Refresh damage bookkeeping,
-clean-registry reuse, render subtree caching/skipping, and render-cache
-performance regression guards are implemented; the next slice in this file is
-registry subtree chunk caching/skipping.
+clean-registry reuse, render subtree caching/skipping, render-cache performance
+regression guards, and conservative registry chunk-cache infrastructure are
+implemented. The registry cache path currently falls back for damaged/no-cache
+and escape-nearby cases, so follow-up work should either add cheap production
+seeding or keep it guarded.
 
 ### `layout-caching-roadmap.md`
 
@@ -82,14 +84,18 @@ The native layout-caching foundation is in place:
   not seed render caches, damaged refreshes with no existing caches use the
   uncached renderer, scroll-offset subtrees bypass render-cache lookup, and dirty
   scroll containers do not store large immediately-stale render caches
+- event registry rebuilds have a conservative chunk-cache path with full-rebuild
+  fallback for damaged/no-retained-cache and escape-nearby cases
 
 ## Next recommended implementation order
 
-### 1. Add registry subtree chunk skipping
+### 1. Refine registry chunk seeding or keep it guarded
 
 Refresh damage bookkeeping, cached full-registry reuse, render subtree skipping,
-and render-cache regression guards are in place. Next, make registry rebuilds
-reuse clean subtree chunks.
+render-cache regression guards, and conservative registry chunk infrastructure
+are in place. The next registry-specific decision is whether to add a cheap
+production seeding strategy plus broader precedence tests, or to leave the chunk
+path guarded and move on.
 
 ### 2. Broaden relayout/dependency boundaries
 

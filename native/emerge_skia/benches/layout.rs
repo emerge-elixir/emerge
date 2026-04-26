@@ -2,7 +2,10 @@ mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use emerge_skia::events::{
-    RegistryRebuildPayload, registry_builder::build_registry_rebuild_for_benchmark,
+    RegistryRebuildPayload,
+    registry_builder::{
+        build_registry_rebuild_cached_for_benchmark, build_registry_rebuild_for_benchmark,
+    },
 };
 use emerge_skia::tree::animation::AnimationRuntime;
 use emerge_skia::tree::deserialize::decode_tree;
@@ -788,34 +791,43 @@ fn bench_registry_refresh_cache_regression(c: &mut Criterion) {
         let case = format!("{fixture_id}/{mutation}");
 
         group.throughput(Throughput::Elements(node_count));
-        bench_registry_full_rebuild(&mut group, &case, warmed_base.clone());
+        bench_registry_full_rebuild_pair(&mut group, &case, warmed_base.clone());
         bench_registry_clean_reuse(
             &mut group,
             &case,
             warmed_base.clone(),
             cached_rebuild.clone(),
         );
-        bench_registry_after_patch_full_rebuild(
+        bench_registry_after_patch_rebuild_pair(
             &mut group,
             &case,
             warmed_base.clone(),
             decoded_patches,
             constraint,
         );
-        bench_registry_patch_full_rebuild(&mut group, &case, warmed_base, patch_bytes, constraint);
+        bench_registry_patch_rebuild_pair(&mut group, &case, warmed_base, patch_bytes, constraint);
     }
 
     group.finish();
 }
 
-fn bench_registry_full_rebuild(
+fn bench_registry_full_rebuild_pair(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
 ) {
+    let full_tree = warmed_base.clone();
     group.bench_function(format!("{case}/full_registry_rebuild"), move |b| {
         b.iter(|| {
-            let rebuild = build_registry_rebuild_for_benchmark(&warmed_base);
+            let rebuild = build_registry_rebuild_for_benchmark(&full_tree);
+            consume_registry_rebuild(rebuild)
+        });
+    });
+
+    let mut chunked_tree = warmed_base;
+    group.bench_function(format!("{case}/chunked_registry_rebuild"), move |b| {
+        b.iter(|| {
+            let rebuild = build_registry_rebuild_cached_for_benchmark(&mut chunked_tree);
             consume_registry_rebuild(rebuild)
         });
     });
@@ -837,16 +849,18 @@ fn bench_registry_clean_reuse(
     });
 }
 
-fn bench_registry_after_patch_full_rebuild(
+fn bench_registry_after_patch_rebuild_pair(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
     decoded_patches: Vec<Patch>,
     constraint: Constraint,
 ) {
+    let full_base = warmed_base.clone();
+    let full_patches = decoded_patches.clone();
     group.bench_function(format!("{case}/after_patch_full_registry"), move |b| {
         b.iter_batched(
-            || prepare_after_patch_refresh_tree(&warmed_base, &decoded_patches, constraint),
+            || prepare_after_patch_refresh_tree(&full_base, &full_patches, constraint),
             |tree| {
                 let rebuild = build_registry_rebuild_for_benchmark(&tree);
                 consume_registry_rebuild(rebuild)
@@ -854,18 +868,49 @@ fn bench_registry_after_patch_full_rebuild(
             BatchSize::SmallInput,
         );
     });
+
+    let chunked_base = warmed_base.clone();
+    let chunked_patches = decoded_patches.clone();
+    group.bench_function(format!("{case}/after_patch_chunked_registry"), move |b| {
+        b.iter_batched(
+            || prepare_after_patch_refresh_tree(&chunked_base, &chunked_patches, constraint),
+            |mut tree| {
+                let rebuild = build_registry_rebuild_cached_for_benchmark(&mut tree);
+                consume_registry_rebuild(rebuild)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let seeded_base = seed_registry_subtree_cache(warmed_base.clone());
+    let seeded_patches = decoded_patches.clone();
+    group.bench_function(
+        format!("{case}/after_patch_seeded_chunked_registry"),
+        move |b| {
+            b.iter_batched(
+                || prepare_after_patch_refresh_tree(&seeded_base, &seeded_patches, constraint),
+                |mut tree| {
+                    let rebuild = build_registry_rebuild_cached_for_benchmark(&mut tree);
+                    consume_registry_rebuild(rebuild)
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
 }
 
-fn bench_registry_patch_full_rebuild(
+fn bench_registry_patch_rebuild_pair(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
     patch_bytes: Vec<u8>,
     constraint: Constraint,
 ) {
+    let full_base = warmed_base.clone();
+    let full_patch_bytes = patch_bytes.clone();
     group.bench_function(format!("{case}/patch_full_registry"), move |b| {
         b.iter_batched(
-            || (warmed_base.clone(), patch_bytes.clone()),
+            || (full_base.clone(), full_patch_bytes.clone()),
             |(mut tree, bytes)| {
                 apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
                 let rebuild = build_registry_rebuild_for_benchmark(&tree);
@@ -874,6 +919,38 @@ fn bench_registry_patch_full_rebuild(
             BatchSize::SmallInput,
         );
     });
+
+    let chunked_base = warmed_base.clone();
+    let chunked_patch_bytes = patch_bytes.clone();
+    group.bench_function(format!("{case}/patch_chunked_registry"), move |b| {
+        b.iter_batched(
+            || (chunked_base.clone(), chunked_patch_bytes.clone()),
+            |(mut tree, bytes)| {
+                apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
+                let rebuild = build_registry_rebuild_cached_for_benchmark(&mut tree);
+                consume_registry_rebuild(rebuild)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let seeded_base = seed_registry_subtree_cache(warmed_base);
+    group.bench_function(format!("{case}/patch_seeded_chunked_registry"), move |b| {
+        b.iter_batched(
+            || (seeded_base.clone(), patch_bytes.clone()),
+            |(mut tree, bytes)| {
+                apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
+                let rebuild = build_registry_rebuild_cached_for_benchmark(&mut tree);
+                consume_registry_rebuild(rebuild)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn seed_registry_subtree_cache(mut tree: ElementTree) -> ElementTree {
+    let _ = build_registry_rebuild_cached_for_benchmark(&mut tree);
+    tree
 }
 
 fn consume_registry_rebuild(rebuild: RegistryRebuildPayload) {
