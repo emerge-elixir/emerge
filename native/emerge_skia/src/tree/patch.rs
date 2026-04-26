@@ -18,7 +18,9 @@ use super::element::{
     Element, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbySlot, NodeId,
     NodeResidency, ParentLink, TextInputContentOrigin,
 };
-use super::invalidation::{TreeInvalidation, classify_attrs_change};
+use super::invalidation::{
+    TreeInvalidation, attrs_change_affects_registry_refresh, classify_attrs_change,
+};
 use std::collections::{HashMap, HashSet};
 
 /// A single patch operation.
@@ -302,15 +304,20 @@ fn apply_patch(
                 }
 
                 let mut invalidation = classify_attrs_change(&before_attrs, &element.spec.declared);
+                let registry_refresh_dirty =
+                    attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
                 if before_patch_content != element.runtime.patch_content
                     || before_content_origin != element.runtime.text_input_content_origin
                 {
                     invalidation.add(TreeInvalidation::Registry);
                 }
-                invalidation
+                (invalidation, registry_refresh_dirty)
             };
-            tree.mark_measure_dirty_for_invalidation(&id, invalidation);
-            invalidation
+            tree.mark_measure_dirty_for_invalidation(&id, invalidation.0);
+            if invalidation.1 {
+                tree.mark_registry_refresh_dirty(&id);
+            }
+            invalidation.0
         }
 
         Patch::SetChildren { id, children } => {
@@ -742,6 +749,7 @@ fn clone_as_ghost(
             resolve_cache: None,
             resolve_dirty: true,
         },
+        refresh: Default::default(),
         lifecycle: crate::tree::element::NodeLifecycle {
             mounted_at_revision: old.lifecycle.mounted_at_revision,
             residency: NodeResidency::Ghost,
