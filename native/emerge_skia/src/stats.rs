@@ -3,7 +3,156 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutCacheStats {
+    pub intrinsic_measure_hits: u64,
+    pub intrinsic_measure_misses: u64,
+    pub intrinsic_measure_stores: u64,
+    pub intrinsic_measure_ineligible_bypasses: u64,
+    pub subtree_measure_hits: u64,
+    pub subtree_measure_misses: u64,
+    pub subtree_measure_stores: u64,
+    pub subtree_measure_dirty_bypasses: u64,
+    pub subtree_measure_animation_bypasses: u64,
+    pub resolve_hits: u64,
+    pub resolve_misses: u64,
+    pub resolve_stores: u64,
+    pub resolve_dirty_bypasses: u64,
+    pub resolve_ineligible_bypasses: u64,
+    pub resolve_animation_bypasses: u64,
+    pub resolve_store_bypasses: u64,
+}
+
+impl LayoutCacheStats {
+    fn increment(counter: &mut u64) {
+        *counter = counter.saturating_add(1);
+    }
+
+    fn add_counter(counter: &mut u64, value: u64) {
+        *counter = counter.saturating_add(value);
+    }
+
+    pub fn add(&mut self, other: Self) {
+        Self::add_counter(
+            &mut self.intrinsic_measure_hits,
+            other.intrinsic_measure_hits,
+        );
+        Self::add_counter(
+            &mut self.intrinsic_measure_misses,
+            other.intrinsic_measure_misses,
+        );
+        Self::add_counter(
+            &mut self.intrinsic_measure_stores,
+            other.intrinsic_measure_stores,
+        );
+        Self::add_counter(
+            &mut self.intrinsic_measure_ineligible_bypasses,
+            other.intrinsic_measure_ineligible_bypasses,
+        );
+        Self::add_counter(&mut self.subtree_measure_hits, other.subtree_measure_hits);
+        Self::add_counter(
+            &mut self.subtree_measure_misses,
+            other.subtree_measure_misses,
+        );
+        Self::add_counter(
+            &mut self.subtree_measure_stores,
+            other.subtree_measure_stores,
+        );
+        Self::add_counter(
+            &mut self.subtree_measure_dirty_bypasses,
+            other.subtree_measure_dirty_bypasses,
+        );
+        Self::add_counter(
+            &mut self.subtree_measure_animation_bypasses,
+            other.subtree_measure_animation_bypasses,
+        );
+        Self::add_counter(&mut self.resolve_hits, other.resolve_hits);
+        Self::add_counter(&mut self.resolve_misses, other.resolve_misses);
+        Self::add_counter(&mut self.resolve_stores, other.resolve_stores);
+        Self::add_counter(
+            &mut self.resolve_dirty_bypasses,
+            other.resolve_dirty_bypasses,
+        );
+        Self::add_counter(
+            &mut self.resolve_ineligible_bypasses,
+            other.resolve_ineligible_bypasses,
+        );
+        Self::add_counter(
+            &mut self.resolve_animation_bypasses,
+            other.resolve_animation_bypasses,
+        );
+        Self::add_counter(
+            &mut self.resolve_store_bypasses,
+            other.resolve_store_bypasses,
+        );
+    }
+
+    pub fn record_intrinsic_measure_hit(&mut self) {
+        Self::increment(&mut self.intrinsic_measure_hits);
+    }
+
+    pub fn record_intrinsic_measure_miss(&mut self) {
+        Self::increment(&mut self.intrinsic_measure_misses);
+    }
+
+    pub fn record_intrinsic_measure_store(&mut self) {
+        Self::increment(&mut self.intrinsic_measure_stores);
+    }
+
+    pub fn record_intrinsic_measure_ineligible_bypass(&mut self) {
+        Self::increment(&mut self.intrinsic_measure_ineligible_bypasses);
+    }
+
+    pub fn record_subtree_measure_hit(&mut self) {
+        Self::increment(&mut self.subtree_measure_hits);
+    }
+
+    pub fn record_subtree_measure_miss(&mut self) {
+        Self::increment(&mut self.subtree_measure_misses);
+    }
+
+    pub fn record_subtree_measure_store(&mut self) {
+        Self::increment(&mut self.subtree_measure_stores);
+    }
+
+    pub fn record_subtree_measure_dirty_bypass(&mut self) {
+        Self::increment(&mut self.subtree_measure_dirty_bypasses);
+    }
+
+    pub fn record_subtree_measure_animation_bypass(&mut self) {
+        Self::increment(&mut self.subtree_measure_animation_bypasses);
+    }
+
+    pub fn record_resolve_hit(&mut self) {
+        Self::increment(&mut self.resolve_hits);
+    }
+
+    pub fn record_resolve_miss(&mut self) {
+        Self::increment(&mut self.resolve_misses);
+    }
+
+    pub fn record_resolve_store(&mut self) {
+        Self::increment(&mut self.resolve_stores);
+    }
+
+    pub fn record_resolve_dirty_bypass(&mut self) {
+        Self::increment(&mut self.resolve_dirty_bypasses);
+    }
+
+    pub fn record_resolve_ineligible_bypass(&mut self) {
+        Self::increment(&mut self.resolve_ineligible_bypasses);
+    }
+
+    pub fn record_resolve_animation_bypass(&mut self) {
+        Self::increment(&mut self.resolve_animation_bypasses);
+    }
+
+    pub fn record_resolve_store_bypass(&mut self) {
+        Self::increment(&mut self.resolve_store_bypasses);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DurationStatsSnapshot {
     pub count: u64,
     pub avg_ms: f64,
@@ -11,7 +160,7 @@ pub struct DurationStatsSnapshot {
     pub max_ms: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RendererStatsSnapshot {
     pub window: Duration,
     pub fps: f64,
@@ -24,6 +173,22 @@ pub struct RendererStatsSnapshot {
     pub refresh: DurationStatsSnapshot,
     pub event_resolve: DurationStatsSnapshot,
     pub patch_tree_process: DurationStatsSnapshot,
+    pub layout_cache: LayoutCacheStats,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatsFamilies {
+    pub timings: bool,
+    pub layout_cache: bool,
+}
+
+impl StatsFamilies {
+    pub fn all_current() -> Self {
+        Self {
+            timings: true,
+            layout_cache: true,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,6 +237,7 @@ struct RendererStatsWindow {
     refresh: DurationStatsWindow,
     event_resolve: DurationStatsWindow,
     patch_tree_process: DurationStatsWindow,
+    layout_cache: LayoutCacheStats,
 }
 
 impl RendererStatsWindow {
@@ -86,12 +252,43 @@ impl RendererStatsWindow {
             refresh: DurationStatsWindow::default(),
             event_resolve: DurationStatsWindow::default(),
             patch_tree_process: DurationStatsWindow::default(),
+            layout_cache: LayoutCacheStats::default(),
+        }
+    }
+
+    fn snapshot(&self, now: Instant) -> RendererStatsSnapshot {
+        let elapsed = now.saturating_duration_since(self.started_at);
+
+        RendererStatsSnapshot {
+            window: elapsed,
+            fps: if elapsed.is_zero() {
+                0.0
+            } else {
+                self.frame_count as f64 / elapsed.as_secs_f64()
+            },
+            display_fps: self
+                .last_display_interval_ns
+                .map(|ns| 1_000_000_000.0 / ns as f64)
+                .unwrap_or(0.0),
+            display_frame_ms: self
+                .last_display_interval_ns
+                .map(|ns| ns as f64 / 1_000_000.0)
+                .unwrap_or(0.0),
+            frame_count: self.frame_count,
+            render: self.render.snapshot(),
+            present_submit: self.present_submit.snapshot(),
+            layout: self.layout.snapshot(),
+            refresh: self.refresh.snapshot(),
+            event_resolve: self.event_resolve.snapshot(),
+            patch_tree_process: self.patch_tree_process.snapshot(),
+            layout_cache: self.layout_cache,
         }
     }
 }
 
 pub struct RendererStatsCollector {
     window: Mutex<RendererStatsWindow>,
+    families: StatsFamilies,
 }
 
 impl Default for RendererStatsCollector {
@@ -102,12 +299,25 @@ impl Default for RendererStatsCollector {
 
 impl RendererStatsCollector {
     pub fn new() -> Self {
+        Self::with_families(StatsFamilies::all_current())
+    }
+
+    pub fn with_families(families: StatsFamilies) -> Self {
         Self {
             window: Mutex::new(RendererStatsWindow::new(Instant::now(), None)),
+            families,
         }
     }
 
+    pub fn layout_cache_enabled(&self) -> bool {
+        self.families.layout_cache
+    }
+
     pub fn record_frame_present(&self) {
+        if !self.families.timings {
+            return;
+        }
+
         let mut window = self
             .window
             .lock()
@@ -116,6 +326,10 @@ impl RendererStatsCollector {
     }
 
     pub fn record_display_interval(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         let mut window = self
             .window
             .lock()
@@ -125,63 +339,97 @@ impl RendererStatsCollector {
     }
 
     pub fn record_render(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.render);
     }
 
     pub fn record_present_submit(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.present_submit);
     }
 
     pub fn record_layout(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.layout);
     }
 
     pub fn record_refresh(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.refresh);
     }
 
     pub fn record_event_resolve(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.event_resolve);
     }
 
     pub fn record_patch_tree_process(&self, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         self.record_duration(duration, |window| &mut window.patch_tree_process);
     }
 
+    pub fn record_layout_cache(&self, stats: LayoutCacheStats) {
+        if !self.families.layout_cache {
+            return;
+        }
+
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        window.layout_cache.add(stats);
+    }
+
+    pub fn peek(&self) -> RendererStatsSnapshot {
+        let now = Instant::now();
+        let window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        window.snapshot(now)
+    }
+
     pub fn snapshot(&self) -> RendererStatsSnapshot {
+        self.take()
+    }
+
+    pub fn take(&self) -> RendererStatsSnapshot {
         let now = Instant::now();
         let mut window = self
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let elapsed = now.saturating_duration_since(window.started_at);
-
-        let snapshot = RendererStatsSnapshot {
-            window: elapsed,
-            fps: if elapsed.is_zero() {
-                0.0
-            } else {
-                window.frame_count as f64 / elapsed.as_secs_f64()
-            },
-            display_fps: window
-                .last_display_interval_ns
-                .map(|ns| 1_000_000_000.0 / ns as f64)
-                .unwrap_or(0.0),
-            display_frame_ms: window
-                .last_display_interval_ns
-                .map(|ns| ns as f64 / 1_000_000.0)
-                .unwrap_or(0.0),
-            frame_count: window.frame_count,
-            render: window.render.snapshot(),
-            present_submit: window.present_submit.snapshot(),
-            layout: window.layout.snapshot(),
-            refresh: window.refresh.snapshot(),
-            event_resolve: window.event_resolve.snapshot(),
-            patch_tree_process: window.patch_tree_process.snapshot(),
-        };
+        let snapshot = window.snapshot(now);
 
         *window = RendererStatsWindow::new(now, window.last_display_interval_ns);
         snapshot
+    }
+
+    pub fn reset(&self) {
+        let now = Instant::now();
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *window = RendererStatsWindow::new(now, window.last_display_interval_ns);
     }
 
     fn record_duration(
@@ -214,7 +462,19 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "event_resolve_ms_avg={:.3} event_resolve_ms_min={:.3} ",
             "event_resolve_ms_max={:.3} event_resolve_ms_count={} ",
             "patch_tree_actor_process_ms_avg={:.3} patch_tree_actor_process_ms_min={:.3} ",
-            "patch_tree_actor_process_ms_max={:.3} patch_tree_actor_process_ms_count={}"
+            "patch_tree_actor_process_ms_max={:.3} patch_tree_actor_process_ms_count={} ",
+            "layout_cache_intrinsic_measure_hits={} layout_cache_intrinsic_measure_misses={} ",
+            "layout_cache_intrinsic_measure_stores={} ",
+            "layout_cache_intrinsic_measure_ineligible_bypasses={} ",
+            "layout_cache_subtree_measure_hits={} layout_cache_subtree_measure_misses={} ",
+            "layout_cache_subtree_measure_stores={} ",
+            "layout_cache_subtree_measure_dirty_bypasses={} ",
+            "layout_cache_subtree_measure_animation_bypasses={} ",
+            "layout_cache_resolve_hits={} layout_cache_resolve_misses={} ",
+            "layout_cache_resolve_stores={} layout_cache_resolve_dirty_bypasses={} ",
+            "layout_cache_resolve_ineligible_bypasses={} ",
+            "layout_cache_resolve_animation_bypasses={} ",
+            "layout_cache_resolve_store_bypasses={}"
         ),
         backend_label,
         snapshot.window.as_millis(),
@@ -246,12 +506,28 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.patch_tree_process.min_ms,
         snapshot.patch_tree_process.max_ms,
         snapshot.patch_tree_process.count,
+        snapshot.layout_cache.intrinsic_measure_hits,
+        snapshot.layout_cache.intrinsic_measure_misses,
+        snapshot.layout_cache.intrinsic_measure_stores,
+        snapshot.layout_cache.intrinsic_measure_ineligible_bypasses,
+        snapshot.layout_cache.subtree_measure_hits,
+        snapshot.layout_cache.subtree_measure_misses,
+        snapshot.layout_cache.subtree_measure_stores,
+        snapshot.layout_cache.subtree_measure_dirty_bypasses,
+        snapshot.layout_cache.subtree_measure_animation_bypasses,
+        snapshot.layout_cache.resolve_hits,
+        snapshot.layout_cache.resolve_misses,
+        snapshot.layout_cache.resolve_stores,
+        snapshot.layout_cache.resolve_dirty_bypasses,
+        snapshot.layout_cache.resolve_ineligible_bypasses,
+        snapshot.layout_cache.resolve_animation_bypasses,
+        snapshot.layout_cache.resolve_store_bypasses,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RendererStatsCollector, format_renderer_stats_log};
+    use super::{LayoutCacheStats, RendererStatsCollector, format_renderer_stats_log};
     use std::time::Duration;
 
     #[test]
@@ -269,6 +545,15 @@ mod tests {
         stats.record_refresh(Duration::from_millis(3));
         stats.record_event_resolve(Duration::from_millis(1));
         stats.record_patch_tree_process(Duration::from_millis(9));
+        stats.record_layout_cache(LayoutCacheStats {
+            resolve_hits: 5,
+            subtree_measure_hits: 3,
+            ..LayoutCacheStats::default()
+        });
+
+        let peek_snapshot = stats.peek();
+        assert_eq!(peek_snapshot.frame_count, 2);
+        assert_eq!(peek_snapshot.layout_cache.resolve_hits, 5);
 
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.frame_count, 2);
@@ -287,6 +572,8 @@ mod tests {
         assert_eq!(snapshot.refresh.avg_ms, 2.0);
         assert_eq!(snapshot.event_resolve.count, 1);
         assert_eq!(snapshot.patch_tree_process.count, 1);
+        assert_eq!(snapshot.layout_cache.resolve_hits, 5);
+        assert_eq!(snapshot.layout_cache.subtree_measure_hits, 3);
 
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
@@ -297,6 +584,7 @@ mod tests {
         assert_eq!(reset_snapshot.refresh.count, 0);
         assert_eq!(reset_snapshot.event_resolve.count, 0);
         assert_eq!(reset_snapshot.patch_tree_process.count, 0);
+        assert_eq!(reset_snapshot.layout_cache.resolve_hits, 0);
     }
 
     #[test]
@@ -310,6 +598,10 @@ mod tests {
         stats.record_refresh(Duration::from_millis(1));
         stats.record_event_resolve(Duration::from_millis(2));
         stats.record_patch_tree_process(Duration::from_millis(7));
+        stats.record_layout_cache(LayoutCacheStats {
+            resolve_hits: 11,
+            ..LayoutCacheStats::default()
+        });
 
         let message = format_renderer_stats_log("wayland", &stats.snapshot());
 
@@ -332,5 +624,7 @@ mod tests {
         assert!(message.contains("refresh_ms_count=1"));
         assert!(message.contains("event_resolve_ms_count=1"));
         assert!(message.contains("patch_tree_actor_process_ms_count=1"));
+        assert!(message.contains("layout_cache_resolve_hits=11"));
+        assert!(message.contains("layout_cache_subtree_measure_hits="));
     }
 }

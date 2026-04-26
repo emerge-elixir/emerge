@@ -1,8 +1,10 @@
 use super::super::*;
 use super::common::*;
+use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
 use crate::tree::attrs::Background;
 use crate::tree::invalidation::TreeInvalidation;
 use crate::tree::patch::{Patch, apply_patches};
+use std::time::{Duration, Instant};
 
 #[test]
 fn test_leaf_text_measurement_cache_reuses_repeated_layout() {
@@ -462,6 +464,166 @@ fn test_resolve_cache_stores_for_simple_subtree() {
         assert!(layout.resolve_cache.is_some());
         assert!(!layout.resolve_dirty);
     }
+}
+
+#[test]
+fn test_layout_cache_stats_report_warm_cache_hits() {
+    let mut tree = text_child_tree("Hello");
+    tree.set_layout_cache_stats_enabled(true);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let cold_stats = tree.layout_cache_stats();
+    assert_eq!(cold_stats.subtree_measure_hits, 0);
+    assert_eq!(cold_stats.resolve_hits, 0);
+    assert!(cold_stats.subtree_measure_stores > 0);
+    assert!(cold_stats.resolve_stores > 0);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let warm_stats = tree.layout_cache_stats();
+
+    assert!(warm_stats.subtree_measure_hits > 0);
+    assert!(warm_stats.resolve_hits > 0);
+    assert_eq!(warm_stats.subtree_measure_misses, 0);
+    assert_eq!(warm_stats.resolve_misses, 0);
+    assert_eq!(warm_stats.subtree_measure_stores, 0);
+    assert_eq!(warm_stats.resolve_stores, 0);
+}
+
+#[test]
+fn test_layout_cache_stats_are_disabled_by_default() {
+    let mut tree = text_child_tree("Hello");
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_eq!(
+        tree.layout_cache_stats(),
+        crate::stats::LayoutCacheStats::default()
+    );
+}
+
+#[test]
+fn test_layout_cache_stats_report_shifted_sibling_reuse() {
+    let mut tree = shifted_sibling_tree(10.0);
+    tree.set_layout_cache_stats_enabled(true);
+    let root_id = tree.root_id().unwrap();
+    let control_id = tree.child_ids(&root_id)[0];
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: control_id,
+            attrs_raw: raw_control_height_attrs(20.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert!(stats.subtree_measure_dirty_bypasses > 0);
+    assert!(stats.subtree_measure_hits > 0);
+    assert!(stats.resolve_dirty_bypasses > 0);
+    assert!(stats.resolve_hits > 0);
+}
+
+#[test]
+fn test_layout_cache_stats_report_resolve_ineligible_nodes() {
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let paragraph = make_element("paragraph", ElementKind::Paragraph, Attrs::default());
+    let paragraph_id = paragraph.id;
+
+    tree.set_root_id(paragraph_id);
+    tree.insert(paragraph);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(stats.resolve_stores, 0);
+    assert!(stats.resolve_ineligible_bypasses > 0);
+    assert!(stats.resolve_store_bypasses > 0);
+}
+
+#[test]
+fn test_layout_cache_stats_report_animation_bypasses() {
+    let mut attrs = Attrs::default();
+    let mut start_attrs = Attrs::default();
+    let mut end_attrs = Attrs::default();
+    start_attrs.move_x = Some(0.0);
+    end_attrs.move_x = Some(10.0);
+    attrs.animate = Some(AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_layout_cache_stats_enabled(true);
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    let animations_active = layout_tree_with_context_and_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+        &FontContext::default(),
+        Some(&runtime),
+        Some(start + Duration::from_millis(1)),
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert!(animations_active);
+    assert!(stats.subtree_measure_animation_bypasses > 0);
+    assert!(stats.resolve_animation_bypasses > 0);
+    assert_eq!(stats.subtree_measure_stores, 0);
+    assert_eq!(stats.resolve_stores, 0);
 }
 
 #[test]

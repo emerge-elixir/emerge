@@ -91,7 +91,8 @@ defmodule EmergeSkia do
   - `input_log` - Log DRM input devices on startup (default: false)
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
-  - `renderer_stats_log` - Log renderer timing stats every 5 seconds, including frame rate and min/avg/max/count timing windows for render, present submit, layout, event resolve, and patch completion (default: false)
+  - `stats` - Enable renderer stats collection without periodic logging (default: false)
+  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, timing windows, and layout-cache counters (default: false)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as
@@ -619,6 +620,22 @@ defmodule EmergeSkia do
     |> apply(:set_log_target, [renderer, pid])
   end
 
+  @doc """
+  Fetch renderer stats.
+
+  Stats collection is disabled by default. Start the renderer with `stats: true`
+  or `renderer_stats_log: true` to collect renderer stats. Use `:take` to read
+  and reset the current stats window.
+  """
+  @spec stats(renderer(), Native.stats_command()) ::
+          {:ok, Native.stats_snapshot()} | {:error, term()}
+  def stats(renderer, command \\ :peek) do
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:stats, [renderer, command])
+  end
+
+  defp normalize_native_ok(:ok), do: :ok
   defp normalize_native_ok({:ok, _}), do: :ok
   defp normalize_native_ok({:error, reason}), do: {:error, reason}
 end

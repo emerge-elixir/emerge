@@ -264,6 +264,56 @@ defmodule EmergeSkia.TreeTest do
       assert w == 200.0
       assert h == 100.0
     end
+
+    test "reports gated stats from retained layout" do
+      tree = Native.tree_new()
+
+      root_id = 90
+      child1_id = 91
+      child2_id = 92
+      child_attrs = attrs_with_size(50.0, 30.0)
+
+      root_node = encode_node(root_id, 3, empty_attrs(), [child1_id, child2_id])
+      child1_node = encode_node(child1_id, 4, child_attrs)
+      child2_node = encode_node(child2_id, 4, child_attrs)
+
+      data = make_header(3) <> root_node <> child1_node <> child2_node
+      assert {:ok, :ok} = Native.tree_upload(tree, data)
+
+      {:ok, disabled_stats} = Native.stats(tree, :peek)
+      refute disabled_stats.enabled
+
+      {:ok, _frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
+      {:ok, disabled_after_layout} = Native.stats(tree, :peek)
+      assert disabled_after_layout.counters.layout_cache.resolve_stores == 0
+
+      {:ok, enabled_stats} = Native.stats(tree, {:configure, %{enabled: true}})
+      assert enabled_stats.enabled
+
+      {:ok, _frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
+      {:ok, warm_snapshot} = Native.stats(tree, :peek)
+      warm_stats = warm_snapshot.counters.layout_cache
+      assert warm_stats.subtree_measure_hits > 0
+      assert warm_stats.resolve_hits > 0
+      assert warm_snapshot.timings.layout.count == 1
+
+      {:ok, peek_again} = Native.stats(tree, :peek)
+      assert peek_again.timings.layout.count == 1
+
+      {:ok, _frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
+      {:ok, taken_snapshot} = Native.stats(tree, :take)
+      taken_stats = taken_snapshot.counters.layout_cache
+
+      assert taken_stats.subtree_measure_hits > 0
+      assert taken_stats.resolve_hits > 0
+      assert taken_stats.resolve_misses == 0
+      assert Map.has_key?(taken_stats, :intrinsic_measure_ineligible_bypasses)
+      assert taken_snapshot.window.reset_on_read
+
+      {:ok, reset_snapshot} = Native.stats(tree, :peek)
+      assert reset_snapshot.timings.layout.count == 0
+      assert reset_snapshot.counters.layout_cache.resolve_hits == 0
+    end
   end
 
   # Helper to create attrs with width, height, and uniform padding

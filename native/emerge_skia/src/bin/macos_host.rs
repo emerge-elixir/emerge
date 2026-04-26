@@ -2398,6 +2398,12 @@ mod app {
             let _ = session
                 .animation_runtime
                 .prune_completed_exit_ghosts(&mut session.tree, Some(sample_time));
+            session.tree.set_layout_cache_stats_enabled(
+                session
+                    .stats
+                    .as_ref()
+                    .is_some_and(|stats| stats.layout_cache_enabled()),
+            );
             let layout_started_at = std::time::Instant::now();
 
             let output = if session.animation_runtime.is_empty() {
@@ -2414,6 +2420,7 @@ mod app {
 
             if let Some(stats) = session.stats.as_ref() {
                 stats.record_layout(layout_started_at.elapsed());
+                stats.record_layout_cache(session.tree.layout_cache_stats());
             }
 
             let animations_active = output.animations_active;

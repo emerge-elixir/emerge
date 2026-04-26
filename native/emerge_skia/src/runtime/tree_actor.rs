@@ -359,6 +359,11 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     animation_runtime.sync_with_tree(&tree, sample_time);
                     let _ =
                         animation_runtime.prune_completed_exit_ghosts(&mut tree, Some(sample_time));
+                    tree.set_layout_cache_stats_enabled(
+                        stats
+                            .as_ref()
+                            .is_some_and(|stats| stats.layout_cache_enabled()),
+                    );
                     let layout_started_at = Instant::now();
                     let output = if animation_runtime.is_empty() {
                         layout_and_refresh_default(&mut tree, constraint, scale)
@@ -373,6 +378,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     };
                     if let Some(stats) = stats.as_ref() {
                         stats.record_layout(layout_started_at.elapsed());
+                        stats.record_layout_cache(tree.layout_cache_stats());
                     }
                     let animations_active = output.animations_active;
                     publish_layout_output(

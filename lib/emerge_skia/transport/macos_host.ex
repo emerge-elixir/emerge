@@ -31,6 +31,11 @@ defmodule EmergeSkia.Transport.MacosHost do
   end
 
   @impl true
+  def stats(_renderer, _command) do
+    {:error, :not_supported}
+  end
+
+  @impl true
   def set_input_mask(renderer, mask) do
     Host.set_input_mask(renderer, mask)
   end

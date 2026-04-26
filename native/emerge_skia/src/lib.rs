@@ -33,7 +33,7 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc};
+use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 pub mod actors;
 pub mod assets;
 pub mod backend;
@@ -81,13 +81,168 @@ use renderer::clear_global_caches;
 ))]
 use renderer::set_render_log_enabled;
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
-use stats::RendererStatsCollector;
+use stats::{LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot};
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsConfigureNif {
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifTaggedEnum)]
+enum StatsCommandNif {
+    Peek,
+    Take,
+    Reset,
+    Configure(StatsConfigureNif),
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct StatsSnapshotNif {
+    version: u64,
+    kind: String,
+    enabled: bool,
+    window: StatsWindowNif,
+    frames: StatsFrameSnapshotNif,
+    timings: StatsTimingSnapshotNif,
+    counters: StatsCounterSnapshotNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsWindowNif {
+    elapsed_ms: u64,
+    reset_on_read: bool,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsFrameSnapshotNif {
+    fps: f64,
+    display_fps: f64,
+    display_frame_ms: f64,
+    frame_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsTimingSnapshotNif {
+    render: DurationStatsNif,
+    present_submit: DurationStatsNif,
+    layout: DurationStatsNif,
+    refresh: DurationStatsNif,
+    event_resolve: DurationStatsNif,
+    patch_tree_process: DurationStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct DurationStatsNif {
+    count: u64,
+    avg_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsCounterSnapshotNif {
+    layout_cache: LayoutCacheStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct LayoutCacheStatsNif {
+    intrinsic_measure_hits: u64,
+    intrinsic_measure_misses: u64,
+    intrinsic_measure_stores: u64,
+    intrinsic_measure_ineligible_bypasses: u64,
+    subtree_measure_hits: u64,
+    subtree_measure_misses: u64,
+    subtree_measure_stores: u64,
+    subtree_measure_dirty_bypasses: u64,
+    subtree_measure_animation_bypasses: u64,
+    resolve_hits: u64,
+    resolve_misses: u64,
+    resolve_stores: u64,
+    resolve_dirty_bypasses: u64,
+    resolve_ineligible_bypasses: u64,
+    resolve_animation_bypasses: u64,
+    resolve_store_bypasses: u64,
+}
+
+impl StatsSnapshotNif {
+    fn disabled(kind: &'static str) -> Self {
+        Self::from_snapshot(kind, false, false, &RendererStatsSnapshot::default())
+    }
+
+    fn from_snapshot(
+        kind: &'static str,
+        enabled: bool,
+        reset_on_read: bool,
+        snapshot: &RendererStatsSnapshot,
+    ) -> Self {
+        Self {
+            version: 1,
+            kind: kind.to_string(),
+            enabled,
+            window: StatsWindowNif {
+                elapsed_ms: snapshot.window.as_millis() as u64,
+                reset_on_read,
+            },
+            frames: StatsFrameSnapshotNif {
+                fps: snapshot.fps,
+                display_fps: snapshot.display_fps,
+                display_frame_ms: snapshot.display_frame_ms,
+                frame_count: snapshot.frame_count,
+            },
+            timings: StatsTimingSnapshotNif {
+                render: DurationStatsNif::from(snapshot.render.clone()),
+                present_submit: DurationStatsNif::from(snapshot.present_submit.clone()),
+                layout: DurationStatsNif::from(snapshot.layout.clone()),
+                refresh: DurationStatsNif::from(snapshot.refresh.clone()),
+                event_resolve: DurationStatsNif::from(snapshot.event_resolve.clone()),
+                patch_tree_process: DurationStatsNif::from(snapshot.patch_tree_process.clone()),
+            },
+            counters: StatsCounterSnapshotNif {
+                layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
+            },
+        }
+    }
+}
+
+impl From<stats::DurationStatsSnapshot> for DurationStatsNif {
+    fn from(stats: stats::DurationStatsSnapshot) -> Self {
+        Self {
+            count: stats.count,
+            avg_ms: stats.avg_ms,
+            min_ms: stats.min_ms,
+            max_ms: stats.max_ms,
+        }
+    }
+}
+
+impl From<LayoutCacheStats> for LayoutCacheStatsNif {
+    fn from(stats: LayoutCacheStats) -> Self {
+        Self {
+            intrinsic_measure_hits: stats.intrinsic_measure_hits,
+            intrinsic_measure_misses: stats.intrinsic_measure_misses,
+            intrinsic_measure_stores: stats.intrinsic_measure_stores,
+            intrinsic_measure_ineligible_bypasses: stats.intrinsic_measure_ineligible_bypasses,
+            subtree_measure_hits: stats.subtree_measure_hits,
+            subtree_measure_misses: stats.subtree_measure_misses,
+            subtree_measure_stores: stats.subtree_measure_stores,
+            subtree_measure_dirty_bypasses: stats.subtree_measure_dirty_bypasses,
+            subtree_measure_animation_bypasses: stats.subtree_measure_animation_bypasses,
+            resolve_hits: stats.resolve_hits,
+            resolve_misses: stats.resolve_misses,
+            resolve_stores: stats.resolve_stores,
+            resolve_dirty_bypasses: stats.resolve_dirty_bypasses,
+            resolve_ineligible_bypasses: stats.resolve_ineligible_bypasses,
+            resolve_animation_bypasses: stats.resolve_animation_bypasses,
+            resolve_store_bypasses: stats.resolve_store_bypasses,
+        }
+    }
+}
 
 // ============================================================================
 // Atoms
@@ -126,6 +281,7 @@ struct RendererResource {
     video_wake: VideoWake,
     prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
+    stats: Option<Arc<RendererStatsCollector>>,
     close_signal_log: bool,
     log_render: bool,
     log_input: bool,
@@ -220,6 +376,7 @@ impl RenderSender {
 /// Resource for holding an element tree (for layout/rendering).
 struct TreeResource {
     tree: Mutex<ElementTree>,
+    stats: Mutex<Option<Arc<RendererStatsCollector>>>,
 }
 
 struct TestHarnessHandles {
@@ -576,6 +733,14 @@ struct StartConfig {
         )),
         allow(dead_code)
     )]
+    stats_enabled: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+        )),
+        allow(dead_code)
+    )]
     renderer_stats_log: bool,
 }
 
@@ -608,6 +773,7 @@ struct StartOptsNif {
     input_log: bool,
     render_log: bool,
     close_signal_log: bool,
+    stats_enabled: bool,
     renderer_stats_log: bool,
 }
 
@@ -669,8 +835,7 @@ fn start_native_renderer_with_config(
     let log_input = false;
     let log_render = config.render_log;
     let close_signal_log = config.close_signal_log;
-    let renderer_stats = config
-        .renderer_stats_log
+    let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
     set_render_log_enabled(log_render);
@@ -696,12 +861,17 @@ fn start_native_renderer_with_config(
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     let system_clipboard = false;
+    let heartbeat_stats = if config.renderer_stats_log {
+        renderer_stats.clone()
+    } else {
+        None
+    };
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
             Arc::clone(&running_flag),
             Arc::clone(&input_target),
             Arc::clone(&native_log),
-            renderer_stats.clone(),
+            heartbeat_stats,
             backend_label,
         )),
         ..RendererHandles::default()
@@ -1002,6 +1172,7 @@ fn start_native_renderer_with_config(
         video_wake,
         prime_video_supported,
         native_log,
+        stats: renderer_stats,
         close_signal_log,
         log_render,
         log_input,
@@ -1051,6 +1222,7 @@ fn start(
                 drm_input_log: false,
                 render_log: false,
                 close_signal_log: false,
+                stats_enabled: false,
                 renderer_stats_log: false,
             },
             Some(env.pid()),
@@ -1098,6 +1270,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
             close_signal_log: opts.close_signal_log,
+            stats_enabled: opts.stats_enabled,
             renderer_stats_log: opts.renderer_stats_log,
         },
         Some(env.pid()),
@@ -1283,6 +1456,121 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
     atoms::ok()
 }
 
+#[rustler::nif(name = "stats", schedule = "DirtyCpu")]
+fn stats_nif<'a>(
+    env: Env<'a>,
+    resource: Term<'a>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    if let Ok(renderer) = resource.decode::<ResourceArc<RendererResource>>() {
+        return renderer_stats_snapshot(env, renderer, command);
+    }
+
+    if let Ok(tree) = resource.decode::<ResourceArc<TreeResource>>() {
+        return tree_stats_snapshot(env, tree, command);
+    }
+
+    Err("unsupported stats resource".to_string())
+}
+
+fn renderer_stats_snapshot<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    if matches!(command, StatsCommandNif::Configure(_)) {
+        return Err("renderer stats are configured when the renderer starts".to_string());
+    }
+
+    let Some(stats) = renderer.stats.as_ref() else {
+        return Ok(StatsSnapshotNif::disabled("renderer").encode(env));
+    };
+
+    match command {
+        StatsCommandNif::Peek => {
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
+        }
+        StatsCommandNif::Take => {
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, true, &stats.take()).encode(env))
+        }
+        StatsCommandNif::Reset => {
+            stats.reset();
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
+        }
+        StatsCommandNif::Configure(_) => unreachable!(),
+    }
+}
+
+fn tree_stats_snapshot<'a>(
+    env: Env<'a>,
+    tree_res: ResourceArc<TreeResource>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    match command {
+        StatsCommandNif::Configure(config) => {
+            let next_stats = config
+                .enabled
+                .then(|| Arc::new(RendererStatsCollector::new()));
+
+            {
+                let mut stats_slot = tree_res
+                    .stats
+                    .lock()
+                    .map_err(|_| "failed to lock tree stats".to_string())?;
+                *stats_slot = next_stats.clone();
+            }
+
+            {
+                let mut tree = tree_res
+                    .tree
+                    .lock()
+                    .map_err(|_| "failed to lock tree".to_string())?;
+                tree.set_layout_cache_stats_enabled(config.enabled);
+            }
+
+            if let Some(stats) = next_stats {
+                Ok(StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek()).encode(env))
+            } else {
+                Ok(StatsSnapshotNif::disabled("tree").encode(env))
+            }
+        }
+        StatsCommandNif::Peek | StatsCommandNif::Take | StatsCommandNif::Reset => {
+            let stats = tree_res
+                .stats
+                .lock()
+                .map_err(|_| "failed to lock tree stats".to_string())?
+                .clone();
+
+            let Some(stats) = stats else {
+                return Ok(StatsSnapshotNif::disabled("tree").encode(env));
+            };
+
+            match command {
+                StatsCommandNif::Peek => {
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Take => {
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, true, &stats.take())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Reset => {
+                    stats.reset();
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Configure(_) => unreachable!(),
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Raster NIF Functions
 // ============================================================================
@@ -1387,6 +1675,7 @@ fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a
 fn tree_new() -> ResourceArc<TreeResource> {
     ResourceArc::new(TreeResource {
         tree: Mutex::new(ElementTree::new()),
+        stats: Mutex::new(None),
     })
 }
 
@@ -1475,9 +1764,24 @@ fn tree_layout<'a>(
     height: f64,
     scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
+    let stats = tree_res
+        .stats
+        .lock()
+        .map_err(|_| "failed to lock tree stats".to_string())?
+        .clone();
     let mut tree = clone_tree_resource(&tree_res)?;
+    tree.set_layout_cache_stats_enabled(
+        stats
+            .as_ref()
+            .is_some_and(|stats| stats.layout_cache_enabled()),
+    );
     let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+    let layout_started_at = Instant::now();
     tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
+    if let Some(stats) = stats.as_ref() {
+        stats.record_layout(layout_started_at.elapsed());
+        stats.record_layout_cache(tree.layout_cache_stats());
+    }
     let frames = encode_layout_frames(env, &tree);
     replace_tree_resource(&tree_res, tree)?;
     Ok(frames)
