@@ -303,10 +303,13 @@ Implemented mitigation:
 - Avoided seeding render subtree caches on dirty/full rebuilds. Render caches are
   now a lazy clean-refresh optimization instead of extra work during app switch
   or full upload.
-- Added a render-node-count cap for stored subtrees so cache storage cannot clone
-  very large scene chunks.
+- If a damaged refresh has no retained render caches yet, use the safe uncached
+  scene renderer instead of walking the cache path.
+- Added a small per-refresh cache-store budget plus a render-node-count cap for
+  stored subtrees so cache storage cannot clone many large scene chunks in one
+  frame.
 - Bypassed the cache path entirely for nodes with their own render dirty bit;
-  descendant-dirty ancestors can still use cached clean siblings.
+  descendant-dirty ancestors can still use existing cached clean siblings.
 
 This is still a conservative design. Future work should replace broad debug-hash
 fields with typed versions where profiles justify it.
