@@ -434,21 +434,56 @@ fn apply_patch(
                 );
             }
 
+            let registry_relevant =
+                slot == NearbySlot::InFront || tree.subtree_affects_registry(&subtree_root_id);
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
-            tree.restore_detached_layout_subtree_cache(&subtree_root_id);
-            TreeInvalidation::Resolve
+            let restored_layout = tree.restore_detached_layout_subtree_cache(&subtree_root_id);
+            let can_skip_layout =
+                restored_layout || tree.nearby_subtree_can_skip_layout(&subtree_root_id);
+
+            if can_skip_layout {
+                if !restored_layout {
+                    tree.mark_nearby_subtree_layout_clean_for_refresh_only(&subtree_root_id);
+                }
+                if !registry_relevant {
+                    tree.clear_registry_refresh_dirty_for_subtree(&subtree_root_id);
+                }
+                tree.recompute_layout_descendant_dirty();
+                if registry_relevant {
+                    TreeInvalidation::Registry
+                } else {
+                    TreeInvalidation::Paint
+                }
+            } else {
+                TreeInvalidation::Resolve
+            }
         }
 
         Patch::Remove { id } => {
             let parent_link = tree.ix_of(&id).and_then(|ix| tree.parent_link_of(ix));
+            let nearby_registry_relevant = match parent_link {
+                Some(ParentLink::Nearby { slot, .. }) => {
+                    slot == NearbySlot::InFront || tree.subtree_affects_registry(&id)
+                }
+                _ => false,
+            };
 
-            if let Some(ghost_root_id) = maybe_capture_exit_ghost(tree, &id)? {
+            let ghost_root_id = maybe_capture_exit_ghost(tree, &id)?;
+            if let Some(ghost_root_id) = ghost_root_id {
                 attach_ghost_root(tree, &ghost_root_id)?;
             }
 
             remove_subtree(tree, &id);
             match parent_link {
+                Some(ParentLink::Nearby { .. }) if ghost_root_id.is_none() => {
+                    tree.recompute_layout_descendant_dirty();
+                    if nearby_registry_relevant {
+                        TreeInvalidation::Registry
+                    } else {
+                        TreeInvalidation::Paint
+                    }
+                }
                 Some(ParentLink::Nearby { .. }) => TreeInvalidation::Resolve,
                 _ => TreeInvalidation::Structure,
             }

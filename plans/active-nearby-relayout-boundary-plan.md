@@ -151,7 +151,7 @@ nearby_code_show_50/nearby_slot_change after_patch:
   patch_then_layout median ~= 48.0 µs
 ```
 
-Post-implementation guard shape with the same command:
+Post-measurement/resolve implementation guard shape with the same command:
 
 ```text
 nearby_code_hide_50/nearby_slot_change after_patch:
@@ -168,6 +168,27 @@ nearby_code_show_50/nearby_slot_change after_patch:
   layout_only median ~= 27.1 µs
   patch_then_layout median ~= 52.5 µs  # short-run timing remained noisy
 ```
+
+After the refresh-only nearby hide/restored-show follow-up, the retained-layout
+metadata/counter guard reports:
+
+```text
+nearby_code_hide_50/nearby_slot_change:
+  invalidation=paint operations=remove:1
+  after_patch intrinsic misses=0 stores=0
+  after_patch subtree hits=1 misses=0 stores=0
+  after_patch resolve hits=1 misses=0 stores=0
+
+nearby_code_show_50/nearby_slot_change:
+  invalidation=resolve operations=insert_nearby_subtree:1
+  after_patch intrinsic misses=3 stores=3
+  after_patch subtree hits=14 misses=4 stores=4
+  after_patch resolve hits=3 misses=4 stores=5
+```
+
+The cold show fixture still resolves because it has no prior detached code-block
+layout to restore; repeated real hover toggles should use the detached restore
+path and classify as paint/refresh-only.
 
 Focused retained-layout smoke after implementation:
 
@@ -211,6 +232,40 @@ and resolve that newly inserted subtree. A follow-up detached-layout cache now
 keeps a small bounded layout-state snapshot when a nearby subtree is removed and
 restores it when the same subtree shape is reinserted, preserving hit/miss/store
 semantics while avoiding repeated cold code-block layout on later toggles.
+
+A later hover-only demo sample showed all layout cache misses gone but timings
+still high:
+
+```text
+layout: avg=1.485 ms count=18
+patch tree actor: avg=1.800 ms count=18
+intrinsic measure: hits=0 misses=0 stores=0
+subtree measure: hits=360 misses=0 stores=0
+resolve: hits=162 misses=0 stores=18
+```
+
+Investigation: those samples are no longer cache-miss driven. The native
+`layout` timing records the whole recompute update (`prepare attrs + layout +
+refresh`), and the patch tree actor timing records patch processing through
+publish. Because remove/restored-show was still classified as resolve, the tree
+actor ran the recompute path even though all measurement/resolve cache lookups
+hit. The follow-up now classifies non-registry nearby remove and restored nearby
+show as `Paint`, so the tree actor can take the refresh-only path and reuse the
+cached full registry when possible.
+
+Focused Criterion guard added:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout \
+  nearby_hover_toggle_refresh -- --warm-up-time 0.1 --measurement-time 0.2
+```
+
+Short local result:
+
+```text
+native/nearby_hover_toggle_refresh/borders_like/restored_show_refresh_only ~166 µs
+native/nearby_hover_toggle_refresh/borders_like/cold_show_layout_refresh    ~318 µs
+```
 
 ## Slice 2: classify nearby topology invalidation — done
 
@@ -340,6 +395,8 @@ Tasks:
   subtree with the same structural signature, raw attrs, runtime layout state,
   and scale is reinserted
 - bound memory and subtree size
+- classify non-registry nearby remove/restored-show as refresh-only work instead
+  of recompute work
 
 Implemented shape:
 
@@ -350,9 +407,14 @@ Implemented shape:
   signature and scale match
 - restored subtree/resolve cache keys are retargeted to the new topology version
   counters before use
+- nearby topology changes mark registry refresh dirty only when the changed
+  nearby subtree/slot can affect the event registry; no-listener code previews
+  remain render-only damage
+- removing a non-registry nearby subtree and reinserting a restored non-registry
+  nearby subtree classify as `Paint`, allowing refresh-only work selection
 - focused test covers `none()` -> code block -> `none()` -> same code block with
   different node ids and verifies zero intrinsic/subtree/resolve misses on the
-  repeated show
+  repeated show plus no registry refresh damage on render-only nearby changes
 
 ## Slice 6: focused demo smoke and docs — done locally; focused app smoke still useful
 
@@ -370,6 +432,8 @@ cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check
 mix format --check-formatted
 git diff --check
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout \
+  nearby_hover_toggle_refresh -- --warm-up-time 0.1 --measurement-time 0.2
 cargo test --manifest-path native/emerge_skia/Cargo.toml --quiet
 mix test
 ```

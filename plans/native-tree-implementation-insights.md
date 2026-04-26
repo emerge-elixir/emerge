@@ -290,7 +290,10 @@ for recently removed nearby subtrees. It stores cloned `NodeLayoutState`
 snapshots only for small animation-free subtrees and restores them only when the
 same structural signature/raw attrs/runtime layout state/scale is reinserted.
 This handles `none()`/code-block nearby toggles where node ids are fresh but the
-subtree is exactly the same.
+subtree is exactly the same. When the changed nearby subtree/slot has no event
+registry contribution, remove/restored-show patches should classify as
+paint/render damage rather than resolve damage so the tree actor can skip layout
+and reuse the cached full registry.
 
 `measure_descendant_dirty` and `resolve_descendant_dirty` are traversal signals,
 not cache outcomes. The measurement bit exists so a clean ancestor can avoid
