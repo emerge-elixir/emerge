@@ -10,9 +10,9 @@ investigation that led to the current implementation.
 ### `active-nearby-relayout-boundary-plan.md`
 
 The current temporary active implementation plan. It targets nearby overlay
-mount/unmount work. The benchmark/test guard and measurement boundary are in
-place; remaining active work is conservative resolve traversal so nearby changes
-avoid visiting more clean siblings/ancestors than necessary.
+mount/unmount work. The benchmark/test guard, measurement boundary, and nearby
+resolve traversal are implemented and locally validated; focused app smoke is
+still useful before deleting the temporary plan file.
 
 ### `layout-caching-roadmap.md`
 
@@ -22,9 +22,8 @@ Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
 targeted layout-affecting animation invalidation, text-flow resolve-cache
 eligibility, the first relayout/dependency boundary, compact topology version
-cache keys, refresh subtree skipping, and the nearby measurement boundary are
-done. The next work is nearby resolve traversal, broader boundaries, and
-viewport/repeater-aware caching.
+cache keys, refresh subtree skipping, and nearby relayout boundaries are done.
+The next work is broader boundaries and viewport/repeater-aware caching.
 
 ### `layout-caching-engine-insights.md`
 
@@ -92,26 +91,19 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Finish nearby resolve traversal
+### 1. Broaden other relayout/dependency boundaries
 
-Nearby overlay topology no longer forces broad host/ancestor measurement misses.
-The remaining nearby work is to reduce conservative resolve traversal so large
-nearby show/hide updates avoid visiting unrelated clean siblings while still
-keeping changed nearby descendants reachable.
+Nearby overlay topology no longer forces broad host/ancestor measurement or
+resolve misses. The next layout-cache work should broaden boundaries for other
+container/dependency shapes one at a time with focused correctness tests.
 
-### 2. Broaden other relayout/dependency boundaries
-
-The first boundary covers fixed-size `El`/`None`, and the active slice targets
-nearby overlays. Broader row/column, scrollable, and text-flow boundaries should
-be added only with focused correctness tests.
-
-### 3. Revisit registry chunk seeding if profiles justify it
+### 2. Revisit registry chunk seeding if profiles justify it
 
 The guarded registry chunk infrastructure is in place. Leave damaged/no-cache
 and escape-nearby cases on the full-rebuild fallback unless a future profile
 shows registry rebuilds are the dominant cost and cheap seeding is proven safe.
 
-### 4. Repeater/viewport-aware caching
+### 3. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.

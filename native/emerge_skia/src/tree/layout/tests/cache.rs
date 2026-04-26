@@ -1687,8 +1687,67 @@ fn test_nearby_slot_change_reuses_host_measure_cache() {
     assert_eq!(stats.intrinsic_measure_misses, 0);
     assert_eq!(stats.subtree_measure_misses, 0);
     assert!(stats.subtree_measure_hits >= 2);
+    assert_eq!(stats.resolve_misses, 0);
+    assert!(stats.resolve_hits >= 1);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+}
+
+#[test]
+fn test_nearby_slot_change_cached_resolve_matches_uncached_layout() {
+    let mut cached = fixed_host_with_nearby_tree(true);
+    let root_id = cached.root_id().unwrap();
+    let host_id = cached.child_ids(&root_id)[0];
+    let nearby_id = cached.nearby_mounts_for(&host_id)[0].id;
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let invalidation = apply_patches(
+        &mut cached,
+        vec![Patch::SetNearbyMounts {
+            host_id,
+            mounts: vec![NearbyMount {
+                slot: NearbySlot::Below,
+                id: nearby_id,
+            }],
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let mut uncached = fixed_host_with_nearby_tree(true);
+    let uncached_root_id = uncached.root_id().unwrap();
+    let uncached_host_id = uncached.child_ids(&uncached_root_id)[0];
+    let uncached_nearby_id = uncached.nearby_mounts_for(&uncached_host_id)[0].id;
+    uncached
+        .set_nearby_mounts(
+            &uncached_host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::Below,
+                id: uncached_nearby_id,
+            }],
+        )
+        .unwrap();
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
 }
 
 #[test]
@@ -1759,6 +1818,8 @@ fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
     assert_eq!(tree.get(&sibling_id).unwrap().layout.frame, sibling_frame);
     assert!(stats.subtree_measure_hits >= 2);
     assert!(stats.subtree_measure_misses <= 2);
+    assert!(stats.resolve_hits >= 1);
+    assert!(stats.resolve_misses <= 2);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
 }

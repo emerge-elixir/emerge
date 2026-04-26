@@ -291,9 +291,9 @@ not cache outcomes. The measurement bit exists so a clean ancestor can avoid
 remeasuring itself without hiding dirty descendants behind its subtree
 measurement cache. `measure_element(...)` traverses dirty descendants first and
 can then reuse the ancestor's cached measured frame when the ancestor itself
-stayed clean. The resolve bit currently keeps dirty nearby descendants reachable
-by blocking clean ancestor resolve-cache hits; avoiding all clean sibling visits
-is a future traversal-boundary optimization.
+stayed clean. The resolve bit lets clean ancestor resolve-cache hits restore
+ancestor geometry while still traversing dirty nearby descendant paths, so
+unrelated clean siblings do not need to be visited just to record cache hits.
 
 ## Text-flow resolve-cache insight
 
@@ -343,7 +343,9 @@ This preserves the relevant cache dependency while reducing hot-path key cloning
 Paint-child versions are tracked for future render/order work, resolve keys use
 nearby topology because nearby placement/order affects output, and subtree
 measurement keys exclude nearby topology because it should not affect host
-measured size.
+measured size. During nearby-only resolve traversal, a cached host key may be
+reused for the host's own geometry while ignoring only the nearby portion of the
+key; the host then resolves nearby mounts and stores an updated full resolve key.
 
 Future ix-native traversal cleanup should build on these compact dependency
 helpers rather than reintroducing cloned identity lists.
