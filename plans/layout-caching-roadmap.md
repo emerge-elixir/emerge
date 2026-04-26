@@ -55,10 +55,11 @@ The remaining work is about making reuse broader, cheaper, and more precise:
 - relayout/dependency boundaries currently cover only fixed-size `El`/`None`
   parents; row/column, scrollable, nearby, and text-flow boundaries remain
   conservative
-- cache keys no longer clone child/nearby identity lists, but attrs and some
-  traversal helpers still allocate/clone in hot paths
+- cache keys no longer clone child/nearby identity lists, and render subtree
+  keys no longer allocate joined debug strings, but attrs and some traversal
+  helpers still allocate/clone in hot paths
 - measure/resolve traversal still uses some id-facing compatibility helpers even though topology is ix-based
-- `refresh(tree)` does not yet skip clean subtrees
+- refresh registry traversal does not yet skip clean subtree chunks
 - dynamic list / viewport cache preservation is not specialized yet
 
 ## Current benchmark signal
@@ -84,9 +85,10 @@ Important caveat: origin-agnostic scheduling now keeps paint-only updates on the
 refresh path regardless of whether they came from animation, scroll, patching,
 or runtime state. Layout-affecting animations now dirty affected paths and keep
 layout caches enabled elsewhere. The first fixed-size `El`/`None` measure
-boundary is implemented, and child/nearby topology dependencies now use compact
-version keys. Broader boundaries, attr-key allocation reductions, and refresh
-skipping remain future work.
+boundary is implemented, child/nearby topology dependencies now use compact
+version keys, and render refresh can skip clean retained subtrees. Broader
+boundaries, additional typed version keys, and registry chunk skipping remain
+future work.
 
 ## Completed slice: simplify layout-cache stats
 
@@ -298,12 +300,18 @@ Implemented so far:
 - duplicate registry updates are avoided when the cached registry payload is
   reused
 - render scene refresh can reuse clean retained render subtrees
+- render-cache regression guards compare cached and uncached refresh paths for
+  paint-rich, nearby-rich, layout-matrix, animated-shadow, and scrolling-shadow
+  cases
+- render snapshots omit retained layout cache entries, dirty paths avoid lookup
+  key construction before rebuilding, and scroll-offset subtrees bypass render
+  cache lookup to avoid cloning immediately-stale render scenes
 
 Next within this slice:
 
 - registry subtree chunk cache/skip
 
-`refresh(tree)` should be able to skip a subtree when:
+Render refresh can skip a subtree when:
 
 - geometry did not change
 - paint-relevant attrs did not change
