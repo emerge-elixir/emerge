@@ -429,6 +429,70 @@ Implementation acceptance:
 
 Goal: make event registry rebuild proportional to registry damage, not tree size.
 
+### Slice 5a: registry regression guard — first
+
+Do not start the registry chunk implementation until this guard exists and has a
+recorded baseline. This is the lesson from the render-cache regression: the
+benchmark/test must be in place before changing the hot path.
+
+Required benchmark shape:
+
+- Add a native benchmark group named something like
+  `native/registry_refresh_cache_regression`.
+- It must measure registry-producing refresh work, not layout-only work.
+- It must compile under `cargo test --benches --no-run`; timing execution stays
+  opt-in.
+- It must compare the current full-registry rebuild path against a safe baseline
+  and future chunk-cache path. Before chunk caching exists, it should at least
+  capture current full-rebuild baseline timings with stable case names.
+- Suggested cases:
+  - `interactive_rich_500/event_attr`
+  - `nearby_rich_500/event_attr`
+  - `nearby_rich_500/nearby_slot_change`
+  - `scroll_rich_500/event_attr`
+  - `text_rich_500/event_attr`
+  - focused text-input runtime/focus change if a fixture or native tree helper
+    can model it cheaply
+- Suggested measured variants:
+  - `full_registry_rebuild`: warmed tree, force/build full registry payload
+  - `clean_registry_reuse`: warmed tree with no registry damage, verify existing
+    full-registry reuse stays cheap
+  - `after_patch_full_registry`: apply a registry-affecting patch in setup, then
+    run the current refresh/full-registry rebuild path
+  - `patch_full_registry`: patch plus actor-equivalent refresh decision in the
+    measured body
+  - after chunking exists, matching `chunked_*` variants that compare against
+    the full-rebuild baseline for the same tree/update
+- Benchmark output names must remain grep-friendly and include scenario,
+  mutation, and variant.
+
+Required deterministic tests before/with implementation:
+
+- A helper/test that compares future chunked registry output to the existing
+  full `build_registry_rebuild(tree)` output for representative trees.
+- Registry-only patch keeps render scene stable while registry output changes.
+- Clean paint-only refresh reuses cached full registry payload and does not
+  rebuild registry chunks.
+- Event dispatch precedence remains unchanged for:
+  - nearby overlays
+  - nested scroll containers and scrollbar hit areas
+  - focus order/focus cycle listeners
+  - focused text input metadata and IME cursor area
+  - hover/press/click listener ordering
+- If test-only counters are added, they must be registry/refresh counters, not
+  layout-cache bypass counters.
+
+Regression guard acceptance:
+
+- Baseline benchmark command is documented in this plan before implementation.
+- Baseline benchmark has been run once and the approximate current timings are
+  captured in the plan or commit notes.
+- Tests can compare chunked output to the existing full rebuild path without
+  relying on timing assertions.
+- Normal `cargo test` / `mix test` do not execute timing benchmarks.
+
+### Slice 5b: registry chunk implementation
+
 Tasks:
 
 - factor registry traversal into cacheable per-subtree chunks before final window
@@ -447,11 +511,14 @@ Tasks:
 - add targeted registry tests for nested scroll, nearby overlays, focus order,
   text input, and scrollbar hit areas
 
-Acceptance:
+Implementation acceptance:
 
 - registry output matches full rebuild for all focused tests
 - registry-only updates avoid rebuilding unrelated sibling chunks
 - event dispatch precedence remains unchanged
+- benchmark variants show chunked registry refresh is not worse than full rebuild
+  for cold/no-cache or damaged/no-cache cases, and is better for clean-sibling
+  registry updates
 
 ## Slice 6: stats and benchmark smoke
 
