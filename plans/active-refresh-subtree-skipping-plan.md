@@ -2,9 +2,9 @@
 
 Last updated: 2026-04-26.
 
-Status: partially implemented. Refresh damage bookkeeping and clean-registry
-reuse for refresh-only frames are implemented; render subtree caching and
-registry subtree chunks remain planned.
+Status: partially implemented. Refresh damage bookkeeping, clean-registry reuse,
+and render subtree caching/skipping are implemented; registry subtree chunks
+remain planned.
 
 ## Motivation
 
@@ -198,7 +198,7 @@ Acceptance:
 - explicit registry requests still use cached rebuild or rebuild as today
 - no event hit-test/focus/text-input regressions
 
-## Slice 3: render subtree cache/skip — next
+## Slice 3: render subtree cache/skip — done
 
 Goal: reuse retained render subtrees when render dependencies are unchanged.
 
@@ -231,7 +231,23 @@ Acceptance:
   text input cursor/selection/preedit, image/video primitives, and shadows do
   not produce stale output
 
-## Slice 4: registry subtree chunk cache/skip
+Implemented shape:
+
+- `NodeRefreshState` owns an optional retained render subtree cache
+- render caches store local and escape render nodes plus text-input IME metadata
+- render keys conservatively include render-relevant effective attrs, runtime
+  render state, frame/scroll state, inherited font context, scene/render context,
+  child/paint-child/nearby topology versions/counts, and paragraph fragments
+- `refresh(tree)` and clean-registry refresh use cached scene rendering
+- a subtree cache is reused only when the render key matches and the node has no
+  render or descendant render damage
+- uncached test rendering remains available for equality checks
+
+Focused tests cover cached-vs-uncached scene equality after a sibling paint
+patch, registry-only root refresh preserving render cache, clean registry reuse,
+and transform paint changes rebuilding registry output.
+
+## Slice 4: registry subtree chunk cache/skip — next
 
 Goal: make event registry rebuild proportional to registry damage, not tree size.
 
@@ -357,7 +373,7 @@ mix test
 cargo test --manifest-path native/emerge_skia/Cargo.toml --benches --no-run
 ```
 
-Validation status for implemented slices 1–2:
+Validation status for implemented slices 1–3:
 
 - `cargo fmt --manifest-path native/emerge_skia/Cargo.toml --check`
 - `mix format --check-formatted`

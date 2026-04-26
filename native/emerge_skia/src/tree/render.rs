@@ -18,8 +18,8 @@ use self::text::{
 };
 use super::attrs::{Attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::element::{
-    Element, ElementKind, ElementTree, Frame, NearbySlot, NodeIx, RetainedChildMode,
-    RetainedLocalBranchRef,
+    Element, ElementKind, ElementTree, Frame, NearbySlot, NodeIx, RenderSubtreeCache,
+    RenderSubtreeKey, RetainedChildMode, RetainedLocalBranchRef,
 };
 use super::geometry::{ClipShape, Rect, host_clip_shape, self_shape as geometry_self_shape};
 use super::layout::FontContext;
@@ -27,10 +27,12 @@ use super::scene::{
     ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
 };
 use super::transform::element_transform;
+#[cfg(test)]
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 
+#[cfg(test)]
 pub(crate) struct RenderOutput {
     pub scene: RenderScene,
     pub event_rebuild: RegistryRebuildPayload,
@@ -136,11 +138,13 @@ impl RenderBuildContext {
     }
 }
 
+#[cfg(test)]
 struct RenderOutputs<'a> {
     text_input_focused: &'a mut bool,
     text_input_cursor_area: &'a mut Option<(f32, f32, f32, f32)>,
 }
 
+#[cfg(test)]
 impl<'a> RenderOutputs<'a> {
     fn reborrow(&mut self) -> RenderOutputs<'_> {
         let text_input_focused = &mut *self.text_input_focused;
@@ -159,20 +163,61 @@ struct RenderTraversal<'a> {
     render_ctx: &'a RenderBuildContext,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RenderSubtree {
     local: Vec<RenderNode>,
     escapes: Vec<RenderNode>,
+    text_input_focused: bool,
+    text_input_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
 impl RenderSubtree {
+    fn from_cache(cache: RenderSubtreeCache) -> Self {
+        Self {
+            local: cache.local,
+            escapes: cache.escapes,
+            text_input_focused: cache.text_input_focused,
+            text_input_cursor_area: cache.text_input_cursor_area,
+        }
+    }
+
+    fn to_cache(&self, key: RenderSubtreeKey) -> RenderSubtreeCache {
+        RenderSubtreeCache {
+            key,
+            local: self.local.clone(),
+            escapes: self.escapes.clone(),
+            text_input_focused: self.text_input_focused,
+            text_input_cursor_area: self.text_input_cursor_area,
+        }
+    }
+
     fn extend_local(&mut self, subtree: RenderSubtree) {
+        self.merge_outputs(&subtree);
         self.local.extend(subtree.local);
         self.escapes.extend(subtree.escapes);
     }
 
     fn extend_escape(&mut self, subtree: RenderSubtree) {
+        self.merge_outputs(&subtree);
         self.escapes.extend(subtree.into_nodes());
+    }
+
+    fn merge_outputs(&mut self, subtree: &RenderSubtree) {
+        self.text_input_focused |= subtree.text_input_focused;
+        if self.text_input_cursor_area.is_none() {
+            self.text_input_cursor_area = subtree.text_input_cursor_area;
+        }
+    }
+
+    fn merge_output_values(
+        &mut self,
+        text_input_focused: bool,
+        text_input_cursor_area: Option<(f32, f32, f32, f32)>,
+    ) {
+        self.text_input_focused |= text_input_focused;
+        if self.text_input_cursor_area.is_none() {
+            self.text_input_cursor_area = text_input_cursor_area;
+        }
     }
 
     fn into_nodes(self) -> Vec<RenderNode> {
@@ -184,6 +229,7 @@ impl RenderSubtree {
 
 /// Render the tree without rebuilding event registry metadata.
 /// Reads from pre-scaled attrs (layout pass must run first).
+#[cfg(test)]
 pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
     let Some(root_ix) = tree.root_ix() else {
         return RenderSceneOutput {
@@ -223,8 +269,44 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
     }
 }
 
+pub(crate) fn render_tree_scene_cached(tree: &mut ElementTree) -> RenderSceneOutput {
+    let Some(root_ix) = tree.root_ix() else {
+        return RenderSceneOutput {
+            scene: RenderScene::default(),
+            text_input_focused: false,
+            text_input_cursor_area: None,
+        };
+    };
+
+    let render_ctx = RenderBuildContext {
+        scene_bounds: scene_bounds_for_root(tree, root_ix),
+        ..RenderBuildContext::default()
+    };
+    let subtree = build_element_subtree_cached(
+        tree,
+        root_ix,
+        &FontContext::default(),
+        RenderTraversal {
+            scene_ctx: SceneContext::default(),
+            render_ctx: &render_ctx,
+        },
+    );
+
+    let text_input_focused = subtree.text_input_focused;
+    let text_input_cursor_area = subtree.text_input_cursor_area;
+
+    RenderSceneOutput {
+        scene: RenderScene {
+            nodes: subtree.into_nodes(),
+        },
+        text_input_focused,
+        text_input_cursor_area,
+    }
+}
+
 /// Render the tree and collect rebuild metadata.
 /// Reads from pre-scaled attrs (layout pass must run first).
+#[cfg(test)]
 pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     let scene_output = render_tree_scene(tree);
 
@@ -236,6 +318,7 @@ pub(crate) fn render_tree(tree: &ElementTree) -> RenderOutput {
     }
 }
 
+#[cfg(test)]
 fn build_element_subtree(
     tree: &ElementTree,
     ix: NodeIx,
@@ -328,9 +411,442 @@ fn build_element_subtree(
     RenderSubtree {
         local: wrap_with_alpha(local, alpha),
         escapes,
+        text_input_focused: false,
+        text_input_cursor_area: None,
     }
 }
 
+fn build_element_subtree_cached(
+    tree: &mut ElementTree,
+    ix: NodeIx,
+    inherited: &FontContext,
+    traversal: RenderTraversal<'_>,
+) -> RenderSubtree {
+    let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
+        return RenderSubtree::default();
+    };
+    let Some(frame) = element.layout.frame else {
+        return RenderSubtree::default();
+    };
+
+    let key = render_subtree_key(tree, ix, &element, inherited, &traversal);
+    let render_damage = element.refresh.render_dirty || element.refresh.render_descendant_dirty;
+    if !render_damage
+        && let Some(cache) = tree
+            .get_ix(ix)
+            .and_then(|element| element.refresh.render_cache.as_ref())
+            .filter(|cache| cache.key == key)
+            .cloned()
+    {
+        return RenderSubtree::from_cache(cache);
+    }
+
+    let attrs = &element.layout.effective;
+    let radius = attrs.border_radius.as_ref();
+    let scene_state = resolve_node_state(&element, traversal.scene_ctx.clone());
+    let render_frame = scene_state
+        .as_ref()
+        .map(|state| state.adjusted_frame)
+        .unwrap_or(frame);
+    let transform = element_transform(render_frame, attrs);
+    let alpha = attrs.alpha.unwrap_or(1.0) as f32;
+
+    let element_context = inherited.merge_with_attrs(attrs);
+    let mut local = Vec::new();
+
+    let outer_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, false);
+    local.extend(wrap_with_shadow_pass(wrap_with_clips(
+        wrap_with_transform(outer_shadow_nodes, transform),
+        traversal.render_ctx.shadow_clip_shapes(),
+    )));
+
+    let background_nodes = build_background_nodes(render_frame, attrs);
+    let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
+    let host_content = build_host_content_subtree_cached(
+        tree,
+        &element,
+        ix,
+        render_frame,
+        &element_context,
+        RenderTraversal {
+            scene_ctx: traversal.scene_ctx.clone(),
+            render_ctx: traversal.render_ctx,
+        },
+        scene_state.clone(),
+    );
+    let border_nodes = collect_border_nodes(render_frame, attrs);
+    let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
+    let inherited_self_clip = traversal.render_ctx.nearest_self_clip();
+
+    if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video) {
+        let mut decorative_nodes = Vec::new();
+        decorative_nodes.extend(background_nodes);
+        decorative_nodes.extend(inset_shadow_nodes);
+        decorative_nodes.extend(border_nodes);
+
+        let content_clips = if image_video_needs_own_host_clip(attrs) {
+            inherited_host_clips.clone()
+        } else {
+            inherited_self_clip
+                .map(|clip| vec![clip])
+                .unwrap_or_else(|| inherited_host_clips.clone())
+        };
+
+        local.extend(wrap_with_clips(
+            wrap_with_transform(decorative_nodes, transform),
+            inherited_host_clips.clone(),
+        ));
+        local.extend(wrap_with_relaxed_clips(
+            wrap_with_transform(host_content.local, transform),
+            content_clips,
+        ));
+    } else {
+        let mut normal_nodes = Vec::new();
+        normal_nodes.extend(background_nodes);
+        normal_nodes.extend(inset_shadow_nodes);
+        normal_nodes.extend(host_content.local);
+        normal_nodes.extend(border_nodes);
+
+        local.extend(wrap_with_clips(
+            wrap_with_transform(normal_nodes, transform),
+            inherited_host_clips,
+        ));
+    }
+
+    let escapes = wrap_with_alpha(wrap_with_transform(host_content.escapes, transform), alpha);
+
+    let subtree = RenderSubtree {
+        local: wrap_with_alpha(local, alpha),
+        escapes,
+        text_input_focused: host_content.text_input_focused,
+        text_input_cursor_area: host_content.text_input_cursor_area,
+    };
+
+    if let Some(element) = tree.get_ix_mut(ix) {
+        element.refresh.render_cache = Some(subtree.to_cache(key));
+    }
+
+    subtree
+}
+
+fn render_subtree_key(
+    tree: &ElementTree,
+    ix: NodeIx,
+    element: &Element,
+    inherited: &FontContext,
+    traversal: &RenderTraversal<'_>,
+) -> RenderSubtreeKey {
+    RenderSubtreeKey {
+        kind: element.spec.kind,
+        attrs: render_attrs_key(&element.layout.effective),
+        runtime: format!("{:?}", element.runtime),
+        frame: element.layout.frame,
+        scroll_x: element.layout.scroll_x,
+        scroll_y: element.layout.scroll_y,
+        scroll_x_max: element.layout.scroll_x_max,
+        scroll_y_max: element.layout.scroll_y_max,
+        inherited: format!("{inherited:?}"),
+        scene_context: format!("{:?}", traversal.scene_ctx),
+        render_context: format!("{:?}", traversal.render_ctx),
+        topology: tree.render_topology_dependency_key_ix(ix),
+        paragraph_fragments: format!("{:?}", element.layout.paragraph_fragments),
+    }
+}
+
+fn render_attrs_key(attrs: &Attrs) -> String {
+    [
+        format!("{:?}", &attrs.width),
+        format!("{:?}", &attrs.height),
+        format!("{:?}", &attrs.padding),
+        format!("{:?}", &attrs.spacing),
+        format!("{:?}", &attrs.spacing_x),
+        format!("{:?}", &attrs.spacing_y),
+        format!("{:?}", &attrs.align_x),
+        format!("{:?}", &attrs.align_y),
+        format!("{:?}", &attrs.scrollbar_y),
+        format!("{:?}", &attrs.scrollbar_x),
+        format!("{:?}", &attrs.ghost_scrollbar_y),
+        format!("{:?}", &attrs.ghost_scrollbar_x),
+        format!("{:?}", &attrs.scroll_x),
+        format!("{:?}", &attrs.scroll_y),
+        format!("{:?}", &attrs.clip_nearby),
+        format!("{:?}", &attrs.border_width),
+        format!("{:?}", &attrs.background),
+        format!("{:?}", &attrs.border_radius),
+        format!("{:?}", &attrs.border_style),
+        format!("{:?}", &attrs.border_color),
+        format!("{:?}", &attrs.box_shadows),
+        format!("{:?}", &attrs.font),
+        format!("{:?}", &attrs.font_weight),
+        format!("{:?}", &attrs.font_style),
+        format!("{:?}", &attrs.font_size),
+        format!("{:?}", &attrs.font_color),
+        format!("{:?}", &attrs.svg_color),
+        format!("{:?}", &attrs.font_underline),
+        format!("{:?}", &attrs.font_strike),
+        format!("{:?}", &attrs.font_letter_spacing),
+        format!("{:?}", &attrs.font_word_spacing),
+        format!("{:?}", &attrs.image_src),
+        format!("{:?}", &attrs.image_fit),
+        format!("{:?}", &attrs.image_size),
+        format!("{:?}", &attrs.text_align),
+        format!("{:?}", &attrs.content),
+        format!("{:?}", &attrs.snap_layout),
+        format!("{:?}", &attrs.snap_text_metrics),
+        format!("{:?}", &attrs.space_evenly),
+        format!("{:?}", &attrs.move_x),
+        format!("{:?}", &attrs.move_y),
+        format!("{:?}", &attrs.rotate),
+        format!("{:?}", &attrs.scale),
+        format!("{:?}", &attrs.alpha),
+        format!("{:?}", &attrs.video_target),
+    ]
+    .join("|")
+}
+
+fn build_host_content_subtree_cached(
+    tree: &mut ElementTree,
+    element: &Element,
+    element_ix: NodeIx,
+    render_frame: Frame,
+    element_context: &FontContext,
+    traversal: RenderTraversal<'_>,
+    scene_state: Option<ResolvedNodeState>,
+) -> RenderSubtree {
+    let attrs = &element.layout.effective;
+    let current_host_clip = HostClipDescriptor {
+        clip: scene_state
+            .as_ref()
+            .map(|state| state.host_clip)
+            .unwrap_or_else(|| host_clip_shape(render_frame, attrs)),
+        scroll_x: effective_scrollbar_x(attrs),
+        scroll_y: effective_scrollbar_y(attrs),
+    };
+    let current_self_shape = geometry_self_shape(render_frame, attrs);
+    let child_render_ctx = traversal.render_ctx.with_host_clip(
+        current_host_clip,
+        ClipShape {
+            rect: current_self_shape.rect,
+            radii: current_self_shape.radii,
+        },
+        attrs.clip_nearby.unwrap_or(false),
+    );
+
+    let mut subtree = RenderSubtree::default();
+
+    if element.spec.kind == ElementKind::Paragraph {
+        for mount in tree.local_nearby_mounts_ix(element_ix) {
+            let branch_subtree = build_nearby_mount_subtree_cached(
+                tree,
+                mount.ix,
+                mount.slot,
+                element_context,
+                RenderTraversal {
+                    scene_ctx: traversal.scene_ctx.clone(),
+                    render_ctx: &child_render_ctx,
+                },
+                scene_state.clone(),
+            );
+            subtree.extend_local(branch_subtree);
+        }
+    } else {
+        let mut branches = Vec::new();
+        element.for_each_retained_local_branch(tree, |branch| branches.push(branch));
+        let child_scene_ctx = scene_state
+            .clone()
+            .map(|resolved| {
+                next_scene_context(resolved, super::element::RetainedPaintPhase::Children)
+            })
+            .unwrap_or_default();
+
+        for branch in branches {
+            match branch {
+                RetainedLocalBranchRef::Nearby(mount) => {
+                    let branch_subtree = build_nearby_mount_subtree_cached(
+                        tree,
+                        mount.ix,
+                        mount.slot,
+                        element_context,
+                        RenderTraversal {
+                            scene_ctx: traversal.scene_ctx.clone(),
+                            render_ctx: &child_render_ctx,
+                        },
+                        scene_state.clone(),
+                    );
+                    subtree.extend_local(branch_subtree);
+                }
+                RetainedLocalBranchRef::Child(child) => {
+                    let branch_subtree = build_element_subtree_cached(
+                        tree,
+                        child.ix,
+                        element_context,
+                        RenderTraversal {
+                            scene_ctx: child_scene_ctx.clone(),
+                            render_ctx: &child_render_ctx,
+                        },
+                    );
+                    subtree.extend_local(branch_subtree);
+                }
+            }
+        }
+    }
+
+    let mut own_text_input_focused = false;
+    let mut own_text_input_cursor_area = None;
+    subtree.local.extend(wrap_own_content_nodes(
+        build_own_content_nodes(
+            element,
+            render_frame,
+            attrs,
+            element_context,
+            &mut own_text_input_focused,
+            &mut own_text_input_cursor_area,
+        ),
+        attrs,
+        element.spec.kind,
+        current_host_clip.clip,
+    ));
+    subtree.merge_output_values(own_text_input_focused, own_text_input_cursor_area);
+
+    if element.spec.kind == ElementKind::Paragraph {
+        let paragraph_subtree = build_paragraph_subtree_cached(
+            tree,
+            element,
+            element_context,
+            RenderTraversal {
+                scene_ctx: traversal.scene_ctx.clone(),
+                render_ctx: &child_render_ctx,
+            },
+            scene_state.clone(),
+            current_host_clip.clip,
+        );
+        subtree.extend_local(paragraph_subtree);
+    }
+
+    subtree.local.extend(wrap_with_host_clip(
+        collect_scrollbar_nodes(scene_state.as_ref(), render_frame, attrs),
+        current_host_clip.clip,
+    ));
+
+    for mount in tree.escape_nearby_mounts_ix(element_ix) {
+        subtree.extend_escape(build_nearby_mount_subtree_cached(
+            tree,
+            mount.ix,
+            mount.slot,
+            element_context,
+            RenderTraversal {
+                scene_ctx: traversal.scene_ctx.clone(),
+                render_ctx: &child_render_ctx.without_host_clips(),
+            },
+            scene_state.clone(),
+        ));
+    }
+
+    subtree
+}
+
+fn build_nearby_mount_subtree_cached(
+    tree: &mut ElementTree,
+    nearby_ix: NodeIx,
+    slot: NearbySlot,
+    element_context: &FontContext,
+    traversal: RenderTraversal<'_>,
+    scene_state: Option<ResolvedNodeState>,
+) -> RenderSubtree {
+    build_element_subtree_cached(
+        tree,
+        nearby_ix,
+        element_context,
+        RenderTraversal {
+            scene_ctx: scene_state
+                .map(|state| next_scene_context(state, slot.spec().phase))
+                .unwrap_or_default(),
+            render_ctx: traversal.render_ctx,
+        },
+    )
+}
+
+fn build_paragraph_subtree_cached(
+    tree: &mut ElementTree,
+    element: &Element,
+    element_context: &FontContext,
+    traversal: RenderTraversal<'_>,
+    scene_state: Option<ResolvedNodeState>,
+    current_host_clip: ClipShape,
+) -> RenderSubtree {
+    let child_scene_ctx = paragraph_children_scene_context(scene_state.clone());
+    let fragment_offset = scene_state
+        .as_ref()
+        .map(|state| {
+            (
+                state.adjusted_frame.x - state.frame.x,
+                state.adjusted_frame.y - state.frame.y,
+            )
+        })
+        .unwrap_or_default();
+
+    let mut subtree = RenderSubtree::default();
+    let mut children = Vec::new();
+    element.for_each_retained_child(tree, |child| children.push(child));
+    for child in children {
+        match child.mode {
+            RetainedChildMode::Scope => {
+                let child_subtree = build_element_subtree_cached(
+                    tree,
+                    child.ix,
+                    element_context,
+                    RenderTraversal {
+                        scene_ctx: child_scene_ctx.clone(),
+                        render_ctx: traversal.render_ctx,
+                    },
+                );
+                subtree.extend_local(child_subtree);
+            }
+            RetainedChildMode::InlineEventOnly => {}
+        }
+    }
+
+    let mut fragment_nodes = Vec::new();
+    if let Some(fragments) = &element.layout.paragraph_fragments {
+        for frag in fragments {
+            let x = frag.x + fragment_offset.0;
+            let baseline_y = frag.y + fragment_offset.1 + frag.ascent;
+            fragment_nodes.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
+                x,
+                baseline_y,
+                frag.text.clone(),
+                frag.font_size,
+                frag.color,
+                frag.family.clone(),
+                frag.weight,
+                frag.italic,
+            )));
+
+            if frag.underline || frag.strike {
+                let font =
+                    make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
+                let word_width =
+                    measure_text_visual_metrics_with_font(&font, &frag.text).visual_width;
+                fragment_nodes.extend(text_decoration_items(TextDecorationSpec {
+                    x,
+                    baseline_y,
+                    width: word_width,
+                    font_size: frag.font_size,
+                    color: frag.color,
+                    underline: frag.underline,
+                    strike: frag.strike,
+                }));
+            }
+        }
+    }
+    subtree
+        .local
+        .extend(wrap_with_host_clip(fragment_nodes, current_host_clip));
+
+    subtree
+}
+
+#[cfg(test)]
 fn build_host_content_subtree(
     tree: &ElementTree,
     element: &Element,
@@ -473,6 +989,7 @@ fn build_host_content_subtree(
     subtree
 }
 
+#[cfg(test)]
 fn build_nearby_mount_subtree(
     tree: &ElementTree,
     nearby_ix: NodeIx,
@@ -496,6 +1013,7 @@ fn build_nearby_mount_subtree(
     )
 }
 
+#[cfg(test)]
 fn build_paragraph_subtree(
     tree: &ElementTree,
     element: &Element,
