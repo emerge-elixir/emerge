@@ -728,6 +728,7 @@ struct NodeTopology {
 #[derive(Clone, Debug)]
 struct DetachedLayoutSubtreeCache {
     signature: u64,
+    context_signature: u64,
     scale_bits: u32,
     states: Vec<NodeLayoutState>,
 }
@@ -1017,26 +1018,26 @@ impl Element {
 
         if self.spec.kind == ElementKind::Paragraph {
             for child_ix in tree.child_ixs(ix) {
-                if paragraph_child_mode(tree, child_ix) == RetainedChildMode::Scope {
-                    if let Some(id) = tree.id_of(child_ix) {
-                        f(RetainedChildRef {
-                            ix: child_ix,
-                            id,
-                            mode: RetainedChildMode::Scope,
-                        });
-                    }
+                if paragraph_child_mode(tree, child_ix) == RetainedChildMode::Scope
+                    && let Some(id) = tree.id_of(child_ix)
+                {
+                    f(RetainedChildRef {
+                        ix: child_ix,
+                        id,
+                        mode: RetainedChildMode::Scope,
+                    });
                 }
             }
 
             for child_ix in tree.child_ixs(ix) {
-                if paragraph_child_mode(tree, child_ix) == RetainedChildMode::InlineEventOnly {
-                    if let Some(id) = tree.id_of(child_ix) {
-                        f(RetainedChildRef {
-                            ix: child_ix,
-                            id,
-                            mode: RetainedChildMode::InlineEventOnly,
-                        });
-                    }
+                if paragraph_child_mode(tree, child_ix) == RetainedChildMode::InlineEventOnly
+                    && let Some(id) = tree.id_of(child_ix)
+                {
+                    f(RetainedChildRef {
+                        ix: child_ix,
+                        id,
+                        mode: RetainedChildMode::InlineEventOnly,
+                    });
                 }
             }
         } else {
@@ -1205,6 +1206,9 @@ impl ElementTree {
         let Some(signature) = self.detached_layout_signature_ix(root_ix) else {
             return;
         };
+        let Some(context_signature) = self.detached_layout_context_signature_ix(root_ix) else {
+            return;
+        };
         let ixs = self.detached_layout_ixs(root_ix);
 
         if ixs.is_empty() || ixs.len() > DETACHED_LAYOUT_CACHE_MAX_NODES {
@@ -1221,10 +1225,14 @@ impl ElementTree {
         }
 
         let scale_bits = self.current_scale.to_bits();
-        self.detached_layout_cache
-            .retain(|cache| cache.signature != signature || cache.scale_bits != scale_bits);
+        self.detached_layout_cache.retain(|cache| {
+            cache.signature != signature
+                || cache.context_signature != context_signature
+                || cache.scale_bits != scale_bits
+        });
         self.detached_layout_cache.push(DetachedLayoutSubtreeCache {
             signature,
+            context_signature,
             scale_bits,
             states,
         });
@@ -1242,12 +1250,15 @@ impl ElementTree {
         let Some(signature) = self.detached_layout_signature_ix(root_ix) else {
             return false;
         };
+        let Some(context_signature) = self.detached_layout_context_signature_ix(root_ix) else {
+            return false;
+        };
         let scale_bits = self.current_scale.to_bits();
-        let Some(position) = self
-            .detached_layout_cache
-            .iter()
-            .position(|cache| cache.signature == signature && cache.scale_bits == scale_bits)
-        else {
+        let Some(position) = self.detached_layout_cache.iter().position(|cache| {
+            cache.signature == signature
+                && cache.context_signature == context_signature
+                && cache.scale_bits == scale_bits
+        }) else {
             return false;
         };
 
@@ -1325,6 +1336,29 @@ impl ElementTree {
         }
 
         Some(())
+    }
+
+    fn detached_layout_context_signature_ix(&self, ix: NodeIx) -> Option<u64> {
+        let ParentLink::Nearby { host, slot } = self.parent_link_of(ix)? else {
+            return None;
+        };
+
+        let host_id = self.id_of(host)?;
+        let host_frame = self.get_ix(host)?.layout.frame?;
+        let mut hasher = DefaultHasher::new();
+        host_id.hash(&mut hasher);
+        slot.hash(&mut hasher);
+        Self::hash_layout_context_frame(host_frame, &mut hasher);
+        Some(hasher.finish())
+    }
+
+    fn hash_layout_context_frame(frame: Frame, state: &mut impl Hasher) {
+        frame.x.to_bits().hash(state);
+        frame.y.to_bits().hash(state);
+        frame.width.to_bits().hash(state);
+        frame.height.to_bits().hash(state);
+        frame.content_width.to_bits().hash(state);
+        frame.content_height.to_bits().hash(state);
     }
 
     fn detached_layout_ixs(&self, root_ix: NodeIx) -> Vec<NodeIx> {
@@ -2091,7 +2125,7 @@ impl ElementTree {
             let parent_depends_on_child_measure = match parent_link {
                 ParentLink::Child { .. } if measure_propagates => self
                     .get_ix(parent_ix)
-                    .map_or(true, parent_measure_depends_on_child_measure),
+                    .is_none_or(parent_measure_depends_on_child_measure),
                 ParentLink::Child { .. } => false,
                 ParentLink::Nearby { .. } => true,
             };
@@ -2359,12 +2393,12 @@ impl ElementTree {
                     break;
                 }
 
-                merged.push(ghost_id.clone());
+                merged.push(*ghost_id);
                 ghost_index += 1;
             }
 
             if let Some(live_id) = new_live_ids.get(live_index) {
-                merged.push(live_id.clone());
+                merged.push(*live_id);
             }
         }
 
