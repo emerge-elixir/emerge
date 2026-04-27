@@ -7,7 +7,15 @@ investigation that led to the current implementation.
 
 ## Files
 
-No temporary active plan is currently open.
+### `active-performance-merge-readiness-plan.md`
+
+Completed merge-readiness evidence for the remaining
+`performance-improvements` review concerns and the follow-up demo regressions.
+
+Use this when checking what was validated before merging the performance
+branch. It records full CI, benchmark evidence, broader native patch roundtrip
+coverage, cache/topology watch-list hardening, benchmark fixture policy, and
+the later animate-exit / todo-input regression fixes.
 
 ### `layout-caching-roadmap.md`
 
@@ -18,7 +26,7 @@ initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
 targeted layout-affecting animation invalidation, text-flow resolve-cache
 eligibility, the first relayout/dependency boundary, compact topology version
 cache keys, refresh subtree skipping, and nearby relayout boundaries are done.
-The next work is broader boundaries and viewport/repeater-aware caching.
+The next feature work is broader boundaries and viewport/repeater-aware caching.
 
 ### `layout-caching-engine-insights.md`
 
@@ -35,6 +43,15 @@ native topology cleanup work.
 
 This replaces the old separate node-identity / phase-4 / phase-5 plan files with
 a single status-and-insights document.
+
+### `performance-improvements-branch-review.md`
+
+Branch review and revisit notes for `performance-improvements`.
+
+Use this when checking merge readiness. It records the original blocker, the
+resolved fixes, and the completed merge-readiness checklist.
+The one-off completed fix plan was folded into this review and removed to keep
+`plans/` focused on active or durable reference documents.
 
 ## Current repo state
 
@@ -63,8 +80,11 @@ The native layout-caching foundation is in place:
   host/ancestor measurement dirtiness when host size is independent of the
   nearby overlay
 - recently removed small nearby subtrees can restore detached layout state when
-  the same animation-free structural signature is reinserted, avoiding repeated
-  cold code-block layout on hover toggles
+  the same animation-free structural signature is reinserted with the same
+  attachment context, avoiding repeated cold code-block layout on hover toggles
+- detached nearby layout cache restore is scoped by host id, slot, host frame,
+  subtree signature, and scale so changed-host or changed-slot reinserts
+  relayout instead of reusing stale absolute frames
 - non-registry nearby remove/restored-show changes classify as paint/render
   damage so warmed code-preview hover toggles can use refresh-only scheduling
   and cached registry reuse
@@ -95,22 +115,32 @@ The native layout-caching foundation is in place:
   scroll containers do not store large immediately-stale render caches
 - event registry rebuilds have a conservative chunk-cache path with full-rebuild
   fallback for damaged/no-retained-cache and escape-nearby cases
+- `animate_exit` removal keeps a cloned ghost subtree in active layout, with
+  child, paint-child, and nearby topology remapped to ghost ids until pruning
+- focused single-line text inputs suppress the follow-up Enter text commit when
+  an Enter key-down binding is handled, so app-driven clears such as todo
+  create remain authoritative
 
 ## Next recommended implementation order
 
-### 1. Broaden other relayout/dependency boundaries
+### 1. Merge or archive the performance branch
+
+No active plan remains open. The completed merge-readiness plan records the
+validation and hardening done before merge.
+
+### 2. Broaden other relayout/dependency boundaries
 
 Nearby overlay topology no longer forces broad host/ancestor measurement or
 resolve misses. The next layout-cache work should broaden boundaries for other
 container/dependency shapes one at a time with focused correctness tests.
 
-### 2. Revisit registry chunk seeding if profiles justify it
+### 3. Revisit registry chunk seeding if profiles justify it
 
 The guarded registry chunk infrastructure is in place. Leave damaged/no-cache
 and escape-nearby cases on the full-rebuild fallback unless a future profile
 shows registry rebuilds are the dominant cost and cheap seeding is proven safe.
 
-### 3. Repeater/viewport-aware caching
+### 4. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.
