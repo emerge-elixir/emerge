@@ -25,6 +25,26 @@ Regenerate cross-language fixture binaries:
 mix bench.fixtures
 ```
 
+## Fixture Policy
+
+`bench/fixtures/` is intentionally checked in. The binary fixtures make the
+Rust Criterion benchmarks reproducible without booting the BEAM fixture
+generator first, and they keep Elixir/Rust benchmark inputs aligned.
+
+Regenerate fixtures with:
+
+```bash
+mix bench.fixtures
+```
+
+Update the tracked fixtures when scenario generation, serialization, patch
+encoding, mutation coverage, or fixture metadata changes. Empty patch binaries
+are valid fixtures for no-op mutations and should stay tracked when generated.
+
+After regenerating fixtures, run at least one Elixir retained-layout smoke and
+one Rust Criterion target that reads fixtures before committing the fixture
+diff.
+
 Useful environment overrides:
 
 ```bash

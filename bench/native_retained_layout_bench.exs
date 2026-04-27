@@ -20,7 +20,8 @@ defmodule Emerge.Bench.NativeRetainedLayout do
     :insert_tail,
     :remove_tail,
     :nearby_slot_change,
-    :nearby_reorder
+    :nearby_reorder,
+    :animation_attr
   ]
   @cache_stat_keys [
     :intrinsic_measure_hits,
