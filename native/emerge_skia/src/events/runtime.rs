@@ -840,7 +840,7 @@ impl DirectEventRuntime {
             send_tree(
                 tree_tx,
                 TreeMsg::ScrollRequest {
-                    element_id: inertia.element_id.clone(),
+                    element_id: inertia.element_id,
                     dx: if inertia.axis == ScrollbarAxis::X {
                         delta
                     } else {
@@ -917,7 +917,6 @@ impl DirectEventRuntime {
     ) -> bool {
         let Some(element_id) = self
             .focused_id
-            .clone()
             .filter(|element_id| self.text_states.contains_key(element_id))
         else {
             return false;
@@ -956,7 +955,6 @@ impl DirectEventRuntime {
     ) -> bool {
         let Some(element_id) = self
             .focused_id
-            .clone()
             .filter(|element_id| self.text_states.contains_key(element_id))
         else {
             return false;
@@ -997,7 +995,6 @@ impl DirectEventRuntime {
 
         let Some(element_id) = self
             .focused_id
-            .clone()
             .filter(|element_id| self.text_states.contains_key(element_id))
         else {
             return false;
@@ -1437,7 +1434,7 @@ impl DirectEventRuntime {
                 self.suppress_drag_release_inertia = false;
                 self.cancel_inertial_scroll();
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Active {
-                    element_id: element_id.clone(),
+                    element_id,
                     matcher_kind,
                     last_x,
                     last_y,
@@ -1532,7 +1529,7 @@ impl DirectEventRuntime {
     }
 
     fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
-        self.text_states.insert(element_id.clone(), state);
+        self.text_states.insert(*element_id, state);
     }
 
     fn clear_text_commit_suppressions_for_event(&mut self, event: &InputEvent) {
@@ -1663,7 +1660,7 @@ impl DirectEventRuntime {
             .find_precedence(|listener| {
                 listener.matcher.kind() == ListenerMatcherKind::HoverLeaveCurrentOwner
             })
-            .and_then(|listener| listener.element_id.clone());
+            .and_then(|listener| listener.element_id);
     }
 }
 
@@ -1678,7 +1675,7 @@ fn base_has_source_listener(
 }
 
 fn scrollbar_key(element_id: &NodeId, axis: ScrollbarAxis) -> (NodeId, ScrollbarAxis) {
-    (element_id.clone(), axis)
+    (*element_id, axis)
 }
 
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
@@ -1757,7 +1754,7 @@ fn send_runtime_update(
     send_tree(
         tree_tx,
         TreeMsg::SetTextInputRuntime {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             focused: state.focused,
             cursor: Some(state.cursor),
             selection_anchor: state.selection_anchor,
@@ -1778,7 +1775,7 @@ fn send_content_update(
     send_tree(
         tree_tx,
         TreeMsg::SetTextInputContent {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             content,
         },
         log_render,
@@ -1945,12 +1942,10 @@ fn reconcile_text_input_states(
     let mut changed_tree = false;
 
     for (id, rebuild_state) in text_inputs {
-        let id = id.clone();
+        let id = *id;
         let should_focus = focused.as_ref().is_some_and(|focused_id| focused_id == &id);
 
-        let state = states
-            .entry(id.clone())
-            .or_insert_with(|| rebuild_state.clone());
+        let state = states.entry(id).or_insert_with(|| rebuild_state.clone());
 
         if should_focus {
             changed_tree |= reconcile_focused_text_input(
@@ -2007,7 +2002,7 @@ fn apply_focus_to(
         send_tree(
             tree_tx,
             TreeMsg::SetFocusedActive {
-                element_id: prev_id.clone(),
+                element_id: prev_id,
                 active: false,
             },
             log_render,
@@ -2065,7 +2060,7 @@ fn apply_focus_to(
         send_tree(
             tree_tx,
             TreeMsg::SetFocusedActive {
-                element_id: next_id.clone(),
+                element_id: next_id,
                 active: true,
             },
             log_render,
@@ -2099,7 +2094,7 @@ fn apply_focus_to(
             send_tree(
                 tree_tx,
                 TreeMsg::ScrollRequest {
-                    element_id: reveal.element_id.clone(),
+                    element_id: reveal.element_id,
                     dx: reveal.dx,
                     dy: reveal.dy,
                 },
@@ -2109,8 +2104,8 @@ fn apply_focus_to(
         })
     }
 
-    let previous_focus = focused.clone();
-    *focused = next_focus.clone();
+    let previous_focus = *focused;
+    *focused = next_focus;
 
     if previous_focus == next_focus {
         return false;
@@ -4388,6 +4383,105 @@ mod tests {
             msg,
             TreeMsg::SetTextInputContent { element_id, .. }
                 if *element_id == NodeId::from_term_bytes(vec![152])
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_single_line_enter_binding_suppresses_buffered_text_commit_after_reset() {
+        let input_id = NodeId::from_term_bytes(vec![154]);
+        let mut attrs = Attrs::default();
+        attrs.content = Some("task".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(4);
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![make_key_down_binding(CanonicalKey::Enter)]);
+        let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
+        let initial_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
+            text_inputs: HashMap::from([(input_id, make_text_input_state("task", 4, None, true))]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id),
+            focus_on_mount: None,
+        };
+        let reset_patch_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
+            text_inputs: HashMap::from([(
+                input_id,
+                make_text_input_state_with_patch(
+                    "task",
+                    Some(""),
+                    TextInputContentOrigin::Event,
+                    4,
+                    None,
+                    true,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id),
+            focus_on_mount: None,
+        };
+
+        let mut cleared_attrs = element.spec.declared.clone();
+        cleared_attrs.content = Some(String::new());
+        cleared_attrs.text_input_cursor = Some(0);
+        let cleared_element =
+            with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
+        let reset_applied_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[cleared_element]),
+            text_inputs: HashMap::from([(
+                input_id,
+                make_text_input_state_with_origin("", TextInputContentOrigin::Event, 0, None, true),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(initial_rebuild.clone(), &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::Key {
+                key: CanonicalKey::Enter,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::TextCommit {
+                text: "\n".to_string(),
+                mods: 0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        runtime.handle_registry_update(reset_patch_rebuild, &tree_tx, false);
+        assert!(runtime.listener_lane.is_stale());
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_registry_update(reset_applied_rebuild, &tree_tx, false);
+
+        let session = runtime
+            .text_states
+            .get(&input_id)
+            .expect("session preserved after reset and buffered commit");
+        assert_eq!(session.content, "");
+        assert_eq!(session.cursor, 0);
+        assert!(drain_msgs(&tree_rx).iter().all(|msg| !matches!(
+            msg,
+            TreeMsg::SetTextInputContent {
+                element_id,
+                content
+            } if *element_id == input_id && content == " "
         )));
     }
 
