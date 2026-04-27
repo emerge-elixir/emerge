@@ -153,16 +153,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "keyed reorder emits set_children without inserts or removes" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -171,8 +167,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert Enum.any?(patches, fn
              {:set_children, id, _} when id == tree1.id -> true
@@ -187,15 +182,11 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "keyed insert emits insert_subtree without set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -204,8 +195,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert Enum.any?(patches, fn
              {:insert_subtree, id, _index, _} when id == tree1.id -> true
@@ -219,8 +209,6 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "keyed remove emits remove without set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
@@ -228,16 +216,13 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:c)], text("c"))
       ])
 
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
-
     layout2 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:c)], text("c"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert Enum.any?(patches, fn
              {:remove, _id} -> true
@@ -251,15 +236,11 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "keyed attribute change emits set_attrs only for that node" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -267,8 +248,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     ids = content_id_map(tree1)
     a_id = Map.fetch!(ids, "a")
@@ -284,31 +264,24 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "no patches when tree is identical" do
-    state = Emerge.Engine.DiffState.new()
-
     layout =
       column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b"))
       ])
 
-    {_bin1, state, _tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout)
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout)
+    {patches, _tree1, _tree2} = diff_state_native_patch_roundtrip(layout, layout)
 
-    assert Patch.decode(bin2) == []
+    assert patches == []
   end
 
   test "no extra patches when attrs unchanged but children reorder keyed" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -317,8 +290,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     refute Enum.any?(patches, fn
              {:set_attrs, id, _} when id == tree1.id -> true
@@ -327,16 +299,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "set_children preserves child ordering" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -345,8 +313,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:b)], text("b"))
       ])
 
-    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert {:set_children, id, children} =
              Enum.find(patches, fn
@@ -359,16 +326,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "unkeyed reorder emits set_attrs but no inserts/removes" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([], text("a")),
         el([], text("b")),
         el([], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -377,8 +340,7 @@ defmodule Emerge.Engine.PatchTest do
         el([], text("b"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     set_attrs =
       Enum.filter(patches, fn
@@ -416,16 +378,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "insert with reordering existing nodes emits set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -435,8 +393,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert Enum.any?(patches, fn
              {:set_children, id, _} when id == tree1.id -> true
@@ -471,16 +428,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "insert preserving existing order skips set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -490,8 +443,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     refute Enum.any?(patches, fn
              {:set_children, id, _} when id == tree1.id -> true
@@ -500,16 +452,12 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "multiple inserts preserving existing order skip set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
         el([key(:b)], text("b")),
         el([key(:c)], text("c"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -520,8 +468,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:y)], text("y"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     refute Enum.any?(patches, fn
              {:set_children, id, _} when id == tree1.id -> true
@@ -529,9 +476,7 @@ defmodule Emerge.Engine.PatchTest do
            end)
   end
 
-  test "remove and insert without reordering preserves order without set_children" do
-    state = Emerge.Engine.DiffState.new()
-
+  test "remove and insert without reordering emits final set_children and roundtrips natively" do
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
@@ -539,8 +484,6 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:c)], text("c")),
         el([key(:d)], text("d"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -550,18 +493,59 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:x)], text("x"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
-    refute Enum.any?(patches, fn
-             {:set_children, id, _} when id == tree1.id -> true
+    assert {:set_children, id, children} =
+             Enum.find(patches, fn
+               {:set_children, id, _} when id == tree1.id -> true
+               _ -> false
+             end)
+
+    assert id == tree1.id
+    assert children == Enum.map(tree2.children, & &1.id)
+  end
+
+  test "multiple removes and inserts without survivor reordering roundtrip natively" do
+    layout1 =
+      row([key(:root)], [
+        el([key(:a)], text("a")),
+        el([key(:b)], text("b")),
+        el([key(:c)], text("c")),
+        el([key(:d)], text("d")),
+        el([key(:e)], text("e"))
+      ])
+
+    layout2 =
+      row([key(:root)], [
+        el([key(:a)], text("a")),
+        el([key(:d)], text("d")),
+        el([key(:e)], text("e")),
+        el([key(:x)], text("x")),
+        el([key(:y)], text("y"))
+      ])
+
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
+
+    assert Enum.any?(patches, fn
+             {:remove, _id} -> true
              _ -> false
+           end)
+
+    assert Enum.any?(patches, fn
+             {:insert_subtree, id, _index, _subtree} when id == tree1.id -> true
+             _ -> false
+           end)
+
+    assert Enum.any?(patches, fn
+             {:set_children, id, children} when id == tree1.id ->
+               children == Enum.map(tree2.children, & &1.id)
+
+             _ ->
+               false
            end)
   end
 
   test "multiple inserts with one reorder emit set_children" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       row([key(:root)], [
         el([key(:a)], text("a")),
@@ -569,8 +553,6 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:c)], text("c")),
         el([key(:d)], text("d"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       row([key(:root)], [
@@ -582,8 +564,7 @@ defmodule Emerge.Engine.PatchTest do
         el([key(:d)], text("d"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     assert Enum.any?(patches, fn
              {:set_children, id, _} when id == tree1.id -> true
@@ -592,22 +573,17 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "nearby slot change preserves keyed node id and emits set_nearby_mounts only" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
         el([key(:host), Nearby.below(el([key(:tip)], text("Tip")))], text("Host"))
       ])
 
-    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     host1 = hd(tree1.children)
     host2 = hd(tree2.children)
@@ -632,22 +608,17 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "adding keyed nearby emits insert_nearby_subtree without set_nearby_mounts" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:host)], text("Host"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
         el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
       ])
 
-    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     host1 = hd(tree1.children)
     host2 = hd(tree2.children)
@@ -670,22 +641,17 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "removing keyed nearby emits remove without set_nearby_mounts" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
         el([key(:host)], text("Host"))
       ])
 
-    {bin2, _state, _tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, _tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     host1 = hd(tree1.children)
     [{:above, tip1}] = host1.nearby
@@ -703,8 +669,6 @@ defmodule Emerge.Engine.PatchTest do
   end
 
   test "nearby keyed reorder emits set_nearby_mounts without inserts or removes" do
-    state = Emerge.Engine.DiffState.new()
-
     layout1 =
       column([key(:root)], [
         el(
@@ -716,8 +680,6 @@ defmodule Emerge.Engine.PatchTest do
           text("Host")
         )
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -731,8 +693,7 @@ defmodule Emerge.Engine.PatchTest do
         )
       ])
 
-    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     host1 = hd(tree1.children)
     host2 = hd(tree2.children)
@@ -759,9 +720,64 @@ defmodule Emerge.Engine.PatchTest do
            end)
   end
 
-  test "attr-only update keeps all assigned ids stable" do
-    state = Emerge.Engine.DiffState.new()
+  test "nearby remove and insert without survivor reordering emits final order and roundtrips natively" do
+    layout1 =
+      column([key(:root)], [
+        el(
+          [
+            key(:host),
+            Nearby.above(el([key(:above)], text("Above"))),
+            Nearby.below(el([key(:below)], text("Below"))),
+            Nearby.on_left(el([key(:left)], text("Left"))),
+            Nearby.on_right(el([key(:right)], text("Right")))
+          ],
+          text("Host")
+        )
+      ])
 
+    layout2 =
+      column([key(:root)], [
+        el(
+          [
+            key(:host),
+            Nearby.above(el([key(:above)], text("Above"))),
+            Nearby.on_left(el([key(:left)], text("Left"))),
+            Nearby.on_right(el([key(:right)], text("Right"))),
+            Nearby.in_front(el([key(:front)], text("Front")))
+          ],
+          text("Host")
+        )
+      ])
+
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
+
+    host1 = hd(tree1.children)
+    host2 = hd(tree2.children)
+    expected_mounts = Enum.map(host2.nearby, fn {slot, vnode} -> {slot, vnode.id} end)
+
+    assert Enum.any?(patches, fn
+             {:remove, _id} -> true
+             _ -> false
+           end)
+
+    assert Enum.any?(patches, fn
+             {:insert_nearby_subtree, id, _index, :in_front, _subtree} when id == host1.id ->
+               true
+
+             _ ->
+               false
+           end)
+
+    assert Enum.any?(patches, fn
+             {:set_nearby_mounts, id, mounts} when id == host1.id ->
+               mounts == expected_mounts
+
+             _ ->
+               false
+           end)
+  end
+
+  test "attr-only update keeps all assigned ids stable" do
     layout1 =
       column([key(:root)], [
         el(
@@ -769,8 +785,6 @@ defmodule Emerge.Engine.PatchTest do
           el([key(:child)], text("Child"))
         )
       ])
-
-    {_bin1, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
 
     layout2 =
       column([key(:root)], [
@@ -780,8 +794,7 @@ defmodule Emerge.Engine.PatchTest do
         )
       ])
 
-    {bin2, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
-    patches = Patch.decode(bin2)
+    {patches, tree1, tree2} = diff_state_native_patch_roundtrip(layout1, layout2)
 
     ids1 = key_node_id_map(tree1)
     ids2 = key_node_id_map(tree2)
@@ -880,6 +893,28 @@ defmodule Emerge.Engine.PatchTest do
   defp normalize_value({a, b}), do: {normalize_value(a), normalize_value(b)}
 
   defp normalize_value(value), do: value
+
+  defp diff_state_native_patch_roundtrip(layout1, layout2) do
+    state = Emerge.Engine.DiffState.new()
+    {_initial_patch_bin, state, tree1} = Emerge.Engine.DiffState.diff_and_encode(state, layout1)
+    {patch_bin, _state, tree2} = Emerge.Engine.DiffState.diff_and_encode(state, layout2)
+
+    tree = EmergeSkia.Native.tree_new()
+    full_bin1 = Emerge.Engine.Serialization.encode_tree(tree1)
+    full_bin2 = Emerge.Engine.Serialization.encode_tree(tree2)
+
+    upload_roundtrip = unwrap_binary(EmergeSkia.Native.tree_upload_roundtrip(tree, full_bin1))
+    expected_upload = unwrap_binary(EmergeSkia.Native.tree_roundtrip(full_bin1))
+
+    assert upload_roundtrip == expected_upload
+
+    patch_roundtrip = unwrap_binary(EmergeSkia.Native.tree_patch_roundtrip(tree, patch_bin))
+    expected = unwrap_binary(EmergeSkia.Native.tree_roundtrip(full_bin2))
+
+    assert patch_roundtrip == expected
+
+    {Patch.decode(patch_bin), tree1, tree2}
+  end
 
   defp demo_tree(scroll_y) do
     tree =
