@@ -785,7 +785,7 @@ fn runtime_drag_active_release_clear_listener(
         ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
     ];
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static { actions },
     })
@@ -810,7 +810,7 @@ fn runtime_drag_candidate_release_anywhere_clear_listener(
         ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
     ];
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static { actions },
     })
@@ -836,7 +836,7 @@ fn runtime_drag_window_blur_clear_listener(
 
     runtime_source_listener(base, element_id, matcher_kind)?;
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
             actions: vec![
@@ -867,7 +867,7 @@ fn runtime_drag_window_leave_clear_listener(
 
     runtime_source_listener(base, element_id, matcher_kind)?;
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::Static {
             actions: vec![
@@ -895,7 +895,7 @@ fn runtime_drag_active_scroll_move_listener(
 
     runtime_source_listener(base, element_id, matcher_kind)?;
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::CursorPosAnywhere,
         compute: ListenerCompute::RedispatchScrollFromCursorMove {
             last_x,
@@ -954,14 +954,14 @@ fn runtime_drag_candidate_threshold_listener(
     runtime_source_listener(base, element_id, matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(*element_id),
         matcher: ListenerMatcher::CursorPosDistanceFromPointExceeded {
             origin_x,
             origin_y,
             threshold: RUNTIME_DRAG_DEADZONE,
         },
         compute: ListenerCompute::PromoteDragTrackerFromCursorPos {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             matcher_kind,
             origin_x,
             origin_y,
@@ -974,7 +974,7 @@ fn runtime_scrollbar_drag_release_listener(
     scrollbar: &Option<ScrollbarDragTracker>,
 ) -> Option<Listener> {
     scrollbar.as_ref().map(|tracker| Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -988,7 +988,7 @@ fn runtime_scrollbar_drag_move_listener(
     scrollbar: &Option<ScrollbarDragTracker>,
 ) -> Option<Listener> {
     scrollbar.as_ref().map(|tracker| Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorPosAnywhere,
         compute: ListenerCompute::ScrollbarDragMove {
             tracker: tracker.clone(),
@@ -1004,10 +1004,10 @@ fn runtime_click_press_release_listener(
     let region = runtime_press_region_from_source(source)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseInside { region },
         compute: ListenerCompute::ClickPressReleaseFollowupToBase {
-            element_id: tracker.element_id.clone(),
+            element_id: tracker.element_id,
             emit_click: tracker.emit_click,
             emit_press_pointer: tracker.emit_press_pointer,
         },
@@ -1018,7 +1018,7 @@ fn runtime_swipe_release_listener(base: &Registry, tracker: &SwipeTracker) -> Op
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::SwipeReleaseFollowupToBase {
             tracker: tracker.clone(),
@@ -1033,7 +1033,7 @@ fn runtime_swipe_window_blur_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1050,7 +1050,7 @@ fn runtime_swipe_window_leave_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1067,7 +1067,7 @@ fn runtime_click_press_release_anywhere_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static {
             actions: vec![
@@ -1085,7 +1085,7 @@ fn runtime_click_press_window_blur_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
             actions: vec![
@@ -1103,7 +1103,7 @@ fn runtime_click_press_window_leave_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::Static {
             actions: vec![
@@ -1167,7 +1167,7 @@ fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener
     ));
 
     Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseInside {
             region: tracker.region.clone(),
         },
@@ -1177,7 +1177,7 @@ fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener
 
 fn runtime_virtual_key_release_anywhere_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
     Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1193,7 +1193,7 @@ fn runtime_virtual_key_leave_cancel_listener(tracker: &VirtualKeyTracker) -> Opt
         VirtualKeyPhase::Armed | VirtualKeyPhase::Repeating
     )
     .then(|| Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorLocationLeaveBoundary {
             region: tracker.region.clone(),
         },
@@ -1207,7 +1207,7 @@ fn runtime_virtual_key_leave_cancel_listener(tracker: &VirtualKeyTracker) -> Opt
 
 fn runtime_virtual_key_window_blur_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
     Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::DispatchBaseThenStatic {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1219,7 +1219,7 @@ fn runtime_virtual_key_window_blur_clear_listener(tracker: &VirtualKeyTracker) -
 
 fn runtime_virtual_key_window_leave_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
     Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::DispatchBaseThenStatic {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1252,7 +1252,7 @@ fn runtime_key_press_release_listeners(
         .map(|(key, trackers)| Listener {
             element_id: trackers
                 .iter()
-                .find_map(|tracker| tracker.source_element_id.clone()),
+                .find_map(|tracker| tracker.source_element_id),
             matcher: ListenerMatcher::KeyReleaseTracked { key },
             compute: ListenerCompute::KeyPressReleaseFollowupToBase { key, trackers },
         })
@@ -1263,7 +1263,7 @@ fn runtime_key_press_window_blur_clear_listener(trackers: &[KeyPressTracker]) ->
     (!trackers.is_empty()).then_some(Listener {
         element_id: trackers
             .iter()
-            .find_map(|tracker| tracker.source_element_id.clone()),
+            .find_map(|tracker| tracker.source_element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::DispatchBaseThenStatic {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1280,7 +1280,7 @@ fn runtime_text_drag_release_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1297,11 +1297,11 @@ fn runtime_text_drag_cursor_move_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorPosAnywhere,
         compute: ListenerCompute::StaticWithTextInputCursorRuntime {
             actions: Vec::new(),
-            element_id: tracker.element_id.clone(),
+            element_id: tracker.element_id,
             extend_selection: true,
         },
     })
@@ -1314,7 +1314,7 @@ fn runtime_text_drag_window_blur_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -1331,7 +1331,7 @@ fn runtime_text_drag_window_leave_clear_listener(
     runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
 
     Some(Listener {
-        element_id: Some(tracker.element_id.clone()),
+        element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::Static {
             actions: vec![ListenerAction::RuntimeChange(
@@ -2035,7 +2035,7 @@ fn key_press_followup_actions(tracker: &KeyPressTracker) -> Vec<ListenerAction> 
         .map(|followup| match followup {
             KeyPressFollowup::ElixirEvent { element_id, route } => {
                 ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element_id.clone(),
+                    element_id: *element_id,
                     kind: ElementEventKind::KeyPress,
                     payload: Some(route.clone()),
                 })
@@ -2379,7 +2379,7 @@ impl ListenerCompute {
                     .cloned()
                     .chain(pointer_drag.as_ref().map(|pointer_drag| {
                         ListenerAction::RuntimeChange(RuntimeChange::StartDragTracker {
-                            element_id: pointer_drag.element_id.clone(),
+                            element_id: pointer_drag.element_id,
                             matcher_kind: pointer_drag.matcher_kind,
                             origin_x: *x,
                             origin_y: *y,
@@ -2388,7 +2388,7 @@ impl ListenerCompute {
                     }))
                     .chain(text_cursor_element_id.as_ref().map(|element_id| {
                         ListenerAction::Semantic(SemanticAction::TextInputCursor {
-                            element_id: element_id.clone(),
+                            element_id: *element_id,
                             x: *x,
                             y: *y,
                             extend_selection: *mods & MOD_SHIFT != 0,
@@ -2396,7 +2396,7 @@ impl ListenerCompute {
                     }))
                     .chain(text_drag.as_ref().map(|text_drag| {
                         ListenerAction::RuntimeChange(RuntimeChange::StartTextDragTracker {
-                            element_id: text_drag.element_id.clone(),
+                            element_id: text_drag.element_id,
                             matcher_kind: text_drag.matcher_kind,
                         })
                     }))
@@ -2426,16 +2426,16 @@ impl ListenerCompute {
                 {
                     ctx.dispatch_base(input)
                         .into_iter()
-                        .chain((*emit_click).then(|| {
+                        .chain((*emit_click).then_some({
                             ListenerAction::ElixirEvent(ElixirEvent {
-                                element_id: element_id.clone(),
+                                element_id: *element_id,
                                 kind: ElementEventKind::Click,
                                 payload: None,
                             })
                         }))
-                        .chain((*emit_press_pointer).then(|| {
+                        .chain((*emit_press_pointer).then_some({
                             ListenerAction::ElixirEvent(ElixirEvent {
-                                element_id: element_id.clone(),
+                                element_id: *element_id,
                                 kind: ElementEventKind::Press,
                                 payload: None,
                             })
@@ -2460,7 +2460,7 @@ impl ListenerCompute {
                     .into_iter()
                     .chain(swipe_event_from_release(tracker, *x, *y).map(|kind| {
                         ListenerAction::ElixirEvent(ElixirEvent {
-                            element_id: tracker.element_id.clone(),
+                            element_id: tracker.element_id,
                             kind,
                             payload: None,
                         })
@@ -2510,7 +2510,7 @@ impl ListenerCompute {
                     if drag_scroll_can_activate_on_axis(locked_axis, dx, dy, *x, *y, ctx) {
                         vec![
                             ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
-                                element_id: element_id.clone(),
+                                element_id: *element_id,
                                 matcher_kind: *matcher_kind,
                                 last_x: *x,
                                 last_y: *y,
@@ -2524,7 +2524,7 @@ impl ListenerCompute {
                             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
                             ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker {
                                 tracker: SwipeTracker {
-                                    element_id: element_id.clone(),
+                                    element_id: *element_id,
                                     matcher_kind: *matcher_kind,
                                     origin_x: *origin_x,
                                     origin_y: *origin_y,
@@ -2567,7 +2567,7 @@ impl ListenerCompute {
             },
             ListenerCompute::KeyScrollToTree { element_id, dx, dy } => {
                 vec![ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
-                    element_id: element_id.clone(),
+                    element_id: *element_id,
                     dx: *dx,
                     dy: *dy,
                 })]
@@ -2595,7 +2595,7 @@ impl ListenerCompute {
                 .and_then(|snapshot| text_key_edit_request(&snapshot, *kind, input.raw()?))
                 .map(|request| {
                     vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
-                        element_id: element_id.clone(),
+                        element_id: *element_id,
                         request,
                     })]
                 })
@@ -2615,7 +2615,7 @@ impl ListenerCompute {
                 })
                 .map(|_| {
                     vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
-                        element_id: element_id.clone(),
+                        element_id: *element_id,
                         request: request.clone(),
                     })]
                 })
@@ -2633,7 +2633,7 @@ impl ListenerCompute {
                                 Vec::new()
                             } else {
                                 vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
-                                    element_id: element_id.clone(),
+                                    element_id: *element_id,
                                     request: TextInputEditRequest::Insert(filtered),
                                 })]
                             }
@@ -2693,14 +2693,14 @@ fn text_cursor_action_from_input(
         InputEvent::CursorButton {
             action, x, y, mods, ..
         } if *action == ACTION_PRESS => ListenerAction::Semantic(SemanticAction::TextInputCursor {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             x: *x,
             y: *y,
             extend_selection: extend_selection || (*mods & MOD_SHIFT != 0),
         }),
         InputEvent::CursorPos { x, y } => {
             ListenerAction::Semantic(SemanticAction::TextInputCursor {
-                element_id: element_id.clone(),
+                element_id: *element_id,
                 x: *x,
                 y: *y,
                 extend_selection,
@@ -2791,7 +2791,7 @@ fn text_preedit_action_from_input(
     };
 
     Some(ListenerAction::Semantic(SemanticAction::TextInputPreedit {
-        element_id: element_id.clone(),
+        element_id: *element_id,
         request,
     }))
 }
@@ -2809,7 +2809,7 @@ fn text_delete_surrounding_action_from_input(
     };
 
     Some(ListenerAction::Semantic(SemanticAction::TextInputEdit {
-        element_id: element_id.clone(),
+        element_id: *element_id,
         request: TextInputEditRequest::DeleteSurrounding {
             before_length,
             after_length,
@@ -2965,7 +2965,7 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
             .and_then(|input| ctx.base_first_match_listener(input, &[]));
         let next_hover_id = next_hover_listener
             .as_ref()
-            .and_then(|listener| listener.element_id.clone());
+            .and_then(|listener| listener.element_id);
         let hover_owner_changed = current_hover_id != next_hover_id;
 
         let mut out = ctx.dispatch_effective_skip(&leave_input, skip);
@@ -3055,7 +3055,7 @@ fn scroll_tree_actions_from_directional_input(
             ..
         } if *matched_direction == direction => {
             vec![ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
-                element_id: element_id.clone(),
+                element_id: *element_id,
                 dx: *dx,
                 dy: *dy,
             })]
@@ -3081,7 +3081,7 @@ fn scrollbar_hover_compute_for_element(
     };
 
     Some(ScrollbarHoverCompute {
-        element_id: element.id.clone(),
+        element_id: element.id,
         current_axis,
         x_region: scrollbar_x
             .and_then(|scrollbar| pointer_region_for_subregion(state, scrollbar.thumb_rect)),
@@ -3136,11 +3136,11 @@ fn scrollbar_hover_delta_actions(
     ) -> Option<ListenerAction> {
         match axis {
             Some(ScrollbarAxis::X) => Some(ListenerAction::TreeMsg(TreeMsg::SetScrollbarXHover {
-                element_id: element_id.clone(),
+                element_id: *element_id,
                 hovered,
             })),
             Some(ScrollbarAxis::Y) => Some(ListenerAction::TreeMsg(TreeMsg::SetScrollbarYHover {
-                element_id: element_id.clone(),
+                element_id: *element_id,
                 hovered,
             })),
             None => None,
@@ -3252,7 +3252,7 @@ pub(crate) fn resolve_text_input_command_actions<C: ListenerComputeCtx>(
 ) -> Vec<ListenerAction> {
     resolve_listener_actions(
         vec![ListenerAction::Semantic(SemanticAction::TextInputCommand {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             request,
         })],
         ctx,
@@ -3266,7 +3266,7 @@ pub(crate) fn resolve_text_input_edit_actions<C: ListenerComputeCtx>(
 ) -> Vec<ListenerAction> {
     resolve_listener_actions(
         vec![ListenerAction::Semantic(SemanticAction::TextInputEdit {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             request,
         })],
         ctx,
@@ -3297,7 +3297,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
 
     fn snapshot(&mut self, element_id: &NodeId) -> Option<&mut TextInputState> {
         self.snapshots
-            .entry(element_id.clone())
+            .entry(*element_id)
             .or_insert_with(|| self.ctx.text_input_state(element_id))
             .as_mut()
     }
@@ -3324,7 +3324,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
             }
             ListenerAction::TreeMsg(TreeMsg::SetFocusedActive { element_id, active }) => {
                 if *active {
-                    self.focused_id = Some(element_id.clone());
+                    self.focused_id = Some(*element_id);
                 } else if self.focused_id.as_ref() == Some(element_id) {
                     self.focused_id = None;
                 }
@@ -3398,12 +3398,12 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
             FocusTransition::Blur(prev_id) => {
                 out.extend([
                     ListenerAction::ElixirEvent(ElixirEvent {
-                        element_id: prev_id.clone(),
+                        element_id: prev_id,
                         kind: ElementEventKind::Blur,
                         payload: None,
                     }),
                     ListenerAction::TreeMsg(TreeMsg::SetFocusedActive {
-                        element_id: prev_id.clone(),
+                        element_id: prev_id,
                         active: false,
                     }),
                 ]);
@@ -3424,12 +3424,12 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
             FocusTransition::Focus(next_id) => {
                 out.extend([
                     ListenerAction::ElixirEvent(ElixirEvent {
-                        element_id: next_id.clone(),
+                        element_id: next_id,
                         kind: ElementEventKind::Focus,
                         payload: None,
                     }),
                     ListenerAction::TreeMsg(TreeMsg::SetFocusedActive {
-                        element_id: next_id.clone(),
+                        element_id: next_id,
                         active: true,
                     }),
                 ]);
@@ -3485,11 +3485,11 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         next: Option<NodeId>,
         reveal_scrolls: Vec<FocusRevealScroll>,
     ) -> Vec<ListenerAction> {
-        let previous = self.focused_id.clone();
+        let previous = self.focused_id;
         if previous == next {
             return Vec::new();
         }
-        self.focused_id = next.clone();
+        self.focused_id = next;
 
         [
             previous.map(FocusTransition::Blur),
@@ -4356,7 +4356,7 @@ fn move_snapshot_cursor(
 
 fn text_runtime_tree_action(element_id: &NodeId, snapshot: &TextInputState) -> ListenerAction {
     ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime {
-        element_id: element_id.clone(),
+        element_id: *element_id,
         focused: snapshot.focused,
         cursor: Some(snapshot.cursor),
         selection_anchor: snapshot.selection_anchor,
@@ -4367,7 +4367,7 @@ fn text_runtime_tree_action(element_id: &NodeId, snapshot: &TextInputState) -> L
 
 fn text_runtime_mirror_change(element_id: &NodeId, snapshot: &TextInputState) -> ListenerAction {
     ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState {
-        element_id: element_id.clone(),
+        element_id: *element_id,
         state: snapshot.clone(),
     })
 }
@@ -4386,7 +4386,7 @@ fn content_change_actions(
 ) -> Vec<ListenerAction> {
     [
         ListenerAction::TreeMsg(TreeMsg::SetTextInputContent {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             content: snapshot.content.clone(),
         }),
         text_runtime_tree_action(element_id, snapshot),
@@ -4394,13 +4394,13 @@ fn content_change_actions(
     .into_iter()
     .chain(snapshot.emit_change.then(|| {
         ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             content: snapshot.content.clone(),
         })
     }))
     .chain(change_payload.into_iter().map(|payload| {
         ListenerAction::ElixirEvent(ElixirEvent {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             kind: ElementEventKind::Change,
             payload: Some(payload),
         })
@@ -4492,7 +4492,7 @@ fn scrollbar_press_actions_from_input(
     };
 
     let tracker = ScrollbarDragTracker {
-        element_id: element_id.clone(),
+        element_id: *element_id,
         axis: spec.axis,
         track_start: spec.track_start,
         track_len: spec.track_len,
@@ -4568,11 +4568,11 @@ fn scrollbar_drag_tree_action(
 ) -> ListenerAction {
     ListenerAction::TreeMsg(match axis {
         ScrollbarAxis::X => TreeMsg::ScrollbarThumbDragX {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             dx: delta,
         },
         ScrollbarAxis::Y => TreeMsg::ScrollbarThumbDragY {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             dy: delta,
         },
     })
@@ -4692,7 +4692,7 @@ fn focused_text_input_id(element: &Element) -> Option<NodeId> {
         return None;
     }
 
-    Some(element.id.clone())
+    Some(element.id)
 }
 
 fn text_input_emit_change(element: &Element) -> Option<bool> {
@@ -4836,7 +4836,7 @@ fn focus_reveal_scrolls_for_contexts(
                     ..adjusted
                 },
                 Some(FocusRevealScroll {
-                    element_id: context.id.clone(),
+                    element_id: context.id,
                     dx: -scroll_delta_x,
                     dy: -scroll_delta_y,
                 }),
@@ -4868,10 +4868,7 @@ fn focus_to_action(next: Option<NodeId>, reveal_scrolls: Vec<FocusRevealScroll>)
 }
 
 fn focus_to_element_action(focus_meta: &ElementFocusMeta, element_id: &NodeId) -> ListenerAction {
-    focus_to_action(
-        Some(element_id.clone()),
-        focus_meta.self_reveal_scrolls.clone(),
-    )
+    focus_to_action(Some(*element_id), focus_meta.self_reveal_scrolls.clone())
 }
 
 fn emit_element_listeners_with_focus_meta(
@@ -4920,10 +4917,10 @@ fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut Prece
             let Some(meta) = state.by_id.get(focused_id) else {
                 return;
             };
-            let Some(next) = meta.tab_next.clone() else {
+            let Some(next) = meta.tab_next else {
                 return;
             };
-            let Some(previous) = meta.tab_prev.clone() else {
+            let Some(previous) = meta.tab_prev else {
                 return;
             };
             (
@@ -4931,13 +4928,13 @@ fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut Prece
                 meta.tab_next_reveal_scrolls.clone(),
                 previous,
                 meta.tab_prev_reveal_scrolls.clone(),
-                Some(focused_id.clone()),
+                Some(*focused_id),
             )
         } else {
-            let Some(next) = state.first_focusable.clone() else {
+            let Some(next) = state.first_focusable else {
                 return;
             };
-            let Some(previous) = state.last_focusable.clone() else {
+            let Some(previous) = state.last_focusable else {
                 return;
             };
             (
@@ -4950,7 +4947,7 @@ fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut Prece
         };
 
     out.emit(Listener {
-        element_id: element_id.clone(),
+        element_id,
         matcher: ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta,
         compute: ListenerCompute::Static {
             actions: vec![focus_to_action(Some(next), next_reveal_scrolls)],
@@ -4967,7 +4964,7 @@ fn emit_focus_cycle_listeners_for_state(state: &FocusBuildState, out: &mut Prece
 
 fn focused_window_blur_listener(state: &FocusBuildState) -> Option<Listener> {
     state.focused_id.as_ref().map(|focused_id| Listener {
-        element_id: Some(focused_id.clone()),
+        element_id: Some(*focused_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
             actions: vec![focus_to_action(None, Vec::new())],
@@ -4977,14 +4974,14 @@ fn focused_window_blur_listener(state: &FocusBuildState) -> Option<Listener> {
 
 fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
     let focused_index = entries.iter().position(|entry| entry.is_currently_focused);
-    let focused_id = focused_index.map(|index| entries[index].element_id.clone());
+    let focused_id = focused_index.map(|index| entries[index].element_id);
 
-    let first_focusable = entries.first().map(|entry| entry.element_id.clone());
+    let first_focusable = entries.first().map(|entry| entry.element_id);
     let first_focusable_reveal_scrolls = entries
         .first()
         .map(|entry| entry.self_reveal_scrolls.clone())
         .unwrap_or_default();
-    let last_focusable = entries.last().map(|entry| entry.element_id.clone());
+    let last_focusable = entries.last().map(|entry| entry.element_id);
     let last_focusable_reveal_scrolls = entries
         .last()
         .map(|entry| entry.self_reveal_scrolls.clone())
@@ -5002,15 +4999,15 @@ fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
             };
 
             (
-                entry.element_id.clone(),
+                entry.element_id,
                 ElementFocusMeta {
                     is_currently_focused: focused_index == Some(index),
                     self_reveal_scrolls: entry.self_reveal_scrolls.clone(),
-                    tab_next: tab_next_entry.map(|next| next.element_id.clone()),
+                    tab_next: tab_next_entry.map(|next| next.element_id),
                     tab_next_reveal_scrolls: tab_next_entry
                         .map(|next| next.self_reveal_scrolls.clone())
                         .unwrap_or_default(),
-                    tab_prev: tab_prev_entry.map(|prev| prev.element_id.clone()),
+                    tab_prev: tab_prev_entry.map(|prev| prev.element_id),
                     tab_prev_reveal_scrolls: tab_prev_entry
                         .map(|prev| prev.self_reveal_scrolls.clone())
                         .unwrap_or_default(),
@@ -5048,7 +5045,7 @@ fn consider_focus_on_mount_candidate(
 
     if should_replace {
         acc.focus_on_mount = Some(FocusOnMountTarget {
-            element_id: element.id.clone(),
+            element_id: element.id,
             reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
             mounted_at_revision: element.lifecycle.mounted_at_revision,
         });
@@ -5130,7 +5127,7 @@ pub(crate) fn accumulate_element_rebuild(
     scroll_contexts: &[ScrollContext],
 ) -> Vec<ScrollContext> {
     if acc.focused_id.is_none() && element.runtime.focused_active {
-        acc.focused_id = Some(element.id.clone());
+        acc.focused_id = Some(element.id);
     }
 
     let (local_focus_meta, next_scroll_contexts) =
@@ -5144,7 +5141,7 @@ pub(crate) fn accumulate_element_rebuild(
         if let Some(scrollbar) = scrollbar_x {
             let previous = acc
                 .scrollbars
-                .insert((element.id.clone(), ScrollbarAxis::X), scrollbar);
+                .insert((element.id, ScrollbarAxis::X), scrollbar);
             debug_assert!(
                 previous.is_none(),
                 "duplicate horizontal scrollbar rebuild state"
@@ -5154,7 +5151,7 @@ pub(crate) fn accumulate_element_rebuild(
         if let Some(scrollbar) = scrollbar_y {
             let previous = acc
                 .scrollbars
-                .insert((element.id.clone(), ScrollbarAxis::Y), scrollbar);
+                .insert((element.id, ScrollbarAxis::Y), scrollbar);
             debug_assert!(
                 previous.is_none(),
                 "duplicate vertical scrollbar rebuild state"
@@ -5163,7 +5160,7 @@ pub(crate) fn accumulate_element_rebuild(
 
         if element.spec.kind.is_text_input_family() {
             let previous = acc.text_inputs.insert(
-                element.id.clone(),
+                element.id,
                 super::text_input_state(element, adjusted_rect, state.interaction_inverse),
             );
             debug_assert!(previous.is_none(), "duplicate text input rebuild state");
@@ -5172,7 +5169,7 @@ pub(crate) fn accumulate_element_rebuild(
 
     if let Some(focus_meta) = local_focus_meta.as_ref() {
         acc.focus_entries.push(FocusEntry {
-            element_id: element.id.clone(),
+            element_id: element.id,
             is_currently_focused: focus_meta.is_currently_focused,
             self_reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
         });
@@ -5930,7 +5927,7 @@ fn key_scroll_listener(
         element_id: source_element_id,
         matcher,
         compute: ListenerCompute::KeyScrollToTree {
-            element_id: target_id.clone(),
+            element_id: *target_id,
             dx,
             dy,
         },
@@ -5965,7 +5962,7 @@ fn emit_key_scroll_listeners_for_element(element: &Element, out: &mut Precedence
                     ),
                 };
 
-                key_scroll_listener(Some(element.id.clone()), matcher, &element.id, dx, dy)
+                key_scroll_listener(Some(element.id), matcher, &element.id, dx, dy)
             }),
     );
 }
@@ -5990,7 +5987,7 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                 UserKeySlotPhase::Down,
                 binding,
                 ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     kind: ElementEventKind::KeyDown,
                     payload: Some(binding.route.clone()),
                 }),
@@ -6002,7 +5999,7 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                     UserKeySlotPhase::Down,
                     binding,
                     ListenerAction::RuntimeChange(RuntimeChange::ArmTextCommitSuppression {
-                        element_id: element.id.clone(),
+                        element_id: element.id,
                         key: binding.key,
                     }),
                 );
@@ -6040,7 +6037,7 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                 UserKeySlotPhase::Up,
                 binding,
                 ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     kind: ElementEventKind::KeyUp,
                     payload: Some(binding.route.clone()),
                 }),
@@ -6095,12 +6092,12 @@ fn push_user_key_slot_action(
 
 fn key_press_tracker_for_binding(element: &Element, binding: &KeyBindingSpec) -> KeyPressTracker {
     KeyPressTracker {
-        source_element_id: Some(element.id.clone()),
+        source_element_id: Some(element.id),
         key: binding.key,
         mods: binding.mods,
         match_mode: binding.match_mode,
         followups: vec![KeyPressFollowup::ElixirEvent {
-            element_id: element.id.clone(),
+            element_id: element.id,
             route: binding.route.clone(),
         }],
     }
@@ -6121,7 +6118,7 @@ fn user_key_slot_listener(element: &Element, slot: UserKeySlot) -> Listener {
     };
 
     Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher,
         compute: ListenerCompute::Static {
             actions: slot.actions,
@@ -6187,7 +6184,8 @@ fn binding_arms_text_commit_suppression(element: &Element, binding: &KeyBindingS
             | CanonicalKey::Slash
             | CanonicalKey::Space
             | CanonicalKey::Tab
-    ) || (element.spec.kind == ElementKind::Multiline && binding.key == CanonicalKey::Enter)
+            | CanonicalKey::Enter
+    )
 }
 
 fn slot_scrollbar_thumb_press_y(
@@ -6260,10 +6258,10 @@ fn scrollbar_press_listener(
     let region = pointer_region_for_subregion(state.expect("scrollbar press needs state"), rect)
         .expect("scrollbar press needs interaction");
     Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
         compute: ListenerCompute::ScrollbarPressToRuntime {
-            element_id: element.id.clone(),
+            element_id: element.id,
             spec: ScrollbarPressSpec {
                 axis: scrollbar.axis,
                 area,
@@ -6312,13 +6310,13 @@ fn slot_primary_left_press(
         .spec
         .kind
         .is_text_input_family()
-        .then_some(element.id.clone());
+        .then_some(element.id);
     let text_drag = element
         .spec
         .kind
         .is_text_input_family()
         .then_some(TextDragTracker {
-            element_id: element.id.clone(),
+            element_id: element.id,
             matcher_kind,
         });
 
@@ -6340,7 +6338,7 @@ fn slot_primary_left_press(
             };
 
         Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher,
             compute,
         }
@@ -6407,7 +6405,7 @@ fn slot_text_key_edit(
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher,
         compute: ListenerCompute::TextInputKeyEditToRuntime { element_id, kind },
     })
@@ -6422,16 +6420,16 @@ fn slot_multiline_enter_press(
     }
 
     Some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::KeyEnterPressNoCtrlAltMeta,
         compute: ListenerCompute::Static {
             actions: vec![
                 ListenerAction::Semantic(SemanticAction::TextInputEdit {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     request: TextInputEditRequest::Insert("\n".to_string()),
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ArmTextCommitSuppression {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     key: CanonicalKey::Enter,
                 }),
             ],
@@ -6457,7 +6455,7 @@ fn slot_primary_left_release(
     .collect();
 
     (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseInside { region },
         compute: ListenerCompute::Static { actions },
     })
@@ -6470,7 +6468,7 @@ fn slot_mouse_down_release_anywhere(
     let actions = mouse_down_style::left_release_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static { actions },
     })
@@ -6497,7 +6495,7 @@ fn slot_cursor_pos_inside(
         .collect();
 
     (!actions.is_empty() || has_scrollbar_hover).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorPosInside { region },
         compute: ListenerCompute::RawCursorPosWithScrollbarHover {
             actions,
@@ -6515,7 +6513,7 @@ fn slot_hover_pointer_enter(
     let actions = hover::inside_actions(element);
 
     tracks_hover_inside(element).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::PointerEnterInside { region },
         compute: ListenerCompute::Static { actions },
     })
@@ -6526,7 +6524,7 @@ fn slot_key_enter_press(element: &Element, _state: Option<&ResolvedNodeState>) -
     let actions = on_press_keyboard::enter_press_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::KeyEnterPressNoCtrlAltMeta,
         compute: ListenerCompute::Static { actions },
     })
@@ -6537,7 +6535,7 @@ fn slot_text_commit(element: &Element, _state: Option<&ResolvedNodeState>) -> Op
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::TextCommitNoCtrlMeta,
         compute: ListenerCompute::TextCommitToRuntime { element_id },
     })
@@ -6551,7 +6549,7 @@ fn slot_key_backspace_press(
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::KeyBackspacePress,
         compute: ListenerCompute::TextInputEditToRuntimeMaybe {
             element_id,
@@ -6568,7 +6566,7 @@ fn slot_key_delete_press(
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::KeyDeletePress,
         compute: ListenerCompute::TextInputEditToRuntimeMaybe {
             element_id,
@@ -6648,11 +6646,11 @@ fn slot_middle_paste_primary_press(
         .collect();
 
     Some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorButtonMiddlePressInside { region },
         compute: ListenerCompute::StaticWithTextInputCursorRuntime {
             actions,
-            element_id: element.id.clone(),
+            element_id: element.id,
             extend_selection: false,
         },
     })
@@ -6663,7 +6661,7 @@ fn slot_text_preedit(element: &Element, _state: Option<&ResolvedNodeState>) -> O
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::TextPreeditAny,
         compute: ListenerCompute::TextInputPreeditToRuntime { element_id },
     })
@@ -6677,7 +6675,7 @@ fn slot_text_preedit_clear(
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::TextPreeditClear,
         compute: ListenerCompute::TextInputPreeditToRuntime { element_id },
     })
@@ -6691,7 +6689,7 @@ fn slot_text_delete_surrounding(
     let element_id = focused_text_input_id(element)?;
 
     Some(Listener {
-        element_id: Some(element_id.clone()),
+        element_id: Some(element_id),
         matcher: ListenerMatcher::TextDeleteSurroundingAny,
         compute: ListenerCompute::TextDeleteSurroundingToRuntime { element_id },
     })
@@ -6711,7 +6709,7 @@ fn slot_cursor_pos_outside(
     let scrollbar_hover = active_scrollbar_hover_compute_for_element(element, Some(state));
 
     (!actions.is_empty() || scrollbar_hover.is_some()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::CursorLocationLeaveBoundary { region },
         compute: ListenerCompute::PointerLeaveWithScrollbarHover {
             actions,
@@ -6727,7 +6725,7 @@ fn slot_hover_leave_owner(
     let actions = hover::leave_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::HoverLeaveCurrentOwner,
         compute: ListenerCompute::Static { actions },
     })
@@ -6747,13 +6745,13 @@ fn emit_scroll_listeners_for_element(
         scroll_wheel::scroll_directions_for_element(element)
             .into_iter()
             .map(|direction| Listener {
-                element_id: Some(element.id.clone()),
+                element_id: Some(element.id),
                 matcher: ListenerMatcher::CursorScrollInsideDirection {
                     region: region.clone(),
                     direction,
                 },
                 compute: ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     direction,
                 },
             }),
@@ -6778,28 +6776,28 @@ fn emit_front_nearby_blockers_for_element(
 
     out.emit_all([
         Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher: ListenerMatcher::CursorButtonLeftPressInside {
                 region: region.clone(),
             },
             compute: blocker(),
         },
         Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher: ListenerMatcher::CursorButtonLeftReleaseInside {
                 region: region.clone(),
             },
             compute: blocker(),
         },
         Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher: ListenerMatcher::CursorButtonMiddlePressInside {
                 region: region.clone(),
             },
             compute: blocker(),
         },
         Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher: ListenerMatcher::CursorPosInside {
                 region: region.clone(),
             },
@@ -6816,7 +6814,7 @@ fn emit_front_nearby_blockers_for_element(
         ]
         .into_iter()
         .map(|direction| Listener {
-            element_id: Some(element.id.clone()),
+            element_id: Some(element.id),
             matcher: ListenerMatcher::CursorScrollInsideDirection {
                 region: region.clone(),
                 direction,
@@ -6833,7 +6831,7 @@ fn slot_mouse_down_window_blur_clear(
     let actions = mouse_down_style::window_blur_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
-        element_id: Some(element.id.clone()),
+        element_id: Some(element.id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static { actions },
     })
@@ -6844,7 +6842,7 @@ mod mouse_events {
     use super::*;
 
     pub(super) fn left_press_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let attrs = &element.layout.effective;
         let on_mouse_down = attrs.on_mouse_down.unwrap_or(false);
         on_mouse_down
@@ -6861,7 +6859,7 @@ mod mouse_events {
     }
 
     pub(super) fn left_release_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let on_mouse_up = element.layout.effective.on_mouse_up.unwrap_or(false);
 
         on_mouse_up
@@ -6878,7 +6876,7 @@ mod mouse_events {
     }
 
     pub(super) fn cursor_pos_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let on_mouse_move = element.layout.effective.on_mouse_move.unwrap_or(false);
 
         on_mouse_move
@@ -6901,7 +6899,7 @@ mod hover {
 
     pub(super) fn inside_actions(element: &Element) -> Vec<ListenerAction> {
         let attrs = &element.layout.effective;
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let has_hover_style = attrs.mouse_over.is_some();
         let hover_active = element.runtime.mouse_over_active;
         let on_mouse_enter = attrs.on_mouse_enter.unwrap_or(false);
@@ -6913,16 +6911,16 @@ mod hover {
         }
 
         [
-            on_mouse_enter.then(|| {
+            on_mouse_enter.then_some({
                 ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element_id.clone(),
+                    element_id,
                     kind: ElementEventKind::MouseEnter,
                     payload: None,
                 })
             }),
-            track_hover_active.then(|| {
+            track_hover_active.then_some({
                 ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
-                    element_id: element_id.clone(),
+                    element_id,
                     active: true,
                 })
             }),
@@ -6934,7 +6932,7 @@ mod hover {
 
     pub(super) fn leave_actions(element: &Element) -> Vec<ListenerAction> {
         let attrs = &element.layout.effective;
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let has_hover_style = attrs.mouse_over.is_some();
         let hover_active = element.runtime.mouse_over_active;
         let on_mouse_leave = attrs.on_mouse_leave.unwrap_or(false);
@@ -6946,16 +6944,16 @@ mod hover {
         }
 
         [
-            on_mouse_leave.then(|| {
+            on_mouse_leave.then_some({
                 ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element_id.clone(),
+                    element_id,
                     kind: ElementEventKind::MouseLeave,
                     payload: None,
                 })
             }),
-            track_hover_active.then(|| {
+            track_hover_active.then_some({
                 ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
-                    element_id: element_id.clone(),
+                    element_id,
                     active: false,
                 })
             }),
@@ -6978,7 +6976,7 @@ mod mouse_down_style {
     }
 
     pub(super) fn left_press_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let (has_mouse_down_style, mouse_down_active) = has_and_active(element);
 
         (has_mouse_down_style && !mouse_down_active)
@@ -6994,7 +6992,7 @@ mod mouse_down_style {
     }
 
     pub(super) fn left_release_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let (has_mouse_down_style, mouse_down_active) = has_and_active(element);
 
         (has_mouse_down_style && mouse_down_active)
@@ -7010,7 +7008,7 @@ mod mouse_down_style {
     }
 
     pub(super) fn leave_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let (has_mouse_down_style, mouse_down_active) = has_and_active(element);
 
         (has_mouse_down_style && mouse_down_active)
@@ -7026,7 +7024,7 @@ mod mouse_down_style {
     }
 
     pub(super) fn window_blur_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id.clone();
+        let element_id = element.id;
         let (has_mouse_down_style, mouse_down_active) = has_and_active(element);
 
         (has_mouse_down_style && mouse_down_active)
@@ -7059,7 +7057,7 @@ mod virtual_key {
                 vec![ListenerAction::RuntimeChange(
                     RuntimeChange::StartVirtualKeyTracker {
                         tracker: VirtualKeyTracker {
-                            element_id: element.id.clone(),
+                            element_id: element.id,
                             region: region.clone(),
                             tap: spec.tap.clone(),
                             hold: spec.hold,
@@ -7085,7 +7083,7 @@ mod click_press_tracker {
         let attrs = &element.layout.effective;
         let emit_click = attrs.on_click.unwrap_or(false);
         let emit_press_pointer = attrs.on_press.unwrap_or(false);
-        let element_id = element.id.clone();
+        let element_id = element.id;
 
         (emit_click || emit_press_pointer)
             .then(|| {
@@ -7113,8 +7111,8 @@ mod click_press_tracker {
             || attrs.on_press.unwrap_or(false)
             || swipe_handlers.any()
             || !scroll_wheel::scroll_directions_for_element(element).is_empty())
-        .then(|| PointerDragBootstrap {
-            element_id: element.id.clone(),
+        .then_some(PointerDragBootstrap {
+            element_id: element.id,
             matcher_kind,
             swipe_handlers,
         })
@@ -7132,7 +7130,7 @@ mod on_press_keyboard {
         emit_press
             .then(|| {
                 vec![ListenerAction::ElixirEvent(ElixirEvent {
-                    element_id: element.id.clone(),
+                    element_id: element.id,
                     kind: ElementEventKind::Press,
                     payload: None,
                 })]
@@ -7152,7 +7150,7 @@ mod text_input_commands {
         request: TextInputCommandRequest,
     ) -> Vec<ListenerAction> {
         vec![ListenerAction::Semantic(SemanticAction::TextInputCommand {
-            element_id: element_id.clone(),
+            element_id: *element_id,
             request,
         })]
     }
@@ -10409,6 +10407,56 @@ mod tests {
             })] if *element_id == NodeId::from_term_bytes(vec![37])
                 && payload.as_deref() == Some("key_up:escape:exact:2")
         ));
+    }
+
+    #[test]
+    fn listeners_for_focused_text_input_enter_key_down_arms_text_commit_suppression() {
+        let mut attrs = Attrs::default();
+        attrs.content = Some("task".to_string());
+        attrs.text_input_focused = Some(true);
+        attrs.text_input_cursor = Some(4);
+        attrs.focused_active = Some(true);
+        attrs.on_key_down = Some(vec![KeyBindingSpec {
+            route: "key_down:enter:exact:0".to_string(),
+            key: CanonicalKey::Enter,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = make_text_input_element(137, attrs);
+
+        let listeners = listeners_for_element(&element);
+        let key_down_listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyDownBinding {
+                    key: CanonicalKey::Enter,
+                    mods: 0,
+                    match_mode: KeyBindingMatch::Exact,
+                }
+            )
+        });
+
+        let actions = key_down_listener.compute_actions(&InputEvent::Key {
+            key: CanonicalKey::Enter,
+            action: ACTION_PRESS,
+            mods: 0,
+        });
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::KeyDown,
+                ..
+            }) if *element_id == NodeId::from_term_bytes(vec![137])
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::RuntimeChange(RuntimeChange::ArmTextCommitSuppression {
+                element_id,
+                key: CanonicalKey::Enter,
+            }) if *element_id == NodeId::from_term_bytes(vec![137])
+        )));
     }
 
     #[test]
