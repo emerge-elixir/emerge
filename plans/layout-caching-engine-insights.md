@@ -52,6 +52,7 @@ Already implemented:
 - broader resolve-cache reuse for text-flow-heavy layouts
 - first relayout/dependency boundary for fixed-size `El`/`None` parents
 - compact child/nearby topology dependency versions in layout cache keys
+- detached nearby layout-cache reuse scoped to matching attachment context
 - refresh-specific render/registry damage tracking with cached full-registry
   reuse when registry damage is clean
 - retained render subtree caching/skipping for clean render subtrees
@@ -64,7 +65,7 @@ Still open:
 
 - broader relayout/dependency boundaries
 - further version/key work for attrs or measured/resolve dependency generations if profiles justify it
-- registry chunk skipping
+- broader registry chunk seeding/skipping if profiles justify it
 - replacing remaining broad debug-hash render key fields with typed dependency
   versions if profiles justify it
 - viewport/repeater-aware cache preservation
@@ -136,8 +137,10 @@ resolved layout caches.
 
 Taffy dirties ancestors rather than globally dirtying the whole tree.
 
-Emerge status: implemented for measure/resolve through parent links. Future work
-should add dependency boundaries so upward propagation can stop earlier.
+Emerge status: implemented for measure/resolve through parent links. The first
+fixed-size `El`/`None` and nearby overlay boundaries are implemented; future
+work should add more dependency boundaries so upward propagation can stop
+earlier in row/column, scrollable, and text-flow cases.
 
 #### Centralize cache lookup/store
 
@@ -267,8 +270,9 @@ Emerge takeaway:
 - stop upward invalidation when the parent does not consume the changed layout
 - make relayout boundaries an explicit result of dependency shape
 
-Emerge status: upward propagation exists, but it does not yet stop at dependency
-boundaries.
+Emerge status: upward propagation exists, and the first fixed-size `El`/`None`
+plus nearby overlay boundaries are implemented. Broader dependency boundaries
+remain future work.
 
 #### `parentUsesSize`
 
@@ -525,21 +529,27 @@ Useful Emerge inputs include:
 - child/nearby dependency versions
 - run/cache mode
 
-Emerge status: implemented conservatively; versioned keys are future work.
+Emerge status: implemented conservatively. Child/nearby topology dependencies
+now use compact version keys; additional attr or dependency generations remain
+future work if profiles justify them.
 
 ### 4. Dirtiness should propagate upward, not globally
 
 A child's layout-affecting change should dirty ancestors that depend on it, not
 unrelated subtrees.
 
-Emerge status: upward propagation exists; dependency boundaries are future work.
+Emerge status: upward propagation exists. Initial dependency boundaries exist
+for fixed-size `El`/`None` and nearby overlays; broader boundaries remain future
+work.
 
 ### 5. Relayout boundaries matter
 
 Flutter and Servo strongly suggest that upward propagation needs explicit stop
 points.
 
-Emerge status: future work.
+Emerge status: initial fixed-size `El`/`None` and nearby overlay boundaries are
+implemented. Row/column, scrollable, and text-flow boundaries remain future
+work.
 
 ### 6. State identity must survive list and subtree edits
 
@@ -583,18 +593,22 @@ paint-only animation refresh skipping.
 
 Do not conflate geometry caching with scene or event-registry caching.
 
-Emerge status: architecture separates these phases; future refresh skipping can
-optimize the downstream phase.
+Emerge status: architecture separates these phases. Refresh-specific
+render/registry damage, cached full-registry reuse, retained render subtree
+reuse, and conservative registry chunk caching are implemented; broader
+registry chunk seeding remains future work if profiles justify it.
 
 ## How these insights shape the current roadmap
 
 The current roadmap is not "add caches" anymore. Those are implemented. The
-next work should use the insights above to make reuse broader and more precise:
+next work should use the insights above to make reuse broader, safer, and more
+precise:
 
-1. improve text-flow/paragraph resolve caching
-2. add relayout/dependency boundaries
-3. move from cloned child/nearby lists to versioned dependency keys and make hot layout traversal more ix-native where useful
-4. skip clean subtrees during refresh
-5. preserve cache identity through viewport/repeater movement
+1. broaden relayout/dependency boundaries beyond fixed-size `El`/`None` and
+   nearby overlays
+2. make hot layout traversal more ix-native where profiles show id-facing
+   compatibility helpers are costly
+3. revisit registry chunk seeding/skipping only if profiles justify it
+4. preserve cache identity through viewport/repeater movement
 
 See `layout-caching-roadmap.md` for the implementation order.

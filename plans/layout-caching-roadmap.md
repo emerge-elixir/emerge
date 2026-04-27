@@ -30,7 +30,10 @@ work:
 - per-node intrinsic measurement cache
 - per-node subtree measurement cache
 - coordinate-invariant resolve cache
-- small bounded detached-layout reuse for removed/reinserted nearby subtrees
+- small bounded detached-layout reuse for removed/reinserted nearby subtrees,
+  scoped to matching attachment context
+- exit-animation ghosts that preserve cloned subtree topology and remain in
+  active layout until pruning
 - resolve-cache eligibility for text-flow kinds (`Multiline`, `WrappedRow`,
   `TextColumn`, and `Paragraph`)
 - targeted dirty propagation for layout-affecting animation samples
@@ -54,6 +57,9 @@ Relevant files:
 - `bench/native_retained_layout_bench.exs`
 
 ### What remains
+
+The merge-readiness plan is complete and retained as evidence in
+`active-performance-merge-readiness-plan.md`. Broader cache work can now resume.
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
@@ -358,9 +364,12 @@ Implemented direction:
 - resolve-cache hits can restore clean ancestor geometry while traversing the
   dirty nearby path, avoiding visits to unrelated clean siblings
 - removed small animation-free nearby subtrees keep a bounded detached layout
-  snapshot keyed by structural signature/raw attrs/runtime state/scale, so
-  repeated `none()`/code-block hover toggles can restore layout caches even when
-  the reinserted subtree has fresh node ids
+  snapshot keyed by structural signature/raw attrs/runtime state/scale plus
+  attachment context, so repeated `none()`/code-block hover toggles can restore
+  layout caches even when the reinserted subtree has fresh node ids
+- detached nearby layout cache restore requires the same host id, slot, and host
+  frame; changed-host or changed-slot reinserts relayout instead of reusing
+  stale absolute frames
 - non-registry nearby remove/restored-show changes classify as paint/render
   damage, allowing refresh-only work selection and cached full-registry reuse
 - registry damage remains conservative when the changed nearby subtree or slot
