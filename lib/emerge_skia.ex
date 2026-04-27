@@ -92,7 +92,7 @@ defmodule EmergeSkia do
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `stats` - Enable renderer stats collection without periodic logging (default: false)
-  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, timing windows, and layout-cache counters (default: false)
+  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, and layout-cache counters. Slow Wayland render/present frames also include a scene primitive summary. (default: false)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as

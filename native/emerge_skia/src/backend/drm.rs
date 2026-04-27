@@ -1220,7 +1220,7 @@ fn prepare_primary_frame(
     }
 
     let render_started_at = Instant::now();
-    renderer.render(&mut frame, render_state);
+    let render_timings = renderer.render(&mut frame, render_state);
     if !hw_cursor_enabled && cursor_visible {
         draw_software_cursor(
             renderer,
@@ -1233,6 +1233,10 @@ fn prepare_primary_frame(
 
     if let Some(stats) = stats {
         stats.record_render(render_started_at.elapsed());
+        stats.record_render_draw(render_timings.draw);
+        stats.record_render_flush(render_timings.flush);
+        stats.record_render_gpu_flush(render_timings.gpu_flush);
+        stats.record_render_submit(render_timings.submit);
     }
 
     let present_submit_started_at = Instant::now();

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use resvg::usvg;
 use skia_safe::{
@@ -22,6 +23,7 @@ use skia_safe::{
     font::Edging as FontEdging,
     gpu,
     gradient::{Colors as GradientColors, Gradient, Interpolation},
+    image::CachingHint,
     shaders,
 };
 
@@ -40,6 +42,162 @@ pub struct RenderState {
     pub clear_color: Color,
     pub render_version: u64,
     pub animate: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderTimings {
+    pub total: Duration,
+    pub draw: Duration,
+    pub draw_detail: Option<RenderDrawTimings>,
+    pub flush: Duration,
+    pub gpu_flush: Duration,
+    pub submit: Duration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderDrawTimings {
+    pub clear: Duration,
+    pub clips: Duration,
+    pub relaxed_clips: Duration,
+    pub transforms: Duration,
+    pub alphas: Duration,
+    pub rects: Duration,
+    pub rounded_rects: Duration,
+    pub borders: Duration,
+    pub shadows: Duration,
+    pub inset_shadows: Duration,
+    pub texts: Duration,
+    pub gradients: Duration,
+    pub images: Duration,
+    pub videos: Duration,
+    pub image_placeholders: Duration,
+    pub shadow_details: Vec<RenderShadowDrawProfile>,
+    pub image_details: Vec<RenderImageDrawProfile>,
+}
+
+impl RenderDrawTimings {
+    pub fn attributed_total(&self) -> Duration {
+        self.clear
+            + self.clips
+            + self.relaxed_clips
+            + self.transforms
+            + self.alphas
+            + self.rects
+            + self.rounded_rects
+            + self.borders
+            + self.shadows
+            + self.inset_shadows
+            + self.texts
+            + self.gradients
+            + self.images
+            + self.videos
+            + self.image_placeholders
+    }
+
+    pub fn unattributed(&self, draw: Duration) -> Duration {
+        draw.saturating_sub(self.attributed_total())
+    }
+
+    fn record_primitive(&mut self, primitive: &DrawPrimitive, duration: Duration) {
+        match primitive {
+            DrawPrimitive::Rect(..) => self.rects += duration,
+            DrawPrimitive::RoundedRect(..) => self.rounded_rects += duration,
+            DrawPrimitive::Border(..)
+            | DrawPrimitive::BorderCorners(..)
+            | DrawPrimitive::BorderEdges(..) => self.borders += duration,
+            DrawPrimitive::Shadow(..) => self.shadows += duration,
+            DrawPrimitive::InsetShadow(..) => self.inset_shadows += duration,
+            DrawPrimitive::TextWithFont(..) => self.texts += duration,
+            DrawPrimitive::Gradient(..) => self.gradients += duration,
+            DrawPrimitive::Image(..) => self.images += duration,
+            DrawPrimitive::Video(..) => self.videos += duration,
+            DrawPrimitive::ImageLoading(..) | DrawPrimitive::ImageFailed(..) => {
+                self.image_placeholders += duration
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderShadowDrawProfile {
+    pub rect_x: f32,
+    pub rect_y: f32,
+    pub rect_width: f32,
+    pub rect_height: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur: f32,
+    pub size: f32,
+    pub radius: f32,
+    pub color: u32,
+    pub total: Duration,
+    pub prepare: Duration,
+    pub clip: Duration,
+    pub draw: Duration,
+}
+
+impl RenderShadowDrawProfile {
+    fn new(spec: ShadowDrawSpec) -> Self {
+        Self {
+            rect_x: spec.rect.x,
+            rect_y: spec.rect.y,
+            rect_width: spec.rect.w,
+            rect_height: spec.rect.h,
+            offset_x: spec.offset_x,
+            offset_y: spec.offset_y,
+            blur: spec.blur,
+            size: spec.size,
+            radius: spec.radius,
+            color: spec.color,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderImageDrawProfile {
+    pub image_id: String,
+    pub kind: RenderImageAssetKind,
+    pub fit: ImageFit,
+    pub tinted: bool,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub draw_width: u32,
+    pub draw_height: u32,
+    pub total: Duration,
+    pub asset_lookup: Duration,
+    pub fit_compute: Duration,
+    pub vector_cache_lookup: Duration,
+    pub vector_cache_hit: Option<bool>,
+    pub vector_rasterize: Duration,
+    pub vector_cache_store: Duration,
+    pub draw: Duration,
+}
+
+impl RenderImageDrawProfile {
+    fn new(spec: ImageDrawSpec<'_>) -> Self {
+        Self {
+            image_id: spec.image_id.to_string(),
+            fit: spec.fit,
+            tinted: spec.svg_tint.is_some(),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RenderImageAssetKind {
+    #[default]
+    Missing,
+    Raster,
+    Vector,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderFlushTimings {
+    pub total: Duration,
+    pub gpu_flush: Duration,
+    pub submit: Duration,
 }
 
 const RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET: f32 = 1.0;
@@ -486,6 +644,9 @@ fn clear_rendered_vector_variants(asset_id: &str) {
 
 pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
     let image = Image::from_encoded(Data::new_copy(data))
+        .and_then(|image| {
+            image.make_raster_image(None::<&mut gpu::DirectContext>, CachingHint::Allow)
+        })
         .ok_or_else(|| "failed to decode image data".to_string())?;
 
     let width = image.width().max(0) as u32;
@@ -597,9 +758,25 @@ impl<'a> RenderFrame<'a> {
         self.surface
     }
 
-    pub fn flush(&mut self) {
+    pub fn flush(&mut self) -> RenderFlushTimings {
+        let started_at = Instant::now();
+        let mut gpu_flush = Duration::ZERO;
+        let mut submit = Duration::ZERO;
+
         if let Some(gr_context) = self.direct_context.as_deref_mut() {
-            gr_context.flush_and_submit();
+            let flush_started_at = Instant::now();
+            gr_context.flush(None);
+            gpu_flush = flush_started_at.elapsed();
+
+            let submit_started_at = Instant::now();
+            gr_context.submit(gpu::SyncCpu::No);
+            submit = submit_started_at.elapsed();
+        }
+
+        RenderFlushTimings {
+            total: started_at.elapsed(),
+            gpu_flush,
+            submit,
         }
     }
 }
@@ -639,12 +816,58 @@ impl SceneRenderer {
     }
 
     /// Render the given state to the surface.
-    pub fn render(&mut self, frame: &mut RenderFrame<'_>, state: &RenderState) {
-        let canvas = frame.surface.canvas();
-        canvas.clear(state.clear_color);
+    pub fn render(&mut self, frame: &mut RenderFrame<'_>, state: &RenderState) -> RenderTimings {
+        self.render_with_draw_profile(frame, state, false)
+    }
 
-        Self::render_nodes(canvas, &state.scene.nodes, &self.video_state, 0.0);
-        frame.flush();
+    pub fn render_profiled(
+        &mut self,
+        frame: &mut RenderFrame<'_>,
+        state: &RenderState,
+    ) -> RenderTimings {
+        self.render_with_draw_profile(frame, state, true)
+    }
+
+    fn render_with_draw_profile(
+        &mut self,
+        frame: &mut RenderFrame<'_>,
+        state: &RenderState,
+        profile_draw: bool,
+    ) -> RenderTimings {
+        let started_at = Instant::now();
+        let draw_started_at = Instant::now();
+        let canvas = frame.surface.canvas();
+
+        let draw_detail = if profile_draw {
+            let mut detail = RenderDrawTimings::default();
+            let clear_started_at = Instant::now();
+            canvas.clear(state.clear_color);
+            detail.clear = clear_started_at.elapsed();
+            Self::render_nodes_profiled(
+                canvas,
+                &state.scene.nodes,
+                &self.video_state,
+                0.0,
+                &mut detail,
+            );
+            Some(detail)
+        } else {
+            canvas.clear(state.clear_color);
+            Self::render_nodes(canvas, &state.scene.nodes, &self.video_state, 0.0);
+            None
+        };
+
+        let draw = draw_started_at.elapsed();
+        let flush = frame.flush();
+
+        RenderTimings {
+            total: started_at.elapsed(),
+            draw,
+            draw_detail,
+            flush: flush.total,
+            gpu_flush: flush.gpu_flush,
+            submit: flush.submit,
+        }
     }
 
     fn render_nodes(
@@ -693,6 +916,347 @@ impl SceneRenderer {
                 ),
             }
         }
+    }
+
+    fn render_nodes_profiled(
+        canvas: &skia_safe::Canvas,
+        nodes: &[RenderNode],
+        video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
+        draw_detail: &mut RenderDrawTimings,
+    ) {
+        for node in nodes {
+            match node {
+                RenderNode::ShadowPass { children } => Self::render_nodes_profiled(
+                    canvas,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                    draw_detail,
+                ),
+                RenderNode::Clip { clips, children } => Self::render_clip_node_profiled(
+                    canvas,
+                    clips,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                    draw_detail,
+                ),
+                RenderNode::RelaxedClip { clips, children } => {
+                    Self::render_relaxed_clip_node_profiled(
+                        canvas,
+                        clips,
+                        children,
+                        video_state,
+                        draw_detail,
+                    )
+                }
+                RenderNode::Transform {
+                    transform,
+                    children,
+                } => Self::render_transform_node_profiled(
+                    canvas,
+                    *transform,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                    draw_detail,
+                ),
+                RenderNode::Alpha { alpha, children } => Self::render_alpha_node_profiled(
+                    canvas,
+                    *alpha,
+                    children,
+                    video_state,
+                    image_bleed_device_outset,
+                    draw_detail,
+                ),
+                RenderNode::Primitive(primitive) => match primitive {
+                    DrawPrimitive::Shadow(
+                        x,
+                        y,
+                        w,
+                        h,
+                        offset_x,
+                        offset_y,
+                        blur,
+                        size,
+                        radius,
+                        color,
+                    ) => {
+                        let profile = draw_outer_shadow_profiled(
+                            canvas,
+                            ShadowDrawSpec {
+                                rect: RectSpec {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                },
+                                offset_x: *offset_x,
+                                offset_y: *offset_y,
+                                blur: *blur,
+                                size: *size,
+                                radius: *radius,
+                                color: *color,
+                            },
+                        );
+                        draw_detail.shadows += profile.total;
+                        draw_detail.shadow_details.push(profile);
+                    }
+                    DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
+                        let profile = draw_cached_asset_with_fit_profiled(
+                            canvas,
+                            ImageDrawSpec {
+                                rect: RectSpec {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                },
+                                image_id,
+                                fit: *fit,
+                                svg_tint: *svg_tint,
+                            },
+                            image_bleed_device_outset,
+                        );
+                        draw_detail.images += profile.total;
+                        draw_detail.image_details.push(profile);
+                    }
+                    _ => {
+                        let started_at = Instant::now();
+                        Self::render_primitive(
+                            canvas,
+                            primitive,
+                            video_state,
+                            image_bleed_device_outset,
+                        );
+                        draw_detail.record_primitive(primitive, started_at.elapsed());
+                    }
+                },
+            }
+        }
+    }
+
+    fn render_clip_node_profiled(
+        canvas: &skia_safe::Canvas,
+        clips: &[ClipShape],
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
+        draw_detail: &mut RenderDrawTimings,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if clips.is_empty() {
+            Self::render_nodes_profiled(
+                canvas,
+                children,
+                video_state,
+                image_bleed_device_outset,
+                draw_detail,
+            );
+            return;
+        }
+
+        let clip_started_at = Instant::now();
+        canvas.save();
+        for clip in clips {
+            apply_clip_shape(canvas, clip);
+        }
+        draw_detail.clips += clip_started_at.elapsed();
+
+        for child in children {
+            match child {
+                RenderNode::ShadowPass { children } => {
+                    let clip_started_at = Instant::now();
+                    canvas.restore();
+                    draw_detail.clips += clip_started_at.elapsed();
+
+                    Self::render_nodes_profiled(
+                        canvas,
+                        children,
+                        video_state,
+                        image_bleed_device_outset,
+                        draw_detail,
+                    );
+
+                    let clip_started_at = Instant::now();
+                    canvas.save();
+                    for clip in clips {
+                        apply_clip_shape(canvas, clip);
+                    }
+                    draw_detail.clips += clip_started_at.elapsed();
+                }
+                _ => {
+                    Self::render_nodes_profiled(
+                        canvas,
+                        std::slice::from_ref(child),
+                        video_state,
+                        image_bleed_device_outset,
+                        draw_detail,
+                    );
+                }
+            }
+        }
+
+        let clip_started_at = Instant::now();
+        canvas.restore();
+        draw_detail.clips += clip_started_at.elapsed();
+    }
+
+    fn render_relaxed_clip_node_profiled(
+        canvas: &skia_safe::Canvas,
+        clips: &[ClipShape],
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+        draw_detail: &mut RenderDrawTimings,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if clips.is_empty() {
+            Self::render_nodes_profiled(
+                canvas,
+                children,
+                video_state,
+                RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+                draw_detail,
+            );
+            return;
+        }
+
+        let clip_started_at = Instant::now();
+        canvas.save();
+        for clip in clips {
+            apply_relaxed_clip_shape(canvas, clip);
+        }
+        draw_detail.relaxed_clips += clip_started_at.elapsed();
+
+        for child in children {
+            match child {
+                RenderNode::ShadowPass { children } => {
+                    let clip_started_at = Instant::now();
+                    canvas.restore();
+                    draw_detail.relaxed_clips += clip_started_at.elapsed();
+
+                    Self::render_nodes_profiled(
+                        canvas,
+                        children,
+                        video_state,
+                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+                        draw_detail,
+                    );
+
+                    let clip_started_at = Instant::now();
+                    canvas.save();
+                    for clip in clips {
+                        apply_relaxed_clip_shape(canvas, clip);
+                    }
+                    draw_detail.relaxed_clips += clip_started_at.elapsed();
+                }
+                _ => {
+                    Self::render_nodes_profiled(
+                        canvas,
+                        std::slice::from_ref(child),
+                        video_state,
+                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
+                        draw_detail,
+                    );
+                }
+            }
+        }
+
+        let clip_started_at = Instant::now();
+        canvas.restore();
+        draw_detail.relaxed_clips += clip_started_at.elapsed();
+    }
+
+    fn render_transform_node_profiled(
+        canvas: &skia_safe::Canvas,
+        transform: Affine2,
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
+        draw_detail: &mut RenderDrawTimings,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if transform.is_identity() {
+            Self::render_nodes_profiled(
+                canvas,
+                children,
+                video_state,
+                image_bleed_device_outset,
+                draw_detail,
+            );
+            return;
+        }
+
+        let transform_started_at = Instant::now();
+        canvas.save();
+        let matrix = matrix_from_affine2(transform);
+        canvas.concat(&matrix);
+        draw_detail.transforms += transform_started_at.elapsed();
+
+        Self::render_nodes_profiled(
+            canvas,
+            children,
+            video_state,
+            image_bleed_device_outset,
+            draw_detail,
+        );
+
+        let transform_started_at = Instant::now();
+        canvas.restore();
+        draw_detail.transforms += transform_started_at.elapsed();
+    }
+
+    fn render_alpha_node_profiled(
+        canvas: &skia_safe::Canvas,
+        alpha: f32,
+        children: &[RenderNode],
+        video_state: &RendererVideoState,
+        image_bleed_device_outset: f32,
+        draw_detail: &mut RenderDrawTimings,
+    ) {
+        if children.is_empty() {
+            return;
+        }
+
+        if alpha >= 1.0 {
+            Self::render_nodes_profiled(
+                canvas,
+                children,
+                video_state,
+                image_bleed_device_outset,
+                draw_detail,
+            );
+            return;
+        }
+
+        let clamped = alpha.clamp(0.0, 1.0);
+        let alpha_u8 = (clamped * 255.0).round() as u8;
+
+        let alpha_started_at = Instant::now();
+        canvas.save_layer_alpha(None, alpha_u8.into());
+        draw_detail.alphas += alpha_started_at.elapsed();
+
+        Self::render_nodes_profiled(
+            canvas,
+            children,
+            video_state,
+            image_bleed_device_outset,
+            draw_detail,
+        );
+
+        let alpha_started_at = Instant::now();
+        canvas.restore();
+        draw_detail.alphas += alpha_started_at.elapsed();
     }
 
     fn render_clip_node(
@@ -932,33 +1496,23 @@ impl SceneRenderer {
             }
 
             DrawPrimitive::Shadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
-                let shadow_x = *x + *offset_x - *size;
-                let shadow_y = *y + *offset_y - *size;
-                let shadow_w = *w + *size * 2.0;
-                let shadow_h = *h + *size * 2.0;
-                let shadow_radius = (*radius + *size).max(0.0);
-
-                let shadow_rrect = corner_rrect(
-                    Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h),
-                    [shadow_radius; 4],
+                draw_outer_shadow(
+                    canvas,
+                    ShadowDrawSpec {
+                        rect: RectSpec {
+                            x: *x,
+                            y: *y,
+                            w: *w,
+                            h: *h,
+                        },
+                        offset_x: *offset_x,
+                        offset_y: *offset_y,
+                        blur: *blur,
+                        size: *size,
+                        radius: *radius,
+                        color: *color,
+                    },
                 );
-                let bounds_rrect = corner_rrect(Rect::from_xywh(*x, *y, *w, *h), [*radius; 4]);
-
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*color));
-                paint.set_anti_alias(true);
-
-                if *blur > 0.0 {
-                    let sigma = *blur / 2.0;
-                    if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
-                        paint.set_mask_filter(filter);
-                    }
-                }
-
-                canvas.save();
-                canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Difference, true);
-                canvas.draw_rrect(shadow_rrect, &paint);
-                canvas.restore();
             }
 
             DrawPrimitive::InsetShadow(
@@ -1178,6 +1732,23 @@ struct BorderDrawSpec {
     style: BorderStyle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShadowDrawSpec {
+    rect: RectSpec,
+    offset_x: f32,
+    offset_y: f32,
+    blur: f32,
+    size: f32,
+    radius: f32,
+    color: u32,
+}
+
+struct PreparedOuterShadow {
+    shadow_rrect: RRect,
+    bounds_rrect: RRect,
+    paint: Paint,
+}
+
 fn matrix_from_affine2(transform: Affine2) -> Matrix {
     Matrix::new_all(
         transform.xx,
@@ -1325,6 +1896,57 @@ fn draw_cached_asset_with_fit(
     }
 }
 
+fn draw_cached_asset_with_fit_profiled(
+    canvas: &skia_safe::Canvas,
+    spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
+) -> RenderImageDrawProfile {
+    let started_at = Instant::now();
+    let mut profile = RenderImageDrawProfile::new(spec);
+    let RectSpec { w, h, .. } = spec.rect;
+
+    if w > 0.0 && h > 0.0 {
+        let lookup_started_at = Instant::now();
+        let cached = cached_asset(spec.image_id);
+        profile.asset_lookup = lookup_started_at.elapsed();
+
+        if let Some(cached) = cached {
+            profile.source_width = cached.width;
+            profile.source_height = cached.height;
+
+            match &cached.kind {
+                CachedAssetKind::Raster(image) => {
+                    profile.kind = RenderImageAssetKind::Raster;
+                    draw_image_with_fit_profiled(
+                        canvas,
+                        image,
+                        cached.width,
+                        cached.height,
+                        spec,
+                        image_bleed_device_outset,
+                        &mut profile,
+                    );
+                }
+                CachedAssetKind::Vector(tree) => {
+                    profile.kind = RenderImageAssetKind::Vector;
+                    draw_vector_asset_with_fit_profiled(
+                        canvas,
+                        tree,
+                        cached.width,
+                        cached.height,
+                        spec,
+                        image_bleed_device_outset,
+                        &mut profile,
+                    );
+                }
+            }
+        }
+    }
+
+    profile.total = started_at.elapsed();
+    profile
+}
+
 fn draw_image_with_fit(
     canvas: &skia_safe::Canvas,
     image: &Image,
@@ -1373,6 +1995,74 @@ fn draw_image_with_fit(
                 spec.fit,
                 spec.svg_tint,
             );
+        }
+    }
+}
+
+fn draw_image_with_fit_profiled(
+    canvas: &skia_safe::Canvas,
+    image: &Image,
+    image_width: u32,
+    image_height: u32,
+    spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
+    profile: &mut RenderImageDrawProfile,
+) {
+    let RectSpec { x, y, w, h } = spec.rect;
+
+    match spec.fit {
+        ImageFit::Contain | ImageFit::Cover => {
+            let fit_started_at = Instant::now();
+            let src_w = image_width as f32;
+            let src_h = image_height as f32;
+            let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
+                profile.fit_compute += fit_started_at.elapsed();
+                return;
+            };
+
+            let mut paint = Paint::default();
+            paint.set_anti_alias(false);
+            let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
+
+            let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
+            let dst_rect = maybe_expand_fit_dst_rect(
+                canvas,
+                Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h),
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                image_bleed_device_outset,
+            );
+            profile.draw_width = dst_rect.width().ceil().max(0.0) as u32;
+            profile.draw_height = dst_rect.height().ceil().max(0.0) as u32;
+            profile.fit_compute += fit_started_at.elapsed();
+
+            let draw_started_at = Instant::now();
+            draw_image_rect_with_optional_template_tint(
+                canvas,
+                image,
+                Some((&src_rect, SrcRectConstraint::Strict)),
+                dst_rect,
+                sampling,
+                &paint,
+                spec.svg_tint,
+            );
+            profile.draw += draw_started_at.elapsed();
+        }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
+            let fit_started_at = Instant::now();
+            profile.draw_width = w.ceil().max(0.0) as u32;
+            profile.draw_height = h.ceil().max(0.0) as u32;
+            profile.fit_compute += fit_started_at.elapsed();
+
+            let draw_started_at = Instant::now();
+            draw_tiled_image(
+                canvas,
+                image,
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                spec.svg_tint,
+            );
+            profile.draw += draw_started_at.elapsed();
         }
     }
 }
@@ -1540,6 +2230,34 @@ fn get_or_rasterize_vector_variant(
     Some(image)
 }
 
+fn get_or_rasterize_vector_variant_profiled(
+    asset_id: &str,
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+    profile: &mut RenderImageDrawProfile,
+) -> Option<Image> {
+    let lookup_started_at = Instant::now();
+    let cached = lookup_rendered_vector_variant(asset_id, width, height);
+    profile.vector_cache_lookup += lookup_started_at.elapsed();
+
+    if let Some(image) = cached {
+        profile.vector_cache_hit = Some(true);
+        return Some(image);
+    }
+
+    profile.vector_cache_hit = Some(false);
+    let rasterize_started_at = Instant::now();
+    let image = rasterize_vector_tree(tree, width, height);
+    profile.vector_rasterize += rasterize_started_at.elapsed();
+    let image = image?;
+
+    let store_started_at = Instant::now();
+    store_rendered_vector_variant(asset_id, width, height, &image);
+    profile.vector_cache_store += store_started_at.elapsed();
+    Some(image)
+}
+
 fn draw_vector_asset_with_fit(
     canvas: &skia_safe::Canvas,
     asset_id: &str,
@@ -1607,6 +2325,100 @@ fn draw_vector_asset_with_fit(
                 spec.fit,
                 spec.svg_tint,
             );
+        }
+    }
+}
+
+fn draw_vector_asset_with_fit_profiled(
+    canvas: &skia_safe::Canvas,
+    tree: &usvg::Tree,
+    asset_width: u32,
+    asset_height: u32,
+    spec: ImageDrawSpec<'_>,
+    image_bleed_device_outset: f32,
+    profile: &mut RenderImageDrawProfile,
+) {
+    let RectSpec { x, y, w, h } = spec.rect;
+
+    match spec.fit {
+        ImageFit::Contain | ImageFit::Cover => {
+            let fit_started_at = Instant::now();
+            let src_w = asset_width as f32;
+            let src_h = asset_height as f32;
+            let Some((draw_x, draw_y, draw_w, draw_h)) =
+                compute_vector_fit_rect(src_w, src_h, x, y, w, h, spec.fit)
+            else {
+                profile.fit_compute += fit_started_at.elapsed();
+                return;
+            };
+
+            let dst_rect = maybe_expand_fit_dst_rect(
+                canvas,
+                Rect::from_xywh(draw_x, draw_y, draw_w, draw_h),
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                image_bleed_device_outset,
+            );
+
+            let raster_width = dst_rect.width().ceil().max(1.0) as u32;
+            let raster_height = dst_rect.height().ceil().max(1.0) as u32;
+            profile.draw_width = raster_width;
+            profile.draw_height = raster_height;
+            profile.fit_compute += fit_started_at.elapsed();
+
+            let Some(image) = get_or_rasterize_vector_variant_profiled(
+                spec.image_id,
+                tree,
+                raster_width,
+                raster_height,
+                profile,
+            ) else {
+                return;
+            };
+
+            let draw_started_at = Instant::now();
+            canvas.save();
+            if matches!(spec.fit, ImageFit::Cover) {
+                let clip = Rect::from_xywh(x, y, w, h);
+                canvas.clip_rect(clip, skia_safe::ClipOp::Intersect, true);
+            }
+            draw_image_fill_rect_tinted(
+                canvas,
+                &image,
+                dst_rect.x(),
+                dst_rect.y(),
+                dst_rect.width(),
+                dst_rect.height(),
+                spec.svg_tint,
+            );
+            canvas.restore();
+            profile.draw += draw_started_at.elapsed();
+        }
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
+            let fit_started_at = Instant::now();
+            profile.draw_width = w.ceil().max(0.0) as u32;
+            profile.draw_height = h.ceil().max(0.0) as u32;
+            profile.fit_compute += fit_started_at.elapsed();
+
+            let Some(image) = get_or_rasterize_vector_variant_profiled(
+                spec.image_id,
+                tree,
+                asset_width,
+                asset_height,
+                profile,
+            ) else {
+                return;
+            };
+
+            let draw_started_at = Instant::now();
+            draw_tiled_image(
+                canvas,
+                &image,
+                Rect::from_xywh(x, y, w, h),
+                spec.fit,
+                spec.svg_tint,
+            );
+            profile.draw += draw_started_at.elapsed();
         }
     }
 }
@@ -1976,6 +2788,78 @@ fn border_band_path(outer_rrect: RRect, inner_rrect: Option<RRect>) -> skia_safe
         builder.add_rrect(inner, None, None);
     }
     builder.detach()
+}
+
+fn prepare_outer_shadow(spec: ShadowDrawSpec) -> PreparedOuterShadow {
+    let RectSpec { x, y, w, h } = spec.rect;
+    let shadow_x = x + spec.offset_x - spec.size;
+    let shadow_y = y + spec.offset_y - spec.size;
+    let shadow_w = w + spec.size * 2.0;
+    let shadow_h = h + spec.size * 2.0;
+    let shadow_radius = (spec.radius + spec.size).max(0.0);
+
+    let shadow_rrect = corner_rrect(
+        Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h),
+        [shadow_radius; 4],
+    );
+    let bounds_rrect = corner_rrect(Rect::from_xywh(x, y, w, h), [spec.radius; 4]);
+
+    let mut paint = Paint::default();
+    paint.set_color(color_from_u32(spec.color));
+    paint.set_anti_alias(true);
+
+    if spec.blur > 0.0 {
+        let sigma = spec.blur / 2.0;
+        if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, sigma, false) {
+            paint.set_mask_filter(filter);
+        }
+    }
+
+    PreparedOuterShadow {
+        shadow_rrect,
+        bounds_rrect,
+        paint,
+    }
+}
+
+fn draw_prepared_outer_shadow(canvas: &skia_safe::Canvas, prepared: &PreparedOuterShadow) {
+    canvas.save();
+    canvas.clip_rrect(prepared.bounds_rrect, skia_safe::ClipOp::Difference, true);
+    canvas.draw_rrect(prepared.shadow_rrect, &prepared.paint);
+    canvas.restore();
+}
+
+fn draw_outer_shadow(canvas: &skia_safe::Canvas, spec: ShadowDrawSpec) {
+    let prepared = prepare_outer_shadow(spec);
+    draw_prepared_outer_shadow(canvas, &prepared);
+}
+
+fn draw_outer_shadow_profiled(
+    canvas: &skia_safe::Canvas,
+    spec: ShadowDrawSpec,
+) -> RenderShadowDrawProfile {
+    let total_started_at = Instant::now();
+    let mut profile = RenderShadowDrawProfile::new(spec);
+
+    let prepare_started_at = Instant::now();
+    let prepared = prepare_outer_shadow(spec);
+    profile.prepare = prepare_started_at.elapsed();
+
+    let clip_started_at = Instant::now();
+    canvas.save();
+    canvas.clip_rrect(prepared.bounds_rrect, skia_safe::ClipOp::Difference, true);
+    profile.clip += clip_started_at.elapsed();
+
+    let draw_started_at = Instant::now();
+    canvas.draw_rrect(prepared.shadow_rrect, &prepared.paint);
+    profile.draw = draw_started_at.elapsed();
+
+    let clip_started_at = Instant::now();
+    canvas.restore();
+    profile.clip += clip_started_at.elapsed();
+
+    profile.total = total_started_at.elapsed();
+    profile
 }
 
 fn quad_path(quad: [(f32, f32); 4]) -> skia_safe::Path {
