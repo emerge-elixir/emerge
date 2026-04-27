@@ -227,7 +227,7 @@ impl AnimationRuntime {
             .iter()
             .filter_map(|(id, entry)| {
                 let sample = sample_exit_animation_spec(entry, sample_time, tree.current_scale());
-                (!sample.active).then_some(id.clone())
+                (!sample.active).then_some(*id)
             })
             .collect();
 

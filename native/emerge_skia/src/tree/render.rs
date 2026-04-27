@@ -189,6 +189,14 @@ struct RenderTraversal<'a> {
     cache_store_budget: &'a Cell<usize>,
 }
 
+struct HostContentBuild<'a> {
+    element: &'a Element,
+    element_ix: NodeIx,
+    render_frame: Frame,
+    element_context: &'a FontContext,
+    scene_state: Option<ResolvedNodeState>,
+}
+
 #[derive(Clone, Default)]
 struct RenderSubtree {
     local: Vec<RenderNode>,
@@ -410,17 +418,19 @@ fn build_element_subtree(
     let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
     let host_content = build_host_content_subtree(
         tree,
-        element,
-        ix,
-        render_frame,
-        &element_context,
+        HostContentBuild {
+            element,
+            element_ix: ix,
+            render_frame,
+            element_context: &element_context,
+            scene_state: scene_state.clone(),
+        },
         &mut outputs.reborrow(),
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
             render_ctx: traversal.render_ctx,
             cache_store_budget: traversal.cache_store_budget,
         },
-        scene_state.clone(),
     );
     let border_nodes = collect_border_nodes(render_frame, attrs);
     let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
@@ -1106,14 +1116,18 @@ fn build_paragraph_subtree_cached(
 
 fn build_host_content_subtree(
     tree: &ElementTree,
-    element: &Element,
-    element_ix: NodeIx,
-    render_frame: Frame,
-    element_context: &FontContext,
+    input: HostContentBuild<'_>,
     outputs: &mut RenderOutputs<'_>,
     traversal: RenderTraversal<'_>,
-    scene_state: Option<ResolvedNodeState>,
 ) -> RenderSubtree {
+    let HostContentBuild {
+        element,
+        element_ix,
+        render_frame,
+        element_context,
+        scene_state,
+    } = input;
+
     let attrs = &element.layout.effective;
     let current_host_clip = HostClipDescriptor {
         clip: scene_state
