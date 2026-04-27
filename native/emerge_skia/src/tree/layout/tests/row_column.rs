@@ -1,5 +1,7 @@
 use super::super::*;
 use super::common::*;
+use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
+use crate::tree::patch::{Patch, apply_patches};
 
 struct ExactAssetsIds {
     weather_row_id: NodeId,
@@ -78,6 +80,86 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
         .get(&row_id)
         .expect("wrapped row should exist after layout");
     assert_eq!(row.paint_children, vec![first_id, second_id, third_id]);
+}
+
+#[test]
+fn test_exit_ghost_stays_in_active_layout_until_pruned() {
+    let root_id = NodeId::from_u64(10_201);
+    let removed_id = NodeId::from_u64(10_202);
+    let survivor_id = NodeId::from_u64(10_203);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Content);
+    let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
+    root.children = vec![removed_id, survivor_id];
+
+    let mut removed_attrs = fixed_box_attrs(100.0, 20.0);
+    removed_attrs.animate_exit = Some(exit_alpha_spec());
+    let removed = Element::with_attrs(removed_id, ElementKind::El, Vec::new(), removed_attrs);
+    let survivor = Element::with_attrs(
+        survivor_id,
+        ElementKind::El,
+        Vec::new(),
+        fixed_box_attrs(100.0, 20.0),
+    );
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(removed);
+    tree.insert(survivor);
+
+    layout_tree_default(&mut tree, Constraint::new(100.0, 100.0), 1.0);
+    assert_eq!(
+        tree.get(&survivor_id).unwrap().layout.frame.unwrap().y,
+        20.0
+    );
+
+    apply_patches(&mut tree, vec![Patch::Remove { id: removed_id }]).unwrap();
+    let ghost_id = tree
+        .child_ids(&root_id)
+        .into_iter()
+        .find(|id| tree.get(id).is_some_and(Element::is_ghost_root))
+        .expect("remove should leave an exit ghost");
+
+    layout_tree_default(&mut tree, Constraint::new(100.0, 100.0), 1.0);
+
+    assert_eq!(
+        tree.get(&survivor_id).unwrap().layout.frame.unwrap().y,
+        20.0
+    );
+    assert_eq!(tree.get(&ghost_id).unwrap().layout.frame.unwrap().y, 0.0);
+    assert_eq!(
+        tree.get(&root_id).unwrap().layout.frame.unwrap().height,
+        40.0
+    );
+    assert_eq!(
+        tree.paint_child_ids_for(&root_id),
+        vec![ghost_id, survivor_id]
+    );
+}
+
+fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(width));
+    attrs.height = Some(Length::Px(height));
+    attrs
+}
+
+fn exit_alpha_spec() -> AnimationSpec {
+    let mut from = Attrs::default();
+    from.alpha = Some(1.0);
+
+    let mut to = Attrs::default();
+    to.alpha = Some(0.0);
+
+    AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 150.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    }
 }
 
 fn insert_text_node(tree: &mut ElementTree, id: &str, content: &str, font_size: f64) -> NodeId {
