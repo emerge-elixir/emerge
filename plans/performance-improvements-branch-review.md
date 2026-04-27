@@ -2,23 +2,46 @@
 
 Date: 2026-04-26
 
+Last revisited: 2026-04-26, after the merge-readiness implementation and
+follow-up demo regression fixes in this worktree.
+
 Comparison base: `main` / `origin/main` at `1ffb362385c184c2794501a3509e199491a3d6d3`
 
-Reviewed branch: `performance-improvements` at `c3b61ae`
+Originally reviewed branch: `performance-improvements` at `c3b61ae`
+
+Revisited worktree: `performance-improvements` at `182df18` plus local
+review-fix and merge-readiness changes.
 
 ## Summary verdict
 
-This branch is not ready to merge as-is.
+The branch is merge-ready from this review's perspective.
+
+The original correctness blocker is addressed in the current worktree. Mixed
+keyed insert/remove child and nearby updates now emit explicit final ordering,
+the failing shapes and broader optimized patch streams have native roundtrip
+regression tests, and detached nearby layout-cache restore is scoped to
+attachment context.
+
+The remaining review concerns have been closed: full CI is green, retained
+layout benchmark smokes have recorded cache counters, topology/registry/
+animation-only watch-list paths have targeted hardening, and checked-in
+benchmark fixture policy is documented.
+
+Two later manual-demo regressions were also fixed and covered before merging:
+`animate_exit` ghosts now remain in active layout with their cloned subtree
+topology intact until pruning, and focused single-line text inputs suppress the
+follow-up Enter text commit so app-driven clears such as todo creation remain
+authoritative.
 
 The broad architecture is coherent: the branch moves the renderer toward retained native tree identity, structured invalidation, layout/render/registry cache reuse, and benchmark coverage. The Rust-side cache design is much more explicit than the previous all-refresh path, and the test volume around layout cache behavior is substantial.
 
-The blocking issue is in the Elixir diff optimizer: keyed insert/remove-only updates can emit an insert at a final-list index and then remove an old sibling later. Native patch application applies that stream literally, so the resulting child or nearby order can diverge from the full tree. I confirmed this with ad hoc native roundtrip checks even though both standard suites pass.
+The prior blocking issue was in the Elixir diff optimizer: keyed insert/remove-only updates could emit an insert at a final-list index and then remove an old sibling later. Native patch application applied that stream literally, so the resulting child or nearby order could diverge from the full tree. That issue is now fixed in this worktree, but the review still recommends broadening post-apply equivalence coverage for future optimizer changes.
 
 ## Branch shape
 
-- 33 commits ahead of `main`.
+- 41 commits ahead of `main` at the revisited `HEAD`.
 - 217 files changed.
-- `22298` insertions and `4862` deletions in `git diff --stat main...HEAD`.
+- `22519` insertions and `4864` deletions in `git diff --stat main...HEAD`.
 - Large fixture addition under `bench/fixtures/`.
 - Main code changes are concentrated in:
   - Elixir reconciliation, patching, serialization, and numeric node ids.
@@ -28,7 +51,7 @@ The blocking issue is in the Elixir diff optimizer: keyed insert/remove-only upd
 
 ## Verification run
 
-Standard suites pass:
+Original standard suites passed before the review fixes:
 
 ```text
 cargo test
@@ -68,11 +91,76 @@ patches:
 native patch roundtrip == expected full tree: false
 ```
 
-I did not run `./ci-tests.sh`, `cargo clippy`, dialyzer, or benchmarks.
+Revisit verification after implementing the fixes:
+
+```text
+mix test test/emerge/patch_test.exs
+29 tests, 0 failures
+
+cargo test test_reinserted_nearby_subtree -- --nocapture
+3 tests, 0 failures
+
+cargo test --manifest-path native/emerge_skia/Cargo.toml
+658 passed, 0 failed
+
+mix test
+366 tests, 13 doctests, 0 failures
+
+git diff --check
+clean
+```
+
+Final merge-readiness verification:
+
+```text
+./ci-tests.sh all
+passed
+
+mix test
+366 tests, 13 doctests, 0 failures
+
+cargo test --release --manifest-path native/emerge_skia/Cargo.toml
+662 passed, 0 failed
+
+mix dialyzer
+Total errors: 0
+```
+
+Focused hardening checks also passed:
+
+```text
+mix test test/emerge/patch_test.exs
+29 tests, 0 failures
+
+cargo test test_topology_links_stay_consistent_across_representative_mutation_batch
+1 passed
+
+cargo test publish_layout_output_preserves_cached_registry_when_output_is_clean
+1 passed
+
+cargo test inherited_text_animation_refresh_matches_uncached_render
+2 passed
+```
+
+Post-demo regression verification:
+
+```text
+cargo test --manifest-path native/emerge_skia/Cargo.toml
+666 passed, 0 failed
+
+mix test
+366 tests, 13 doctests, 0 failures
+
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+passed
+
+git diff --check
+clean
+```
 
 ## Findings
 
-### 1. Blocker: keyed insert/remove-only patches can corrupt final child and nearby ordering
+### 1. Resolved blocker: keyed insert/remove-only patches could corrupt final child and nearby ordering
 
 Files:
 
@@ -80,16 +168,27 @@ Files:
 - `native/emerge_skia/src/tree/patch.rs`
 - `test/emerge/patch_test.exs`
 
+Status after revisit:
+
+- Fixed in `lib/emerge/engine/reconcile.ex` by emitting explicit final ordering
+  when a single sibling group has both inserted and removed ids.
+- Covered by native roundtrip tests in `test/emerge/patch_test.exs` for the
+  failing child and nearby shapes.
+- The old patch-shape expectation that skipped `set_children` for the failing
+  mixed edit is replaced with a final-ordering assertion.
+
 The optimizer intentionally skips `set_children` or `set_nearby_mounts` when inserted/removed nodes do not reorder the surviving old nodes. That is valid only if the insert indexes are interpreted against the final list or are adjusted for removals that have not happened yet.
 
-The current stream is not adjusted that way.
+The reviewed stream was not adjusted that way.
 
-Relevant Elixir paths:
+Original relevant Elixir paths:
 
 - Keyed child inserts use the new-list index: `do_reconcile_children_keyed/9`, around `lib/emerge/engine/reconcile.ex:198-210`.
 - Keyed nearby inserts do the same: `do_reconcile_nearby_keyed/9`, around `lib/emerge/engine/reconcile.ex:403-415`.
 - Removed old children/nearby mounts are prepended into the reversed patch list and then the whole list is reversed, so inserts can be emitted before removes: `prepend_removed_children/3` and `prepend_removed_nearby/3`, around `lib/emerge/engine/reconcile.ex:630`.
-- `maybe_set_children/3` and `maybe_set_nearby_mounts/3` skip explicit final ordering when survivors keep the same relative order.
+- In the reviewed code, `maybe_set_children/3` and
+  `maybe_set_nearby_mounts/3` skipped explicit final ordering when survivors
+  kept the same relative order.
 
 Relevant native application paths:
 
@@ -126,24 +225,20 @@ Expected:
 [a, c, d, x]
 ```
 
-This is a correctness issue in normal UI updates, not just a benchmark artifact. Any keyed list or nearby mount update with both deletion before an insertion point and insertion after that deletion can produce a stale sibling order.
+This was a correctness issue in normal UI updates, not just a benchmark artifact. Any keyed list or nearby mount update with both deletion before an insertion point and insertion after that deletion could produce a stale sibling order.
 
-Recommended fix:
+Implemented fix:
 
-- Conservative fix: emit `set_children` / `set_nearby_mounts` whenever a sibling update contains both inserted ids and removed ids, unless the inserted indexes are adjusted against the pre-remove list.
-- More optimized fix: compute patch indexes against the actual application order. If inserts remain before removes, add the count of old removed siblings before each final insertion point. If removes move before inserts, confirm exit-ghost behavior and remove filtering still hold.
-- Add native roundtrip tests for optimized diff scenarios, not only patch-shape assertions.
+- Conservative fix: emit `set_children` / `set_nearby_mounts` whenever a sibling update contains both inserted ids and removed ids.
+- Native roundtrip tests now cover the known failing scenarios.
 
-Minimum regression tests:
+Final hardening:
 
-- Keyed children: `[a, b, c, d] -> [a, c, d, x]`.
-- Keyed children with multiple removals before and between insertions.
-- Keyed nearby mounts with the same patterns.
-- A test helper that applies `DiffState` output through `EmergeSkia.Native.tree_upload_roundtrip/2` and `tree_patch_roundtrip/2`, then compares to full-tree roundtrip.
+- The native roundtrip helper is now used across the optimized patch-shape tests
+  so future optimized streams are checked by post-apply equivalence, not only by
+  local patch assertions.
 
-The current test at `test/emerge/patch_test.exs:532` asserts that no `set_children` is emitted for this shape, but it does not verify the native post-patch tree.
-
-### 2. High risk: detached nearby layout cache is keyed by subtree shape, not attachment constraint
+### 2. Resolved high risk: detached nearby layout cache was keyed by subtree shape, not attachment constraint
 
 Files:
 
@@ -151,13 +246,22 @@ Files:
 - `native/emerge_skia/src/tree/patch.rs`
 - `native/emerge_skia/src/tree/layout/tests/cache.rs`
 
+Status after revisit:
+
+- Fixed in `native/emerge_skia/src/tree/element.rs` by adding attachment
+  context to detached layout-cache lookup: host id, slot, host frame, subtree
+  signature, and scale.
+- Covered in `native/emerge_skia/src/tree/layout/tests/cache.rs` by changed-slot
+  and changed-host tests that must take `Resolve` and match uncached layout.
+- Existing same-host/same-slot detached cache reuse still passes.
+
 The detached layout cache stores layout state for removed nearby subtrees using:
 
 - subtree signature,
 - scale bits,
 - cloned `NodeLayoutState`s.
 
-The signature excludes the old host, old slot, old host frame, and nearby constraint. Restore happens in `InsertNearbySubtree`, and a restored subtree can downgrade invalidation to `Paint` / `Registry`, allowing refresh without layout.
+In the reviewed code, the signature excluded the old host, old slot, old host frame, and nearby constraint. Restore happens in `InsertNearbySubtree`, and a restored subtree can downgrade invalidation to `Paint` / `Registry`, allowing refresh without layout.
 
 Relevant paths:
 
@@ -165,16 +269,16 @@ Relevant paths:
 - Restore and skip-layout decision: `native/emerge_skia/src/tree/patch.rs:441-459`.
 - Current test coverage validates same-host/same-slot reinsert reuse: `native/emerge_skia/src/tree/layout/tests/cache.rs:1828`.
 
-This is probably correct for the intended hover/show-hide case where the same nearby subtree is hidden and restored on the same host with the same slot and stable host frame. It is risky for same-shaped nearby content reinserted under a different host, different slot, or host frame with different dimensions. In those cases, the restored absolute frames and resolve caches may represent the previous attachment constraint.
+This is correct for the intended hover/show-hide case where the same nearby subtree is hidden and restored on the same host with the same slot and stable host frame. The added context key prevents same-shaped nearby content reinserted under a different host, different slot, or host frame with different dimensions from restoring stale absolute frames.
 
-Recommended follow-up:
+Final hardening:
 
-- Add tests that remove a nearby subtree, reinsert a same-signature subtree under a different slot and a different-sized host, then compare refresh-only output against an uncached layout.
-- Either include attachment constraint data in the detached cache key or degrade restored reinsertions to `Resolve` unless the host id, slot, and host frame/constraint match.
+- Keep future detached-cache optimizations paired with cached-vs-uncached layout
+  tests before allowing refresh-only scheduling.
 
-### 3. Medium: optimized patch tests assert patch shape more than post-apply equivalence
+### 3. Resolved medium: optimized patch tests now have broader post-apply equivalence
 
-The new Elixir patch tests are valuable, but several optimizer tests stop at assertions like "no `set_children` was emitted". For a diff optimizer, the invariant should be stronger:
+The new Elixir patch tests use the stronger invariant:
 
 ```text
 upload old full tree
@@ -182,13 +286,68 @@ apply generated patch stream
 compare native tree to new full tree
 ```
 
-This would have caught finding 1. The existing single stateful roundtrip test uses a demo tree that does not cover the failing list/nearby shapes.
+This would have caught finding 1. The helper now covers keyed insert/remove,
+keyed reorder, insertion-without-final-ordering cases, nearby slot changes,
+nearby insert/remove, nearby reorder, no-op, and attr-only small patch streams.
+Patch-shape assertions remain as secondary performance-contract checks.
 
-Recommended follow-up:
+### 4. Resolved demo regression: animate_exit ghosts were not retained in active layout
 
-- Add a reusable assertion helper for `DiffState`-generated patches.
-- Use it in every test that claims an optimized patch stream is sufficient.
-- Keep patch-shape assertions as secondary checks.
+Files:
+
+- `native/emerge_skia/src/tree/patch.rs`
+- `native/emerge_skia/src/tree/layout/tests/row_column.rs`
+
+Status:
+
+- Fixed by preserving cloned ghost subtree topology when a removed subtree is
+  converted into exit-animation ghosts.
+- The ghost root remains in active child/nearby topology until the animation
+  runtime prunes it, so surviving siblings do not jump early and layout is not
+  delayed by a paint-only placeholder.
+- Covered by topology and active-layout tests for exit ghosts.
+
+The important correction is architectural: exit ghosts are layout participants,
+not render-only escape content. When the old subtree is cloned into ghost ids,
+child links, paint-child links, and nearby mounts must all be remapped to those
+ghost ids before the live node ids are removed from the production topology.
+
+### 5. Resolved demo regression: todo input clear after Enter could be overwritten
+
+Files:
+
+- `native/emerge_skia/src/events/registry_builder.rs`
+- `native/emerge_skia/src/events/runtime.rs`
+
+Status:
+
+- Fixed by arming text-commit suppression for Enter key-down bindings on
+  focused single-line text inputs.
+- Covered by a listener-builder test and an event-runtime regression that
+  simulates the stale-listener-lane sequence: Enter key-down, buffered
+  `TextCommit("\n")`, focused tree patch with cleared content, and final
+  cleared rebuild.
+
+The focused patch reconciliation was already able to accept a non-pending app
+value such as `""`. The missing piece was suppressing the backend's follow-up
+Enter text commit while the listener lane was stale after forwarding the
+Elixir key-down event.
+
+## Merge-readiness closure
+
+The active merge-readiness plan is complete:
+
+1. Full merge validation passed via `./ci-tests.sh all`.
+2. Retained-layout benchmark smokes ran for list, nearby, text-rich,
+   scroll-rich, and animation-rich scenarios with cache counters recorded in
+   `plans/active-performance-merge-readiness-plan.md`.
+3. Optimized Elixir patch tests now assert native post-apply equivalence.
+4. Watch-list hardening was added for incremental topology links, clean
+   registry refresh output, and animation-only inherited text/nearby refresh.
+5. Generated benchmark fixtures stay checked in; policy and regeneration
+   command are documented in `bench/README.md`.
+6. Post-completion demo regressions for `animate_exit` and todo input Enter
+   reset were fixed and validated.
 
 ## Subsystem review
 
@@ -211,10 +370,14 @@ Strengths:
 - Runtime state moved out of attrs makes text input, hover, focus, and scrollbar state easier to preserve.
 - Ghost exit animation handling is integrated with retained topology instead of requiring full replacement.
 
-Areas to watch:
+Areas hardened during merge readiness:
 
-- The non-test topology is maintained incrementally, while test topology is rebuilt lazily. The test path can mask incremental topology maintenance bugs if a mutation path forgets to update production topology.
-- Restore paths that skip layout need extra tests against changed host constraints.
+- The non-test topology is maintained incrementally, while test topology is
+  rebuilt lazily. A representative retained mutation batch now recursively
+  asserts child and nearby parent links after remove, insert, nearby insert,
+  nearby reorder, and subtree paint-child restoration.
+- Restore paths that skip layout now have changed-slot and changed-host
+  cached-vs-uncached tests.
 
 ### Layout caching
 
@@ -246,7 +409,10 @@ The latest animation path adds active-node-only frame attr preparation for warme
 - paint-only active animation samples can refresh without layout,
 - measure/resolve-affecting samples still escalate to recompute.
 
-The main risk is subtle inherited context behavior when only active nodes are prepared. Current render/layout contexts appear to recompute inherited font context during traversal, so paint-only inherited font changes should flow through parent cache misses. Keep this area covered with cached-vs-uncached animation tests for inherited text style and nearby overlays.
+The main risk was subtle inherited context behavior when only active nodes are
+prepared. Current render/layout contexts recompute inherited font context during
+traversal, and merge-readiness hardening added cached-vs-uncached animation
+tests for inherited text style and nearby overlays.
 
 ### Benchmarks and fixtures
 
@@ -258,16 +424,30 @@ The branch adds a useful benchmark surface:
 - native retained layout benchmarks,
 - fixture generation across scenario families.
 
-The generated fixture binaries make benchmark runs reproducible but add a large amount of repository data. That is acceptable if the project wants checked-in perf fixtures; otherwise move generated fixtures to CI artifacts and keep only manifests/seeds.
+The generated fixture binaries make benchmark runs reproducible but add a large
+amount of repository data. The project now keeps them checked in, with
+regeneration policy documented in `bench/README.md`.
 
 ## Suggested merge checklist
 
-1. Fix the keyed insert/remove patch ordering bug.
-2. Add native roundtrip tests for optimized child and nearby patch streams.
-3. Validate detached nearby layout cache restore under changed slot, host, and host constraints.
-4. Run `./ci-tests.sh all` or at least `./ci-tests.sh quality test dialyzer`.
-5. Run at least the retained layout benchmark cases that motivated the branch and record before/after numbers in the relevant plan.
+1. [x] Fix the keyed insert/remove patch ordering bug.
+2. [x] Add native roundtrip tests for the previously failing child and nearby
+   patch streams.
+3. [x] Validate detached nearby layout cache restore under changed slot, host,
+   and host constraints.
+4. [x] Broaden native roundtrip coverage across the remaining optimized patch
+   tests.
+5. [x] Run `./ci-tests.sh all` or at least `./ci-tests.sh quality test
+   dialyzer`.
+6. [x] Run the retained-layout benchmark cases that motivated the branch and
+   record before/after numbers in the relevant plan.
+7. [x] Decide and document the policy for checked-in benchmark fixture binaries.
 
 ## Review conclusion
 
-The branch is directionally strong and most of the Rust cache architecture looks deliberate. The current blocker is narrow but serious because it can produce an incorrect native tree from a valid Elixir update while all standard tests still pass. Fix that first, then harden the cache restore boundary tests before merging.
+The branch is ready to merge from this review's perspective. The original
+blocker and detached-cache risk are fixed, full CI is green, retained-layout
+benchmark smokes support the change, broader optimizer roundtrip coverage is in
+place, targeted watch-list hardening was added, and benchmark fixture policy is
+documented. Follow-up demo regressions found before merge were also fixed and
+covered.

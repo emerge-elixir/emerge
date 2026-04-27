@@ -232,7 +232,9 @@ Lifecycle/residency data:
 - ghost exit animation
 
 Ghosts are runtime/lifecycle concerns. Avoid letting ghost mechanics leak into
-shared identity semantics.
+shared identity semantics. Exit-animation ghosts still participate in active
+layout until pruning, so cloned ghost subtrees must preserve child,
+paint-child, and nearby topology with links remapped to the generated ghost ids.
 
 ## Dirty propagation insight
 
@@ -288,12 +290,17 @@ preserve cache state when identity is reused. A narrow exception exists for
 nearby hover overlays: `ElementTree` keeps a small bounded detached layout cache
 for recently removed nearby subtrees. It stores cloned `NodeLayoutState`
 snapshots only for small animation-free subtrees and restores them only when the
-same structural signature/raw attrs/runtime layout state/scale is reinserted.
+same structural signature/raw attrs/runtime layout state/scale is reinserted
+under the same attachment context. The context currently includes host id, slot,
+and host frame, so changed-host or changed-slot reinserts relayout instead of
+reusing stale absolute frames.
+
 This handles `none()`/code-block nearby toggles where node ids are fresh but the
-subtree is exactly the same. When the changed nearby subtree/slot has no event
-registry contribution, remove/restored-show patches should classify as
-paint/render damage rather than resolve damage so the tree actor can skip layout
-and reuse the cached full registry.
+subtree is exactly the same and the host attachment did not change. When the
+changed nearby subtree has no event registry contribution and detached layout is
+restored for the same attachment context, remove/restored-show patches should
+classify as paint/render damage rather than resolve damage so the tree actor can
+skip layout and reuse the cached full registry.
 
 `measure_descendant_dirty` and `resolve_descendant_dirty` are traversal signals,
 not cache outcomes. The measurement bit exists so a clean ancestor can avoid
@@ -356,8 +363,9 @@ measured size. During nearby-only resolve traversal, a cached host key may be
 reused for the host's own geometry while ignoring only the nearby portion of the
 key; the host then resolves nearby mounts and stores an updated full resolve key.
 
-Detached nearby layout restore retargets copied subtree/resolve cache keys to
-the new node's current compact topology versions before reuse. Future ix-native
+Detached nearby layout restore first checks subtree signature, attachment
+context, and scale, then retargets copied subtree/resolve cache keys to the new
+node's current compact topology versions before reuse. Future ix-native
 traversal cleanup should build on these compact dependency helpers rather than
 reintroducing cloned identity lists.
 
@@ -460,6 +468,9 @@ Useful constraints:
 - ghost attachment should be represented as lifecycle/topology metadata
 - ghost rendering/layout should not require preserving semantic identity across
   reparenting
+- exit ghosts should stay in active topology until pruning; treating them as
+  paint-only escape output causes sibling layout to jump early or stall behind
+  the animation duration
 
 ## Implementation lessons for future work
 
