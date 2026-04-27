@@ -920,6 +920,16 @@ fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
 }
 
 #[test]
+fn test_paint_only_inherited_text_animation_refresh_matches_uncached_render() {
+    assert_paint_only_inherited_text_animation_matches_uncached(false);
+}
+
+#[test]
+fn test_paint_only_nearby_inherited_text_animation_refresh_matches_uncached_render() {
+    assert_paint_only_inherited_text_animation_matches_uncached(true);
+}
+
+#[test]
 fn test_paint_only_shadow_patch_refresh_skips_layout() {
     let mut tree = text_child_tree("Hello");
     let root_id = tree.root_id().unwrap();
@@ -1877,6 +1887,140 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
 }
 
 #[test]
+fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
+    let mut cached = nearby_placeholder_tree("detached_slot_context");
+    let root_id = cached.root_id().unwrap();
+    let host_id = cached.child_ids(&root_id)[0];
+
+    layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
+    assert_eq!(
+        replace_nearby_root_in_slot(
+            &mut cached,
+            host_id,
+            NearbySlot::Above,
+            nearby_fill_width_subtree("slot_context_first"),
+        ),
+        TreeInvalidation::Resolve
+    );
+    layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
+
+    cached.set_layout_cache_stats_enabled(true);
+    assert_eq!(
+        replace_nearby_root_in_slot(
+            &mut cached,
+            host_id,
+            NearbySlot::OnRight,
+            nearby_fill_width_subtree("slot_context_second"),
+        ),
+        TreeInvalidation::Resolve
+    );
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let mut uncached = nearby_placeholder_tree("detached_slot_context");
+    let uncached_root_id = uncached.root_id().unwrap();
+    let uncached_host_id = uncached.child_ids(&uncached_root_id)[0];
+    assert_eq!(
+        replace_nearby_root_in_slot(
+            &mut uncached,
+            uncached_host_id,
+            NearbySlot::OnRight,
+            nearby_fill_width_subtree("slot_context_second"),
+        ),
+        TreeInvalidation::Resolve
+    );
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+}
+
+#[test]
+fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
+    let mut cached = nearby_two_host_placeholder_tree("detached_host_context");
+    let root_id = cached.root_id().unwrap();
+    let host_ids = cached.child_ids(&root_id);
+    let first_host_id = host_ids[0];
+    let second_host_id = host_ids[1];
+
+    layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
+    assert_eq!(
+        replace_nearby_root_in_slot(
+            &mut cached,
+            first_host_id,
+            NearbySlot::Above,
+            nearby_fill_width_subtree("host_context_first"),
+        ),
+        TreeInvalidation::Resolve
+    );
+    layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
+
+    let old_id = cached.nearby_mounts_for(&first_host_id)[0].id;
+    cached.set_layout_cache_stats_enabled(true);
+    assert_eq!(
+        apply_patches(
+            &mut cached,
+            vec![
+                Patch::Remove { id: old_id },
+                Patch::InsertNearbySubtree {
+                    host_id: second_host_id,
+                    index: 0,
+                    slot: NearbySlot::Above,
+                    subtree: nearby_fill_width_subtree("host_context_second"),
+                },
+            ],
+        )
+        .unwrap(),
+        TreeInvalidation::Resolve
+    );
+    layout_tree(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let mut uncached = nearby_two_host_placeholder_tree("detached_host_context");
+    let uncached_root_id = uncached.root_id().unwrap();
+    let uncached_host_ids = uncached.child_ids(&uncached_root_id);
+    let uncached_first_host_id = uncached_host_ids[0];
+    let uncached_second_host_id = uncached_host_ids[1];
+    let hidden_id = uncached.nearby_mounts_for(&uncached_first_host_id)[0].id;
+    assert_eq!(
+        apply_patches(
+            &mut uncached,
+            vec![
+                Patch::Remove { id: hidden_id },
+                Patch::InsertNearbySubtree {
+                    host_id: uncached_second_host_id,
+                    index: 0,
+                    slot: NearbySlot::Above,
+                    subtree: nearby_fill_width_subtree("host_context_second"),
+                },
+            ],
+        )
+        .unwrap(),
+        TreeInvalidation::Resolve
+    );
+    layout_tree(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    assert_layout_matches(&cached, &uncached);
+}
+
+#[test]
 fn test_nearby_registry_subtree_removal_keeps_registry_invalidation() {
     let mut tree = nearby_placeholder_tree("detached_registry_initial");
     let root_id = tree.root_id().unwrap();
@@ -2398,6 +2542,57 @@ fn test_resolve_cache_translates_clean_sibling_after_previous_sibling_layout_cha
     }
 }
 
+fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool) {
+    let start = Instant::now();
+    let mut cached = inherited_text_color_animation_tree(use_nearby);
+    let mut uncached = inherited_text_color_animation_tree(use_nearby);
+
+    let mut cached_runtime = AnimationRuntime::default();
+    cached_runtime.sync_with_tree(&cached, start);
+    let mut uncached_runtime = AnimationRuntime::default();
+    uncached_runtime.sync_with_tree(&uncached, start);
+
+    let initial_cached = layout_or_refresh_default_with_animation(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &cached_runtime,
+        start,
+    );
+    let initial_uncached = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &uncached_runtime,
+        start,
+    );
+
+    assert!(initial_cached.layout_performed);
+    assert!(initial_uncached.layout_performed);
+
+    let cached_update = layout_or_refresh_default_with_animation(
+        &mut cached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &cached_runtime,
+        start + Duration::from_millis(25),
+    );
+    let uncached_update = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+        &mut uncached,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &uncached_runtime,
+        start + Duration::from_millis(25),
+    );
+
+    assert!(cached_update.output.animations_active);
+    assert!(uncached_update.output.animations_active);
+    assert!(!cached_update.layout_performed);
+    assert!(!uncached_update.layout_performed);
+    assert_eq!(cached_update.output.scene, uncached_update.output.scene);
+    assert_layout_matches(&cached, &uncached);
+}
+
 fn assert_layout_matches(left: &ElementTree, right: &ElementTree) {
     for id in left.iter_node_pairs().map(|(id, _)| id).collect::<Vec<_>>() {
         assert_eq!(
@@ -2548,6 +2743,51 @@ fn nearby_placeholder_tree(seed: &str) -> ElementTree {
     tree
 }
 
+fn nearby_two_host_placeholder_tree(seed: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        &format!("{seed}_root"),
+        ElementKind::Column,
+        Attrs::default(),
+    );
+    let root_id = root.id;
+    let first_host = make_element(
+        &format!("{seed}_first_host"),
+        ElementKind::El,
+        fixed_box_attrs(120.0, 48.0),
+    );
+    let first_host_id = first_host.id;
+    let second_host = make_element(
+        &format!("{seed}_second_host"),
+        ElementKind::El,
+        fixed_box_attrs(240.0, 48.0),
+    );
+    let second_host_id = second_host.id;
+    let hidden = make_element(
+        &format!("{seed}_hidden"),
+        ElementKind::None,
+        Attrs::default(),
+    );
+    let hidden_id = hidden.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first_host);
+    tree.insert(second_host);
+    tree.insert(hidden);
+    tree.set_children(&root_id, vec![first_host_id, second_host_id])
+        .unwrap();
+    tree.set_nearby_mounts(
+        &first_host_id,
+        vec![NearbyMount {
+            slot: NearbySlot::Above,
+            id: hidden_id,
+        }],
+    )
+    .unwrap();
+    tree
+}
+
 fn nearby_none_subtree(seed: &str) -> ElementTree {
     let mut tree = ElementTree::new();
     let hidden = make_element(&format!("{seed}_none"), ElementKind::None, Attrs::default());
@@ -2601,9 +2841,39 @@ fn nearby_code_subtree(seed: &str, lines: &[&str]) -> ElementTree {
     tree
 }
 
+fn nearby_fill_width_subtree(seed: &str) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Fill);
+    root_attrs.padding = Some(Padding::Uniform(2.0));
+    let root = make_element(&format!("{seed}_fill_root"), ElementKind::El, root_attrs);
+    let root_id = root.id;
+    let text = make_element(
+        &format!("{seed}_fill_text"),
+        ElementKind::Text,
+        text_attrs("Detached layout cache context"),
+    );
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(text);
+    tree.set_children(&root_id, vec![text_id]).unwrap();
+    tree
+}
+
 fn replace_nearby_root(
     tree: &mut ElementTree,
     host_id: NodeId,
+    subtree: ElementTree,
+) -> TreeInvalidation {
+    replace_nearby_root_in_slot(tree, host_id, NearbySlot::Above, subtree)
+}
+
+fn replace_nearby_root_in_slot(
+    tree: &mut ElementTree,
+    host_id: NodeId,
+    slot: NearbySlot,
     subtree: ElementTree,
 ) -> TreeInvalidation {
     let old_id = tree.nearby_mounts_for(&host_id)[0].id;
@@ -2614,7 +2884,7 @@ fn replace_nearby_root(
             Patch::InsertNearbySubtree {
                 host_id,
                 index: 0,
-                slot: NearbySlot::Above,
+                slot,
                 subtree,
             },
         ],
@@ -2842,6 +3112,66 @@ fn shifted_sibling_tree(control_height: f64) -> ElementTree {
     tree.set_children(&root_id, vec![control_id, body_id])
         .unwrap();
     tree
+}
+
+fn inherited_text_color_animation_tree(use_nearby: bool) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(160.0));
+    root_attrs.height = Some(Length::Px(64.0));
+    root_attrs.animate = Some(font_color_animation_spec());
+
+    let root = make_element("animated_color_root", ElementKind::El, root_attrs);
+    let root_id = root.id;
+    let text = make_element(
+        "inherited_color_text",
+        ElementKind::Text,
+        text_attrs("Inherited"),
+    );
+    let text_id = text.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(text);
+
+    if use_nearby {
+        tree.set_nearby_mounts(
+            &root_id,
+            vec![NearbyMount {
+                slot: NearbySlot::InFront,
+                id: text_id,
+            }],
+        )
+        .unwrap();
+    } else {
+        tree.set_children(&root_id, vec![text_id]).unwrap();
+    }
+
+    tree
+}
+
+fn font_color_animation_spec() -> AnimationSpec {
+    let mut start_attrs = Attrs::default();
+    start_attrs.font_color = Some(Color::Rgba {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 255,
+    });
+    let mut end_attrs = Attrs::default();
+    end_attrs.font_color = Some(Color::Rgba {
+        r: 0,
+        g: 0,
+        b: 255,
+        a: 255,
+    });
+
+    AnimationSpec {
+        keyframes: vec![start_attrs, end_attrs],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
+    }
 }
 
 fn raw_text_attrs(content: &str) -> Vec<u8> {
