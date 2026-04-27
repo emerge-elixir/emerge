@@ -568,6 +568,66 @@ pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RenderSender, render_scene::RenderScene, tree::element::NodeId};
+    use crossbeam_channel::bounded;
+    use std::sync::{Arc, atomic::AtomicU64};
+
+    #[test]
+    fn publish_layout_output_preserves_cached_registry_when_output_is_clean() {
+        let (event_tx, event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let render_sender = RenderSender {
+            tx: render_tx,
+            drop_rx: render_rx.clone(),
+            log_render: false,
+        };
+        let render_counter = Arc::new(AtomicU64::new(0));
+        let window_wake = BackendWakeHandle::noop();
+        let focused_id = NodeId::from_term_bytes(vec![42]);
+        let mut cached_rebuild = Some(RegistryRebuildPayload {
+            focused_id: Some(focused_id),
+            ..Default::default()
+        });
+
+        publish_layout_output(
+            &event_tx,
+            &render_sender,
+            &render_counter,
+            &window_wake,
+            &mut cached_rebuild,
+            LayoutOutput {
+                scene: RenderScene::default(),
+                event_rebuild: RegistryRebuildPayload::default(),
+                event_rebuild_changed: false,
+                ime_enabled: false,
+                ime_cursor_area: None,
+                ime_text_state: None,
+                animations_active: false,
+            },
+            false,
+        );
+
+        assert_eq!(
+            cached_rebuild
+                .as_ref()
+                .and_then(|rebuild| rebuild.focused_id),
+            Some(focused_id)
+        );
+        assert!(event_rx.try_recv().is_err());
+
+        match render_rx
+            .try_recv()
+            .expect("scene should still be published")
+        {
+            RenderMsg::Scene { version, .. } => assert_eq!(version, 1),
+            RenderMsg::Stop => panic!("expected scene render message"),
+        }
+    }
+}
+
 #[cfg(feature = "hover-trace")]
 fn trace_tree_snapshots(tree: &ElementTree) {
     for (id, x, y, w, h, move_x) in trace_element_snapshots(tree) {
