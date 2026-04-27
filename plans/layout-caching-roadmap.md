@@ -1,6 +1,6 @@
 # Layout Caching Roadmap
 
-Last updated: 2026-04-26.
+Last updated: 2026-04-27.
 
 This is the active roadmap for native retained-layout caching. It intentionally
 references the fuller research notes in `layout-caching-engine-insights.md` and
@@ -58,8 +58,9 @@ Relevant files:
 
 ### What remains
 
-The merge-readiness plan is complete and retained as evidence in
-`active-performance-merge-readiness-plan.md`. Broader cache work can now resume.
+The merge-readiness plan is complete and has been folded into
+`performance-improvements-branch-review.md`, then removed as a completed
+one-off plan. Broader cache work can now resume.
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
@@ -421,6 +422,32 @@ constant hover/unhover:
   patch tree actor avg=0.776 ms count=30
   layout no samples; layout cache all zero
 ```
+
+## Completed follow-up: renderer slow-frame instrumentation
+
+The post-layout work exposed renderer-side spikes that were not visible in the
+layout-cache counters, so the renderer stats path now separates draw, GPU flush,
+GPU submit, and present-submit timing. Slow-frame logs include a compact scene
+summary, aggregate draw-category timings, per-image draw details, and per-shadow
+draw details.
+
+Observed assets-page signal after eager raster decode:
+
+```text
+render=8.384 ms draw=2.445 ms flush=5.939 ms gpu_flush=5.935 ms
+draws={shadows=2 inset_shadows=1 images=0 texts=10}
+draw detail: shadows=2.012 ms inset_shadows=0.046 ms texts=0.289 ms images=0.000 ms
+present submit=5.933 ms
+```
+
+Interpretation:
+
+- the earlier image first-draw spike was caused by deferred raster decode; image
+  assets now decode before they enter the render scene
+- the remaining first visible assets-page spike is a large blurred shadow draw
+  followed by GPU/present synchronization, not image rendering
+- a later assets-page frame is dominated by border and text drawing under many
+  clips, which is a separate draw-path optimization candidate
 
 ## Later slice: broaden other relayout/dependency boundaries
 

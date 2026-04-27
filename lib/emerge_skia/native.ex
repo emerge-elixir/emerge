@@ -302,6 +302,10 @@ defmodule EmergeSkia.Native do
           },
           required(:timings) => %{
             required(:render) => duration_stats(),
+            required(:render_draw) => duration_stats(),
+            required(:render_flush) => duration_stats(),
+            required(:render_gpu_flush) => duration_stats(),
+            required(:render_submit) => duration_stats(),
             required(:present_submit) => duration_stats(),
             required(:layout) => duration_stats(),
             required(:refresh) => duration_stats(),

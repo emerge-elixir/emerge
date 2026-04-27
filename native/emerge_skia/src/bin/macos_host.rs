@@ -2203,15 +2203,27 @@ mod app {
         )
         .ok_or_else(|| "failed to wrap CAMetalLayer drawable as Skia surface".to_string())?;
 
-        {
+        let mut render_timings = {
             let mut frame = RenderFrame::new(&mut skia_surface, Some(&mut surface.skia));
-            renderer.render(&mut frame, render_state);
-        }
+            renderer.render(&mut frame, render_state)
+        };
 
-        surface.skia.flush_and_submit();
+        let extra_flush_started_at = Instant::now();
+        let extra_gpu_flush_started_at = Instant::now();
+        surface.skia.flush(None);
+        render_timings.gpu_flush += extra_gpu_flush_started_at.elapsed();
+
+        let extra_submit_started_at = Instant::now();
+        surface.skia.submit(gpu::SyncCpu::No);
+        render_timings.submit += extra_submit_started_at.elapsed();
+        render_timings.flush += extra_flush_started_at.elapsed();
 
         if let Some(stats) = stats {
             stats.record_render(render_started_at.elapsed());
+            stats.record_render_draw(render_timings.draw);
+            stats.record_render_flush(render_timings.flush);
+            stats.record_render_gpu_flush(render_timings.gpu_flush);
+            stats.record_render_submit(render_timings.submit);
         }
 
         drop(skia_surface);
@@ -2241,13 +2253,17 @@ mod app {
     ) -> Result<(), String> {
         let render_started_at = Instant::now();
 
-        {
+        let render_timings = {
             let mut frame = RenderFrame::new(&mut surface.surface, None);
-            renderer.render(&mut frame, render_state);
-        }
+            renderer.render(&mut frame, render_state)
+        };
 
         if let Some(stats) = stats {
             stats.record_render(render_started_at.elapsed());
+            stats.record_render_draw(render_timings.draw);
+            stats.record_render_flush(render_timings.flush);
+            stats.record_render_gpu_flush(render_timings.gpu_flush);
+            stats.record_render_submit(render_timings.submit);
         }
 
         let image = surface.surface.image_snapshot();

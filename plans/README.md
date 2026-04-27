@@ -1,21 +1,11 @@
 # Plans
 
-Last updated: 2026-04-26.
+Last updated: 2026-04-27.
 
 This directory tracks the native layout-caching roadmap and the background
 investigation that led to the current implementation.
 
 ## Files
-
-### `active-performance-merge-readiness-plan.md`
-
-Completed merge-readiness evidence for the remaining
-`performance-improvements` review concerns and the follow-up demo regressions.
-
-Use this when checking what was validated before merging the performance
-branch. It records full CI, benchmark evidence, broader native patch roundtrip
-coverage, cache/topology watch-list hardening, benchmark fixture policy, and
-the later animate-exit / todo-input regression fixes.
 
 ### `layout-caching-roadmap.md`
 
@@ -36,6 +26,15 @@ This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
 
+### `rendering-cache-engine-investigation.md`
+
+Cross-engine rendering-cache research notes.
+
+Use this when choosing renderer-thread performance work. It compares Flutter
+repaint boundaries/raster cache, Slint dirty-region and shadow caches, Iced
+geometry caches, Servo/WebRender display-list and tile caching, and Scenic
+Driver Skia script replay against Emerge's current renderer.
+
 ### `native-tree-implementation-insights.md`
 
 Implementation lessons from the completed node identity, `NodeIx` storage, and
@@ -50,8 +49,9 @@ Branch review and revisit notes for `performance-improvements`.
 
 Use this when checking merge readiness. It records the original blocker, the
 resolved fixes, and the completed merge-readiness checklist.
-The one-off completed fix plan was folded into this review and removed to keep
-`plans/` focused on active or durable reference documents.
+The completed merge-readiness plan and one-off fix plan were folded into this
+review and removed to keep `plans/` focused on active or durable reference
+documents.
 
 ## Current repo state
 
@@ -96,6 +96,11 @@ The native layout-caching foundation is in place:
   - `stats: true` enables collection without periodic logs
   - `renderer_stats_log: true` enables collection and periodic logs
   - `Native.stats/2` and `EmergeSkia.stats/2` expose peek/take/reset snapshots
+- renderer slow-frame diagnostics split render time into draw, GPU flush, GPU
+  submit, and present-submit stages; profiled slow-frame logs now include scene
+  summaries plus per-category draw timings, image details, and shadow details
+- raster image assets are decoded eagerly when inserted into the renderer asset
+  cache so deferred PNG/JPEG decode is not paid during the first draw
 - retained-layout benchmarks print grep-friendly layout-cache counters
 - refresh-specific dirty state tracks render vs registry damage separately from
   layout-cache outcomes
@@ -123,10 +128,12 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Merge or archive the performance branch
+### 1. Choose the first renderer-cache slice
 
-No active plan remains open. The completed merge-readiness plan records the
-validation and hardening done before merge.
+No active implementation plan remains open. The next renderer work should be
+planned from `rendering-cache-engine-investigation.md`; the recommended first
+slice is border/text/clip diagnostics plus simple solid-border fast paths before
+adding shadow texture caching.
 
 ### 2. Broaden other relayout/dependency boundaries
 

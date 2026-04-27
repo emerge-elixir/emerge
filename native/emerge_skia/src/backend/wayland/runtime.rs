@@ -54,8 +54,12 @@ use crate::{
     },
     events::CursorIcon,
     input::InputEvent,
+    native_log::NativeLogRelay,
     renderer::RenderState,
-    stats::RendererStatsCollector,
+    stats::{
+        RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, format_slow_present_frame_log,
+        format_slow_render_frame_log, render_frame_has_slow_stage,
+    },
     video::{VideoImportContext, VideoRegistry},
 };
 
@@ -88,6 +92,8 @@ struct WaylandAppRuntime {
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
+    renderer_stats_log: bool,
+    native_log: Arc<NativeLogRelay>,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
@@ -102,6 +108,8 @@ pub(crate) struct WaylandRunArgs {
     pub input_target: Arc<InputTargetRelay>,
     pub close_signal_log: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
+    pub renderer_stats_log: bool,
+    pub native_log: Arc<NativeLogRelay>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
     pub video_registry: Arc<VideoRegistry>,
@@ -220,6 +228,8 @@ pub(super) struct WaylandApp {
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
+    renderer_stats_log: bool,
+    native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
     render_state: RenderState,
@@ -255,6 +265,8 @@ impl WaylandApp {
             input_target,
             close_signal_log,
             stats,
+            renderer_stats_log,
+            native_log,
             render_rx,
             cursor_icon_rx,
             video_registry,
@@ -285,6 +297,8 @@ impl WaylandApp {
             input_target,
             close_signal_log,
             stats,
+            renderer_stats_log,
+            native_log,
             video_registry,
             loop_handle,
             render_state: RenderState::default(),
@@ -499,11 +513,29 @@ impl WaylandApp {
                 }
             }
 
-            let render_started_at = std::time::Instant::now();
-            env.renderer.render(&mut frame, &self.render_state);
+            let render_timings = if self.renderer_stats_log {
+                env.renderer.render_profiled(&mut frame, &self.render_state)
+            } else {
+                env.renderer.render(&mut frame, &self.render_state)
+            };
 
             if let Some(stats) = self.stats.as_ref() {
-                stats.record_render(render_started_at.elapsed());
+                stats.record_render(render_timings.total);
+                stats.record_render_draw(render_timings.draw);
+                stats.record_render_flush(render_timings.flush);
+                stats.record_render_gpu_flush(render_timings.gpu_flush);
+                stats.record_render_submit(render_timings.submit);
+            }
+
+            if self.renderer_stats_log && render_frame_has_slow_stage(&render_timings) {
+                self.native_log.info(
+                    "renderer_slow_frame",
+                    format_slow_render_frame_log(
+                        "wayland",
+                        &render_timings,
+                        self.render_state.scene.summary(),
+                    ),
+                );
             }
         }
 
@@ -516,8 +548,21 @@ impl WaylandApp {
             return;
         }
 
+        let present_submit = present_submit_started_at.elapsed();
+
         if let Some(stats) = self.stats.as_ref() {
-            stats.record_present_submit(present_submit_started_at.elapsed());
+            stats.record_present_submit(present_submit);
+        }
+
+        if self.renderer_stats_log && present_submit >= SLOW_PRESENT_SUBMIT_THRESHOLD {
+            self.native_log.info(
+                "renderer_slow_frame",
+                format_slow_present_frame_log(
+                    "wayland",
+                    present_submit,
+                    self.render_state.scene.summary(),
+                ),
+            );
         }
 
         if let Some(stats) = self.stats.as_ref() {
@@ -1026,6 +1071,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
         input_target,
         close_signal_log,
         stats,
+        renderer_stats_log,
+        native_log,
         render_rx,
         cursor_icon_rx,
         video_registry,
@@ -1119,6 +1166,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
             input_target,
             close_signal_log,
             stats,
+            renderer_stats_log,
+            native_log,
             render_rx,
             cursor_icon_rx,
             video_registry,

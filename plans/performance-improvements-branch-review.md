@@ -335,12 +335,13 @@ Elixir key-down event.
 
 ## Merge-readiness closure
 
-The active merge-readiness plan is complete:
+The merge-readiness work is complete and the one-off completed plan has been
+folded into this review:
 
 1. Full merge validation passed via `./ci-tests.sh all`.
 2. Retained-layout benchmark smokes ran for list, nearby, text-rich,
-   scroll-rich, and animation-rich scenarios with cache counters recorded in
-   `plans/active-performance-merge-readiness-plan.md`.
+   scroll-rich, and animation-rich scenarios with cache counters recorded during
+   the merge-readiness pass.
 3. Optimized Elixir patch tests now assert native post-apply equivalence.
 4. Watch-list hardening was added for incremental topology links, clean
    registry refresh output, and animation-only inherited text/nearby refresh.

@@ -130,6 +130,10 @@ struct StatsFrameSnapshotNif {
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsTimingSnapshotNif {
     render: DurationStatsNif,
+    render_draw: DurationStatsNif,
+    render_flush: DurationStatsNif,
+    render_gpu_flush: DurationStatsNif,
+    render_submit: DurationStatsNif,
     present_submit: DurationStatsNif,
     layout: DurationStatsNif,
     refresh: DurationStatsNif,
@@ -175,7 +179,7 @@ impl StatsSnapshotNif {
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         Self {
-            version: 2,
+            version: 4,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -190,6 +194,10 @@ impl StatsSnapshotNif {
             },
             timings: StatsTimingSnapshotNif {
                 render: DurationStatsNif::from(snapshot.render.clone()),
+                render_draw: DurationStatsNif::from(snapshot.render_draw.clone()),
+                render_flush: DurationStatsNif::from(snapshot.render_flush.clone()),
+                render_gpu_flush: DurationStatsNif::from(snapshot.render_gpu_flush.clone()),
+                render_submit: DurationStatsNif::from(snapshot.render_submit.clone()),
                 present_submit: DurationStatsNif::from(snapshot.present_submit.clone()),
                 layout: DurationStatsNif::from(snapshot.layout.clone()),
                 refresh: DurationStatsNif::from(snapshot.refresh.clone()),
@@ -887,7 +895,9 @@ fn start_native_renderer_with_config(
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let input_target_clone = Arc::clone(&input_target);
+            let native_log_clone = Arc::clone(&native_log);
             let renderer_stats_clone = renderer_stats.clone();
+            let renderer_stats_log = config.renderer_stats_log;
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -904,6 +914,8 @@ fn start_native_renderer_with_config(
                     input_target: input_target_clone,
                     close_signal_log,
                     stats: renderer_stats_clone,
+                    renderer_stats_log,
+                    native_log: native_log_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
                     video_registry: video_registry_clone,

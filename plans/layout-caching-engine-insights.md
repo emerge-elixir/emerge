@@ -76,10 +76,10 @@ Still open:
 
 Relevant files from the investigation:
 
-- `../taffy/src/tree/cache.rs`
-- `../taffy/src/compute/mod.rs`
-- `../taffy/src/tree/taffy_tree.rs`
-- `../taffy/src/tree/traits.rs`
+- `/workspace/tmp-layout-engines/taffy/src/tree/cache.rs`
+- `/workspace/tmp-layout-engines/taffy/src/compute/mod.rs`
+- `/workspace/tmp-layout-engines/taffy/src/tree/taffy_tree.rs`
+- `/workspace/tmp-layout-engines/taffy/src/tree/traits.rs`
 
 ### Useful ideas
 

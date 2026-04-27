@@ -482,7 +482,7 @@ Other DRM-specific settings:
 - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
 - `input_log` - Log DRM input devices on startup (default: false)
 - `render_log` - Log DRM render/present diagnostics (default: false)
-- `renderer_stats_log` - Log renderer timing stats every 5 seconds, including render and present submit timings (default: false)
+- `renderer_stats_log` - Log renderer timing stats every 5 seconds, including total render, draw, GPU flush, submit, and present submit timings (default: false)
 
 Each `drm_cursor` entry supports:
 - `source` (required, `.png` or `.svg`; logical path under `<otp_app>/priv`, `%Emerge.Assets.Ref{}`, or an absolute runtime path allowed by `assets.runtime_paths`)
