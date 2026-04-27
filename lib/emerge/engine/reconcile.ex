@@ -144,7 +144,7 @@ defmodule Emerge.Engine.Reconcile do
         [],
         [],
         [],
-        MapSet.new()
+        %{}
       )
 
     patches_rev = prepend_removed_children(old_children, used_old_ids, patches_rev)
@@ -192,7 +192,7 @@ defmodule Emerge.Engine.Reconcile do
           [vnode | vnodes_rev],
           [assigned | elements_rev],
           prepend_many(patches_rev, child_patches),
-          MapSet.put(used_old_ids, old_child.id)
+          Map.put(used_old_ids, old_child.id, true)
         )
 
       _ ->
@@ -349,7 +349,7 @@ defmodule Emerge.Engine.Reconcile do
         [],
         [],
         [],
-        MapSet.new()
+        %{}
       )
 
     patches_rev = prepend_removed_nearby(old_nearby, used_old_ids, patches_rev)
@@ -397,7 +397,7 @@ defmodule Emerge.Engine.Reconcile do
           [{slot, vnode} | vnodes_rev],
           [{slot, assigned} | elements_rev],
           prepend_many(patches_rev, mount_patches),
-          MapSet.put(used_old_ids, old_vnode.id)
+          Map.put(used_old_ids, old_vnode.id, true)
         )
 
       _ ->
@@ -629,7 +629,7 @@ defmodule Emerge.Engine.Reconcile do
 
   defp prepend_removed_children(old_children, used_old_ids, patches_rev) do
     Enum.reduce(old_children, patches_rev, fn child, acc ->
-      if MapSet.member?(used_old_ids, child.id) do
+      if Map.has_key?(used_old_ids, child.id) do
         acc
       else
         [{:remove, child.id} | acc]
@@ -639,7 +639,7 @@ defmodule Emerge.Engine.Reconcile do
 
   defp prepend_removed_nearby(old_nearby, used_old_ids, patches_rev) do
     Enum.reduce(old_nearby, patches_rev, fn {_slot, vnode}, acc ->
-      if MapSet.member?(used_old_ids, vnode.id) do
+      if Map.has_key?(used_old_ids, vnode.id) do
         acc
       else
         [{:remove, vnode.id} | acc]
@@ -667,12 +667,13 @@ defmodule Emerge.Engine.Reconcile do
 
     old_remaining = old_ids -- removed_ids
     new_remaining = new_ids -- inserted_ids
+    has_mixed_edits? = inserted_ids != [] and removed_ids != []
 
     cond do
       old_ids == new_ids ->
         patches
 
-      old_remaining != new_remaining ->
+      has_mixed_edits? or old_remaining != new_remaining ->
         [{:set_children, id, new_ids} | patches]
 
       true ->
@@ -693,12 +694,13 @@ defmodule Emerge.Engine.Reconcile do
 
     old_remaining = Enum.reject(old_refs, fn {_slot, mount_id} -> mount_id in removed_ids end)
     new_remaining = Enum.reject(new_refs, fn {_slot, mount_id} -> mount_id in inserted_ids end)
+    has_mixed_edits? = inserted_ids != [] and removed_ids != []
 
     cond do
       old_refs == new_refs ->
         patches
 
-      old_remaining != new_remaining ->
+      has_mixed_edits? or old_remaining != new_remaining ->
         [{:set_nearby_mounts, id, new_refs} | patches]
 
       true ->
