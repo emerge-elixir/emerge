@@ -85,7 +85,7 @@ fn kind_tag(kind: ElementKind) -> u8 {
     }
 }
 
-fn collect_nodes<'a>(tree: &'a ElementTree, root: NodeIx) -> Vec<&'a Element> {
+fn collect_nodes(tree: &ElementTree, root: NodeIx) -> Vec<&Element> {
     let mut out = Vec::new();
     collect_nodes_inner(tree, root, &mut out);
     out
