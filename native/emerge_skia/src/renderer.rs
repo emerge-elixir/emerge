@@ -93,17 +93,20 @@ impl RendererCacheFrameStats {
 pub struct RendererCacheKindFrameStats {
     pub candidates: u64,
     pub visible_candidates: u64,
+    pub suppressed_by_parent: u64,
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
     pub stores: u64,
     pub evictions: u64,
+    pub stale_evictions: u64,
     pub rejected: u64,
     pub current_entries: u64,
     pub current_bytes: u64,
     pub current_gpu_payloads: u64,
     pub current_cpu_payloads: u64,
     pub evicted_bytes: u64,
+    pub stale_evicted_bytes: u64,
     pub gpu_payload_stores: u64,
     pub cpu_payload_stores: u64,
     pub prepare_successes: u64,
@@ -121,17 +124,20 @@ impl RendererCacheKindFrameStats {
     pub fn is_empty(&self) -> bool {
         self.candidates == 0
             && self.visible_candidates == 0
+            && self.suppressed_by_parent == 0
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
             && self.stores == 0
             && self.evictions == 0
+            && self.stale_evictions == 0
             && self.rejected == 0
             && self.current_entries == 0
             && self.current_bytes == 0
             && self.current_gpu_payloads == 0
             && self.current_cpu_payloads == 0
             && self.evicted_bytes == 0
+            && self.stale_evicted_bytes == 0
             && self.gpu_payload_stores == 0
             && self.cpu_payload_stores == 0
             && self.prepare_successes == 0
@@ -1077,6 +1083,7 @@ const CLEAN_SUBTREE_CACHE_MAX_ENTRIES: usize = 128;
 const CLEAN_SUBTREE_CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CLEAN_SUBTREE_CACHE_MAX_ENTRY_BYTES: u64 = 4 * 1024 * 1024;
 const CLEAN_SUBTREE_CACHE_BYTES_PER_PIXEL: u64 = 4;
+const CLEAN_SUBTREE_CACHE_MAX_STALE_FRAMES: u64 = 120;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendererCacheConfig {
@@ -1238,6 +1245,7 @@ pub struct CleanSubtreeEntry {
     pub visible_count: u64,
     pub first_visible_frame: u64,
     pub last_visible_frame: u64,
+    pub last_seen_frame: u64,
     pub last_used_frame: u64,
     image: Option<Image>,
 }
@@ -1247,6 +1255,7 @@ struct CleanSubtreeAccess {
     visible_count: u64,
     first_visible_frame: u64,
     last_visible_frame: u64,
+    last_seen_frame: u64,
 }
 
 #[derive(Debug)]
@@ -1258,6 +1267,7 @@ struct CleanSubtreeCache {
     max_bytes: u64,
     max_entry_bytes: u64,
     min_visible_before_store: u64,
+    max_stale_frames: u64,
 }
 
 impl Default for CleanSubtreeCache {
@@ -1276,6 +1286,7 @@ impl CleanSubtreeCache {
             max_bytes: config.max_bytes,
             max_entry_bytes: config.max_entry_bytes,
             min_visible_before_store: CLEAN_SUBTREE_CACHE_MIN_VISIBLE_BEFORE_STORE,
+            max_stale_frames: CLEAN_SUBTREE_CACHE_MAX_STALE_FRAMES,
         }
     }
 }
@@ -1295,17 +1306,37 @@ impl CleanSubtreeCache {
                 visible_count: 0,
                 first_visible_frame: frame_index,
                 last_visible_frame: frame_index,
+                last_seen_frame: frame_index,
             });
         access.visible_count = access.visible_count.saturating_add(1);
         access.last_visible_frame = frame_index;
+        access.last_seen_frame = frame_index;
 
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.visible_count = access.visible_count;
             entry.last_visible_frame = frame_index;
+            entry.last_seen_frame = frame_index;
             entry.last_used_frame = frame_index;
         }
 
         access.visible_count
+    }
+
+    fn touch_suppressed_by_parent(
+        &mut self,
+        key: CleanSubtreeContentKey,
+        frame_index: u64,
+    ) -> bool {
+        let mut touched = false;
+        if let Some(access) = self.visible_accesses.get_mut(&key) {
+            access.last_seen_frame = frame_index;
+            touched = true;
+        }
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_seen_frame = frame_index;
+            touched = true;
+        }
+        touched
     }
 
     fn image(&mut self, key: CleanSubtreeContentKey, frame_index: u64) -> Option<Image> {
@@ -1374,6 +1405,7 @@ impl CleanSubtreeCache {
                 visible_count: access.visible_count,
                 first_visible_frame: access.first_visible_frame,
                 last_visible_frame: access.last_visible_frame,
+                last_seen_frame: frame_index,
                 last_used_frame: frame_index,
                 image,
             },
@@ -1400,6 +1432,33 @@ impl CleanSubtreeCache {
                 evicted.push(entry.bytes);
             }
         }
+        evicted
+    }
+
+    fn evict_stale(&mut self, frame_index: u64) -> Vec<u64> {
+        let stale_keys: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| {
+                frame_index.saturating_sub(entry.last_seen_frame) > self.max_stale_frames
+            })
+            .map(|(key, _)| *key)
+            .collect();
+
+        let evicted = stale_keys
+            .into_iter()
+            .filter_map(|key| self.entries.remove(&key))
+            .map(|entry| {
+                self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
+                entry.bytes
+            })
+            .collect();
+
+        self.visible_accesses.retain(|key, access| {
+            self.entries.contains_key(key)
+                || frame_index.saturating_sub(access.last_seen_frame) <= self.max_stale_frames
+        });
+
         evicted
     }
 
@@ -1575,6 +1634,9 @@ impl RendererCacheManager {
     pub fn end_frame(&mut self, frame: RendererCacheFrame) -> RendererCacheFrameStats {
         debug_assert_eq!(frame.generation, self.generation);
         let mut stats = frame.stats;
+        for bytes in self.clean_subtree.evict_stale(frame.frame_index) {
+            stats.clean_subtree.record_stale_eviction(bytes);
+        }
         stats.clean_subtree.current_entries = self.clean_subtree.entry_count();
         stats.clean_subtree.current_bytes = self.clean_subtree.total_bytes();
         let (gpu_payloads, cpu_payloads) = self.clean_subtree.payload_counts();
@@ -1599,6 +1661,20 @@ impl RendererCacheManager {
     ) -> u64 {
         frame.mark_candidate(RendererCacheKind::CleanSubtree, true);
         self.clean_subtree.mark_visible(key, frame.frame_index)
+    }
+
+    pub fn touch_clean_subtree_suppressed_by_parent(
+        &mut self,
+        frame: &mut RendererCacheFrame,
+        key: CleanSubtreeContentKey,
+    ) -> bool {
+        let touched = self
+            .clean_subtree
+            .touch_suppressed_by_parent(key, frame.frame_index);
+        if touched {
+            frame.record_suppressed_by_parent(RendererCacheKind::CleanSubtree);
+        }
+        touched
     }
 
     pub fn clean_subtree_payload(
@@ -1807,6 +1883,11 @@ impl RendererCacheManager {
         self.clean_subtree.max_bytes = max_bytes;
         self.clean_subtree.max_entry_bytes = max_entry_bytes;
     }
+
+    #[cfg(test)]
+    fn configure_clean_subtree_max_stale_frames_for_test(&mut self, max_stale_frames: u64) {
+        self.clean_subtree.max_stale_frames = max_stale_frames;
+    }
 }
 
 #[derive(Debug)]
@@ -1829,6 +1910,11 @@ impl RendererCacheFrame {
     pub fn admit_candidate(&mut self, kind: RendererCacheKind) {
         let stats = self.stats.for_kind_mut(kind);
         stats.admitted = stats.admitted.saturating_add(1);
+    }
+
+    pub fn record_suppressed_by_parent(&mut self, kind: RendererCacheKind) {
+        let stats = self.stats.for_kind_mut(kind);
+        stats.suppressed_by_parent = stats.suppressed_by_parent.saturating_add(1);
     }
 
     pub fn record_hit(&mut self, kind: RendererCacheKind, draw_hit_time: Duration) {
@@ -1915,6 +2001,17 @@ impl RendererCacheFrame {
 
         self.new_payload_budget_remaining -= 1;
         true
+    }
+}
+
+impl RendererCacheKindFrameStats {
+    fn record_stale_eviction(&mut self, bytes: u64) {
+        self.evictions = self.evictions.saturating_add(1);
+        self.stale_evictions = self.stale_evictions.saturating_add(1);
+        self.current_entries = self.current_entries.saturating_sub(1);
+        self.current_bytes = self.current_bytes.saturating_sub(bytes);
+        self.evicted_bytes = self.evicted_bytes.saturating_add(bytes);
+        self.stale_evicted_bytes = self.stale_evicted_bytes.saturating_add(bytes);
     }
 }
 
@@ -2277,6 +2374,10 @@ impl SceneRenderer {
                 {
                     let hit_started_at = Instant::now();
                     canvas.draw_image(&image, (candidate.bounds.x, candidate.bounds.y), None);
+                    Self::touch_descendant_clean_subtree_cache_candidates(
+                        &candidate.children,
+                        cache_tracking,
+                    );
                     cache_tracking
                         .frame
                         .record_hit(RendererCacheKind::CleanSubtree, hit_started_at.elapsed());
@@ -2338,6 +2439,10 @@ impl SceneRenderer {
                                 (candidate.bounds.x, candidate.bounds.y),
                                 None,
                             );
+                            Self::touch_descendant_clean_subtree_cache_candidates(
+                                &candidate.children,
+                                cache_tracking,
+                            );
                             cache_tracking
                                 .renderer_cache
                                 .store_reserved_clean_subtree_payload(
@@ -2373,6 +2478,44 @@ impl SceneRenderer {
                     cache_tracking,
                     eligibility,
                 );
+            }
+        }
+    }
+
+    fn touch_descendant_clean_subtree_cache_candidates(
+        nodes: &[RenderNode],
+        cache_tracking: &mut RenderCacheTracking<'_>,
+    ) {
+        for node in nodes {
+            match node {
+                RenderNode::Clip { children, .. }
+                | RenderNode::RelaxedClip { children, .. }
+                | RenderNode::ShadowPass { children }
+                | RenderNode::Transform { children, .. }
+                | RenderNode::Alpha { children, .. } => {
+                    Self::touch_descendant_clean_subtree_cache_candidates(children, cache_tracking);
+                }
+                RenderNode::CacheCandidate(candidate) => {
+                    if candidate.kind == RenderCacheCandidateKind::CleanSubtree {
+                        let resource_generation =
+                            clean_subtree_resource_generation(&candidate.children);
+                        if let Some(key) = resource_generation.and_then(|generation| {
+                            CleanSubtreeContentKey::from_candidate(candidate, 1.0, generation)
+                        }) {
+                            cache_tracking
+                                .renderer_cache
+                                .touch_clean_subtree_suppressed_by_parent(
+                                    cache_tracking.frame,
+                                    key,
+                                );
+                        }
+                    }
+                    Self::touch_descendant_clean_subtree_cache_candidates(
+                        &candidate.children,
+                        cache_tracking,
+                    );
+                }
+                RenderNode::Primitive(_) => {}
             }
         }
     }
@@ -5516,14 +5659,7 @@ mod tests {
 
     #[test]
     fn clean_subtree_cache_requires_repeated_visibility_and_tracks_eviction_stats() {
-        let key_a = CleanSubtreeContentKey {
-            stable_id: 1,
-            content_generation: 1,
-            width_px: 8,
-            height_px: 4,
-            scale_bits: 1.0_f32.to_bits(),
-            resource_generation: 1,
-        };
+        let key_a = clean_subtree_test_key(1);
         let key_b = CleanSubtreeContentKey {
             stable_id: 2,
             ..key_a
@@ -5612,6 +5748,96 @@ mod tests {
         cache.clear();
         assert_eq!(cache.clean_subtree_entry_count(), 0);
         assert_eq!(cache.clean_subtree_total_bytes(), 0);
+    }
+
+    #[test]
+    fn clean_subtree_stale_eviction_waits_for_configured_window() {
+        let key_a = clean_subtree_test_key(1);
+        let key_b = clean_subtree_test_key(2);
+        let mut cache = RendererCacheManager::new();
+        cache.configure_clean_subtree_max_stale_frames_for_test(1);
+
+        let mut first_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut first_frame, key_a);
+        cache.end_frame(first_frame);
+
+        let mut second_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut second_frame, key_a);
+        assert_eq!(
+            cache.try_store_clean_subtree_metadata(
+                &mut second_frame,
+                key_a,
+                128,
+                Duration::from_micros(3)
+            ),
+            Ok(())
+        );
+        cache.end_frame(second_frame);
+        assert_eq!(cache.clean_subtree_entry_count(), 1);
+
+        let mut third_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut third_frame, key_b);
+        let third_stats = cache.end_frame(third_frame);
+        assert_eq!(third_stats.clean_subtree.stale_evictions, 0);
+        assert_eq!(third_stats.clean_subtree.current_entries, 1);
+
+        let mut fourth_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut fourth_frame, key_b);
+        let fourth_stats = cache.end_frame(fourth_frame);
+        assert_eq!(fourth_stats.clean_subtree.stale_evictions, 1);
+        assert_eq!(fourth_stats.clean_subtree.evictions, 1);
+        assert_eq!(fourth_stats.clean_subtree.stale_evicted_bytes, 128);
+        assert_eq!(fourth_stats.clean_subtree.current_entries, 0);
+    }
+
+    #[test]
+    fn clean_subtree_parent_suppressed_touch_prevents_stale_eviction() {
+        let child_key = clean_subtree_test_key(1);
+        let other_key = clean_subtree_test_key(2);
+        let mut cache = RendererCacheManager::new();
+        cache.configure_clean_subtree_max_stale_frames_for_test(1);
+
+        let mut first_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut first_frame, child_key);
+        cache.end_frame(first_frame);
+
+        let mut second_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut second_frame, child_key);
+        assert_eq!(
+            cache.try_store_clean_subtree_metadata(
+                &mut second_frame,
+                child_key,
+                128,
+                Duration::from_micros(3)
+            ),
+            Ok(())
+        );
+        cache.end_frame(second_frame);
+
+        let mut third_frame = cache.begin_frame();
+        assert!(cache.touch_clean_subtree_suppressed_by_parent(&mut third_frame, child_key));
+        let third_stats = cache.end_frame(third_frame);
+        assert_eq!(third_stats.clean_subtree.suppressed_by_parent, 1);
+        assert_eq!(third_stats.clean_subtree.stale_evictions, 0);
+        assert_eq!(third_stats.clean_subtree.current_entries, 1);
+
+        let mut fourth_frame = cache.begin_frame();
+        assert!(cache.touch_clean_subtree_suppressed_by_parent(&mut fourth_frame, child_key));
+        let fourth_stats = cache.end_frame(fourth_frame);
+        assert_eq!(fourth_stats.clean_subtree.suppressed_by_parent, 1);
+        assert_eq!(fourth_stats.clean_subtree.stale_evictions, 0);
+        assert_eq!(fourth_stats.clean_subtree.current_entries, 1);
+
+        let mut fifth_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut fifth_frame, other_key);
+        let fifth_stats = cache.end_frame(fifth_frame);
+        assert_eq!(fifth_stats.clean_subtree.stale_evictions, 0);
+
+        let mut sixth_frame = cache.begin_frame();
+        cache.mark_clean_subtree_visible(&mut sixth_frame, other_key);
+        let sixth_stats = cache.end_frame(sixth_frame);
+        assert_eq!(sixth_stats.clean_subtree.stale_evictions, 1);
+        assert_eq!(sixth_stats.clean_subtree.current_entries, 0);
     }
 
     #[test]
@@ -5722,6 +5948,17 @@ mod tests {
                 height: 16.0,
             },
             children,
+        }
+    }
+
+    fn clean_subtree_test_key(stable_id: u64) -> CleanSubtreeContentKey {
+        CleanSubtreeContentKey {
+            stable_id,
+            content_generation: 1,
+            width_px: 8,
+            height_px: 4,
+            scale_bits: 1.0_f32.to_bits(),
+            resource_generation: 1,
         }
     }
 
@@ -5970,6 +6207,96 @@ mod tests {
         assert_eq!(third_stats.clean_subtree.misses, 0);
         assert_eq!(third_stats.clean_subtree.stores, 0);
         assert_eq!(third_stats.clean_subtree.current_entries, 1);
+    }
+
+    #[test]
+    fn parent_cache_hit_touches_existing_descendant_cache_entries() {
+        fn child_candidate() -> RenderCacheCandidate {
+            RenderCacheCandidate {
+                kind: RenderCacheCandidateKind::CleanSubtree,
+                stable_id: 101,
+                content_generation: 1,
+                bounds: crate::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 22.0,
+                    height: 16.0,
+                },
+                children: clean_subtree_test_children(),
+            }
+        }
+
+        let child_scene = || RenderScene {
+            nodes: vec![RenderNode::Transform {
+                transform: Affine2::translation(8.0, 5.0),
+                children: vec![RenderNode::CacheCandidate(child_candidate())],
+            }],
+        };
+        let parent_scene = || RenderScene {
+            nodes: vec![RenderNode::Transform {
+                transform: Affine2::translation(8.0, 5.0),
+                children: vec![RenderNode::CacheCandidate(RenderCacheCandidate {
+                    kind: RenderCacheCandidateKind::CleanSubtree,
+                    stable_id: 100,
+                    content_generation: 1,
+                    bounds: crate::tree::geometry::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 28.0,
+                        height: 22.0,
+                    },
+                    children: vec![RenderNode::CacheCandidate(child_candidate())],
+                })],
+            }],
+        };
+
+        let mut renderer = SceneRenderer::new();
+        let _ = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            child_scene(),
+        );
+        let (_, child_store_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            child_scene(),
+        );
+        assert_eq!(
+            child_store_timings
+                .renderer_cache
+                .as_ref()
+                .expect("child cache should store on second frame")
+                .clean_subtree
+                .stores,
+            1
+        );
+
+        let _ = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            parent_scene(),
+        );
+        let _ = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            parent_scene(),
+        );
+        let (_, parent_hit_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            parent_scene(),
+        );
+        let stats = parent_hit_timings
+            .renderer_cache
+            .expect("parent cache hit should produce cache stats");
+        assert_eq!(stats.clean_subtree.hits, 1);
+        assert_eq!(stats.clean_subtree.suppressed_by_parent, 1);
+        assert_eq!(stats.clean_subtree.misses, 0);
     }
 
     #[test]

@@ -184,17 +184,20 @@ struct RendererCacheStatsNif {
 struct RendererCacheKindStatsNif {
     candidates: u64,
     visible_candidates: u64,
+    suppressed_by_parent: u64,
     admitted: u64,
     hits: u64,
     misses: u64,
     stores: u64,
     evictions: u64,
+    stale_evictions: u64,
     rejected: u64,
     current_entries: u64,
     current_bytes: u64,
     current_gpu_payloads: u64,
     current_cpu_payloads: u64,
     evicted_bytes: u64,
+    stale_evicted_bytes: u64,
     prepare: DurationStatsNif,
     draw_hit: DurationStatsNif,
 }
@@ -211,7 +214,7 @@ impl StatsSnapshotNif {
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         Self {
-            version: 8,
+            version: 9,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -299,17 +302,20 @@ impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
         Self {
             candidates: stats.candidates,
             visible_candidates: stats.visible_candidates,
+            suppressed_by_parent: stats.suppressed_by_parent,
             admitted: stats.admitted,
             hits: stats.hits,
             misses: stats.misses,
             stores: stats.stores,
             evictions: stats.evictions,
+            stale_evictions: stats.stale_evictions,
             rejected: stats.rejected,
             current_entries: stats.current_entries,
             current_bytes: stats.current_bytes,
             current_gpu_payloads: stats.current_gpu_payloads,
             current_cpu_payloads: stats.current_cpu_payloads,
             evicted_bytes: stats.evicted_bytes,
+            stale_evicted_bytes: stats.stale_evicted_bytes,
             prepare: DurationStatsNif::from(stats.prepare),
             draw_hit: DurationStatsNif::from(stats.draw_hit),
         }
@@ -818,6 +824,11 @@ struct StartConfig {
     )]
     renderer_stats_log: bool,
     #[cfg_attr(
+        not(any(all(feature = "wayland", target_os = "linux"),)),
+        allow(dead_code)
+    )]
+    renderer_animation_log: bool,
+    #[cfg_attr(
         not(any(
             all(feature = "wayland", target_os = "linux"),
             all(feature = "drm", target_os = "linux"),
@@ -858,6 +869,7 @@ struct StartOptsNif {
     close_signal_log: bool,
     stats_enabled: bool,
     renderer_stats_log: bool,
+    renderer_animation_log: bool,
     renderer_cache: RendererCacheConfigNif,
 }
 
@@ -1018,6 +1030,7 @@ fn start_native_renderer_with_config(
             let native_log_clone = Arc::clone(&native_log);
             let renderer_stats_clone = renderer_stats.clone();
             let renderer_stats_log = config.renderer_stats_log;
+            let renderer_animation_log = config.renderer_animation_log;
             let renderer_cache_config = config.renderer_cache_config;
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
@@ -1036,6 +1049,7 @@ fn start_native_renderer_with_config(
                     close_signal_log,
                     stats: renderer_stats_clone,
                     renderer_stats_log,
+                    renderer_animation_log,
                     renderer_cache_config,
                     native_log: native_log_clone,
                     render_rx,
@@ -1345,6 +1359,7 @@ fn start(
                 close_signal_log: false,
                 stats_enabled: false,
                 renderer_stats_log: false,
+                renderer_animation_log: false,
                 renderer_cache_config: RendererCacheConfig::default(),
             },
             Some(env.pid()),
@@ -1396,6 +1411,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             close_signal_log: opts.close_signal_log,
             stats_enabled: opts.stats_enabled,
             renderer_stats_log: opts.renderer_stats_log,
+            renderer_animation_log: opts.renderer_animation_log,
             renderer_cache_config,
         },
         Some(env.pid()),

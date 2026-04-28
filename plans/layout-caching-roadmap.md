@@ -451,7 +451,9 @@ Interpretation:
 
 Follow-up:
 
-- renderer-cache work is now tracked in `active-render-cache-plan.md`
+- renderer-cache implementation status is folded into
+  `rendering-cache-engine-investigation.md` and
+  `render-cache-flutter-comparison.md`
 - the current renderer-cache direction is GPU-first clean-subtree payloads with
   Flutter-like prepare-before-draw lifecycle
 - admitted clean subtrees should be rendered into an offscreen GPU cache target

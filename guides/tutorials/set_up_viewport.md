@@ -476,13 +476,14 @@ children = [
 ]
 ```
 
-Other DRM-specific settings:
+Other backend/logging settings:
 
 - `hw_cursor` - Enable hardware cursor when available (default: true). If the device has a cursor plane, it will draw the cursor independently from the rest of the UI.
 - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
 - `input_log` - Log DRM input devices on startup (default: false)
 - `render_log` - Log DRM render/present diagnostics (default: false)
 - `renderer_stats_log` - Log renderer timing stats every 5 seconds, including total render, draw, GPU flush, submit, and present submit timings (default: false)
+- `renderer_animation_log` - Log detailed Wayland animation cadence traces separately from renderer stats (default: false)
 
 Each `drm_cursor` entry supports:
 - `source` (required, `.png` or `.svg`; logical path under `<otp_app>/priv`, `%Emerge.Assets.Ref{}`, or an absolute runtime path allowed by `assets.runtime_paths`)
