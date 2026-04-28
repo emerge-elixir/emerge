@@ -63,6 +63,7 @@ use crate::tree::geometry::{
 use crate::tree::scene::ResolvedNodeState;
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
+use crate::tree::viewport_culling::should_skip_registry_viewport_subtree;
 
 use super::{
     CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload,
@@ -5229,6 +5230,9 @@ fn accumulate_subtree_rebuild_local(
         .unwrap_or_default();
     element.for_each_retained_child(tree, |child| match child.mode {
         RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
+            if should_skip_registry_child_subtree(tree, child.ix, &child_scene_ctx) {
+                return;
+            }
             deferred.extend(accumulate_subtree_rebuild_local(
                 tree,
                 &child.id,
@@ -5421,6 +5425,9 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
     for child in children {
         match child.mode {
             RetainedChildMode::Scope | RetainedChildMode::InlineEventOnly => {
+                if should_skip_registry_child_subtree(tree, child.ix, &child_scene_ctx) {
+                    continue;
+                }
                 deferred.extend(accumulate_subtree_rebuild_local_cached(
                     tree,
                     &child.id,
@@ -5462,6 +5469,14 @@ fn try_take_registry_cache_budget(cache_budget: &Cell<usize>) -> bool {
     }
     cache_budget.set(remaining - 1);
     true
+}
+
+fn should_skip_registry_child_subtree(
+    tree: &ElementTree,
+    child_ix: NodeIx,
+    scene_ctx: &crate::tree::scene::SceneContext,
+) -> bool {
+    should_skip_registry_viewport_subtree(tree, child_ix, scene_ctx)
 }
 
 fn registry_subtree_cache_eligible(tree: &ElementTree, ix: NodeIx) -> bool {
