@@ -1,15 +1,46 @@
 # Plans
 
-Last updated: 2026-04-27.
+Last updated: 2026-04-28.
 
-This directory tracks the native layout-caching roadmap and the background
-investigation that led to the current implementation.
+This directory tracks active implementation plans plus the background
+investigations that led to the current native layout and renderer work.
 
 ## Files
 
+### `active-render-cache-plan.md`
+
+The active renderer-cache implementation plan.
+
+Use this for renderer-cache work now that the first direct drawing plan has
+landed or rejected its current slices. The clean-subtree raster payload cache
+has completed its first production slices for integer translation and
+layout-reflow placement reuse, with renderer-cache stats and configurable
+`EmergeSkia.start/1` cache budget limits in place. The GPU-first slice is now
+implemented: admitted candidates prepare into offscreen GPU render targets when
+a `DirectContext` exists, prepare-before-draw can draw the newly prepared image
+in the same frame, CPU raster payloads stay raster/offscreen fallback, and root
+element alpha is treated as composition state. Future cache work still requires
+renderer benchmarks to compare against the saved `render_cache_before`
+Criterion baseline, and this plan should be read with
+`drawing-optimization-investigation.md` so new cache pilots are measured against
+the current direct renderer.
+
+### `active-frame-latency-plan.md`
+
+The active frame-latency implementation plan.
+
+Use this for reducing patch-to-visible-frame latency now that renderer stats
+split the pipeline into tree, render queue, swap, and frame-callback stages.
+The first target is a small internal Wayland scheduler change that disables EGL
+swap-interval pacing when supported and can attempt one static patch-derived
+late replacement draw while a frame callback is pending. Animation-active
+scenes stay on normal callback pacing so fade/translate animations keep a
+regular cadence. The plan also covers DRM, macOS Metal, macOS raster fallback,
+and raster/offscreen applicability.
+
 ### `layout-caching-roadmap.md`
 
-The active implementation roadmap.
+The retained-layout implementation roadmap.
 
 Use this when deciding what to build next. It reflects the current repo state:
 initial identity/storage/invalidation/cache work, origin-agnostic scheduling,
@@ -33,7 +64,18 @@ Cross-engine rendering-cache research notes.
 Use this when choosing renderer-thread performance work. It compares Flutter
 repaint boundaries/raster cache, Slint dirty-region and shadow caches, Iced
 geometry caches, Servo/WebRender display-list and tile caching, and Scenic
-Driver Skia script replay against Emerge's current renderer.
+Driver Skia script replay against Emerge's current renderer. It covers retained
+renderer output only; non-cache direct draw-path work lives in
+`drawing-optimization-investigation.md`.
+
+### `drawing-optimization-investigation.md`
+
+Non-cache drawing optimization research notes.
+
+Use this when investigating direct draw-path improvements without introducing
+renderer caches: Skia primitive fast paths, shader/pipeline warmup, saveLayer
+reduction, template tint, opacity distribution, shadow alternatives, backend
+options, and benchmark gates for drawing optimizations.
 
 ### `native-tree-implementation-insights.md`
 
@@ -99,6 +141,26 @@ The native layout-caching foundation is in place:
 - renderer slow-frame diagnostics split render time into draw, GPU flush, GPU
   submit, and present-submit stages; profiled slow-frame logs now include scene
   summaries plus per-category draw timings, image details, and shadow details
+- pipeline diagnostics split patch submission into tree actor, render queue,
+  swap, and Wayland frame-callback wait so frame latency work can distinguish
+  Emerge processing from backend/compositor pacing
+- profiled renderer slow-frame logs also include clip, border, and layer detail
+  for direct drawing optimization work
+- direct renderer drawing benchmarks cover focused border, tint, alpha, shadow,
+  clip, gradient, image, cold-frame, GPU-surface, and mixed-scene cases;
+  `drawing_opt_before` is the baseline for non-cache drawing optimizations
+- proven non-cache drawing optimizations have landed for unclipped solid
+  borders, template-image tint without `saveLayer`, and narrow single-primitive
+  alpha distribution; clipped border fast paths, clip combining, direct Skia
+  shadows, and warmup behavior stayed out of renderer code because benchmarks did
+  not prove a win
+- renderer-cache work has a saved `render_cache_before` Criterion baseline,
+  fresh demo trace gate, shared `SceneRenderer` cache lifecycle, generation
+  clear, per-frame payload budget, stats path, configurable
+  `EmergeSkia.start/1` cache limits, GPU render-target payloads for GPU frames,
+  CPU raster fallback for raster/offscreen frames, prepare-before-draw
+  admission, layout-reflow placement reuse, and root element-alpha composition
+  reuse
 - raster image assets are decoded eagerly when inserted into the renderer asset
   cache so deferred PNG/JPEG decode is not paid during the first draw
 - retained-layout benchmarks print grep-friendly layout-cache counters
@@ -128,26 +190,38 @@ The native layout-caching foundation is in place:
 
 ## Next recommended implementation order
 
-### 1. Choose the first renderer-cache slice
+### 1. Reduce frame latency for patch-driven interaction
 
-No active implementation plan remains open. The next renderer work should be
-planned from `rendering-cache-engine-investigation.md`; the recommended first
-slice is border/text/clip diagnostics plus simple solid-border fast paths before
-adding shadow texture caching.
+Use `active-frame-latency-plan.md`. The first implementation target is Wayland:
+keep callback pacing as the base behavior, add one internal conservative
+late-replacement path for patch-derived scenes, and prove with split pipeline
+stats whether it reduces typing/interaction latency without increasing
+present-submit, GPU flush, or steady-state frame cost.
 
-### 2. Broaden other relayout/dependency boundaries
+### 2. Validate renderer-cache payloads in longer live sessions
+
+The GPU-first slice in `active-render-cache-plan.md` is implemented. The next
+renderer-cache work should be driven by live traces from `../emerge_demo`:
+validate default budgets over longer resize/interaction sessions, watch
+renderer-cache stats for rejected/oversized candidates, and only open a new
+cache model if direct drawing and the current clean-subtree cache no longer
+explain the slow frames. Rotate, scale, active text editing visuals, video, and
+loading/error image placeholders remain direct-render paths until each has
+targeted parity tests and benchmarks.
+
+### 3. Broaden other relayout/dependency boundaries
 
 Nearby overlay topology no longer forces broad host/ancestor measurement or
 resolve misses. The next layout-cache work should broaden boundaries for other
 container/dependency shapes one at a time with focused correctness tests.
 
-### 3. Revisit registry chunk seeding if profiles justify it
+### 4. Revisit registry chunk seeding if profiles justify it
 
 The guarded registry chunk infrastructure is in place. Leave damaged/no-cache
 and escape-nearby cases on the full-rebuild fallback unless a future profile
 shows registry rebuilds are the dominant cost and cheap seeding is proven safe.
 
-### 4. Repeater/viewport-aware caching
+### 5. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.
