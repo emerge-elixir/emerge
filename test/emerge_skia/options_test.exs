@@ -68,6 +68,17 @@ defmodule EmergeSkia.OptionsTest do
              Options.build_start_native_opts!(renderer_stats_log: true)
   end
 
+  test "build_start_native_opts! keeps renderer_animation_log option separate from stats log" do
+    assert %{renderer_animation_log: false, renderer_stats_log: false} =
+             Options.build_start_native_opts!([])
+
+    assert %{renderer_animation_log: true, renderer_stats_log: false} =
+             Options.build_start_native_opts!(renderer_animation_log: true)
+
+    assert %{renderer_animation_log: false, renderer_stats_log: true} =
+             Options.build_start_native_opts!(renderer_stats_log: true)
+  end
+
   test "build_start_native_opts! keeps stats option" do
     assert %{stats_enabled: false} = Options.build_start_native_opts!([])
     assert %{stats_enabled: true} = Options.build_start_native_opts!(stats: true)

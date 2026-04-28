@@ -3,7 +3,7 @@
 Last updated: 2026-04-28.
 
 Status: investigation/reference; no active direct-drawing implementation plan is
-open. The active renderer work is in `active-render-cache-plan.md`.
+open.
 
 ## Purpose
 
@@ -11,7 +11,7 @@ This document covers direct rendering optimizations only. It intentionally avoid
 renderer caches, subtree rasterization, retained pictures, retained text blobs,
 shader-object reuse, tile reuse, and dirty-region/back-buffer reuse. Those topics
 belong in `rendering-cache-engine-investigation.md` and
-`active-render-cache-plan.md`.
+`render-cache-flutter-comparison.md`.
 
 The focus here is narrower: make the direct Skia draw path cheaper and make cold
 GPU behavior less visible without retaining Emerge-rendered output.
@@ -56,9 +56,9 @@ benchmark-first rule:
   must beat the current direct path in steady state without hiding miss or
   warm-up regressions
 
-The active implementation plan for this investigation has completed and was
-folded back into this document. Future direct drawing work should start here and
-create a new active plan only when it has a fresh benchmark target.
+The direct-drawing implementation slice for this investigation has completed
+and was folded back into this document. Future direct drawing work should start
+here and create a new plan only when it has a fresh benchmark target.
 
 ## Completed Direct Drawing Pass
 

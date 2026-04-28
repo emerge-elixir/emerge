@@ -10,6 +10,11 @@ caches such as prepared primitive output, pictures, raster layers, dirty
 regions, and tiles. It is not an active implementation plan. It is a reference
 document for deciding the next renderer-performance slice.
 
+For a focused post-implementation comparison between Emerge's current
+clean-subtree cache and Flutter's Skia/Ganesh raster cache, see
+`render-cache-flutter-comparison.md`. The implemented follow-up record from
+that comparison is `active-render-cache-children-plan.md`.
+
 ## Why this exists
 
 Recent `../emerge_demo` showcase/assets-page traces show that layout and refresh
@@ -131,8 +136,8 @@ budgets.
 
 The first concrete cache was chosen by measured benefit, by how well it
 exercised the common model, and by whether the same cost still existed after the
-direct-rendering pass. The current active plan is the clean-subtree
-raster/texture payload: it exercises content-vs-composite key separation,
+direct-rendering pass. The completed first cache is the clean-subtree
+raster/texture payload. It exercises content-vs-composite key separation,
 retained element identity, layout-cache signals, admission, byte budgets,
 cached-vs-direct parity, and GPU payload behavior.
 
@@ -146,8 +151,8 @@ Other useful candidates remain:
   render-subtree identity, but less likely to reduce GPU blur/flush cost
 - **simple raster layers:** broad benefit but higher stale-pixel and memory risk
 
-Shadow caching is therefore a later primitive pilot, not the current active
-first pilot.
+Shadow caching is therefore a later primitive pilot, not the first implemented
+pilot.
 
 ### Companion baseline: direct draw optimization
 
@@ -845,8 +850,8 @@ Expected impact:
 
 ## 4. Clean-subtree GPU payload cache
 
-This is the current active first pilot, tracked in
-`active-render-cache-plan.md`.
+Status: implemented. The completed active renderer-cache plan was folded back
+into this investigation and `render-cache-flutter-comparison.md`.
 
 ### Why
 
@@ -860,7 +865,7 @@ This is the current active first pilot, tracked in
 - It gives a single place to prove GPU render-target payloads,
   prepare-before-draw store frames, byte budgets, stats, and direct fallback.
 
-### Proposed shape
+### Implemented shape
 
 - Candidate boundaries come from tree rendering with stable id, content
   generation, local bounds, and child render nodes.
@@ -873,17 +878,55 @@ This is the current active first pilot, tracked in
   that element. Element alpha is applied while drawing the cached payload image.
 - Descendant alpha changes inside a cached ancestor require nested composited
   boundaries or ancestor invalidation.
+- Entries track `last_seen_frame`; parent cache hits and same-frame parent
+  prepares touch existing descendant entries as `suppressed_by_parent`.
+- Entries that are no longer visible or parent-suppressed age out after a
+  conservative stale-frame window, while byte/count budgets remain the hard cap.
 
 ### Validation
 
-- Benchmarks must cover direct rendering, current CPU payloads, GPU payloads,
-  admitted prepare-before-draw frames, and warm hits.
-- Required demo-shaped cases include Nerves-style `move_x`, vertical/combined
-  integer translation, showcase layout-reflow movement, app-selector alpha
-  animation, todo-entry translate+alpha animation, warm assets, and
-  border/text/clip-heavy mixed subtrees.
-- If full-frame timings do not beat the direct renderer, keep the simpler direct
-  path and document the rejected optimization.
+- Benchmarks cover direct rendering, CPU payloads, GPU payloads, admitted
+  prepare-before-draw frames, and warm hits.
+- Demo-shaped cases include Nerves-style `move_x`, vertical/combined integer
+  translation, showcase layout-reflow movement, app-selector alpha animation,
+  todo-entry translate+alpha animation, warm assets, and border/text/clip-heavy
+  mixed subtrees.
+- If full-frame timings do not beat the direct renderer for a future cache
+  expansion, keep the simpler direct path and document the rejected
+  optimization.
+
+Measured GPU Criterion checks from 2026-04-28:
+
+- `gpu_cache_candidates_layout_reflow`: direct reflowed children `1.7046 ms`
+  versus cached local content `177.71 us`
+- `gpu_cache_candidates_translated/app_selector_menu_alpha`: direct
+  `1.1213 ms` versus production cached candidate `396.02 us`
+- `gpu_cache_candidates_translated/todo_entry_translate_alpha`: direct
+  `929.48 us` versus production cached candidate `389.62 us`
+- `gpu_surfaceless/mixed_ui_scene`: no statistically significant change
+  (`3.8186 ms`, `+0.5121%`, `p = 0.28`)
+
+Measured child-cache follow-up from 2026-04-28:
+
+- parent-hit nested clean-subtree accounting was neutral to better, so
+  descendant suppression accounting is retained for stale-entry correctness
+- a dedicated nested-alpha children-cache kind did not beat direct GPU drawing
+  in the small overlapping-alpha microbench, so no new production cache kind was
+  added
+- raster no-candidate cold mixed frames improved in the short guard run, so the
+  metadata path did not show a direct-renderer regression
+
+Remaining conservative exclusions:
+
+- descendant alpha under a cached ancestor
+- fractional placement, rotate, and scale
+- active text input/caret/preedit visuals
+- active video
+- image loading/failure placeholder payloads
+
+Asset source status generation is part of render-subtree keys, so a subtree
+cached while an image is pending is invalidated when the asset becomes ready or
+failed. Placeholder drawing remains direct-rendered.
 
 ## 5. Box-shadow texture cache
 
@@ -1242,7 +1285,7 @@ Work:
 
 Status:
 
-- completed before the active plan was compacted
+- completed during the first clean-subtree cache slice
 
 ### Slice 4: GPU-first payload and prepare-before-draw
 
@@ -1265,10 +1308,10 @@ Work:
 
 Status:
 
-- implemented in `active-render-cache-plan.md`; GPU frames prepare offscreen
-  GPU render-target payloads, raster/offscreen frames keep CPU raster payloads,
-  admitted candidates prepare before drawing, and stats now split payload kind,
-  prepare result, direct fallback, and rejection reasons
+- implemented; GPU frames prepare offscreen GPU render-target payloads,
+  raster/offscreen frames keep CPU raster payloads, admitted candidates prepare
+  before drawing, and stats now split payload kind, prepare result, direct
+  fallback, and rejection reasons
 
 ### Slice 5: element-alpha composition eligibility
 
@@ -1285,12 +1328,13 @@ Work:
   drawing the cached image
 - descendant alpha remains conservative: nested `Alpha` under a candidate still
   rejects the candidate until nested composited/cache boundaries have parity
-  coverage
+  coverage and benchmark evidence
 - app-selector menu fades and todo-entry translate+fade animations are covered
   by GPU renderer benchmarks
 - cached-vs-direct pixel parity is covered for root-alpha payload reuse; broader
-  overlapping/nested alpha cases remain future coverage before expanding
-  eligibility
+  overlapping/nested alpha cases now have a benchmark guard, and the first
+  alpha-only cache-boundary expansion stayed out because it did not prove a GPU
+  win
 
 ### Slice 6: later primitive cache pilot
 
@@ -1389,6 +1433,9 @@ Work:
 - Element alpha should be treated as cache-hit draw state for caches rooted at
   that element, not payload content, when the cached subtree was rendered into a
   transparent target and alpha is applied while drawing the payload image.
+- Parent cache hits must keep descendant cache entries seen/suppressed before
+  stale eviction is applied; otherwise useful child payloads can age out only
+  because a parent payload was warm.
 - Layout-cache and render-subtree hits should feed renderer-cache
   lookup/admission as high-confidence signals, but renderer-cache keys still
   validate paint/resource/scale/backend/residency state.

@@ -352,6 +352,68 @@ fn bench_renderer_layout_reflow_cache_candidates(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_renderer_cache_children(c: &mut Criterion) {
+    // This group is also the measured record for the rejected "new alpha
+    // children cache kind" idea. The small overlapping-alpha workload did not
+    // beat direct GPU drawing, so production code keeps alpha caching to the
+    // existing root clean-subtree composition path and only adds lifecycle
+    // accounting for parent/child cache interaction.
+    let mut group = c.benchmark_group("native/renderer/cache_children");
+    group.sample_size(30);
+
+    group.bench_function("nested_alpha/direct_children", |b| {
+        let states = alpha_children_states(false);
+        let mut sample_index = 0usize;
+        let mut surface = raster_bench_surface(WIDTH, HEIGHT);
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let state = &states[sample_index];
+            sample_index = (sample_index + 1) % states.len();
+            let mut frame = RenderFrame::new(&mut surface, None);
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function("nested_alpha/candidate_children", |b| {
+        let states = alpha_children_states(true);
+        let mut sample_index = 0usize;
+        let mut surface = raster_bench_surface(WIDTH, HEIGHT);
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let state = &states[sample_index];
+            sample_index = (sample_index + 1) % states.len();
+            let mut frame = RenderFrame::new(&mut surface, None);
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function("parent_hit/direct_children", |b| {
+        let state = RenderState::new(parent_child_cache_scene(false), Color::WHITE, 1, false);
+        let mut surface = raster_bench_surface(WIDTH, HEIGHT);
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let mut frame = RenderFrame::new(&mut surface, None);
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.bench_function("parent_hit/nested_candidates", |b| {
+        let state = RenderState::new(parent_child_cache_scene(true), Color::WHITE, 1, false);
+        let mut surface = raster_bench_surface(WIDTH, HEIGHT);
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let mut frame = RenderFrame::new(&mut surface, None);
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_renderer_cold_frames(c: &mut Criterion) {
     // This is a measurement gate, not a warmup implementation. Keep cold-frame
     // optimizations out of the renderer until this benchmark or a scripted demo
@@ -732,6 +794,77 @@ fn bench_renderer_gpu_layout_reflow_cache_candidates(c: &mut Criterion) {
 
 #[cfg(not(target_os = "linux"))]
 fn bench_renderer_gpu_layout_reflow_cache_candidates(_c: &mut Criterion) {}
+
+#[cfg(target_os = "linux")]
+fn bench_renderer_gpu_cache_children(c: &mut Criterion) {
+    let Ok(surface_probe) = EglBenchSurface::new((WIDTH, HEIGHT)) else {
+        eprintln!("Skipping native/renderer/gpu_cache_children: EGL surfaceless setup failed");
+        return;
+    };
+    drop(surface_probe);
+
+    let mut group = c.benchmark_group("native/renderer/gpu_cache_children");
+    group.sample_size(30);
+
+    group.bench_function("nested_alpha/direct_children", |b| {
+        let states = alpha_children_states(false);
+        let mut sample_index = 0usize;
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let state = &states[sample_index];
+            sample_index = (sample_index + 1) % states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function("nested_alpha/candidate_children", |b| {
+        let states = alpha_children_states(true);
+        let mut sample_index = 0usize;
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let state = &states[sample_index];
+            sample_index = (sample_index + 1) % states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function("parent_hit/direct_children", |b| {
+        let state = RenderState::new(parent_child_cache_scene(false), Color::WHITE, 1, false);
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.bench_function("parent_hit/nested_candidates", |b| {
+        let state = RenderState::new(parent_child_cache_scene(true), Color::WHITE, 1, false);
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.finish();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bench_renderer_gpu_cache_children(_c: &mut Criterion) {}
 
 struct RenderCase {
     name: &'static str,
@@ -1278,6 +1411,181 @@ fn layout_reflow_scene(sample: LayoutReflowSample, cache_candidate: bool) -> Ren
             })
             .collect(),
     }
+}
+
+fn alpha_children_states(cache_candidate: bool) -> Vec<RenderState> {
+    APP_SELECTOR_ALPHA_SAMPLES
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| {
+            RenderState::new(
+                alpha_children_scene(sample.alpha, cache_candidate),
+                Color::WHITE,
+                index as u64 + 1,
+                true,
+            )
+        })
+        .collect()
+}
+
+fn alpha_children_scene(alpha: f32, cache_candidate: bool) -> RenderScene {
+    let children = if cache_candidate {
+        vec![RenderNode::CacheCandidate(RenderCacheCandidate {
+            kind: RenderCacheCandidateKind::CleanSubtree,
+            stable_id: 30_000,
+            content_generation: 1,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 360.0,
+                height: 210.0,
+            },
+            children: alpha_children_content_nodes(0.0, 0.0),
+        })]
+    } else {
+        alpha_children_content_nodes(0.0, 0.0)
+    };
+
+    RenderScene {
+        nodes: vec![
+            RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                WIDTH as f32,
+                HEIGHT as f32,
+                0xF8FAFCFF,
+            )),
+            RenderNode::Transform {
+                transform: Affine2::translation(300.0, 220.0),
+                children: vec![RenderNode::Alpha { alpha, children }],
+            },
+        ],
+    }
+}
+
+fn parent_child_cache_scene(cache_candidates: bool) -> RenderScene {
+    let child_nodes = alpha_children_content_nodes(26.0, 52.0);
+    let nested_child = if cache_candidates {
+        vec![RenderNode::CacheCandidate(RenderCacheCandidate {
+            kind: RenderCacheCandidateKind::CleanSubtree,
+            stable_id: 31_001,
+            content_generation: 1,
+            bounds: Rect {
+                x: 26.0,
+                y: 52.0,
+                width: 360.0,
+                height: 210.0,
+            },
+            children: child_nodes,
+        })]
+    } else {
+        child_nodes
+    };
+
+    let mut parent_children = vec![
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            0.0, 0.0, 430.0, 312.0, 14.0, 0xFFFFFFFF,
+        )),
+        RenderNode::Primitive(DrawPrimitive::Border(
+            0.5,
+            0.5,
+            429.0,
+            311.0,
+            14.0,
+            1.0,
+            0xCBD5E1FF,
+            BorderStyle::Solid,
+        )),
+        RenderNode::Primitive(DrawPrimitive::TextWithFont(
+            24.0,
+            31.0,
+            "Parent cache candidate".to_string(),
+            16.0,
+            0x0F172AFF,
+            "default".to_string(),
+            700,
+            false,
+        )),
+    ];
+    parent_children.extend(nested_child);
+
+    let children = if cache_candidates {
+        vec![RenderNode::CacheCandidate(RenderCacheCandidate {
+            kind: RenderCacheCandidateKind::CleanSubtree,
+            stable_id: 31_000,
+            content_generation: 1,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 430.0,
+                height: 312.0,
+            },
+            children: parent_children,
+        })]
+    } else {
+        parent_children
+    };
+
+    RenderScene {
+        nodes: vec![RenderNode::Transform {
+            transform: Affine2::translation(252.0, 184.0),
+            children,
+        }],
+    }
+}
+
+fn alpha_children_content_nodes(offset_x: f32, offset_y: f32) -> Vec<RenderNode> {
+    vec![
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            offset_x, offset_y, 360.0, 210.0, 12.0, 0xE0F2FEF2,
+        )),
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            offset_x + 22.0,
+            offset_y + 26.0,
+            188.0,
+            78.0,
+            12.0,
+            0x2563EBF0,
+        )),
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            offset_x + 122.0,
+            offset_y + 62.0,
+            190.0,
+            86.0,
+            14.0,
+            0xF97316E8,
+        )),
+        RenderNode::Primitive(DrawPrimitive::TextWithFont(
+            offset_x + 34.0,
+            offset_y + 54.0,
+            "alpha children".to_string(),
+            16.0,
+            0xFFFFFFFF,
+            "default".to_string(),
+            700,
+            false,
+        )),
+        RenderNode::Primitive(DrawPrimitive::TextWithFont(
+            offset_x + 142.0,
+            offset_y + 116.0,
+            "overlap group".to_string(),
+            14.0,
+            0x111827FF,
+            "default".to_string(),
+            600,
+            false,
+        )),
+        RenderNode::Primitive(DrawPrimitive::Border(
+            offset_x + 0.5,
+            offset_y + 0.5,
+            359.0,
+            209.0,
+            12.0,
+            1.0,
+            0x0369A1FF,
+            BorderStyle::Solid,
+        )),
+    ]
 }
 
 fn layout_reflow_card_position(index: usize, container_width: f32) -> (f32, f32) {
@@ -2888,11 +3196,13 @@ criterion_group!(
     bench_renderer_clean_subtree_cache_candidates,
     bench_renderer_translated_cache_candidates,
     bench_renderer_layout_reflow_cache_candidates,
+    bench_renderer_cache_children,
     bench_renderer_cold_frames,
     bench_renderer_gpu_surfaceless,
     bench_renderer_gpu_cold_frames,
     bench_renderer_gpu_cache_candidates,
     bench_renderer_gpu_translated_cache_candidates,
-    bench_renderer_gpu_layout_reflow_cache_candidates
+    bench_renderer_gpu_layout_reflow_cache_candidates,
+    bench_renderer_gpu_cache_children
 );
 criterion_main!(benches);
