@@ -554,4 +554,4 @@ The native tree now supports the next layout-caching stages:
 3. additional ix-native measure/resolve traversal cleanup where profiles justify it
 4. viewport/repeater-aware cache preservation
 
-See `layout-caching-roadmap.md` for the active implementation order.
+See `layout-caching-roadmap.md` for the recommended implementation order.

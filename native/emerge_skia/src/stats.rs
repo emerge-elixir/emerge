@@ -151,17 +151,20 @@ impl RendererCacheStatsSnapshot {
 pub struct RendererCacheKindStatsSnapshot {
     pub candidates: u64,
     pub visible_candidates: u64,
+    pub suppressed_by_parent: u64,
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
     pub stores: u64,
     pub evictions: u64,
+    pub stale_evictions: u64,
     pub rejected: u64,
     pub current_entries: u64,
     pub current_bytes: u64,
     pub current_gpu_payloads: u64,
     pub current_cpu_payloads: u64,
     pub evicted_bytes: u64,
+    pub stale_evicted_bytes: u64,
     pub gpu_payload_stores: u64,
     pub cpu_payload_stores: u64,
     pub prepare_successes: u64,
@@ -179,17 +182,20 @@ impl RendererCacheKindStatsSnapshot {
     pub fn is_empty(&self) -> bool {
         self.candidates == 0
             && self.visible_candidates == 0
+            && self.suppressed_by_parent == 0
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
             && self.stores == 0
             && self.evictions == 0
+            && self.stale_evictions == 0
             && self.rejected == 0
             && self.current_entries == 0
             && self.current_bytes == 0
             && self.current_gpu_payloads == 0
             && self.current_cpu_payloads == 0
             && self.evicted_bytes == 0
+            && self.stale_evicted_bytes == 0
             && self.gpu_payload_stores == 0
             && self.cpu_payload_stores == 0
             && self.prepare_successes == 0
@@ -371,17 +377,20 @@ impl RendererCacheStatsWindow {
 struct RendererCacheKindStatsWindow {
     candidates: u64,
     visible_candidates: u64,
+    suppressed_by_parent: u64,
     admitted: u64,
     hits: u64,
     misses: u64,
     stores: u64,
     evictions: u64,
+    stale_evictions: u64,
     rejected: u64,
     current_entries: u64,
     current_bytes: u64,
     current_gpu_payloads: u64,
     current_cpu_payloads: u64,
     evicted_bytes: u64,
+    stale_evicted_bytes: u64,
     gpu_payload_stores: u64,
     cpu_payload_stores: u64,
     prepare_successes: u64,
@@ -401,17 +410,24 @@ impl RendererCacheKindStatsWindow {
         self.visible_candidates = self
             .visible_candidates
             .saturating_add(stats.visible_candidates);
+        self.suppressed_by_parent = self
+            .suppressed_by_parent
+            .saturating_add(stats.suppressed_by_parent);
         self.admitted = self.admitted.saturating_add(stats.admitted);
         self.hits = self.hits.saturating_add(stats.hits);
         self.misses = self.misses.saturating_add(stats.misses);
         self.stores = self.stores.saturating_add(stats.stores);
         self.evictions = self.evictions.saturating_add(stats.evictions);
+        self.stale_evictions = self.stale_evictions.saturating_add(stats.stale_evictions);
         self.rejected = self.rejected.saturating_add(stats.rejected);
         self.current_entries = stats.current_entries;
         self.current_bytes = stats.current_bytes;
         self.current_gpu_payloads = stats.current_gpu_payloads;
         self.current_cpu_payloads = stats.current_cpu_payloads;
         self.evicted_bytes = self.evicted_bytes.saturating_add(stats.evicted_bytes);
+        self.stale_evicted_bytes = self
+            .stale_evicted_bytes
+            .saturating_add(stats.stale_evicted_bytes);
         self.gpu_payload_stores = self
             .gpu_payload_stores
             .saturating_add(stats.gpu_payload_stores);
@@ -451,17 +467,20 @@ impl RendererCacheKindStatsWindow {
         RendererCacheKindStatsSnapshot {
             candidates: self.candidates,
             visible_candidates: self.visible_candidates,
+            suppressed_by_parent: self.suppressed_by_parent,
             admitted: self.admitted,
             hits: self.hits,
             misses: self.misses,
             stores: self.stores,
             evictions: self.evictions,
+            stale_evictions: self.stale_evictions,
             rejected: self.rejected,
             current_entries: self.current_entries,
             current_bytes: self.current_bytes,
             current_gpu_payloads: self.current_gpu_payloads,
             current_cpu_payloads: self.current_cpu_payloads,
             evicted_bytes: self.evicted_bytes,
+            stale_evicted_bytes: self.stale_evicted_bytes,
             gpu_payload_stores: self.gpu_payload_stores,
             cpu_payload_stores: self.cpu_payload_stores,
             prepare_successes: self.prepare_successes,
@@ -836,28 +855,42 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         message.push_str(&format_renderer_cache_kind_line(
             "noop",
             &snapshot.renderer_cache.noop,
+            snapshot.frame_count,
         ));
     }
     message.push_str(&format_renderer_cache_kind_line(
         "clean_subtree",
         &snapshot.renderer_cache.clean_subtree,
+        snapshot.frame_count,
     ));
 
     message
 }
 
-fn format_renderer_cache_kind_line(label: &str, stats: &RendererCacheKindStatsSnapshot) -> String {
+fn format_renderer_cache_kind_line(
+    label: &str,
+    stats: &RendererCacheKindStatsSnapshot,
+    frame_count: u64,
+) -> String {
     let unknown_payloads = stats.current_entries.saturating_sub(
         stats
             .current_gpu_payloads
             .saturating_add(stats.current_cpu_payloads),
     );
+    let per_frame = |count: u64| {
+        if frame_count == 0 {
+            0.0
+        } else {
+            count as f64 / frame_count as f64
+        }
+    };
     format!(
         concat!(
             "    {}\n",
-            "      activity: candidates={} visible={} admitted={} hits={} misses={} stores={} evictions={} rejected={}\n",
+            "      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
+            "      per_frame: candidates={:.2} visible={:.2} hits={:.2} misses={:.2} stores={:.2} rejected={:.2}\n",
             "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
-            "      store_payloads: gpu={} cpu={} evicted_bytes={}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
             "      prepare: success={} failure={} avg={:.3} ms count={}\n",
             "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
             "      hit_draw: avg={:.3} ms count={}\n"
@@ -865,12 +898,20 @@ fn format_renderer_cache_kind_line(label: &str, stats: &RendererCacheKindStatsSn
         label,
         stats.candidates,
         stats.visible_candidates,
+        stats.suppressed_by_parent,
         stats.admitted,
         stats.hits,
         stats.misses,
         stats.stores,
         stats.evictions,
+        stats.stale_evictions,
         stats.rejected,
+        per_frame(stats.candidates),
+        per_frame(stats.visible_candidates),
+        per_frame(stats.hits),
+        per_frame(stats.misses),
+        per_frame(stats.stores),
+        per_frame(stats.rejected),
         stats.current_entries,
         stats.current_bytes,
         stats.current_gpu_payloads,
@@ -879,6 +920,7 @@ fn format_renderer_cache_kind_line(label: &str, stats: &RendererCacheKindStatsSn
         stats.gpu_payload_stores,
         stats.cpu_payload_stores,
         stats.evicted_bytes,
+        stats.stale_evicted_bytes,
         stats.prepare_successes,
         stats.prepare_failures,
         stats.prepare.avg_ms,
@@ -957,9 +999,9 @@ fn format_renderer_cache_kind_frame_line(
     format!(
         concat!(
             "    {}\n",
-            "      activity: candidates={} visible={} admitted={} hits={} misses={} stores={} evictions={} rejected={}\n",
+            "      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
             "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
-            "      store_payloads: gpu={} cpu={} evicted_bytes={}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
             "      prepare: success={} failure={} time={:.3} ms\n",
             "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
             "      hit_draw: time={:.3} ms\n"
@@ -967,11 +1009,13 @@ fn format_renderer_cache_kind_frame_line(
         label,
         stats.candidates,
         stats.visible_candidates,
+        stats.suppressed_by_parent,
         stats.admitted,
         stats.hits,
         stats.misses,
         stats.stores,
         stats.evictions,
+        stats.stale_evictions,
         stats.rejected,
         stats.current_entries,
         stats.current_bytes,
@@ -981,6 +1025,7 @@ fn format_renderer_cache_kind_frame_line(
         stats.gpu_payload_stores,
         stats.cpu_payload_stores,
         stats.evicted_bytes,
+        stats.stale_evicted_bytes,
         stats.prepare_successes,
         stats.prepare_failures,
         duration_ms(stats.prepare_time),
@@ -1525,16 +1570,26 @@ mod tests {
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    noop\n"));
         assert!(message.contains(
-            "activity: candidates=3 visible=2 admitted=1 hits=1 misses=1 stores=1 evictions=0 rejected=1"
+            "activity: candidates=3 visible=2 suppressed_by_parent=0 admitted=1 hits=1 misses=1 stores=1 evictions=0 stale_evictions=0 rejected=1"
+        ));
+        assert!(message.contains(
+            "per_frame: candidates=3.00 visible=2.00 hits=1.00 misses=1.00 stores=1.00 rejected=1.00"
         ));
         assert!(message.contains("resident: entries=1 bytes=256 payloads={gpu=0 cpu=1 unknown=0}"));
-        assert!(message.contains("store_payloads: gpu=0 cpu=1 evicted_bytes=0"));
+        assert!(
+            message.contains("store_payloads: gpu=0 cpu=1 evicted_bytes=0 stale_evicted_bytes=0")
+        );
         assert!(message.contains("    clean_subtree\n"));
         assert!(message.contains(
-            "activity: candidates=5 visible=5 admitted=2 hits=0 misses=1 stores=1 evictions=1 rejected=1"
+            "activity: candidates=5 visible=5 suppressed_by_parent=0 admitted=2 hits=0 misses=1 stores=1 evictions=1 stale_evictions=0 rejected=1"
+        ));
+        assert!(message.contains(
+            "per_frame: candidates=5.00 visible=5.00 hits=0.00 misses=1.00 stores=1.00 rejected=1.00"
         ));
         assert!(message.contains("resident: entries=1 bytes=512 payloads={gpu=1 cpu=0 unknown=0}"));
-        assert!(message.contains("store_payloads: gpu=1 cpu=0 evicted_bytes=128"));
+        assert!(
+            message.contains("store_payloads: gpu=1 cpu=0 evicted_bytes=128 stale_evicted_bytes=0")
+        );
         assert!(message.contains("prepare: success=1 failure=0 avg=0.050 ms count=1"));
         assert!(message.contains("prepare: success=1 failure=0 avg=0.040 ms count=1"));
         assert!(message.contains(
@@ -1554,7 +1609,7 @@ mod tests {
         assert!(message.contains("    clean_subtree\n"));
         assert!(
             message
-                .contains("activity: candidates=0 visible=0 admitted=0 hits=0 misses=0 stores=0")
+                .contains("activity: candidates=0 visible=0 suppressed_by_parent=0 admitted=0 hits=0 misses=0 stores=0")
         );
         assert!(!message.contains("    noop\n"));
     }
@@ -1733,7 +1788,7 @@ mod tests {
         assert!(message.contains("    clean_subtree\n"));
         assert!(
             message
-                .contains("activity: candidates=1 visible=1 admitted=1 hits=1 misses=0 stores=0")
+                .contains("activity: candidates=1 visible=1 suppressed_by_parent=0 admitted=1 hits=1 misses=0 stores=0")
         );
         assert!(
             message.contains("resident: entries=1 bytes=4096 payloads={gpu=1 cpu=0 unknown=0}")

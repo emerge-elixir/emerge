@@ -96,6 +96,7 @@ struct WaylandAppRuntime {
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
+    renderer_animation_log: bool,
     renderer_cache_config: RendererCacheConfig,
     native_log: Arc<NativeLogRelay>,
     render_rx: Receiver<RenderMsg>,
@@ -113,6 +114,7 @@ pub(crate) struct WaylandRunArgs {
     pub close_signal_log: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
+    pub renderer_animation_log: bool,
     pub renderer_cache_config: RendererCacheConfig,
     pub native_log: Arc<NativeLogRelay>,
     pub render_rx: Receiver<RenderMsg>,
@@ -243,6 +245,7 @@ pub(super) struct WaylandApp {
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
+    renderer_animation_log: bool,
     renderer_cache_config: RendererCacheConfig,
     native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
@@ -285,6 +288,7 @@ impl WaylandApp {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_animation_log,
             renderer_cache_config,
             native_log,
             render_rx,
@@ -318,6 +322,7 @@ impl WaylandApp {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_animation_log,
             renderer_cache_config,
             native_log,
             video_registry,
@@ -438,7 +443,7 @@ impl WaylandApp {
                         pipeline_submitted_at.is_some(),
                         animate,
                     );
-                    if self.renderer_stats_log && (animate || animation_trace.is_some()) {
+                    if self.renderer_animation_log && (animate || animation_trace.is_some()) {
                         self.native_log.info(
                             "renderer_animation",
                             format_animation_scene_log(
@@ -626,7 +631,7 @@ impl WaylandApp {
 
         let present_submit = present_submit_started_at.elapsed();
         let swap_done_at = std::time::Instant::now();
-        if self.renderer_stats_log && (self.render_state.animate || animation_trace.is_some()) {
+        if self.renderer_animation_log && (self.render_state.animate || animation_trace.is_some()) {
             self.native_log.info(
                 "renderer_animation",
                 format_animation_draw_log(AnimationDrawLogInput {
@@ -781,7 +786,7 @@ impl WaylandApp {
             sequence: self.animation_pulse_sequence,
             sent_at: std::time::Instant::now(),
         };
-        if self.renderer_stats_log {
+        if self.renderer_animation_log {
             self.native_log.info(
                 "renderer_animation",
                 format_animation_pulse_log(
@@ -1079,7 +1084,7 @@ impl CompositorHandler for WaylandApp {
         }
         let previous_estimated_interval = self.present.estimated_frame_interval();
         self.present.frame_callback_received(received_at, time);
-        if self.renderer_stats_log && self.render_state.animate {
+        if self.renderer_animation_log && self.render_state.animate {
             self.native_log.info(
                 "renderer_animation",
                 format_animation_frame_callback_log(
@@ -1453,6 +1458,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         close_signal_log,
         stats,
         renderer_stats_log,
+        renderer_animation_log,
         renderer_cache_config,
         native_log,
         render_rx,
@@ -1549,6 +1555,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_animation_log,
             renderer_cache_config,
             native_log,
             render_rx,

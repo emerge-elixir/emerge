@@ -103,6 +103,7 @@ defmodule EmergeSkia.Native do
           required(:close_signal_log) => boolean(),
           required(:stats_enabled) => boolean(),
           required(:renderer_stats_log) => boolean(),
+          required(:renderer_animation_log) => boolean(),
           required(:renderer_cache) => %{
             required(:max_new_payloads_per_frame) => non_neg_integer(),
             required(:clean_subtree) => %{
@@ -297,17 +298,20 @@ defmodule EmergeSkia.Native do
   @type renderer_cache_kind_stats :: %{
           required(:candidates) => non_neg_integer(),
           required(:visible_candidates) => non_neg_integer(),
+          required(:suppressed_by_parent) => non_neg_integer(),
           required(:admitted) => non_neg_integer(),
           required(:hits) => non_neg_integer(),
           required(:misses) => non_neg_integer(),
           required(:stores) => non_neg_integer(),
           required(:evictions) => non_neg_integer(),
+          required(:stale_evictions) => non_neg_integer(),
           required(:rejected) => non_neg_integer(),
           required(:current_entries) => non_neg_integer(),
           required(:current_bytes) => non_neg_integer(),
           required(:current_gpu_payloads) => non_neg_integer(),
           required(:current_cpu_payloads) => non_neg_integer(),
           required(:evicted_bytes) => non_neg_integer(),
+          required(:stale_evicted_bytes) => non_neg_integer(),
           required(:prepare) => duration_stats(),
           required(:draw_hit) => duration_stats()
         }
