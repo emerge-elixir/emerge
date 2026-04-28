@@ -12,6 +12,7 @@ use std::path::PathBuf;
 pub const TEXT_ROW_COUNT: usize = 500;
 pub const CARD_COUNT: usize = 160;
 pub const SHADOW_RECIPE_CARD_COUNT: usize = 84;
+pub const SCROLL_VIEWPORT_ROW_COUNT: usize = 2_000;
 
 pub struct FixtureScenario {
     pub id: String,
@@ -315,6 +316,256 @@ pub fn nested_card_grid(card_count: usize) -> ElementTree {
     tree.set_children(&root_id, card_ids)
         .expect("root children should exist");
     tree
+}
+
+pub fn large_simple_scroll_column(row_count: usize) -> ElementTree {
+    large_scroll_column(row_count, ScrollViewportRowStyle::Simple)
+}
+
+pub fn large_paint_rich_scroll_column(row_count: usize) -> ElementTree {
+    large_scroll_column(row_count, ScrollViewportRowStyle::PaintRich)
+}
+
+#[derive(Clone, Copy)]
+enum ScrollViewportRowStyle {
+    Simple,
+    PaintRich,
+}
+
+fn large_scroll_column(row_count: usize, style: ScrollViewportRowStyle) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(9_000_000);
+    let content_id = NodeId::from_u64(9_000_001);
+    tree.set_root_id(root_id);
+
+    let root_attrs = Attrs {
+        width: Some(Length::Px(900.0)),
+        height: Some(Length::Px(640.0)),
+        scrollbar_y: Some(true),
+        background: Some(Background::Color(Color::Rgb {
+            r: 244,
+            g: 246,
+            b: 250,
+        })),
+        ..Default::default()
+    };
+    let content_attrs = Attrs {
+        width: Some(Length::Fill),
+        padding: Some(Padding::Uniform(10.0)),
+        spacing: Some(match style {
+            ScrollViewportRowStyle::Simple => 2.0,
+            ScrollViewportRowStyle::PaintRich => 8.0,
+        }),
+        ..Default::default()
+    };
+
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::El,
+        Vec::new(),
+        root_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        content_id,
+        ElementKind::Column,
+        Vec::new(),
+        content_attrs,
+    ));
+
+    let row_ids: Vec<_> = (0..row_count)
+        .map(|index| match style {
+            ScrollViewportRowStyle::Simple => insert_simple_scroll_row(&mut tree, index),
+            ScrollViewportRowStyle::PaintRich => insert_paint_rich_scroll_row(&mut tree, index),
+        })
+        .collect();
+
+    tree.set_children(&content_id, row_ids)
+        .expect("scroll content children should exist");
+    tree.set_children(&root_id, vec![content_id])
+        .expect("scroll root child should exist");
+    tree
+}
+
+fn insert_simple_scroll_row(tree: &mut ElementTree, index: usize) -> NodeId {
+    let base = 9_100_000 + index as u64 * 10;
+    let row_id = NodeId::from_u64(base);
+    let text_id = NodeId::from_u64(base + 1);
+
+    let row_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Px(34.0)),
+        padding: Some(Padding::Sides {
+            top: 6.0,
+            right: 10.0,
+            bottom: 6.0,
+            left: 10.0,
+        }),
+        background: Some(Background::Color(if index.is_multiple_of(2) {
+            Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            }
+        } else {
+            Color::Rgb {
+                r: 238,
+                g: 242,
+                b: 247,
+            }
+        })),
+        ..Default::default()
+    };
+    let text_attrs = Attrs {
+        content: Some(format!("Viewport row {index:04}")),
+        font_size: Some(14.0),
+        font_color: Some(Color::Rgb {
+            r: 31,
+            g: 41,
+            b: 55,
+        }),
+        ..Default::default()
+    };
+
+    tree.insert(Element::with_attrs(
+        row_id,
+        ElementKind::El,
+        Vec::new(),
+        row_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        text_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs,
+    ));
+    tree.set_children(&row_id, vec![text_id])
+        .expect("simple row child should exist");
+    row_id
+}
+
+fn insert_paint_rich_scroll_row(tree: &mut ElementTree, index: usize) -> NodeId {
+    let base = 9_500_000 + index as u64 * 20;
+    let row_id = NodeId::from_u64(base);
+    let header_id = NodeId::from_u64(base + 1);
+    let title_id = NodeId::from_u64(base + 2);
+    let badge_id = NodeId::from_u64(base + 3);
+    let detail_id = NodeId::from_u64(base + 4);
+
+    let hue = (index % 5) as u8;
+    let row_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Px(82.0)),
+        padding: Some(Padding::Uniform(10.0)),
+        spacing: Some(5.0),
+        background: Some(Background::Gradient {
+            from: Color::Rgb {
+                r: 246,
+                g: 249,
+                b: 255,
+            },
+            to: Color::Rgb {
+                r: 232,
+                g: 238 + hue,
+                b: 248,
+            },
+            angle: 18.0,
+        }),
+        border_radius: Some(BorderRadius::Uniform(10.0)),
+        border_width: Some(BorderWidth::Uniform(1.0)),
+        border_color: Some(Color::Rgb {
+            r: 205,
+            g: 214,
+            b: 228,
+        }),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 3.0,
+            blur: 10.0,
+            size: 0.0,
+            color: Color::Rgba {
+                r: 15,
+                g: 23,
+                b: 42,
+                a: 32,
+            },
+            inset: false,
+        }]),
+        ..Default::default()
+    };
+    let header_attrs = Attrs {
+        width: Some(Length::Fill),
+        spacing: Some(6.0),
+        ..Default::default()
+    };
+    let title_attrs = Attrs {
+        content: Some(format!("Paint rich viewport row {index:04}")),
+        font_size: Some(15.0),
+        font_color: Some(Color::Rgb {
+            r: 17,
+            g: 24,
+            b: 39,
+        }),
+        ..Default::default()
+    };
+    let badge_attrs = Attrs {
+        content: Some(format!("cache {}", index % 17)),
+        font_size: Some(12.0),
+        font_color: Some(Color::Rgb {
+            r: 79,
+            g: 70,
+            b: 229,
+        }),
+        ..Default::default()
+    };
+    let detail_attrs = Attrs {
+        content: Some(
+            "Extra paint-rich row copy with enough text to exercise clipping and text draw setup."
+                .to_string(),
+        ),
+        font_size: Some(12.0),
+        font_color: Some(Color::Rgb {
+            r: 75,
+            g: 85,
+            b: 99,
+        }),
+        ..Default::default()
+    };
+
+    tree.insert(Element::with_attrs(
+        row_id,
+        ElementKind::Column,
+        Vec::new(),
+        row_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        header_id,
+        ElementKind::Row,
+        Vec::new(),
+        header_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        title_id,
+        ElementKind::Text,
+        Vec::new(),
+        title_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        badge_id,
+        ElementKind::Text,
+        Vec::new(),
+        badge_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        detail_id,
+        ElementKind::Text,
+        Vec::new(),
+        detail_attrs,
+    ));
+    tree.set_children(&header_id, vec![title_id, badge_id])
+        .expect("paint rich row header children should exist");
+    tree.set_children(&row_id, vec![header_id, detail_id])
+        .expect("paint rich row children should exist");
+    row_id
 }
 
 pub fn scrollable_animated_shadow_showcase() -> ElementTree {

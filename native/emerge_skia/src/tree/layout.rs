@@ -5018,6 +5018,20 @@ pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
     refresh_from_render_output(tree, render_output)
 }
 
+#[doc(hidden)]
+pub fn refresh_render_scene_cached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
+    let render_output = render_tree_scene_cached(tree);
+    tree.clear_render_refresh_dirty();
+    render_output.scene
+}
+
+#[doc(hidden)]
+pub fn refresh_render_scene_uncached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
+    let render_output = render_tree_scene(tree);
+    tree.clear_render_refresh_dirty();
+    render_output.scene
+}
+
 fn refresh_from_render_output(
     tree: &mut ElementTree,
     render_output: super::render::RenderSceneOutput,

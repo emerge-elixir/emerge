@@ -1,18 +1,28 @@
 # Plans
 
-Last updated: 2026-04-28.
+Last updated: 2026-04-29.
 
 This directory tracks current implementation notes plus the background
 investigations that led to the current native layout and renderer work. Files
 with an `active-` prefix are reserved for currently open implementation slices.
-`active-render-cache-children-plan.md` is now implemented and retained as the
-most recent active-plan record until the next cleanup pass.
+`active-scroll-viewport-culling-plan.md` is the current active implementation
+plan. `active-render-cache-children-plan.md` is implemented and retained as the
+most recent completed active-plan record until the next cleanup pass.
 
 ## Files
 
+### `active-scroll-viewport-culling-plan.md`
+
+Current active plan for the scroll viewport traversal performance slice.
+
+It now records the implemented benchmark-first shared viewport participation
+gate for render traversal and event-registry traversal. The remaining active
+work is focused exception auditing, direct regression tests for offscreen
+pointer/focus/text-input behavior, and live-demo validation.
+
 ### `active-render-cache-children-plan.md`
 
-The most recent renderer-cache implementation plan.
+The most recent completed renderer-cache implementation plan.
 
 It records the implemented Flutter-inspired cache slice: parent/child cache
 accounting, stale-entry lifecycle, and the benchmark-gated decision not to add a

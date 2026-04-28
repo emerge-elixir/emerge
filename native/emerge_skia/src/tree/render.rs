@@ -27,6 +27,9 @@ use super::scene::{
     ResolvedNodeState, SceneContext, child_context as next_scene_context, resolve_node_state,
 };
 use super::transform::{Affine2, element_transform};
+use super::viewport_culling::{
+    should_skip_render_viewport_subtree, should_skip_resolved_viewport_subtree,
+};
 #[cfg(test)]
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{
@@ -47,6 +50,66 @@ thread_local! {
     static RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
+thread_local! {
+    static RENDER_TRAVERSAL_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static RENDER_TRAVERSAL_DIAGNOSTICS: Cell<RenderTraversalDiagnostics> = const {
+        Cell::new(RenderTraversalDiagnostics::empty())
+    };
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderTraversalDiagnostics {
+    pub element_visits: u64,
+    pub culled_subtrees: u64,
+    pub render_subtree_cache_lookup_key_builds: u64,
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+impl RenderTraversalDiagnostics {
+    const fn empty() -> Self {
+        Self {
+            element_visits: 0,
+            culled_subtrees: 0,
+            render_subtree_cache_lookup_key_builds: 0,
+        }
+    }
+
+    fn with_element_visit(mut self) -> Self {
+        self.element_visits = self.element_visits.saturating_add(1);
+        self
+    }
+
+    fn with_culled_subtree(mut self) -> Self {
+        self.culled_subtrees = self.culled_subtrees.saturating_add(1);
+        self
+    }
+
+    fn with_render_subtree_cache_lookup_key_build(mut self) -> Self {
+        self.render_subtree_cache_lookup_key_builds = self
+            .render_subtree_cache_lookup_key_builds
+            .saturating_add(1);
+        self
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn reset_render_traversal_diagnostics_for_benchmark() {
+    RENDER_TRAVERSAL_DIAGNOSTICS.with(|diagnostics| {
+        diagnostics.set(RenderTraversalDiagnostics::empty());
+    });
+    RENDER_TRAVERSAL_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn take_render_traversal_diagnostics_for_benchmark() -> RenderTraversalDiagnostics {
+    RENDER_TRAVERSAL_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(false));
+    RENDER_TRAVERSAL_DIAGNOSTICS.with(Cell::get)
+}
+
 #[cfg(test)]
 pub(crate) fn reset_render_subtree_cache_lookup_key_builds() {
     RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS.with(|builds| builds.set(0));
@@ -58,8 +121,53 @@ pub(crate) fn render_subtree_cache_lookup_key_builds() -> usize {
 }
 
 #[cfg(test)]
-fn record_render_subtree_cache_lookup_key_build() {
+fn record_render_subtree_cache_lookup_key_build_for_test() {
     RENDER_SUBTREE_CACHE_LOOKUP_KEY_BUILDS.with(|builds| builds.set(builds.get() + 1));
+}
+
+#[cfg(not(test))]
+fn record_render_subtree_cache_lookup_key_build_for_test() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn update_render_traversal_diagnostics(
+    update: impl FnOnce(RenderTraversalDiagnostics) -> RenderTraversalDiagnostics,
+) {
+    RENDER_TRAVERSAL_DIAGNOSTICS_ENABLED.with(|enabled| {
+        if enabled.get() {
+            RENDER_TRAVERSAL_DIAGNOSTICS.with(|diagnostics| {
+                diagnostics.set(update(diagnostics.get()));
+            });
+        }
+    });
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_render_traversal_element_visit() {
+    update_render_traversal_diagnostics(RenderTraversalDiagnostics::with_element_visit);
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_render_traversal_element_visit() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_render_traversal_culled_subtree() {
+    update_render_traversal_diagnostics(RenderTraversalDiagnostics::with_culled_subtree);
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_render_traversal_culled_subtree() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_render_subtree_cache_lookup_key_build() {
+    record_render_subtree_cache_lookup_key_build_for_test();
+    update_render_traversal_diagnostics(
+        RenderTraversalDiagnostics::with_render_subtree_cache_lookup_key_build,
+    );
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_render_subtree_cache_lookup_key_build() {
+    record_render_subtree_cache_lookup_key_build_for_test();
 }
 
 #[cfg(test)]
@@ -382,6 +490,7 @@ fn build_element_subtree(
     let Some(frame) = element.layout.frame else {
         return RenderSubtree::default();
     };
+    record_render_traversal_element_visit();
 
     let attrs = &element.layout.effective;
     let radius = attrs.border_radius.as_ref();
@@ -496,13 +605,13 @@ fn build_element_subtree_cached(
     let Some(frame) = element.layout.frame else {
         return RenderSubtree::default();
     };
+    record_render_traversal_element_visit();
 
     let render_damage = element.refresh.render_dirty || element.refresh.render_descendant_dirty;
     let has_existing_cache = tree
         .get_ix(ix)
         .is_some_and(|element| element.refresh.render_cache.is_some());
     let lookup_key = if !render_damage && has_existing_cache {
-        #[cfg(test)]
         record_render_subtree_cache_lookup_key_build();
         Some(render_subtree_key(
             tree, ix, &element, inherited, &traversal,
@@ -988,56 +1097,24 @@ fn should_cull_render_subtree(
     transform: Affine2,
     scene_ctx: &SceneContext,
 ) -> bool {
-    let inherited_clip = if scene_ctx.front_nearby_subtree {
-        scene_ctx.nearby_visible_clip
-    } else {
-        scene_ctx.visible_clip
-    };
-    let Some(clip) = inherited_clip else {
-        return false;
-    };
-
-    let visual_bounds = transform.map_rect_aabb(render_visual_bounds(render_frame, attrs));
-    visual_bounds.intersect(clip.rect).is_none() && !tree.has_nearby_mounts_ix(ix)
-}
-
-fn render_visual_bounds(frame: Frame, attrs: &Attrs) -> Rect {
-    let rect = Rect::from_frame(frame);
-    attrs
-        .box_shadows
-        .as_deref()
-        .into_iter()
-        .flatten()
-        .filter(|shadow| !shadow.inset)
-        .fold(rect, |bounds, shadow| {
-            let offset_x = shadow.offset_x as f32;
-            let offset_y = shadow.offset_y as f32;
-            let blur = shadow.blur.abs() as f32;
-            let spread = shadow.size.abs() as f32;
-            let pad = blur * 2.0 + spread;
-            union_rect(
-                bounds,
-                Rect {
-                    x: rect.x + offset_x - pad,
-                    y: rect.y + offset_y - pad,
-                    width: rect.width + pad * 2.0,
-                    height: rect.height + pad * 2.0,
-                },
-            )
-        })
-}
-
-fn union_rect(a: Rect, b: Rect) -> Rect {
-    let min_x = a.x.min(b.x);
-    let min_y = a.y.min(b.y);
-    let max_x = (a.x + a.width).max(b.x + b.width);
-    let max_y = (a.y + a.height).max(b.y + b.height);
-    Rect {
-        x: min_x,
-        y: min_y,
-        width: max_x - min_x,
-        height: max_y - min_y,
+    let culled =
+        should_skip_resolved_viewport_subtree(tree, ix, attrs, render_frame, transform, scene_ctx);
+    if culled {
+        record_render_traversal_culled_subtree();
     }
+    culled
+}
+
+fn should_skip_render_child_subtree(
+    tree: &ElementTree,
+    child_ix: NodeIx,
+    scene_ctx: &SceneContext,
+) -> bool {
+    let culled = should_skip_render_viewport_subtree(tree, child_ix, scene_ctx);
+    if culled {
+        record_render_traversal_culled_subtree();
+    }
+    culled
 }
 
 fn render_node_count(nodes: &[RenderNode]) -> usize {
@@ -1231,6 +1308,9 @@ fn build_host_content_subtree_cached(
                     subtree.extend_local(branch_subtree);
                 }
                 RetainedLocalBranchRef::Child(child) => {
+                    if should_skip_render_child_subtree(tree, child.ix, &child_scene_ctx) {
+                        continue;
+                    }
                     let branch_subtree = build_element_subtree_cached(
                         tree,
                         child.ix,
@@ -1350,6 +1430,9 @@ fn build_paragraph_subtree_cached(
     for child in children {
         match child.mode {
             RetainedChildMode::Scope => {
+                if should_skip_render_child_subtree(tree, child.ix, &child_scene_ctx) {
+                    continue;
+                }
                 let child_subtree = build_element_subtree_cached(
                     tree,
                     child.ix,
@@ -1477,21 +1560,22 @@ fn build_host_content_subtree(
                 subtree.extend_local(branch_subtree);
             }
             RetainedLocalBranchRef::Child(child) => {
+                let child_scene_ctx = scene_state
+                    .clone()
+                    .map(|state| {
+                        next_scene_context(state, super::element::RetainedPaintPhase::Children)
+                    })
+                    .unwrap_or_default();
+                if should_skip_render_child_subtree(tree, child.ix, &child_scene_ctx) {
+                    return;
+                }
                 let branch_subtree = build_element_subtree(
                     tree,
                     child.ix,
                     element_context,
                     &mut outputs.reborrow(),
                     RenderTraversal {
-                        scene_ctx: scene_state
-                            .clone()
-                            .map(|state| {
-                                next_scene_context(
-                                    state,
-                                    super::element::RetainedPaintPhase::Children,
-                                )
-                            })
-                            .unwrap_or_default(),
+                        scene_ctx: child_scene_ctx,
                         render_ctx: &child_render_ctx,
                         cache_store_budget: traversal.cache_store_budget,
                     },
@@ -1604,6 +1688,9 @@ fn build_paragraph_subtree(
     let mut subtree = RenderSubtree::default();
     element.for_each_retained_child(tree, |child| match child.mode {
         RetainedChildMode::Scope => {
+            if should_skip_render_child_subtree(tree, child.ix, &child_scene_ctx) {
+                return;
+            }
             let child_subtree = build_element_subtree(
                 tree,
                 child.ix,

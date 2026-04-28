@@ -80,6 +80,95 @@ fn build_nested_child_tree(
     tree
 }
 
+fn build_manual_scroll_row_tree(row_count: usize) -> ElementTree {
+    let root_id = NodeId::from_u64(800_000);
+    let content_id = NodeId::from_u64(800_001);
+    let row_height = 10.0;
+
+    let mut root_attrs = solid_fill_attrs((240, 240, 240));
+    root_attrs.scrollbar_y = Some(true);
+    root_attrs.scroll_y = Some(500.0);
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.layout.scroll_y = 500.0;
+    root.layout.scroll_y_max = 1_000.0;
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 50.0,
+        content_width: 100.0,
+        content_height: row_count as f32 * row_height,
+    });
+    root.children = vec![content_id];
+
+    let mut content = Element::with_attrs(
+        content_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs::default(),
+    );
+    content.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: row_count as f32 * row_height,
+        content_width: 100.0,
+        content_height: row_count as f32 * row_height,
+    });
+
+    let row_ids: Vec<_> = (0..row_count)
+        .map(|index| NodeId::from_u64(801_000 + index as u64))
+        .collect();
+    content.children = row_ids.clone();
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(content);
+    for (index, row_id) in row_ids.into_iter().enumerate() {
+        let mut row = Element::with_attrs(
+            row_id,
+            ElementKind::El,
+            Vec::new(),
+            solid_fill_attrs((255, 255, 255)),
+        );
+        row.layout.frame = Some(Frame {
+            x: 0.0,
+            y: index as f32 * row_height,
+            width: 100.0,
+            height: row_height,
+            content_width: 100.0,
+            content_height: row_height,
+        });
+        tree.insert(row);
+    }
+    tree
+}
+
+#[test]
+fn test_scroll_viewport_culling_skips_offscreen_child_roots_before_render_visit() {
+    let tree = build_manual_scroll_row_tree(120);
+
+    super::super::reset_render_traversal_diagnostics_for_benchmark();
+    let output = super::super::render_tree_scene(&tree);
+    let diagnostics = super::super::take_render_traversal_diagnostics_for_benchmark();
+
+    assert!(
+        diagnostics.element_visits < 20,
+        "expected only visible row roots to be visited, got {:?}",
+        diagnostics
+    );
+    assert!(
+        diagnostics.culled_subtrees > 100,
+        "expected offscreen rows to be culled before traversal, got {:?}",
+        diagnostics
+    );
+    assert!(
+        !output.scene.nodes.is_empty(),
+        "visible rows should still produce a scene"
+    );
+}
+
 #[test]
 fn test_render_skips_child_fully_outside_inherited_clip() {
     let tree = build_tree_with_child_frame(

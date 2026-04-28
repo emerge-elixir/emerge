@@ -18,15 +18,22 @@ use emerge_skia::tree::layout::{
     Constraint, layout_and_refresh_default, layout_and_refresh_default_uncached_for_benchmark,
     layout_and_refresh_default_with_animation, layout_or_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_uncached_for_benchmark, layout_tree,
-    layout_tree_default, refresh, refresh_reusing_clean_registry_for_benchmark,
+    layout_tree_default, refresh, refresh_render_scene_cached_for_benchmark,
+    refresh_render_scene_uncached_for_benchmark, refresh_reusing_clean_registry_for_benchmark,
     refresh_uncached_reusing_clean_registry_for_benchmark,
 };
 use emerge_skia::tree::patch::{Patch, apply_patches, decode_patches};
+#[cfg(feature = "bench-diagnostics")]
+use emerge_skia::tree::render::{
+    reset_render_traversal_diagnostics_for_benchmark,
+    take_render_traversal_diagnostics_for_benchmark,
+};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 use support::{
-    CARD_COUNT, MockTextMeasurer, TEXT_ROW_COUNT, animated_shadow_showcase, large_text_column,
-    load_fixture, nested_card_grid, scrollable_animated_shadow_showcase,
+    CARD_COUNT, MockTextMeasurer, SCROLL_VIEWPORT_ROW_COUNT, TEXT_ROW_COUNT,
+    animated_shadow_showcase, large_paint_rich_scroll_column, large_simple_scroll_column,
+    large_text_column, load_fixture, nested_card_grid, scrollable_animated_shadow_showcase,
 };
 
 const RETAINED_FIXTURE_IDS: &[&str] = &[
@@ -405,6 +412,290 @@ fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
     });
 
     group.finish();
+}
+
+fn bench_scroll_viewport_culling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/scroll_viewport_culling");
+    let constraint = Constraint::new(900.0, 640.0);
+    let cases = [
+        ScrollViewportCase {
+            name: "large_column_simple_rows",
+            make_tree: simple_scroll_viewport_tree,
+        },
+        ScrollViewportCase {
+            name: "large_column_paint_rich_rows",
+            make_tree: paint_rich_scroll_viewport_tree,
+        },
+    ];
+
+    for case in cases {
+        let node_count = (case.make_tree)().len() as u64;
+        group.throughput(Throughput::Elements(node_count));
+        log_scroll_viewport_case_diagnostics(case, constraint);
+        bench_scroll_viewport_case(&mut group, case, constraint);
+    }
+
+    group.finish();
+}
+
+#[derive(Clone, Copy)]
+struct ScrollViewportCase {
+    name: &'static str,
+    make_tree: fn() -> ElementTree,
+}
+
+#[derive(Clone, Copy)]
+enum ScrollViewportPosition {
+    Top,
+    Middle,
+}
+
+fn simple_scroll_viewport_tree() -> ElementTree {
+    large_simple_scroll_column(SCROLL_VIEWPORT_ROW_COUNT)
+}
+
+fn paint_rich_scroll_viewport_tree() -> ElementTree {
+    large_paint_rich_scroll_column(SCROLL_VIEWPORT_ROW_COUNT)
+}
+
+fn bench_scroll_viewport_case(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: ScrollViewportCase,
+    constraint: Constraint,
+) {
+    let (mut top_tree, top_cached_rebuild, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Top);
+    group.bench_function(format!("{}/top_cached_refresh", case.name), move |b| {
+        b.iter(|| {
+            let output = refresh_reusing_clean_registry_for_benchmark(
+                &mut top_tree,
+                Some(&top_cached_rebuild),
+            );
+            consume_layout_output(output)
+        });
+    });
+
+    let (mut middle_tree, middle_cached_rebuild, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    group.bench_function(format!("{}/middle_cached_refresh", case.name), move |b| {
+        b.iter(|| {
+            let output = refresh_reusing_clean_registry_for_benchmark(
+                &mut middle_tree,
+                Some(&middle_cached_rebuild),
+            );
+            consume_layout_output(output)
+        });
+    });
+
+    let (mut uncached_middle_tree, uncached_middle_rebuild, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    group.bench_function(format!("{}/middle_uncached_refresh", case.name), move |b| {
+        b.iter(|| {
+            let output = refresh_uncached_reusing_clean_registry_for_benchmark(
+                &mut uncached_middle_tree,
+                Some(&uncached_middle_rebuild),
+            );
+            consume_layout_output(output)
+        });
+    });
+
+    let (mut render_only_middle_tree, _, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    group.bench_function(
+        format!("{}/middle_render_only_cached", case.name),
+        move |b| {
+            b.iter(|| {
+                let scene = refresh_render_scene_cached_for_benchmark(&mut render_only_middle_tree);
+                consume_render_scene(scene)
+            });
+        },
+    );
+
+    let (mut render_only_uncached_middle_tree, _, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    group.bench_function(
+        format!("{}/middle_render_only_uncached", case.name),
+        move |b| {
+            b.iter(|| {
+                let scene = refresh_render_scene_uncached_for_benchmark(
+                    &mut render_only_uncached_middle_tree,
+                );
+                consume_render_scene(scene)
+            });
+        },
+    );
+
+    let (mut step_tree, mut step_cached_rebuild, step_root_id) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    let mut step_tick = 0_u64;
+    group.bench_function(
+        format!("{}/scroll_step_cached_refresh", case.name),
+        move |b| {
+            b.iter(|| {
+                step_tick = step_tick.saturating_add(1);
+                let delta = if step_tick.is_multiple_of(2) {
+                    -24.0
+                } else {
+                    24.0
+                };
+                black_box(step_tree.apply_scroll_y(&step_root_id, delta));
+                let output = refresh_reusing_clean_registry_for_benchmark(
+                    &mut step_tree,
+                    Some(&step_cached_rebuild),
+                );
+                if output.event_rebuild_changed {
+                    step_cached_rebuild = output.event_rebuild.clone();
+                }
+                consume_layout_output(output)
+            });
+        },
+    );
+
+    let (mut render_only_step_tree, _, render_only_step_root_id) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    let mut render_only_step_tick = 0_u64;
+    group.bench_function(
+        format!("{}/scroll_step_render_only_cached", case.name),
+        move |b| {
+            b.iter(|| {
+                render_only_step_tick = render_only_step_tick.saturating_add(1);
+                let delta = if render_only_step_tick.is_multiple_of(2) {
+                    -24.0
+                } else {
+                    24.0
+                };
+                black_box(render_only_step_tree.apply_scroll_y(&render_only_step_root_id, delta));
+                let scene = refresh_render_scene_cached_for_benchmark(&mut render_only_step_tree);
+                consume_render_scene(scene)
+            });
+        },
+    );
+
+    let (mut render_only_uncached_step_tree, _, render_only_uncached_step_root_id) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    let mut render_only_uncached_step_tick = 0_u64;
+    group.bench_function(
+        format!("{}/scroll_step_render_only_uncached", case.name),
+        move |b| {
+            b.iter(|| {
+                render_only_uncached_step_tick = render_only_uncached_step_tick.saturating_add(1);
+                let delta = if render_only_uncached_step_tick.is_multiple_of(2) {
+                    -24.0
+                } else {
+                    24.0
+                };
+                black_box(
+                    render_only_uncached_step_tree
+                        .apply_scroll_y(&render_only_uncached_step_root_id, delta),
+                );
+                let scene = refresh_render_scene_uncached_for_benchmark(
+                    &mut render_only_uncached_step_tree,
+                );
+                consume_render_scene(scene)
+            });
+        },
+    );
+
+    let (mut uncached_step_tree, mut uncached_step_rebuild, uncached_step_root_id) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    let mut uncached_step_tick = 0_u64;
+    group.bench_function(
+        format!("{}/scroll_step_uncached_refresh", case.name),
+        move |b| {
+            b.iter(|| {
+                uncached_step_tick = uncached_step_tick.saturating_add(1);
+                let delta = if uncached_step_tick.is_multiple_of(2) {
+                    -24.0
+                } else {
+                    24.0
+                };
+                black_box(uncached_step_tree.apply_scroll_y(&uncached_step_root_id, delta));
+                let output = refresh_uncached_reusing_clean_registry_for_benchmark(
+                    &mut uncached_step_tree,
+                    Some(&uncached_step_rebuild),
+                );
+                if output.event_rebuild_changed {
+                    uncached_step_rebuild = output.event_rebuild.clone();
+                }
+                consume_layout_output(output)
+            });
+        },
+    );
+}
+
+fn prepare_scroll_viewport_tree(
+    make_tree: fn() -> ElementTree,
+    constraint: Constraint,
+    position: ScrollViewportPosition,
+) -> (ElementTree, RegistryRebuildPayload, NodeId) {
+    let mut tree = make_tree();
+    let root_id = tree
+        .root_id()
+        .expect("scroll viewport benchmark tree should have a root");
+    let mut output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    match position {
+        ScrollViewportPosition::Top => {}
+        ScrollViewportPosition::Middle => {
+            black_box(tree.apply_scroll_y(&root_id, -40_000.0));
+            output = refresh_reusing_clean_registry_for_benchmark(
+                &mut tree,
+                Some(&output.event_rebuild),
+            );
+        }
+    }
+
+    (tree, output.event_rebuild, root_id)
+}
+
+fn log_scroll_viewport_case_diagnostics(case: ScrollViewportCase, constraint: Constraint) {
+    let (mut top_tree, top_cached_rebuild, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Top);
+    sample_scroll_viewport_refresh_diagnostics(
+        &format!("{}/top", case.name),
+        &mut top_tree,
+        &top_cached_rebuild,
+    );
+
+    let (mut middle_tree, middle_cached_rebuild, _) =
+        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
+    sample_scroll_viewport_refresh_diagnostics(
+        &format!("{}/middle", case.name),
+        &mut middle_tree,
+        &middle_cached_rebuild,
+    );
+}
+
+#[cfg(feature = "bench-diagnostics")]
+fn sample_scroll_viewport_refresh_diagnostics(
+    label: &str,
+    tree: &mut ElementTree,
+    cached_rebuild: &RegistryRebuildPayload,
+) {
+    reset_render_traversal_diagnostics_for_benchmark();
+    let output = refresh_reusing_clean_registry_for_benchmark(tree, Some(cached_rebuild));
+    let diagnostics = take_render_traversal_diagnostics_for_benchmark();
+    let summary = output.scene.summary();
+    eprintln!(
+        concat!(
+            "scroll_viewport_diag {}: retained_nodes={} traversal_visits={} ",
+            "culled_subtrees={} render_subtree_cache_key_builds={} scene={}"
+        ),
+        label,
+        tree.len(),
+        diagnostics.element_visits,
+        diagnostics.culled_subtrees,
+        diagnostics.render_subtree_cache_lookup_key_builds,
+        summary
+    );
+    consume_layout_output(output);
+}
+
+#[cfg(not(feature = "bench-diagnostics"))]
+fn sample_scroll_viewport_refresh_diagnostics(
+    _label: &str,
+    _tree: &mut ElementTree,
+    _cached_rebuild: &RegistryRebuildPayload,
+) {
 }
 
 fn bench_fixture_retained_layout_after_patch(c: &mut Criterion) {
@@ -983,6 +1274,10 @@ fn consume_registry_rebuild(rebuild: RegistryRebuildPayload) {
     black_box(rebuild.base_registry);
 }
 
+fn consume_render_scene(scene: emerge_skia::render_scene::RenderScene) {
+    black_box(scene.nodes.len());
+}
+
 fn consume_layout_update_output(output: emerge_skia::tree::layout::LayoutUpdateOutput) {
     black_box((
         output.output.scene.nodes.len(),
@@ -1283,6 +1578,7 @@ criterion_group!(
     bench_nested_card_grid_retained,
     bench_animated_shadow_showcase,
     bench_scrolling_animated_shadow_showcase,
+    bench_scroll_viewport_culling,
     bench_fixture_retained_layout_after_patch,
     bench_fixture_retained_patch_layout,
     bench_render_refresh_cache_regression,

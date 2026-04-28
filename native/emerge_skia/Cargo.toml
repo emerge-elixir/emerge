@@ -30,6 +30,7 @@ harness = false
 
 [features]
 default = ["wayland"]
+bench-diagnostics = []
 hover-trace = []
 macos = [
     "dep:objc2",
