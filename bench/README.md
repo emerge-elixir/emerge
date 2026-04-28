@@ -63,6 +63,7 @@ cargo bench --manifest-path native/emerge_skia/Cargo.toml
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench layout
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench patch
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench emrg
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer
 ```
 
 Use Criterion baselines around optimization work:
@@ -70,6 +71,29 @@ Use Criterion baselines around optimization work:
 ```bash
 cargo bench --manifest-path native/emerge_skia/Cargo.toml -- --save-baseline before_cache
 cargo bench --manifest-path native/emerge_skia/Cargo.toml -- --baseline before_cache
+```
+
+Renderer-cache work must take a renderer benchmark baseline before any cache
+implementation and compare against it before landing:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer -- --save-baseline render_cache_before
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer -- --baseline render_cache_before
+```
+
+Focused resize/reflow cache checks can be run with:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer -- cache_candidates_layout_reflow
+```
+
+Direct renderer drawing optimization work must take a renderer benchmark baseline
+before changing draw behavior. Every drawing optimization should compare focused
+renderer cases and broad mixed-scene cases against this baseline before landing:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer -- --save-baseline drawing_opt_before
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer -- --baseline drawing_opt_before
 ```
 
 ## Naming
@@ -87,4 +111,5 @@ engine/diff/list_text_500/noop
 native/layout/list_text_500/layout_plus_refresh
 native/patch/list_text_500/decode_apply/paint_attr
 native/emrg/list_text_500/decode_encode
+native/renderer/raster_direct/shadow_mask_filter
 ```
