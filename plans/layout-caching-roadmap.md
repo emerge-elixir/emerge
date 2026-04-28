@@ -1,6 +1,6 @@
 # Layout Caching Roadmap
 
-Last updated: 2026-04-27.
+Last updated: 2026-04-28.
 
 This is the active roadmap for native retained-layout caching. It intentionally
 references the fuller research notes in `layout-caching-engine-insights.md` and
@@ -448,6 +448,23 @@ Interpretation:
   followed by GPU/present synchronization, not image rendering
 - a later assets-page frame is dominated by border and text drawing under many
   clips, which is a separate draw-path optimization candidate
+
+Follow-up:
+
+- renderer-cache work is now tracked in `active-render-cache-plan.md`
+- the current renderer-cache direction is GPU-first clean-subtree payloads with
+  Flutter-like prepare-before-draw lifecycle
+- admitted clean subtrees should be rendered into an offscreen GPU cache target
+  before compositing to the main surface; copying already-rendered framebuffer
+  pixels is not the renderer-cache model
+- element alpha should be treated as cache-hit draw state for transparent GPU
+  payloads rooted at that element, with `../emerge_demo` selector-menu fade and
+  todo-entry translate+fade animations used as benchmark cases
+- full clean resolved-layout cache hits should be exposed to renderer-cache work
+  as high-confidence candidate/admission signals, but renderer-cache lookup must
+  still validate paint/resource/scale/backend payload state
+- shadow, text, and broader layer caches remain later pilots after the
+  clean-subtree GPU payload path is proven by full-frame benchmarks
 
 ## Later slice: broaden other relayout/dependency boundaries
 
