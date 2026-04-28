@@ -41,6 +41,7 @@ pub struct AnimationRuntimeEntry {
 pub struct EnterAnimationRuntimeEntry {
     pub spec: AnimationSpec,
     pub started_at: Instant,
+    pub presentation_anchor_pending: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +49,7 @@ pub struct ExitAnimationRuntimeEntry {
     pub spec: AnimationSpec,
     pub started_at: Instant,
     pub capture_scale: f32,
+    pub presentation_anchor_pending: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -117,6 +119,7 @@ impl AnimationRuntime {
                             spec: spec.clone(),
                             started_at,
                             capture_scale: element.lifecycle.ghost_capture_scale.unwrap_or(1.0),
+                            presentation_anchor_pending: true,
                         });
                 }
                 continue;
@@ -135,6 +138,7 @@ impl AnimationRuntime {
                         EnterAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
+                            presentation_anchor_pending: true,
                         },
                     );
                 } else {
@@ -184,6 +188,22 @@ impl AnimationRuntime {
         self.animate_entries.is_empty()
             && self.enter_entries.is_empty()
             && self.exit_entries.is_empty()
+    }
+
+    pub fn anchor_pending_transient_entries_to_present(&mut self, presented_at: Instant) {
+        self.enter_entries.values_mut().for_each(|entry| {
+            if entry.presentation_anchor_pending {
+                entry.started_at = presented_at;
+                entry.presentation_anchor_pending = false;
+            }
+        });
+
+        self.exit_entries.values_mut().for_each(|entry| {
+            if entry.presentation_anchor_pending {
+                entry.started_at = presented_at;
+                entry.presentation_anchor_pending = false;
+            }
+        });
     }
 
     pub fn has_transient_entries(&self) -> bool {
@@ -261,6 +281,65 @@ pub fn scale_animation_spec(spec: &AnimationSpec, scale: f64) -> AnimationSpec {
         curve: spec.curve.clone(),
         repeat: spec.repeat.clone(),
     }
+}
+
+/// Exit ghosts start from the current rendered attrs so interrupted enter or
+/// interaction animations do not jump back to the declared exit keyframe.
+pub fn retarget_exit_animation_spec_to_current_visual(
+    mut spec: AnimationSpec,
+    current: &Attrs,
+) -> AnimationSpec {
+    if let Some(first) = spec.keyframes.first_mut() {
+        retarget_exit_keyframe_to_current_visual(first, current);
+    }
+
+    spec
+}
+
+fn retarget_exit_keyframe_to_current_visual(first: &mut Attrs, current: &Attrs) {
+    macro_rules! retarget_clone {
+        ($field:ident) => {
+            if first.$field.is_some() {
+                if let Some(value) = current.$field.clone() {
+                    first.$field = Some(value);
+                }
+            }
+        };
+    }
+
+    macro_rules! retarget_copy {
+        ($field:ident) => {
+            if first.$field.is_some() {
+                if let Some(value) = current.$field {
+                    first.$field = Some(value);
+                }
+            }
+        };
+    }
+
+    retarget_clone!(width);
+    retarget_clone!(height);
+    retarget_clone!(padding);
+    retarget_copy!(spacing);
+    retarget_copy!(spacing_x);
+    retarget_copy!(spacing_y);
+    retarget_copy!(align_x);
+    retarget_copy!(align_y);
+    retarget_clone!(background);
+    retarget_clone!(border_radius);
+    retarget_clone!(border_width);
+    retarget_clone!(border_color);
+    retarget_clone!(box_shadows);
+    retarget_copy!(font_size);
+    retarget_clone!(font_color);
+    retarget_copy!(font_letter_spacing);
+    retarget_copy!(font_word_spacing);
+    retarget_clone!(svg_color);
+    retarget_copy!(move_x);
+    retarget_copy!(move_y);
+    retarget_copy!(rotate);
+    retarget_copy!(scale);
+    retarget_copy!(alpha);
 }
 
 pub fn apply_animation_overlays(
@@ -1037,7 +1116,6 @@ fn scale_border_width(value: &BorderWidth, scale: f64) -> BorderWidth {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::element::{Element, ElementKind, GhostAttachment, NodeResidency};
@@ -1083,12 +1161,12 @@ mod tests {
         mounted_at_revision: u64,
     ) -> (ElementTree, NodeId) {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.lifecycle.mounted_at_revision = mounted_at_revision;
 
         let mut tree = ElementTree::new();
         tree.insert(element);
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.set_revision(tree_revision);
         (tree, id)
     }
@@ -1097,26 +1175,17 @@ mod tests {
         let root_id = NodeId::from_term_bytes(vec![10]);
         let ghost_id = NodeId::from_term_bytes(vec![11]);
 
-        let mut root = Element::with_attrs(
-            root_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        root.children = vec![ghost_id.clone()];
+        let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+        root.children = vec![ghost_id];
 
         let mut ghost_attrs = Attrs::default();
         ghost_attrs.alpha = Some(1.0);
-        let mut ghost = Element::with_attrs(
-            ghost_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            ghost_attrs.clone(),
-        );
+        let mut ghost =
+            Element::with_attrs(ghost_id, ElementKind::El, Vec::new(), ghost_attrs.clone());
         ghost.spec.declared = ghost_attrs;
         ghost.lifecycle.residency = NodeResidency::Ghost;
         ghost.lifecycle.ghost_attachment = Some(GhostAttachment::Child {
-            parent_id: root_id.clone(),
+            parent_id: root_id,
             live_index: 0,
             seq: 0,
         });
@@ -1126,7 +1195,7 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.insert(root);
         tree.insert(ghost);
-        tree.set_root_id(root_id.clone());
+        tree.set_root_id(root_id);
         (tree, root_id, ghost_id)
     }
 
@@ -1201,8 +1270,43 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         assert!(runtime.enter_entry(&id).is_some());
+        assert!(
+            runtime
+                .enter_entry(&id)
+                .expect("enter entry should exist")
+                .presentation_anchor_pending
+        );
         assert!(runtime.animate_entry(&id).is_none());
         assert_eq!(runtime.last_seen_revision, 1);
+    }
+
+    #[test]
+    fn transient_enter_animation_anchors_to_first_presented_frame_once() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        let (tree, id) = tree_with_element(attrs, 1, 1);
+        let patch_time = Instant::now();
+        let first_presented = patch_time + std::time::Duration::from_millis(24);
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, patch_time);
+        runtime.anchor_pending_transient_entries_to_present(first_presented);
+        runtime.anchor_pending_transient_entries_to_present(
+            first_presented + std::time::Duration::from_millis(16),
+        );
+
+        let entry = runtime
+            .enter_entry(&id)
+            .expect("enter entry should stay active");
+        assert_eq!(entry.started_at, first_presented);
+        assert!(!entry.presentation_anchor_pending);
+
+        let sample = sample_enter_animation_spec(
+            entry,
+            Some(first_presented + std::time::Duration::from_millis(50)),
+            1.0,
+        );
+        assert_eq!(sample.attrs.alpha, Some(0.5));
     }
 
     #[test]
@@ -1307,6 +1411,39 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         assert!(runtime.exit_entry(&ghost_id).is_some());
+        assert!(
+            runtime
+                .exit_entry(&ghost_id)
+                .expect("exit entry should exist")
+                .presentation_anchor_pending
+        );
+    }
+
+    #[test]
+    fn transient_exit_animation_anchors_to_first_presented_frame_once() {
+        let (tree, _root_id, ghost_id) = tree_with_exit_ghost();
+        let patch_time = Instant::now();
+        let first_presented = patch_time + std::time::Duration::from_millis(24);
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, patch_time);
+        runtime.anchor_pending_transient_entries_to_present(first_presented);
+        runtime.anchor_pending_transient_entries_to_present(
+            first_presented + std::time::Duration::from_millis(16),
+        );
+
+        let entry = runtime
+            .exit_entry(&ghost_id)
+            .expect("exit entry should stay active");
+        assert_eq!(entry.started_at, first_presented);
+        assert!(!entry.presentation_anchor_pending);
+
+        let sample = sample_exit_animation_spec(
+            entry,
+            Some(first_presented + std::time::Duration::from_millis(50)),
+            1.0,
+        );
+        assert_eq!(sample.attrs.alpha, Some(0.5));
     }
 
     #[test]

@@ -73,6 +73,48 @@ defmodule EmergeSkia.OptionsTest do
     assert %{stats_enabled: true} = Options.build_start_native_opts!(stats: true)
   end
 
+  test "build_start_native_opts! normalizes renderer cache limits" do
+    assert %{
+             renderer_cache: %{
+               max_new_payloads_per_frame: 1,
+               clean_subtree: %{
+                 max_entries: 128,
+                 max_bytes: 33_554_432,
+                 max_entry_bytes: 4_194_304
+               }
+             }
+           } = Options.build_start_native_opts!([])
+
+    assert %{
+             renderer_cache: %{
+               max_new_payloads_per_frame: 0,
+               clean_subtree: %{
+                 max_entries: 16,
+                 max_bytes: 1_048_576,
+                 max_entry_bytes: 131_072
+               }
+             }
+           } =
+             Options.build_start_native_opts!(
+               renderer_cache: [
+                 max_new_payloads_per_frame: 0,
+                 clean_subtree: [
+                   max_entries: 16,
+                   max_bytes: 1_048_576,
+                   max_entry_bytes: 131_072
+                 ]
+               ]
+             )
+
+    assert_raise ArgumentError,
+                 ~r/:renderer_cache.clean_subtree.max_bytes must be a non-negative integer/,
+                 fn ->
+                   Options.build_start_native_opts!(
+                     renderer_cache: [clean_subtree: [max_bytes: -1]]
+                   )
+                 end
+  end
+
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do
     runtime_path =
       Path.join(System.tmp_dir!(), "emerge_cursor_#{System.unique_integer([:positive])}.svg")

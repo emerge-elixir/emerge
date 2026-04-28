@@ -92,20 +92,29 @@ defmodule EmergeSkia do
   - `render_log` - Log DRM render/present diagnostics (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `stats` - Enable renderer stats collection without periodic logging (default: false)
-  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, and layout-cache counters. Slow Wayland render/present frames also include a scene primitive summary. (default: false)
+  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. (default: false)
+  - `renderer_cache` - Renderer cache limits (optional)
   - `assets` - Asset runtime policy options (optional)
 
   Native renderer logs are delivered to the process that starts the renderer as
   `{:emerge_skia_log, level, source, message}` messages. Call
   `set_log_target/2` to redirect them.
 
-   `assets` options:
+  `assets` options:
   - `runtime_paths.enabled` (default: `false`)
   - `runtime_paths.allowlist` (default: `[]`)
   - `runtime_paths.follow_symlinks` (default: `false`)
   - `runtime_paths.max_file_size` (default: `25_000_000`)
   - `runtime_paths.extensions` (default image/SVG extension allowlist)
   - `fonts` (default: `[]`)
+
+  `renderer_cache` options:
+  - `max_new_payloads_per_frame` (default: `1`)
+  - `clean_subtree.max_entries` (default: `128`)
+  - `clean_subtree.max_bytes` (default: `33_554_432`)
+  - `clean_subtree.max_entry_bytes` (default: `4_194_304`)
+
+  Set a renderer-cache limit to `0` to prevent new stores for that dimension.
 
   Each `assets.fonts` entry supports:
   - `family` (required)

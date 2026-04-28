@@ -11,7 +11,10 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 
 use crate::{
     RenderSender,
-    actors::{EventMsg, RenderMsg, TreeMsg},
+    actors::{
+        AnimationFrameTraceSeed, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg,
+        earliest_pipeline_submitted_at,
+    },
     assets,
     backend::wake::BackendWakeHandle,
     events::{self, RegistryRebuildPayload},
@@ -94,6 +97,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             while let Ok(next) = tree_rx.try_recv() {
                 push_tree_message_flat(next, &mut messages);
             }
+            let tree_batch_started_at = Instant::now();
 
             let mut scroll_acc = std::collections::HashMap::new();
             let mut thumb_drag_x_acc = std::collections::HashMap::new();
@@ -104,9 +108,14 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             let mut mouse_down_active_state = std::collections::HashMap::new();
             let mut focused_active_state = std::collections::HashMap::new();
             let mut patch_processing_started_ats = Vec::new();
+            let mut pipeline_submitted_at = None;
             let mut invalidation = TreeInvalidation::None;
             let mut registry_requested = false;
             let mut animation_sample_time = latest_animation_sample_time;
+            let mut animation_trace_previous_sample_time = animation_sample_time;
+            let mut animation_trace_pulse: Option<(AnimationPulseTrace, Instant, Instant)> = None;
+            let mut animation_presented_at = None;
+            let mut animation_predicted_next_present_at = None;
             let mut animation_sample_requested = false;
 
             for message in messages.iter().cloned() {
@@ -115,7 +124,12 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     TreeMsg::Batch(_) => {
                         unreachable!("tree batches must be flattened before processing")
                     }
-                    TreeMsg::UploadTree { bytes } => {
+                    TreeMsg::UploadTree {
+                        bytes,
+                        submitted_at,
+                    } => {
+                        pipeline_submitted_at =
+                            earliest_pipeline_submitted_at(pipeline_submitted_at, submitted_at);
                         match crate::tree::deserialize::decode_tree(&bytes) {
                             Ok(decoded) => {
                                 tree.replace_with_uploaded(decoded);
@@ -126,7 +140,12 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             }
                         }
                     }
-                    TreeMsg::PatchTree { bytes } => {
+                    TreeMsg::PatchTree {
+                        bytes,
+                        submitted_at,
+                    } => {
+                        pipeline_submitted_at =
+                            earliest_pipeline_submitted_at(pipeline_submitted_at, submitted_at);
                         let patch_started_at = Instant::now();
                         let patches = match crate::tree::patch::decode_patches(&bytes) {
                             Ok(patches) => patches,
@@ -228,6 +247,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     TreeMsg::AnimationPulse {
                         presented_at,
                         predicted_next_present_at,
+                        trace,
                     } => {
                         crate::debug_trace::hover_trace!(
                             "tree_pulse",
@@ -235,7 +255,18 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             presented_at,
                             predicted_next_present_at
                         );
-                        animation_sample_time = Some(predicted_next_present_at.max(presented_at));
+                        animation_trace_previous_sample_time = animation_sample_time;
+                        animation_sample_time = Some(animation_pulse_sample_time(
+                            animation_sample_time,
+                            presented_at,
+                            predicted_next_present_at,
+                        ));
+                        if let Some(trace) = trace {
+                            animation_trace_pulse =
+                                Some((trace, presented_at, predicted_next_present_at));
+                        }
+                        animation_presented_at = Some(presented_at);
+                        animation_predicted_next_present_at = Some(predicted_next_present_at);
                         animation_sample_requested = true;
                     }
                     TreeMsg::RebuildRegistry => {
@@ -245,6 +276,10 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         invalidation.add(TreeInvalidation::Measure);
                     }
                 }
+            }
+
+            if let (Some(stats), Some(submitted_at)) = (stats.as_ref(), pipeline_submitted_at) {
+                stats.record_pipeline_submit_to_tree_start(submitted_at, tree_batch_started_at);
             }
 
             for (id, (dx, dy)) in scroll_acc {
@@ -290,6 +325,9 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             let had_transient_animations = animation_runtime.has_transient_entries();
 
             if let Some(sample_time) = sample_time {
+                if animation_sample_requested && let Some(presented_at) = animation_presented_at {
+                    animation_runtime.anchor_pending_transient_entries_to_present(presented_at);
+                }
                 latest_animation_sample_time = Some(sample_time);
                 crate::debug_trace::hover_trace!(
                     "tree_plan",
@@ -360,6 +398,37 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     ),
                 },
             );
+            let animation_frame_trace = sample_time
+                .filter(|_| plan.animations_active || animation_sample_requested)
+                .map(|sample_time| {
+                    let (pulse, presented_at, predicted_next_present_at) = animation_trace_pulse
+                        .map_or(
+                            (
+                                None,
+                                animation_presented_at,
+                                animation_predicted_next_present_at,
+                            ),
+                            |(trace, presented_at, predicted_next_present_at)| {
+                                (
+                                    Some(trace),
+                                    Some(presented_at),
+                                    Some(predicted_next_present_at),
+                                )
+                            },
+                        );
+
+                    AnimationFrameTraceSeed {
+                        sequence: pulse.map(|trace| trace.sequence),
+                        pulse_sent_at: pulse.map(|trace| trace.sent_at),
+                        tree_started_at: tree_batch_started_at,
+                        presented_at,
+                        predicted_next_present_at,
+                        sample_time,
+                        previous_sample_time: animation_trace_previous_sample_time,
+                        animations_active: plan.animations_active,
+                        pulse_requested_sample: animation_sample_requested,
+                    }
+                });
 
             match plan.action {
                 RefreshDecision::Skip => {
@@ -408,13 +477,19 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
 
                     let animations_active = update.output.animations_active;
                     publish_layout_output(
-                        &event_tx,
-                        &render_sender,
-                        &render_counter,
-                        &window_wake,
-                        &mut cached_rebuild,
+                        LayoutOutputPublishTargets {
+                            event_tx: &event_tx,
+                            render_sender: &render_sender,
+                            render_counter: &render_counter,
+                            window_wake: &window_wake,
+                            cached_rebuild: &mut cached_rebuild,
+                            stats: stats.as_ref(),
+                            log_input,
+                        },
                         update.output,
-                        log_input,
+                        pipeline_submitted_at,
+                        pipeline_submitted_at.map(|_| tree_batch_started_at),
+                        animation_frame_trace,
                     );
 
                     trace_tree_snapshots(&tree);
@@ -454,13 +529,19 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     }
                     let animations_active = update.output.animations_active;
                     publish_layout_output(
-                        &event_tx,
-                        &render_sender,
-                        &render_counter,
-                        &window_wake,
-                        &mut cached_rebuild,
+                        LayoutOutputPublishTargets {
+                            event_tx: &event_tx,
+                            render_sender: &render_sender,
+                            render_counter: &render_counter,
+                            window_wake: &window_wake,
+                            cached_rebuild: &mut cached_rebuild,
+                            stats: stats.as_ref(),
+                            log_input,
+                        },
                         update.output,
-                        log_input,
+                        pipeline_submitted_at,
+                        pipeline_submitted_at.map(|_| tree_batch_started_at),
+                        animation_frame_trace,
                     );
 
                     trace_tree_snapshots(&tree);
@@ -474,6 +555,15 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             }
         }
     })
+}
+
+fn animation_pulse_sample_time(
+    previous_sample_time: Option<Instant>,
+    presented_at: Instant,
+    predicted_next_present_at: Instant,
+) -> Instant {
+    let sample_time = predicted_next_present_at.max(presented_at);
+    previous_sample_time.map_or(sample_time, |previous| sample_time.max(previous))
 }
 
 #[derive(Debug)]
@@ -532,31 +622,51 @@ pub(crate) fn send_registry_update(
     }
 }
 
-fn publish_layout_output(
-    event_tx: &Sender<EventMsg>,
-    render_sender: &RenderSender,
-    render_counter: &Arc<AtomicU64>,
-    window_wake: &BackendWakeHandle,
-    cached_rebuild: &mut Option<RegistryRebuildPayload>,
-    output: LayoutOutput,
+struct LayoutOutputPublishTargets<'a> {
+    event_tx: &'a Sender<EventMsg>,
+    render_sender: &'a RenderSender,
+    render_counter: &'a Arc<AtomicU64>,
+    window_wake: &'a BackendWakeHandle,
+    cached_rebuild: &'a mut Option<RegistryRebuildPayload>,
+    stats: Option<&'a Arc<RendererStatsCollector>>,
     log_input: bool,
+}
+
+fn publish_layout_output(
+    targets: LayoutOutputPublishTargets<'_>,
+    output: LayoutOutput,
+    pipeline_submitted_at: Option<Instant>,
+    pipeline_tree_started_at: Option<Instant>,
+    animation_trace: Option<AnimationFrameTraceSeed>,
 ) {
     if output.event_rebuild_changed {
-        cached_rebuild.replace(output.event_rebuild.clone());
-        send_registry_update(event_tx, output.event_rebuild, log_input);
+        targets.cached_rebuild.replace(output.event_rebuild.clone());
+        send_registry_update(targets.event_tx, output.event_rebuild, targets.log_input);
     }
 
-    let version = render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    render_sender.send_latest(RenderMsg::Scene {
+    let version = targets.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let render_queued_at = Instant::now();
+    let pipeline_render_queued_at = pipeline_submitted_at.map(|_| render_queued_at);
+    if let (Some(stats), Some(tree_started_at), Some(render_queued_at)) = (
+        targets.stats,
+        pipeline_tree_started_at,
+        pipeline_render_queued_at,
+    ) {
+        stats.record_pipeline_tree(tree_started_at, render_queued_at);
+    }
+    targets.render_sender.send_latest(RenderMsg::Scene {
         scene: Box::new(output.scene),
         version,
+        pipeline_submitted_at,
+        pipeline_render_queued_at,
+        animation_trace: animation_trace.map(|trace| Box::new(trace.queued_at(render_queued_at))),
         animate: output.animations_active,
         ime_enabled: output.ime_enabled,
         ime_cursor_area: output.ime_cursor_area,
         ime_text_state: Box::new(output.ime_text_state),
     });
 
-    window_wake.request_redraw();
+    targets.window_wake.request_redraw();
 }
 
 pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
@@ -568,12 +678,53 @@ pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
     }
 }
 
+#[cfg(feature = "hover-trace")]
+fn trace_tree_snapshots(tree: &ElementTree) {
+    for (id, x, y, w, h, move_x) in trace_element_snapshots(tree) {
+        crate::debug_trace::hover_trace!(
+            "tree_snapshot",
+            "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
+            id.0,
+            move_x.unwrap_or(0.0),
+            x + move_x.unwrap_or(0.0) as f32
+        );
+    }
+}
+
+#[cfg(not(feature = "hover-trace"))]
+fn trace_tree_snapshots(_tree: &ElementTree) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{RenderSender, render_scene::RenderScene, tree::element::NodeId};
     use crossbeam_channel::bounded;
     use std::sync::{Arc, atomic::AtomicU64};
+
+    #[test]
+    fn animation_pulse_sample_time_never_regresses() {
+        let base = Instant::now();
+        let previous = base + std::time::Duration::from_millis(67);
+        let presented_at = base + std::time::Duration::from_millis(20);
+        let predicted_next_present_at = base + std::time::Duration::from_millis(36);
+
+        assert_eq!(
+            animation_pulse_sample_time(Some(previous), presented_at, predicted_next_present_at),
+            previous
+        );
+    }
+
+    #[test]
+    fn animation_pulse_sample_time_uses_predicted_present_without_previous() {
+        let base = Instant::now();
+        let presented_at = base;
+        let predicted_next_present_at = base + std::time::Duration::from_millis(16);
+
+        assert_eq!(
+            animation_pulse_sample_time(None, presented_at, predicted_next_present_at),
+            predicted_next_present_at
+        );
+    }
 
     #[test]
     fn publish_layout_output_preserves_cached_registry_when_output_is_clean() {
@@ -593,11 +744,15 @@ mod tests {
         });
 
         publish_layout_output(
-            &event_tx,
-            &render_sender,
-            &render_counter,
-            &window_wake,
-            &mut cached_rebuild,
+            LayoutOutputPublishTargets {
+                event_tx: &event_tx,
+                render_sender: &render_sender,
+                render_counter: &render_counter,
+                window_wake: &window_wake,
+                cached_rebuild: &mut cached_rebuild,
+                stats: None,
+                log_input: false,
+            },
             LayoutOutput {
                 scene: RenderScene::default(),
                 event_rebuild: RegistryRebuildPayload::default(),
@@ -607,7 +762,9 @@ mod tests {
                 ime_text_state: None,
                 animations_active: false,
             },
-            false,
+            Some(Instant::now()),
+            Some(Instant::now()),
+            None,
         );
 
         assert_eq!(
@@ -622,27 +779,20 @@ mod tests {
             .try_recv()
             .expect("scene should still be published")
         {
-            RenderMsg::Scene { version, .. } => assert_eq!(version, 1),
+            RenderMsg::Scene {
+                version,
+                pipeline_submitted_at,
+                pipeline_render_queued_at,
+                ..
+            } => {
+                assert_eq!(version, 1);
+                assert!(pipeline_submitted_at.is_some());
+                assert!(pipeline_render_queued_at.is_some());
+            }
             RenderMsg::Stop => panic!("expected scene render message"),
         }
     }
 }
-
-#[cfg(feature = "hover-trace")]
-fn trace_tree_snapshots(tree: &ElementTree) {
-    for (id, x, y, w, h, move_x) in trace_element_snapshots(tree) {
-        crate::debug_trace::hover_trace!(
-            "tree_snapshot",
-            "id={:?} frame=({x:.2},{y:.2},{w:.2},{h:.2}) move_x={:.2} visual_x={:.2}",
-            id.0,
-            move_x.unwrap_or(0.0),
-            x + move_x.unwrap_or(0.0) as f32
-        );
-    }
-}
-
-#[cfg(not(feature = "hover-trace"))]
-fn trace_tree_snapshots(_tree: &ElementTree) {}
 
 #[cfg(feature = "hover-trace")]
 fn trace_element_snapshots(tree: &ElementTree) -> Vec<(NodeId, f32, f32, f32, f32, Option<f64>)> {

@@ -9,7 +9,9 @@
 //!   - 5: set_nearby_mounts - host_id(u64) + count(2) + [slot(1) + id(u64)]...
 //!   - 6: insert_nearby_subtree - host_id(u64) + index(2) + slot(1) + tree_len(4) + tree_bytes
 
-use super::animation::{AnimationSpec, scale_animation_spec};
+use super::animation::{
+    AnimationSpec, retarget_exit_animation_spec_to_current_visual, scale_animation_spec,
+};
 use super::attrs::{Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y};
 use super::deserialize::{DecodeError, decode_tree};
 #[cfg(test)]
@@ -664,32 +666,23 @@ fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &NodeId) -> Result<(
         .ok_or_else(|| "attach_ghost_root: ghost root missing attachment".to_string())?;
 
     match attachment {
-        GhostAttachment::Child {
-            parent_id,
-            live_index,
-            ..
-        } => {
-            let mut live_children = tree.live_child_ids(&parent_id);
-            let insert_idx = live_index.min(live_children.len());
-            live_children.insert(insert_idx, *ghost_root_id);
-            tree.set_children(&parent_id, live_children)?;
-        }
-        GhostAttachment::Nearby {
-            host_id,
-            mount_index,
-            slot,
-            ..
-        } => {
-            let mut live_mounts = tree.live_nearby_mounts(&host_id);
-            let insert_idx = mount_index.min(live_mounts.len());
-            live_mounts.insert(
-                insert_idx,
-                NearbyMount {
-                    slot,
-                    id: *ghost_root_id,
-                },
+        GhostAttachment::Child { parent_id, .. } => {
+            let live_children = tree.live_child_ids(&parent_id);
+            let merged_children = tree.merge_live_children_with_ghosts_including(
+                &parent_id,
+                live_children,
+                Some(*ghost_root_id),
             );
-            tree.set_nearby_mounts(&host_id, live_mounts)?;
+            tree.set_children(&parent_id, merged_children)?;
+        }
+        GhostAttachment::Nearby { host_id, .. } => {
+            let live_mounts = tree.live_nearby_mounts(&host_id);
+            let merged_mounts = tree.merge_live_nearby_with_ghosts_including(
+                &host_id,
+                live_mounts,
+                Some(*ghost_root_id),
+            );
+            tree.set_nearby_mounts(&host_id, merged_mounts)?;
         }
     }
 
@@ -697,14 +690,19 @@ fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &NodeId) -> Result<(
 }
 
 fn captured_exit_spec(element: &Element, capture_scale: f32) -> Option<AnimationSpec> {
-    element.layout.effective.animate_exit.clone().or_else(|| {
+    let spec = element.layout.effective.animate_exit.clone().or_else(|| {
         element
             .spec
             .declared
             .animate_exit
             .as_ref()
             .map(|spec| scale_animation_spec(spec, capture_scale as f64))
-    })
+    })?;
+
+    Some(retarget_exit_animation_spec_to_current_visual(
+        spec,
+        &element.layout.effective,
+    ))
 }
 
 fn locate_attachment(tree: &ElementTree, id: &NodeId) -> Option<AttachmentPoint> {
@@ -742,9 +740,18 @@ fn locate_attachment(tree: &ElementTree, id: &NodeId) -> Option<AttachmentPoint>
             let mount_index = tree
                 .nearby_mounts_for(&host_id)
                 .iter()
-                .enumerate()
-                .filter(|(_, mount)| tree.get(&mount.id).is_some_and(Element::is_live))
-                .find_map(|(mount_index, mount)| (mount.id == *id).then_some(mount_index))?;
+                .scan(0usize, |live_index, mount| {
+                    let current_live_index = *live_index;
+                    let is_live = tree.get(&mount.id).is_some_and(Element::is_live);
+                    let result = (mount.id, current_live_index, is_live);
+                    if is_live {
+                        *live_index += 1;
+                    }
+                    Some(result)
+                })
+                .find_map(|(mount_id, mount_live_index, _is_live)| {
+                    (mount_id == *id).then_some(mount_live_index)
+                })?;
 
             Some(AttachmentPoint::Nearby {
                 host_id,
@@ -1047,7 +1054,7 @@ mod tests {
         element.lifecycle.mounted_at_revision = 7;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let before_ix = node_ix(&tree, &id);
@@ -1056,7 +1063,7 @@ mod tests {
         let invalidation = apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: vec![0, 1, 12, 0, 1, 255, 0, 0, 255],
             }],
         )
@@ -1075,16 +1082,13 @@ mod tests {
         let third_id = NodeId::from_term_bytes(vec![5]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(2));
         tree.insert(plain_element(3));
         tree.insert(plain_element(4));
         tree.insert(plain_element(5));
-        tree.set_children(
-            &parent_id,
-            vec![first_id.clone(), second_id.clone(), third_id.clone()],
-        )
-        .unwrap();
+        tree.set_children(&parent_id, vec![first_id, second_id, third_id])
+            .unwrap();
 
         let parent_ix = node_ix(&tree, &parent_id);
         let first_ix = node_ix(&tree, &first_id);
@@ -1094,8 +1098,8 @@ mod tests {
         let invalidation = apply_patches(
             &mut tree,
             vec![Patch::SetChildren {
-                id: parent_id.clone(),
-                children: vec![third_id.clone(), first_id.clone(), second_id.clone()],
+                id: parent_id,
+                children: vec![third_id, first_id, second_id],
             }],
         )
         .unwrap();
@@ -1129,7 +1133,7 @@ mod tests {
         let second_id = NodeId::from_term_bytes(vec![8]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(plain_element(6));
         tree.insert(plain_element(7));
         tree.insert(plain_element(8));
@@ -1138,11 +1142,11 @@ mod tests {
             vec![
                 NearbyMount {
                     slot: NearbySlot::Above,
-                    id: first_id.clone(),
+                    id: first_id,
                 },
                 NearbyMount {
                     slot: NearbySlot::Below,
-                    id: second_id.clone(),
+                    id: second_id,
                 },
             ],
         )
@@ -1155,15 +1159,15 @@ mod tests {
         let invalidation = apply_patches(
             &mut tree,
             vec![Patch::SetNearbyMounts {
-                host_id: host_id.clone(),
+                host_id,
                 mounts: vec![
                     NearbyMount {
                         slot: NearbySlot::Below,
-                        id: second_id.clone(),
+                        id: second_id,
                     },
                     NearbyMount {
                         slot: NearbySlot::Above,
-                        id: first_id.clone(),
+                        id: first_id,
                     },
                 ],
             }],
@@ -1208,14 +1212,14 @@ mod tests {
         let tip_id = NodeId::from_term_bytes(vec![10]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(plain_element(9));
         tree.insert(plain_element(10));
         tree.set_nearby_mounts(
             &host_id,
             vec![NearbyMount {
                 slot: NearbySlot::Above,
-                id: tip_id.clone(),
+                id: tip_id,
             }],
         )
         .unwrap();
@@ -1226,10 +1230,10 @@ mod tests {
         apply_patches(
             &mut tree,
             vec![Patch::SetNearbyMounts {
-                host_id: host_id.clone(),
+                host_id,
                 mounts: vec![NearbyMount {
                     slot: NearbySlot::Below,
-                    id: tip_id.clone(),
+                    id: tip_id,
                 }],
             }],
         )
@@ -1265,43 +1269,42 @@ mod tests {
         let inserted_nearby_leaf_id = NodeId::from_term_bytes(vec![98]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(root_id.clone());
+        tree.set_root_id(root_id);
         tree.insert(plain_element(90));
         tree.insert(plain_element(91));
         tree.insert(plain_element(92));
         tree.insert(plain_element(93));
         tree.insert(plain_element(94));
-        tree.set_children(&root_id, vec![host_id.clone(), removed_id.clone()])
+        tree.set_children(&root_id, vec![host_id, removed_id])
             .unwrap();
-        tree.set_children(&host_id, vec![child_id.clone()]).unwrap();
-        tree.set_paint_children(&host_id, vec![child_id.clone()])
-            .unwrap();
+        tree.set_children(&host_id, vec![child_id]).unwrap();
+        tree.set_paint_children(&host_id, vec![child_id]).unwrap();
         tree.set_nearby_mounts(
             &host_id,
             vec![NearbyMount {
                 slot: NearbySlot::Above,
-                id: nearby_id.clone(),
+                id: nearby_id,
             }],
         )
         .unwrap();
 
         let mut inserted_child = ElementTree::new();
-        inserted_child.set_root_id(inserted_child_id.clone());
+        inserted_child.set_root_id(inserted_child_id);
         inserted_child.insert(plain_element(95));
         inserted_child.insert(text_element(96, "inserted child"));
         inserted_child
-            .set_children(&inserted_child_id, vec![inserted_child_leaf_id.clone()])
+            .set_children(&inserted_child_id, vec![inserted_child_leaf_id])
             .unwrap();
         inserted_child
-            .set_paint_children(&inserted_child_id, vec![inserted_child_leaf_id.clone()])
+            .set_paint_children(&inserted_child_id, vec![inserted_child_leaf_id])
             .unwrap();
 
         let mut inserted_nearby = ElementTree::new();
-        inserted_nearby.set_root_id(inserted_nearby_id.clone());
+        inserted_nearby.set_root_id(inserted_nearby_id);
         inserted_nearby.insert(plain_element(97));
         inserted_nearby.insert(text_element(98, "inserted nearby"));
         inserted_nearby
-            .set_children(&inserted_nearby_id, vec![inserted_nearby_leaf_id.clone()])
+            .set_children(&inserted_nearby_id, vec![inserted_nearby_leaf_id])
             .unwrap();
 
         apply_patches(
@@ -1309,26 +1312,26 @@ mod tests {
             vec![
                 Patch::Remove { id: removed_id },
                 Patch::InsertSubtree {
-                    parent_id: Some(host_id.clone()),
+                    parent_id: Some(host_id),
                     index: 1,
                     subtree: inserted_child,
                 },
                 Patch::InsertNearbySubtree {
-                    host_id: host_id.clone(),
+                    host_id,
                     index: 1,
                     slot: NearbySlot::OnRight,
                     subtree: inserted_nearby,
                 },
                 Patch::SetNearbyMounts {
-                    host_id: host_id.clone(),
+                    host_id,
                     mounts: vec![
                         NearbyMount {
                             slot: NearbySlot::OnRight,
-                            id: inserted_nearby_id.clone(),
+                            id: inserted_nearby_id,
                         },
                         NearbyMount {
                             slot: NearbySlot::Above,
-                            id: nearby_id.clone(),
+                            id: nearby_id,
                         },
                     ],
                 },
@@ -1336,11 +1339,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(tree.child_ids(&root_id), vec![host_id.clone()]);
-        assert_eq!(
-            tree.child_ids(&host_id),
-            vec![child_id.clone(), inserted_child_id.clone()]
-        );
+        assert_eq!(tree.child_ids(&root_id), vec![host_id]);
+        assert_eq!(tree.child_ids(&host_id), vec![child_id, inserted_child_id]);
         assert_eq!(
             tree.paint_child_ids_for(&inserted_child_id),
             vec![inserted_child_leaf_id]
@@ -1371,11 +1371,11 @@ mod tests {
         let new_leaf_id = NodeId::from_term_bytes(vec![15]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(11));
         tree.insert(plain_element(12));
         tree.insert(plain_element(13));
-        tree.set_children(&parent_id, vec![first_id.clone(), second_id.clone()])
+        tree.set_children(&parent_id, vec![first_id, second_id])
             .unwrap();
 
         let parent_ix = node_ix(&tree, &parent_id);
@@ -1385,17 +1385,17 @@ mod tests {
         let second_revision = mount_revision(&tree, &second_id);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_root_id.clone());
+        subtree.set_root_id(new_root_id);
         subtree.insert(plain_element(14));
         subtree.insert(text_element(15, "new"));
         subtree
-            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .set_children(&new_root_id, vec![new_leaf_id])
             .unwrap();
 
         let invalidation = apply_patches(
             &mut tree,
             vec![Patch::InsertSubtree {
-                parent_id: Some(parent_id.clone()),
+                parent_id: Some(parent_id),
                 index: 1,
                 subtree,
             }],
@@ -1427,7 +1427,7 @@ mod tests {
         let new_leaf_id = NodeId::from_term_bytes(vec![60]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(plain_element(56));
         tree.insert(plain_element(57));
         tree.insert(plain_element(58));
@@ -1436,11 +1436,11 @@ mod tests {
             vec![
                 NearbyMount {
                     slot: NearbySlot::Above,
-                    id: first_id.clone(),
+                    id: first_id,
                 },
                 NearbyMount {
                     slot: NearbySlot::Below,
-                    id: second_id.clone(),
+                    id: second_id,
                 },
             ],
         )
@@ -1453,17 +1453,17 @@ mod tests {
         let second_revision = mount_revision(&tree, &second_id);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_root_id.clone());
+        subtree.set_root_id(new_root_id);
         subtree.insert(plain_element(59));
         subtree.insert(text_element(60, "new nearby"));
         subtree
-            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .set_children(&new_root_id, vec![new_leaf_id])
             .unwrap();
 
         let invalidation = apply_patches(
             &mut tree,
             vec![Patch::InsertNearbySubtree {
-                host_id: host_id.clone(),
+                host_id,
                 index: 1,
                 slot: NearbySlot::OnRight,
                 subtree,
@@ -1521,26 +1521,26 @@ mod tests {
         let new_id = NodeId::from_term_bytes(vec![18]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(16));
         tree.insert(plain_element(17));
-        tree.set_children(&parent_id, vec![old_id.clone()]).unwrap();
+        tree.set_children(&parent_id, vec![old_id]).unwrap();
 
         let old_ix = node_ix(&tree, &old_id);
 
-        apply_patches(&mut tree, vec![Patch::Remove { id: old_id.clone() }]).unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: old_id }]).unwrap();
 
         assert_eq!(tree.ix_of(&old_id), None);
         assert_eq!(tree.id_of(old_ix), None);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_id.clone());
+        subtree.set_root_id(new_id);
         subtree.insert(plain_element(18));
 
         apply_patches(
             &mut tree,
             vec![Patch::InsertSubtree {
-                parent_id: Some(parent_id.clone()),
+                parent_id: Some(parent_id),
                 index: 0,
                 subtree,
             }],
@@ -1560,20 +1560,18 @@ mod tests {
         let nearby_id = NodeId::from_term_bytes(vec![64]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(61));
         tree.insert(plain_element(62));
         tree.insert(plain_element(63));
         tree.insert(plain_element(64));
-        tree.set_children(&parent_id, vec![removed_id.clone()])
-            .unwrap();
-        tree.set_children(&removed_id, vec![child_id.clone()])
-            .unwrap();
+        tree.set_children(&parent_id, vec![removed_id]).unwrap();
+        tree.set_children(&removed_id, vec![child_id]).unwrap();
         tree.set_nearby_mounts(
             &removed_id,
             vec![NearbyMount {
                 slot: NearbySlot::Above,
-                id: nearby_id.clone(),
+                id: nearby_id,
             }],
         )
         .unwrap();
@@ -1583,13 +1581,7 @@ mod tests {
         let child_ix = node_ix(&tree, &child_id);
         let nearby_ix = node_ix(&tree, &nearby_id);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: removed_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: removed_id }]).unwrap();
 
         assert_eq!(tree.child_ixs(parent_ix), Vec::<NodeIx>::new());
         assert_eq!(tree.ix_of(&removed_id), None);
@@ -1610,16 +1602,13 @@ mod tests {
         let new_leaf_id = NodeId::from_term_bytes(vec![70]);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(65));
         tree.insert(text_element(66, "first"));
         tree.insert(text_element(67, "removed"));
         tree.insert(text_element(68, "third"));
-        tree.set_children(
-            &parent_id,
-            vec![first_id.clone(), removed_id.clone(), third_id.clone()],
-        )
-        .unwrap();
+        tree.set_children(&parent_id, vec![first_id, removed_id, third_id])
+            .unwrap();
 
         let parent_ix = node_ix(&tree, &parent_id);
         let first_ix = node_ix(&tree, &first_id);
@@ -1628,21 +1617,19 @@ mod tests {
         let third_revision = mount_revision(&tree, &third_id);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_root_id.clone());
+        subtree.set_root_id(new_root_id);
         subtree.insert(plain_element(69));
         subtree.insert(text_element(70, "new"));
         subtree
-            .set_children(&new_root_id, vec![new_leaf_id.clone()])
+            .set_children(&new_root_id, vec![new_leaf_id])
             .unwrap();
 
         let invalidation = apply_patches(
             &mut tree,
             vec![
-                Patch::Remove {
-                    id: removed_id.clone(),
-                },
+                Patch::Remove { id: removed_id },
                 Patch::InsertSubtree {
-                    parent_id: Some(parent_id.clone()),
+                    parent_id: Some(parent_id),
                     index: 1,
                     subtree,
                 },
@@ -1679,28 +1666,19 @@ mod tests {
         removed.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(plain_element(19));
         tree.insert(text_element(20, "first"));
         tree.insert(removed);
         tree.insert(text_element(22, "third"));
-        tree.set_children(
-            &parent_id,
-            vec![first_id.clone(), removed_id.clone(), third_id.clone()],
-        )
-        .unwrap();
+        tree.set_children(&parent_id, vec![first_id, removed_id, third_id])
+            .unwrap();
 
         let parent_ix = node_ix(&tree, &parent_id);
         let first_ix = node_ix(&tree, &first_id);
         let third_ix = node_ix(&tree, &third_id);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: removed_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: removed_id }]).unwrap();
 
         assert_eq!(tree.ix_of(&removed_id), None);
         assert_eq!(node_ix(&tree, &first_id), first_ix);
@@ -1729,6 +1707,40 @@ mod tests {
     }
 
     #[test]
+    fn test_animated_remove_retargets_exit_spec_to_current_visual_alpha() {
+        let parent_id = NodeId::from_term_bytes(vec![75]);
+        let removed_id = NodeId::from_term_bytes(vec![76]);
+
+        let mut parent =
+            Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+        parent.children = vec![removed_id];
+
+        let mut removed = text_element(76, "closing");
+        removed.layout.effective.animate_exit = Some(exit_alpha_spec());
+        removed.spec.declared.animate_exit = Some(exit_alpha_spec());
+        removed.layout.effective.alpha = Some(0.42);
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id);
+        tree.insert(parent);
+        tree.insert(removed);
+
+        apply_patches(&mut tree, vec![Patch::Remove { id: removed_id }]).unwrap();
+
+        let ghost_id = tree.child_ids(&parent_id)[0];
+        let ghost = tree.get(&ghost_id).expect("ghost root should exist");
+        let exit_spec = ghost
+            .lifecycle
+            .ghost_exit_animation
+            .as_ref()
+            .expect("exit animation should be captured");
+
+        assert_eq!(ghost.layout.effective.alpha, Some(0.42));
+        assert_eq!(exit_spec.keyframes[0].alpha, Some(0.42));
+        assert_eq!(exit_spec.keyframes[1].alpha, Some(0.0));
+    }
+
+    #[test]
     fn test_animated_nearby_remove_keeps_live_ixs_stable_while_adding_ghost() {
         let host_id = NodeId::from_term_bytes(vec![71]);
         let first_id = NodeId::from_term_bytes(vec![72]);
@@ -1740,7 +1752,7 @@ mod tests {
         removed.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(plain_element(71));
         tree.insert(text_element(72, "first"));
         tree.insert(removed);
@@ -1750,15 +1762,15 @@ mod tests {
             vec![
                 NearbyMount {
                     slot: NearbySlot::Above,
-                    id: first_id.clone(),
+                    id: first_id,
                 },
                 NearbyMount {
                     slot: NearbySlot::Below,
-                    id: removed_id.clone(),
+                    id: removed_id,
                 },
                 NearbyMount {
                     slot: NearbySlot::InFront,
-                    id: third_id.clone(),
+                    id: third_id,
                 },
             ],
         )
@@ -1768,13 +1780,7 @@ mod tests {
         let first_ix = node_ix(&tree, &first_id);
         let third_ix = node_ix(&tree, &third_id);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: removed_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: removed_id }]).unwrap();
 
         assert_eq!(tree.ix_of(&removed_id), None);
         assert_eq!(node_ix(&tree, &first_id), first_ix);
@@ -1825,6 +1831,86 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_animated_nearby_removes_keep_all_ghost_mounts() {
+        let host_id = NodeId::from_term_bytes(vec![175]);
+        let nearby_ids: Vec<NodeId> = (0..6)
+            .map(|index| NodeId::from_term_bytes(vec![176 + index]))
+            .collect();
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id);
+        tree.insert(plain_element(175));
+
+        for (index, nearby_id) in nearby_ids.iter().enumerate() {
+            let mut nearby = text_element(176 + index as u8, &format!("nearby {index}"));
+            if (1..=3).contains(&index) {
+                nearby.layout.effective.animate_exit = Some(exit_alpha_spec());
+                nearby.spec.declared.animate_exit = Some(exit_alpha_spec());
+            }
+            assert_eq!(nearby.id, *nearby_id);
+            tree.insert(nearby);
+        }
+
+        tree.set_nearby_mounts(
+            &host_id,
+            nearby_ids
+                .iter()
+                .copied()
+                .map(|id| NearbyMount {
+                    slot: NearbySlot::OnRight,
+                    id,
+                })
+                .collect(),
+        )
+        .unwrap();
+
+        apply_patches(
+            &mut tree,
+            vec![
+                Patch::Remove { id: nearby_ids[1] },
+                Patch::Remove { id: nearby_ids[2] },
+                Patch::Remove { id: nearby_ids[3] },
+            ],
+        )
+        .unwrap();
+
+        let mounts = tree.nearby_mounts_for(&host_id);
+        let ghost_ids: Vec<NodeId> = mounts
+            .iter()
+            .map(|mount| mount.id)
+            .filter(|id| tree.get(id).is_some_and(Element::is_ghost_root))
+            .collect();
+
+        assert_eq!(ghost_ids.len(), 3);
+        assert!(ghost_ids.iter().all(|id| {
+            tree.get(id)
+                .and_then(|ghost| ghost.lifecycle.ghost_attachment.as_ref())
+                .is_some_and(|attachment| {
+                    matches!(
+                        attachment,
+                        GhostAttachment::Nearby {
+                            host_id: ghost_host_id,
+                            mount_index: 1,
+                            slot: NearbySlot::OnRight,
+                            ..
+                        } if ghost_host_id == &host_id
+                    )
+                })
+        }));
+        assert_eq!(
+            mounts.iter().map(|mount| mount.id).collect::<Vec<_>>(),
+            vec![
+                nearby_ids[0],
+                ghost_ids[0],
+                ghost_ids[1],
+                ghost_ids[2],
+                nearby_ids[4],
+                nearby_ids[5],
+            ]
+        );
+    }
+
+    #[test]
     fn test_preserve_runtime_attrs_on_patch() {
         let id = NodeId::from_term_bytes(vec![1]);
         let mut attrs = Attrs::default();
@@ -1835,13 +1921,13 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
 
-        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
-            id: id.clone(),
+            id,
             attrs_raw: Vec::new(),
         };
 
@@ -1866,13 +1952,13 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
 
-        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
-            id: id.clone(),
+            id,
             attrs_raw: vec![0, 1, 7, 1],
         };
 
@@ -1893,13 +1979,13 @@ mod tests {
         attrs.mouse_over = Some(crate::tree::attrs::MouseOverAttrs::default());
         attrs.mouse_over_active = Some(true);
 
-        let element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let patch = Patch::SetAttrs {
-            id: id.clone(),
+            id,
             attrs_raw: Vec::new(),
         };
 
@@ -1913,10 +1999,9 @@ mod tests {
     #[test]
     fn test_apply_patches_advances_revision_once_per_batch() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
@@ -1934,10 +2019,9 @@ mod tests {
     #[test]
     fn test_apply_patches_classifies_event_attr_as_registry() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let invalidation = apply_patches(
@@ -1955,10 +2039,9 @@ mod tests {
     #[test]
     fn test_apply_patches_classifies_visual_attr_as_paint() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let invalidation = apply_patches(
@@ -1976,10 +2059,9 @@ mod tests {
     #[test]
     fn test_apply_patches_classifies_content_attr_as_measure() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let element =
-            Element::with_attrs(id.clone(), ElementKind::Text, Vec::new(), Attrs::default());
+        let element = Element::with_attrs(id, ElementKind::Text, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         let invalidation = apply_patches(
@@ -1998,20 +2080,10 @@ mod tests {
     fn test_apply_patches_classifies_child_changes_as_structure() {
         let parent_id = NodeId::from_term_bytes(vec![1]);
         let child_id = NodeId::from_term_bytes(vec![2]);
-        let parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        let child = Element::with_attrs(
-            child_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+        let child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), Attrs::default());
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
         tree.insert(child);
 
@@ -2032,26 +2104,16 @@ mod tests {
         let parent_id = NodeId::from_term_bytes(vec![1]);
         let child_id = NodeId::from_term_bytes(vec![2]);
 
-        let parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
 
-        let child = Element::with_attrs(
-            child_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), Attrs::default());
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(child_id.clone());
+        subtree.set_root_id(child_id);
         subtree.insert(child);
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
 
         apply_patches(
@@ -2071,18 +2133,17 @@ mod tests {
     #[test]
     fn test_set_attrs_preserves_existing_mount_revision() {
         let id = NodeId::from_term_bytes(vec![7]);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         element.lifecycle.mounted_at_revision = 4;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: Vec::new(),
             }],
         )
@@ -2096,18 +2157,17 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![17]);
         let mut attrs = Attrs::default();
         attrs.content = Some("before".to_string());
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
             }],
         )
@@ -2126,18 +2186,17 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![18]);
         let mut attrs = Attrs::default();
         attrs.content = Some("before".to_string());
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: Vec::new(),
             }],
         )
@@ -2155,18 +2214,17 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.content = Some("before".to_string());
         attrs.text_input_focused = Some(true);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
             }],
         )
@@ -2187,18 +2245,17 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![182]);
         let mut attrs = Attrs::default();
         attrs.content = Some("before".to_string());
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.patch_content = Some("stale".to_string());
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
         tree.insert(element);
 
         apply_patches(
             &mut tree,
             vec![Patch::SetAttrs {
-                id: id.clone(),
+                id,
                 attrs_raw: vec![0, 1, 21, 0, 5, b'a', b'f', b't', b'e', b'r'],
             }],
         )
@@ -2219,33 +2276,21 @@ mod tests {
         let first_id = NodeId::from_term_bytes(vec![9]);
         let second_id = NodeId::from_term_bytes(vec![10]);
 
-        let mut parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        parent.children = vec![first_id.clone(), second_id.clone()];
+        let mut parent =
+            Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+        parent.children = vec![first_id, second_id];
         parent.lifecycle.mounted_at_revision = 2;
 
-        let mut first = Element::with_attrs(
-            first_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let mut first =
+            Element::with_attrs(first_id, ElementKind::El, Vec::new(), Attrs::default());
         first.lifecycle.mounted_at_revision = 2;
 
-        let mut second = Element::with_attrs(
-            second_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let mut second =
+            Element::with_attrs(second_id, ElementKind::El, Vec::new(), Attrs::default());
         second.lifecycle.mounted_at_revision = 3;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
         tree.insert(first);
         tree.insert(second);
@@ -2254,7 +2299,7 @@ mod tests {
             &mut tree,
             vec![Patch::SetChildren {
                 id: parent_id,
-                children: vec![second_id.clone(), first_id.clone()],
+                children: vec![second_id, first_id],
             }],
         )
         .unwrap();
@@ -2274,41 +2319,27 @@ mod tests {
         let parent_id = NodeId::from_term_bytes(vec![11]);
         let child_id = NodeId::from_term_bytes(vec![12]);
 
-        let mut parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        parent.children = vec![child_id.clone()];
+        let mut parent =
+            Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+        parent.children = vec![child_id];
 
-        let mut child = Element::with_attrs(
-            child_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let mut child =
+            Element::with_attrs(child_id, ElementKind::El, Vec::new(), Attrs::default());
         child.lifecycle.mounted_at_revision = 1;
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
         tree.insert(child);
         tree.set_revision(1);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: child_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: child_id }]).unwrap();
         let removed_revision = tree.revision();
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(child_id.clone());
+        subtree.set_root_id(child_id);
         subtree.insert(Element::with_attrs(
-            child_id.clone(),
+            child_id,
             ElementKind::El,
             Vec::new(),
             Attrs::default(),
@@ -2332,13 +2363,9 @@ mod tests {
         let parent_id = NodeId::from_term_bytes(vec![20]);
         let child_id = NodeId::from_term_bytes(vec![21]);
 
-        let mut parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        parent.children = vec![child_id.clone()];
+        let mut parent =
+            Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+        parent.children = vec![child_id];
 
         let mut child_attrs = Attrs::default();
         child_attrs.content = Some("ghosted".to_string());
@@ -2352,12 +2379,8 @@ mod tests {
         child_attrs.text_input_cursor = Some(2);
         child_attrs.animate_exit = Some(exit_alpha_spec());
 
-        let mut child = Element::with_attrs(
-            child_id.clone(),
-            ElementKind::TextInput,
-            Vec::new(),
-            child_attrs,
-        );
+        let mut child =
+            Element::with_attrs(child_id, ElementKind::TextInput, Vec::new(), child_attrs);
         child.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -2368,23 +2391,17 @@ mod tests {
         });
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
         tree.insert(child);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: child_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: child_id }]).unwrap();
 
         assert!(tree.get(&child_id).is_none());
 
         let parent = tree.get(&parent_id).unwrap();
         assert_eq!(parent.children.len(), 1);
-        let ghost_id = parent.children[0].clone();
+        let ghost_id = parent.children[0];
         assert_ne!(ghost_id, child_id);
 
         let ghost = tree.get(&ghost_id).expect("ghost root should exist");
@@ -2439,13 +2456,8 @@ mod tests {
         let root_id = NodeId::from_term_bytes(vec![30]);
         let child_id = NodeId::from_term_bytes(vec![31]);
 
-        let mut root = Element::with_attrs(
-            root_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        root.children = vec![child_id.clone()];
+        let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+        root.children = vec![child_id];
         root.layout.frame = Some(text_frame(0.0, 0.0, 120.0, 40.0));
 
         let mut child = text_element(31, "bye");
@@ -2456,17 +2468,11 @@ mod tests {
         child.layout.frame = Some(text_frame(8.0, 8.0, 48.0, 20.0));
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(root_id.clone());
+        tree.set_root_id(root_id);
         tree.insert(root);
         tree.insert(child);
 
-        apply_patches(
-            &mut tree,
-            vec![Patch::Remove {
-                id: child_id.clone(),
-            }],
-        )
-        .unwrap();
+        apply_patches(&mut tree, vec![Patch::Remove { id: child_id }]).unwrap();
 
         let output = crate::tree::render::render_tree(&tree);
         let press_ids: Vec<_> = output
@@ -2477,7 +2483,7 @@ mod tests {
             .filter(|listener| {
                 listener.matcher.kind() == ListenerMatcherKind::CursorButtonLeftPressInside
             })
-            .filter_map(|listener| listener.element_id.clone())
+            .filter_map(|listener| listener.element_id)
             .collect();
 
         assert!(!output.scene.nodes.is_empty());
@@ -2492,13 +2498,9 @@ mod tests {
         let third_id = NodeId::from_term_bytes(vec![43]);
         let new_id = NodeId::from_term_bytes(vec![44]);
 
-        let mut parent = Element::with_attrs(
-            parent_id.clone(),
-            ElementKind::Row,
-            Vec::new(),
-            Attrs::default(),
-        );
-        parent.children = vec![first_id.clone(), removed_id.clone(), third_id.clone()];
+        let mut parent =
+            Element::with_attrs(parent_id, ElementKind::Row, Vec::new(), Attrs::default());
+        parent.children = vec![first_id, removed_id, third_id];
 
         let first = text_element(41, "a");
 
@@ -2509,24 +2511,22 @@ mod tests {
         let third = text_element(43, "c");
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(parent_id.clone());
+        tree.set_root_id(parent_id);
         tree.insert(parent);
         tree.insert(first);
         tree.insert(removed);
         tree.insert(third);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_id.clone());
+        subtree.set_root_id(new_id);
         subtree.insert(text_element(44, "d"));
 
         apply_patches(
             &mut tree,
             vec![
-                Patch::Remove {
-                    id: removed_id.clone(),
-                },
+                Patch::Remove { id: removed_id },
                 Patch::InsertSubtree {
-                    parent_id: Some(parent_id.clone()),
+                    parent_id: Some(parent_id),
                     index: 1,
                     subtree,
                 },
@@ -2548,36 +2548,28 @@ mod tests {
         let old_nearby_id = NodeId::from_term_bytes(vec![51]);
         let new_nearby_id = NodeId::from_term_bytes(vec![52]);
 
-        let mut host = Element::with_attrs(
-            host_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        host.nearby
-            .set(NearbySlot::OnRight, Some(old_nearby_id.clone()));
+        let mut host = Element::with_attrs(host_id, ElementKind::El, Vec::new(), Attrs::default());
+        host.nearby.set(NearbySlot::OnRight, Some(old_nearby_id));
 
         let mut old_nearby = text_element(51, "old");
         old_nearby.layout.effective.animate_exit = Some(exit_alpha_spec());
         old_nearby.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(host);
         tree.insert(old_nearby);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_nearby_id.clone());
+        subtree.set_root_id(new_nearby_id);
         subtree.insert(text_element(52, "new"));
 
         apply_patches(
             &mut tree,
             vec![
-                Patch::Remove {
-                    id: old_nearby_id.clone(),
-                },
+                Patch::Remove { id: old_nearby_id },
                 Patch::InsertNearbySubtree {
-                    host_id: host_id.clone(),
+                    host_id,
                     index: 0,
                     slot: NearbySlot::OnRight,
                     subtree,
@@ -2599,36 +2591,28 @@ mod tests {
         let old_nearby_id = NodeId::from_term_bytes(vec![54]);
         let new_nearby_id = NodeId::from_term_bytes(vec![55]);
 
-        let mut host = Element::with_attrs(
-            host_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        host.nearby
-            .set(NearbySlot::InFront, Some(old_nearby_id.clone()));
+        let mut host = Element::with_attrs(host_id, ElementKind::El, Vec::new(), Attrs::default());
+        host.nearby.set(NearbySlot::InFront, Some(old_nearby_id));
 
         let mut old_nearby = text_element(54, "old");
         old_nearby.layout.effective.animate_exit = Some(exit_alpha_spec());
         old_nearby.spec.declared.animate_exit = Some(exit_alpha_spec());
 
         let mut tree = ElementTree::new();
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
         tree.insert(host);
         tree.insert(old_nearby);
 
         let mut subtree = ElementTree::new();
-        subtree.set_root_id(new_nearby_id.clone());
+        subtree.set_root_id(new_nearby_id);
         subtree.insert(text_element(55, "new"));
 
         apply_patches(
             &mut tree,
             vec![
-                Patch::Remove {
-                    id: old_nearby_id.clone(),
-                },
+                Patch::Remove { id: old_nearby_id },
                 Patch::InsertNearbySubtree {
-                    host_id: host_id.clone(),
+                    host_id,
                     index: 0,
                     slot: NearbySlot::Below,
                     subtree,

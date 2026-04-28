@@ -345,7 +345,11 @@ fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
     group.bench_function("full_layout_plus_refresh_scroll_frame", |b| {
         b.iter(|| {
             full_tick += 16;
-            let delta = if full_tick % 32 == 0 { 8.0 } else { -8.0 };
+            let delta = if full_tick.is_multiple_of(32) {
+                8.0
+            } else {
+                -8.0
+            };
             black_box(full_tree.apply_scroll_y(&full_root_id, delta));
             let output = layout_and_refresh_default_with_animation(
                 &mut full_tree,
@@ -379,7 +383,11 @@ fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
     group.bench_function("paint_only_refresh_scroll_frame", |b| {
         b.iter(|| {
             refresh_tick += 16;
-            let delta = if refresh_tick % 32 == 0 { 8.0 } else { -8.0 };
+            let delta = if refresh_tick.is_multiple_of(32) {
+                8.0
+            } else {
+                -8.0
+            };
             black_box(refresh_tree.apply_scroll_y(&refresh_root_id, delta));
             let update = layout_or_refresh_default_with_animation(
                 &mut refresh_tree,
@@ -729,7 +737,11 @@ fn bench_animation_refresh_regression_pair(
         b.iter(|| {
             cached_tick += 16;
             if scroll_each_frame {
-                let delta = if cached_tick % 32 == 0 { 8.0 } else { -8.0 };
+                let delta = if cached_tick.is_multiple_of(32) {
+                    8.0
+                } else {
+                    -8.0
+                };
                 if let Some(root_id) = cached_root_id {
                     black_box(cached_tree.apply_scroll_y(&root_id, delta));
                 }
@@ -761,7 +773,11 @@ fn bench_animation_refresh_regression_pair(
         b.iter(|| {
             uncached_tick += 16;
             if scroll_each_frame {
-                let delta = if uncached_tick % 32 == 0 { 8.0 } else { -8.0 };
+                let delta = if uncached_tick.is_multiple_of(32) {
+                    8.0
+                } else {
+                    -8.0
+                };
                 if let Some(root_id) = uncached_root_id {
                     black_box(uncached_tree.apply_scroll_y(&root_id, delta));
                 }
@@ -1109,9 +1125,11 @@ fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId)
     let host_id = NodeId::from_u64(2);
     let hidden_id = NodeId::from_u64(hidden_seed);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(920.0));
-    root_attrs.spacing = Some(8.0);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(920.0)),
+        spacing: Some(8.0),
+        ..Default::default()
+    };
     tree.set_root_id(root_id);
     tree.insert(Element::with_attrs(
         root_id,
@@ -1125,12 +1143,16 @@ fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId)
             let card_id = NodeId::from_u64(1_000 + index as u64);
             let text_id = NodeId::from_u64(2_000 + index as u64);
 
-            let mut card_attrs = Attrs::default();
-            card_attrs.width = Some(Length::Px(280.0));
-            card_attrs.padding = Some(Padding::Uniform(10.0));
-            let mut text_attrs = Attrs::default();
-            text_attrs.content = Some(format!("Border recipe card {index}"));
-            text_attrs.font_size = Some(13.0);
+            let card_attrs = Attrs {
+                width: Some(Length::Px(280.0)),
+                padding: Some(Padding::Uniform(10.0)),
+                ..Default::default()
+            };
+            let text_attrs = Attrs {
+                content: Some(format!("Border recipe card {index}")),
+                font_size: Some(13.0),
+                ..Default::default()
+            };
 
             tree.insert(Element::with_attrs(
                 card_id,
@@ -1150,11 +1172,13 @@ fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId)
         }))
         .collect();
 
-    let mut host_attrs = Attrs::default();
-    host_attrs.width = Some(Length::Px(360.0));
-    host_attrs.padding = Some(Padding::Uniform(12.0));
-    host_attrs.on_mouse_enter = Some(true);
-    host_attrs.on_mouse_leave = Some(true);
+    let host_attrs = Attrs {
+        width: Some(Length::Px(360.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        on_mouse_enter: Some(true),
+        on_mouse_leave: Some(true),
+        ..Default::default()
+    };
     tree.insert(Element::with_attrs(
         host_id,
         ElementKind::El,
@@ -1184,10 +1208,12 @@ fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId)
 fn nearby_code_block_subtree(seed: u64) -> ElementTree {
     let mut tree = ElementTree::new();
     let root_id = NodeId::from_u64(seed);
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(460.0));
-    root_attrs.padding = Some(Padding::Uniform(12.0));
-    root_attrs.spacing = Some(4.0);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(460.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        spacing: Some(4.0),
+        ..Default::default()
+    };
     tree.set_root_id(root_id);
     tree.insert(Element::with_attrs(
         root_id,
@@ -1210,9 +1236,11 @@ fn nearby_code_block_subtree(seed: u64) -> ElementTree {
         .enumerate()
         .map(|(index, line)| {
             let id = NodeId::from_u64(seed + 1 + index as u64);
-            let mut attrs = Attrs::default();
-            attrs.content = Some((*line).to_string());
-            attrs.font_size = Some(if index == 0 { 11.0 } else { 12.0 });
+            let attrs = Attrs {
+                content: Some((*line).to_string()),
+                font_size: Some(if index == 0 { 11.0 } else { 12.0 }),
+                ..Default::default()
+            };
             tree.insert(Element::with_attrs(
                 id,
                 ElementKind::Text,

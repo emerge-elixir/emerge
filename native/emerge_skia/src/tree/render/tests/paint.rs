@@ -72,11 +72,11 @@ fn build_scroll_panel_with_cards(
     cards: Vec<(u8, Attrs, Frame)>,
 ) -> ElementTree {
     let panel_id = NodeId::from_term_bytes(vec![90]);
-    let mut panel = Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
+    let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), panel_attrs);
     panel.layout.frame = Some(panel_frame);
 
     let mut tree = ElementTree::new();
-    tree.set_root_id(panel_id.clone());
+    tree.set_root_id(panel_id);
 
     let child_ids = cards
         .iter()
@@ -212,7 +212,7 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     attrs.image_src = Some(ImageSource::Logical("images/photo.jpg".to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -233,6 +233,61 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
             .iter()
             .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _)))
     );
+}
+
+#[test]
+fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
+    let image_id = "paint_cached_pending_image_becomes_ready";
+    let id = NodeId::from_term_bytes(vec![90]);
+    let mut attrs = Attrs::default();
+    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
+    attrs.image_fit = Some(ImageFit::Contain);
+
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
+    element.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 40.0,
+        content_width: 40.0,
+        content_height: 40.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(id);
+    tree.insert(element);
+    tree.clear_refresh_dirty();
+
+    let first_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let first_trace = trace_scene(&first_scene);
+    assert!(first_trace.draws.iter().any(|draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
+        )
+    }));
+    assert!(tree.has_render_subtree_cache());
+
+    crate::renderer::insert_test_raster_asset_rgba(image_id, 1, 1, &[0, 255, 0, 255])
+        .expect("test asset should insert");
+    crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
+
+    let second_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let second_trace = trace_scene(&second_scene);
+
+    assert!(!second_trace.draws.iter().any(|draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
+        )
+    }));
+    assert!(second_trace.draws.iter().any(|draw| {
+        matches!(
+            &draw.primitive,
+            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, None)
+                if asset_id == image_id
+        )
+    }));
 }
 
 #[test]
@@ -734,7 +789,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
         b: 255,
     });
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -770,7 +825,7 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     attrs.image_fit = Some(ImageFit::Contain);
     attrs.svg_expected = Some(true);
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -1403,22 +1458,17 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             ),
         ];
 
-        let mut panel =
-            Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
+        let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), panel_attrs);
         panel.layout.frame = Some(panel_frame);
-        panel.children = vec![column_id.clone()];
+        panel.children = vec![column_id];
 
-        let mut column = Element::with_attrs(
-            column_id.clone(),
-            ElementKind::Column,
-            Vec::new(),
-            column_attrs,
-        );
+        let mut column =
+            Element::with_attrs(column_id, ElementKind::Column, Vec::new(), column_attrs);
         column.layout.frame = Some(column_frame);
-        column.children = vec![glow_row_id.clone(), combined_row_id.clone()];
+        column.children = vec![glow_row_id, combined_row_id];
 
         let mut glow_row = Element::with_attrs(
-            glow_row_id.clone(),
+            glow_row_id,
             ElementKind::WrappedRow,
             Vec::new(),
             glow_row_attrs,
@@ -1430,7 +1480,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             .collect();
 
         let mut combined_row = Element::with_attrs(
-            combined_row_id.clone(),
+            combined_row_id,
             ElementKind::WrappedRow,
             Vec::new(),
             combined_row_attrs,
@@ -1450,7 +1500,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
 
         for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
             let id = NodeId::from_term_bytes(vec![id]);
-            let mut child = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+            let mut child = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
             child.layout.frame = Some(frame);
             tree.insert(child);
         }

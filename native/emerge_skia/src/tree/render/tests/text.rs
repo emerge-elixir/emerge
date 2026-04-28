@@ -353,8 +353,8 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         b: 65,
     }));
     root_attrs.scrollbar_y = Some(true);
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![column_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![column_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -364,13 +364,9 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         content_height: 180.0,
     });
 
-    let mut column = Element::with_attrs(
-        column_id.clone(),
-        ElementKind::Column,
-        Vec::new(),
-        Attrs::default(),
-    );
-    column.children = vec![row1_id.clone(), row2_id.clone()];
+    let mut column =
+        Element::with_attrs(column_id, ElementKind::Column, Vec::new(), Attrs::default());
+    column.children = vec![row1_id, row2_id];
     column.layout.frame = Some(Frame {
         x: 10.0,
         y: 10.0,
@@ -380,13 +376,8 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         content_height: 160.0,
     });
 
-    let mut row1 = Element::with_attrs(
-        row1_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        Attrs::default(),
-    );
-    row1.children = vec![row1_text_id.clone()];
+    let mut row1 = Element::with_attrs(row1_id, ElementKind::El, Vec::new(), Attrs::default());
+    row1.children = vec![row1_text_id];
     row1.layout.frame = Some(Frame {
         x: 10.0,
         y: 10.0,
@@ -411,13 +402,8 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         content_height: 14.0,
     });
 
-    let mut row2 = Element::with_attrs(
-        row2_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        Attrs::default(),
-    );
-    row2.children = vec![row2_text_id.clone()];
+    let mut row2 = Element::with_attrs(row2_id, ElementKind::El, Vec::new(), Attrs::default());
+    row2.children = vec![row2_text_id];
     row2.layout.frame = Some(Frame {
         x: 10.0,
         y: 36.0,

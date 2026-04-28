@@ -16,8 +16,8 @@ fn test_layout_with_scale() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     // With scale=2.0, frame pixel values should double
@@ -55,8 +55,8 @@ fn test_layout_with_scale_scales_font_spacing() {
     attrs.font_word_spacing = Some(3.0);
 
     let el = make_element("root", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -83,8 +83,8 @@ fn test_layout_scale_minimum_maximum() {
     attrs.height = Some(Length::Maximum(200.0, Box::new(Length::Fill)));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     // With scale=2.0:
@@ -149,8 +149,8 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
     attrs.mouse_over_active = Some(true);
 
     let root = make_element("root", ElementKind::El, attrs);
-    let root_id = root.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -295,8 +295,8 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     attrs.mouse_down_active = Some(true);
 
     let root = make_element("root", ElementKind::TextInput, attrs);
-    let root_id = root.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -660,8 +660,8 @@ fn test_layout_uses_first_animation_keyframe_for_static_frames() {
     });
 
     let root = make_element("root", ElementKind::El, attrs);
-    let root_id = root.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(

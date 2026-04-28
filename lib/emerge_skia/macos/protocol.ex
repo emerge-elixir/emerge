@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 7
+  @protocol_version 8
 
   @log_level_debug 0
   @log_level_info 1
@@ -151,6 +151,7 @@ defmodule EmergeSkia.Macos.Protocol do
         height,
         scroll_line_pixels,
         renderer_stats_log,
+        renderer_cache,
         macos_backend,
         asset_config
       ) do
@@ -162,8 +163,18 @@ defmodule EmergeSkia.Macos.Protocol do
 
     <<byte_size(title)::unsigned-big-32, title::binary, width::unsigned-big-32,
       height::unsigned-big-32, scroll_line_pixels::float-big-32, renderer_stats_log,
+      encode_renderer_cache_config(renderer_cache)::binary,
       encode_macos_backend_tag(macos_backend), asset_payload::binary,
       encode_fonts(fonts, priv_dir)::binary>>
+  end
+
+  defp encode_renderer_cache_config(renderer_cache) do
+    clean_subtree = Map.fetch!(renderer_cache, :clean_subtree)
+
+    <<Map.fetch!(renderer_cache, :max_new_payloads_per_frame)::unsigned-big-32,
+      Map.fetch!(clean_subtree, :max_entries)::unsigned-big-64,
+      Map.fetch!(clean_subtree, :max_bytes)::unsigned-big-64,
+      Map.fetch!(clean_subtree, :max_entry_bytes)::unsigned-big-64>>
   end
 
   def encode_configure_assets(asset_config) do

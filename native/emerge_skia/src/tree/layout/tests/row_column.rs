@@ -20,22 +20,22 @@ fn test_row_paint_children_follow_layout_order_not_source_order() {
     row_attrs.width = Some(Length::Px(200.0));
     row_attrs.height = Some(Length::Px(40.0));
     let mut row = Element::with_attrs(row_id, ElementKind::Row, Vec::new(), row_attrs);
-    row.children = vec![right_id.clone(), center_id.clone()];
+    row.children = vec![right_id, center_id];
 
     let mut right_attrs = Attrs::default();
     right_attrs.width = Some(Length::Px(20.0));
     right_attrs.height = Some(Length::Px(20.0));
     right_attrs.align_x = Some(AlignX::Right);
-    let right = Element::with_attrs(right_id.clone(), ElementKind::El, Vec::new(), right_attrs);
+    let right = Element::with_attrs(right_id, ElementKind::El, Vec::new(), right_attrs);
 
     let mut center_attrs = Attrs::default();
     center_attrs.width = Some(Length::Px(20.0));
     center_attrs.height = Some(Length::Px(20.0));
     center_attrs.align_x = Some(AlignX::Center);
-    let center = Element::with_attrs(center_id.clone(), ElementKind::El, Vec::new(), center_attrs);
+    let center = Element::with_attrs(center_id, ElementKind::El, Vec::new(), center_attrs);
 
     let mut tree = ElementTree::new();
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(right);
     tree.insert(center);
@@ -58,7 +58,7 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
     row_attrs.height = Some(Length::Content);
     row_attrs.spacing = Some(10.0);
     let mut row = Element::with_attrs(row_id, ElementKind::WrappedRow, Vec::new(), row_attrs);
-    row.children = vec![first_id.clone(), second_id.clone(), third_id.clone()];
+    row.children = vec![first_id, second_id, third_id];
 
     let child = |id: NodeId| {
         let mut attrs = Attrs::default();
@@ -68,11 +68,11 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
     };
 
     let mut tree = ElementTree::new();
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
-    tree.insert(child(first_id.clone()));
-    tree.insert(child(second_id.clone()));
-    tree.insert(child(third_id.clone()));
+    tree.insert(child(first_id));
+    tree.insert(child(second_id));
+    tree.insert(child(third_id));
 
     layout_tree_default(&mut tree, Constraint::new(150.0, 200.0), 1.0);
 
@@ -140,6 +140,87 @@ fn test_exit_ghost_stays_in_active_layout_until_pruned() {
     );
 }
 
+#[test]
+fn test_multiple_exit_ghosts_keep_individual_column_slots() {
+    let root_id = NodeId::from_u64(10_301);
+    let item_ids: Vec<NodeId> = (0..8)
+        .map(|index| NodeId::from_u64(10_310 + index))
+        .collect();
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(100.0));
+    root_attrs.height = Some(Length::Content);
+    let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
+    root.children = item_ids.clone();
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+
+    for (index, item_id) in item_ids.iter().enumerate() {
+        let mut attrs = fixed_box_attrs(100.0, 20.0);
+        if (1..=3).contains(&index) {
+            attrs.animate_exit = Some(exit_alpha_spec());
+        }
+        tree.insert(Element::with_attrs(
+            *item_id,
+            ElementKind::El,
+            Vec::new(),
+            attrs,
+        ));
+    }
+
+    layout_tree_default(&mut tree, Constraint::new(100.0, 200.0), 1.0);
+
+    apply_patches(
+        &mut tree,
+        vec![
+            Patch::Remove { id: item_ids[1] },
+            Patch::Remove { id: item_ids[2] },
+            Patch::Remove { id: item_ids[3] },
+        ],
+    )
+    .unwrap();
+    layout_tree_default(&mut tree, Constraint::new(100.0, 200.0), 1.0);
+
+    let child_ids = tree.child_ids(&root_id);
+    let ghost_ids: Vec<NodeId> = child_ids
+        .iter()
+        .copied()
+        .filter(|id| tree.get(id).is_some_and(Element::is_ghost_root))
+        .collect();
+
+    assert_eq!(ghost_ids.len(), 3);
+    assert_eq!(
+        ghost_ids
+            .iter()
+            .map(|id| tree.get(id).unwrap().layout.frame.unwrap().y)
+            .collect::<Vec<_>>(),
+        vec![20.0, 40.0, 60.0]
+    );
+    assert_eq!(
+        tree.get(&item_ids[4]).unwrap().layout.frame.unwrap().y,
+        80.0
+    );
+    assert_eq!(
+        tree.get(&root_id).unwrap().layout.frame.unwrap().height,
+        160.0
+    );
+    assert_eq!(
+        child_ids,
+        vec![
+            item_ids[0],
+            ghost_ids[0],
+            ghost_ids[1],
+            ghost_ids[2],
+            item_ids[4],
+            item_ids[5],
+            item_ids[6],
+            item_ids[7],
+        ]
+    );
+}
+
 fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
     let mut attrs = Attrs::default();
     attrs.width = Some(Length::Px(width));
@@ -166,7 +247,7 @@ fn insert_text_node(tree: &mut ElementTree, id: &str, content: &str, font_size: 
     let mut attrs = text_attrs(content);
     attrs.font_size = Some(font_size);
     let element = make_element(id, ElementKind::Text, attrs);
-    let element_id = element.id.clone();
+    let element_id = element.id;
     tree.insert(element);
     element_id
 }
@@ -190,7 +271,7 @@ fn insert_badge_node(
         });
         a
     });
-    let badge_id = badge.id.clone();
+    let badge_id = badge.id;
     badge.children = vec![text_id];
     tree.insert(badge);
     badge_id
@@ -212,7 +293,7 @@ fn insert_temp_line_node(
         a.spacing = Some(6.0);
         a
     });
-    let row_id = row.id.clone();
+    let row_id = row.id;
     row.children = vec![label_id, primary_id, secondary_id];
     tree.insert(row);
     row_id
@@ -237,7 +318,7 @@ fn insert_weather_day_card_node(
         a.height = Some(Length::Fill);
         a
     });
-    let icon_id = icon.id.clone();
+    let icon_id = icon.id;
     tree.insert(icon);
 
     let mut icon_wrap = make_element(&format!("{id}_icon_wrap"), ElementKind::El, {
@@ -247,7 +328,7 @@ fn insert_weather_day_card_node(
         a.padding = Some(Padding::Uniform(8.0));
         a
     });
-    let icon_wrap_id = icon_wrap.id.clone();
+    let icon_wrap_id = icon_wrap.id;
     icon_wrap.children = vec![icon_id];
     tree.insert(icon_wrap);
 
@@ -267,7 +348,7 @@ fn insert_weather_day_card_node(
         a.spacing = Some(8.0);
         a
     });
-    let column_id = column.id.clone();
+    let column_id = column.id;
     column.children = vec![day_id, icon_wrap_id, condition_id, hi_id, lo_id, precip_id];
     tree.insert(column);
 
@@ -279,7 +360,7 @@ fn insert_weather_day_card_node(
         a.border_width = Some(BorderWidth::Uniform(1.0));
         a
     });
-    let card_id = card.id.clone();
+    let card_id = card.id;
     card.children = vec![column_id];
     tree.insert(card);
     card_id
@@ -292,7 +373,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         a.width = Some(Length::Fill);
         a
     });
-    let title_fill_id = title_fill.id.clone();
+    let title_fill_id = title_fill.id;
     title_fill.children = vec![title_text_id];
     tree.insert(title_fill);
 
@@ -310,7 +391,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         a.spacing = Some(8.0);
         a
     });
-    let title_row_id = title_row.id.clone();
+    let title_row_id = title_row.id;
     title_row.children = vec![title_fill_id, badge_id];
     tree.insert(title_row);
 
@@ -326,7 +407,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
                 a.height = Some(Length::Px(size));
                 a
             });
-            let icon_id = icon.id.clone();
+            let icon_id = icon.id;
             tree.insert(icon);
 
             let text_id =
@@ -338,7 +419,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
                     a.spacing = Some(8.0);
                     a
                 });
-            let content_id = content.id.clone();
+            let content_id = content.id;
             content.children = vec![icon_id, text_id];
             tree.insert(content);
 
@@ -349,7 +430,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
                 a.padding = Some(Padding::Uniform(8.0));
                 a
             });
-            let box_id = box_el.id.clone();
+            let box_id = box_el.id;
             box_el.children = vec![content_id];
             tree.insert(box_el);
             box_id
@@ -362,7 +443,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         a.spacing = Some(8.0);
         a
     });
-    let sizes_row_id = sizes_row.id.clone();
+    let sizes_row_id = sizes_row.id;
     sizes_row.children = size_box_ids;
     tree.insert(sizes_row);
 
@@ -371,7 +452,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         a.spacing = Some(10.0);
         a
     });
-    let column_id = column.id.clone();
+    let column_id = column.id;
     column.children = vec![title_row_id, note_id, sizes_row_id];
     tree.insert(column);
 
@@ -382,7 +463,7 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         a.spacing = Some(10.0);
         a
     });
-    let card_id = card.id.clone();
+    let card_id = card.id;
     card.children = vec![column_id];
     tree.insert(card);
     card_id
@@ -499,7 +580,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a.spacing = Some(8.0);
         a
     });
-    let left_badges_id = left_badges.id.clone();
+    let left_badges_id = left_badges.id;
     left_badges.children = vec![badge_svg_id, badge_c_id, badge_f_id];
     tree.insert(left_badges);
 
@@ -509,7 +590,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a.spacing = Some(6.0);
         a
     });
-    let left_column_id = left_column.id.clone();
+    let left_column_id = left_column.id;
     left_column.children = vec![left_title_id, left_intro_id, left_badges_id];
     tree.insert(left_column);
 
@@ -532,7 +613,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a.spacing = Some(8.0);
         a
     });
-    let right_column_id = right_column.id.clone();
+    let right_column_id = right_column.id;
     right_column.children = vec![sample_badge_id, summary_text_id];
     tree.insert(right_column);
 
@@ -542,7 +623,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a.spacing = Some(12.0);
         a
     });
-    let top_row_id = top_row.id.clone();
+    let top_row_id = top_row.id;
     top_row.children = vec![left_column_id, right_column_id];
     tree.insert(top_row);
 
@@ -589,12 +670,12 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         })
         .collect();
 
-    let weather_row_id = weather_row.id.clone();
+    let weather_row_id = weather_row.id;
     weather_row.children = weather_card_ids.clone();
     tree.insert(weather_row);
 
-    let weather_shell_id = weather_shell.id.clone();
-    weather_shell.children = vec![weather_row_id.clone()];
+    let weather_shell_id = weather_shell.id;
+    weather_shell.children = vec![weather_row_id];
     tree.insert(weather_shell);
 
     let weather_column = make_element("weather_column", ElementKind::Column, {
@@ -603,11 +684,11 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a
     });
     let mut weather_column = weather_column;
-    let weather_column_id = weather_column.id.clone();
-    weather_column.children = vec![top_row_id, weather_shell_id.clone()];
+    let weather_column_id = weather_column.id;
+    weather_column.children = vec![top_row_id, weather_shell_id];
     tree.insert(weather_column);
 
-    let weather_widget_id = weather_widget.id.clone();
+    let weather_widget_id = weather_widget.id;
     weather_widget.children = vec![weather_column_id];
     tree.insert(weather_widget);
 
@@ -657,12 +738,12 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         })
         .collect();
 
-    let svg_row_id = svg_row.id.clone();
+    let svg_row_id = svg_row.id;
     svg_row.children = svg_card_ids.clone();
     tree.insert(svg_row);
 
-    let centered_wrapper_id = centered_wrapper.id.clone();
-    centered_wrapper.children = vec![svg_row_id.clone()];
+    let centered_wrapper_id = centered_wrapper.id;
+    centered_wrapper.children = vec![svg_row_id];
     tree.insert(centered_wrapper);
 
     let mut svg_section = make_element("svg_section", ElementKind::Column, {
@@ -671,7 +752,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a.spacing = Some(12.0);
         a
     });
-    let svg_section_id = svg_section.id.clone();
+    let svg_section_id = svg_section.id;
     svg_section.children = vec![
         svg_scaling_title_id,
         svg_scaling_intro_id,
@@ -686,12 +767,12 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
         a
     });
 
-    let header_id = header.id.clone();
-    let body_id = body.id.clone();
-    let menu_id = menu.id.clone();
-    let content_panel_id = content_panel.id.clone();
-    let page_id = page.id.clone();
-    let footer_id = footer.id.clone();
+    let header_id = header.id;
+    let body_id = body.id;
+    let menu_id = menu.id;
+    let content_panel_id = content_panel.id;
+    let page_id = page.id;
+    let footer_id = footer.id;
 
     page.children = vec![
         assets_title_id,
@@ -753,12 +834,12 @@ fn test_layout_row_weighted_fill_with_content_parent() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -802,12 +883,12 @@ fn test_layout_column_weighted_fill_with_content_parent() {
         a
     });
 
-    let col_id = col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let col_id = col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(col_id.clone());
+    col.children = vec![c1_id, c2_id];
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -849,11 +930,11 @@ fn test_layout_row_spacing_xy_uses_horizontal() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
+    row.children = vec![c1_id, c2_id];
     tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
@@ -896,11 +977,11 @@ fn test_layout_column_spacing_xy_uses_vertical() {
         a
     });
 
-    let col_id = col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let col_id = col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    col.children = vec![c1_id.clone(), c2_id.clone()];
+    col.children = vec![c1_id, c2_id];
     tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
@@ -943,12 +1024,12 @@ fn test_layout_text_column_stacks_like_column() {
         a
     });
 
-    let text_col_id = text_col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let text_col_id = text_col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    text_col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(text_col_id.clone());
+    text_col.children = vec![c1_id, c2_id];
+    tree.set_root_id(text_col_id);
     tree.insert(text_col);
     tree.insert(child1);
     tree.insert(child2);
@@ -993,11 +1074,11 @@ fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
+    row.children = vec![c1_id, c2_id];
     tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
@@ -1047,12 +1128,12 @@ fn test_layout_row_space_evenly_distribution() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+    row.children = vec![c1_id, c2_id, c3_id];
     tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
@@ -1105,12 +1186,12 @@ fn test_layout_column_space_evenly_distribution() {
         a
     });
 
-    let col_id = col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let col_id = col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    col.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
+    col.children = vec![c1_id, c2_id, c3_id];
     tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
@@ -1156,11 +1237,11 @@ fn test_layout_row_space_evenly_ignored_for_content_parent() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
+    row.children = vec![c1_id, c2_id];
     tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
@@ -1202,12 +1283,12 @@ fn test_layout_row() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1259,13 +1340,13 @@ fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id, c3_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1316,12 +1397,12 @@ fn test_layout_column_fill() {
         a
     });
 
-    let col_id = col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let col_id = col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    col.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(col_id.clone());
+    col.children = vec![c1_id, c2_id];
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -1366,12 +1447,12 @@ fn test_layout_row_with_max_width_child() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1431,13 +1512,13 @@ fn test_wrapped_row_height_with_wrapping() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id, c3_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -1499,11 +1580,11 @@ fn test_wrapped_row_two_items_per_line() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let row_id = row.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let row_id = row.id;
     row.children = child_ids.clone();
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     for child in children {
         tree.insert(child);
@@ -1590,17 +1671,17 @@ fn test_column_with_wrapped_row_pushes_siblings() {
         a
     });
 
-    let col_id = col.id.clone();
-    let row_id = wrapped_row.id.clone();
-    let chip1_id = chip1.id.clone();
-    let chip2_id = chip2.id.clone();
-    let chip3_id = chip3.id.clone();
-    let below_id = below_el.id.clone();
+    let col_id = col.id;
+    let row_id = wrapped_row.id;
+    let chip1_id = chip1.id;
+    let chip2_id = chip2.id;
+    let chip3_id = chip3.id;
+    let below_id = below_el.id;
 
-    wrapped_row.children = vec![chip1_id.clone(), chip2_id.clone(), chip3_id.clone()];
-    col.children = vec![row_id.clone(), below_id.clone()];
+    wrapped_row.children = vec![chip1_id, chip2_id, chip3_id];
+    col.children = vec![row_id, below_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(wrapped_row);
     tree.insert(chip1);
@@ -1674,18 +1755,18 @@ fn test_wrapped_row_inside_fill_chain_wraps_cards() {
         })
         .collect();
 
-    let root_id = root.id.clone();
-    let column_id = column.id.clone();
-    let wrapper_id = wrapper.id.clone();
-    let row_id = wrapped_row.id.clone();
-    let card_ids: Vec<_> = cards.iter().map(|card| card.id.clone()).collect();
+    let root_id = root.id;
+    let column_id = column.id;
+    let wrapper_id = wrapper.id;
+    let row_id = wrapped_row.id;
+    let card_ids: Vec<_> = cards.iter().map(|card| card.id).collect();
 
     wrapped_row.children = card_ids.clone();
-    wrapper.children = vec![row_id.clone()];
-    column.children = vec![wrapper_id.clone()];
-    root.children = vec![column_id.clone()];
+    wrapper.children = vec![row_id];
+    column.children = vec![wrapper_id];
+    root.children = vec![column_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(column);
     tree.insert(wrapper);
@@ -1743,11 +1824,11 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
         })
         .collect();
 
-    let row_id = wrapped_row.id.clone();
-    let card_ids: Vec<_> = cards.iter().map(|card| card.id.clone()).collect();
+    let row_id = wrapped_row.id;
+    let card_ids: Vec<_> = cards.iter().map(|card| card.id).collect();
 
     wrapped_row.children = card_ids.clone();
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(wrapped_row);
     for card in cards {
         tree.insert(card);
@@ -1813,10 +1894,10 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
             ),
         );
 
-        let label_id = label.id.clone();
-        let box_id = box_el.id.clone();
-        let paragraph_id = paragraph.id.clone();
-        let text_child_id = text.id.clone();
+        let label_id = label.id;
+        let box_id = box_el.id;
+        let paragraph_id = paragraph.id;
+        let text_child_id = text.id;
 
         paragraph.children = vec![text_child_id];
         box_el.children = vec![paragraph_id];
@@ -1836,9 +1917,9 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
         ),
     );
 
-    let isolated_card_id = isolated_card.id.clone();
+    let isolated_card_id = isolated_card.id;
 
-    isolated_tree.set_root_id(isolated_card_id.clone());
+    isolated_tree.set_root_id(isolated_card_id);
     isolated_tree.insert(isolated_card);
     isolated_tree.insert(isolated_label);
     isolated_tree.insert(isolated_box);
@@ -1902,14 +1983,14 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
         a
     });
 
-    let root_id = column.id.clone();
-    let row_id = wrapped_row.id.clone();
-    let card_a_id = card_a.id.clone();
-    let card_b_id = card_b.id.clone();
-    let below_id = below.id.clone();
+    let root_id = column.id;
+    let row_id = wrapped_row.id;
+    let card_a_id = card_a.id;
+    let card_b_id = card_b.id;
+    let below_id = below.id;
 
-    wrapped_row.children = vec![card_a_id.clone(), card_b_id.clone()];
-    column.children = vec![row_id.clone(), below_id.clone()];
+    wrapped_row.children = vec![card_a_id, card_b_id];
+    column.children = vec![row_id, below_id];
 
     tree.set_root_id(root_id);
     tree.insert(column);
@@ -1975,14 +2056,14 @@ fn test_row_weighted_fill_subtracts_decorated_fixed_outer_width() {
         a
     });
 
-    let row_id = row.id.clone();
-    let fixed_id = fixed.id.clone();
-    let fill_a_id = fill_a.id.clone();
-    let fill_b_id = fill_b.id.clone();
+    let row_id = row.id;
+    let fixed_id = fixed.id;
+    let fill_a_id = fill_a.id;
+    let fill_b_id = fill_b.id;
 
-    row.children = vec![fixed_id.clone(), fill_a_id.clone(), fill_b_id.clone()];
+    row.children = vec![fixed_id, fill_a_id, fill_b_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(fixed);
     tree.insert(fill_a);
@@ -2281,34 +2362,34 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
         a
     });
 
-    let root_id = root.id.clone();
-    let header_id = header.id.clone();
-    let body_id = body.id.clone();
-    let menu_id = menu.id.clone();
-    let content_panel_id = content_panel.id.clone();
-    let page_id = page.id.clone();
-    let weather_widget_id = weather_widget.id.clone();
-    let weather_shell_id = weather_shell.id.clone();
-    let weather_row_id = weather_row.id.clone();
-    let weather_card_ids: Vec<_> = weather_cards.iter().map(|card| card.id.clone()).collect();
-    let svg_section_id = svg_section.id.clone();
-    let centered_wrapper_id = centered_wrapper.id.clone();
-    let svg_row_id = svg_row.id.clone();
-    let svg_card_ids: Vec<_> = svg_cards.iter().map(|card| card.id.clone()).collect();
-    let footer_id = footer.id.clone();
+    let root_id = root.id;
+    let header_id = header.id;
+    let body_id = body.id;
+    let menu_id = menu.id;
+    let content_panel_id = content_panel.id;
+    let page_id = page.id;
+    let weather_widget_id = weather_widget.id;
+    let weather_shell_id = weather_shell.id;
+    let weather_row_id = weather_row.id;
+    let weather_card_ids: Vec<_> = weather_cards.iter().map(|card| card.id).collect();
+    let svg_section_id = svg_section.id;
+    let centered_wrapper_id = centered_wrapper.id;
+    let svg_row_id = svg_row.id;
+    let svg_card_ids: Vec<_> = svg_cards.iter().map(|card| card.id).collect();
+    let footer_id = footer.id;
 
     weather_row.children = weather_card_ids.clone();
-    weather_shell.children = vec![weather_row_id.clone()];
-    weather_widget.children = vec![weather_shell_id.clone()];
+    weather_shell.children = vec![weather_row_id];
+    weather_widget.children = vec![weather_shell_id];
     svg_row.children = svg_card_ids.clone();
-    centered_wrapper.children = vec![svg_row_id.clone()];
-    svg_section.children = vec![centered_wrapper_id.clone()];
-    page.children = vec![weather_widget_id.clone(), svg_section_id.clone()];
-    content_panel.children = vec![page_id.clone()];
-    body.children = vec![menu_id.clone(), content_panel_id.clone()];
-    root.children = vec![header_id.clone(), body_id.clone(), footer_id.clone()];
+    centered_wrapper.children = vec![svg_row_id];
+    svg_section.children = vec![centered_wrapper_id];
+    page.children = vec![weather_widget_id, svg_section_id];
+    content_panel.children = vec![page_id];
+    body.children = vec![menu_id, content_panel_id];
+    root.children = vec![header_id, body_id, footer_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(header);
     tree.insert(body);
@@ -2442,17 +2523,17 @@ fn test_content_height_column_repositions_bottom_aligned_child_after_expansion()
         a
     });
 
-    let col_id = col.id.clone();
-    let row_id = row.id.clone();
-    let para_id = para.id.clone();
-    let txt_id = txt.id.clone();
-    let bottom_id = bottom.id.clone();
+    let col_id = col.id;
+    let row_id = row.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let bottom_id = bottom.id;
 
-    para.children = vec![txt_id.clone()];
-    row.children = vec![para_id.clone()];
-    col.children = vec![row_id.clone(), bottom_id.clone()];
+    para.children = vec![txt_id];
+    row.children = vec![para_id];
+    col.children = vec![row_id, bottom_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2509,17 +2590,17 @@ fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
         a
     });
 
-    let col_id = col.id.clone();
-    let row_id = row.id.clone();
-    let para_id = para.id.clone();
-    let txt_id = txt.id.clone();
-    let bottom_id = bottom.id.clone();
+    let col_id = col.id;
+    let row_id = row.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let bottom_id = bottom.id;
 
-    para.children = vec![txt_id.clone()];
-    row.children = vec![para_id.clone()];
-    col.children = vec![row_id.clone(), bottom_id.clone()];
+    para.children = vec![txt_id];
+    row.children = vec![para_id];
+    col.children = vec![row_id, bottom_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2571,17 +2652,17 @@ fn test_row_expands_height_when_child_paragraph_wraps() {
         a
     });
 
-    let col_id = col.id.clone();
-    let row_id = row.id.clone();
-    let para_id = para.id.clone();
-    let txt_id = txt.id.clone();
-    let below_id = below.id.clone();
+    let col_id = col.id;
+    let row_id = row.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let below_id = below.id;
 
-    para.children = vec![txt_id.clone()];
-    row.children = vec![para_id.clone()];
-    col.children = vec![row_id.clone(), below_id.clone()];
+    para.children = vec![txt_id];
+    row.children = vec![para_id];
+    col.children = vec![row_id, below_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -2639,18 +2720,18 @@ fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
         a
     });
 
-    let col_id = col.id.clone();
-    let top_id = top.id.clone();
-    let row_id = row.id.clone();
-    let para_id = para.id.clone();
-    let txt_id = txt.id.clone();
-    let footer_id = footer.id.clone();
+    let col_id = col.id;
+    let top_id = top.id;
+    let row_id = row.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let footer_id = footer.id;
 
-    para.children = vec![txt_id.clone()];
-    row.children = vec![para_id.clone()];
-    col.children = vec![top_id.clone(), row_id.clone(), footer_id.clone()];
+    para.children = vec![txt_id];
+    row.children = vec![para_id];
+    col.children = vec![top_id, row_id, footer_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(top);
     tree.insert(row);
@@ -2707,13 +2788,13 @@ fn test_row_weighted_fill_distribution() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id, c3_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2776,13 +2857,13 @@ fn test_row_weighted_fill_with_fixed() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id, c3_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2840,13 +2921,13 @@ fn test_column_weighted_fill_distribution() {
         a
     });
 
-    let col_id = col.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    let c3_id = child3.id.clone();
+    let col_id = col.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    let c3_id = child3.id;
 
-    col.children = vec![c1_id.clone(), c2_id.clone(), c3_id.clone()];
-    tree.set_root_id(col_id.clone());
+    col.children = vec![c1_id, c2_id, c3_id];
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(child1);
     tree.insert(child2);
@@ -2905,12 +2986,12 @@ fn test_fill_and_weighted_fill_mixed() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
 
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(row_id.clone());
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -2967,14 +3048,14 @@ fn test_row_self_alignment_zones() {
         a
     });
 
-    let row_id = row.id.clone();
-    let left_id = left_child.id.clone();
-    let center_id = center_child.id.clone();
-    let right_id = right_child.id.clone();
+    let row_id = row.id;
+    let left_id = left_child.id;
+    let center_id = center_child.id;
+    let right_id = right_child.id;
 
-    row.children = vec![left_id.clone(), center_id.clone(), right_id.clone()];
+    row.children = vec![left_id, center_id, right_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(left_child);
     tree.insert(center_child);
@@ -3028,13 +3109,13 @@ fn test_wrapped_row_center_alignment_on_wrapped_line() {
         a
     });
 
-    let row_id = row.id.clone();
-    let wide_id = wide_child.id.clone();
-    let centered_id = centered_child.id.clone();
+    let row_id = row.id;
+    let wide_id = wide_child.id;
+    let centered_id = centered_child.id;
 
-    row.children = vec![wide_id.clone(), centered_id.clone()];
+    row.children = vec![wide_id, centered_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(centered_child);
@@ -3083,13 +3164,13 @@ fn test_wrapped_row_right_alignment_on_wrapped_line() {
         a
     });
 
-    let row_id = row.id.clone();
-    let wide_id = wide_child.id.clone();
-    let right_id = right_child.id.clone();
+    let row_id = row.id;
+    let wide_id = wide_child.id;
+    let right_id = right_child.id;
 
-    row.children = vec![wide_id.clone(), right_id.clone()];
+    row.children = vec![wide_id, right_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(right_child);
@@ -3154,20 +3235,15 @@ fn test_wrapped_row_mixed_alignment_zones_per_line() {
         a
     });
 
-    let row_id = row.id.clone();
-    let wide_id = wide_child.id.clone();
-    let left_id = left_child.id.clone();
-    let center_id = center_child.id.clone();
-    let right_id = right_child.id.clone();
+    let row_id = row.id;
+    let wide_id = wide_child.id;
+    let left_id = left_child.id;
+    let center_id = center_child.id;
+    let right_id = right_child.id;
 
-    row.children = vec![
-        wide_id.clone(),
-        left_id.clone(),
-        center_id.clone(),
-        right_id.clone(),
-    ];
+    row.children = vec![wide_id, left_id, center_id, right_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(wide_child);
     tree.insert(left_child);
@@ -3237,14 +3313,14 @@ fn test_column_self_alignment_zones() {
         a
     });
 
-    let col_id = col.id.clone();
-    let top_id = top_child.id.clone();
-    let center_id = center_child.id.clone();
-    let bottom_id = bottom_child.id.clone();
+    let col_id = col.id;
+    let top_id = top_child.id;
+    let center_id = center_child.id;
+    let bottom_id = bottom_child.id;
 
-    col.children = vec![top_id.clone(), center_id.clone(), bottom_id.clone()];
+    col.children = vec![top_id, center_id, bottom_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(top_child);
     tree.insert(center_child);
@@ -3304,13 +3380,13 @@ fn test_row_with_mixed_alignments_and_vertical() {
         a
     });
 
-    let row_id = row.id.clone();
-    let lt_id = left_top.id.clone();
-    let rb_id = right_bottom.id.clone();
+    let row_id = row.id;
+    let lt_id = left_top.id;
+    let rb_id = right_bottom.id;
 
-    row.children = vec![lt_id.clone(), rb_id.clone()];
+    row.children = vec![lt_id, rb_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(left_top);
     tree.insert(right_bottom);
@@ -3357,12 +3433,12 @@ fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
         a
     });
 
-    let row_id = row.id.clone();
-    let min_fill_id = min_fill.id.clone();
-    let plain_fill_id = plain_fill.id.clone();
-    row.children = vec![min_fill_id.clone(), plain_fill_id.clone()];
+    let row_id = row.id;
+    let min_fill_id = min_fill.id;
+    let plain_fill_id = plain_fill.id;
+    row.children = vec![min_fill_id, plain_fill_id];
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(min_fill);
     tree.insert(plain_fill);
@@ -3406,12 +3482,12 @@ fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
         a
     });
 
-    let col_id = col.id.clone();
-    let max_fill_id = max_fill.id.clone();
-    let plain_fill_id = plain_fill.id.clone();
-    col.children = vec![max_fill_id.clone(), plain_fill_id.clone()];
+    let col_id = col.id;
+    let max_fill_id = max_fill.id;
+    let plain_fill_id = plain_fill.id;
+    col.children = vec![max_fill_id, plain_fill_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(max_fill);
     tree.insert(plain_fill);

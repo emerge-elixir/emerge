@@ -10,8 +10,8 @@ fn test_layout_text() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("text", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -38,8 +38,8 @@ fn test_layout_text_letter_and_word_spacing() {
     attrs.font_word_spacing = Some(3.0);
 
     let el = make_element("text", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -65,8 +65,8 @@ fn test_layout_multiline_defaults_to_one_line_minimum_height() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -91,8 +91,8 @@ fn test_layout_multiline_wraps_and_auto_grows_height() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -119,8 +119,8 @@ fn test_layout_multiline_respects_explicit_height_override() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -144,8 +144,8 @@ fn test_content_size_basic_element() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -187,11 +187,11 @@ fn test_content_size_row_with_children() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let row_id = row.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let row_id = row.id;
     row.children = child_ids;
 
-    tree.set_root_id(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     for child in children {
         tree.insert(child);
@@ -241,11 +241,11 @@ fn test_content_size_column_with_children() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let col_id = col.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let col_id = col.id;
     col.children = child_ids;
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     for child in children {
         tree.insert(child);
@@ -294,11 +294,11 @@ fn test_content_size_scrollable_column() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let col_id = col.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let col_id = col.id;
     col.children = child_ids;
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     for child in children {
         tree.insert(child);
@@ -343,11 +343,11 @@ fn test_content_size_el_with_child() {
         a
     });
 
-    let child_id = child.id.clone();
-    let el_id = el.id.clone();
+    let child_id = child.id;
+    let el_id = el.id;
     el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -379,8 +379,8 @@ fn test_content_size_image_intrinsic_includes_padding_and_border() {
     attrs.border_width = Some(BorderWidth::Uniform(2.0));
 
     let image = make_element("image", ElementKind::Image, attrs);
-    let image_id = image.id.clone();
-    tree.set_root_id(image_id.clone());
+    let image_id = image.id;
+    tree.set_root_id(image_id);
     tree.insert(image);
 
     layout_tree(

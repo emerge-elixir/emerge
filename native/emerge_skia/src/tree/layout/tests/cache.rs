@@ -1042,7 +1042,7 @@ fn test_render_subtree_cache_matches_uncached_scene_after_sibling_paint_patch() 
     let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
     let uncached_scene = render_tree_scene(&tree).scene;
 
-    assert_eq!(output.scene, uncached_scene);
+    assert_eq!(scene_without_cache_candidates(output.scene), uncached_scene);
     assert_eq!(
         tree.get(&second_id).unwrap().refresh.render_cache.as_ref(),
         Some(&second_cache_before)
@@ -1116,7 +1116,10 @@ fn test_dirty_render_refresh_skips_lookup_key_builds_for_dirty_path() {
     reset_render_subtree_cache_lookup_key_builds();
     let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
 
-    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert_eq!(
+        scene_without_cache_candidates(output.scene),
+        render_tree_scene(&tree).scene
+    );
     assert_eq!(render_subtree_cache_lookup_key_builds(), 0);
 }
 
@@ -1169,7 +1172,10 @@ fn test_scroll_refresh_does_not_store_scroll_container_render_cache() {
     );
     let output = refresh(&mut tree);
 
-    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert_eq!(
+        scene_without_cache_candidates(output.scene),
+        render_tree_scene(&tree).scene
+    );
     assert!(tree.get(&root_id).unwrap().refresh.render_cache.is_none());
 }
 
@@ -1258,7 +1264,10 @@ fn test_registry_only_root_refresh_reuses_render_cache() {
     let output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
 
     assert!(output.event_rebuild_changed);
-    assert_eq!(output.scene, render_tree_scene(&tree).scene);
+    assert_eq!(
+        scene_without_cache_candidates(output.scene),
+        render_tree_scene(&tree).scene
+    );
     assert_eq!(
         tree.get(&root_id).unwrap().refresh.render_cache.as_ref(),
         Some(&root_cache_before)
@@ -1322,6 +1331,190 @@ fn test_transform_paint_refresh_rebuilds_registry() {
     assert!(output.event_rebuild_changed);
     assert!(!tree.has_render_refresh_damage());
     assert!(!tree.has_registry_refresh_damage());
+}
+
+#[test]
+fn test_integer_move_transform_emits_stable_clean_subtree_candidate() {
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        "moving_row",
+        ElementKind::Row,
+        moving_row_attrs_with_move_x(12.0),
+    );
+    let root_id = root.id;
+    let first = make_element("moving_first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("moving_second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let warmed_candidate = first_clean_subtree_candidate(&warmed_output.scene.nodes)
+        .expect("clean cached refresh should emit a moving-row cache candidate");
+    assert_eq!(warmed_candidate.stable_id, root_id.to_wire_u64());
+    let warmed_generation = warmed_candidate.content_generation;
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_moving_row_attrs_with_move_x(24.0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+
+    let moved_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let moved_candidate = first_clean_subtree_candidate(&moved_output.scene.nodes)
+        .expect("integer move_x refresh should keep emitting a cache candidate");
+    assert_eq!(moved_candidate.content_generation, warmed_generation);
+}
+
+#[test]
+fn test_clean_subtree_candidate_generation_changes_after_child_paint_change() {
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        "moving_row_generation",
+        ElementKind::Row,
+        moving_row_attrs_with_move_x(12.0),
+    );
+    let root_id = root.id;
+    let first = make_element(
+        "moving_generation_first",
+        ElementKind::Text,
+        text_attrs("One"),
+    );
+    let first_id = first.id;
+    let second = make_element(
+        "moving_generation_second",
+        ElementKind::Text,
+        text_attrs("Two"),
+    );
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let warmed_candidate = first_clean_subtree_candidate(&warmed_output.scene.nodes)
+        .expect("clean cached refresh should emit a moving-row cache candidate");
+    let warmed_generation = warmed_candidate.content_generation;
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: first_id,
+            attrs_raw: raw_text_background_attrs("One"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+
+    let content_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let content_candidate = first_clean_subtree_candidate(&content_output.scene.nodes)
+        .expect("content refresh should keep the moving-row cache candidate boundary");
+    assert_ne!(content_candidate.content_generation, warmed_generation);
+}
+
+#[test]
+fn test_root_alpha_change_keeps_clean_subtree_candidate_generation() {
+    let mut tree = ElementTree::new();
+    let root = make_element("alpha_row", ElementKind::Row, alpha_row_attrs(0.42));
+    let root_id = root.id;
+    let first = make_element("alpha_first", ElementKind::Text, text_attrs("One"));
+    let first_id = first.id;
+    let second = make_element("alpha_second", ElementKind::Text, text_attrs("Two"));
+    let second_id = second.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(first);
+    tree.insert(second);
+    tree.set_children(&root_id, vec![first_id, second_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let warmed_candidate = first_clean_subtree_candidate(&warmed_output.scene.nodes)
+        .expect("root alpha should not block a clean-subtree cache candidate");
+    assert_eq!(warmed_candidate.stable_id, root_id.to_wire_u64());
+    let warmed_generation = warmed_candidate.content_generation;
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_alpha_row_attrs(0.72),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+
+    let faded_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let faded_candidate = first_clean_subtree_candidate(&faded_output.scene.nodes)
+        .expect("alpha-only refresh should keep emitting the cache candidate");
+    assert_eq!(faded_candidate.content_generation, warmed_generation);
+}
+
+#[test]
+fn test_layout_reflow_emits_stable_local_clean_subtree_candidate() {
+    let (mut tree, root_id, target_card_id) = layout_reflow_candidate_tree();
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+
+    let wide_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let (wide_placement, wide_candidate) = clean_subtree_candidate_with_placement_for_stable_id(
+        &wide_output.scene.nodes,
+        target_card_id.to_wire_u64(),
+    )
+    .expect("wide layout should emit a card cache candidate");
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: root_id,
+            attrs_raw: raw_layout_reflow_root_attrs(210.0),
+        }],
+    )
+    .unwrap();
+    assert!(invalidation >= TreeInvalidation::Measure);
+
+    let narrow_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let (narrow_placement, narrow_candidate) =
+        clean_subtree_candidate_with_placement_for_stable_id(
+            &narrow_output.scene.nodes,
+            target_card_id.to_wire_u64(),
+        )
+        .expect("narrow reflow should keep emitting the card cache candidate");
+
+    assert_eq!(wide_candidate.bounds.x, 0.0);
+    assert_eq!(wide_candidate.bounds.y, 0.0);
+    assert_eq!(narrow_candidate.bounds.x, 0.0);
+    assert_eq!(narrow_candidate.bounds.y, 0.0);
+    assert_eq!(
+        wide_candidate.content_generation,
+        narrow_candidate.content_generation
+    );
+    assert_ne!(wide_placement.tx, narrow_placement.tx);
+    assert_ne!(wide_placement.ty, narrow_placement.ty);
 }
 
 #[test]
@@ -2589,7 +2782,10 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
     assert!(uncached_update.output.animations_active);
     assert!(!cached_update.layout_performed);
     assert!(!uncached_update.layout_performed);
-    assert_eq!(cached_update.output.scene, uncached_update.output.scene);
+    assert_eq!(
+        scene_without_cache_candidates(cached_update.output.scene),
+        scene_without_cache_candidates(uncached_update.output.scene)
+    );
     assert_layout_matches(&cached, &uncached);
 }
 
@@ -2655,6 +2851,43 @@ fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
     attrs.width = Some(Length::Px(width));
     attrs.height = Some(Length::Px(height));
     attrs
+}
+
+fn layout_reflow_candidate_tree() -> (ElementTree, NodeId, NodeId) {
+    let mut tree = ElementTree::new();
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Px(420.0));
+    root_attrs.spacing_x = Some(8.0);
+    root_attrs.spacing_y = Some(8.0);
+    let root = make_element("layout_reflow_root", ElementKind::WrappedRow, root_attrs);
+    let root_id = root.id;
+
+    let cards: Vec<NodeId> = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|label| {
+            let mut card_attrs = fixed_box_attrs(180.0, 48.0);
+            card_attrs.background = Some(Background::Color(Color::Rgba {
+                r: 248,
+                g: 250,
+                b: 252,
+                a: 255,
+            }));
+            let card = make_element(
+                &format!("layout_reflow_card_{label}"),
+                ElementKind::El,
+                card_attrs,
+            );
+            let card_id = card.id;
+            tree.insert(card);
+            card_id
+        })
+        .collect();
+    let target_card_id = cards[1];
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.set_children(&root_id, cards).unwrap();
+    (tree, root_id, target_card_id)
 }
 
 fn fixed_host_with_nearby_tree(include_nearby: bool) -> ElementTree {
@@ -3220,6 +3453,31 @@ fn raw_text_move_x_attrs(content: &str, move_x: f64) -> Vec<u8> {
     data
 }
 
+fn raw_moving_row_attrs_with_move_x(move_x: f64) -> Vec<u8> {
+    let mut data = vec![0, 4];
+    push_px_length_attr(&mut data, 1, 180.0);
+    push_px_length_attr(&mut data, 2, 48.0);
+    push_move_x_attr(&mut data, move_x);
+    data.extend_from_slice(&[12, 0, 1, 248, 250, 252, 255]);
+    data
+}
+
+fn raw_alpha_row_attrs(alpha: f64) -> Vec<u8> {
+    let mut data = vec![0, 4];
+    push_px_length_attr(&mut data, 1, 180.0);
+    push_px_length_attr(&mut data, 2, 48.0);
+    push_alpha_attr(&mut data, alpha);
+    data.extend_from_slice(&[12, 0, 1, 248, 250, 252, 255]);
+    data
+}
+
+fn raw_layout_reflow_root_attrs(width: f64) -> Vec<u8> {
+    let mut data = vec![0, 2];
+    push_px_length_attr(&mut data, 1, width);
+    push_spacing_xy_attr(&mut data, 8.0, 8.0);
+    data
+}
+
 fn raw_text_event_attrs(content: &str) -> Vec<u8> {
     let mut data = vec![0, 3];
     push_content_attr(&mut data, content);
@@ -3297,6 +3555,169 @@ fn push_box_shadow_attr(data: &mut Vec<u8>, offset_x: f64) {
 fn push_move_x_attr(data: &mut Vec<u8>, move_x: f64) {
     data.push(31);
     data.extend_from_slice(&move_x.to_be_bytes());
+}
+
+fn push_alpha_attr(data: &mut Vec<u8>, alpha: f64) {
+    data.push(35);
+    data.extend_from_slice(&alpha.to_be_bytes());
+}
+
+fn moving_row_attrs_with_move_x(move_x: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(180.0)),
+        height: Some(Length::Px(48.0)),
+        move_x: Some(move_x),
+        background: Some(Background::Color(Color::Rgba {
+            r: 248,
+            g: 250,
+            b: 252,
+            a: 255,
+        })),
+        ..Attrs::default()
+    }
+}
+
+fn alpha_row_attrs(alpha: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(180.0)),
+        height: Some(Length::Px(48.0)),
+        alpha: Some(alpha),
+        background: Some(Background::Color(Color::Rgba {
+            r: 248,
+            g: 250,
+            b: 252,
+            a: 255,
+        })),
+        ..Attrs::default()
+    }
+}
+
+fn first_clean_subtree_candidate(
+    nodes: &[crate::render_scene::RenderNode],
+) -> Option<&crate::render_scene::RenderCacheCandidate> {
+    nodes.iter().find_map(|node| match node {
+        crate::render_scene::RenderNode::ShadowPass { children }
+        | crate::render_scene::RenderNode::Clip { children, .. }
+        | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+        | crate::render_scene::RenderNode::Transform { children, .. }
+        | crate::render_scene::RenderNode::Alpha { children, .. } => {
+            first_clean_subtree_candidate(children)
+        }
+        crate::render_scene::RenderNode::CacheCandidate(candidate)
+            if candidate.kind == crate::render_scene::RenderCacheCandidateKind::CleanSubtree =>
+        {
+            Some(candidate)
+        }
+        crate::render_scene::RenderNode::CacheCandidate(candidate) => {
+            first_clean_subtree_candidate(&candidate.children)
+        }
+        crate::render_scene::RenderNode::Primitive(_) => None,
+    })
+}
+
+fn clean_subtree_candidate_with_placement_for_stable_id(
+    nodes: &[crate::render_scene::RenderNode],
+    stable_id: u64,
+) -> Option<(
+    crate::tree::transform::Affine2,
+    &crate::render_scene::RenderCacheCandidate,
+)> {
+    fn visit<'a>(
+        nodes: &'a [crate::render_scene::RenderNode],
+        stable_id: u64,
+        placement: crate::tree::transform::Affine2,
+    ) -> Option<(
+        crate::tree::transform::Affine2,
+        &'a crate::render_scene::RenderCacheCandidate,
+    )> {
+        nodes.iter().find_map(|node| match node {
+            crate::render_scene::RenderNode::ShadowPass { children }
+            | crate::render_scene::RenderNode::Clip { children, .. }
+            | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+            | crate::render_scene::RenderNode::Alpha { children, .. } => {
+                visit(children, stable_id, placement)
+            }
+            crate::render_scene::RenderNode::Transform {
+                transform,
+                children,
+            } => visit(children, stable_id, placement.then(*transform)),
+            crate::render_scene::RenderNode::CacheCandidate(candidate)
+                if candidate.kind
+                    == crate::render_scene::RenderCacheCandidateKind::CleanSubtree
+                    && candidate.stable_id == stable_id =>
+            {
+                Some((placement, candidate))
+            }
+            crate::render_scene::RenderNode::CacheCandidate(candidate) => {
+                visit(&candidate.children, stable_id, placement)
+            }
+            crate::render_scene::RenderNode::Primitive(_) => None,
+        })
+    }
+
+    visit(
+        nodes,
+        stable_id,
+        crate::tree::transform::Affine2::identity(),
+    )
+}
+
+fn scene_without_cache_candidates(
+    scene: crate::render_scene::RenderScene,
+) -> crate::render_scene::RenderScene {
+    crate::render_scene::RenderScene {
+        nodes: nodes_without_cache_candidates(scene.nodes),
+    }
+}
+
+fn nodes_without_cache_candidates(
+    nodes: Vec<crate::render_scene::RenderNode>,
+) -> Vec<crate::render_scene::RenderNode> {
+    nodes
+        .into_iter()
+        .flat_map(node_without_cache_candidates)
+        .collect()
+}
+
+fn node_without_cache_candidates(
+    node: crate::render_scene::RenderNode,
+) -> Vec<crate::render_scene::RenderNode> {
+    match node {
+        crate::render_scene::RenderNode::ShadowPass { children } => {
+            vec![crate::render_scene::RenderNode::ShadowPass {
+                children: nodes_without_cache_candidates(children),
+            }]
+        }
+        crate::render_scene::RenderNode::Clip { clips, children } => {
+            vec![crate::render_scene::RenderNode::Clip {
+                clips,
+                children: nodes_without_cache_candidates(children),
+            }]
+        }
+        crate::render_scene::RenderNode::RelaxedClip { clips, children } => {
+            vec![crate::render_scene::RenderNode::RelaxedClip {
+                clips,
+                children: nodes_without_cache_candidates(children),
+            }]
+        }
+        crate::render_scene::RenderNode::Transform {
+            transform,
+            children,
+        } => vec![crate::render_scene::RenderNode::Transform {
+            transform,
+            children: nodes_without_cache_candidates(children),
+        }],
+        crate::render_scene::RenderNode::Alpha { alpha, children } => {
+            vec![crate::render_scene::RenderNode::Alpha {
+                alpha,
+                children: nodes_without_cache_candidates(children),
+            }]
+        }
+        crate::render_scene::RenderNode::CacheCandidate(candidate) => {
+            nodes_without_cache_candidates(candidate.children)
+        }
+        crate::render_scene::RenderNode::Primitive(_) => vec![node],
+    }
 }
 
 fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {

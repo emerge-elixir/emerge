@@ -29,7 +29,9 @@ use super::scene::{
 use super::transform::{Affine2, element_transform};
 #[cfg(test)]
 use crate::events::{RegistryRebuildPayload, registry_builder};
-use crate::render_scene::{DrawPrimitive, RenderNode, RenderScene};
+use crate::render_scene::{
+    DrawPrimitive, RenderCacheCandidate, RenderCacheCandidateKind, RenderNode, RenderScene,
+};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -38,6 +40,7 @@ use std::hash::{Hash, Hasher};
 
 const RENDER_SUBTREE_CACHE_MAX_RENDER_NODES: usize = 128;
 const RENDER_SUBTREE_CACHE_STORE_BUDGET: usize = 32;
+const RENDER_CLEAN_SUBTREE_CANDIDATE_MIN_RENDER_NODES: usize = 1;
 
 #[cfg(test)]
 thread_local! {
@@ -312,10 +315,6 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
 }
 
 pub(crate) fn render_tree_scene_cached(tree: &mut ElementTree) -> RenderSceneOutput {
-    if tree.has_render_refresh_damage() && !tree.has_render_subtree_cache() {
-        return render_tree_scene(tree);
-    }
-
     let Some(root_ix) = tree.root_ix() else {
         return RenderSceneOutput {
             scene: RenderScene::default(),
@@ -487,7 +486,7 @@ fn build_element_subtree_cached(
     inherited: &FontContext,
     traversal: RenderTraversal<'_>,
 ) -> RenderSubtree {
-    if render_subtree_cache_bypassed(tree, ix, &traversal) {
+    if render_subtree_cache_bypassed(&traversal) {
         return build_element_subtree_uncached_in_cached_path(tree, ix, inherited, traversal);
     }
 
@@ -595,15 +594,21 @@ fn build_element_subtree_cached(
         ));
     } else {
         let mut normal_nodes = Vec::new();
+        let host_content_has_text_input_focus = host_content.text_input_focused;
         normal_nodes.extend(background_nodes);
         normal_nodes.extend(inset_shadow_nodes);
         normal_nodes.extend(host_content.local);
         normal_nodes.extend(border_nodes);
+        let normal_nodes = wrap_with_clean_subtree_candidate_if_useful(
+            normal_nodes,
+            &element,
+            render_frame,
+            transform,
+            &traversal,
+            host_content_has_text_input_focus,
+        );
 
-        local.extend(wrap_with_clips(
-            wrap_with_transform(normal_nodes, transform),
-            inherited_host_clips,
-        ));
+        local.extend(wrap_with_clips(normal_nodes, inherited_host_clips));
     }
 
     let escapes = wrap_with_alpha(wrap_with_transform(host_content.escapes, transform), alpha);
@@ -645,14 +650,8 @@ fn build_element_subtree_uncached_in_cached_path(
     subtree
 }
 
-fn render_subtree_cache_bypassed(
-    tree: &ElementTree,
-    ix: NodeIx,
-    traversal: &RenderTraversal<'_>,
-) -> bool {
-    tree.get_ix(ix)
-        .is_some_and(|element| element.refresh.render_dirty)
-        || scene_context_has_scroll_offset(&traversal.scene_ctx)
+fn render_subtree_cache_bypassed(traversal: &RenderTraversal<'_>) -> bool {
+    scene_context_has_scroll_offset(&traversal.scene_ctx)
 }
 
 fn should_store_render_subtree_cache(
@@ -675,6 +674,297 @@ fn should_store_render_subtree_cache(
 
     traversal.cache_store_budget.set(remaining - 1);
     true
+}
+
+fn wrap_with_clean_subtree_candidate_if_useful(
+    nodes: Vec<RenderNode>,
+    element: &Element,
+    render_frame: Frame,
+    transform: Affine2,
+    traversal: &RenderTraversal<'_>,
+    text_input_focused: bool,
+) -> Vec<RenderNode> {
+    let placement_transform = clean_subtree_candidate_placement_transform(render_frame, transform);
+    if !should_emit_clean_subtree_candidate(
+        &nodes,
+        element,
+        render_frame,
+        placement_transform,
+        traversal,
+        text_input_focused,
+    ) {
+        return wrap_with_transform(nodes, transform);
+    }
+
+    let local_children =
+        localize_clean_subtree_candidate_nodes(nodes, render_frame.x, render_frame.y);
+    let content_generation = clean_subtree_candidate_content_generation(&local_children);
+
+    wrap_with_transform(
+        vec![RenderNode::CacheCandidate(RenderCacheCandidate {
+            kind: RenderCacheCandidateKind::CleanSubtree,
+            stable_id: element.id.to_wire_u64(),
+            content_generation,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: render_frame.width,
+                height: render_frame.height,
+            },
+            children: local_children,
+        })],
+        placement_transform,
+    )
+}
+
+fn should_emit_clean_subtree_candidate(
+    nodes: &[RenderNode],
+    element: &Element,
+    render_frame: Frame,
+    placement_transform: Affine2,
+    traversal: &RenderTraversal<'_>,
+    text_input_focused: bool,
+) -> bool {
+    let attrs = &element.layout.effective;
+    if nodes.is_empty()
+        || !clean_subtree_candidate_frame_has_finite_bounds(render_frame)
+        || text_input_focused
+        || scene_context_has_scroll_offset(&traversal.scene_ctx)
+        || is_scroll_container(element)
+        || matches!(
+            element.spec.kind,
+            ElementKind::Text
+                | ElementKind::TextInput
+                | ElementKind::Multiline
+                | ElementKind::Image
+                | ElementKind::Video
+                | ElementKind::None
+                | ElementKind::Paragraph
+        )
+        || !clean_subtree_candidate_transform_is_integer_translation(placement_transform)
+        || !clean_subtree_candidate_children_are_supported(nodes)
+    {
+        return false;
+    }
+
+    let node_count = render_node_count(nodes);
+    (RENDER_CLEAN_SUBTREE_CANDIDATE_MIN_RENDER_NODES..=RENDER_SUBTREE_CACHE_MAX_RENDER_NODES)
+        .contains(&node_count)
+        && attrs.rotate.unwrap_or(0.0) == 0.0
+        && attrs.scale.unwrap_or(1.0) == 1.0
+}
+
+fn clean_subtree_candidate_placement_transform(render_frame: Frame, transform: Affine2) -> Affine2 {
+    transform.then(Affine2::translation(render_frame.x, render_frame.y))
+}
+
+fn clean_subtree_candidate_frame_has_finite_bounds(render_frame: Frame) -> bool {
+    render_frame.x.is_finite()
+        && render_frame.y.is_finite()
+        && render_frame.width.is_finite()
+        && render_frame.height.is_finite()
+        && render_frame.width > 0.0
+        && render_frame.height > 0.0
+}
+
+fn clean_subtree_candidate_transform_is_integer_translation(transform: Affine2) -> bool {
+    if transform.xx != 1.0 || transform.yx != 0.0 || transform.xy != 0.0 || transform.yy != 1.0 {
+        return false;
+    }
+
+    clean_subtree_candidate_translation_is_integer(transform.tx)
+        && clean_subtree_candidate_translation_is_integer(transform.ty)
+}
+
+fn clean_subtree_candidate_translation_is_integer(value: f32) -> bool {
+    value.is_finite() && (value - value.round()).abs() <= 0.001
+}
+
+fn clean_subtree_candidate_content_generation(nodes: &[RenderNode]) -> u64 {
+    debug_hash(&nodes)
+}
+
+fn clean_subtree_candidate_children_are_supported(nodes: &[RenderNode]) -> bool {
+    nodes.iter().all(|node| match node {
+        RenderNode::Clip { children, .. } | RenderNode::RelaxedClip { children, .. } => {
+            clean_subtree_candidate_children_are_supported(children)
+        }
+        RenderNode::Primitive(primitive) => match primitive {
+            DrawPrimitive::Video(..)
+            | DrawPrimitive::ImageLoading(..)
+            | DrawPrimitive::ImageFailed(..) => false,
+            DrawPrimitive::Rect(..)
+            | DrawPrimitive::RoundedRect(..)
+            | DrawPrimitive::Border(..)
+            | DrawPrimitive::BorderCorners(..)
+            | DrawPrimitive::BorderEdges(..)
+            | DrawPrimitive::Shadow(..)
+            | DrawPrimitive::InsetShadow(..)
+            | DrawPrimitive::TextWithFont(..)
+            | DrawPrimitive::Gradient(..)
+            | DrawPrimitive::Image(..) => true,
+        },
+        RenderNode::ShadowPass { .. }
+        | RenderNode::Transform { .. }
+        | RenderNode::Alpha { .. }
+        | RenderNode::CacheCandidate(_) => false,
+    })
+}
+
+fn localize_clean_subtree_candidate_nodes(
+    nodes: Vec<RenderNode>,
+    origin_x: f32,
+    origin_y: f32,
+) -> Vec<RenderNode> {
+    nodes
+        .into_iter()
+        .map(|node| localize_clean_subtree_candidate_node(node, origin_x, origin_y))
+        .collect()
+}
+
+fn localize_clean_subtree_candidate_node(
+    node: RenderNode,
+    origin_x: f32,
+    origin_y: f32,
+) -> RenderNode {
+    match node {
+        RenderNode::Clip { clips, children } => RenderNode::Clip {
+            clips: localize_clean_subtree_clip_shapes(clips, origin_x, origin_y),
+            children: localize_clean_subtree_candidate_nodes(children, origin_x, origin_y),
+        },
+        RenderNode::RelaxedClip { clips, children } => RenderNode::RelaxedClip {
+            clips: localize_clean_subtree_clip_shapes(clips, origin_x, origin_y),
+            children: localize_clean_subtree_candidate_nodes(children, origin_x, origin_y),
+        },
+        RenderNode::Primitive(primitive) => RenderNode::Primitive(
+            localize_clean_subtree_candidate_primitive(primitive, origin_x, origin_y),
+        ),
+        RenderNode::ShadowPass { .. }
+        | RenderNode::Transform { .. }
+        | RenderNode::Alpha { .. }
+        | RenderNode::CacheCandidate(_) => node,
+    }
+}
+
+fn localize_clean_subtree_clip_shapes(
+    clips: Vec<ClipShape>,
+    origin_x: f32,
+    origin_y: f32,
+) -> Vec<ClipShape> {
+    clips
+        .into_iter()
+        .map(|clip| clip.offset(origin_x, origin_y))
+        .collect()
+}
+
+fn localize_clean_subtree_candidate_primitive(
+    primitive: DrawPrimitive,
+    origin_x: f32,
+    origin_y: f32,
+) -> DrawPrimitive {
+    match primitive {
+        DrawPrimitive::Rect(x, y, w, h, color) => {
+            DrawPrimitive::Rect(x - origin_x, y - origin_y, w, h, color)
+        }
+        DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
+            DrawPrimitive::RoundedRect(x - origin_x, y - origin_y, w, h, radius, color)
+        }
+        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => DrawPrimitive::Border(
+            x - origin_x,
+            y - origin_y,
+            w,
+            h,
+            radius,
+            width,
+            color,
+            style,
+        ),
+        DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
+            DrawPrimitive::BorderCorners(
+                x - origin_x,
+                y - origin_y,
+                w,
+                h,
+                tl,
+                tr,
+                br,
+                bl,
+                width,
+                color,
+                style,
+            )
+        }
+        DrawPrimitive::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
+            DrawPrimitive::BorderEdges(
+                x - origin_x,
+                y - origin_y,
+                w,
+                h,
+                radius,
+                top,
+                right,
+                bottom,
+                left,
+                color,
+                style,
+            )
+        }
+        DrawPrimitive::Shadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+            DrawPrimitive::Shadow(
+                x - origin_x,
+                y - origin_y,
+                w,
+                h,
+                offset_x,
+                offset_y,
+                blur,
+                size,
+                radius,
+                color,
+            )
+        }
+        DrawPrimitive::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
+            DrawPrimitive::InsetShadow(
+                x - origin_x,
+                y - origin_y,
+                w,
+                h,
+                offset_x,
+                offset_y,
+                blur,
+                size,
+                radius,
+                color,
+            )
+        }
+        DrawPrimitive::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
+            DrawPrimitive::TextWithFont(
+                x - origin_x,
+                y - origin_y,
+                text,
+                font_size,
+                fill,
+                family,
+                weight,
+                italic,
+            )
+        }
+        DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
+            DrawPrimitive::Gradient(x - origin_x, y - origin_y, w, h, from, to, angle)
+        }
+        DrawPrimitive::Image(x, y, w, h, image_id, fit, tint) => {
+            DrawPrimitive::Image(x - origin_x, y - origin_y, w, h, image_id, fit, tint)
+        }
+        DrawPrimitive::Video(x, y, w, h, target, fit) => {
+            DrawPrimitive::Video(x - origin_x, y - origin_y, w, h, target, fit)
+        }
+        DrawPrimitive::ImageLoading(x, y, w, h) => {
+            DrawPrimitive::ImageLoading(x - origin_x, y - origin_y, w, h)
+        }
+        DrawPrimitive::ImageFailed(x, y, w, h) => {
+            DrawPrimitive::ImageFailed(x - origin_x, y - origin_y, w, h)
+        }
+    }
 }
 
 fn scene_context_has_scroll_offset(scene_ctx: &SceneContext) -> bool {
@@ -759,6 +1049,7 @@ fn render_node_count(nodes: &[RenderNode]) -> usize {
             | RenderNode::RelaxedClip { children, .. }
             | RenderNode::Transform { children, .. }
             | RenderNode::Alpha { children, .. } => 1 + render_node_count(children),
+            RenderNode::CacheCandidate(candidate) => 1 + render_node_count(&candidate.children),
             RenderNode::Primitive(_) => 1,
         })
         .sum()
@@ -783,6 +1074,7 @@ fn render_subtree_key(
         inherited_hash: debug_hash(inherited),
         scene_context_hash: debug_hash(&traversal.scene_ctx),
         render_context_hash: debug_hash(traversal.render_ctx),
+        asset_status_generation: crate::assets::source_status_generation(),
         topology: tree.render_topology_dependency_key_ix(ix),
         paragraph_fragments_hash: debug_hash(&element.layout.paragraph_fragments),
     }

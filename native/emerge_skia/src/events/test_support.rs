@@ -1,5 +1,3 @@
-#![allow(clippy::field_reassign_with_default)]
-
 use std::time::{Duration, Instant};
 
 use super::registry_builder::{self, Listener, ListenerAction, Registry};
@@ -225,22 +223,16 @@ fn source_tree_for_case(case: &AnimatedNearbyHitCase, hover_active: bool) -> Ele
     let mut host_attrs = Attrs::default();
     host_attrs.width = Some(Length::Px(128.0));
     host_attrs.height = Some(Length::Px(82.0));
-    let mut host = Element::with_attrs(
-        case.host_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        host_attrs,
-    );
-    host.nearby
-        .set(NearbySlot::InFront, Some(case.target_id.clone()));
-    host.children = vec![case.underlying_id.clone()];
+    let mut host = Element::with_attrs(case.host_id, ElementKind::El, Vec::new(), host_attrs);
+    host.nearby.set(NearbySlot::InFront, Some(case.target_id));
+    host.children = vec![case.underlying_id];
 
     let mut underlying_attrs = Attrs::default();
     underlying_attrs.width = Some(Length::Px(128.0));
     underlying_attrs.height = Some(Length::Px(82.0));
     underlying_attrs.on_mouse_move = Some(true);
     let underlying = Element::with_attrs(
-        case.underlying_id.clone(),
+        case.underlying_id,
         ElementKind::El,
         Vec::new(),
         underlying_attrs,
@@ -268,17 +260,12 @@ fn source_tree_for_case(case: &AnimatedNearbyHitCase, hover_active: bool) -> Ele
         curve: AnimationCurve::Linear,
         repeat: AnimationRepeat::Once,
     });
-    let target = Element::with_attrs(
-        case.target_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        target_attrs,
-    );
+    let target = Element::with_attrs(case.target_id, ElementKind::El, Vec::new(), target_attrs);
 
     tree.insert(host);
     tree.insert(underlying);
     tree.insert(target);
-    tree.set_root_id(case.host_id.clone());
+    tree.set_root_id(case.host_id);
 
     tree
 }

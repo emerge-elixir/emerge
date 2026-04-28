@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::tree::attrs::{BorderStyle, ImageFit};
-use crate::tree::geometry::ClipShape;
+use crate::tree::geometry::{ClipShape, Rect};
 use crate::tree::transform::Affine2;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -15,6 +15,22 @@ impl RenderScene {
         summary.record_nodes(&self.nodes);
         summary
     }
+
+    pub fn has_cache_candidates(&self) -> bool {
+        nodes_have_cache_candidates(&self.nodes)
+    }
+}
+
+fn nodes_have_cache_candidates(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => nodes_have_cache_candidates(children),
+        RenderNode::CacheCandidate(_) => true,
+        RenderNode::Primitive(_) => false,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +86,9 @@ impl RenderSceneSummary {
                 RenderNode::Alpha { children, .. } => {
                     self.alphas += 1;
                     self.record_nodes(children);
+                }
+                RenderNode::CacheCandidate(candidate) => {
+                    self.record_nodes(&candidate.children);
                 }
                 RenderNode::Primitive(primitive) => self.record_primitive(primitive),
             }
@@ -158,7 +177,25 @@ pub enum RenderNode {
         alpha: f32,
         children: Vec<RenderNode>,
     },
+    CacheCandidate(RenderCacheCandidate),
     Primitive(DrawPrimitive),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderCacheCandidate {
+    pub kind: RenderCacheCandidateKind,
+    pub stable_id: u64,
+    pub content_generation: u64,
+    pub bounds: Rect,
+    /// Local subtree content used for direct fallback and future payload
+    /// preparation. Candidates must not hide shadow-escape semantics from a
+    /// parent clip; tree rendering should only emit clean local subtrees here.
+    pub children: Vec<RenderNode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderCacheCandidateKind {
+    CleanSubtree,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -11,14 +11,14 @@ fn test_layout_preserves_scroll_offsets() {
     attrs.height = Some(Length::Px(100.0));
 
     let mut root = make_element("root", ElementKind::Column, attrs);
-    let root_id = root.id.clone();
+    let root_id = root.id;
     let mut child_attrs = Attrs::default();
     child_attrs.height = Some(Length::Px(200.0));
     let child = make_element("child", ElementKind::El, child_attrs);
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
+    let child_id = child.id;
+    root.children = vec![child_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -58,11 +58,11 @@ fn test_layout_scroll_offset_clamps_when_max_shrinks() {
     child_attrs.height = Some(Length::Px(50.0));
     let child = make_element("child", ElementKind::El, child_attrs);
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -104,11 +104,11 @@ fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
     child_attrs.height = Some(Length::Px(50.0));
     let child = make_element("child", ElementKind::El, child_attrs);
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -144,8 +144,8 @@ fn test_layout_clears_scroll_when_scrollbar_disabled() {
     attrs.height = Some(Length::Px(100.0));
 
     let root = make_element("root", ElementKind::El, attrs);
-    let root_id = root.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -190,15 +190,15 @@ fn test_scrollable_el_uses_child_frame_height_for_content() {
         a
     });
 
-    let el_id = el.id.clone();
-    let col_id = col.id.clone();
-    let top_id = top.id.clone();
-    let bottom_id = bottom.id.clone();
+    let el_id = el.id;
+    let col_id = col.id;
+    let top_id = top.id;
+    let bottom_id = bottom.id;
 
-    col.children = vec![top_id.clone(), bottom_id.clone()];
-    el.children = vec![col_id.clone()];
+    col.children = vec![top_id, bottom_id];
+    el.children = vec![col_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(col);
     tree.insert(top);
@@ -245,11 +245,11 @@ fn test_layout_clears_only_disabled_scroll_axis() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
 
-    tree.set_root_id(root_id.clone());
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 

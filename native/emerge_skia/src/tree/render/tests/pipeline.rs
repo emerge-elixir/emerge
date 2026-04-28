@@ -15,8 +15,8 @@ fn build_two_child_tree(
     let left_id = NodeId::from_term_bytes(vec![201]);
     let right_id = NodeId::from_term_bytes(vec![202]);
 
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![left_id.clone(), right_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![left_id, right_id];
     root.layout.frame = Some(root_frame);
 
     let mut left = Element::with_attrs(left_id, ElementKind::El, Vec::new(), left_attrs);
@@ -61,13 +61,12 @@ fn build_nested_child_tree(
     let parent_id = NodeId::from_term_bytes(vec![211]);
     let child_id = NodeId::from_term_bytes(vec![212]);
 
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![parent_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![parent_id];
     root.layout.frame = Some(root_frame);
 
-    let mut parent =
-        Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
-    parent.children = vec![child_id.clone()];
+    let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![child_id];
     parent.layout.frame = Some(parent_frame);
 
     let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
@@ -207,8 +206,8 @@ fn test_render_nested_wrapper_children_use_host_clips() {
         g: 20,
         b: 40,
     }));
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![column_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![column_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -218,13 +217,9 @@ fn test_render_nested_wrapper_children_use_host_clips() {
         content_height: 120.0,
     });
 
-    let mut column = Element::with_attrs(
-        column_id.clone(),
-        ElementKind::Column,
-        Vec::new(),
-        Attrs::default(),
-    );
-    column.children = vec![text_holder_id.clone()];
+    let mut column =
+        Element::with_attrs(column_id, ElementKind::Column, Vec::new(), Attrs::default());
+    column.children = vec![text_holder_id];
     column.layout.frame = Some(Frame {
         x: 16.0,
         y: 14.0,
@@ -240,13 +235,9 @@ fn test_render_nested_wrapper_children_use_host_clips() {
         g: 50,
         b: 80,
     }));
-    let mut text_holder = Element::with_attrs(
-        text_holder_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        holder_attrs,
-    );
-    text_holder.children = vec![text_id.clone()];
+    let mut text_holder =
+        Element::with_attrs(text_holder_id, ElementKind::El, Vec::new(), holder_attrs);
+    text_holder.children = vec![text_id];
     text_holder.layout.frame = Some(Frame {
         x: 16.0,
         y: 14.0,
@@ -260,7 +251,7 @@ fn test_render_nested_wrapper_children_use_host_clips() {
     text_attrs.content = Some("Overview".to_string());
     text_attrs.font_size = Some(22.0);
     text_attrs.font_color = Some(Color::Named("white".to_string()));
-    let mut text = Element::with_attrs(text_id.clone(), ElementKind::Text, Vec::new(), text_attrs);
+    let mut text = Element::with_attrs(text_id, ElementKind::Text, Vec::new(), text_attrs);
     text.layout.frame = Some(Frame {
         x: 24.0,
         y: 22.0,
@@ -383,8 +374,8 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         g: 20,
         b: 40,
     }));
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::Row, Vec::new(), root_attrs);
-    root.children = vec![left_id.clone(), right_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::Row, Vec::new(), root_attrs);
+    root.children = vec![left_id, right_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -514,9 +505,8 @@ fn test_render_rounded_parent_clips_child_background_corners() {
         b: 255,
     }));
     root_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
-    let mut root =
-        Element::with_attrs(root_id.clone(), ElementKind::Column, Vec::new(), root_attrs);
-    root.children = vec![child_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
+    root.children = vec![child_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -781,9 +771,8 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
     let mut parent_attrs = Attrs::default();
     parent_attrs.scrollbar_y = Some(true);
 
-    let mut parent =
-        Element::with_attrs(parent_id.clone(), ElementKind::El, Vec::new(), parent_attrs);
-    parent.children = vec![child_id.clone()];
+    let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![child_id];
     parent.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -860,13 +849,8 @@ fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
     let parent_id = NodeId::from_term_bytes(vec![12]);
     let child_id = NodeId::from_term_bytes(vec![13]);
 
-    let mut parent = Element::with_attrs(
-        parent_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        Attrs::default(),
-    );
-    parent.children = vec![child_id.clone()];
+    let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+    parent.children = vec![child_id];
     parent.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -1052,12 +1036,12 @@ fn test_render_translated_full_width_row_moves_host_frame_and_children_together(
     let child_id = NodeId::from_term_bytes(vec![222]);
 
     let mut root = Element::with_attrs(
-        root_id.clone(),
+        root_id,
         ElementKind::El,
         Vec::new(),
         solid_fill_attrs((0, 0, 0)),
     );
-    root.children = vec![row_id.clone()];
+    root.children = vec![row_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -1077,8 +1061,8 @@ fn test_render_translated_full_width_row_moves_host_frame_and_children_together(
     });
     row_attrs.border_color = Some(Color::Rgb { r: 0, g: 0, b: 255 });
 
-    let mut row = Element::with_attrs(row_id.clone(), ElementKind::Row, Vec::new(), row_attrs);
-    row.children = vec![child_id.clone()];
+    let mut row = Element::with_attrs(row_id, ElementKind::Row, Vec::new(), row_attrs);
+    row.children = vec![child_id];
     row.layout.frame = Some(Frame {
         x: 20.0,
         y: 30.0,
@@ -1957,7 +1941,7 @@ fn test_render_nested_escape_submenu_paints_after_parent_menu() {
     let submenu_id = NodeId::from_term_bytes(vec![73]);
 
     let mut menu = Element::with_attrs(
-        menu_id.clone(),
+        menu_id,
         ElementKind::El,
         Vec::new(),
         solid_fill_attrs((255, 255, 255)),
@@ -1970,10 +1954,10 @@ fn test_render_nested_escape_submenu_paints_after_parent_menu() {
         content_width: 80.0,
         content_height: 60.0,
     });
-    menu.nearby.push(NearbySlot::OnRight, submenu_id.clone());
+    menu.nearby.push(NearbySlot::OnRight, submenu_id);
 
     let mut submenu = Element::with_attrs(
-        submenu_id.clone(),
+        submenu_id,
         ElementKind::El,
         Vec::new(),
         solid_fill_attrs((255, 255, 0)),
@@ -2658,8 +2642,8 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     root_attrs.scrollbar_y = Some(true);
     root_attrs.scroll_y = Some(10.0);
 
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![child_a_id.clone(), child_b_id.clone(), child_c_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![child_a_id, child_b_id, child_c_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -2670,7 +2654,7 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     });
 
     let mut child_a = Element::with_attrs(
-        child_a_id.clone(),
+        child_a_id,
         ElementKind::El,
         Vec::new(),
         solid_fill_attrs((255, 0, 0)),
@@ -2693,12 +2677,7 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
         color: Color::Named("black".to_string()),
         inset: false,
     }]);
-    let mut child_b = Element::with_attrs(
-        child_b_id.clone(),
-        ElementKind::El,
-        Vec::new(),
-        child_b_attrs,
-    );
+    let mut child_b = Element::with_attrs(child_b_id, ElementKind::El, Vec::new(), child_b_attrs);
     child_b.layout.frame = Some(Frame {
         x: 0.0,
         y: 20.0,
@@ -2775,8 +2754,8 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
     root_attrs.scrollbar_y = Some(true);
     root_attrs.scroll_y = Some(150.0);
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![inner_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![inner_id];
     root.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
@@ -2794,8 +2773,8 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     }));
     inner_attrs.scrollbar_y = Some(true);
     inner_attrs.scroll_y = Some(10.0);
-    let mut inner = Element::with_attrs(inner_id.clone(), ElementKind::El, Vec::new(), inner_attrs);
-    inner.children = vec![text_id.clone()];
+    let mut inner = Element::with_attrs(inner_id, ElementKind::El, Vec::new(), inner_attrs);
+    inner.children = vec![text_id];
     inner.layout.frame = Some(Frame {
         x: 10.0,
         y: 200.0,
@@ -2869,8 +2848,8 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
     root_attrs.scrollbar_y = Some(true);
     root_attrs.scroll_y = Some(10.0);
-    let mut root = Element::with_attrs(root_id.clone(), ElementKind::El, Vec::new(), root_attrs);
-    root.children = vec![text_id.clone()];
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![text_id];
     root.layout.frame = Some(Frame {
         x: 50.0,
         y: 60.0,

@@ -45,14 +45,14 @@ impl Default for AssetConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedAsset {
     pub id: String,
     pub width: u32,
     pub height: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetStatus {
     Pending,
     Ready(ResolvedAsset),
@@ -64,6 +64,26 @@ struct AssetState {
     config: AssetConfig,
     sources: HashMap<ImageSource, AssetStatus>,
     pending_count: usize,
+    status_generation: u64,
+}
+
+impl AssetState {
+    fn clear_sources(&mut self) {
+        if !self.sources.is_empty() || self.pending_count != 0 {
+            self.status_generation = self.status_generation.wrapping_add(1);
+        }
+        self.sources.clear();
+        self.pending_count = 0;
+    }
+
+    fn set_source_status(&mut self, source: ImageSource, status: AssetStatus) {
+        if self.sources.get(&source) == Some(&status) {
+            return;
+        }
+
+        self.sources.insert(source, status);
+        self.status_generation = self.status_generation.wrapping_add(1);
+    }
 }
 
 struct Global {
@@ -112,8 +132,7 @@ pub fn start(tree_tx: Sender<TreeMsg>, log_render: bool) {
     let state = Arc::clone(&guard.state);
 
     if let Ok(mut state_guard) = state.lock() {
-        state_guard.sources.clear();
-        state_guard.pending_count = 0;
+        state_guard.clear_sources();
     }
 
     guard.tx = Some(tx.clone());
@@ -146,8 +165,7 @@ pub fn stop() {
     }
 
     if let Ok(mut state) = guard.state.lock() {
-        state.sources.clear();
-        state.pending_count = 0;
+        state.clear_sources();
     }
 }
 
@@ -159,8 +177,8 @@ pub fn configure(config: AssetConfig) {
 
     if let Ok(mut state) = guard.state.lock() {
         state.config = normalize_config(config);
-        state.sources.clear();
-        state.pending_count = 0;
+        state.clear_sources();
+        state.status_generation = state.status_generation.wrapping_add(1);
     }
 }
 
@@ -185,9 +203,7 @@ pub fn snapshot_tree_sources(tree: &ElementTree) {
     if let Ok(mut state) = guard.state.lock() {
         state.pending_count = 0;
         sources.iter().for_each(|source| {
-            state
-                .sources
-                .insert(source.clone(), snapshot_status_for_source(source));
+            state.set_source_status(source.clone(), snapshot_status_for_source(source))
         });
     }
 }
@@ -203,9 +219,7 @@ pub fn snapshot_tree_sources_for_offscreen(tree: &ElementTree) {
     if let Ok(mut state) = guard.state.lock() {
         state.pending_count = 0;
         sources.iter().for_each(|source| {
-            state
-                .sources
-                .insert(source.clone(), snapshot_status_for_source(source));
+            state.set_source_status(source.clone(), snapshot_status_for_source(source))
         });
     }
 }
@@ -239,7 +253,7 @@ pub fn resolve_tree_sources_sync(
         let mut state = state
             .lock()
             .map_err(|_| "failed to lock asset state".to_string())?;
-        state.sources.insert(source, status);
+        state.set_source_status(source, status);
         state.pending_count = 0;
     }
 
@@ -253,7 +267,12 @@ pub fn ensure_source(source: &ImageSource) {
         if let Ok(guard) = global().lock()
             && let Ok(mut state) = guard.state.lock()
         {
-            state.sources.insert(
+            if matches!(state.sources.get(source), Some(AssetStatus::Pending))
+                && state.pending_count > 0
+            {
+                state.pending_count -= 1;
+            }
+            state.set_source_status(
                 source.clone(),
                 AssetStatus::Ready(ResolvedAsset {
                     id: id.clone(),
@@ -278,7 +297,7 @@ pub fn ensure_source(source: &ImageSource) {
             | Some(AssetStatus::Ready(_))
             | Some(AssetStatus::Failed) => {}
             None => {
-                state.sources.insert(source.clone(), AssetStatus::Pending);
+                state.set_source_status(source.clone(), AssetStatus::Pending);
                 state.pending_count = state.pending_count.saturating_add(1);
                 should_queue = true;
             }
@@ -302,7 +321,7 @@ pub fn ensure_source(source: &ImageSource) {
                     if state.pending_count > 0 {
                         state.pending_count -= 1;
                     }
-                    state.sources.insert(source.clone(), AssetStatus::Failed);
+                    state.set_source_status(source.clone(), AssetStatus::Failed);
                 }
             }
         }
@@ -322,6 +341,17 @@ pub fn source_dimensions(source: &ImageSource) -> Option<(u32, u32)> {
     }
 }
 
+pub fn source_status_generation() -> u64 {
+    let Ok(guard) = global().lock() else {
+        return 0;
+    };
+    let Ok(state) = guard.state.lock() else {
+        return 0;
+    };
+
+    state.status_generation
+}
+
 impl Worker {
     fn handle_ensure(&mut self, source: ImageSource) {
         let config = match self.state.lock() {
@@ -339,15 +369,13 @@ impl Worker {
 
             match result {
                 Ok(asset) => {
-                    state
-                        .sources
-                        .insert(source.clone(), AssetStatus::Ready(asset));
+                    state.set_source_status(source.clone(), AssetStatus::Ready(asset));
                 }
                 Err(reason) => {
                     if self.log_render {
                         eprintln!("asset load failed source={source:?} reason={reason}");
                     }
-                    state.sources.insert(source.clone(), AssetStatus::Failed);
+                    state.set_source_status(source.clone(), AssetStatus::Failed);
                 }
             }
         }

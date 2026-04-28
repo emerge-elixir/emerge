@@ -102,7 +102,15 @@ defmodule EmergeSkia.Native do
           required(:render_log) => boolean(),
           required(:close_signal_log) => boolean(),
           required(:stats_enabled) => boolean(),
-          required(:renderer_stats_log) => boolean()
+          required(:renderer_stats_log) => boolean(),
+          required(:renderer_cache) => %{
+            required(:max_new_payloads_per_frame) => non_neg_integer(),
+            required(:clean_subtree) => %{
+              required(:max_entries) => non_neg_integer(),
+              required(:max_bytes) => non_neg_integer(),
+              required(:max_entry_bytes) => non_neg_integer()
+            }
+          }
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
@@ -286,6 +294,29 @@ defmodule EmergeSkia.Native do
           required(:resolve_stores) => non_neg_integer()
         }
 
+  @type renderer_cache_kind_stats :: %{
+          required(:candidates) => non_neg_integer(),
+          required(:visible_candidates) => non_neg_integer(),
+          required(:admitted) => non_neg_integer(),
+          required(:hits) => non_neg_integer(),
+          required(:misses) => non_neg_integer(),
+          required(:stores) => non_neg_integer(),
+          required(:evictions) => non_neg_integer(),
+          required(:rejected) => non_neg_integer(),
+          required(:current_entries) => non_neg_integer(),
+          required(:current_bytes) => non_neg_integer(),
+          required(:current_gpu_payloads) => non_neg_integer(),
+          required(:current_cpu_payloads) => non_neg_integer(),
+          required(:evicted_bytes) => non_neg_integer(),
+          required(:prepare) => duration_stats(),
+          required(:draw_hit) => duration_stats()
+        }
+
+  @type renderer_cache_stats :: %{
+          required(:noop) => renderer_cache_kind_stats(),
+          required(:clean_subtree) => renderer_cache_kind_stats()
+        }
+
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
           required(:kind) => String.t(),
@@ -307,13 +338,20 @@ defmodule EmergeSkia.Native do
             required(:render_gpu_flush) => duration_stats(),
             required(:render_submit) => duration_stats(),
             required(:present_submit) => duration_stats(),
+            required(:pipeline) => duration_stats(),
+            required(:pipeline_submit_to_tree_start) => duration_stats(),
+            required(:pipeline_tree) => duration_stats(),
+            required(:pipeline_render_queue) => duration_stats(),
+            required(:pipeline_submit_to_swap) => duration_stats(),
+            required(:pipeline_swap_to_frame_callback) => duration_stats(),
             required(:layout) => duration_stats(),
             required(:refresh) => duration_stats(),
             required(:event_resolve) => duration_stats(),
             required(:patch_tree_process) => duration_stats()
           },
           required(:counters) => %{
-            required(:layout_cache) => layout_cache_stats()
+            required(:layout_cache) => layout_cache_stats(),
+            required(:renderer_cache) => renderer_cache_stats()
           }
         }
 
