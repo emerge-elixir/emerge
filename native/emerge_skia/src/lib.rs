@@ -74,12 +74,12 @@ use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
 #[cfg(all(feature = "drm", target_os = "linux"))]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
-use renderer::clear_global_caches;
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
+use renderer::{CleanSubtreeCacheConfig, RendererCacheConfig, clear_global_caches};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::{LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot};
 use std::time::Instant;
@@ -135,6 +135,12 @@ struct StatsTimingSnapshotNif {
     render_gpu_flush: DurationStatsNif,
     render_submit: DurationStatsNif,
     present_submit: DurationStatsNif,
+    pipeline: DurationStatsNif,
+    pipeline_submit_to_tree_start: DurationStatsNif,
+    pipeline_tree: DurationStatsNif,
+    pipeline_render_queue: DurationStatsNif,
+    pipeline_submit_to_swap: DurationStatsNif,
+    pipeline_swap_to_frame_callback: DurationStatsNif,
     layout: DurationStatsNif,
     refresh: DurationStatsNif,
     event_resolve: DurationStatsNif,
@@ -152,6 +158,7 @@ struct DurationStatsNif {
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsCounterSnapshotNif {
     layout_cache: LayoutCacheStatsNif,
+    renderer_cache: RendererCacheStatsNif,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
@@ -167,6 +174,31 @@ struct LayoutCacheStatsNif {
     resolve_stores: u64,
 }
 
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheStatsNif {
+    noop: RendererCacheKindStatsNif,
+    clean_subtree: RendererCacheKindStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheKindStatsNif {
+    candidates: u64,
+    visible_candidates: u64,
+    admitted: u64,
+    hits: u64,
+    misses: u64,
+    stores: u64,
+    evictions: u64,
+    rejected: u64,
+    current_entries: u64,
+    current_bytes: u64,
+    current_gpu_payloads: u64,
+    current_cpu_payloads: u64,
+    evicted_bytes: u64,
+    prepare: DurationStatsNif,
+    draw_hit: DurationStatsNif,
+}
+
 impl StatsSnapshotNif {
     fn disabled(kind: &'static str) -> Self {
         Self::from_snapshot(kind, false, false, &RendererStatsSnapshot::default())
@@ -179,7 +211,7 @@ impl StatsSnapshotNif {
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         Self {
-            version: 4,
+            version: 8,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -199,6 +231,20 @@ impl StatsSnapshotNif {
                 render_gpu_flush: DurationStatsNif::from(snapshot.render_gpu_flush.clone()),
                 render_submit: DurationStatsNif::from(snapshot.render_submit.clone()),
                 present_submit: DurationStatsNif::from(snapshot.present_submit.clone()),
+                pipeline: DurationStatsNif::from(snapshot.pipeline.clone()),
+                pipeline_submit_to_tree_start: DurationStatsNif::from(
+                    snapshot.pipeline_submit_to_tree_start.clone(),
+                ),
+                pipeline_tree: DurationStatsNif::from(snapshot.pipeline_tree.clone()),
+                pipeline_render_queue: DurationStatsNif::from(
+                    snapshot.pipeline_render_queue.clone(),
+                ),
+                pipeline_submit_to_swap: DurationStatsNif::from(
+                    snapshot.pipeline_submit_to_swap.clone(),
+                ),
+                pipeline_swap_to_frame_callback: DurationStatsNif::from(
+                    snapshot.pipeline_swap_to_frame_callback.clone(),
+                ),
                 layout: DurationStatsNif::from(snapshot.layout.clone()),
                 refresh: DurationStatsNif::from(snapshot.refresh.clone()),
                 event_resolve: DurationStatsNif::from(snapshot.event_resolve.clone()),
@@ -206,6 +252,7 @@ impl StatsSnapshotNif {
             },
             counters: StatsCounterSnapshotNif {
                 layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
+                renderer_cache: RendererCacheStatsNif::from(snapshot.renderer_cache.clone()),
             },
         }
     }
@@ -234,6 +281,37 @@ impl From<LayoutCacheStats> for LayoutCacheStatsNif {
             resolve_hits: stats.resolve_hits,
             resolve_misses: stats.resolve_misses,
             resolve_stores: stats.resolve_stores,
+        }
+    }
+}
+
+impl From<stats::RendererCacheStatsSnapshot> for RendererCacheStatsNif {
+    fn from(stats: stats::RendererCacheStatsSnapshot) -> Self {
+        Self {
+            noop: RendererCacheKindStatsNif::from(stats.noop),
+            clean_subtree: RendererCacheKindStatsNif::from(stats.clean_subtree),
+        }
+    }
+}
+
+impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
+    fn from(stats: stats::RendererCacheKindStatsSnapshot) -> Self {
+        Self {
+            candidates: stats.candidates,
+            visible_candidates: stats.visible_candidates,
+            admitted: stats.admitted,
+            hits: stats.hits,
+            misses: stats.misses,
+            stores: stats.stores,
+            evictions: stats.evictions,
+            rejected: stats.rejected,
+            current_entries: stats.current_entries,
+            current_bytes: stats.current_bytes,
+            current_gpu_payloads: stats.current_gpu_payloads,
+            current_cpu_payloads: stats.current_cpu_payloads,
+            evicted_bytes: stats.evicted_bytes,
+            prepare: DurationStatsNif::from(stats.prepare),
+            draw_hit: DurationStatsNif::from(stats.draw_hit),
         }
     }
 }
@@ -356,7 +434,10 @@ impl RenderSender {
         match self.tx.try_send(msg) {
             Ok(()) => {}
             Err(TrySendError::Full(msg)) => {
-                let _ = self.drop_rx.try_recv();
+                let mut msg = msg;
+                if let Ok(dropped) = self.drop_rx.try_recv() {
+                    msg.absorb_pipeline_submitted_at(&dropped);
+                }
                 let _ = self.tx.try_send(msg);
                 if self.log_render {
                     eprintln!("render queue overwrite");
@@ -736,6 +817,14 @@ struct StartConfig {
         allow(dead_code)
     )]
     renderer_stats_log: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+        )),
+        allow(dead_code)
+    )]
+    renderer_cache_config: RendererCacheConfig,
 }
 
 #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
@@ -769,6 +858,20 @@ struct StartOptsNif {
     close_signal_log: bool,
     stats_enabled: bool,
     renderer_stats_log: bool,
+    renderer_cache: RendererCacheConfigNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheConfigNif {
+    max_new_payloads_per_frame: u32,
+    clean_subtree: CleanSubtreeCacheConfigNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct CleanSubtreeCacheConfigNif {
+    max_entries: u64,
+    max_bytes: u64,
+    max_entry_bytes: u64,
 }
 
 #[derive(rustler::NifMap)]
@@ -807,6 +910,23 @@ fn start_with_config(
     }
 
     start_native_renderer_with_config(config, initial_log_target)
+}
+
+fn renderer_cache_config_from_nif(
+    config: RendererCacheConfigNif,
+) -> Result<RendererCacheConfig, String> {
+    let max_entries = usize::try_from(config.clean_subtree.max_entries).map_err(|_| {
+        "renderer_cache.clean_subtree.max_entries does not fit this platform".to_string()
+    })?;
+
+    Ok(RendererCacheConfig {
+        max_new_payloads_per_frame: config.max_new_payloads_per_frame,
+        clean_subtree: CleanSubtreeCacheConfig {
+            max_entries,
+            max_bytes: config.clean_subtree.max_bytes,
+            max_entry_bytes: config.clean_subtree.max_entry_bytes,
+        },
+    })
 }
 
 #[cfg(any(
@@ -898,6 +1018,7 @@ fn start_native_renderer_with_config(
             let native_log_clone = Arc::clone(&native_log);
             let renderer_stats_clone = renderer_stats.clone();
             let renderer_stats_log = config.renderer_stats_log;
+            let renderer_cache_config = config.renderer_cache_config;
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -915,6 +1036,7 @@ fn start_native_renderer_with_config(
                     close_signal_log,
                     stats: renderer_stats_clone,
                     renderer_stats_log,
+                    renderer_cache_config,
                     native_log: native_log_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
@@ -1042,6 +1164,7 @@ fn start_native_renderer_with_config(
                 retry_interval_ms: config.drm_retry_interval_ms,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
+                renderer_cache_config: config.renderer_cache_config,
             };
 
             handles.backend_handle = Some(thread::spawn(move || {
@@ -1222,6 +1345,7 @@ fn start(
                 close_signal_log: false,
                 stats_enabled: false,
                 renderer_stats_log: false,
+                renderer_cache_config: RendererCacheConfig::default(),
             },
             Some(env.pid()),
         )
@@ -1251,6 +1375,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let renderer_cache_config = renderer_cache_config_from_nif(opts.renderer_cache)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(
         StartConfig {
@@ -1270,6 +1396,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             close_signal_log: opts.close_signal_log,
             stats_enabled: opts.stats_enabled,
             renderer_stats_log: opts.renderer_stats_log,
+            renderer_cache_config,
         },
         Some(env.pid()),
     )
@@ -1335,10 +1462,14 @@ fn video_target_submit_prime(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
+    let submitted_at = Instant::now();
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::UploadTree { bytes },
+        TreeMsg::UploadTree {
+            bytes,
+            submitted_at: Some(submitted_at),
+        },
         renderer.log_render,
     );
     atoms::ok()
@@ -1346,10 +1477,14 @@ fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Ato
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
+    let submitted_at = Instant::now();
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::PatchTree { bytes },
+        TreeMsg::PatchTree {
+            bytes,
+            submitted_at: Some(submitted_at),
+        },
         renderer.log_render,
     );
     atoms::ok()
@@ -1866,6 +2001,7 @@ fn test_harness_upload(harness: ResourceArc<TestHarnessResource>, data: Binary) 
         &harness.tree_tx,
         TreeMsg::UploadTree {
             bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
         false,
     );
@@ -1878,6 +2014,7 @@ fn test_harness_patch(harness: ResourceArc<TestHarnessResource>, data: Binary) -
         &harness.tree_tx,
         TreeMsg::PatchTree {
             bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
         false,
     );
@@ -1912,6 +2049,7 @@ fn test_harness_animation_pulse(
         TreeMsg::AnimationPulse {
             presented_at: base_instant + Duration::from_millis(presented_ms),
             predicted_next_present_at: base_instant + Duration::from_millis(predicted_ms),
+            trace: None,
         },
         false,
     );
@@ -2409,6 +2547,7 @@ mod tests {
         harness.send_tree(TreeMsg::AnimationPulse {
             presented_at: base,
             predicted_next_present_at: base,
+            trace: None,
         });
         harness.wait_for_render_settle();
         let _ = harness.drain_set_mouse_over_active(&case.target_id);
@@ -2424,6 +2563,7 @@ mod tests {
             harness.send_tree(TreeMsg::AnimationPulse {
                 presented_at: base + Duration::from_millis(sample_ms),
                 predicted_next_present_at: base + Duration::from_millis(sample_ms),
+                trace: None,
             });
             harness.wait_for_render_settle();
 
@@ -2452,6 +2592,7 @@ mod tests {
         harness.send_tree(TreeMsg::AnimationPulse {
             presented_at: base,
             predicted_next_present_at: base,
+            trace: None,
         });
         match harness.render_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(_) => {}
@@ -2470,6 +2611,7 @@ mod tests {
             harness.send_tree(TreeMsg::AnimationPulse {
                 presented_at: base + Duration::from_millis(sample_ms),
                 predicted_next_present_at: base + Duration::from_millis(sample_ms),
+                trace: None,
             });
 
             match harness.render_rx.recv_timeout(Duration::from_millis(250)) {

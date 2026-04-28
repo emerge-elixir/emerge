@@ -5,7 +5,10 @@ use std::{
 
 use crate::{
     render_scene::RenderSceneSummary,
-    renderer::{RenderDrawTimings, RenderImageDrawProfile, RenderShadowDrawProfile, RenderTimings},
+    renderer::{
+        RenderDrawTimings, RenderImageDrawProfile, RenderShadowDrawProfile, RenderTimings,
+        RendererCacheFrameStats, RendererCacheKindFrameStats,
+    },
 };
 
 pub const SLOW_RENDER_STAGE_THRESHOLD: Duration = Duration::from_millis(4);
@@ -118,11 +121,87 @@ pub struct RendererStatsSnapshot {
     pub render_gpu_flush: DurationStatsSnapshot,
     pub render_submit: DurationStatsSnapshot,
     pub present_submit: DurationStatsSnapshot,
+    pub pipeline: DurationStatsSnapshot,
+    pub pipeline_submit_to_tree_start: DurationStatsSnapshot,
+    pub pipeline_tree: DurationStatsSnapshot,
+    pub pipeline_render_queue: DurationStatsSnapshot,
+    pub pipeline_submit_to_swap: DurationStatsSnapshot,
+    pub pipeline_swap_to_frame_callback: DurationStatsSnapshot,
     pub layout: DurationStatsSnapshot,
     pub refresh: DurationStatsSnapshot,
     pub event_resolve: DurationStatsSnapshot,
     pub patch_tree_process: DurationStatsSnapshot,
     pub layout_cache: LayoutCacheStats,
+    pub renderer_cache: RendererCacheStatsSnapshot,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RendererCacheStatsSnapshot {
+    pub noop: RendererCacheKindStatsSnapshot,
+    pub clean_subtree: RendererCacheKindStatsSnapshot,
+}
+
+impl RendererCacheStatsSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.noop.is_empty() && self.clean_subtree.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RendererCacheKindStatsSnapshot {
+    pub candidates: u64,
+    pub visible_candidates: u64,
+    pub admitted: u64,
+    pub hits: u64,
+    pub misses: u64,
+    pub stores: u64,
+    pub evictions: u64,
+    pub rejected: u64,
+    pub current_entries: u64,
+    pub current_bytes: u64,
+    pub current_gpu_payloads: u64,
+    pub current_cpu_payloads: u64,
+    pub evicted_bytes: u64,
+    pub gpu_payload_stores: u64,
+    pub cpu_payload_stores: u64,
+    pub prepare_successes: u64,
+    pub prepare_failures: u64,
+    pub direct_fallbacks_after_admission: u64,
+    pub rejected_ineligible: u64,
+    pub rejected_admission: u64,
+    pub rejected_oversized: u64,
+    pub rejected_payload_budget: u64,
+    pub prepare: DurationStatsSnapshot,
+    pub draw_hit: DurationStatsSnapshot,
+}
+
+impl RendererCacheKindStatsSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.candidates == 0
+            && self.visible_candidates == 0
+            && self.admitted == 0
+            && self.hits == 0
+            && self.misses == 0
+            && self.stores == 0
+            && self.evictions == 0
+            && self.rejected == 0
+            && self.current_entries == 0
+            && self.current_bytes == 0
+            && self.current_gpu_payloads == 0
+            && self.current_cpu_payloads == 0
+            && self.evicted_bytes == 0
+            && self.gpu_payload_stores == 0
+            && self.cpu_payload_stores == 0
+            && self.prepare_successes == 0
+            && self.prepare_failures == 0
+            && self.direct_fallbacks_after_admission == 0
+            && self.rejected_ineligible == 0
+            && self.rejected_admission == 0
+            && self.rejected_oversized == 0
+            && self.rejected_payload_budget == 0
+            && self.prepare.count == 0
+            && self.draw_hit.count == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,11 +265,18 @@ struct RendererStatsWindow {
     render_gpu_flush: DurationStatsWindow,
     render_submit: DurationStatsWindow,
     present_submit: DurationStatsWindow,
+    pipeline: DurationStatsWindow,
+    pipeline_submit_to_tree_start: DurationStatsWindow,
+    pipeline_tree: DurationStatsWindow,
+    pipeline_render_queue: DurationStatsWindow,
+    pipeline_submit_to_swap: DurationStatsWindow,
+    pipeline_swap_to_frame_callback: DurationStatsWindow,
     layout: DurationStatsWindow,
     refresh: DurationStatsWindow,
     event_resolve: DurationStatsWindow,
     patch_tree_process: DurationStatsWindow,
     layout_cache: LayoutCacheStats,
+    renderer_cache: RendererCacheStatsWindow,
 }
 
 impl RendererStatsWindow {
@@ -205,11 +291,18 @@ impl RendererStatsWindow {
             render_gpu_flush: DurationStatsWindow::default(),
             render_submit: DurationStatsWindow::default(),
             present_submit: DurationStatsWindow::default(),
+            pipeline: DurationStatsWindow::default(),
+            pipeline_submit_to_tree_start: DurationStatsWindow::default(),
+            pipeline_tree: DurationStatsWindow::default(),
+            pipeline_render_queue: DurationStatsWindow::default(),
+            pipeline_submit_to_swap: DurationStatsWindow::default(),
+            pipeline_swap_to_frame_callback: DurationStatsWindow::default(),
             layout: DurationStatsWindow::default(),
             refresh: DurationStatsWindow::default(),
             event_resolve: DurationStatsWindow::default(),
             patch_tree_process: DurationStatsWindow::default(),
             layout_cache: LayoutCacheStats::default(),
+            renderer_cache: RendererCacheStatsWindow::default(),
         }
     }
 
@@ -238,11 +331,148 @@ impl RendererStatsWindow {
             render_gpu_flush: self.render_gpu_flush.snapshot(),
             render_submit: self.render_submit.snapshot(),
             present_submit: self.present_submit.snapshot(),
+            pipeline: self.pipeline.snapshot(),
+            pipeline_submit_to_tree_start: self.pipeline_submit_to_tree_start.snapshot(),
+            pipeline_tree: self.pipeline_tree.snapshot(),
+            pipeline_render_queue: self.pipeline_render_queue.snapshot(),
+            pipeline_submit_to_swap: self.pipeline_submit_to_swap.snapshot(),
+            pipeline_swap_to_frame_callback: self.pipeline_swap_to_frame_callback.snapshot(),
             layout: self.layout.snapshot(),
             refresh: self.refresh.snapshot(),
             event_resolve: self.event_resolve.snapshot(),
             patch_tree_process: self.patch_tree_process.snapshot(),
             layout_cache: self.layout_cache,
+            renderer_cache: self.renderer_cache.snapshot(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RendererCacheStatsWindow {
+    noop: RendererCacheKindStatsWindow,
+    clean_subtree: RendererCacheKindStatsWindow,
+}
+
+impl RendererCacheStatsWindow {
+    fn record(&mut self, stats: RendererCacheFrameStats) {
+        self.noop.record(stats.noop);
+        self.clean_subtree.record(stats.clean_subtree);
+    }
+
+    fn snapshot(&self) -> RendererCacheStatsSnapshot {
+        RendererCacheStatsSnapshot {
+            noop: self.noop.snapshot(),
+            clean_subtree: self.clean_subtree.snapshot(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RendererCacheKindStatsWindow {
+    candidates: u64,
+    visible_candidates: u64,
+    admitted: u64,
+    hits: u64,
+    misses: u64,
+    stores: u64,
+    evictions: u64,
+    rejected: u64,
+    current_entries: u64,
+    current_bytes: u64,
+    current_gpu_payloads: u64,
+    current_cpu_payloads: u64,
+    evicted_bytes: u64,
+    gpu_payload_stores: u64,
+    cpu_payload_stores: u64,
+    prepare_successes: u64,
+    prepare_failures: u64,
+    direct_fallbacks_after_admission: u64,
+    rejected_ineligible: u64,
+    rejected_admission: u64,
+    rejected_oversized: u64,
+    rejected_payload_budget: u64,
+    prepare: DurationStatsWindow,
+    draw_hit: DurationStatsWindow,
+}
+
+impl RendererCacheKindStatsWindow {
+    fn record(&mut self, stats: RendererCacheKindFrameStats) {
+        self.candidates = self.candidates.saturating_add(stats.candidates);
+        self.visible_candidates = self
+            .visible_candidates
+            .saturating_add(stats.visible_candidates);
+        self.admitted = self.admitted.saturating_add(stats.admitted);
+        self.hits = self.hits.saturating_add(stats.hits);
+        self.misses = self.misses.saturating_add(stats.misses);
+        self.stores = self.stores.saturating_add(stats.stores);
+        self.evictions = self.evictions.saturating_add(stats.evictions);
+        self.rejected = self.rejected.saturating_add(stats.rejected);
+        self.current_entries = stats.current_entries;
+        self.current_bytes = stats.current_bytes;
+        self.current_gpu_payloads = stats.current_gpu_payloads;
+        self.current_cpu_payloads = stats.current_cpu_payloads;
+        self.evicted_bytes = self.evicted_bytes.saturating_add(stats.evicted_bytes);
+        self.gpu_payload_stores = self
+            .gpu_payload_stores
+            .saturating_add(stats.gpu_payload_stores);
+        self.cpu_payload_stores = self
+            .cpu_payload_stores
+            .saturating_add(stats.cpu_payload_stores);
+        self.prepare_successes = self
+            .prepare_successes
+            .saturating_add(stats.prepare_successes);
+        self.prepare_failures = self.prepare_failures.saturating_add(stats.prepare_failures);
+        self.direct_fallbacks_after_admission = self
+            .direct_fallbacks_after_admission
+            .saturating_add(stats.direct_fallbacks_after_admission);
+        self.rejected_ineligible = self
+            .rejected_ineligible
+            .saturating_add(stats.rejected_ineligible);
+        self.rejected_admission = self
+            .rejected_admission
+            .saturating_add(stats.rejected_admission);
+        self.rejected_oversized = self
+            .rejected_oversized
+            .saturating_add(stats.rejected_oversized);
+        self.rejected_payload_budget = self
+            .rejected_payload_budget
+            .saturating_add(stats.rejected_payload_budget);
+
+        if stats.stores > 0 {
+            self.prepare.record(stats.prepare_time);
+        }
+
+        if stats.hits > 0 {
+            self.draw_hit.record(stats.draw_hit_time);
+        }
+    }
+
+    fn snapshot(&self) -> RendererCacheKindStatsSnapshot {
+        RendererCacheKindStatsSnapshot {
+            candidates: self.candidates,
+            visible_candidates: self.visible_candidates,
+            admitted: self.admitted,
+            hits: self.hits,
+            misses: self.misses,
+            stores: self.stores,
+            evictions: self.evictions,
+            rejected: self.rejected,
+            current_entries: self.current_entries,
+            current_bytes: self.current_bytes,
+            current_gpu_payloads: self.current_gpu_payloads,
+            current_cpu_payloads: self.current_cpu_payloads,
+            evicted_bytes: self.evicted_bytes,
+            gpu_payload_stores: self.gpu_payload_stores,
+            cpu_payload_stores: self.cpu_payload_stores,
+            prepare_successes: self.prepare_successes,
+            prepare_failures: self.prepare_failures,
+            direct_fallbacks_after_admission: self.direct_fallbacks_after_admission,
+            rejected_ineligible: self.rejected_ineligible,
+            rejected_admission: self.rejected_admission,
+            rejected_oversized: self.rejected_oversized,
+            rejected_payload_budget: self.rejected_payload_budget,
+            prepare: self.prepare.snapshot(),
+            draw_hit: self.draw_hit.snapshot(),
         }
     }
 }
@@ -347,6 +577,84 @@ impl RendererStatsCollector {
         self.record_duration(duration, |window| &mut window.present_submit);
     }
 
+    pub fn record_pipeline(&self, submitted_at: Instant, presented_at: Instant) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            presented_at.saturating_duration_since(submitted_at),
+            |window| &mut window.pipeline,
+        );
+    }
+
+    pub fn record_pipeline_submit_to_tree_start(
+        &self,
+        submitted_at: Instant,
+        tree_started_at: Instant,
+    ) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            tree_started_at.saturating_duration_since(submitted_at),
+            |window| &mut window.pipeline_submit_to_tree_start,
+        );
+    }
+
+    pub fn record_pipeline_tree(&self, tree_started_at: Instant, render_queued_at: Instant) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            render_queued_at.saturating_duration_since(tree_started_at),
+            |window| &mut window.pipeline_tree,
+        );
+    }
+
+    pub fn record_pipeline_render_queue(
+        &self,
+        render_queued_at: Instant,
+        render_received_at: Instant,
+    ) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            render_received_at.saturating_duration_since(render_queued_at),
+            |window| &mut window.pipeline_render_queue,
+        );
+    }
+
+    pub fn record_pipeline_submit_to_swap(&self, submitted_at: Instant, swap_done_at: Instant) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            swap_done_at.saturating_duration_since(submitted_at),
+            |window| &mut window.pipeline_submit_to_swap,
+        );
+    }
+
+    pub fn record_pipeline_swap_to_frame_callback(
+        &self,
+        swap_done_at: Instant,
+        presented_at: Instant,
+    ) {
+        if !self.families.timings {
+            return;
+        }
+
+        self.record_duration(
+            presented_at.saturating_duration_since(swap_done_at),
+            |window| &mut window.pipeline_swap_to_frame_callback,
+        );
+    }
+
     pub fn record_layout(&self, duration: Duration) {
         if !self.families.timings {
             return;
@@ -389,6 +697,18 @@ impl RendererStatsCollector {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         window.layout_cache.add(stats);
+    }
+
+    pub fn record_renderer_cache(&self, stats: RendererCacheFrameStats) {
+        if !self.families.timings {
+            return;
+        }
+
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        window.renderer_cache.record(stats);
     }
 
     pub fn peek(&self) -> RendererStatsSnapshot {
@@ -439,7 +759,7 @@ impl RendererStatsCollector {
 }
 
 pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSnapshot) -> String {
-    format!(
+    let mut message = format!(
         concat!(
             "renderer stats\n",
             "  window\n",
@@ -450,6 +770,12 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "    display: {:.1} fps ({:.3} ms/frame)\n",
             "\n",
             "  timings\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
+            "{}\n",
             "{}\n",
             "{}\n",
             "{}\n",
@@ -478,6 +804,18 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         format_duration_stat_line("render gpu flush", &snapshot.render_gpu_flush),
         format_duration_stat_line("render submit", &snapshot.render_submit),
         format_duration_stat_line("present submit", &snapshot.present_submit),
+        format_duration_stat_line("pipeline submit->frame callback", &snapshot.pipeline),
+        format_duration_stat_line(
+            "pipeline submit->tree",
+            &snapshot.pipeline_submit_to_tree_start,
+        ),
+        format_duration_stat_line("pipeline tree", &snapshot.pipeline_tree),
+        format_duration_stat_line("pipeline render queue", &snapshot.pipeline_render_queue),
+        format_duration_stat_line("pipeline submit->swap", &snapshot.pipeline_submit_to_swap),
+        format_duration_stat_line(
+            "pipeline swap->frame callback",
+            &snapshot.pipeline_swap_to_frame_callback
+        ),
         format_duration_stat_line("layout", &snapshot.layout),
         format_duration_stat_line("refresh", &snapshot.refresh),
         format_duration_stat_line("event resolve", &snapshot.event_resolve),
@@ -491,6 +829,67 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout_cache.resolve_hits,
         snapshot.layout_cache.resolve_misses,
         snapshot.layout_cache.resolve_stores,
+    );
+
+    message.push_str("\n\n  renderer cache\n");
+    if !snapshot.renderer_cache.noop.is_empty() {
+        message.push_str(&format_renderer_cache_kind_line(
+            "noop",
+            &snapshot.renderer_cache.noop,
+        ));
+    }
+    message.push_str(&format_renderer_cache_kind_line(
+        "clean_subtree",
+        &snapshot.renderer_cache.clean_subtree,
+    ));
+
+    message
+}
+
+fn format_renderer_cache_kind_line(label: &str, stats: &RendererCacheKindStatsSnapshot) -> String {
+    let unknown_payloads = stats.current_entries.saturating_sub(
+        stats
+            .current_gpu_payloads
+            .saturating_add(stats.current_cpu_payloads),
+    );
+    format!(
+        concat!(
+            "    {}\n",
+            "      activity: candidates={} visible={} admitted={} hits={} misses={} stores={} evictions={} rejected={}\n",
+            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={}\n",
+            "      prepare: success={} failure={} avg={:.3} ms count={}\n",
+            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
+            "      hit_draw: avg={:.3} ms count={}\n"
+        ),
+        label,
+        stats.candidates,
+        stats.visible_candidates,
+        stats.admitted,
+        stats.hits,
+        stats.misses,
+        stats.stores,
+        stats.evictions,
+        stats.rejected,
+        stats.current_entries,
+        stats.current_bytes,
+        stats.current_gpu_payloads,
+        stats.current_cpu_payloads,
+        unknown_payloads,
+        stats.gpu_payload_stores,
+        stats.cpu_payload_stores,
+        stats.evicted_bytes,
+        stats.prepare_successes,
+        stats.prepare_failures,
+        stats.prepare.avg_ms,
+        stats.prepare.count,
+        stats.direct_fallbacks_after_admission,
+        stats.rejected_ineligible,
+        stats.rejected_admission,
+        stats.rejected_oversized,
+        stats.rejected_payload_budget,
+        stats.draw_hit.avg_ms,
+        stats.draw_hit.count,
     )
 }
 
@@ -522,7 +921,76 @@ pub fn format_slow_render_frame_log(
         message.push_str(&format_render_draw_detail(timings.draw, detail));
     }
 
+    message.push('\n');
+    message.push_str(&format_renderer_cache_frame_detail(
+        timings.renderer_cache.as_deref(),
+    ));
+
     message
+}
+
+fn format_renderer_cache_frame_detail(stats: Option<&RendererCacheFrameStats>) -> String {
+    let Some(stats) = stats else {
+        return "  renderer cache: no candidates".to_string();
+    };
+
+    let mut message = String::from("  renderer cache\n");
+    if !stats.noop.is_empty() {
+        message.push_str(&format_renderer_cache_kind_frame_line("noop", &stats.noop));
+    }
+    message.push_str(&format_renderer_cache_kind_frame_line(
+        "clean_subtree",
+        &stats.clean_subtree,
+    ));
+    message
+}
+
+fn format_renderer_cache_kind_frame_line(
+    label: &str,
+    stats: &RendererCacheKindFrameStats,
+) -> String {
+    let unknown_payloads = stats.current_entries.saturating_sub(
+        stats
+            .current_gpu_payloads
+            .saturating_add(stats.current_cpu_payloads),
+    );
+    format!(
+        concat!(
+            "    {}\n",
+            "      activity: candidates={} visible={} admitted={} hits={} misses={} stores={} evictions={} rejected={}\n",
+            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={}\n",
+            "      prepare: success={} failure={} time={:.3} ms\n",
+            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
+            "      hit_draw: time={:.3} ms\n"
+        ),
+        label,
+        stats.candidates,
+        stats.visible_candidates,
+        stats.admitted,
+        stats.hits,
+        stats.misses,
+        stats.stores,
+        stats.evictions,
+        stats.rejected,
+        stats.current_entries,
+        stats.current_bytes,
+        stats.current_gpu_payloads,
+        stats.current_cpu_payloads,
+        unknown_payloads,
+        stats.gpu_payload_stores,
+        stats.cpu_payload_stores,
+        stats.evicted_bytes,
+        stats.prepare_successes,
+        stats.prepare_failures,
+        duration_ms(stats.prepare_time),
+        stats.direct_fallbacks_after_admission,
+        stats.rejected_ineligible,
+        stats.rejected_admission,
+        stats.rejected_oversized,
+        stats.rejected_payload_budget,
+        duration_ms(stats.draw_hit_time),
+    )
 }
 
 pub fn format_slow_present_frame_log(
@@ -592,6 +1060,21 @@ fn format_render_draw_detail(draw: Duration, detail: &RenderDrawTimings) -> Stri
         duration_ms(detail.unattributed(draw))
     );
 
+    if !detail.clip_detail.is_empty() {
+        message.push('\n');
+        message.push_str(&format_clip_draw_detail(detail));
+    }
+
+    if !detail.border_detail.is_empty() {
+        message.push('\n');
+        message.push_str(&format_border_draw_detail(detail));
+    }
+
+    if !detail.layer_detail.is_empty() {
+        message.push('\n');
+        message.push_str(&format_layer_draw_detail(detail));
+    }
+
     for (index, shadow) in detail.shadow_details.iter().enumerate() {
         message.push('\n');
         message.push_str(&format_shadow_draw_detail(index, shadow));
@@ -605,14 +1088,69 @@ fn format_render_draw_detail(draw: Duration, detail: &RenderDrawTimings) -> Stri
     message
 }
 
+fn format_clip_draw_detail(detail: &RenderDrawTimings) -> String {
+    let clip = detail.clip_detail;
+    format!(
+        concat!(
+            "  clip detail: scopes={} relaxed_scopes={} empty_scopes={} ",
+            "rect_shapes={} rounded_shapes={} shadow_escape_reapplications={}"
+        ),
+        clip.clip_scopes,
+        clip.relaxed_clip_scopes,
+        clip.empty_clip_scopes,
+        clip.rect_shapes,
+        clip.rounded_shapes,
+        clip.shadow_escape_reapplications
+    )
+}
+
+fn format_border_draw_detail(detail: &RenderDrawTimings) -> String {
+    let border = detail.border_detail;
+    format!(
+        concat!(
+            "  border detail: total={} solid={} dashed={} dotted={} uniform_width={} ",
+            "asymmetric_width={} zero_radius={} rounded={} path_clip_candidates={} ",
+            "max_width={:.1} max_area={:.0}"
+        ),
+        border.total,
+        border.solid,
+        border.dashed,
+        border.dotted,
+        border.uniform_width,
+        border.asymmetric_width,
+        border.zero_radius,
+        border.rounded,
+        border.path_clip_candidates,
+        border.max_width,
+        border.max_area
+    )
+}
+
+fn format_layer_draw_detail(detail: &RenderDrawTimings) -> String {
+    let layer = detail.layer_detail;
+    format!(
+        concat!(
+            "  layer detail: alpha_layers={} alpha_children={} max_alpha_children={} ",
+            "tint_layers={} tint_area_px={} max_tint_area_px={}"
+        ),
+        layer.alpha_layers,
+        layer.alpha_children,
+        layer.max_alpha_children,
+        layer.tinted_image_layers,
+        layer.tinted_image_area_px,
+        layer.max_tinted_image_area_px
+    )
+}
+
 fn format_shadow_draw_detail(index: usize, shadow: &RenderShadowDrawProfile) -> String {
     format!(
         concat!(
-            "  shadow[{}]: rect={:.1},{:.1} {:.1}x{:.1} offset={:.1},{:.1} ",
+            "  shadow[{}]: path={:?} rect={:.1},{:.1} {:.1}x{:.1} offset={:.1},{:.1} ",
             "blur={:.1} size={:.1} radius={:.1} color=0x{:08X} total={:.3} ms ",
             "prepare={:.3} ms clip={:.3} ms draw={:.3} ms"
         ),
         index,
+        shadow.path,
         shadow.rect_x,
         shadow.rect_y,
         shadow.rect_width,
@@ -633,7 +1171,7 @@ fn format_shadow_draw_detail(index: usize, shadow: &RenderShadowDrawProfile) -> 
 fn format_image_draw_detail(index: usize, image: &RenderImageDrawProfile) -> String {
     format!(
         concat!(
-            "  image[{}]: id={} kind={:?} fit={:?} tint={} source={}x{} draw={}x{} ",
+            "  image[{}]: id={} kind={:?} fit={:?} tint={} tint_layer={} source={}x{} draw={}x{} ",
             "total={:.3} ms lookup={:.3} ms fit={:.3} ms vector_cache_lookup={:.3} ms ",
             "vector_cache_hit={} vector_rasterize={:.3} ms vector_cache_store={:.3} ms ",
             "draw={:.3} ms"
@@ -643,6 +1181,7 @@ fn format_image_draw_detail(index: usize, image: &RenderImageDrawProfile) -> Str
         image.kind,
         image.fit,
         image.tinted,
+        image.tint_layer_used,
         image.source_width,
         image.source_height,
         image.draw_width,
@@ -684,11 +1223,13 @@ mod tests {
     use crate::{
         render_scene::{DrawPrimitive, RenderNode, RenderScene},
         renderer::{
-            RenderDrawTimings, RenderImageAssetKind, RenderImageDrawProfile,
-            RenderShadowDrawProfile, RenderTimings,
+            RenderBorderDrawSummary, RenderClipDrawSummary, RenderDrawTimings,
+            RenderImageAssetKind, RenderImageDrawProfile, RenderLayerDrawSummary,
+            RenderShadowDrawPath, RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
+            RendererCacheKindFrameStats,
         },
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn snapshot_tracks_avg_min_max_and_resets_window() {
@@ -703,12 +1244,70 @@ mod tests {
         stats.record_render_gpu_flush(Duration::from_millis(1));
         stats.record_render_submit(Duration::from_millis(0));
         stats.record_present_submit(Duration::from_millis(1));
+        let pipeline_submitted_at = Instant::now();
+        stats.record_pipeline(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(13),
+        );
+        stats.record_pipeline_submit_to_tree_start(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(1),
+        );
+        stats.record_pipeline_tree(
+            pipeline_submitted_at + Duration::from_millis(1),
+            pipeline_submitted_at + Duration::from_millis(5),
+        );
+        stats.record_pipeline_render_queue(
+            pipeline_submitted_at + Duration::from_millis(5),
+            pipeline_submitted_at + Duration::from_millis(7),
+        );
+        stats.record_pipeline_submit_to_swap(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(9),
+        );
+        stats.record_pipeline_swap_to_frame_callback(
+            pipeline_submitted_at + Duration::from_millis(9),
+            pipeline_submitted_at + Duration::from_millis(13),
+        );
         stats.record_layout(Duration::from_millis(2));
         stats.record_layout(Duration::from_millis(6));
         stats.record_refresh(Duration::from_millis(1));
         stats.record_refresh(Duration::from_millis(3));
         stats.record_event_resolve(Duration::from_millis(1));
         stats.record_patch_tree_process(Duration::from_millis(9));
+        stats.record_renderer_cache(RendererCacheFrameStats {
+            noop: RendererCacheKindFrameStats {
+                candidates: 2,
+                visible_candidates: 1,
+                admitted: 1,
+                hits: 1,
+                misses: 1,
+                stores: 1,
+                current_entries: 1,
+                current_bytes: 128,
+                current_cpu_payloads: 1,
+                cpu_payload_stores: 1,
+                prepare_successes: 1,
+                prepare_time: Duration::from_micros(20),
+                draw_hit_time: Duration::from_micros(10),
+                ..RendererCacheKindFrameStats::default()
+            },
+            clean_subtree: RendererCacheKindFrameStats {
+                candidates: 4,
+                visible_candidates: 4,
+                admitted: 1,
+                stores: 1,
+                evictions: 1,
+                current_entries: 1,
+                current_bytes: 512,
+                current_gpu_payloads: 1,
+                evicted_bytes: 128,
+                gpu_payload_stores: 1,
+                prepare_successes: 1,
+                prepare_time: Duration::from_micros(30),
+                ..RendererCacheKindFrameStats::default()
+            },
+        });
         stats.record_layout_cache(LayoutCacheStats {
             resolve_hits: 5,
             subtree_measure_hits: 3,
@@ -734,6 +1333,18 @@ mod tests {
         assert_eq!(snapshot.render_submit.avg_ms, 0.0);
         assert_eq!(snapshot.present_submit.count, 1);
         assert_eq!(snapshot.present_submit.avg_ms, 1.0);
+        assert_eq!(snapshot.pipeline.count, 1);
+        assert_eq!(snapshot.pipeline.avg_ms, 13.0);
+        assert_eq!(snapshot.pipeline_submit_to_tree_start.count, 1);
+        assert_eq!(snapshot.pipeline_submit_to_tree_start.avg_ms, 1.0);
+        assert_eq!(snapshot.pipeline_tree.count, 1);
+        assert_eq!(snapshot.pipeline_tree.avg_ms, 4.0);
+        assert_eq!(snapshot.pipeline_render_queue.count, 1);
+        assert_eq!(snapshot.pipeline_render_queue.avg_ms, 2.0);
+        assert_eq!(snapshot.pipeline_submit_to_swap.count, 1);
+        assert_eq!(snapshot.pipeline_submit_to_swap.avg_ms, 9.0);
+        assert_eq!(snapshot.pipeline_swap_to_frame_callback.count, 1);
+        assert_eq!(snapshot.pipeline_swap_to_frame_callback.avg_ms, 4.0);
         assert_eq!(snapshot.layout.count, 2);
         assert_eq!(snapshot.layout.min_ms, 2.0);
         assert_eq!(snapshot.layout.max_ms, 6.0);
@@ -746,6 +1357,33 @@ mod tests {
         assert_eq!(snapshot.patch_tree_process.count, 1);
         assert_eq!(snapshot.layout_cache.resolve_hits, 5);
         assert_eq!(snapshot.layout_cache.subtree_measure_hits, 3);
+        assert_eq!(snapshot.renderer_cache.noop.candidates, 2);
+        assert_eq!(snapshot.renderer_cache.noop.visible_candidates, 1);
+        assert_eq!(snapshot.renderer_cache.noop.cpu_payload_stores, 1);
+        assert_eq!(snapshot.renderer_cache.noop.prepare_successes, 1);
+        assert_eq!(snapshot.renderer_cache.noop.prepare.count, 1);
+        assert_eq!(snapshot.renderer_cache.noop.prepare.avg_ms, 0.02);
+        assert_eq!(snapshot.renderer_cache.noop.draw_hit.count, 1);
+        assert_eq!(snapshot.renderer_cache.noop.draw_hit.avg_ms, 0.01);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.candidates, 4);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.visible_candidates, 4);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.stores, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.evictions, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.current_entries, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.current_bytes, 512);
+        assert_eq!(
+            snapshot.renderer_cache.clean_subtree.current_gpu_payloads,
+            1
+        );
+        assert_eq!(
+            snapshot.renderer_cache.clean_subtree.current_cpu_payloads,
+            0
+        );
+        assert_eq!(snapshot.renderer_cache.clean_subtree.evicted_bytes, 128);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.gpu_payload_stores, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare_successes, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare.count, 1);
+        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare.avg_ms, 0.03);
 
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
@@ -756,11 +1394,19 @@ mod tests {
         assert_eq!(reset_snapshot.render_gpu_flush.count, 0);
         assert_eq!(reset_snapshot.render_submit.count, 0);
         assert_eq!(reset_snapshot.present_submit.count, 0);
+        assert_eq!(reset_snapshot.pipeline.count, 0);
+        assert_eq!(reset_snapshot.pipeline_submit_to_tree_start.count, 0);
+        assert_eq!(reset_snapshot.pipeline_tree.count, 0);
+        assert_eq!(reset_snapshot.pipeline_render_queue.count, 0);
+        assert_eq!(reset_snapshot.pipeline_submit_to_swap.count, 0);
+        assert_eq!(reset_snapshot.pipeline_swap_to_frame_callback.count, 0);
         assert_eq!(reset_snapshot.layout.count, 0);
         assert_eq!(reset_snapshot.refresh.count, 0);
         assert_eq!(reset_snapshot.event_resolve.count, 0);
         assert_eq!(reset_snapshot.patch_tree_process.count, 0);
         assert_eq!(reset_snapshot.layout_cache.resolve_hits, 0);
+        assert_eq!(reset_snapshot.renderer_cache.noop.candidates, 0);
+        assert_eq!(reset_snapshot.renderer_cache.clean_subtree.candidates, 0);
     }
 
     #[test]
@@ -774,10 +1420,74 @@ mod tests {
         stats.record_render_gpu_flush(Duration::from_millis(1));
         stats.record_render_submit(Duration::from_millis(0));
         stats.record_present_submit(Duration::from_millis(1));
+        let pipeline_submitted_at = Instant::now();
+        stats.record_pipeline(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(18),
+        );
+        stats.record_pipeline_submit_to_tree_start(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(2),
+        );
+        stats.record_pipeline_tree(
+            pipeline_submitted_at + Duration::from_millis(2),
+            pipeline_submitted_at + Duration::from_millis(8),
+        );
+        stats.record_pipeline_render_queue(
+            pipeline_submitted_at + Duration::from_millis(8),
+            pipeline_submitted_at + Duration::from_millis(10),
+        );
+        stats.record_pipeline_submit_to_swap(
+            pipeline_submitted_at,
+            pipeline_submitted_at + Duration::from_millis(11),
+        );
+        stats.record_pipeline_swap_to_frame_callback(
+            pipeline_submitted_at + Duration::from_millis(11),
+            pipeline_submitted_at + Duration::from_millis(18),
+        );
         stats.record_layout(Duration::from_millis(3));
         stats.record_refresh(Duration::from_millis(1));
         stats.record_event_resolve(Duration::from_millis(2));
         stats.record_patch_tree_process(Duration::from_millis(7));
+        stats.record_renderer_cache(RendererCacheFrameStats {
+            noop: RendererCacheKindFrameStats {
+                candidates: 3,
+                visible_candidates: 2,
+                admitted: 1,
+                hits: 1,
+                misses: 1,
+                stores: 1,
+                rejected: 1,
+                current_entries: 1,
+                current_bytes: 256,
+                current_cpu_payloads: 1,
+                cpu_payload_stores: 1,
+                prepare_successes: 1,
+                rejected_ineligible: 1,
+                prepare_time: Duration::from_micros(40),
+                draw_hit_time: Duration::from_micros(12),
+                ..RendererCacheKindFrameStats::default()
+            },
+            clean_subtree: RendererCacheKindFrameStats {
+                candidates: 5,
+                visible_candidates: 5,
+                admitted: 2,
+                misses: 1,
+                stores: 1,
+                evictions: 1,
+                rejected: 1,
+                current_entries: 1,
+                current_bytes: 512,
+                current_gpu_payloads: 1,
+                evicted_bytes: 128,
+                gpu_payload_stores: 1,
+                prepare_successes: 1,
+                direct_fallbacks_after_admission: 1,
+                rejected_payload_budget: 1,
+                prepare_time: Duration::from_micros(50),
+                ..RendererCacheKindFrameStats::default()
+            },
+        });
         stats.record_layout_cache(LayoutCacheStats {
             resolve_hits: 11,
             ..LayoutCacheStats::default()
@@ -798,6 +1508,12 @@ mod tests {
         assert!(message.contains("    render gpu flush: avg=1.000 ms"));
         assert!(message.contains("    render submit: avg=0.000 ms"));
         assert!(message.contains("    present submit: avg=1.000 ms"));
+        assert!(message.contains("    pipeline submit->frame callback: avg=18.000 ms"));
+        assert!(message.contains("    pipeline submit->tree: avg=2.000 ms"));
+        assert!(message.contains("    pipeline tree: avg=6.000 ms"));
+        assert!(message.contains("    pipeline render queue: avg=2.000 ms"));
+        assert!(message.contains("    pipeline submit->swap: avg=11.000 ms"));
+        assert!(message.contains("    pipeline swap->frame callback: avg=7.000 ms"));
         assert!(message.contains("    layout: avg=3.000 ms"));
         assert!(message.contains("    refresh: avg=1.000 ms"));
         assert!(message.contains("    event resolve: avg=2.000 ms"));
@@ -806,6 +1522,41 @@ mod tests {
         assert!(message.contains("    intrinsic measure: hits=0 misses=0 stores=0"));
         assert!(message.contains("    subtree measure:   hits=0 misses=0 stores=0"));
         assert!(message.contains("    resolve:           hits=11 misses=0 stores=0"));
+        assert!(message.contains("  renderer cache\n"));
+        assert!(message.contains("    noop\n"));
+        assert!(message.contains(
+            "activity: candidates=3 visible=2 admitted=1 hits=1 misses=1 stores=1 evictions=0 rejected=1"
+        ));
+        assert!(message.contains("resident: entries=1 bytes=256 payloads={gpu=0 cpu=1 unknown=0}"));
+        assert!(message.contains("store_payloads: gpu=0 cpu=1 evicted_bytes=0"));
+        assert!(message.contains("    clean_subtree\n"));
+        assert!(message.contains(
+            "activity: candidates=5 visible=5 admitted=2 hits=0 misses=1 stores=1 evictions=1 rejected=1"
+        ));
+        assert!(message.contains("resident: entries=1 bytes=512 payloads={gpu=1 cpu=0 unknown=0}"));
+        assert!(message.contains("store_payloads: gpu=1 cpu=0 evicted_bytes=128"));
+        assert!(message.contains("prepare: success=1 failure=0 avg=0.050 ms count=1"));
+        assert!(message.contains("prepare: success=1 failure=0 avg=0.040 ms count=1"));
+        assert!(message.contains(
+            "fallback_after_admit=1 rejections={ineligible=0 admission=0 oversized=0 budget=1}"
+        ));
+        assert!(message.contains("hit_draw: avg=0.012 ms count=1"));
+    }
+
+    #[test]
+    fn log_format_includes_empty_clean_subtree_renderer_cache() {
+        let stats = RendererStatsCollector::new();
+        stats.record_frame_present();
+
+        let message = format_renderer_stats_log("wayland", &stats.snapshot());
+
+        assert!(message.contains("  renderer cache\n"));
+        assert!(message.contains("    clean_subtree\n"));
+        assert!(
+            message
+                .contains("activity: candidates=0 visible=0 admitted=0 hits=0 misses=0 stores=0")
+        );
+        assert!(!message.contains("    noop\n"));
     }
 
     #[test]
@@ -837,7 +1588,33 @@ mod tests {
                 clear: Duration::from_micros(100),
                 shadows: Duration::from_micros(100),
                 texts: Duration::from_micros(200),
+                clip_detail: RenderClipDrawSummary {
+                    clip_scopes: 1,
+                    rect_shapes: 1,
+                    ..RenderClipDrawSummary::default()
+                },
+                border_detail: RenderBorderDrawSummary {
+                    total: 2,
+                    solid: 1,
+                    dashed: 1,
+                    uniform_width: 1,
+                    asymmetric_width: 1,
+                    rounded: 1,
+                    path_clip_candidates: 2,
+                    max_width: 3.0,
+                    max_area: 120.0,
+                    ..RenderBorderDrawSummary::default()
+                },
+                layer_detail: RenderLayerDrawSummary {
+                    alpha_layers: 1,
+                    alpha_children: 2,
+                    max_alpha_children: 2,
+                    tinted_image_layers: 1,
+                    tinted_image_area_px: 2_304,
+                    max_tinted_image_area_px: 2_304,
+                },
                 shadow_details: vec![RenderShadowDrawProfile {
+                    path: RenderShadowDrawPath::MaskFilter,
                     rect_x: 0.0,
                     rect_y: 0.0,
                     rect_width: 10.0,
@@ -858,6 +1635,7 @@ mod tests {
                     kind: RenderImageAssetKind::Vector,
                     fit: crate::tree::attrs::ImageFit::Contain,
                     tinted: true,
+                    tint_layer_used: true,
                     source_width: 24,
                     source_height: 24,
                     draw_width: 48,
@@ -876,6 +1654,7 @@ mod tests {
             flush: Duration::from_micros(9_500),
             gpu_flush: Duration::from_micros(9_250),
             submit: Duration::from_micros(250),
+            renderer_cache: None,
         };
 
         assert!(render_frame_has_slow_stage(&timings));
@@ -898,14 +1677,68 @@ mod tests {
         assert!(message.contains("texts=0.200 ms"));
         assert!(message.contains("unattributed=0.350 ms"));
         assert!(message.contains(
-            "shadow[0]: rect=0.0,0.0 10.0x10.0 offset=0.0,1.0 blur=8.0 size=0.0 radius=4.0 color=0x00000080"
+            "clip detail: scopes=1 relaxed_scopes=0 empty_scopes=0 rect_shapes=1 rounded_shapes=0 shadow_escape_reapplications=0"
+        ));
+        assert!(message.contains(
+            "border detail: total=2 solid=1 dashed=1 dotted=0 uniform_width=1 asymmetric_width=1 zero_radius=0 rounded=1 path_clip_candidates=2"
+        ));
+        assert!(message.contains(
+            "layer detail: alpha_layers=1 alpha_children=2 max_alpha_children=2 tint_layers=1 tint_area_px=2304 max_tint_area_px=2304"
+        ));
+        assert!(message.contains(
+            "shadow[0]: path=MaskFilter rect=0.0,0.0 10.0x10.0 offset=0.0,1.0 blur=8.0 size=0.0 radius=4.0 color=0x00000080"
         ));
         assert!(message.contains("prepare=0.010 ms clip=0.020 ms draw=0.070 ms"));
         assert!(message.contains(
-            "image[0]: id=asset-1 kind=Vector fit=Contain tint=true source=24x24 draw=48x48"
+            "image[0]: id=asset-1 kind=Vector fit=Contain tint=true tint_layer=true source=24x24 draw=48x48"
         ));
         assert!(message.contains("vector_cache_hit=false"));
         assert!(message.contains("vector_rasterize=0.200 ms"));
+        assert!(message.contains("renderer cache: no candidates"));
+    }
+
+    #[test]
+    fn slow_render_frame_log_includes_renderer_cache_frame_stats() {
+        let scene = RenderScene {
+            nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0, 0.0, 10.0, 10.0, 0xFFFFFFFF,
+            ))],
+        };
+        let timings = RenderTimings {
+            total: Duration::from_micros(5_000),
+            draw: Duration::from_micros(500),
+            flush: Duration::from_micros(4_500),
+            gpu_flush: Duration::from_micros(4_400),
+            submit: Duration::from_micros(100),
+            renderer_cache: Some(Box::new(RendererCacheFrameStats {
+                clean_subtree: RendererCacheKindFrameStats {
+                    candidates: 1,
+                    visible_candidates: 1,
+                    admitted: 1,
+                    hits: 1,
+                    current_entries: 1,
+                    current_bytes: 4096,
+                    current_gpu_payloads: 1,
+                    draw_hit_time: Duration::from_micros(9),
+                    ..RendererCacheKindFrameStats::default()
+                },
+                ..RendererCacheFrameStats::default()
+            })),
+            ..RenderTimings::default()
+        };
+
+        let message = format_slow_render_frame_log("wayland", &timings, scene.summary());
+
+        assert!(message.contains("  renderer cache\n"));
+        assert!(message.contains("    clean_subtree\n"));
+        assert!(
+            message
+                .contains("activity: candidates=1 visible=1 admitted=1 hits=1 misses=0 stores=0")
+        );
+        assert!(
+            message.contains("resident: entries=1 bytes=4096 payloads={gpu=1 cpu=0 unknown=0}")
+        );
+        assert!(message.contains("hit_draw: time=0.009 ms"));
     }
 
     #[test]

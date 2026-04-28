@@ -24,6 +24,10 @@ harness = false
 name = "emrg"
 harness = false
 
+[[bench]]
+name = "renderer"
+harness = false
+
 [features]
 default = ["wayland"]
 hover-trace = []

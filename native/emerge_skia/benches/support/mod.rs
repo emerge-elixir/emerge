@@ -144,9 +144,11 @@ pub fn large_text_column(row_count: usize) -> ElementTree {
     let root_id = NodeId::from_u64(1);
     tree.set_root_id(root_id);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.spacing = Some(2.0);
+    let root_attrs = Attrs {
+        width: Some(Length::Fill),
+        spacing: Some(2.0),
+        ..Default::default()
+    };
     tree.insert(Element::with_attrs(
         root_id,
         ElementKind::Column,
@@ -159,15 +161,19 @@ pub fn large_text_column(row_count: usize) -> ElementTree {
             let row_id = NodeId::from_u64(10_000 + index as u64);
             let text_id = NodeId::from_u64(20_000 + index as u64);
 
-            let mut row_attrs = Attrs::default();
-            row_attrs.width = Some(Length::Fill);
-            row_attrs.padding = Some(Padding::Uniform(2.0));
+            let row_attrs = Attrs {
+                width: Some(Length::Fill),
+                padding: Some(Padding::Uniform(2.0)),
+                ..Default::default()
+            };
 
-            let mut text_attrs = Attrs::default();
-            text_attrs.content = Some(format!(
-                "Benchmark row {index}: repeated text content for layout measurement"
-            ));
-            text_attrs.font_size = Some(16.0);
+            let text_attrs = Attrs {
+                content: Some(format!(
+                    "Benchmark row {index}: repeated text content for layout measurement"
+                )),
+                font_size: Some(16.0),
+                ..Default::default()
+            };
 
             tree.insert(Element::with_attrs(
                 row_id,
@@ -198,10 +204,12 @@ pub fn nested_card_grid(card_count: usize) -> ElementTree {
     let root_id = NodeId::from_u64(2);
     tree.set_root_id(root_id);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(960.0));
-    root_attrs.spacing_x = Some(8.0);
-    root_attrs.spacing_y = Some(8.0);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(960.0)),
+        spacing_x: Some(8.0),
+        spacing_y: Some(8.0),
+        ..Default::default()
+    };
     tree.insert(Element::with_attrs(
         root_id,
         ElementKind::WrappedRow,
@@ -218,41 +226,51 @@ pub fn nested_card_grid(card_count: usize) -> ElementTree {
             let badge_id = NodeId::from_u64(base + 3);
             let body_id = NodeId::from_u64(base + 4);
 
-            let mut card_attrs = Attrs::default();
-            card_attrs.width = Some(Length::Px(280.0));
-            card_attrs.padding = Some(Padding::Uniform(8.0));
-            card_attrs.spacing = Some(6.0);
-            card_attrs.background = Some(Background::Color(Color::Rgb {
-                r: 245,
-                g: 247,
-                b: 250,
-            }));
-            card_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-            card_attrs.border_width = Some(BorderWidth::Uniform(1.0));
-            card_attrs.border_color = Some(Color::Rgb {
-                r: 220,
-                g: 226,
-                b: 235,
-            });
+            let card_attrs = Attrs {
+                width: Some(Length::Px(280.0)),
+                padding: Some(Padding::Uniform(8.0)),
+                spacing: Some(6.0),
+                background: Some(Background::Color(Color::Rgb {
+                    r: 245,
+                    g: 247,
+                    b: 250,
+                })),
+                border_radius: Some(BorderRadius::Uniform(8.0)),
+                border_width: Some(BorderWidth::Uniform(1.0)),
+                border_color: Some(Color::Rgb {
+                    r: 220,
+                    g: 226,
+                    b: 235,
+                }),
+                ..Default::default()
+            };
 
-            let mut header_attrs = Attrs::default();
-            header_attrs.width = Some(Length::Fill);
-            header_attrs.spacing = Some(6.0);
+            let header_attrs = Attrs {
+                width: Some(Length::Fill),
+                spacing: Some(6.0),
+                ..Default::default()
+            };
 
-            let mut title_attrs = Attrs::default();
-            title_attrs.content = Some(format!("Card {index}"));
-            title_attrs.font_size = Some(18.0);
+            let title_attrs = Attrs {
+                content: Some(format!("Card {index}")),
+                font_size: Some(18.0),
+                ..Default::default()
+            };
 
-            let mut badge_attrs = Attrs::default();
-            badge_attrs.content = Some(format!("#{index}"));
-            badge_attrs.font_size = Some(12.0);
+            let badge_attrs = Attrs {
+                content: Some(format!("#{index}")),
+                font_size: Some(12.0),
+                ..Default::default()
+            };
 
-            let mut body_attrs = Attrs::default();
-            body_attrs.content = Some(
-                "Nested benchmark body copy with enough words to exercise text measurement."
-                    .to_string(),
-            );
-            body_attrs.font_size = Some(14.0);
+            let body_attrs = Attrs {
+                content: Some(
+                    "Nested benchmark body copy with enough words to exercise text measurement."
+                        .to_string(),
+                ),
+                font_size: Some(14.0),
+                ..Default::default()
+            };
 
             tree.insert(Element::with_attrs(
                 card_id,
@@ -304,15 +322,17 @@ pub fn scrollable_animated_shadow_showcase() -> ElementTree {
     let content_id = tree.root_id().expect("shadow showcase should have a root");
     let root_id = NodeId::from_u64(2);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(960.0));
-    root_attrs.height = Some(Length::Px(640.0));
-    root_attrs.scrollbar_y = Some(true);
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 241,
-        g: 244,
-        b: 250,
-    }));
+    let root_attrs = Attrs {
+        width: Some(Length::Px(960.0)),
+        height: Some(Length::Px(640.0)),
+        scrollbar_y: Some(true),
+        background: Some(Background::Color(Color::Rgb {
+            r: 241,
+            g: 244,
+            b: 250,
+        })),
+        ..Default::default()
+    };
 
     tree.insert(Element::with_attrs(
         root_id,
@@ -334,49 +354,57 @@ pub fn animated_shadow_showcase() -> ElementTree {
     let grid_id = NodeId::from_u64(6);
     tree.set_root_id(root_id);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(960.0));
-    root_attrs.padding = Some(Padding::Uniform(18.0));
-    root_attrs.spacing = Some(14.0);
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 241,
-        g: 244,
-        b: 250,
-    }));
+    let root_attrs = Attrs {
+        width: Some(Length::Px(960.0)),
+        padding: Some(Padding::Uniform(18.0)),
+        spacing: Some(14.0),
+        background: Some(Background::Color(Color::Rgb {
+            r: 241,
+            g: 244,
+            b: 250,
+        })),
+        ..Default::default()
+    };
 
-    let mut hero_attrs = Attrs::default();
-    hero_attrs.width = Some(Length::Fill);
-    hero_attrs.padding = Some(Padding::Uniform(16.0));
-    hero_attrs.spacing = Some(6.0);
-    hero_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 248,
-        g: 250,
-        b: 253,
-    }));
-    hero_attrs.border_radius = Some(BorderRadius::Uniform(16.0));
-    hero_attrs.border_width = Some(BorderWidth::Uniform(1.0));
-    hero_attrs.border_color = Some(Color::Rgb {
-        r: 223,
-        g: 228,
-        b: 238,
-    });
+    let hero_attrs = Attrs {
+        width: Some(Length::Fill),
+        padding: Some(Padding::Uniform(16.0)),
+        spacing: Some(6.0),
+        background: Some(Background::Color(Color::Rgb {
+            r: 248,
+            g: 250,
+            b: 253,
+        })),
+        border_radius: Some(BorderRadius::Uniform(16.0)),
+        border_width: Some(BorderWidth::Uniform(1.0)),
+        border_color: Some(Color::Rgb {
+            r: 223,
+            g: 228,
+            b: 238,
+        }),
+        ..Default::default()
+    };
 
-    let mut showcase_attrs = Attrs::default();
-    showcase_attrs.width = Some(Length::Fill);
-    showcase_attrs.padding = Some(Padding::Uniform(18.0));
-    showcase_attrs.spacing = Some(14.0);
-    showcase_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 248,
-        g: 250,
-        b: 253,
-    }));
-    showcase_attrs.border_radius = Some(BorderRadius::Uniform(18.0));
-    showcase_attrs.box_shadows = Some(vec![shadow(0.0, 16.0, 28.0, 6.0, 46)]);
+    let showcase_attrs = Attrs {
+        width: Some(Length::Fill),
+        padding: Some(Padding::Uniform(18.0)),
+        spacing: Some(14.0),
+        background: Some(Background::Color(Color::Rgb {
+            r: 248,
+            g: 250,
+            b: 253,
+        })),
+        border_radius: Some(BorderRadius::Uniform(18.0)),
+        box_shadows: Some(vec![shadow(0.0, 16.0, 28.0, 6.0, 46)]),
+        ..Default::default()
+    };
 
-    let mut grid_attrs = Attrs::default();
-    grid_attrs.width = Some(Length::Fill);
-    grid_attrs.spacing_x = Some(12.0);
-    grid_attrs.spacing_y = Some(12.0);
+    let grid_attrs = Attrs {
+        width: Some(Length::Fill),
+        spacing_x: Some(12.0),
+        spacing_y: Some(12.0),
+        ..Default::default()
+    };
 
     tree.insert(Element::with_attrs(
         root_id,
@@ -486,14 +514,16 @@ fn animated_shadow_card(
     let title_id = NodeId::from_u64(base + 1);
     let subtitle_id = NodeId::from_u64(base + 2);
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::FillWeighted(1.0));
-    attrs.height = Some(Length::Px(94.0));
-    attrs.padding = Some(Padding::Uniform(14.0));
-    attrs.spacing = Some(4.0);
-    attrs.background = Some(Background::Color(background));
-    attrs.border_radius = Some(BorderRadius::Uniform(14.0));
-    attrs.animate = Some(animation);
+    let attrs = Attrs {
+        width: Some(Length::FillWeighted(1.0)),
+        height: Some(Length::Px(94.0)),
+        padding: Some(Padding::Uniform(14.0)),
+        spacing: Some(4.0),
+        background: Some(Background::Color(background)),
+        border_radius: Some(BorderRadius::Uniform(14.0)),
+        animate: Some(animation),
+        ..Default::default()
+    };
 
     tree.insert(Element::with_attrs(
         card_id,
@@ -526,40 +556,44 @@ fn static_shadow_recipe_card(tree: &mut ElementTree, base: u64, index: usize) ->
     let subtitle_id = NodeId::from_u64(base + 3);
     let detail_id = NodeId::from_u64(base + 4);
 
-    let mut card_attrs = Attrs::default();
-    card_attrs.width = Some(Length::Px(280.0));
-    card_attrs.padding = Some(Padding::Uniform(12.0));
-    card_attrs.spacing = Some(10.0);
-    card_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 245,
-        g: 247,
-        b: 251,
-    }));
-    card_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
-    card_attrs.border_width = Some(BorderWidth::Uniform(1.0));
-    card_attrs.border_color = Some(Color::Rgb {
-        r: 223,
-        g: 228,
-        b: 238,
-    });
+    let card_attrs = Attrs {
+        width: Some(Length::Px(280.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        spacing: Some(10.0),
+        background: Some(Background::Color(Color::Rgb {
+            r: 245,
+            g: 247,
+            b: 251,
+        })),
+        border_radius: Some(BorderRadius::Uniform(12.0)),
+        border_width: Some(BorderWidth::Uniform(1.0)),
+        border_color: Some(Color::Rgb {
+            r: 223,
+            g: 228,
+            b: 238,
+        }),
+        ..Default::default()
+    };
 
-    let mut sample_attrs = Attrs::default();
-    sample_attrs.width = Some(Length::Fill);
-    sample_attrs.height = Some(Length::Px(84.0));
-    sample_attrs.padding = Some(Padding::Uniform(12.0));
-    sample_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 34,
-        g: 38,
-        b: 54,
-    }));
-    sample_attrs.border_radius = Some(BorderRadius::Uniform(10.0));
-    sample_attrs.box_shadows = Some(vec![shadow(
-        (index % 5) as f64 - 2.0,
-        8.0 + (index % 3) as f64,
-        10.0 + (index % 4) as f64 * 2.0,
-        (index % 2) as f64,
-        80,
-    )]);
+    let sample_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Px(84.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        background: Some(Background::Color(Color::Rgb {
+            r: 34,
+            g: 38,
+            b: 54,
+        })),
+        border_radius: Some(BorderRadius::Uniform(10.0)),
+        box_shadows: Some(vec![shadow(
+            (index % 5) as f64 - 2.0,
+            8.0 + (index % 3) as f64,
+            10.0 + (index % 4) as f64 * 2.0,
+            (index % 2) as f64,
+            80,
+        )]),
+        ..Default::default()
+    };
 
     tree.insert(Element::with_attrs(
         card_id,
@@ -609,10 +643,11 @@ fn insert_text(tree: &mut ElementTree, id: u64, content: &str, font_size: f64) -
 }
 
 fn text_attrs_with_size(content: &str, font_size: f64) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.content = Some(content.to_string());
-    attrs.font_size = Some(font_size);
-    attrs
+    Attrs {
+        content: Some(content.to_string()),
+        font_size: Some(font_size),
+        ..Default::default()
+    }
 }
 
 fn stacked_shadow_animation() -> AnimationSpec {
@@ -632,13 +667,12 @@ fn stacked_shadow_animation() -> AnimationSpec {
     let keyframes = primary
         .into_iter()
         .zip(secondary)
-        .map(|((ax, ay), (bx, by))| {
-            let mut attrs = Attrs::default();
-            attrs.box_shadows = Some(vec![
+        .map(|((ax, ay), (bx, by))| Attrs {
+            box_shadows: Some(vec![
                 shadow(ax, ay, 18.0, 2.0, 41),
                 shadow(bx, by, 10.0, 0.0, 89),
-            ]);
-            attrs
+            ]),
+            ..Default::default()
         })
         .collect();
 
@@ -659,10 +693,9 @@ fn orbiting_shadow_animation(
 ) -> AnimationSpec {
     let keyframes = orbit_positions(radius, counterclockwise)
         .into_iter()
-        .map(|(x, y)| {
-            let mut attrs = Attrs::default();
-            attrs.box_shadows = Some(vec![shadow(x, y, blur, size, 67)]);
-            attrs
+        .map(|(x, y)| Attrs {
+            box_shadows: Some(vec![shadow(x, y, blur, size, 67)]),
+            ..Default::default()
         })
         .collect();
 

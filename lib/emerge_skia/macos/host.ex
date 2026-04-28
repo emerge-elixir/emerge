@@ -247,6 +247,7 @@ defmodule EmergeSkia.Macos.Host do
     height = Map.fetch!(native_opts, :height)
     scroll_line_pixels = Map.fetch!(native_opts, :scroll_line_pixels)
     renderer_stats_log = Map.fetch!(native_opts, :renderer_stats_log)
+    renderer_cache = Map.fetch!(native_opts, :renderer_cache)
     macos_backend = Map.fetch!(native_opts, :macos_backend)
 
     case queue_request(
@@ -261,6 +262,7 @@ defmodule EmergeSkia.Macos.Host do
              height,
              scroll_line_pixels,
              renderer_stats_log,
+             renderer_cache,
              macos_backend,
              asset_config
            )

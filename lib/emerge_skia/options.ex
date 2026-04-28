@@ -48,7 +48,11 @@ defmodule EmergeSkia.Options do
       render_log: Keyword.get(opts, :render_log, false),
       close_signal_log: Keyword.get(opts, :close_signal_log, false),
       stats_enabled: Keyword.get(opts, :stats, false) == true,
-      renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false)
+      renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false),
+      renderer_cache:
+        opts
+        |> Keyword.get(:renderer_cache, [])
+        |> normalize_renderer_cache_opts!()
     }
   end
 
@@ -164,6 +168,37 @@ defmodule EmergeSkia.Options do
 
   def normalize_positive_number!(value, field_name) do
     raise ArgumentError, "#{field_name} must be a positive number, got: #{inspect(value)}"
+  end
+
+  @doc false
+  def normalize_renderer_cache_opts!(opts) do
+    opts = normalize_keyword_or_map!(opts, ":renderer_cache")
+
+    clean_subtree =
+      opts
+      |> Keyword.get(:clean_subtree, [])
+      |> normalize_keyword_or_map!(":renderer_cache.clean_subtree")
+
+    %{
+      max_new_payloads_per_frame:
+        opts
+        |> Keyword.get(:max_new_payloads_per_frame, 1)
+        |> normalize_non_negative_integer!(":renderer_cache.max_new_payloads_per_frame"),
+      clean_subtree: %{
+        max_entries:
+          clean_subtree
+          |> Keyword.get(:max_entries, 128)
+          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_entries"),
+        max_bytes:
+          clean_subtree
+          |> Keyword.get(:max_bytes, 32 * 1024 * 1024)
+          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_bytes"),
+        max_entry_bytes:
+          clean_subtree
+          |> Keyword.get(:max_entry_bytes, 4 * 1024 * 1024)
+          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_entry_bytes")
+      }
+    }
   end
 
   @doc false

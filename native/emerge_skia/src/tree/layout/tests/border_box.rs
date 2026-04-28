@@ -18,10 +18,10 @@ fn test_border_box_el_insets_child() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -57,10 +57,10 @@ fn test_border_box_el_with_padding_and_border() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -100,10 +100,10 @@ fn test_border_box_per_side_border_width() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -136,10 +136,10 @@ fn test_border_box_intrinsic_sizing() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -179,11 +179,11 @@ fn test_border_box_row_intrinsic_with_border() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.set_root_id(row_id.clone());
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -234,10 +234,10 @@ fn test_border_box_shadows_do_not_affect_layout() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
