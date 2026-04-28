@@ -1324,7 +1324,6 @@ fn log_level_atom(level: NativeLogLevel) -> Atom {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;

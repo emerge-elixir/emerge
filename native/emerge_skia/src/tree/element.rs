@@ -251,6 +251,7 @@ pub struct RenderSubtreeKey {
     pub inherited_hash: u64,
     pub scene_context_hash: u64,
     pub render_context_hash: u64,
+    pub asset_status_generation: u64,
     pub topology: RenderTopologyDependencyKey,
     pub paragraph_fragments_hash: u64,
 }
@@ -2359,27 +2360,34 @@ impl ElementTree {
         parent_id: &NodeId,
         new_live_ids: Vec<NodeId>,
     ) -> Vec<NodeId> {
+        self.merge_live_children_with_ghosts_including(parent_id, new_live_ids, None)
+    }
+
+    pub fn merge_live_children_with_ghosts_including(
+        &self,
+        parent_id: &NodeId,
+        new_live_ids: Vec<NodeId>,
+        extra_ghost_id: Option<NodeId>,
+    ) -> Vec<NodeId> {
         let mut ghosts: Vec<(NodeId, usize, u64)> = self
             .ix_of(parent_id)
             .map(|parent_ix| {
                 self.child_ixs(parent_ix)
                     .into_iter()
-                    .filter_map(|child_ix| {
-                        let child = self.get_ix(child_ix)?;
-                        match child.lifecycle.ghost_attachment.as_ref() {
-                            Some(GhostAttachment::Child {
-                                parent_id: ghost_parent_id,
-                                live_index,
-                                seq,
-                            }) if ghost_parent_id == parent_id => {
-                                Some((child.id, *live_index, *seq))
-                            }
-                            _ => None,
-                        }
-                    })
+                    .filter_map(|child_ix| self.id_of(child_ix))
+                    .filter_map(|child_id| self.child_ghost_anchor(parent_id, child_id))
                     .collect()
             })
             .unwrap_or_default();
+
+        if let Some(extra_ghost_id) = extra_ghost_id
+            && !ghosts
+                .iter()
+                .any(|(ghost_id, _, _)| *ghost_id == extra_ghost_id)
+            && let Some(extra_ghost) = self.child_ghost_anchor(parent_id, extra_ghost_id)
+        {
+            ghosts.push(extra_ghost);
+        }
 
         ghosts.sort_by_key(|(_, live_index, seq)| (*live_index, *seq));
 
@@ -2405,6 +2413,22 @@ impl ElementTree {
         merged
     }
 
+    fn child_ghost_anchor(
+        &self,
+        parent_id: &NodeId,
+        ghost_id: NodeId,
+    ) -> Option<(NodeId, usize, u64)> {
+        let ghost = self.get(&ghost_id)?;
+        match ghost.lifecycle.ghost_attachment.as_ref() {
+            Some(GhostAttachment::Child {
+                parent_id: ghost_parent_id,
+                live_index,
+                seq,
+            }) if ghost_parent_id == parent_id => Some((ghost.id, *live_index, *seq)),
+            _ => None,
+        }
+    }
+
     pub fn live_nearby_mounts(&self, host_id: &NodeId) -> Vec<NearbyMount> {
         self.ix_of(host_id)
             .map(|host_ix| {
@@ -2428,33 +2452,34 @@ impl ElementTree {
         host_id: &NodeId,
         new_live_mounts: Vec<NearbyMount>,
     ) -> Vec<NearbyMount> {
+        self.merge_live_nearby_with_ghosts_including(host_id, new_live_mounts, None)
+    }
+
+    pub fn merge_live_nearby_with_ghosts_including(
+        &self,
+        host_id: &NodeId,
+        new_live_mounts: Vec<NearbyMount>,
+        extra_ghost_id: Option<NodeId>,
+    ) -> Vec<NearbyMount> {
         let mut ghosts: Vec<(NearbyMount, usize, u64)> = self
             .ix_of(host_id)
             .map(|host_ix| {
                 self.nearby_ixs(host_ix)
                     .into_iter()
-                    .filter_map(|mount| {
-                        let nearby = self.get_ix(mount.ix)?;
-                        match nearby.lifecycle.ghost_attachment.as_ref() {
-                            Some(GhostAttachment::Nearby {
-                                host_id: ghost_host_id,
-                                mount_index,
-                                seq,
-                                ..
-                            }) if ghost_host_id == host_id => Some((
-                                NearbyMount {
-                                    slot: mount.slot,
-                                    id: nearby.id,
-                                },
-                                *mount_index,
-                                *seq,
-                            )),
-                            _ => None,
-                        }
-                    })
+                    .filter_map(|mount| self.id_of(mount.ix))
+                    .filter_map(|nearby_id| self.nearby_ghost_anchor(host_id, nearby_id))
                     .collect()
             })
             .unwrap_or_default();
+
+        if let Some(extra_ghost_id) = extra_ghost_id
+            && !ghosts
+                .iter()
+                .any(|(ghost_mount, _, _)| ghost_mount.id == extra_ghost_id)
+            && let Some(extra_ghost) = self.nearby_ghost_anchor(host_id, extra_ghost_id)
+        {
+            ghosts.push(extra_ghost);
+        }
 
         ghosts.sort_by_key(|(_, mount_index, seq)| (*mount_index, *seq));
 
@@ -2478,6 +2503,30 @@ impl ElementTree {
         }
 
         merged
+    }
+
+    fn nearby_ghost_anchor(
+        &self,
+        host_id: &NodeId,
+        ghost_id: NodeId,
+    ) -> Option<(NearbyMount, usize, u64)> {
+        let ghost = self.get(&ghost_id)?;
+        match ghost.lifecycle.ghost_attachment.as_ref() {
+            Some(GhostAttachment::Nearby {
+                host_id: ghost_host_id,
+                mount_index,
+                slot,
+                seq,
+            }) if ghost_host_id == host_id => Some((
+                NearbyMount {
+                    slot: *slot,
+                    id: ghost.id,
+                },
+                *mount_index,
+                *seq,
+            )),
+            _ => None,
+        }
     }
 
     fn ensure_topology_capacity(&mut self, ix: NodeIx) {
@@ -3328,7 +3377,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3365,7 +3414,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3395,7 +3444,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.scrollbar_x = Some(true);
         attrs.scrollbar_y = Some(true);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3424,7 +3473,7 @@ mod tests {
     fn test_set_scrollbar_hover_axis_noop_when_axis_disabled() {
         let id = NodeId::from_term_bytes(vec![1]);
         let attrs = Attrs::default();
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3446,8 +3495,7 @@ mod tests {
     #[test]
     fn test_set_mouse_over_active_requires_mouse_over_attrs() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3473,7 +3521,7 @@ mod tests {
             alpha: Some(0.6),
             ..Default::default()
         });
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3502,7 +3550,7 @@ mod tests {
         let mut attrs = Attrs::default();
         attrs.on_mouse_enter = Some(true);
         attrs.on_mouse_leave = Some(true);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3528,8 +3576,7 @@ mod tests {
     #[test]
     fn test_set_mouse_down_active_requires_mouse_down_attrs() {
         let id = NodeId::from_term_bytes(vec![11]);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3555,7 +3602,7 @@ mod tests {
             alpha: Some(0.7),
             ..Default::default()
         });
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3567,7 +3614,7 @@ mod tests {
 
         let mut tree = ElementTree::new();
         tree.insert(element);
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
 
         assert!(tree.set_mouse_down_active(&id, true).is_dirty());
         assert!(tree.get(&id).unwrap().runtime.mouse_down_active);
@@ -3581,8 +3628,7 @@ mod tests {
     #[test]
     fn test_set_focused_active_toggles_state() {
         let id = NodeId::from_term_bytes(vec![13]);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3594,7 +3640,7 @@ mod tests {
 
         let mut tree = ElementTree::new();
         tree.insert(element);
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
 
         assert!(tree.set_focused_active(&id, true).is_dirty());
         assert!(tree.get(&id).unwrap().runtime.focused_active);
@@ -3614,8 +3660,7 @@ mod tests {
         attrs.text_input_selection_anchor = Some(10);
         attrs.text_input_preedit = Some("pre".to_string());
         attrs.text_input_preedit_cursor = Some((2, 2));
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3627,7 +3672,7 @@ mod tests {
 
         let mut tree = ElementTree::new();
         tree.insert(element);
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
 
         assert!(
             tree.set_text_input_content(&id, "hey".to_string())
@@ -3656,7 +3701,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![14]);
         let mut attrs = Attrs::default();
         attrs.content = Some("same".to_string());
-        let element = Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
 
         let mut tree = ElementTree::new();
         tree.insert(element);
@@ -3681,8 +3726,7 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![3]);
         let mut attrs = Attrs::default();
         attrs.content = Some("abcd".to_string());
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::TextInput, Vec::new(), attrs);
+        let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3747,8 +3791,7 @@ mod tests {
     #[test]
     fn test_set_text_input_runtime_ignores_non_text_input_nodes() {
         let id = NodeId::from_term_bytes(vec![4]);
-        let mut element =
-            Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), Attrs::default());
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), Attrs::default());
         element.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -3779,34 +3822,30 @@ mod tests {
         let float_id = NodeId::from_term_bytes(vec![12]);
 
         let mut paragraph = Element::with_attrs(
-            paragraph_id.clone(),
+            paragraph_id,
             ElementKind::Paragraph,
             Vec::new(),
             Attrs::default(),
         );
-        paragraph.children = vec![inline_id.clone(), float_id.clone()];
+        paragraph.children = vec![inline_id, float_id];
 
-        let inline = Element::with_attrs(
-            inline_id.clone(),
-            ElementKind::Text,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let inline =
+            Element::with_attrs(inline_id, ElementKind::Text, Vec::new(), Attrs::default());
 
         let mut float_attrs = Attrs::default();
         float_attrs.align_x = Some(AlignX::Left);
-        let float = Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
+        let float = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
 
         let mut tree = ElementTree::new();
         tree.insert(paragraph);
         tree.insert(inline);
         tree.insert(float);
-        tree.set_root_id(paragraph_id.clone());
+        tree.set_root_id(paragraph_id);
 
         let mut visited = Vec::new();
         tree.get(&paragraph_id)
             .expect("paragraph should exist")
-            .for_each_retained_child(&tree, |child| visited.push((child.id.clone(), child.mode)));
+            .for_each_retained_child(&tree, |child| visited.push((child.id, child.mode)));
 
         assert_eq!(
             visited,
@@ -3823,37 +3862,22 @@ mod tests {
         let first_id = NodeId::from_term_bytes(vec![21]);
         let second_id = NodeId::from_term_bytes(vec![22]);
 
-        let mut row = Element::with_attrs(
-            row_id.clone(),
-            ElementKind::Row,
-            Vec::new(),
-            Attrs::default(),
-        );
-        row.children = vec![first_id.clone(), second_id.clone()];
+        let mut row = Element::with_attrs(row_id, ElementKind::Row, Vec::new(), Attrs::default());
+        row.children = vec![first_id, second_id];
 
-        let first = Element::with_attrs(
-            first_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        let second = Element::with_attrs(
-            second_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
+        let first = Element::with_attrs(first_id, ElementKind::El, Vec::new(), Attrs::default());
+        let second = Element::with_attrs(second_id, ElementKind::El, Vec::new(), Attrs::default());
 
         let mut tree = ElementTree::new();
         tree.insert(row);
         tree.insert(first);
         tree.insert(second);
-        tree.set_root_id(row_id.clone());
+        tree.set_root_id(row_id);
 
         let mut visited = Vec::new();
         tree.get(&row_id)
             .expect("row should exist")
-            .for_each_retained_child(&tree, |child| visited.push((child.id.clone(), child.mode)));
+            .for_each_retained_child(&tree, |child| visited.push((child.id, child.mode)));
 
         assert_eq!(
             visited,
@@ -3880,12 +3904,12 @@ mod tests {
         let uploaded_id = NodeId::from_term_bytes(vec![2]);
         let mut uploaded = ElementTree::new();
         uploaded.insert(Element::with_attrs(
-            uploaded_id.clone(),
+            uploaded_id,
             ElementKind::El,
             Vec::new(),
             Attrs::default(),
         ));
-        uploaded.set_root_id(uploaded_id.clone());
+        uploaded.set_root_id(uploaded_id);
 
         tree.replace_with_uploaded(uploaded);
 
@@ -3915,12 +3939,12 @@ mod tests {
         let id = NodeId::from_term_bytes(vec![3]);
         let mut tree = ElementTree::new();
         tree.insert(Element::with_attrs(
-            id.clone(),
+            id,
             ElementKind::El,
             Vec::new(),
             Attrs::default(),
         ));
-        tree.set_root_id(id.clone());
+        tree.set_root_id(id);
 
         let revision = tree.bump_revision();
         tree.stamp_all_mounted_at_revision(revision);

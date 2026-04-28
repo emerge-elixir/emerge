@@ -9,18 +9,18 @@ fn build_paragraph(
     let mut tree = ElementTree::new();
 
     let mut para = make_element("para", ElementKind::Paragraph, paragraph_attrs);
-    let para_id = para.id.clone();
+    let para_id = para.id;
 
     let mut child_ids = Vec::new();
     for (i, (name, kind, attrs)) in children.into_iter().enumerate() {
         let child_name = format!("{}_{}", name, i);
         let child = make_element(&child_name, kind, attrs);
-        child_ids.push(child.id.clone());
+        child_ids.push(child.id);
         tree.insert(child);
     }
 
     para.children = child_ids.clone();
-    tree.set_root_id(para_id.clone());
+    tree.set_root_id(para_id);
     tree.insert(para);
 
     (tree, para_id, child_ids)
@@ -48,17 +48,17 @@ fn test_line_spacing_row_pushes_following_heading() {
 
     let heading = make_element("heading", ElementKind::Text, text_attrs("Document Style"));
 
-    let col_id = col.id.clone();
-    let row_id = row.id.clone();
-    let para_id = para.id.clone();
-    let txt_id = txt.id.clone();
-    let heading_id = heading.id.clone();
+    let col_id = col.id;
+    let row_id = row.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let heading_id = heading.id;
 
-    para.children = vec![txt_id.clone()];
-    row.children = vec![para_id.clone()];
-    col.children = vec![row_id.clone(), heading_id.clone()];
+    para.children = vec![txt_id];
+    row.children = vec![para_id];
+    col.children = vec![row_id, heading_id];
 
-    tree.set_root_id(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     tree.insert(row);
     tree.insert(para);
@@ -233,16 +233,16 @@ fn test_text_column_non_paragraph_child_clears_below_active_floats() {
         a
     });
 
-    let text_col_id = text_col.id.clone();
-    let float_id = float_el.id.clone();
-    let para_id = para.id.clone();
-    let para_text_id = para_text.id.clone();
-    let below_id = below_block.id.clone();
+    let text_col_id = text_col.id;
+    let float_id = float_el.id;
+    let para_id = para.id;
+    let para_text_id = para_text.id;
+    let below_id = below_block.id;
 
-    para.children = vec![para_text_id.clone()];
-    text_col.children = vec![float_id.clone(), para_id.clone(), below_id.clone()];
+    para.children = vec![para_text_id];
+    text_col.children = vec![float_id, para_id, below_id];
 
-    tree.set_root_id(text_col_id.clone());
+    tree.set_root_id(text_col_id);
     tree.insert(text_col);
     tree.insert(float_el);
     tree.insert(para);
@@ -398,22 +398,22 @@ fn test_paragraph_el_wrapped_text() {
 
     let mut el_child = make_element("el_child", ElementKind::El, el_attrs);
     let text_child = make_element("el_text", ElementKind::Text, text_attrs("Bold"));
-    let text_child_id = text_child.id.clone();
-    el_child.children = vec![text_child_id.clone()];
+    let text_child_id = text_child.id;
+    el_child.children = vec![text_child_id];
 
     let mut tree = ElementTree::new();
     let mut para_attrs = Attrs::default();
     para_attrs.width = Some(Length::Px(200.0));
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
-    let para_id = para.id.clone();
-    let el_id = el_child.id.clone();
+    let para_id = para.id;
+    let el_id = el_child.id;
 
     // Also add a direct text child
     let plain_text = make_element("plain", ElementKind::Text, text_attrs("Hi "));
-    let plain_id = plain_text.id.clone();
+    let plain_id = plain_text.id;
 
-    para.children = vec![plain_id.clone(), el_id.clone()];
-    tree.set_root_id(para_id.clone());
+    para.children = vec![plain_id, el_id];
+    tree.set_root_id(para_id);
     tree.insert(para);
     tree.insert(plain_text);
     tree.insert(el_child);
@@ -645,23 +645,23 @@ fn test_paragraph_inside_el_shifts_fragments() {
     parent_attrs.padding = Some(Padding::Uniform(12.0));
 
     let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
-    let parent_id = parent_el.id.clone();
+    let parent_id = parent_el.id;
 
     // Paragraph child
     let mut para_attrs = Attrs::default();
     para_attrs.width = Some(Length::Fill);
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
-    let para_id = para.id.clone();
+    let para_id = para.id;
 
     // Text child of paragraph
     let text_child = make_element("t", ElementKind::Text, text_attrs("Hello world"));
-    let text_id = text_child.id.clone();
+    let text_id = text_child.id;
 
     // Wire up children
-    para.children = vec![text_id.clone()];
-    parent_el.children = vec![para_id.clone()];
+    para.children = vec![text_id];
+    parent_el.children = vec![para_id];
 
-    tree.set_root_id(parent_id.clone());
+    tree.set_root_id(parent_id);
     tree.insert(text_child);
     tree.insert(para);
     tree.insert(parent_el);
@@ -704,20 +704,20 @@ fn test_paragraph_wraps_to_parent_constraint() {
     parent_attrs.width = Some(Length::Px(50.0));
 
     let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
-    let parent_id = parent_el.id.clone();
+    let parent_id = parent_el.id;
 
     // Paragraph with NO explicit width
     let para_attrs = Attrs::default();
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
-    let para_id = para.id.clone();
+    let para_id = para.id;
 
     let text_child = make_element("t", ElementKind::Text, text_attrs("AA BB CC DD"));
-    let text_id = text_child.id.clone();
+    let text_id = text_child.id;
 
-    para.children = vec![text_id.clone()];
-    parent_el.children = vec![para_id.clone()];
+    para.children = vec![text_id];
+    parent_el.children = vec![para_id];
 
-    tree.set_root_id(parent_id.clone());
+    tree.set_root_id(parent_id);
     tree.insert(text_child);
     tree.insert(para);
     tree.insert(parent_el);

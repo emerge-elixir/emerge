@@ -10,8 +10,8 @@ fn test_layout_single_el() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -44,11 +44,11 @@ fn test_layout_el_shrink_to_content() {
 
     let mut parent = make_element("root", ElementKind::El, parent_attrs);
     let child = make_element("child", ElementKind::Text, child_attrs);
-    let root_id = parent.id.clone();
-    let child_id = child.id.clone();
+    let root_id = parent.id;
+    let child_id = child.id;
 
-    parent.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    parent.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(parent);
     tree.insert(child);
 
@@ -76,8 +76,8 @@ fn test_layout_minimum_constraint() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -103,8 +103,8 @@ fn test_layout_minimum_constraint_enforced() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -130,8 +130,8 @@ fn test_layout_maximum_constraint() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.set_root_id(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -207,11 +207,11 @@ fn test_el_center_x_aligns_child() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -249,11 +249,11 @@ fn test_el_center_y_aligns_child() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -292,11 +292,11 @@ fn test_el_center_both_axes() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -333,11 +333,11 @@ fn test_el_align_right() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -373,11 +373,11 @@ fn test_el_align_bottom() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -414,11 +414,11 @@ fn test_child_alignment_overrides_parent() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -456,11 +456,11 @@ fn test_el_with_padding_and_center() {
         a
     });
 
-    let el_id = el.id.clone();
-    let child_id = child.id.clone();
-    el.children = vec![child_id.clone()];
+    let el_id = el.id;
+    let child_id = child.id;
+    el.children = vec![child_id];
 
-    tree.set_root_id(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -492,22 +492,22 @@ fn test_el_expands_height_for_wrapped_paragraph() {
     // No height set — should shrink-to-fit then expand
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
-    let el_id = el.id.clone();
+    let el_id = el.id;
 
     // Paragraph child, no explicit width/height (inherits from parent)
     let para_attrs = Attrs::default();
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
-    let para_id = para.id.clone();
+    let para_id = para.id;
 
     // Text child: "AAAA BBBB" = 9 chars * 8px = 72px wide
     // In 50px container: "AAAA" (32px) fits line 1, "BBBB" (32px) fits line 2
     // => 2 lines * 16px = 32px tall
     let text_child = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
-    let text_id = text_child.id.clone();
+    let text_id = text_child.id;
 
-    para.children = vec![text_id.clone()];
-    el.children = vec![para_id.clone()];
-    tree.set_root_id(el_id.clone());
+    para.children = vec![text_id];
+    el.children = vec![para_id];
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(para);
     tree.insert(text_child);
@@ -536,8 +536,8 @@ fn test_text_align_center_without_explicit_width_fills_constraint() {
     // width intentionally unset
 
     let text = make_element("text", ElementKind::Text, attrs);
-    let text_id = text.id.clone();
-    tree.set_root_id(text_id.clone());
+    let text_id = text.id;
+    tree.set_root_id(text_id);
     tree.insert(text);
 
     layout_tree(
@@ -567,8 +567,8 @@ fn test_mouse_over_text_align_center_without_explicit_width_fills_constraint() {
     attrs.mouse_over_active = Some(true);
 
     let text = make_element("text", ElementKind::Text, attrs);
-    let text_id = text.id.clone();
-    tree.set_root_id(text_id.clone());
+    let text_id = text.id;
+    tree.set_root_id(text_id);
     tree.insert(text);
 
     layout_tree(
@@ -602,11 +602,11 @@ fn test_mouse_over_border_width_affects_content_sizing() {
 
     let mut parent = make_element("root", ElementKind::El, parent_attrs);
     let child = make_element("child", ElementKind::Text, child_attrs);
-    let root_id = parent.id.clone();
-    let child_id = child.id.clone();
+    let root_id = parent.id;
+    let child_id = child.id;
 
-    parent.children = vec![child_id.clone()];
-    tree.set_root_id(root_id.clone());
+    parent.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(parent);
     tree.insert(child);
 
@@ -652,11 +652,11 @@ fn test_el_alignment_uses_asymmetric_padding_and_border_content_box() {
         a
     });
 
-    let parent_id = parent.id.clone();
-    let child_id = child.id.clone();
-    parent.children = vec![child_id.clone()];
+    let parent_id = parent.id;
+    let child_id = child.id;
+    parent.children = vec![child_id];
 
-    tree.set_root_id(parent_id.clone());
+    tree.set_root_id(parent_id);
     tree.insert(parent);
     tree.insert(child);
 

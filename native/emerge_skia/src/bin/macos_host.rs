@@ -25,7 +25,9 @@ mod app {
         },
         input::InputEvent,
         keys::CanonicalKey,
-        renderer::{RenderFrame, RenderState, SceneRenderer},
+        renderer::{
+            CleanSubtreeCacheConfig, RenderFrame, RenderState, RendererCacheConfig, SceneRenderer,
+        },
         services::{self, OffscreenRenderOptions},
         stats::{RendererStatsCollector, format_renderer_stats_log},
         tree::{
@@ -71,7 +73,7 @@ mod app {
     };
 
     const PROTOCOL_NAME: &str = "emerge_skia_macos";
-    const PROTOCOL_VERSION: u16 = 7;
+    const PROTOCOL_VERSION: u16 = 8;
 
     const FRAME_INIT: u8 = 1;
     const FRAME_INIT_OK: u8 = 2;
@@ -365,6 +367,7 @@ mod app {
             height: u32,
             scroll_line_pixels: f32,
             renderer_stats_log: bool,
+            renderer_cache_config: RendererCacheConfig,
             macos_backend: RequestedMacosBackend,
             asset_config: StartSessionAssetConfig,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
@@ -1485,6 +1488,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                     reply_tx,
@@ -1502,19 +1506,20 @@ mod app {
                         }
                     };
 
-                    match create_session(
+                    match create_session(CreateSessionRequest {
                         app,
                         mtm,
                         state,
                         session_id,
-                        &title,
+                        title: &title,
                         width,
                         height,
                         scroll_line_pixels,
                         renderer_stats_log,
-                        macos_backend,
+                        renderer_cache_config,
+                        requested_backend: macos_backend,
                         ui_state,
-                    ) {
+                    }) {
                         Ok((session, selected_backend)) => {
                             let stats = session.stats.clone();
                             ui_state.borrow_mut().sessions.insert(session_id, session);
@@ -1904,6 +1909,7 @@ mod app {
                     vec![emerge_skia::actors::TreeMsg::AnimationPulse {
                         presented_at,
                         predicted_next_present_at,
+                        trace: None,
                     }],
                 )
                 .and_then(|invalidation| render_session_for_invalidation(session, invalidation))
@@ -1913,20 +1919,39 @@ mod app {
             });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn create_session(
-        app: &NSApplication,
+    struct CreateSessionRequest<'a> {
+        app: &'a NSApplication,
         mtm: MainThreadMarker,
-        state: &Arc<HostState>,
+        state: &'a Arc<HostState>,
         session_id: u64,
-        title: &str,
+        title: &'a str,
         width: u32,
         height: u32,
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
+        renderer_cache_config: RendererCacheConfig,
         requested_backend: RequestedMacosBackend,
-        ui_state: &Rc<RefCell<HostUiState>>,
+        ui_state: &'a Rc<RefCell<HostUiState>>,
+    }
+
+    fn create_session(
+        request: CreateSessionRequest<'_>,
     ) -> Result<(HostSession, SelectedMacosBackend), String> {
+        let CreateSessionRequest {
+            app,
+            mtm,
+            state,
+            session_id,
+            title,
+            width,
+            height,
+            scroll_line_pixels,
+            renderer_stats_log,
+            renderer_cache_config,
+            requested_backend,
+            ui_state,
+        } = request;
+
         let window = create_window(app, mtm, title, width, height)?;
         let initial_content_view = window
             .contentView()
@@ -1963,7 +1988,7 @@ mod app {
                 _input_view: input_view,
                 _window_delegate: window_delegate,
                 surface,
-                renderer: SceneRenderer::new(),
+                renderer: SceneRenderer::with_cache_config(renderer_cache_config),
                 tree: ElementTree::new(),
                 render_state: RenderState::default(),
                 logical_size: metrics.render_size,
@@ -2224,6 +2249,9 @@ mod app {
             stats.record_render_flush(render_timings.flush);
             stats.record_render_gpu_flush(render_timings.gpu_flush);
             stats.record_render_submit(render_timings.submit);
+            if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+                stats.record_renderer_cache(*renderer_cache);
+            }
         }
 
         drop(skia_surface);
@@ -2264,6 +2292,9 @@ mod app {
             stats.record_render_flush(render_timings.flush);
             stats.record_render_gpu_flush(render_timings.gpu_flush);
             stats.record_render_submit(render_timings.submit);
+            if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+                stats.record_renderer_cache(*renderer_cache);
+            }
         }
 
         let image = surface.surface.image_snapshot();
@@ -2538,7 +2569,7 @@ mod app {
             match message {
                 emerge_skia::actors::TreeMsg::Stop => {}
                 emerge_skia::actors::TreeMsg::Batch(_) => unreachable!(),
-                emerge_skia::actors::TreeMsg::UploadTree { bytes } => {
+                emerge_skia::actors::TreeMsg::UploadTree { bytes, .. } => {
                     let decoded =
                         deserialize::decode_tree(&bytes).map_err(|err| err.to_string())?;
                     session.tree.replace_with_uploaded(decoded);
@@ -2628,6 +2659,7 @@ mod app {
                 emerge_skia::actors::TreeMsg::AnimationPulse {
                     presented_at,
                     predicted_next_present_at,
+                    trace: _,
                 } => {
                     session.latest_animation_sample_time =
                         Some(predicted_next_present_at.max(presented_at));
@@ -3605,6 +3637,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                 )) = decode_start_session(&frame.payload)
@@ -3624,6 +3657,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                     reply_tx,
@@ -3962,6 +3996,7 @@ mod app {
         u32,
         f32,
         bool,
+        RendererCacheConfig,
         RequestedMacosBackend,
         StartSessionAssetConfig,
     )> {
@@ -3971,6 +4006,7 @@ mod app {
         let height = decode_u32(payload, &mut cursor)?;
         let scroll_line_pixels = decode_f32(payload, &mut cursor)?;
         let renderer_stats_log = decode_u8(payload, &mut cursor)? != 0;
+        let renderer_cache_config = decode_renderer_cache_config(payload, &mut cursor)?;
         let backend = decode_requested_macos_backend(decode_u8(payload, &mut cursor)?)?;
         let asset_config = decode_asset_config(payload, &mut cursor)?;
         let fonts = decode_font_list(payload, &mut cursor)?;
@@ -3985,6 +4021,7 @@ mod app {
             height,
             scroll_line_pixels,
             renderer_stats_log,
+            renderer_cache_config,
             backend,
             StartSessionAssetConfig {
                 sources: asset_config.sources,
@@ -3996,6 +4033,25 @@ mod app {
                 fonts,
             },
         ))
+    }
+
+    fn decode_renderer_cache_config(
+        payload: &[u8],
+        cursor: &mut usize,
+    ) -> Option<RendererCacheConfig> {
+        let max_new_payloads_per_frame = decode_u32(payload, cursor)?;
+        let max_entries = usize::try_from(decode_u64(payload, cursor)?).ok()?;
+        let max_bytes = decode_u64(payload, cursor)?;
+        let max_entry_bytes = decode_u64(payload, cursor)?;
+
+        Some(RendererCacheConfig {
+            max_new_payloads_per_frame,
+            clean_subtree: CleanSubtreeCacheConfig {
+                max_entries,
+                max_bytes,
+                max_entry_bytes,
+            },
+        })
     }
 
     fn decode_measure_text(payload: &[u8]) -> Option<(String, f32)> {

@@ -244,52 +244,6 @@ impl InputEvent {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod tests {
-    use super::InputEvent;
-
-    #[test]
-    fn normalize_scroll_with_line_pixels_scales_discrete_wheel_steps() {
-        let event = InputEvent::CursorScrollLines {
-            dx: 2.0,
-            dy: -3.0,
-            x: 10.0,
-            y: 20.0,
-        }
-        .normalize_scroll_with_line_pixels(45.0);
-
-        assert!(matches!(
-            event,
-            InputEvent::CursorScroll { dx, dy, x, y }
-                if (dx - 90.0).abs() < f32::EPSILON
-                    && (dy + 135.0).abs() < f32::EPSILON
-                    && (x - 10.0).abs() < f32::EPSILON
-                    && (y - 20.0).abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn normalize_scroll_with_line_pixels_leaves_absolute_scroll_unchanged() {
-        let event = InputEvent::CursorScroll {
-            dx: 4.5,
-            dy: -7.25,
-            x: 3.0,
-            y: 5.0,
-        }
-        .normalize_scroll_with_line_pixels(45.0);
-
-        assert!(matches!(
-            event,
-            InputEvent::CursorScroll { dx, dy, x, y }
-                if (dx - 4.5).abs() < f32::EPSILON
-                    && (dy + 7.25).abs() < f32::EPSILON
-                    && (x - 3.0).abs() < f32::EPSILON
-                    && (y - 5.0).abs() < f32::EPSILON
-        ));
-    }
-}
-
 impl Encoder for InputEvent {
     fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
         match self {
@@ -357,5 +311,50 @@ impl Encoder for InputEvent {
                 focused: is_focused,
             } => (focused(), *is_focused).encode(env),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputEvent;
+
+    #[test]
+    fn normalize_scroll_with_line_pixels_scales_discrete_wheel_steps() {
+        let event = InputEvent::CursorScrollLines {
+            dx: 2.0,
+            dy: -3.0,
+            x: 10.0,
+            y: 20.0,
+        }
+        .normalize_scroll_with_line_pixels(45.0);
+
+        assert!(matches!(
+            event,
+            InputEvent::CursorScroll { dx, dy, x, y }
+                if (dx - 90.0).abs() < f32::EPSILON
+                    && (dy + 135.0).abs() < f32::EPSILON
+                    && (x - 10.0).abs() < f32::EPSILON
+                    && (y - 20.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn normalize_scroll_with_line_pixels_leaves_absolute_scroll_unchanged() {
+        let event = InputEvent::CursorScroll {
+            dx: 4.5,
+            dy: -7.25,
+            x: 3.0,
+            y: 5.0,
+        }
+        .normalize_scroll_with_line_pixels(45.0);
+
+        assert!(matches!(
+            event,
+            InputEvent::CursorScroll { dx, dy, x, y }
+                if (dx - 4.5).abs() < f32::EPSILON
+                    && (dy + 7.25).abs() < f32::EPSILON
+                    && (x - 3.0).abs() < f32::EPSILON
+                    && (y - 5.0).abs() < f32::EPSILON
+        ));
     }
 }

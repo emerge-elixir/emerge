@@ -5,7 +5,7 @@ use glutin::{
     context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext},
     display::{Display, DisplayApiPreference, GlDisplay},
     prelude::GlSurface,
-    surface::{Surface as GlutinSurface, SurfaceAttributesBuilder, WindowSurface},
+    surface::{Surface as GlutinSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle, RawWindowHandle, WaylandWindowHandle};
 use skia_safe::gpu::{
@@ -14,11 +14,15 @@ use skia_safe::gpu::{
 };
 use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
-use crate::{backend::skia_gpu::GlFrameSurface, renderer::SceneRenderer};
+use crate::{
+    backend::skia_gpu::GlFrameSurface,
+    renderer::{RendererCacheConfig, SceneRenderer},
+};
 
 pub(super) struct GlEnv {
     pub(super) gl_surface: GlutinSurface<WindowSurface>,
     pub(super) gl_context: PossiblyCurrentContext,
+    pub(super) swap_buffers_nonblocking: bool,
     pub(super) renderer: SceneRenderer,
     pub(super) frame_surface: GlFrameSurface,
 }
@@ -35,6 +39,7 @@ pub(super) fn create_gl_env(
     conn: &Connection,
     surface: &wl_surface::WlSurface,
     dimensions: (u32, u32),
+    renderer_cache_config: RendererCacheConfig,
 ) -> Result<GlEnv, String> {
     let raw_display_handle = raw_display_handle(conn)?;
     let raw_window_handle = raw_window_handle(surface)?;
@@ -92,6 +97,17 @@ pub(super) fn create_gl_env(
         .make_current(&gl_surface)
         .map_err(|err| format!("could not make EGL context current: {err}"))?;
 
+    let swap_buffers_nonblocking =
+        match gl_surface.set_swap_interval(&gl_context, SwapInterval::DontWait) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!(
+                    "wayland egl failed to disable swap interval; late replacement disabled: {err}"
+                );
+                false
+            }
+        };
+
     gl::load_with(|symbol| gl_display.get_proc_address(gl_symbol_name(symbol).as_c_str()));
 
     let interface = Interface::new_load_with(|name| {
@@ -130,7 +146,8 @@ pub(super) fn create_gl_env(
     Ok(GlEnv {
         gl_surface,
         gl_context,
-        renderer: SceneRenderer::new(),
+        swap_buffers_nonblocking,
+        renderer: SceneRenderer::with_cache_config(renderer_cache_config),
         frame_surface,
     })
 }

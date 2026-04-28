@@ -5827,14 +5827,14 @@ fn root_ids_for_elements(elements: &[Element]) -> Vec<NodeId> {
                 .children
                 .iter()
                 .cloned()
-                .chain(element.nearby.iter().map(|mount| mount.id.clone()))
+                .chain(element.nearby.iter().map(|mount| mount.id))
         })
         .collect();
 
     elements
         .iter()
         .filter(|element| !child_ids.contains(&element.id))
-        .map(|element| element.id.clone())
+        .map(|element| element.id)
         .collect()
 }
 
@@ -7182,7 +7182,6 @@ mod scroll_wheel {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use std::collections::HashMap;
 
@@ -7392,8 +7391,7 @@ mod tests {
         host_attrs.height = Some(Length::Px(82.0));
         let mut host = make_element(120, host_attrs);
         host.layout.frame = None;
-        host.nearby
-            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
         let mut from = Attrs::default();
         from.width = Some(Length::Px(96.0));
@@ -7421,7 +7419,7 @@ mod tests {
 
         tree.insert(host);
         tree.insert(overlay);
-        tree.set_root_id(host_id.clone());
+        tree.set_root_id(host_id);
 
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -7448,8 +7446,7 @@ mod tests {
         host_attrs.width = Some(Length::Px(128.0));
         host_attrs.height = Some(Length::Px(82.0));
         let mut host = make_element(122, host_attrs);
-        host.nearby
-            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
         let mut from = Attrs::default();
         from.width = Some(Length::Px(96.0));
@@ -8473,7 +8470,7 @@ mod tests {
                 content_height: 120.0,
             },
         );
-        root.children = vec![host_id.clone(), later_id.clone()];
+        root.children = vec![host_id, later_id];
 
         let mut host = with_interaction_rect(
             make_element(141, Attrs::default()),
@@ -8485,7 +8482,7 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.nearby.set(NearbySlot::Below, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::Below, Some(overlay_id));
 
         let mut later_attrs = Attrs::default();
         later_attrs.on_mouse_down = Some(true);
@@ -8549,9 +8546,9 @@ mod tests {
                 content_height: 120.0,
             },
         );
-        root.children = vec![parent_id.clone()];
+        root.children = vec![parent_id];
         root.nearby
-            .set(NearbySlot::InFront, Some(ancestor_overlay_id.clone()));
+            .set(NearbySlot::InFront, Some(ancestor_overlay_id));
 
         let mut parent = with_interaction_rect(
             make_element(145, Attrs::default()),
@@ -8565,7 +8562,7 @@ mod tests {
         );
         parent
             .nearby
-            .set(NearbySlot::Below, Some(descendant_overlay_id.clone()));
+            .set(NearbySlot::Below, Some(descendant_overlay_id));
 
         let mut ancestor_overlay_attrs = Attrs::default();
         ancestor_overlay_attrs.on_mouse_down = Some(true);
@@ -8630,7 +8627,7 @@ mod tests {
                 content_height: 120.0,
             },
         );
-        root.children = vec![host_id.clone(), sibling_id.clone()];
+        root.children = vec![host_id, sibling_id];
 
         let mut host_attrs = Attrs::default();
         host_attrs.on_focus = Some(true);
@@ -8645,7 +8642,7 @@ mod tests {
                 height: 40.0,
             },
         );
-        host.nearby.set(NearbySlot::Below, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::Below, Some(overlay_id));
 
         let mut sibling_attrs = Attrs::default();
         sibling_attrs.on_focus = Some(true);
@@ -8693,27 +8690,24 @@ mod tests {
         let focus_ids: Vec<_> = acc
             .focus_entries
             .iter()
-            .map(|entry| entry.element_id.clone())
+            .map(|entry| entry.element_id)
             .collect();
-        assert_eq!(
-            focus_ids,
-            vec![host_id.clone(), sibling_id.clone(), overlay_id.clone()]
-        );
+        assert_eq!(focus_ids, vec![host_id, sibling_id, overlay_id]);
 
         let focus_state = super::focus_build_state_from_entries(&acc.focus_entries);
         assert_eq!(
             focus_state
                 .by_id
                 .get(&host_id)
-                .and_then(|meta| meta.tab_next.clone()),
-            Some(sibling_id.clone())
+                .and_then(|meta| meta.tab_next),
+            Some(sibling_id)
         );
         assert_eq!(
             focus_state
                 .by_id
                 .get(&sibling_id)
-                .and_then(|meta| meta.tab_next.clone()),
-            Some(overlay_id.clone())
+                .and_then(|meta| meta.tab_next),
+            Some(overlay_id)
         );
     }
 
@@ -8850,9 +8844,8 @@ mod tests {
                 content_height: 82.0,
             },
         );
-        host.children = vec![under_id.clone()];
-        host.nearby
-            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.children = vec![under_id];
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
         let mut under_attrs = Attrs::default();
         under_attrs.on_mouse_move = Some(true);
@@ -8922,8 +8915,7 @@ mod tests {
                 content_height: 80.0,
             },
         );
-        host.nearby
-            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
         let mut overlay_attrs = Attrs::default();
         overlay_attrs.on_mouse_move = Some(true);
@@ -8939,7 +8931,7 @@ mod tests {
                 content_height: 60.0,
             },
         );
-        overlay.children = vec![child_id.clone()];
+        overlay.children = vec![child_id];
 
         let child = with_frame(
             make_element(142, Attrs::default()),
@@ -8981,8 +8973,7 @@ mod tests {
                 content_height: 100.0,
             },
         );
-        host.nearby
-            .set(NearbySlot::InFront, Some(overlay_id.clone()));
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
         let mut overlay = with_frame(
             make_element(150, Attrs::default()),
@@ -8995,7 +8986,7 @@ mod tests {
                 content_height: 70.0,
             },
         );
-        overlay.children = vec![wrapper_id.clone()];
+        overlay.children = vec![wrapper_id];
 
         let mut wrapper = with_frame(
             make_element(151, Attrs::default()),
@@ -9008,7 +8999,7 @@ mod tests {
                 content_height: 40.0,
             },
         );
-        wrapper.children = vec![target_id.clone()];
+        wrapper.children = vec![target_id];
 
         let mut target_attrs = Attrs::default();
         target_attrs.on_mouse_move = Some(true);
@@ -10724,7 +10715,7 @@ mod tests {
             },
         );
         root.lifecycle.mounted_at_revision = 1;
-        root.children = vec![field_id.clone()];
+        root.children = vec![field_id];
 
         let mut field_attrs = Attrs::default();
         field_attrs.focus_on_mount = Some(true);
@@ -10774,7 +10765,7 @@ mod tests {
             },
         );
         root.lifecycle.mounted_at_revision = 1;
-        root.children = vec![existing_id.clone(), new_id.clone()];
+        root.children = vec![existing_id, new_id];
 
         let mut existing_attrs = Attrs::default();
         existing_attrs.focus_on_mount = Some(true);
@@ -10841,7 +10832,7 @@ mod tests {
             },
         );
         root.lifecycle.mounted_at_revision = 1;
-        root.children = vec![first_id.clone(), second_id.clone()];
+        root.children = vec![first_id, second_id];
 
         let mut first_attrs = Attrs::default();
         first_attrs.focus_on_mount = Some(true);
@@ -11966,7 +11957,7 @@ mod tests {
                 content_height: 180.0,
             },
         );
-        parent.children = vec![wrapper_id.clone()];
+        parent.children = vec![wrapper_id];
 
         let mut wrapper = with_frame(
             make_element(92, Attrs::default()),
@@ -11979,7 +11970,7 @@ mod tests {
                 content_height: 60.0,
             },
         );
-        wrapper.children = vec![target_id.clone()];
+        wrapper.children = vec![target_id];
 
         let mut target_attrs = Attrs::default();
         target_attrs.on_mouse_move = Some(true);
@@ -12108,7 +12099,7 @@ mod tests {
                 content_height: 240.0,
             },
         );
-        parent.children = vec![child_id.clone()];
+        parent.children = vec![child_id];
 
         let mut child_attrs = Attrs::default();
         child_attrs.scrollbar_y = Some(true);
@@ -12699,7 +12690,7 @@ mod tests {
     fn listener_compute_scroll_builds_tree_message_from_directional_input() {
         let element_id = NodeId::from_term_bytes(vec![9]);
         let compute = ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
-            element_id: element_id.clone(),
+            element_id,
             direction: ScrollDirection::YNeg,
         };
 

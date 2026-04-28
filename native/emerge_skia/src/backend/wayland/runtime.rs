@@ -45,7 +45,10 @@ use wayland_client::{
 
 use crate::{
     InputTargetRelay,
-    actors::{EventMsg, RenderMsg, TreeMsg},
+    actors::{
+        AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg,
+        earliest_pipeline_submitted_at,
+    },
     backend::{
         wake::{
             BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
@@ -55,7 +58,7 @@ use crate::{
     events::CursorIcon,
     input::InputEvent,
     native_log::NativeLogRelay,
-    renderer::RenderState,
+    renderer::{RenderState, RendererCacheConfig},
     stats::{
         RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, format_slow_present_frame_log,
         format_slow_render_frame_log, render_frame_has_slow_stage,
@@ -68,7 +71,7 @@ use super::{
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
     keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk, normalize_commit_text},
-    present::PresentState,
+    present::{DrawDecision, DrawKind, PresentState},
     protocols::ProtocolHandles,
     text_input::TextInputProtocolState,
 };
@@ -93,6 +96,7 @@ struct WaylandAppRuntime {
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
+    renderer_cache_config: RendererCacheConfig,
     native_log: Arc<NativeLogRelay>,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
@@ -109,6 +113,7 @@ pub(crate) struct WaylandRunArgs {
     pub close_signal_log: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
+    pub renderer_cache_config: RendererCacheConfig,
     pub native_log: Arc<NativeLogRelay>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
@@ -150,8 +155,17 @@ fn should_reconfigure_surface(size_changed: bool, env_missing: bool) -> bool {
     size_changed || env_missing
 }
 
-fn should_draw_frame(present: &PresentState, env_ready: bool, exit: bool) -> bool {
-    env_ready && present.can_draw(exit)
+fn frame_draw_decision(
+    present: &PresentState,
+    env_ready: bool,
+    exit: bool,
+    allow_late_replacement: bool,
+) -> DrawDecision {
+    if env_ready {
+        present.draw_decision(exit, allow_late_replacement)
+    } else {
+        DrawDecision::Skip
+    }
 }
 
 // The compositor thread must never block on actor queues. Under backpressure,
@@ -229,10 +243,15 @@ pub(super) struct WaylandApp {
     close_signal_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
+    renderer_cache_config: RendererCacheConfig,
     native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
     render_state: RenderState,
+    render_animation_trace: Option<AnimationFrameTrace>,
+    animation_pulse_sequence: u64,
+    pending_pipeline_submitted_at: Option<std::time::Instant>,
+    pending_pipeline_swap_done_at: Option<std::time::Instant>,
 }
 
 impl WaylandApp {
@@ -266,6 +285,7 @@ impl WaylandApp {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_cache_config,
             native_log,
             render_rx,
             cursor_icon_rx,
@@ -298,10 +318,15 @@ impl WaylandApp {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_cache_config,
             native_log,
             video_registry,
             loop_handle,
             render_state: RenderState::default(),
+            render_animation_trace: None,
+            animation_pulse_sequence: 0,
+            pending_pipeline_submitted_at: None,
+            pending_pipeline_swap_done_at: None,
         };
 
         app.apply_surface_scale_state();
@@ -390,15 +415,49 @@ impl WaylandApp {
                 RenderMsg::Scene {
                     scene,
                     version,
+                    pipeline_submitted_at,
+                    pipeline_render_queued_at,
+                    animation_trace,
                     animate,
                     ime_enabled,
                     ime_cursor_area,
                     ime_text_state,
                     ..
                 } => {
-                    self.render_state.scene = *scene;
+                    let animation_trace = animation_trace.map(|trace| *trace);
+                    let scene = *scene;
+                    self.render_state.has_cache_candidates = scene.has_cache_candidates();
+                    self.render_state.scene = scene;
                     self.render_state.render_version = version;
+                    self.render_state.pipeline_submitted_at = pipeline_submitted_at;
+                    self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                     self.render_state.animate = animate;
+                    self.render_animation_trace = animation_trace;
+                    self.present.note_scene_received(
+                        version,
+                        pipeline_submitted_at.is_some(),
+                        animate,
+                    );
+                    if self.renderer_stats_log && (animate || animation_trace.is_some()) {
+                        self.native_log.info(
+                            "renderer_animation",
+                            format_animation_scene_log(
+                                "wayland",
+                                version,
+                                animate,
+                                animation_trace,
+                                std::time::Instant::now(),
+                            ),
+                        );
+                    }
+                    if let (Some(stats), Some(render_queued_at)) =
+                        (self.stats.as_ref(), pipeline_render_queued_at)
+                    {
+                        stats.record_pipeline_render_queue(
+                            render_queued_at,
+                            std::time::Instant::now(),
+                        );
+                    }
 
                     if self.text_input.update_render_state(
                         ime_enabled,
@@ -471,23 +530,37 @@ impl WaylandApp {
     }
 
     fn maybe_draw(&mut self) {
-        if !should_draw_frame(&self.present, self.env.is_some(), self.exit) {
-            return;
-        }
+        let allow_late_replacement = self
+            .env
+            .as_ref()
+            .is_some_and(|env| env.swap_buffers_nonblocking);
+        let decision = frame_draw_decision(
+            &self.present,
+            self.env.is_some(),
+            self.exit,
+            allow_late_replacement,
+        );
 
-        self.draw();
+        let DrawDecision::Draw(draw_kind) = decision else {
+            self.present.clear_ready_frame_callback_timing_if_idle();
+            return;
+        };
+
+        self.draw(draw_kind);
     }
 
-    fn draw(&mut self) {
+    fn draw(&mut self, draw_kind: DrawKind) {
         let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
         let video_import_ctx = video_import.context();
+        let animation_trace = self.render_animation_trace;
+        let draw_started_at = std::time::Instant::now();
 
         let Some(env) = self.env.as_mut() else {
             return;
         };
 
-        self.present.request_frame_callback(&self.window, &self.qh);
+        self.present.prepare_draw(draw_kind, &self.window, &self.qh);
 
         let mut video_needs_cleanup = false;
 
@@ -525,6 +598,9 @@ impl WaylandApp {
                 stats.record_render_flush(render_timings.flush);
                 stats.record_render_gpu_flush(render_timings.gpu_flush);
                 stats.record_render_submit(render_timings.submit);
+                if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+                    stats.record_renderer_cache(*renderer_cache);
+                }
             }
 
             if self.renderer_stats_log && render_frame_has_slow_stage(&render_timings) {
@@ -549,6 +625,35 @@ impl WaylandApp {
         }
 
         let present_submit = present_submit_started_at.elapsed();
+        let swap_done_at = std::time::Instant::now();
+        if self.renderer_stats_log && (self.render_state.animate || animation_trace.is_some()) {
+            self.native_log.info(
+                "renderer_animation",
+                format_animation_draw_log(AnimationDrawLogInput {
+                    backend_label: "wayland",
+                    version: self.render_state.render_version,
+                    draw_kind,
+                    animate: self.render_state.animate,
+                    trace: animation_trace,
+                    draw_started_at,
+                    swap_done_at,
+                    present_submit,
+                }),
+            );
+        }
+        if let (Some(stats), Some(submitted_at)) =
+            (self.stats.as_ref(), self.render_state.pipeline_submitted_at)
+        {
+            stats.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
+        }
+        if self.render_state.pipeline_submitted_at.is_some() {
+            self.pending_pipeline_swap_done_at = Some(swap_done_at);
+        }
+        self.pending_pipeline_submitted_at = earliest_pipeline_submitted_at(
+            self.pending_pipeline_submitted_at,
+            self.render_state.pipeline_submitted_at.take(),
+        );
+        self.render_state.pipeline_render_queued_at = None;
 
         if let Some(stats) = self.stats.as_ref() {
             stats.record_present_submit(present_submit);
@@ -569,22 +674,31 @@ impl WaylandApp {
             stats.record_frame_present();
         }
 
-        let presented_at = std::time::Instant::now();
-        let predicted_next_present_at = self.present.observe_present(presented_at);
+        if draw_kind == DrawKind::Normal {
+            let fallback_presented_at = std::time::Instant::now();
+            let (presented_at, predicted_next_present_at) = self
+                .present
+                .present_timing_for_normal_draw(fallback_presented_at);
 
-        if let Some(stats) = self.stats.as_ref() {
-            stats.record_display_interval(
-                predicted_next_present_at.saturating_duration_since(presented_at),
-            );
+            if let Some(stats) = self.stats.as_ref() {
+                stats.record_display_interval(
+                    predicted_next_present_at.saturating_duration_since(presented_at),
+                );
+            }
+
+            self.send_present_timing(presented_at, predicted_next_present_at);
+
+            if self.render_state.animate {
+                self.send_animation_pulse(presented_at, predicted_next_present_at);
+            }
         }
 
-        self.send_present_timing(presented_at, predicted_next_present_at);
-
-        if self.render_state.animate {
-            self.send_animation_pulse(presented_at, predicted_next_present_at);
-        }
-
-        self.present.finish_present(video_needs_cleanup);
+        self.present.finish_present(
+            self.render_state.render_version,
+            draw_kind,
+            video_needs_cleanup,
+        );
+        self.render_animation_trace = None;
     }
 
     fn apply_surface_scale_state(&mut self) {
@@ -625,7 +739,12 @@ impl WaylandApp {
         if self.env.is_none() {
             self.video_import = WaylandVideoImportState::PendingGlInit;
 
-            match create_gl_env(conn, self.window.wl_surface(), self.geometry.buffer_size) {
+            match create_gl_env(
+                conn,
+                self.window.wl_surface(),
+                self.geometry.buffer_size,
+                self.renderer_cache_config,
+            ) {
                 Ok(env) => {
                     self.env = Some(env);
                     self.initialize_video_import();
@@ -653,15 +772,33 @@ impl WaylandApp {
     }
 
     fn send_animation_pulse(
-        &self,
+        &mut self,
         presented_at: std::time::Instant,
         predicted_next_present_at: std::time::Instant,
     ) {
+        self.animation_pulse_sequence = self.animation_pulse_sequence.wrapping_add(1);
+        let trace = AnimationPulseTrace {
+            sequence: self.animation_pulse_sequence,
+            sent_at: std::time::Instant::now(),
+        };
+        if self.renderer_stats_log {
+            self.native_log.info(
+                "renderer_animation",
+                format_animation_pulse_log(
+                    "wayland",
+                    self.render_state.render_version,
+                    trace,
+                    presented_at,
+                    predicted_next_present_at,
+                ),
+            );
+        }
         try_send_wayland_tree(
             &self.tree_tx,
             TreeMsg::AnimationPulse {
                 presented_at,
                 predicted_next_present_at,
+                trace: Some(trace),
             },
         );
     }
@@ -679,6 +816,226 @@ impl WaylandApp {
             },
         );
     }
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+fn signed_instant_delta_ms(later: std::time::Instant, earlier: std::time::Instant) -> f64 {
+    if later >= earlier {
+        duration_ms(later.duration_since(earlier))
+    } else {
+        -duration_ms(earlier.duration_since(later))
+    }
+}
+
+fn optional_signed_instant_delta_ms(
+    later: std::time::Instant,
+    earlier: Option<std::time::Instant>,
+) -> String {
+    earlier.map_or_else(
+        || "n/a".to_string(),
+        |earlier| format!("{:.3} ms", signed_instant_delta_ms(later, earlier)),
+    )
+}
+
+fn trace_source(trace: Option<AnimationFrameTrace>) -> String {
+    match trace.and_then(|trace| trace.sequence) {
+        Some(sequence) => format!("pulse seq={sequence}"),
+        None => "tree update".to_string(),
+    }
+}
+
+fn format_animation_scene_log(
+    backend_label: &str,
+    version: u64,
+    animate: bool,
+    trace: Option<AnimationFrameTrace>,
+    received_at: std::time::Instant,
+) -> String {
+    let Some(trace) = trace else {
+        return format!(
+            "animation scene\n  backend: {backend_label}\n  version: {version}\n  animate: {animate}\n  trace: none"
+        );
+    };
+
+    let sample_regressed = trace
+        .previous_sample_time
+        .is_some_and(|previous| trace.sample_time < previous);
+    let pulse_to_tree =
+        optional_signed_instant_delta_ms(trace.tree_started_at, trace.pulse_sent_at);
+    let tree_to_queue = duration_ms(
+        trace
+            .render_queued_at
+            .saturating_duration_since(trace.tree_started_at),
+    );
+    let pulse_to_queue =
+        optional_signed_instant_delta_ms(trace.render_queued_at, trace.pulse_sent_at);
+    let presented_to_sample =
+        optional_signed_instant_delta_ms(trace.sample_time, trace.presented_at);
+    let predicted_to_sample =
+        optional_signed_instant_delta_ms(trace.sample_time, trace.predicted_next_present_at);
+    let previous_to_sample =
+        optional_signed_instant_delta_ms(trace.sample_time, trace.previous_sample_time);
+    let receive_delay = duration_ms(received_at.saturating_duration_since(trace.render_queued_at));
+
+    format!(
+        concat!(
+            "animation scene\n",
+            "  backend: {backend_label}\n",
+            "  version: {version}\n",
+            "  animate: {animate}\n",
+            "  source: {source}\n",
+            "  active: animations_active={animations_active} pulse_requested_sample={pulse_requested_sample}\n",
+            "  tree: pulse->tree={pulse_to_tree} tree->queue={tree_to_queue:.3} ms pulse->queue={pulse_to_queue} queue->backend={receive_delay:.3} ms\n",
+            "  sample: presented->sample={presented_to_sample} predicted->sample={predicted_to_sample} previous->sample={previous_to_sample} regressed={sample_regressed}"
+        ),
+        backend_label = backend_label,
+        version = version,
+        animate = animate,
+        source = trace_source(Some(trace)),
+        animations_active = trace.animations_active,
+        pulse_requested_sample = trace.pulse_requested_sample,
+        pulse_to_tree = pulse_to_tree,
+        tree_to_queue = tree_to_queue,
+        pulse_to_queue = pulse_to_queue,
+        receive_delay = receive_delay,
+        presented_to_sample = presented_to_sample,
+        predicted_to_sample = predicted_to_sample,
+        previous_to_sample = previous_to_sample,
+        sample_regressed = sample_regressed,
+    )
+}
+
+struct AnimationDrawLogInput<'a> {
+    backend_label: &'a str,
+    version: u64,
+    draw_kind: DrawKind,
+    animate: bool,
+    trace: Option<AnimationFrameTrace>,
+    draw_started_at: std::time::Instant,
+    swap_done_at: std::time::Instant,
+    present_submit: Duration,
+}
+
+fn format_animation_draw_log(input: AnimationDrawLogInput<'_>) -> String {
+    let AnimationDrawLogInput {
+        backend_label,
+        version,
+        draw_kind,
+        animate,
+        trace,
+        draw_started_at,
+        swap_done_at,
+        present_submit,
+    } = input;
+
+    let Some(trace) = trace else {
+        return format!(
+            concat!(
+                "animation draw\n",
+                "  backend: {backend_label}\n",
+                "  version: {version}\n",
+                "  kind: {draw_kind:?}\n",
+                "  animate: {animate}\n",
+                "  trace: none\n",
+                "  present_submit: {present_submit:.3} ms"
+            ),
+            backend_label = backend_label,
+            version = version,
+            draw_kind = draw_kind,
+            animate = animate,
+            present_submit = duration_ms(present_submit),
+        );
+    };
+
+    let queue_to_draw =
+        duration_ms(draw_started_at.saturating_duration_since(trace.render_queued_at));
+    let tree_to_draw =
+        duration_ms(draw_started_at.saturating_duration_since(trace.tree_started_at));
+    let pulse_to_draw = optional_signed_instant_delta_ms(draw_started_at, trace.pulse_sent_at);
+    let draw_to_sample = signed_instant_delta_ms(trace.sample_time, draw_started_at);
+    let draw_to_swap = duration_ms(swap_done_at.saturating_duration_since(draw_started_at));
+    let swap_to_sample = signed_instant_delta_ms(trace.sample_time, swap_done_at);
+
+    format!(
+        concat!(
+            "animation draw\n",
+            "  backend: {backend_label}\n",
+            "  version: {version}\n",
+            "  kind: {draw_kind:?}\n",
+            "  animate: {animate}\n",
+            "  source: {source}\n",
+            "  queue: queue->draw={queue_to_draw:.3} ms tree->draw={tree_to_draw:.3} ms pulse->draw={pulse_to_draw}\n",
+            "  sample: draw->sample={draw_to_sample:.3} ms swap->sample={swap_to_sample:.3} ms\n",
+            "  draw: draw->swap={draw_to_swap:.3} ms present_submit={present_submit:.3} ms"
+        ),
+        backend_label = backend_label,
+        version = version,
+        draw_kind = draw_kind,
+        animate = animate,
+        source = trace_source(Some(trace)),
+        queue_to_draw = queue_to_draw,
+        tree_to_draw = tree_to_draw,
+        pulse_to_draw = pulse_to_draw,
+        draw_to_sample = draw_to_sample,
+        swap_to_sample = swap_to_sample,
+        draw_to_swap = draw_to_swap,
+        present_submit = duration_ms(present_submit),
+    )
+}
+
+fn format_animation_pulse_log(
+    backend_label: &str,
+    version: u64,
+    trace: AnimationPulseTrace,
+    presented_at: std::time::Instant,
+    predicted_next_present_at: std::time::Instant,
+) -> String {
+    let presented_to_predicted =
+        duration_ms(predicted_next_present_at.saturating_duration_since(presented_at));
+    let presented_to_send = signed_instant_delta_ms(trace.sent_at, presented_at);
+    let send_to_predicted = signed_instant_delta_ms(predicted_next_present_at, trace.sent_at);
+
+    format!(
+        concat!(
+            "animation pulse\n",
+            "  backend: {backend_label}\n",
+            "  seq: {sequence}\n",
+            "  submitted_version: {version}\n",
+            "  timing: presented->predicted={presented_to_predicted:.3} ms presented->send={presented_to_send:.3} ms send->predicted={send_to_predicted:.3} ms"
+        ),
+        backend_label = backend_label,
+        sequence = trace.sequence,
+        version = version,
+        presented_to_predicted = presented_to_predicted,
+        presented_to_send = presented_to_send,
+        send_to_predicted = send_to_predicted,
+    )
+}
+
+fn format_animation_frame_callback_log(
+    backend_label: &str,
+    version: u64,
+    callback_time_ms: u32,
+    previous_estimated_interval: Duration,
+    estimated_interval: Duration,
+) -> String {
+    format!(
+        concat!(
+            "animation frame callback\n",
+            "  backend: {backend_label}\n",
+            "  submitted_version: {version}\n",
+            "  callback_time_ms: {callback_time_ms}\n",
+            "  interval: previous_estimate={previous:.3} ms estimate={current:.3} ms"
+        ),
+        backend_label = backend_label,
+        version = version,
+        callback_time_ms = callback_time_ms,
+        previous = duration_ms(previous_estimated_interval),
+        current = duration_ms(estimated_interval),
+    )
 }
 
 impl CompositorHandler for WaylandApp {
@@ -707,9 +1064,33 @@ impl CompositorHandler for WaylandApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _time: u32,
+        time: u32,
     ) {
-        self.present.frame_callback_received();
+        let received_at = std::time::Instant::now();
+        if let Some(submitted_at) = self.pending_pipeline_submitted_at.take()
+            && let Some(stats) = self.stats.as_ref()
+        {
+            stats.record_pipeline(submitted_at, received_at);
+        }
+        if let Some(swap_done_at) = self.pending_pipeline_swap_done_at.take()
+            && let Some(stats) = self.stats.as_ref()
+        {
+            stats.record_pipeline_swap_to_frame_callback(swap_done_at, received_at);
+        }
+        let previous_estimated_interval = self.present.estimated_frame_interval();
+        self.present.frame_callback_received(received_at, time);
+        if self.renderer_stats_log && self.render_state.animate {
+            self.native_log.info(
+                "renderer_animation",
+                format_animation_frame_callback_log(
+                    "wayland",
+                    self.render_state.render_version,
+                    time,
+                    previous_estimated_interval,
+                    self.present.estimated_frame_interval(),
+                ),
+            );
+        }
     }
 
     fn surface_enter(
@@ -1072,6 +1453,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         close_signal_log,
         stats,
         renderer_stats_log,
+        renderer_cache_config,
         native_log,
         render_rx,
         cursor_icon_rx,
@@ -1167,6 +1549,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             close_signal_log,
             stats,
             renderer_stats_log,
+            renderer_cache_config,
             native_log,
             render_rx,
             cursor_icon_rx,
@@ -1213,9 +1596,9 @@ mod tests {
     use crossbeam_channel::bounded;
 
     use super::{
-        PresentState, WaylandVideoImportState, WaylandVideoSyncAction, key_text_commit_event,
-        should_draw_frame, should_reconfigure_surface, try_send_wayland_event,
-        try_send_wayland_tree,
+        DrawDecision, DrawKind, PresentState, WaylandVideoImportState, WaylandVideoSyncAction,
+        frame_draw_decision, key_text_commit_event, should_reconfigure_surface,
+        try_send_wayland_event, try_send_wayland_tree,
     };
     use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
@@ -1246,10 +1629,22 @@ mod tests {
         present.configured = true;
         present.queue_redraw();
 
-        assert!(present.can_draw(false));
-        assert!(!should_draw_frame(&present, false, false));
-        assert!(should_draw_frame(&present, true, false));
-        assert!(!should_draw_frame(&present, true, true));
+        assert_eq!(
+            present.draw_decision(false, false),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+        assert_eq!(
+            frame_draw_decision(&present, false, false, true),
+            DrawDecision::Skip
+        );
+        assert_eq!(
+            frame_draw_decision(&present, true, false, false),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+        assert_eq!(
+            frame_draw_decision(&present, true, true, true),
+            DrawDecision::Skip
+        );
     }
 
     #[test]
@@ -1327,6 +1722,7 @@ mod tests {
                 TreeMsg::AnimationPulse {
                     presented_at: std::time::Instant::now(),
                     predicted_next_present_at: std::time::Instant::now(),
+                    trace: None,
                 },
             );
             let _ = done_tx.send(());
