@@ -5379,6 +5379,8 @@ fn accumulate_subtree_rebuild_local_cached(
     )
 }
 
+// Keep this traversal explicit with the uncached version. A shared visit walker
+// was measured in the registry rebuild benchmarks and regressed full rebuilds.
 fn accumulate_subtree_rebuild_local_cached_uncached(
     tree: &mut ElementTree,
     element: &Element,
@@ -5728,11 +5730,13 @@ fn accumulate_subtree_rebuild_cached(
     drain_deferred_subtrees_cached(tree, acc, deferred, cache_budget);
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn build_registry_rebuild_for_benchmark(tree: &ElementTree) -> RegistryRebuildPayload {
     build_registry_rebuild(tree)
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn build_registry_rebuild_cached_for_benchmark(
     tree: &mut ElementTree,
