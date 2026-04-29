@@ -81,7 +81,9 @@ use native_log::NativeLogRelay;
 use renderer::set_render_log_enabled;
 use renderer::{CleanSubtreeCacheConfig, RendererCacheConfig, clear_global_caches};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
-use stats::{LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot};
+use stats::{
+    LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererTimingMetric,
+};
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
@@ -213,6 +215,8 @@ impl StatsSnapshotNif {
         reset_on_read: bool,
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
+        let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
+
         Self {
             version: 9,
             kind: kind.to_string(),
@@ -228,30 +232,26 @@ impl StatsSnapshotNif {
                 frame_count: snapshot.frame_count,
             },
             timings: StatsTimingSnapshotNif {
-                render: DurationStatsNif::from(snapshot.render.clone()),
-                render_draw: DurationStatsNif::from(snapshot.render_draw.clone()),
-                render_flush: DurationStatsNif::from(snapshot.render_flush.clone()),
-                render_gpu_flush: DurationStatsNif::from(snapshot.render_gpu_flush.clone()),
-                render_submit: DurationStatsNif::from(snapshot.render_submit.clone()),
-                present_submit: DurationStatsNif::from(snapshot.present_submit.clone()),
-                pipeline: DurationStatsNif::from(snapshot.pipeline.clone()),
-                pipeline_submit_to_tree_start: DurationStatsNif::from(
-                    snapshot.pipeline_submit_to_tree_start.clone(),
+                render: timing(RendererTimingMetric::Render),
+                render_draw: timing(RendererTimingMetric::RenderDraw),
+                render_flush: timing(RendererTimingMetric::RenderFlush),
+                render_gpu_flush: timing(RendererTimingMetric::RenderGpuFlush),
+                render_submit: timing(RendererTimingMetric::RenderSubmit),
+                present_submit: timing(RendererTimingMetric::PresentSubmit),
+                pipeline: timing(RendererTimingMetric::Pipeline),
+                pipeline_submit_to_tree_start: timing(
+                    RendererTimingMetric::PipelineSubmitToTreeStart,
                 ),
-                pipeline_tree: DurationStatsNif::from(snapshot.pipeline_tree.clone()),
-                pipeline_render_queue: DurationStatsNif::from(
-                    snapshot.pipeline_render_queue.clone(),
+                pipeline_tree: timing(RendererTimingMetric::PipelineTree),
+                pipeline_render_queue: timing(RendererTimingMetric::PipelineRenderQueue),
+                pipeline_submit_to_swap: timing(RendererTimingMetric::PipelineSubmitToSwap),
+                pipeline_swap_to_frame_callback: timing(
+                    RendererTimingMetric::PipelineSwapToFrameCallback,
                 ),
-                pipeline_submit_to_swap: DurationStatsNif::from(
-                    snapshot.pipeline_submit_to_swap.clone(),
-                ),
-                pipeline_swap_to_frame_callback: DurationStatsNif::from(
-                    snapshot.pipeline_swap_to_frame_callback.clone(),
-                ),
-                layout: DurationStatsNif::from(snapshot.layout.clone()),
-                refresh: DurationStatsNif::from(snapshot.refresh.clone()),
-                event_resolve: DurationStatsNif::from(snapshot.event_resolve.clone()),
-                patch_tree_process: DurationStatsNif::from(snapshot.patch_tree_process.clone()),
+                layout: timing(RendererTimingMetric::Layout),
+                refresh: timing(RendererTimingMetric::Refresh),
+                event_resolve: timing(RendererTimingMetric::EventResolve),
+                patch_tree_process: timing(RendererTimingMetric::PatchTreeProcess),
             },
             counters: StatsCounterSnapshotNif {
                 layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),

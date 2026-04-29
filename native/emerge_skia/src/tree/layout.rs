@@ -4985,7 +4985,9 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::{render_tree_scene, render_tree_scene_cached};
+#[cfg(any(test, feature = "bench-diagnostics"))]
+use super::render::render_tree_scene;
+use super::render::render_tree_scene_cached;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -5012,12 +5014,14 @@ pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     refresh_from_render_output(tree, render_output)
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
     let render_output = render_tree_scene(tree);
     refresh_from_render_output(tree, render_output)
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_render_scene_cached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
     let render_output = render_tree_scene_cached(tree);
@@ -5025,6 +5029,7 @@ pub fn refresh_render_scene_cached_for_benchmark(tree: &mut ElementTree) -> Rend
     render_output.scene
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_render_scene_uncached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
     let render_output = render_tree_scene(tree);
@@ -5052,6 +5057,7 @@ fn refresh_from_render_output(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_reusing_clean_registry_for_benchmark(
     tree: &mut ElementTree,
@@ -5060,6 +5066,7 @@ pub fn refresh_reusing_clean_registry_for_benchmark(
     refresh_reusing_clean_registry(tree, cached_rebuild)
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
     tree: &mut ElementTree,
@@ -5138,6 +5145,7 @@ pub fn layout_and_refresh_default(
     output
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn layout_and_refresh_default_uncached_for_benchmark(
     tree: &mut ElementTree,
@@ -5195,6 +5203,7 @@ pub fn layout_or_refresh_default_with_animation(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
     tree: &mut ElementTree,
@@ -5224,6 +5233,7 @@ pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn layout_and_refresh_prepared_default_uncached_for_benchmark(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -5280,6 +5290,7 @@ pub(crate) fn layout_and_refresh_prepared_default(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn refresh_prepared_default_uncached_for_benchmark(
     tree: &mut ElementTree,
     preparation: FrameAttrsPreparation,
