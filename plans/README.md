@@ -5,20 +5,37 @@ Last updated: 2026-04-29.
 This directory tracks current implementation notes plus the background
 investigations that led to the current native layout and renderer work. Files
 with an `active-` prefix are reserved for currently open implementation slices.
-`active-scroll-viewport-culling-plan.md` is the current active implementation
-plan. `active-render-cache-children-plan.md` is implemented and retained as the
-most recent completed active-plan record until the next cleanup pass.
+There is no open active implementation plan after the release-code-bloat pass.
+`active-release-code-bloat-reduction-plan.md`,
+`active-renderer-instrumentation-refactor-plan.md`,
+`active-scroll-viewport-culling-plan.md`, and
+`active-render-cache-children-plan.md` are implemented and retained as the most
+recent completed active-plan records until the next cleanup pass.
 
 ## Files
 
+### `active-release-code-bloat-reduction-plan.md`
+
+Completed plan for materially reducing default release-code bloat. It accepted
+the benchmark-only `cfg` boundary, stats timing matrix, and renderer-cache
+admission helper, then records rejected benchmark-gated attempts for registry
+traversal dedupe, text edit resolver dedupe, and Elixir child/nearby
+reconciliation dedupe.
+
+### `active-renderer-instrumentation-refactor-plan.md`
+
+Completed plan for reducing renderer release-code bloat by replacing the
+duplicated normal/profiled traversal with one shared draw traversal and
+optional instrumentation. It records the benchmark gate and the deferred
+image/vector/shadow helper follow-up.
+
 ### `active-scroll-viewport-culling-plan.md`
 
-Current active plan for the scroll viewport traversal performance slice.
+Completed scroll viewport traversal performance slice.
 
 It now records the implemented benchmark-first shared viewport participation
-gate for render traversal and event-registry traversal. The remaining active
-work is focused exception auditing, direct regression tests for offscreen
-pointer/focus/text-input behavior, and live-demo validation.
+gate for render traversal and event-registry traversal plus the before/after
+benchmark results.
 
 ### `active-render-cache-children-plan.md`
 

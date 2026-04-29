@@ -1,4 +1,5 @@
 use std::{
+    ops::Index,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -100,12 +101,101 @@ impl LayoutCacheStats {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DurationStatsSnapshot {
     pub count: u64,
     pub avg_ms: f64,
     pub min_ms: f64,
     pub max_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererTimingMetric {
+    Render,
+    RenderDraw,
+    RenderFlush,
+    RenderGpuFlush,
+    RenderSubmit,
+    PresentSubmit,
+    Pipeline,
+    PipelineSubmitToTreeStart,
+    PipelineTree,
+    PipelineRenderQueue,
+    PipelineSubmitToSwap,
+    PipelineSwapToFrameCallback,
+    Layout,
+    Refresh,
+    EventResolve,
+    PatchTreeProcess,
+}
+
+impl RendererTimingMetric {
+    pub const COUNT: usize = 16;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Render,
+        Self::RenderDraw,
+        Self::RenderFlush,
+        Self::RenderGpuFlush,
+        Self::RenderSubmit,
+        Self::PresentSubmit,
+        Self::Pipeline,
+        Self::PipelineSubmitToTreeStart,
+        Self::PipelineTree,
+        Self::PipelineRenderQueue,
+        Self::PipelineSubmitToSwap,
+        Self::PipelineSwapToFrameCallback,
+        Self::Layout,
+        Self::Refresh,
+        Self::EventResolve,
+        Self::PatchTreeProcess,
+    ];
+
+    #[inline]
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::Render => "render",
+            Self::RenderDraw => "render draw",
+            Self::RenderFlush => "render flush",
+            Self::RenderGpuFlush => "render gpu flush",
+            Self::RenderSubmit => "render submit",
+            Self::PresentSubmit => "present submit",
+            Self::Pipeline => "pipeline submit->frame callback",
+            Self::PipelineSubmitToTreeStart => "pipeline submit->tree",
+            Self::PipelineTree => "pipeline tree",
+            Self::PipelineRenderQueue => "pipeline render queue",
+            Self::PipelineSubmitToSwap => "pipeline submit->swap",
+            Self::PipelineSwapToFrameCallback => "pipeline swap->frame callback",
+            Self::Layout => "layout",
+            Self::Refresh => "refresh",
+            Self::EventResolve => "event resolve",
+            Self::PatchTreeProcess => "patch tree actor",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RendererTimingSnapshots {
+    values: [DurationStatsSnapshot; RendererTimingMetric::COUNT],
+}
+
+impl Default for RendererTimingSnapshots {
+    fn default() -> Self {
+        Self {
+            values: [DurationStatsSnapshot::default(); RendererTimingMetric::COUNT],
+        }
+    }
+}
+
+impl Index<RendererTimingMetric> for RendererTimingSnapshots {
+    type Output = DurationStatsSnapshot;
+
+    fn index(&self, metric: RendererTimingMetric) -> &Self::Output {
+        &self.values[metric.index()]
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -115,24 +205,15 @@ pub struct RendererStatsSnapshot {
     pub display_fps: f64,
     pub display_frame_ms: f64,
     pub frame_count: u64,
-    pub render: DurationStatsSnapshot,
-    pub render_draw: DurationStatsSnapshot,
-    pub render_flush: DurationStatsSnapshot,
-    pub render_gpu_flush: DurationStatsSnapshot,
-    pub render_submit: DurationStatsSnapshot,
-    pub present_submit: DurationStatsSnapshot,
-    pub pipeline: DurationStatsSnapshot,
-    pub pipeline_submit_to_tree_start: DurationStatsSnapshot,
-    pub pipeline_tree: DurationStatsSnapshot,
-    pub pipeline_render_queue: DurationStatsSnapshot,
-    pub pipeline_submit_to_swap: DurationStatsSnapshot,
-    pub pipeline_swap_to_frame_callback: DurationStatsSnapshot,
-    pub layout: DurationStatsSnapshot,
-    pub refresh: DurationStatsSnapshot,
-    pub event_resolve: DurationStatsSnapshot,
-    pub patch_tree_process: DurationStatsSnapshot,
+    pub timings: RendererTimingSnapshots,
     pub layout_cache: LayoutCacheStats,
     pub renderer_cache: RendererCacheStatsSnapshot,
+}
+
+impl RendererStatsSnapshot {
+    pub fn timing(&self, metric: RendererTimingMetric) -> &DurationStatsSnapshot {
+        &self.timings[metric]
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -261,26 +342,36 @@ impl DurationStatsWindow {
     }
 }
 
+struct RendererTimingWindows {
+    values: [DurationStatsWindow; RendererTimingMetric::COUNT],
+}
+
+impl Default for RendererTimingWindows {
+    fn default() -> Self {
+        Self {
+            values: std::array::from_fn(|_| DurationStatsWindow::default()),
+        }
+    }
+}
+
+impl RendererTimingWindows {
+    #[inline]
+    fn record(&mut self, metric: RendererTimingMetric, duration: Duration) {
+        self.values[metric.index()].record(duration);
+    }
+
+    fn snapshot(&self) -> RendererTimingSnapshots {
+        RendererTimingSnapshots {
+            values: std::array::from_fn(|index| self.values[index].snapshot()),
+        }
+    }
+}
+
 struct RendererStatsWindow {
     started_at: Instant,
     last_display_interval_ns: Option<u64>,
     frame_count: u64,
-    render: DurationStatsWindow,
-    render_draw: DurationStatsWindow,
-    render_flush: DurationStatsWindow,
-    render_gpu_flush: DurationStatsWindow,
-    render_submit: DurationStatsWindow,
-    present_submit: DurationStatsWindow,
-    pipeline: DurationStatsWindow,
-    pipeline_submit_to_tree_start: DurationStatsWindow,
-    pipeline_tree: DurationStatsWindow,
-    pipeline_render_queue: DurationStatsWindow,
-    pipeline_submit_to_swap: DurationStatsWindow,
-    pipeline_swap_to_frame_callback: DurationStatsWindow,
-    layout: DurationStatsWindow,
-    refresh: DurationStatsWindow,
-    event_resolve: DurationStatsWindow,
-    patch_tree_process: DurationStatsWindow,
+    timings: RendererTimingWindows,
     layout_cache: LayoutCacheStats,
     renderer_cache: RendererCacheStatsWindow,
 }
@@ -291,22 +382,7 @@ impl RendererStatsWindow {
             started_at,
             last_display_interval_ns,
             frame_count: 0,
-            render: DurationStatsWindow::default(),
-            render_draw: DurationStatsWindow::default(),
-            render_flush: DurationStatsWindow::default(),
-            render_gpu_flush: DurationStatsWindow::default(),
-            render_submit: DurationStatsWindow::default(),
-            present_submit: DurationStatsWindow::default(),
-            pipeline: DurationStatsWindow::default(),
-            pipeline_submit_to_tree_start: DurationStatsWindow::default(),
-            pipeline_tree: DurationStatsWindow::default(),
-            pipeline_render_queue: DurationStatsWindow::default(),
-            pipeline_submit_to_swap: DurationStatsWindow::default(),
-            pipeline_swap_to_frame_callback: DurationStatsWindow::default(),
-            layout: DurationStatsWindow::default(),
-            refresh: DurationStatsWindow::default(),
-            event_resolve: DurationStatsWindow::default(),
-            patch_tree_process: DurationStatsWindow::default(),
+            timings: RendererTimingWindows::default(),
             layout_cache: LayoutCacheStats::default(),
             renderer_cache: RendererCacheStatsWindow::default(),
         }
@@ -331,22 +407,7 @@ impl RendererStatsWindow {
                 .map(|ns| ns as f64 / 1_000_000.0)
                 .unwrap_or(0.0),
             frame_count: self.frame_count,
-            render: self.render.snapshot(),
-            render_draw: self.render_draw.snapshot(),
-            render_flush: self.render_flush.snapshot(),
-            render_gpu_flush: self.render_gpu_flush.snapshot(),
-            render_submit: self.render_submit.snapshot(),
-            present_submit: self.present_submit.snapshot(),
-            pipeline: self.pipeline.snapshot(),
-            pipeline_submit_to_tree_start: self.pipeline_submit_to_tree_start.snapshot(),
-            pipeline_tree: self.pipeline_tree.snapshot(),
-            pipeline_render_queue: self.pipeline_render_queue.snapshot(),
-            pipeline_submit_to_swap: self.pipeline_submit_to_swap.snapshot(),
-            pipeline_swap_to_frame_callback: self.pipeline_swap_to_frame_callback.snapshot(),
-            layout: self.layout.snapshot(),
-            refresh: self.refresh.snapshot(),
-            event_resolve: self.event_resolve.snapshot(),
-            patch_tree_process: self.patch_tree_process.snapshot(),
+            timings: self.timings.snapshot(),
             layout_cache: self.layout_cache,
             renderer_cache: self.renderer_cache.snapshot(),
         }
@@ -549,62 +610,31 @@ impl RendererStatsCollector {
     }
 
     pub fn record_render(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.render);
+        self.record_timing(RendererTimingMetric::Render, duration);
     }
 
     pub fn record_render_draw(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.render_draw);
+        self.record_timing(RendererTimingMetric::RenderDraw, duration);
     }
 
     pub fn record_render_flush(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.render_flush);
+        self.record_timing(RendererTimingMetric::RenderFlush, duration);
     }
 
     pub fn record_render_gpu_flush(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.render_gpu_flush);
+        self.record_timing(RendererTimingMetric::RenderGpuFlush, duration);
     }
 
     pub fn record_render_submit(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.render_submit);
+        self.record_timing(RendererTimingMetric::RenderSubmit, duration);
     }
 
     pub fn record_present_submit(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.present_submit);
+        self.record_timing(RendererTimingMetric::PresentSubmit, duration);
     }
 
     pub fn record_pipeline(&self, submitted_at: Instant, presented_at: Instant) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            presented_at.saturating_duration_since(submitted_at),
-            |window| &mut window.pipeline,
-        );
+        self.record_timing_span(RendererTimingMetric::Pipeline, submitted_at, presented_at);
     }
 
     pub fn record_pipeline_submit_to_tree_start(
@@ -612,24 +642,18 @@ impl RendererStatsCollector {
         submitted_at: Instant,
         tree_started_at: Instant,
     ) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            tree_started_at.saturating_duration_since(submitted_at),
-            |window| &mut window.pipeline_submit_to_tree_start,
+        self.record_timing_span(
+            RendererTimingMetric::PipelineSubmitToTreeStart,
+            submitted_at,
+            tree_started_at,
         );
     }
 
     pub fn record_pipeline_tree(&self, tree_started_at: Instant, render_queued_at: Instant) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            render_queued_at.saturating_duration_since(tree_started_at),
-            |window| &mut window.pipeline_tree,
+        self.record_timing_span(
+            RendererTimingMetric::PipelineTree,
+            tree_started_at,
+            render_queued_at,
         );
     }
 
@@ -638,24 +662,18 @@ impl RendererStatsCollector {
         render_queued_at: Instant,
         render_received_at: Instant,
     ) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            render_received_at.saturating_duration_since(render_queued_at),
-            |window| &mut window.pipeline_render_queue,
+        self.record_timing_span(
+            RendererTimingMetric::PipelineRenderQueue,
+            render_queued_at,
+            render_received_at,
         );
     }
 
     pub fn record_pipeline_submit_to_swap(&self, submitted_at: Instant, swap_done_at: Instant) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            swap_done_at.saturating_duration_since(submitted_at),
-            |window| &mut window.pipeline_submit_to_swap,
+        self.record_timing_span(
+            RendererTimingMetric::PipelineSubmitToSwap,
+            submitted_at,
+            swap_done_at,
         );
     }
 
@@ -664,46 +682,27 @@ impl RendererStatsCollector {
         swap_done_at: Instant,
         presented_at: Instant,
     ) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(
-            presented_at.saturating_duration_since(swap_done_at),
-            |window| &mut window.pipeline_swap_to_frame_callback,
+        self.record_timing_span(
+            RendererTimingMetric::PipelineSwapToFrameCallback,
+            swap_done_at,
+            presented_at,
         );
     }
 
     pub fn record_layout(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.layout);
+        self.record_timing(RendererTimingMetric::Layout, duration);
     }
 
     pub fn record_refresh(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.refresh);
+        self.record_timing(RendererTimingMetric::Refresh, duration);
     }
 
     pub fn record_event_resolve(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.event_resolve);
+        self.record_timing(RendererTimingMetric::EventResolve, duration);
     }
 
     pub fn record_patch_tree_process(&self, duration: Duration) {
-        if !self.families.timings {
-            return;
-        }
-
-        self.record_duration(duration, |window| &mut window.patch_tree_process);
+        self.record_timing(RendererTimingMetric::PatchTreeProcess, duration);
     }
 
     pub fn record_layout_cache(&self, stats: LayoutCacheStats) {
@@ -764,20 +763,32 @@ impl RendererStatsCollector {
         *window = RendererStatsWindow::new(now, window.last_display_interval_ns);
     }
 
-    fn record_duration(
-        &self,
-        duration: Duration,
-        metric: impl FnOnce(&mut RendererStatsWindow) -> &mut DurationStatsWindow,
-    ) {
+    #[inline]
+    fn record_timing_span(&self, metric: RendererTimingMetric, start: Instant, end: Instant) {
+        self.record_timing(metric, end.saturating_duration_since(start));
+    }
+
+    #[inline]
+    fn record_timing(&self, metric: RendererTimingMetric, duration: Duration) {
+        if !self.families.timings {
+            return;
+        }
+
         let mut window = self
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        metric(&mut window).record(duration);
+        window.timings.record(metric, duration);
     }
 }
 
 pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSnapshot) -> String {
+    let timing_lines = RendererTimingMetric::ALL
+        .into_iter()
+        .map(|metric| format_duration_stat_line(metric.log_label(), snapshot.timing(metric)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let mut message = format!(
         concat!(
             "renderer stats\n",
@@ -789,21 +800,6 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "    display: {:.1} fps ({:.3} ms/frame)\n",
             "\n",
             "  timings\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
-            "{}\n",
             "{}\n",
             "\n",
             "  layout cache\n",
@@ -817,28 +813,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.fps,
         snapshot.display_fps,
         snapshot.display_frame_ms,
-        format_duration_stat_line("render", &snapshot.render),
-        format_duration_stat_line("render draw", &snapshot.render_draw),
-        format_duration_stat_line("render flush", &snapshot.render_flush),
-        format_duration_stat_line("render gpu flush", &snapshot.render_gpu_flush),
-        format_duration_stat_line("render submit", &snapshot.render_submit),
-        format_duration_stat_line("present submit", &snapshot.present_submit),
-        format_duration_stat_line("pipeline submit->frame callback", &snapshot.pipeline),
-        format_duration_stat_line(
-            "pipeline submit->tree",
-            &snapshot.pipeline_submit_to_tree_start,
-        ),
-        format_duration_stat_line("pipeline tree", &snapshot.pipeline_tree),
-        format_duration_stat_line("pipeline render queue", &snapshot.pipeline_render_queue),
-        format_duration_stat_line("pipeline submit->swap", &snapshot.pipeline_submit_to_swap),
-        format_duration_stat_line(
-            "pipeline swap->frame callback",
-            &snapshot.pipeline_swap_to_frame_callback
-        ),
-        format_duration_stat_line("layout", &snapshot.layout),
-        format_duration_stat_line("refresh", &snapshot.refresh),
-        format_duration_stat_line("event resolve", &snapshot.event_resolve),
-        format_duration_stat_line("patch tree actor", &snapshot.patch_tree_process),
+        timing_lines,
         snapshot.layout_cache.intrinsic_measure_hits,
         snapshot.layout_cache.intrinsic_measure_misses,
         snapshot.layout_cache.intrinsic_measure_stores,
@@ -1262,7 +1237,7 @@ fn duration_ms(duration: Duration) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LayoutCacheStats, RendererStatsCollector, format_renderer_stats_log,
+        LayoutCacheStats, RendererStatsCollector, RendererTimingMetric, format_renderer_stats_log,
         format_slow_present_frame_log, format_slow_render_frame_log, render_frame_has_slow_stage,
     };
     use crate::{
@@ -1366,40 +1341,109 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.frame_count, 2);
         assert_eq!(snapshot.display_frame_ms, 16.0);
-        assert_eq!(snapshot.render.count, 1);
-        assert_eq!(snapshot.render.avg_ms, 4.0);
-        assert_eq!(snapshot.render_draw.count, 1);
-        assert_eq!(snapshot.render_draw.avg_ms, 3.0);
-        assert_eq!(snapshot.render_flush.count, 1);
-        assert_eq!(snapshot.render_flush.avg_ms, 1.0);
-        assert_eq!(snapshot.render_gpu_flush.count, 1);
-        assert_eq!(snapshot.render_gpu_flush.avg_ms, 1.0);
-        assert_eq!(snapshot.render_submit.count, 1);
-        assert_eq!(snapshot.render_submit.avg_ms, 0.0);
-        assert_eq!(snapshot.present_submit.count, 1);
-        assert_eq!(snapshot.present_submit.avg_ms, 1.0);
-        assert_eq!(snapshot.pipeline.count, 1);
-        assert_eq!(snapshot.pipeline.avg_ms, 13.0);
-        assert_eq!(snapshot.pipeline_submit_to_tree_start.count, 1);
-        assert_eq!(snapshot.pipeline_submit_to_tree_start.avg_ms, 1.0);
-        assert_eq!(snapshot.pipeline_tree.count, 1);
-        assert_eq!(snapshot.pipeline_tree.avg_ms, 4.0);
-        assert_eq!(snapshot.pipeline_render_queue.count, 1);
-        assert_eq!(snapshot.pipeline_render_queue.avg_ms, 2.0);
-        assert_eq!(snapshot.pipeline_submit_to_swap.count, 1);
-        assert_eq!(snapshot.pipeline_submit_to_swap.avg_ms, 9.0);
-        assert_eq!(snapshot.pipeline_swap_to_frame_callback.count, 1);
-        assert_eq!(snapshot.pipeline_swap_to_frame_callback.avg_ms, 4.0);
-        assert_eq!(snapshot.layout.count, 2);
-        assert_eq!(snapshot.layout.min_ms, 2.0);
-        assert_eq!(snapshot.layout.max_ms, 6.0);
-        assert_eq!(snapshot.layout.avg_ms, 4.0);
-        assert_eq!(snapshot.refresh.count, 2);
-        assert_eq!(snapshot.refresh.min_ms, 1.0);
-        assert_eq!(snapshot.refresh.max_ms, 3.0);
-        assert_eq!(snapshot.refresh.avg_ms, 2.0);
-        assert_eq!(snapshot.event_resolve.count, 1);
-        assert_eq!(snapshot.patch_tree_process.count, 1);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Render).count, 1);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Render).avg_ms, 4.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::RenderDraw).count, 1);
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::RenderDraw).avg_ms,
+            3.0
+        );
+        assert_eq!(snapshot.timing(RendererTimingMetric::RenderFlush).count, 1);
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::RenderFlush).avg_ms,
+            1.0
+        );
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::RenderGpuFlush).count,
+            1
+        );
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::RenderGpuFlush).avg_ms,
+            1.0
+        );
+        assert_eq!(snapshot.timing(RendererTimingMetric::RenderSubmit).count, 1);
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::RenderSubmit).avg_ms,
+            0.0
+        );
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::PresentSubmit).count,
+            1
+        );
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::PresentSubmit).avg_ms,
+            1.0
+        );
+        assert_eq!(snapshot.timing(RendererTimingMetric::Pipeline).count, 1);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Pipeline).avg_ms, 13.0);
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToTreeStart)
+                .count,
+            1
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToTreeStart)
+                .avg_ms,
+            1.0
+        );
+        assert_eq!(snapshot.timing(RendererTimingMetric::PipelineTree).count, 1);
+        assert_eq!(
+            snapshot.timing(RendererTimingMetric::PipelineTree).avg_ms,
+            4.0
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineRenderQueue)
+                .count,
+            1
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineRenderQueue)
+                .avg_ms,
+            2.0
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToSwap)
+                .count,
+            1
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToSwap)
+                .avg_ms,
+            9.0
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSwapToFrameCallback)
+                .count,
+            1
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PipelineSwapToFrameCallback)
+                .avg_ms,
+            4.0
+        );
+        assert_eq!(snapshot.timing(RendererTimingMetric::Layout).count, 2);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Layout).min_ms, 2.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Layout).max_ms, 6.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Layout).avg_ms, 4.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Refresh).count, 2);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Refresh).min_ms, 1.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Refresh).max_ms, 3.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::Refresh).avg_ms, 2.0);
+        assert_eq!(snapshot.timing(RendererTimingMetric::EventResolve).count, 1);
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::PatchTreeProcess)
+                .count,
+            1
+        );
         assert_eq!(snapshot.layout_cache.resolve_hits, 5);
         assert_eq!(snapshot.layout_cache.subtree_measure_hits, 3);
         assert_eq!(snapshot.renderer_cache.noop.candidates, 2);
@@ -1433,22 +1477,88 @@ mod tests {
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
         assert_eq!(reset_snapshot.display_frame_ms, 16.0);
-        assert_eq!(reset_snapshot.render.count, 0);
-        assert_eq!(reset_snapshot.render_draw.count, 0);
-        assert_eq!(reset_snapshot.render_flush.count, 0);
-        assert_eq!(reset_snapshot.render_gpu_flush.count, 0);
-        assert_eq!(reset_snapshot.render_submit.count, 0);
-        assert_eq!(reset_snapshot.present_submit.count, 0);
-        assert_eq!(reset_snapshot.pipeline.count, 0);
-        assert_eq!(reset_snapshot.pipeline_submit_to_tree_start.count, 0);
-        assert_eq!(reset_snapshot.pipeline_tree.count, 0);
-        assert_eq!(reset_snapshot.pipeline_render_queue.count, 0);
-        assert_eq!(reset_snapshot.pipeline_submit_to_swap.count, 0);
-        assert_eq!(reset_snapshot.pipeline_swap_to_frame_callback.count, 0);
-        assert_eq!(reset_snapshot.layout.count, 0);
-        assert_eq!(reset_snapshot.refresh.count, 0);
-        assert_eq!(reset_snapshot.event_resolve.count, 0);
-        assert_eq!(reset_snapshot.patch_tree_process.count, 0);
+        assert_eq!(reset_snapshot.timing(RendererTimingMetric::Render).count, 0);
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::RenderDraw)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::RenderFlush)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::RenderGpuFlush)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::RenderSubmit)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PresentSubmit)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot.timing(RendererTimingMetric::Pipeline).count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToTreeStart)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PipelineTree)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PipelineRenderQueue)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PipelineSubmitToSwap)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PipelineSwapToFrameCallback)
+                .count,
+            0
+        );
+        assert_eq!(reset_snapshot.timing(RendererTimingMetric::Layout).count, 0);
+        assert_eq!(
+            reset_snapshot.timing(RendererTimingMetric::Refresh).count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::EventResolve)
+                .count,
+            0
+        );
+        assert_eq!(
+            reset_snapshot
+                .timing(RendererTimingMetric::PatchTreeProcess)
+                .count,
+            0
+        );
         assert_eq!(reset_snapshot.layout_cache.resolve_hits, 0);
         assert_eq!(reset_snapshot.renderer_cache.noop.candidates, 0);
         assert_eq!(reset_snapshot.renderer_cache.clean_subtree.candidates, 0);

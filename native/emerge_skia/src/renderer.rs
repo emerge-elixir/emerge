@@ -1696,32 +1696,7 @@ impl RendererCacheManager {
         bytes: u64,
         prepare_time: Duration,
     ) -> Result<(), CleanSubtreeStoreRejection> {
-        if bytes > self.clean_subtree.max_entry_bytes {
-            frame.record_rejection(
-                RendererCacheKind::CleanSubtree,
-                RendererCacheRejectionReason::OversizedEntry,
-            );
-            return Err(CleanSubtreeStoreRejection::OversizedEntry);
-        }
-
-        let visible_count = self
-            .clean_subtree
-            .visible_accesses
-            .get(&key)
-            .map(|access| access.visible_count)
-            .unwrap_or(0);
-        if visible_count < self.clean_subtree.min_visible_before_store {
-            frame.record_rejection(
-                RendererCacheKind::CleanSubtree,
-                RendererCacheRejectionReason::AdmissionThreshold,
-            );
-            return Err(CleanSubtreeStoreRejection::AdmissionThreshold);
-        }
-
-        frame.admit_candidate(RendererCacheKind::CleanSubtree);
-        if !frame.try_consume_new_payload_budget(RendererCacheKind::CleanSubtree) {
-            return Err(CleanSubtreeStoreRejection::PayloadBudget);
-        }
+        self.try_admit_clean_subtree_store(frame, key, bytes)?;
 
         let evicted = self
             .clean_subtree
@@ -1748,32 +1723,7 @@ impl RendererCacheManager {
         image: Image,
         prepare_time: Duration,
     ) -> Result<(), CleanSubtreeStoreRejection> {
-        if bytes > self.clean_subtree.max_entry_bytes {
-            frame.record_rejection(
-                RendererCacheKind::CleanSubtree,
-                RendererCacheRejectionReason::OversizedEntry,
-            );
-            return Err(CleanSubtreeStoreRejection::OversizedEntry);
-        }
-
-        let visible_count = self
-            .clean_subtree
-            .visible_accesses
-            .get(&key)
-            .map(|access| access.visible_count)
-            .unwrap_or(0);
-        if visible_count < self.clean_subtree.min_visible_before_store {
-            frame.record_rejection(
-                RendererCacheKind::CleanSubtree,
-                RendererCacheRejectionReason::AdmissionThreshold,
-            );
-            return Err(CleanSubtreeStoreRejection::AdmissionThreshold);
-        }
-
-        frame.admit_candidate(RendererCacheKind::CleanSubtree);
-        if !frame.try_consume_new_payload_budget(RendererCacheKind::CleanSubtree) {
-            return Err(CleanSubtreeStoreRejection::PayloadBudget);
-        }
+        self.try_admit_clean_subtree_store(frame, key, bytes)?;
 
         let evicted = self.clean_subtree.try_store_payload(
             key,
@@ -1797,6 +1747,16 @@ impl RendererCacheManager {
 
     pub fn reserve_clean_subtree_payload_store(
         &mut self,
+        frame: &mut RendererCacheFrame,
+        key: CleanSubtreeContentKey,
+        bytes: u64,
+    ) -> Result<(), CleanSubtreeStoreRejection> {
+        self.try_admit_clean_subtree_store(frame, key, bytes)
+    }
+
+    #[inline(always)]
+    fn try_admit_clean_subtree_store(
+        &self,
         frame: &mut RendererCacheFrame,
         key: CleanSubtreeContentKey,
         bytes: u64,
@@ -2046,6 +2006,98 @@ impl<'a> RenderTraversalOptions<'a> {
     }
 }
 
+enum DrawDurationKind {
+    Clips,
+    RelaxedClips,
+    Transforms,
+    Alphas,
+}
+
+trait DrawInstrumentation {
+    const ENABLED: bool;
+
+    fn record_clear(&mut self, _duration: Duration) {}
+    fn record_clip_scope(&mut self, _relaxed: bool, _clips: &[ClipShape]) {}
+    fn record_shadow_escape_reapplication(&mut self) {}
+    fn record_duration(&mut self, _kind: DrawDurationKind, _duration: Duration) {}
+    fn record_alpha_layer(&mut self, _children: usize) {}
+    fn record_primitive_duration(&mut self, _primitive: &DrawPrimitive, _duration: Duration) {}
+    fn record_shadow_profile(&mut self, _profile: RenderShadowDrawProfile) {}
+    fn record_image_profile(&mut self, _profile: RenderImageDrawProfile) {}
+}
+
+struct NoDrawInstrumentation;
+
+impl DrawInstrumentation for NoDrawInstrumentation {
+    const ENABLED: bool = false;
+}
+
+struct TimingDrawInstrumentation<'a> {
+    detail: &'a mut RenderDrawTimings,
+}
+
+impl DrawInstrumentation for TimingDrawInstrumentation<'_> {
+    const ENABLED: bool = true;
+
+    fn record_clear(&mut self, duration: Duration) {
+        self.detail.clear += duration;
+    }
+
+    fn record_clip_scope(&mut self, relaxed: bool, clips: &[ClipShape]) {
+        self.detail.clip_detail.record_clip_scope(relaxed, clips);
+    }
+
+    fn record_shadow_escape_reapplication(&mut self) {
+        self.detail.clip_detail.record_shadow_escape_reapplication();
+    }
+
+    fn record_duration(&mut self, kind: DrawDurationKind, duration: Duration) {
+        match kind {
+            DrawDurationKind::Clips => self.detail.clips += duration,
+            DrawDurationKind::RelaxedClips => self.detail.relaxed_clips += duration,
+            DrawDurationKind::Transforms => self.detail.transforms += duration,
+            DrawDurationKind::Alphas => self.detail.alphas += duration,
+        }
+    }
+
+    fn record_alpha_layer(&mut self, children: usize) {
+        self.detail.layer_detail.record_alpha_layer(children);
+    }
+
+    fn record_primitive_duration(&mut self, primitive: &DrawPrimitive, duration: Duration) {
+        self.detail.record_primitive(primitive, duration);
+    }
+
+    fn record_shadow_profile(&mut self, profile: RenderShadowDrawProfile) {
+        self.detail.shadows += profile.total;
+        self.detail.shadow_details.push(profile);
+    }
+
+    fn record_image_profile(&mut self, profile: RenderImageDrawProfile) {
+        self.detail.images += profile.total;
+        if profile.tint_layer_used {
+            self.detail
+                .layer_detail
+                .record_tinted_image_layer(profile.draw_width, profile.draw_height);
+        }
+        self.detail.image_details.push(profile);
+    }
+}
+
+fn measure_draw<I: DrawInstrumentation>(
+    instrumentation: &mut I,
+    kind: DrawDurationKind,
+    draw: impl FnOnce(),
+) {
+    if I::ENABLED {
+        let started_at = Instant::now();
+        draw();
+        instrumentation.record_duration(kind, started_at.elapsed());
+    } else {
+        draw();
+    }
+}
+
 struct RenderCacheTracking<'a> {
     renderer_cache: &'a mut RendererCacheManager,
     frame: &'a mut RendererCacheFrame,
@@ -2153,19 +2205,26 @@ impl SceneRenderer {
                 let mut detail = RenderDrawTimings::default();
                 let clear_started_at = Instant::now();
                 canvas.clear(state.clear_color);
-                detail.clear = clear_started_at.elapsed();
-                Self::render_nodes_profiled(
+                let mut instrumentation = TimingDrawInstrumentation {
+                    detail: &mut detail,
+                };
+                instrumentation.record_clear(clear_started_at.elapsed());
+                Self::render_nodes(
                     canvas,
                     &state.scene.nodes,
-                    &self.video_state,
-                    0.0,
-                    true,
-                    &mut detail,
+                    RenderTraversalOptions::unclipped(&self.video_state),
+                    &mut instrumentation,
                 );
                 Some(detail)
             } else {
                 canvas.clear(state.clear_color);
-                Self::render_nodes(canvas, &state.scene.nodes, &self.video_state, 0.0, true);
+                let mut instrumentation = NoDrawInstrumentation;
+                Self::render_nodes(
+                    canvas,
+                    &state.scene.nodes,
+                    RenderTraversalOptions::unclipped(&self.video_state),
+                    &mut instrumentation,
+                );
                 None
             };
 
@@ -2187,7 +2246,10 @@ impl SceneRenderer {
             let mut detail = RenderDrawTimings::default();
             let clear_started_at = Instant::now();
             canvas.clear(state.clear_color);
-            detail.clear = clear_started_at.elapsed();
+            let mut instrumentation = TimingDrawInstrumentation {
+                detail: &mut detail,
+            };
+            instrumentation.record_clear(clear_started_at.elapsed());
 
             let mut cache_frame = self.renderer_cache.begin_frame();
             let options = RenderTraversalOptions::unclipped(&self.video_state);
@@ -2202,6 +2264,7 @@ impl SceneRenderer {
                 options,
                 &mut cache_tracking,
                 CacheCandidateEligibility::root(),
+                &mut instrumentation,
             );
 
             let stats = self.renderer_cache.end_frame(cache_frame);
@@ -2210,6 +2273,7 @@ impl SceneRenderer {
             (Some(detail), renderer_cache)
         } else {
             canvas.clear(state.clear_color);
+            let mut instrumentation = NoDrawInstrumentation;
 
             let mut cache_frame = self.renderer_cache.begin_frame();
             let options = RenderTraversalOptions::unclipped(&self.video_state);
@@ -2224,6 +2288,7 @@ impl SceneRenderer {
                 options,
                 &mut cache_tracking,
                 CacheCandidateEligibility::root(),
+                &mut instrumentation,
             );
             let stats = self.renderer_cache.end_frame(cache_frame);
             let renderer_cache = (!stats.is_empty()).then(|| Box::new(stats));
@@ -2245,12 +2310,13 @@ impl SceneRenderer {
         }
     }
 
-    fn render_nodes_with_cache_tracking(
+    fn render_nodes_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         for node in nodes {
             match node {
@@ -2260,6 +2326,7 @@ impl SceneRenderer {
                     options,
                     cache_tracking,
                     eligibility,
+                    instrumentation,
                 ),
                 RenderNode::Clip { clips, children } => Self::render_clip_node_with_cache_tracking(
                     canvas,
@@ -2268,6 +2335,7 @@ impl SceneRenderer {
                     options,
                     cache_tracking,
                     eligibility,
+                    instrumentation,
                 ),
                 RenderNode::RelaxedClip { clips, children } => {
                     Self::render_relaxed_clip_node_with_cache_tracking(
@@ -2277,6 +2345,7 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     )
                 }
                 RenderNode::Transform {
@@ -2289,6 +2358,7 @@ impl SceneRenderer {
                     options,
                     cache_tracking,
                     eligibility,
+                    instrumentation,
                 ),
                 RenderNode::Alpha { alpha, children } => {
                     Self::render_alpha_node_with_cache_tracking(
@@ -2298,6 +2368,7 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     )
                 }
                 RenderNode::CacheCandidate(candidate) => {
@@ -2307,25 +2378,23 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                 }
-                RenderNode::Primitive(primitive) => Self::render_primitive(
-                    canvas,
-                    primitive,
-                    options.video_state,
-                    options.image_bleed_device_outset,
-                    options.solid_border_fast_paths,
-                ),
+                RenderNode::Primitive(primitive) => {
+                    Self::render_primitive_instrumented(canvas, primitive, options, instrumentation)
+                }
             }
         }
     }
 
-    fn render_clean_subtree_cache_candidate(
+    fn render_clean_subtree_cache_candidate<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         candidate: &RenderCacheCandidate,
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         match candidate.kind {
             RenderCacheCandidateKind::CleanSubtree => {
@@ -2359,6 +2428,7 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                     return;
                 }
@@ -2398,6 +2468,7 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                     return;
                 }
@@ -2413,6 +2484,7 @@ impl SceneRenderer {
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                     return;
                 };
@@ -2477,6 +2549,7 @@ impl SceneRenderer {
                     options,
                     cache_tracking,
                     eligibility,
+                    instrumentation,
                 );
             }
         }
@@ -2559,13 +2632,8 @@ impl SceneRenderer {
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
         canvas.translate((-candidate.bounds.x, -candidate.bounds.y));
-        Self::render_nodes(
-            canvas,
-            &candidate.children,
-            options.video_state,
-            options.image_bleed_device_outset,
-            options.solid_border_fast_paths,
-        );
+        let mut instrumentation = NoDrawInstrumentation;
+        Self::render_nodes(canvas, &candidate.children, options, &mut instrumentation);
         canvas.restore();
         let image = surface.image_snapshot();
 
@@ -2594,13 +2662,8 @@ impl SceneRenderer {
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
         canvas.translate((-candidate.bounds.x, -candidate.bounds.y));
-        Self::render_nodes(
-            canvas,
-            &candidate.children,
-            options.video_state,
-            options.image_bleed_device_outset,
-            options.solid_border_fast_paths,
-        );
+        let mut instrumentation = NoDrawInstrumentation;
+        Self::render_nodes(canvas, &candidate.children, options, &mut instrumentation);
         canvas.restore();
         let image = surface.image_snapshot();
 
@@ -2612,36 +2675,26 @@ impl SceneRenderer {
         })
     }
 
-    fn render_nodes(
+    fn render_nodes<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
         for node in nodes {
             match node {
-                RenderNode::ShadowPass { children } => Self::render_nodes(
-                    canvas,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                ),
-                RenderNode::Clip { clips, children } => Self::render_clip_node(
-                    canvas,
-                    clips,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                ),
+                RenderNode::ShadowPass { children } => {
+                    Self::render_nodes(canvas, children, options, instrumentation)
+                }
+                RenderNode::Clip { clips, children } => {
+                    Self::render_clip_node(canvas, clips, children, options, instrumentation)
+                }
                 RenderNode::RelaxedClip { clips, children } => Self::render_relaxed_clip_node(
                     canvas,
                     clips,
                     children,
-                    video_state,
-                    solid_border_fast_paths,
+                    options,
+                    instrumentation,
                 ),
                 RenderNode::Transform {
                     transform,
@@ -2650,452 +2703,48 @@ impl SceneRenderer {
                     canvas,
                     *transform,
                     children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
+                    options,
+                    instrumentation,
                 ),
-                RenderNode::Alpha { alpha, children } => Self::render_alpha_node(
-                    canvas,
-                    *alpha,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                ),
-                RenderNode::CacheCandidate(candidate) => Self::render_nodes(
-                    canvas,
-                    &candidate.children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                ),
-                RenderNode::Primitive(primitive) => Self::render_primitive(
-                    canvas,
-                    primitive,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                ),
-            }
-        }
-    }
-
-    fn render_nodes_profiled(
-        canvas: &skia_safe::Canvas,
-        nodes: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
-        draw_detail: &mut RenderDrawTimings,
-    ) {
-        for node in nodes {
-            match node {
-                RenderNode::ShadowPass { children } => Self::render_nodes_profiled(
-                    canvas,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                    draw_detail,
-                ),
-                RenderNode::Clip { clips, children } => Self::render_clip_node_profiled(
-                    canvas,
-                    clips,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                    draw_detail,
-                ),
-                RenderNode::RelaxedClip { clips, children } => {
-                    Self::render_relaxed_clip_node_profiled(
-                        canvas,
-                        clips,
-                        children,
-                        video_state,
-                        solid_border_fast_paths,
-                        draw_detail,
-                    )
+                RenderNode::Alpha { alpha, children } => {
+                    Self::render_alpha_node(canvas, *alpha, children, options, instrumentation)
                 }
-                RenderNode::Transform {
-                    transform,
-                    children,
-                } => Self::render_transform_node_profiled(
-                    canvas,
-                    *transform,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                    draw_detail,
-                ),
-                RenderNode::Alpha { alpha, children } => Self::render_alpha_node_profiled(
-                    canvas,
-                    *alpha,
-                    children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                    draw_detail,
-                ),
-                RenderNode::CacheCandidate(candidate) => Self::render_nodes_profiled(
-                    canvas,
-                    &candidate.children,
-                    video_state,
-                    image_bleed_device_outset,
-                    solid_border_fast_paths,
-                    draw_detail,
-                ),
-                RenderNode::Primitive(primitive) => match primitive {
-                    DrawPrimitive::Shadow(
-                        x,
-                        y,
-                        w,
-                        h,
-                        offset_x,
-                        offset_y,
-                        blur,
-                        size,
-                        radius,
-                        color,
-                    ) => {
-                        let profile = draw_outer_shadow_profiled(
-                            canvas,
-                            ShadowDrawSpec {
-                                rect: RectSpec {
-                                    x: *x,
-                                    y: *y,
-                                    w: *w,
-                                    h: *h,
-                                },
-                                offset_x: *offset_x,
-                                offset_y: *offset_y,
-                                blur: *blur,
-                                size: *size,
-                                radius: *radius,
-                                color: *color,
-                            },
-                        );
-                        draw_detail.shadows += profile.total;
-                        draw_detail.shadow_details.push(profile);
-                    }
-                    DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
-                        let profile = draw_cached_asset_with_fit_profiled(
-                            canvas,
-                            ImageDrawSpec {
-                                rect: RectSpec {
-                                    x: *x,
-                                    y: *y,
-                                    w: *w,
-                                    h: *h,
-                                },
-                                image_id,
-                                fit: *fit,
-                                svg_tint: *svg_tint,
-                            },
-                            image_bleed_device_outset,
-                        );
-                        draw_detail.images += profile.total;
-                        if profile.tint_layer_used {
-                            draw_detail
-                                .layer_detail
-                                .record_tinted_image_layer(profile.draw_width, profile.draw_height);
-                        }
-                        draw_detail.image_details.push(profile);
-                    }
-                    _ => {
-                        let started_at = Instant::now();
-                        Self::render_primitive(
-                            canvas,
-                            primitive,
-                            video_state,
-                            image_bleed_device_outset,
-                            solid_border_fast_paths,
-                        );
-                        draw_detail.record_primitive(primitive, started_at.elapsed());
-                    }
-                },
+                RenderNode::CacheCandidate(candidate) => {
+                    Self::render_nodes(canvas, &candidate.children, options, instrumentation)
+                }
+                RenderNode::Primitive(primitive) => {
+                    Self::render_primitive_instrumented(canvas, primitive, options, instrumentation)
+                }
             }
         }
     }
 
+    #[cfg(any(test, feature = "bench-diagnostics"))]
     #[doc(hidden)]
     pub fn render_nodes_for_cache_candidate_benchmark(
         canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
     ) {
-        Self::render_nodes(canvas, nodes, &RendererVideoState::default(), 0.0, true);
+        let video_state = RendererVideoState::default();
+        let options = RenderTraversalOptions::unclipped(&video_state);
+        let mut instrumentation = NoDrawInstrumentation;
+        Self::render_nodes(canvas, nodes, options, &mut instrumentation);
     }
 
-    fn render_clip_node_profiled(
-        canvas: &skia_safe::Canvas,
-        clips: &[ClipShape],
-        children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
-        draw_detail: &mut RenderDrawTimings,
-    ) {
-        if children.is_empty() {
-            return;
-        }
-
-        draw_detail.clip_detail.record_clip_scope(false, clips);
-
-        if clips.is_empty() {
-            Self::render_nodes_profiled(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-                draw_detail,
-            );
-            return;
-        }
-
-        let clip_started_at = Instant::now();
-        canvas.save();
-        for clip in clips {
-            apply_clip_shape(canvas, clip);
-        }
-        draw_detail.clips += clip_started_at.elapsed();
-
-        for child in children {
-            match child {
-                RenderNode::ShadowPass { children } => {
-                    draw_detail.clip_detail.record_shadow_escape_reapplication();
-
-                    let clip_started_at = Instant::now();
-                    canvas.restore();
-                    draw_detail.clips += clip_started_at.elapsed();
-
-                    Self::render_nodes_profiled(
-                        canvas,
-                        children,
-                        video_state,
-                        image_bleed_device_outset,
-                        solid_border_fast_paths,
-                        draw_detail,
-                    );
-
-                    let clip_started_at = Instant::now();
-                    canvas.save();
-                    for clip in clips {
-                        apply_clip_shape(canvas, clip);
-                    }
-                    draw_detail.clips += clip_started_at.elapsed();
-                }
-                _ => {
-                    Self::render_nodes_profiled(
-                        canvas,
-                        std::slice::from_ref(child),
-                        video_state,
-                        image_bleed_device_outset,
-                        false,
-                        draw_detail,
-                    );
-                }
-            }
-        }
-
-        let clip_started_at = Instant::now();
-        canvas.restore();
-        draw_detail.clips += clip_started_at.elapsed();
-    }
-
-    fn render_relaxed_clip_node_profiled(
-        canvas: &skia_safe::Canvas,
-        clips: &[ClipShape],
-        children: &[RenderNode],
-        video_state: &RendererVideoState,
-        solid_border_fast_paths: bool,
-        draw_detail: &mut RenderDrawTimings,
-    ) {
-        if children.is_empty() {
-            return;
-        }
-
-        draw_detail.clip_detail.record_clip_scope(true, clips);
-
-        if clips.is_empty() {
-            Self::render_nodes_profiled(
-                canvas,
-                children,
-                video_state,
-                RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                solid_border_fast_paths,
-                draw_detail,
-            );
-            return;
-        }
-
-        let clip_started_at = Instant::now();
-        canvas.save();
-        for clip in clips {
-            apply_relaxed_clip_shape(canvas, clip);
-        }
-        draw_detail.relaxed_clips += clip_started_at.elapsed();
-
-        for child in children {
-            match child {
-                RenderNode::ShadowPass { children } => {
-                    draw_detail.clip_detail.record_shadow_escape_reapplication();
-
-                    let clip_started_at = Instant::now();
-                    canvas.restore();
-                    draw_detail.relaxed_clips += clip_started_at.elapsed();
-
-                    Self::render_nodes_profiled(
-                        canvas,
-                        children,
-                        video_state,
-                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                        solid_border_fast_paths,
-                        draw_detail,
-                    );
-
-                    let clip_started_at = Instant::now();
-                    canvas.save();
-                    for clip in clips {
-                        apply_relaxed_clip_shape(canvas, clip);
-                    }
-                    draw_detail.relaxed_clips += clip_started_at.elapsed();
-                }
-                _ => {
-                    Self::render_nodes_profiled(
-                        canvas,
-                        std::slice::from_ref(child),
-                        video_state,
-                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                        false,
-                        draw_detail,
-                    );
-                }
-            }
-        }
-
-        let clip_started_at = Instant::now();
-        canvas.restore();
-        draw_detail.relaxed_clips += clip_started_at.elapsed();
-    }
-
-    fn render_transform_node_profiled(
-        canvas: &skia_safe::Canvas,
-        transform: Affine2,
-        children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
-        draw_detail: &mut RenderDrawTimings,
-    ) {
-        if children.is_empty() {
-            return;
-        }
-
-        if transform.is_identity() {
-            Self::render_nodes_profiled(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-                draw_detail,
-            );
-            return;
-        }
-
-        let transform_started_at = Instant::now();
-        canvas.save();
-        let matrix = matrix_from_affine2(transform);
-        canvas.concat(&matrix);
-        draw_detail.transforms += transform_started_at.elapsed();
-
-        Self::render_nodes_profiled(
-            canvas,
-            children,
-            video_state,
-            image_bleed_device_outset,
-            solid_border_fast_paths,
-            draw_detail,
-        );
-
-        let transform_started_at = Instant::now();
-        canvas.restore();
-        draw_detail.transforms += transform_started_at.elapsed();
-    }
-
-    fn render_alpha_node_profiled(
-        canvas: &skia_safe::Canvas,
-        alpha: f32,
-        children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
-        draw_detail: &mut RenderDrawTimings,
-    ) {
-        if children.is_empty() {
-            return;
-        }
-
-        if alpha >= 1.0 {
-            Self::render_nodes_profiled(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-                draw_detail,
-            );
-            return;
-        }
-
-        let clamped = alpha.clamp(0.0, 1.0);
-        let alpha_u8 = (clamped * 255.0).round() as u8;
-
-        if let [RenderNode::Primitive(primitive)] = children
-            && {
-                let started_at = Instant::now();
-                let rendered = Self::render_primitive_with_alpha(canvas, primitive, clamped);
-                if rendered {
-                    draw_detail.record_primitive(primitive, started_at.elapsed());
-                }
-                rendered
-            }
-        {
-            return;
-        }
-
-        let alpha_started_at = Instant::now();
-        draw_detail.layer_detail.record_alpha_layer(children.len());
-        canvas.save_layer_alpha(None, alpha_u8.into());
-        draw_detail.alphas += alpha_started_at.elapsed();
-
-        Self::render_nodes_profiled(
-            canvas,
-            children,
-            video_state,
-            image_bleed_device_outset,
-            solid_border_fast_paths,
-            draw_detail,
-        );
-
-        let alpha_started_at = Instant::now();
-        canvas.restore();
-        draw_detail.alphas += alpha_started_at.elapsed();
-    }
-
-    fn render_clip_node_with_cache_tracking(
+    fn render_clip_node_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         clips: &[ClipShape],
         children: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
         }
+
+        instrumentation.record_clip_scope(false, clips);
 
         if clips.is_empty() {
             Self::render_nodes_with_cache_tracking(
@@ -3104,29 +2753,38 @@ impl SceneRenderer {
                 options,
                 cache_tracking,
                 eligibility,
+                instrumentation,
             );
             return;
         }
 
-        canvas.save();
-        for clip in clips {
-            apply_clip_shape(canvas, clip);
-        }
+        measure_draw(instrumentation, DrawDurationKind::Clips, || {
+            canvas.save();
+            for clip in clips {
+                apply_clip_shape(canvas, clip);
+            }
+        });
         for child in children {
             match child {
                 RenderNode::ShadowPass { children } => {
-                    canvas.restore();
+                    instrumentation.record_shadow_escape_reapplication();
+                    measure_draw(instrumentation, DrawDurationKind::Clips, || {
+                        canvas.restore();
+                    });
                     Self::render_nodes_with_cache_tracking(
                         canvas,
                         children,
                         options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
-                    canvas.save();
-                    for clip in clips {
-                        apply_clip_shape(canvas, clip);
-                    }
+                    measure_draw(instrumentation, DrawDurationKind::Clips, || {
+                        canvas.save();
+                        for clip in clips {
+                            apply_clip_shape(canvas, clip);
+                        }
+                    });
                 }
                 _ => {
                     Self::render_nodes_with_cache_tracking(
@@ -3135,20 +2793,24 @@ impl SceneRenderer {
                         options.with_solid_border_fast_paths(false),
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                 }
             }
         }
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::Clips, || {
+            canvas.restore();
+        });
     }
 
-    fn render_relaxed_clip_node_with_cache_tracking(
+    fn render_relaxed_clip_node_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         clips: &[ClipShape],
         children: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
@@ -3156,6 +2818,7 @@ impl SceneRenderer {
 
         let relaxed_options =
             options.with_image_bleed_device_outset(RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET);
+        instrumentation.record_clip_scope(true, clips);
         if clips.is_empty() {
             Self::render_nodes_with_cache_tracking(
                 canvas,
@@ -3163,29 +2826,38 @@ impl SceneRenderer {
                 relaxed_options,
                 cache_tracking,
                 eligibility,
+                instrumentation,
             );
             return;
         }
 
-        canvas.save();
-        for clip in clips {
-            apply_relaxed_clip_shape(canvas, clip);
-        }
+        measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+            canvas.save();
+            for clip in clips {
+                apply_relaxed_clip_shape(canvas, clip);
+            }
+        });
         for child in children {
             match child {
                 RenderNode::ShadowPass { children } => {
-                    canvas.restore();
+                    instrumentation.record_shadow_escape_reapplication();
+                    measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+                        canvas.restore();
+                    });
                     Self::render_nodes_with_cache_tracking(
                         canvas,
                         children,
                         relaxed_options,
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
-                    canvas.save();
-                    for clip in clips {
-                        apply_relaxed_clip_shape(canvas, clip);
-                    }
+                    measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+                        canvas.save();
+                        for clip in clips {
+                            apply_relaxed_clip_shape(canvas, clip);
+                        }
+                    });
                 }
                 _ => {
                     Self::render_nodes_with_cache_tracking(
@@ -3194,20 +2866,24 @@ impl SceneRenderer {
                         relaxed_options.with_solid_border_fast_paths(false),
                         cache_tracking,
                         eligibility,
+                        instrumentation,
                     );
                 }
             }
         }
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+            canvas.restore();
+        });
     }
 
-    fn render_transform_node_with_cache_tracking(
+    fn render_transform_node_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         transform: Affine2,
         children: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
@@ -3221,30 +2897,37 @@ impl SceneRenderer {
                 options,
                 cache_tracking,
                 next_eligibility,
+                instrumentation,
             );
             return;
         }
 
-        canvas.save();
-        let matrix = matrix_from_affine2(transform);
-        canvas.concat(&matrix);
+        measure_draw(instrumentation, DrawDurationKind::Transforms, || {
+            canvas.save();
+            let matrix = matrix_from_affine2(transform);
+            canvas.concat(&matrix);
+        });
         Self::render_nodes_with_cache_tracking(
             canvas,
             children,
             options,
             cache_tracking,
             next_eligibility,
+            instrumentation,
         );
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::Transforms, || {
+            canvas.restore();
+        });
     }
 
-    fn render_alpha_node_with_cache_tracking(
+    fn render_alpha_node_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         alpha: f32,
         children: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         cache_tracking: &mut RenderCacheTracking<'_>,
         eligibility: CacheCandidateEligibility,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
@@ -3257,6 +2940,7 @@ impl SceneRenderer {
                 options,
                 cache_tracking,
                 eligibility,
+                instrumentation,
             );
             return;
         }
@@ -3264,64 +2948,71 @@ impl SceneRenderer {
         let clamped = alpha.clamp(0.0, 1.0);
         let alpha_u8 = (clamped * 255.0).round() as u8;
         if let [RenderNode::Primitive(primitive)] = children
-            && Self::render_primitive_with_alpha(canvas, primitive, clamped)
+            && Self::render_primitive_with_alpha_instrumented(
+                canvas,
+                primitive,
+                clamped,
+                instrumentation,
+            )
         {
             return;
         }
 
-        canvas.save_layer_alpha(None, alpha_u8.into());
+        instrumentation.record_alpha_layer(children.len());
+        measure_draw(instrumentation, DrawDurationKind::Alphas, || {
+            canvas.save_layer_alpha(None, alpha_u8.into());
+        });
         Self::render_nodes_with_cache_tracking(
             canvas,
             children,
             options,
             cache_tracking,
             eligibility,
+            instrumentation,
         );
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::Alphas, || {
+            canvas.restore();
+        });
     }
 
-    fn render_clip_node(
+    fn render_clip_node<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         clips: &[ClipShape],
         children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
         }
 
+        instrumentation.record_clip_scope(false, clips);
+
         if clips.is_empty() {
-            Self::render_nodes(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-            );
+            Self::render_nodes(canvas, children, options, instrumentation);
             return;
         }
 
-        canvas.save();
-        for clip in clips {
-            apply_clip_shape(canvas, clip);
-        }
+        measure_draw(instrumentation, DrawDurationKind::Clips, || {
+            canvas.save();
+            for clip in clips {
+                apply_clip_shape(canvas, clip);
+            }
+        });
         for child in children {
             match child {
                 RenderNode::ShadowPass { children } => {
-                    canvas.restore();
-                    Self::render_nodes(
-                        canvas,
-                        children,
-                        video_state,
-                        image_bleed_device_outset,
-                        solid_border_fast_paths,
-                    );
-                    canvas.save();
-                    for clip in clips {
-                        apply_clip_shape(canvas, clip);
-                    }
+                    instrumentation.record_shadow_escape_reapplication();
+                    measure_draw(instrumentation, DrawDurationKind::Clips, || {
+                        canvas.restore();
+                    });
+                    Self::render_nodes(canvas, children, options, instrumentation);
+                    measure_draw(instrumentation, DrawDurationKind::Clips, || {
+                        canvas.save();
+                        for clip in clips {
+                            apply_clip_shape(canvas, clip);
+                        }
+                    });
                 }
                 _ => {
                     // Solid border fast paths stay disabled inside active clips. The
@@ -3332,57 +3023,57 @@ impl SceneRenderer {
                     Self::render_nodes(
                         canvas,
                         std::slice::from_ref(child),
-                        video_state,
-                        image_bleed_device_outset,
-                        false,
+                        options.with_solid_border_fast_paths(false),
+                        instrumentation,
                     );
                 }
             }
         }
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::Clips, || {
+            canvas.restore();
+        });
     }
 
-    fn render_relaxed_clip_node(
+    fn render_relaxed_clip_node<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         clips: &[ClipShape],
         children: &[RenderNode],
-        video_state: &RendererVideoState,
-        solid_border_fast_paths: bool,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
         }
 
+        let relaxed_options =
+            options.with_image_bleed_device_outset(RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET);
+        instrumentation.record_clip_scope(true, clips);
+
         if clips.is_empty() {
-            Self::render_nodes(
-                canvas,
-                children,
-                video_state,
-                RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                solid_border_fast_paths,
-            );
+            Self::render_nodes(canvas, children, relaxed_options, instrumentation);
             return;
         }
 
-        canvas.save();
-        for clip in clips {
-            apply_relaxed_clip_shape(canvas, clip);
-        }
+        measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+            canvas.save();
+            for clip in clips {
+                apply_relaxed_clip_shape(canvas, clip);
+            }
+        });
         for child in children {
             match child {
                 RenderNode::ShadowPass { children } => {
-                    canvas.restore();
-                    Self::render_nodes(
-                        canvas,
-                        children,
-                        video_state,
-                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                        solid_border_fast_paths,
-                    );
-                    canvas.save();
-                    for clip in clips {
-                        apply_relaxed_clip_shape(canvas, clip);
-                    }
+                    instrumentation.record_shadow_escape_reapplication();
+                    measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+                        canvas.restore();
+                    });
+                    Self::render_nodes(canvas, children, relaxed_options, instrumentation);
+                    measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+                        canvas.save();
+                        for clip in clips {
+                            apply_relaxed_clip_shape(canvas, clip);
+                        }
+                    });
                 }
                 _ => {
                     // See the regular clip path above: clipped solid-border fast
@@ -3390,92 +3081,161 @@ impl SceneRenderer {
                     Self::render_nodes(
                         canvas,
                         std::slice::from_ref(child),
-                        video_state,
-                        RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET,
-                        false,
+                        relaxed_options.with_solid_border_fast_paths(false),
+                        instrumentation,
                     );
                 }
             }
         }
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::RelaxedClips, || {
+            canvas.restore();
+        });
     }
 
-    fn render_transform_node(
+    fn render_transform_node<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         transform: Affine2,
         children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
         }
 
         if transform.is_identity() {
-            Self::render_nodes(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-            );
+            Self::render_nodes(canvas, children, options, instrumentation);
             return;
         }
 
-        canvas.save();
-        let matrix = matrix_from_affine2(transform);
-        canvas.concat(&matrix);
-        Self::render_nodes(
-            canvas,
-            children,
-            video_state,
-            image_bleed_device_outset,
-            solid_border_fast_paths,
-        );
-        canvas.restore();
+        measure_draw(instrumentation, DrawDurationKind::Transforms, || {
+            canvas.save();
+            let matrix = matrix_from_affine2(transform);
+            canvas.concat(&matrix);
+        });
+        Self::render_nodes(canvas, children, options, instrumentation);
+        measure_draw(instrumentation, DrawDurationKind::Transforms, || {
+            canvas.restore();
+        });
     }
 
-    fn render_alpha_node(
+    fn render_alpha_node<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         alpha: f32,
         children: &[RenderNode],
-        video_state: &RendererVideoState,
-        image_bleed_device_outset: f32,
-        solid_border_fast_paths: bool,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
         if children.is_empty() {
             return;
         }
 
         if alpha >= 1.0 {
-            Self::render_nodes(
-                canvas,
-                children,
-                video_state,
-                image_bleed_device_outset,
-                solid_border_fast_paths,
-            );
+            Self::render_nodes(canvas, children, options, instrumentation);
             return;
         }
 
         let clamped = alpha.clamp(0.0, 1.0);
         let alpha_u8 = (clamped * 255.0).round() as u8;
         if let [RenderNode::Primitive(primitive)] = children
-            && Self::render_primitive_with_alpha(canvas, primitive, clamped)
+            && Self::render_primitive_with_alpha_instrumented(
+                canvas,
+                primitive,
+                clamped,
+                instrumentation,
+            )
         {
             return;
         }
 
-        canvas.save_layer_alpha(None, alpha_u8.into());
-        Self::render_nodes(
-            canvas,
-            children,
-            video_state,
-            image_bleed_device_outset,
-            solid_border_fast_paths,
-        );
-        canvas.restore();
+        instrumentation.record_alpha_layer(children.len());
+        measure_draw(instrumentation, DrawDurationKind::Alphas, || {
+            canvas.save_layer_alpha(None, alpha_u8.into());
+        });
+        Self::render_nodes(canvas, children, options, instrumentation);
+        measure_draw(instrumentation, DrawDurationKind::Alphas, || {
+            canvas.restore();
+        });
+    }
+
+    fn render_primitive_instrumented<I: DrawInstrumentation>(
+        canvas: &skia_safe::Canvas,
+        primitive: &DrawPrimitive,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
+    ) {
+        if I::ENABLED {
+            match primitive {
+                DrawPrimitive::Shadow(
+                    x,
+                    y,
+                    w,
+                    h,
+                    offset_x,
+                    offset_y,
+                    blur,
+                    size,
+                    radius,
+                    color,
+                ) => {
+                    let profile = draw_outer_shadow_profiled(
+                        canvas,
+                        ShadowDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            offset_x: *offset_x,
+                            offset_y: *offset_y,
+                            blur: *blur,
+                            size: *size,
+                            radius: *radius,
+                            color: *color,
+                        },
+                    );
+                    instrumentation.record_shadow_profile(profile);
+                }
+                DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
+                    let profile = draw_cached_asset_with_fit_profiled(
+                        canvas,
+                        ImageDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            image_id,
+                            fit: *fit,
+                            svg_tint: *svg_tint,
+                        },
+                        options.image_bleed_device_outset,
+                    );
+                    instrumentation.record_image_profile(profile);
+                }
+                _ => {
+                    let started_at = Instant::now();
+                    Self::render_primitive(
+                        canvas,
+                        primitive,
+                        options.video_state,
+                        options.image_bleed_device_outset,
+                        options.solid_border_fast_paths,
+                    );
+                    instrumentation.record_primitive_duration(primitive, started_at.elapsed());
+                }
+            }
+        } else {
+            Self::render_primitive(
+                canvas,
+                primitive,
+                options.video_state,
+                options.image_bleed_device_outset,
+                options.solid_border_fast_paths,
+            );
+        }
     }
 
     fn render_primitive(
@@ -3756,6 +3516,24 @@ impl SceneRenderer {
                 );
                 draw_image_failed(canvas, rect.x(), rect.y(), rect.width(), rect.height());
             }
+        }
+    }
+
+    fn render_primitive_with_alpha_instrumented<I: DrawInstrumentation>(
+        canvas: &skia_safe::Canvas,
+        primitive: &DrawPrimitive,
+        alpha: f32,
+        instrumentation: &mut I,
+    ) -> bool {
+        if I::ENABLED {
+            let started_at = Instant::now();
+            let rendered = Self::render_primitive_with_alpha(canvas, primitive, alpha);
+            if rendered {
+                instrumentation.record_primitive_duration(primitive, started_at.elapsed());
+            }
+            rendered
+        } else {
+            Self::render_primitive_with_alpha(canvas, primitive, alpha)
         }
     }
 

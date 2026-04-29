@@ -381,6 +381,7 @@ impl RenderSubtree {
 ///
 /// Reads from pre-scaled attrs (layout pass must run first). This is kept as a
 /// safe baseline for correctness tests and performance regression benchmarks.
+#[cfg(any(test, feature = "bench-diagnostics"))]
 pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
     let Some(root_ix) = tree.root_ix() else {
         return RenderSceneOutput {

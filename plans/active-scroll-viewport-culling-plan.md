@@ -2,9 +2,8 @@
 
 Last updated: 2026-04-29.
 
-Status: active. Benchmark baseline and the first shared render/registry
-viewport participation gate are implemented. Remaining work is focused
-exception auditing and live-demo validation.
+Status: implemented, pending normal plan cleanup. Benchmark baseline and the
+shared render/registry viewport participation gate are implemented.
 
 ## Purpose
 

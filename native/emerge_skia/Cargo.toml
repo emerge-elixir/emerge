@@ -15,6 +15,7 @@ required-features = ["macos"]
 [[bench]]
 name = "layout"
 harness = false
+required-features = ["bench-diagnostics"]
 
 [[bench]]
 name = "patch"
@@ -26,6 +27,11 @@ harness = false
 
 [[bench]]
 name = "renderer"
+harness = false
+required-features = ["bench-diagnostics"]
+
+[[bench]]
+name = "stats"
 harness = false
 
 [features]
