@@ -1,18 +1,24 @@
 # Plans
 
-Last updated: 2026-04-29.
+Last updated: 2026-05-04.
 
 This directory tracks current implementation notes plus the background
 investigations that led to the current native layout and renderer work. Files
 with an `active-` prefix are reserved for currently open implementation slices.
-There is no open active implementation plan after the release-code-bloat pass.
-`active-release-code-bloat-reduction-plan.md`,
-`active-renderer-instrumentation-refactor-plan.md`,
-`active-scroll-viewport-culling-plan.md`, and
-`active-render-cache-children-plan.md` are implemented and retained as the most
-recent completed active-plan records until the next cleanup pass.
+There is no open active implementation slice after the performance branch-fix
+pass. The active-prefixed documents listed below are implemented and retained as
+completed active-plan records until the next cleanup pass.
 
 ## Files
+
+### `active-performance-branch-fix-plan.md`
+
+Completed branch-fix plan for merge-readiness issues discovered by comparing
+`performance-improvements` to `main` at `a797532`. It records the implemented
+benchmark documentation fixes, test-only `NodeId` helper boundary, mixed
+animation/tree-message regression coverage, test-only clippy allowance
+classification, native diagnostics classification, validation results, and the
+remaining untracked local artifacts that were not deleted.
 
 ### `active-release-code-bloat-reduction-plan.md`
 
