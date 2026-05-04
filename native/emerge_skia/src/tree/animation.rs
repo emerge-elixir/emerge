@@ -5,7 +5,8 @@ use std::time::Instant;
 use super::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
 };
-use super::element::{ElementId, ElementTree};
+use super::element::{ElementTree, NodeId};
+use super::invalidation::{TreeInvalidation, animation_attrs_affect_registry_refresh};
 
 #[derive(Clone, Debug)]
 pub enum AnimationCurve {
@@ -40,6 +41,7 @@ pub struct AnimationRuntimeEntry {
 pub struct EnterAnimationRuntimeEntry {
     pub spec: AnimationSpec,
     pub started_at: Instant,
+    pub presentation_anchor_pending: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -47,13 +49,14 @@ pub struct ExitAnimationRuntimeEntry {
     pub spec: AnimationSpec,
     pub started_at: Instant,
     pub capture_scale: f32,
+    pub presentation_anchor_pending: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct AnimationRuntime {
-    animate_entries: HashMap<ElementId, AnimationRuntimeEntry>,
-    enter_entries: HashMap<ElementId, EnterAnimationRuntimeEntry>,
-    exit_entries: HashMap<ElementId, ExitAnimationRuntimeEntry>,
+    animate_entries: HashMap<NodeId, AnimationRuntimeEntry>,
+    enter_entries: HashMap<NodeId, EnterAnimationRuntimeEntry>,
+    exit_entries: HashMap<NodeId, ExitAnimationRuntimeEntry>,
     last_seen_revision: u64,
 }
 
@@ -63,30 +66,61 @@ pub struct AnimationSample {
     pub active: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationLayoutEffect {
+    pub id: NodeId,
+    pub invalidation: TreeInvalidation,
+    pub registry_refresh: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnimationOverlayResult {
+    pub active: bool,
+    pub invalidation: TreeInvalidation,
+    pub effects: Vec<AnimationLayoutEffect>,
+}
+
+impl AnimationOverlayResult {
+    fn record_sample(&mut self, id: NodeId, sample: &AnimationSample) {
+        let invalidation = classify_animation_sample_attrs(&sample.attrs);
+        self.active |= sample.active;
+        self.invalidation.add(invalidation);
+
+        if invalidation.is_dirty() {
+            self.effects.push(AnimationLayoutEffect {
+                id,
+                invalidation,
+                registry_refresh: animation_attrs_affect_registry_refresh(&sample.attrs),
+            });
+        }
+    }
+}
+
 impl AnimationRuntime {
     pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
         self.animate_entries.retain(|id, _| {
             tree.get(id)
-                .is_some_and(|element| element.is_live() && element.base_attrs.animate.is_some())
+                .is_some_and(|element| element.is_live() && element.spec.declared.animate.is_some())
         });
         self.enter_entries
             .retain(|id, _| tree.get(id).is_some_and(|element| element.is_live()));
         self.exit_entries.retain(|id, _| {
             tree.get(id).is_some_and(|element| {
-                element.is_ghost_root() && element.ghost_exit_animation.is_some()
+                element.is_ghost_root() && element.lifecycle.ghost_exit_animation.is_some()
             })
         });
 
-        for (id, element) in &tree.nodes {
+        for (id, element) in tree.iter_node_pairs() {
             if element.is_ghost_root() {
-                if let Some(spec) = element.ghost_exit_animation.as_ref() {
-                    self.exit_entries.entry(id.clone()).or_insert_with(|| {
-                        ExitAnimationRuntimeEntry {
+                if let Some(spec) = element.lifecycle.ghost_exit_animation.as_ref() {
+                    self.exit_entries
+                        .entry(id)
+                        .or_insert_with(|| ExitAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
-                            capture_scale: element.ghost_capture_scale.unwrap_or(1.0),
-                        }
-                    });
+                            capture_scale: element.lifecycle.ghost_capture_scale.unwrap_or(1.0),
+                            presentation_anchor_pending: true,
+                        });
                 }
                 continue;
             }
@@ -95,29 +129,30 @@ impl AnimationRuntime {
                 continue;
             }
 
-            if tree.was_mounted_after(id, self.last_seen_revision) {
-                self.animate_entries.remove(id);
+            if tree.was_mounted_after(&id, self.last_seen_revision) {
+                self.animate_entries.remove(&id);
 
-                if let Some(spec) = element.base_attrs.animate_enter.as_ref() {
+                if let Some(spec) = element.spec.declared.animate_enter.as_ref() {
                     self.enter_entries.insert(
-                        id.clone(),
+                        id,
                         EnterAnimationRuntimeEntry {
                             spec: spec.clone(),
                             started_at,
+                            presentation_anchor_pending: true,
                         },
                     );
                 } else {
-                    self.enter_entries.remove(id);
+                    self.enter_entries.remove(&id);
                 }
             }
 
-            let enter_active = self.enter_entries.get(id).cloned().is_some_and(|entry| {
+            let enter_active = self.enter_entries.get(&id).cloned().is_some_and(|entry| {
                 let sample = sample_enter_animation_spec(&entry, Some(started_at), 1.0);
                 if sample.active {
-                    self.animate_entries.remove(id);
+                    self.animate_entries.remove(&id);
                     true
                 } else {
-                    self.enter_entries.remove(id);
+                    self.enter_entries.remove(&id);
                     false
                 }
             });
@@ -126,17 +161,17 @@ impl AnimationRuntime {
                 continue;
             }
 
-            let Some(spec) = element.base_attrs.animate.as_ref() else {
-                self.animate_entries.remove(id);
+            let Some(spec) = element.spec.declared.animate.as_ref() else {
+                self.animate_entries.remove(&id);
                 continue;
             };
             let spec_hash = spec_fingerprint(spec);
 
-            match self.animate_entries.get(id) {
+            match self.animate_entries.get(&id) {
                 Some(entry) if entry.spec_hash == spec_hash => {}
                 _ => {
                     self.animate_entries.insert(
-                        id.clone(),
+                        id,
                         AnimationRuntimeEntry {
                             spec_hash,
                             started_at,
@@ -155,15 +190,50 @@ impl AnimationRuntime {
             && self.exit_entries.is_empty()
     }
 
-    pub fn animate_entry(&self, id: &ElementId) -> Option<&AnimationRuntimeEntry> {
+    pub fn anchor_pending_transient_entries_to_present(&mut self, presented_at: Instant) {
+        self.enter_entries.values_mut().for_each(|entry| {
+            if entry.presentation_anchor_pending {
+                entry.started_at = presented_at;
+                entry.presentation_anchor_pending = false;
+            }
+        });
+
+        self.exit_entries.values_mut().for_each(|entry| {
+            if entry.presentation_anchor_pending {
+                entry.started_at = presented_at;
+                entry.presentation_anchor_pending = false;
+            }
+        });
+    }
+
+    pub fn has_transient_entries(&self) -> bool {
+        !self.enter_entries.is_empty() || !self.exit_entries.is_empty()
+    }
+
+    pub fn active_node_ids(&self) -> Vec<NodeId> {
+        let mut ids = Vec::new();
+        for id in self
+            .animate_entries
+            .keys()
+            .chain(self.enter_entries.keys())
+            .chain(self.exit_entries.keys())
+        {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+
+    pub fn animate_entry(&self, id: &NodeId) -> Option<&AnimationRuntimeEntry> {
         self.animate_entries.get(id)
     }
 
-    pub fn enter_entry(&self, id: &ElementId) -> Option<&EnterAnimationRuntimeEntry> {
+    pub fn enter_entry(&self, id: &NodeId) -> Option<&EnterAnimationRuntimeEntry> {
         self.enter_entries.get(id)
     }
 
-    pub fn exit_entry(&self, id: &ElementId) -> Option<&ExitAnimationRuntimeEntry> {
+    pub fn exit_entry(&self, id: &NodeId) -> Option<&ExitAnimationRuntimeEntry> {
         self.exit_entries.get(id)
     }
 
@@ -172,12 +242,12 @@ impl AnimationRuntime {
         tree: &mut ElementTree,
         sample_time: Option<Instant>,
     ) -> bool {
-        let completed_ids: Vec<ElementId> = self
+        let completed_ids: Vec<NodeId> = self
             .exit_entries
             .iter()
             .filter_map(|(id, entry)| {
                 let sample = sample_exit_animation_spec(entry, sample_time, tree.current_scale());
-                (!sample.active).then_some(id.clone())
+                (!sample.active).then_some(*id)
             })
             .collect();
 
@@ -213,43 +283,200 @@ pub fn scale_animation_spec(spec: &AnimationSpec, scale: f64) -> AnimationSpec {
     }
 }
 
+/// Exit ghosts start from the current rendered attrs so interrupted enter or
+/// interaction animations do not jump back to the declared exit keyframe.
+pub fn retarget_exit_animation_spec_to_current_visual(
+    mut spec: AnimationSpec,
+    current: &Attrs,
+) -> AnimationSpec {
+    if let Some(first) = spec.keyframes.first_mut() {
+        retarget_exit_keyframe_to_current_visual(first, current);
+    }
+
+    spec
+}
+
+fn retarget_exit_keyframe_to_current_visual(first: &mut Attrs, current: &Attrs) {
+    macro_rules! retarget_clone {
+        ($field:ident) => {
+            if first.$field.is_some() {
+                if let Some(value) = current.$field.clone() {
+                    first.$field = Some(value);
+                }
+            }
+        };
+    }
+
+    macro_rules! retarget_copy {
+        ($field:ident) => {
+            if first.$field.is_some() {
+                if let Some(value) = current.$field {
+                    first.$field = Some(value);
+                }
+            }
+        };
+    }
+
+    retarget_clone!(width);
+    retarget_clone!(height);
+    retarget_clone!(padding);
+    retarget_copy!(spacing);
+    retarget_copy!(spacing_x);
+    retarget_copy!(spacing_y);
+    retarget_copy!(align_x);
+    retarget_copy!(align_y);
+    retarget_clone!(background);
+    retarget_clone!(border_radius);
+    retarget_clone!(border_width);
+    retarget_clone!(border_color);
+    retarget_clone!(box_shadows);
+    retarget_copy!(font_size);
+    retarget_clone!(font_color);
+    retarget_copy!(font_letter_spacing);
+    retarget_copy!(font_word_spacing);
+    retarget_clone!(svg_color);
+    retarget_copy!(move_x);
+    retarget_copy!(move_y);
+    retarget_copy!(rotate);
+    retarget_copy!(scale);
+    retarget_copy!(alpha);
+}
+
 pub fn apply_animation_overlays(
     tree: &mut ElementTree,
     runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
     scale: f32,
-) -> bool {
-    tree.nodes.values_mut().fold(false, |active_any, element| {
-        if let Some(sample) = runtime
-            .and_then(|state| state.exit_entry(&element.id))
-            .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
-            .filter(|sample| sample.active)
-        {
-            apply_sample_attrs(&mut element.attrs, &sample.attrs);
-            return active_any || sample.active;
-        }
+) -> AnimationOverlayResult {
+    tree.iter_nodes_mut()
+        .fold(AnimationOverlayResult::default(), |mut result, element| {
+            apply_animation_overlay_to_element(&mut result, element, runtime, sample_time, scale);
+            result
+        })
+}
 
-        if let Some(sample) = runtime
-            .and_then(|state| state.enter_entry(&element.id))
-            .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
-            .filter(|sample| sample.active)
-        {
-            apply_sample_attrs(&mut element.attrs, &sample.attrs);
-            return active_any || sample.active;
-        }
+pub fn apply_animation_overlays_to_active(
+    tree: &mut ElementTree,
+    runtime: &AnimationRuntime,
+    sample_time: Option<Instant>,
+    scale: f32,
+) -> AnimationOverlayResult {
+    runtime.active_node_ids().into_iter().fold(
+        AnimationOverlayResult::default(),
+        |mut result, id| {
+            if let Some(element) = tree.get_mut(&id) {
+                apply_animation_overlay_to_element(
+                    &mut result,
+                    element,
+                    Some(runtime),
+                    sample_time,
+                    scale,
+                );
+            }
+            result
+        },
+    )
+}
 
-        let Some(spec) = element.attrs.animate.as_ref() else {
-            return active_any;
-        };
+fn apply_animation_overlay_to_element(
+    result: &mut AnimationOverlayResult,
+    element: &mut super::element::Element,
+    runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+    scale: f32,
+) {
+    if let Some(sample) = runtime
+        .and_then(|state| state.exit_entry(&element.id))
+        .map(|entry| sample_exit_animation_spec(entry, sample_time, scale))
+        .filter(|sample| sample.active)
+    {
+        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+        result.record_sample(element.id, &sample);
+        return;
+    }
 
-        let sample = sample_animation_spec(
-            spec,
-            runtime.and_then(|state| state.animate_entry(&element.id)),
-            sample_time,
-        );
-        apply_sample_attrs(&mut element.attrs, &sample.attrs);
-        active_any || sample.active
-    })
+    if let Some(sample) = runtime
+        .and_then(|state| state.enter_entry(&element.id))
+        .map(|entry| sample_enter_animation_spec(entry, sample_time, scale as f64))
+        .filter(|sample| sample.active)
+    {
+        apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+        result.record_sample(element.id, &sample);
+        return;
+    }
+
+    let Some(spec) = element.layout.effective.animate.as_ref() else {
+        return;
+    };
+
+    let sample = sample_animation_spec(
+        spec,
+        runtime.and_then(|state| state.animate_entry(&element.id)),
+        sample_time,
+    );
+    apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
+    result.record_sample(element.id, &sample);
+}
+
+pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {
+    let mut invalidation = TreeInvalidation::None;
+
+    if attrs.background.is_some()
+        || attrs.border_radius.is_some()
+        || attrs.border_style.is_some()
+        || attrs.border_color.is_some()
+        || attrs.box_shadows.is_some()
+        || attrs.font_color.is_some()
+        || attrs.svg_color.is_some()
+        || attrs.font_underline.is_some()
+        || attrs.font_strike.is_some()
+        || attrs.video_target.is_some()
+        || attrs.move_x.is_some()
+        || attrs.move_y.is_some()
+        || attrs.rotate.is_some()
+        || attrs.scale.is_some()
+        || attrs.alpha.is_some()
+    {
+        invalidation.add(TreeInvalidation::Paint);
+    }
+
+    if attrs.align_x.is_some() || attrs.align_y.is_some() {
+        invalidation.add(TreeInvalidation::Resolve);
+    }
+
+    if attrs.width.is_some()
+        || attrs.height.is_some()
+        || attrs.padding.is_some()
+        || attrs.spacing.is_some()
+        || attrs.spacing_x.is_some()
+        || attrs.spacing_y.is_some()
+        || attrs.scrollbar_y.is_some()
+        || attrs.scrollbar_x.is_some()
+        || attrs.ghost_scrollbar_y.is_some()
+        || attrs.ghost_scrollbar_x.is_some()
+        || attrs.scroll_x.is_some()
+        || attrs.scroll_y.is_some()
+        || attrs.clip_nearby.is_some()
+        || attrs.border_width.is_some()
+        || attrs.font_size.is_some()
+        || attrs.font.is_some()
+        || attrs.font_weight.is_some()
+        || attrs.font_style.is_some()
+        || attrs.font_letter_spacing.is_some()
+        || attrs.font_word_spacing.is_some()
+        || attrs.image_src.is_some()
+        || attrs.image_fit.is_some()
+        || attrs.image_size.is_some()
+        || attrs.text_align.is_some()
+        || attrs.content.is_some()
+        || attrs.snap_layout.is_some()
+        || attrs.snap_text_metrics.is_some()
+        || attrs.space_evenly.is_some()
+    {
+        invalidation.add(TreeInvalidation::Measure);
+    }
+
+    invalidation
 }
 
 fn sample_enter_animation_spec(
@@ -388,6 +615,8 @@ fn scale_animation_keyframe(attrs: &Attrs, scale: f64) -> Attrs {
         spacing: attrs.spacing.map(|value| value * scale),
         spacing_x: attrs.spacing_x.map(|value| value * scale),
         spacing_y: attrs.spacing_y.map(|value| value * scale),
+        align_x: attrs.align_x,
+        align_y: attrs.align_y,
         background: attrs.background.clone(),
         border_radius: attrs
             .border_radius
@@ -448,6 +677,8 @@ fn interpolate_attrs(from: &Attrs, to: &Attrs, t: f64) -> Attrs {
         spacing: interpolate_opt_copy(from.spacing, to.spacing, t, lerp_f64),
         spacing_x: interpolate_opt_copy(from.spacing_x, to.spacing_x, t, lerp_f64),
         spacing_y: interpolate_opt_copy(from.spacing_y, to.spacing_y, t, lerp_f64),
+        align_x: interpolate_opt_copy(from.align_x, to.align_x, t, interpolate_discrete),
+        align_y: interpolate_opt_copy(from.align_y, to.align_y, t, interpolate_discrete),
         background: interpolate_opt_ref(
             from.background.as_ref(),
             to.background.as_ref(),
@@ -531,6 +762,12 @@ fn apply_sample_attrs(attrs: &mut Attrs, sample: &Attrs) {
     if let Some(value) = sample.spacing_y {
         attrs.spacing_y = Some(value);
     }
+    if let Some(value) = sample.align_x {
+        attrs.align_x = Some(value);
+    }
+    if let Some(value) = sample.align_y {
+        attrs.align_y = Some(value);
+    }
     if let Some(value) = sample.background.clone() {
         attrs.background = Some(value);
     }
@@ -606,6 +843,10 @@ where
         (Some(from), Some(to)) => Some(interpolate(from, to, t)),
         _ => None,
     }
+}
+
+fn interpolate_discrete<T: Copy>(from: T, to: T, t: f64) -> T {
+    if t < 0.5 { from } else { to }
 }
 
 fn lerp_f64(from: f64, to: f64, t: f64) -> f64 {
@@ -875,7 +1116,6 @@ fn scale_border_width(value: &BorderWidth, scale: f64) -> BorderWidth {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::element::{Element, ElementKind, GhostAttachment, NodeResidency};
@@ -919,52 +1159,43 @@ mod tests {
         attrs: Attrs,
         tree_revision: u64,
         mounted_at_revision: u64,
-    ) -> (ElementTree, ElementId) {
-        let id = ElementId::from_term_bytes(vec![1]);
-        let mut element = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-        element.mounted_at_revision = mounted_at_revision;
+    ) -> (ElementTree, NodeId) {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
+        element.lifecycle.mounted_at_revision = mounted_at_revision;
 
         let mut tree = ElementTree::new();
-        tree.root = Some(id.clone());
         tree.insert(element);
+        tree.set_root_id(id);
         tree.set_revision(tree_revision);
         (tree, id)
     }
 
-    fn tree_with_exit_ghost() -> (ElementTree, ElementId, ElementId) {
-        let root_id = ElementId::from_term_bytes(vec![10]);
-        let ghost_id = ElementId::from_term_bytes(vec![11]);
+    fn tree_with_exit_ghost() -> (ElementTree, NodeId, NodeId) {
+        let root_id = NodeId::from_term_bytes(vec![10]);
+        let ghost_id = NodeId::from_term_bytes(vec![11]);
 
-        let mut root = Element::with_attrs(
-            root_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            Attrs::default(),
-        );
-        root.children = vec![ghost_id.clone()];
+        let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+        root.children = vec![ghost_id];
 
         let mut ghost_attrs = Attrs::default();
         ghost_attrs.alpha = Some(1.0);
-        let mut ghost = Element::with_attrs(
-            ghost_id.clone(),
-            ElementKind::El,
-            Vec::new(),
-            ghost_attrs.clone(),
-        );
-        ghost.base_attrs = ghost_attrs;
-        ghost.residency = NodeResidency::Ghost;
-        ghost.ghost_attachment = Some(GhostAttachment::Child {
-            parent_id: root_id.clone(),
+        let mut ghost =
+            Element::with_attrs(ghost_id, ElementKind::El, Vec::new(), ghost_attrs.clone());
+        ghost.spec.declared = ghost_attrs;
+        ghost.lifecycle.residency = NodeResidency::Ghost;
+        ghost.lifecycle.ghost_attachment = Some(GhostAttachment::Child {
+            parent_id: root_id,
             live_index: 0,
             seq: 0,
         });
-        ghost.ghost_capture_scale = Some(1.0);
-        ghost.ghost_exit_animation = Some(alpha_spec(1.0, 0.0, 100.0));
+        ghost.lifecycle.ghost_capture_scale = Some(1.0);
+        ghost.lifecycle.ghost_exit_animation = Some(alpha_spec(1.0, 0.0, 100.0));
 
         let mut tree = ElementTree::new();
-        tree.root = Some(root_id.clone());
         tree.insert(root);
         tree.insert(ghost);
+        tree.set_root_id(root_id);
         (tree, root_id, ghost_id)
     }
 
@@ -1039,8 +1270,43 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         assert!(runtime.enter_entry(&id).is_some());
+        assert!(
+            runtime
+                .enter_entry(&id)
+                .expect("enter entry should exist")
+                .presentation_anchor_pending
+        );
         assert!(runtime.animate_entry(&id).is_none());
         assert_eq!(runtime.last_seen_revision, 1);
+    }
+
+    #[test]
+    fn transient_enter_animation_anchors_to_first_presented_frame_once() {
+        let mut attrs = Attrs::default();
+        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        let (tree, id) = tree_with_element(attrs, 1, 1);
+        let patch_time = Instant::now();
+        let first_presented = patch_time + std::time::Duration::from_millis(24);
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, patch_time);
+        runtime.anchor_pending_transient_entries_to_present(first_presented);
+        runtime.anchor_pending_transient_entries_to_present(
+            first_presented + std::time::Duration::from_millis(16),
+        );
+
+        let entry = runtime
+            .enter_entry(&id)
+            .expect("enter entry should stay active");
+        assert_eq!(entry.started_at, first_presented);
+        assert!(!entry.presentation_anchor_pending);
+
+        let sample = sample_enter_animation_spec(
+            entry,
+            Some(first_presented + std::time::Duration::from_millis(50)),
+            1.0,
+        );
+        assert_eq!(sample.attrs.alpha, Some(0.5));
     }
 
     #[test]
@@ -1053,8 +1319,8 @@ mod tests {
 
         tree.set_revision(2);
         let element = tree.get_mut(&id).expect("element should exist");
-        element.base_attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
-        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+        element.spec.declared.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        element.layout.effective.animate_enter = element.spec.declared.animate_enter.clone();
 
         runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(16));
 
@@ -1072,9 +1338,9 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         let element = tree.get_mut(&id).expect("element should exist");
-        element.base_attrs.animate_enter =
+        element.spec.declared.animate_enter =
             Some(move_x_spec(0.0, 200.0, 100.0, AnimationRepeat::Once));
-        element.attrs.animate_enter = element.base_attrs.animate_enter.clone();
+        element.layout.effective.animate_enter = element.spec.declared.animate_enter.clone();
 
         let sample = sample_enter_animation_spec(
             runtime.enter_entry(&id).expect("enter entry should exist"),
@@ -1099,15 +1365,15 @@ mod tests {
         assert!(runtime.enter_entry(&id).is_none());
         assert!(runtime.animate_entry(&id).is_none());
 
-        let active = apply_animation_overlays(
+        let result = apply_animation_overlays(
             &mut tree,
             Some(&runtime),
             Some(start + std::time::Duration::from_millis(150)),
             1.0,
         );
 
-        assert!(!active);
-        assert_eq!(tree.get(&id).unwrap().attrs.move_x, None);
+        assert!(!result.active);
+        assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, None);
     }
 
     #[test]
@@ -1125,15 +1391,15 @@ mod tests {
         assert!(runtime.enter_entry(&id).is_none());
         assert!(runtime.animate_entry(&id).is_some());
 
-        let active = apply_animation_overlays(
+        let result = apply_animation_overlays(
             &mut tree,
             Some(&runtime),
             Some(start + std::time::Duration::from_millis(150)),
             1.0,
         );
 
-        assert!(active);
-        assert_eq!(tree.get(&id).unwrap().attrs.move_x, Some(10.0));
+        assert!(result.active);
+        assert_eq!(tree.get(&id).unwrap().layout.effective.move_x, Some(10.0));
     }
 
     #[test]
@@ -1145,6 +1411,39 @@ mod tests {
         runtime.sync_with_tree(&tree, start);
 
         assert!(runtime.exit_entry(&ghost_id).is_some());
+        assert!(
+            runtime
+                .exit_entry(&ghost_id)
+                .expect("exit entry should exist")
+                .presentation_anchor_pending
+        );
+    }
+
+    #[test]
+    fn transient_exit_animation_anchors_to_first_presented_frame_once() {
+        let (tree, _root_id, ghost_id) = tree_with_exit_ghost();
+        let patch_time = Instant::now();
+        let first_presented = patch_time + std::time::Duration::from_millis(24);
+        let mut runtime = AnimationRuntime::default();
+
+        runtime.sync_with_tree(&tree, patch_time);
+        runtime.anchor_pending_transient_entries_to_present(first_presented);
+        runtime.anchor_pending_transient_entries_to_present(
+            first_presented + std::time::Duration::from_millis(16),
+        );
+
+        let entry = runtime
+            .exit_entry(&ghost_id)
+            .expect("exit entry should stay active");
+        assert_eq!(entry.started_at, first_presented);
+        assert!(!entry.presentation_anchor_pending);
+
+        let sample = sample_exit_animation_spec(
+            entry,
+            Some(first_presented + std::time::Duration::from_millis(50)),
+            1.0,
+        );
+        assert_eq!(sample.attrs.alpha, Some(0.5));
     }
 
     #[test]

@@ -18,10 +18,10 @@ fn test_border_box_el_insets_child() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -32,7 +32,7 @@ fn test_border_box_el_insets_child() {
         &MockTextMeasurer,
     );
 
-    let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+    let child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
     assert_eq!(child_frame.x, 5.0);
     assert_eq!(child_frame.y, 5.0);
     assert_eq!(child_frame.width, 190.0);
@@ -57,10 +57,10 @@ fn test_border_box_el_with_padding_and_border() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -71,7 +71,7 @@ fn test_border_box_el_with_padding_and_border() {
         &MockTextMeasurer,
     );
 
-    let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+    let child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
     assert_eq!(child_frame.x, 15.0); // 10 padding + 5 border
     assert_eq!(child_frame.y, 15.0);
     assert_eq!(child_frame.width, 170.0); // 200 - 2*(10+5)
@@ -100,10 +100,10 @@ fn test_border_box_per_side_border_width() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -114,7 +114,7 @@ fn test_border_box_per_side_border_width() {
         &MockTextMeasurer,
     );
 
-    let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+    let child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
     assert_eq!(child_frame.x, 8.0);
     assert_eq!(child_frame.y, 2.0);
     assert_eq!(child_frame.width, 188.0); // 200 - 8 - 4
@@ -136,10 +136,10 @@ fn test_border_box_intrinsic_sizing() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -150,7 +150,7 @@ fn test_border_box_intrinsic_sizing() {
         &MockTextMeasurer,
     );
 
-    let root_frame = tree.get(&root_id).unwrap().frame.unwrap();
+    let root_frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
     // "Hello" = 5 chars * 8px = 40px wide, 16px tall (mock measurer)
     // + border: 5 left + 5 right = 10, 5 top + 5 bottom = 10
     assert_eq!(root_frame.width, 50.0);
@@ -179,11 +179,11 @@ fn test_border_box_row_intrinsic_with_border() {
         a
     });
 
-    let row_id = row.id.clone();
-    let c1_id = child1.id.clone();
-    let c2_id = child2.id.clone();
-    row.children = vec![c1_id.clone(), c2_id.clone()];
-    tree.root = Some(row_id.clone());
+    let row_id = row.id;
+    let c1_id = child1.id;
+    let c2_id = child2.id;
+    row.children = vec![c1_id, c2_id];
+    tree.set_root_id(row_id);
     tree.insert(row);
     tree.insert(child1);
     tree.insert(child2);
@@ -195,7 +195,7 @@ fn test_border_box_row_intrinsic_with_border() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
     // "Hi" = 16px, "Lo" = 16px, spacing = 4px => content = 36px
     // + border: 3 left + 3 right = 6
     assert_eq!(row_frame.width, 42.0);
@@ -234,10 +234,10 @@ fn test_border_box_shadows_do_not_affect_layout() {
         a
     });
 
-    let root_id = root.id.clone();
-    let child_id = child.id.clone();
-    root.children = vec![child_id.clone()];
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    let child_id = child.id;
+    root.children = vec![child_id];
+    tree.set_root_id(root_id);
     tree.insert(root);
     tree.insert(child);
 
@@ -248,7 +248,7 @@ fn test_border_box_shadows_do_not_affect_layout() {
         &MockTextMeasurer,
     );
 
-    let child_frame = tree.get(&child_id).unwrap().frame.unwrap();
+    let child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
     // Shadows should NOT inset children
     assert_eq!(child_frame.x, 0.0);
     assert_eq!(child_frame.y, 0.0);

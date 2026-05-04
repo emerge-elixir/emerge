@@ -47,22 +47,22 @@ fn point_in_rounded_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radiu
     dx * dx + dy * dy <= r * r
 }
 
-fn point_in_inset_rounded_rect(
-    px: f32,
-    py: f32,
+#[derive(Clone, Copy)]
+struct RoundedRectSample {
     x: f32,
     y: f32,
     w: f32,
     h: f32,
     radius: f32,
-    inset: f32,
-) -> bool {
+}
+
+fn point_in_inset_rounded_rect(px: f32, py: f32, rect: RoundedRectSample, inset: f32) -> bool {
     let inset = inset.max(0.0);
-    let inset_x = x + inset;
-    let inset_y = y + inset;
-    let inset_w = (w - inset * 2.0).max(0.0);
-    let inset_h = (h - inset * 2.0).max(0.0);
-    let inset_r = (radius - inset).max(0.0);
+    let inset_x = rect.x + inset;
+    let inset_y = rect.y + inset;
+    let inset_w = (rect.w - inset * 2.0).max(0.0);
+    let inset_h = (rect.h - inset * 2.0).max(0.0);
+    let inset_r = (rect.radius - inset).max(0.0);
     point_in_rounded_rect(px, py, inset_x, inset_y, inset_w, inset_h, inset_r)
 }
 
@@ -71,23 +71,23 @@ fn build_scroll_panel_with_cards(
     panel_frame: Frame,
     cards: Vec<(u8, Attrs, Frame)>,
 ) -> ElementTree {
-    let panel_id = ElementId::from_term_bytes(vec![90]);
-    let mut panel = Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
-    panel.frame = Some(panel_frame);
+    let panel_id = NodeId::from_term_bytes(vec![90]);
+    let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), panel_attrs);
+    panel.layout.frame = Some(panel_frame);
 
     let mut tree = ElementTree::new();
-    tree.root = Some(panel_id.clone());
+    tree.set_root_id(panel_id);
 
     let child_ids = cards
         .iter()
-        .map(|(id_byte, _attrs, _frame)| ElementId::from_term_bytes(vec![*id_byte]))
+        .map(|(id_byte, _attrs, _frame)| NodeId::from_term_bytes(vec![*id_byte]))
         .collect::<Vec<_>>();
     panel.children = child_ids.clone();
     tree.insert(panel);
 
     for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids.into_iter()) {
         let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), attrs);
-        child.frame = Some(frame);
+        child.layout.frame = Some(frame);
         tree.insert(child);
         let _ = id_byte;
     }
@@ -207,13 +207,13 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 
 #[test]
 fn test_render_image_source_pending_emits_loading_placeholder() {
-    let id = ElementId::from_term_bytes(vec![9]);
+    let id = NodeId::from_term_bytes(vec![9]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Logical("images/photo.jpg".to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -223,7 +223,7 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -233,6 +233,61 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
             .iter()
             .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _)))
     );
+}
+
+#[test]
+fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
+    let image_id = "paint_cached_pending_image_becomes_ready";
+    let id = NodeId::from_term_bytes(vec![90]);
+    let mut attrs = Attrs::default();
+    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
+    attrs.image_fit = Some(ImageFit::Contain);
+
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
+    element.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 40.0,
+        content_width: 40.0,
+        content_height: 40.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(id);
+    tree.insert(element);
+    tree.clear_refresh_dirty();
+
+    let first_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let first_trace = trace_scene(&first_scene);
+    assert!(first_trace.draws.iter().any(|draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
+        )
+    }));
+    assert!(tree.has_render_subtree_cache());
+
+    crate::renderer::insert_test_raster_asset_rgba(image_id, 1, 1, &[0, 255, 0, 255])
+        .expect("test asset should insert");
+    crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
+
+    let second_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let second_trace = trace_scene(&second_scene);
+
+    assert!(!second_trace.draws.iter().any(|draw| {
+        matches!(
+            draw.primitive,
+            DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
+        )
+    }));
+    assert!(second_trace.draws.iter().any(|draw| {
+        matches!(
+            &draw.primitive,
+            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, None)
+                if asset_id == image_id
+        )
+    }));
 }
 
 #[test]
@@ -299,12 +354,15 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
 
-            let in_inner_near_edge = point_in_inset_rounded_rect(
-                px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 0.05,
-            );
-            let in_inner_deep = point_in_inset_rounded_rect(
-                px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
-            );
+            let inner_rect = RoundedRectSample {
+                x: inner_x,
+                y: inner_y,
+                w: inner_w,
+                h: inner_h,
+                radius: inner_r,
+            };
+            let in_inner_near_edge = point_in_inset_rounded_rect(px, py, inner_rect, 0.05);
+            let in_inner_deep = point_in_inset_rounded_rect(px, py, inner_rect, 1.25);
 
             if !(in_inner_near_edge && !in_inner_deep) {
                 continue;
@@ -427,19 +485,16 @@ fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
 
             let in_outer =
                 point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, radius);
-            let away_from_outer_aa = point_in_inset_rounded_rect(
-                px, py, outer_x, outer_y, outer_w, outer_h, radius, 0.15,
-            );
-            let inside_inner_content = point_in_inset_rounded_rect(
-                px,
-                py,
-                outer_x,
-                outer_y,
-                outer_w,
-                outer_h,
+            let outer_rect = RoundedRectSample {
+                x: outer_x,
+                y: outer_y,
+                w: outer_w,
+                h: outer_h,
                 radius,
-                border + 0.15,
-            );
+            };
+            let away_from_outer_aa = point_in_inset_rounded_rect(px, py, outer_rect, 0.15);
+            let inside_inner_content =
+                point_in_inset_rounded_rect(px, py, outer_rect, border + 0.15);
 
             if !(in_outer && away_from_outer_aa && !inside_inner_content) {
                 continue;
@@ -595,7 +650,16 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
                 let in_outer =
                     point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, radius);
                 let away_from_outer_aa = point_in_inset_rounded_rect(
-                    px, py, outer_x, outer_y, outer_w, outer_h, radius, 0.15,
+                    px,
+                    py,
+                    RoundedRectSample {
+                        x: outer_x,
+                        y: outer_y,
+                        w: outer_w,
+                        h: outer_h,
+                        radius,
+                    },
+                    0.15,
                 );
                 let in_right_band = px >= outer_x + outer_w - border - 0.2;
                 let in_image_vertical = py >= draw_y + 8.0 && py <= draw_y + draw_h - 8.0;
@@ -723,7 +787,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
         "##,
     );
 
-    let id = ElementId::from_term_bytes(vec![19]);
+    let id = NodeId::from_term_bytes(vec![19]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
@@ -734,8 +798,8 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
         b: 255,
     });
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -745,7 +809,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -764,14 +828,14 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     crate::renderer::insert_raster_asset(image_id, DEMO_STATIC_JPEG)
         .expect("test JPEG should insert");
 
-    let id = ElementId::from_term_bytes(vec![20]);
+    let id = NodeId::from_term_bytes(vec![20]);
     let mut attrs = Attrs::default();
     attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
     attrs.image_fit = Some(ImageFit::Contain);
     attrs.svg_expected = Some(true);
 
-    let mut element = Element::with_attrs(id.clone(), ElementKind::Image, Vec::new(), attrs);
-    element.frame = Some(Frame {
+    let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
+    element.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -781,7 +845,7 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(id);
+    tree.set_root_id(id);
     tree.insert(element);
 
     let draws = observe_tree(&tree);
@@ -1193,10 +1257,10 @@ fn test_glow_cards_in_scroll_y_panel_bleed_horizontally_at_outer_grid_edges() {
 #[test]
 fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing_space() {
     let build_tree = |with_glow: bool| {
-        let panel_id = ElementId::from_term_bytes(vec![100]);
-        let column_id = ElementId::from_term_bytes(vec![101]);
-        let glow_row_id = ElementId::from_term_bytes(vec![102]);
-        let combined_row_id = ElementId::from_term_bytes(vec![103]);
+        let panel_id = NodeId::from_term_bytes(vec![100]);
+        let column_id = NodeId::from_term_bytes(vec![101]);
+        let glow_row_id = NodeId::from_term_bytes(vec![102]);
+        let combined_row_id = NodeId::from_term_bytes(vec![103]);
 
         let panel_frame = Frame {
             x: 20.0,
@@ -1403,55 +1467,50 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             ),
         ];
 
-        let mut panel =
-            Element::with_attrs(panel_id.clone(), ElementKind::El, Vec::new(), panel_attrs);
-        panel.frame = Some(panel_frame);
-        panel.children = vec![column_id.clone()];
+        let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), panel_attrs);
+        panel.layout.frame = Some(panel_frame);
+        panel.children = vec![column_id];
 
-        let mut column = Element::with_attrs(
-            column_id.clone(),
-            ElementKind::Column,
-            Vec::new(),
-            column_attrs,
-        );
-        column.frame = Some(column_frame);
-        column.children = vec![glow_row_id.clone(), combined_row_id.clone()];
+        let mut column =
+            Element::with_attrs(column_id, ElementKind::Column, Vec::new(), column_attrs);
+        column.layout.frame = Some(column_frame);
+        column.children = vec![glow_row_id, combined_row_id];
 
         let mut glow_row = Element::with_attrs(
-            glow_row_id.clone(),
+            glow_row_id,
             ElementKind::WrappedRow,
             Vec::new(),
             glow_row_attrs,
         );
-        glow_row.frame = Some(glow_row_frame);
+        glow_row.layout.frame = Some(glow_row_frame);
         glow_row.children = glow_cards
             .iter()
-            .map(|(id, _, _)| ElementId::from_term_bytes(vec![*id]))
+            .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
             .collect();
 
         let mut combined_row = Element::with_attrs(
-            combined_row_id.clone(),
+            combined_row_id,
             ElementKind::WrappedRow,
             Vec::new(),
             combined_row_attrs,
         );
-        combined_row.frame = Some(combined_row_frame);
+        combined_row.layout.frame = Some(combined_row_frame);
         combined_row.children = combined_cards
             .iter()
-            .map(|(id, _, _)| ElementId::from_term_bytes(vec![*id]))
+            .map(|(id, _, _)| NodeId::from_term_bytes(vec![*id]))
             .collect();
 
         let mut tree = ElementTree::new();
-        tree.root = Some(panel_id);
+        tree.set_root_id(panel_id);
         tree.insert(panel);
         tree.insert(column);
         tree.insert(glow_row);
         tree.insert(combined_row);
 
         for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
-            let id = ElementId::from_term_bytes(vec![id]);
-            let mut child = Element::with_attrs(id.clone(), ElementKind::El, Vec::new(), attrs);
-            child.frame = Some(frame);
+            let id = NodeId::from_term_bytes(vec![id]);
+            let mut child = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
+            child.layout.frame = Some(frame);
             tree.insert(child);
         }
 
@@ -1738,11 +1797,13 @@ fn test_render_uniform_pill_border_matches_clamped_rounded_clip() {
                 && !point_in_inset_rounded_rect(
                     px,
                     py,
-                    outer_x,
-                    outer_y,
-                    outer_w,
-                    outer_h,
-                    expected_radius,
+                    RoundedRectSample {
+                        x: outer_x,
+                        y: outer_y,
+                        w: outer_w,
+                        h: outer_h,
+                        radius: expected_radius,
+                    },
                     border,
                 ),
             "sample ({}, {}) should land inside the visible border band",

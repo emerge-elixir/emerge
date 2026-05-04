@@ -158,7 +158,7 @@ pub struct FontWeight(pub String);
 pub struct FontStyle(pub String);
 
 /// Runtime hover axis for scrollbar thumb styling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScrollbarHoverAxis {
     X,
     Y,
@@ -265,10 +265,13 @@ pub struct Attrs {
     pub scrollbar_x: Option<bool>,
     pub ghost_scrollbar_y: Option<bool>,
     pub ghost_scrollbar_x: Option<bool>,
+    #[cfg(test)]
     pub scrollbar_hover_axis: Option<ScrollbarHoverAxis>,
     pub scroll_x: Option<f64>,
     pub scroll_y: Option<f64>,
+    #[cfg(test)]
     pub scroll_x_max: Option<f64>,
+    #[cfg(test)]
     pub scroll_y_max: Option<f64>,
     pub on_click: Option<bool>,
     pub on_mouse_down: Option<bool>,
@@ -293,13 +296,21 @@ pub struct Attrs {
     pub mouse_over: Option<MouseOverAttrs>,
     pub focused: Option<MouseOverAttrs>,
     pub mouse_down: Option<MouseOverAttrs>,
+    #[cfg(test)]
     pub mouse_over_active: Option<bool>,
+    #[cfg(test)]
     pub mouse_down_active: Option<bool>,
+    #[cfg(test)]
     pub focused_active: Option<bool>,
+    #[cfg(test)]
     pub text_input_focused: Option<bool>,
+    #[cfg(test)]
     pub text_input_cursor: Option<u32>,
+    #[cfg(test)]
     pub text_input_selection_anchor: Option<u32>,
+    #[cfg(test)]
     pub text_input_preedit: Option<String>,
+    #[cfg(test)]
     pub text_input_preedit_cursor: Option<(u32, u32)>,
     pub background: Option<Background>,
     pub border_radius: Option<BorderRadius>,
@@ -335,6 +346,7 @@ pub struct Attrs {
     pub animate_enter: Option<AnimationSpec>,
     pub animate_exit: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
+    #[cfg(test)]
     /// Runtime-only: computed paragraph text fragments (not decoded from binary).
     pub paragraph_fragments: Option<Vec<TextFragment>>,
 }
@@ -347,125 +359,10 @@ pub fn effective_scrollbar_y(attrs: &Attrs) -> bool {
     attrs.scrollbar_y.unwrap_or(false) || attrs.ghost_scrollbar_y.unwrap_or(false)
 }
 
-/// Preserve runtime-only fields across attr replacement.
-pub fn preserve_runtime_scroll_attrs(existing: &Attrs, incoming: &mut Attrs) {
-    let content_changed = incoming.content != existing.content;
-
-    if incoming.scroll_x.is_none() {
-        incoming.scroll_x = existing.scroll_x;
-    }
-    if incoming.scroll_y.is_none() {
-        incoming.scroll_y = existing.scroll_y;
-    }
-    if incoming.scroll_x_max.is_none() {
-        incoming.scroll_x_max = existing.scroll_x_max;
-    }
-    if incoming.scroll_y_max.is_none() {
-        incoming.scroll_y_max = existing.scroll_y_max;
-    }
-    if incoming.scrollbar_hover_axis.is_none() {
-        incoming.scrollbar_hover_axis = existing.scrollbar_hover_axis;
-    }
-    if incoming.mouse_over_active.is_none() {
-        incoming.mouse_over_active = existing.mouse_over_active;
-    }
-    if incoming.mouse_down_active.is_none() {
-        incoming.mouse_down_active = existing.mouse_down_active;
-    }
-    if incoming.focused_active.is_none() {
-        incoming.focused_active = existing.focused_active;
-    }
-    if incoming.text_input_focused.is_none() {
-        incoming.text_input_focused = existing.text_input_focused;
-    }
-    if incoming.text_input_cursor.is_none() {
-        incoming.text_input_cursor = existing.text_input_cursor;
-    }
-    if incoming.text_input_selection_anchor.is_none() {
-        incoming.text_input_selection_anchor = existing.text_input_selection_anchor;
-    }
-
-    if content_changed {
-        incoming.text_input_selection_anchor = None;
-        incoming.text_input_preedit = None;
-        incoming.text_input_preedit_cursor = None;
-    } else {
-        if incoming.text_input_preedit.is_none() {
-            incoming.text_input_preedit = existing.text_input_preedit.clone();
-        }
-        if incoming.text_input_preedit_cursor.is_none() {
-            incoming.text_input_preedit_cursor = existing.text_input_preedit_cursor;
-        }
-    }
-
-    if !supports_mouse_over_tracking(incoming) {
-        incoming.mouse_over_active = None;
-    }
-
-    if incoming.mouse_down.is_none() {
-        incoming.mouse_down_active = None;
-    }
-
-    normalize_scrollbar_hover_axis(incoming);
-    normalize_text_input_runtime(incoming);
-}
-
 pub fn supports_mouse_over_tracking(attrs: &Attrs) -> bool {
     attrs.mouse_over.is_some()
         || attrs.on_mouse_enter.unwrap_or(false)
         || attrs.on_mouse_leave.unwrap_or(false)
-}
-
-fn normalize_scrollbar_hover_axis(attrs: &mut Attrs) {
-    match attrs.scrollbar_hover_axis {
-        Some(ScrollbarHoverAxis::X) if !attrs.scrollbar_x.unwrap_or(false) => {
-            attrs.scrollbar_hover_axis = None;
-        }
-        Some(ScrollbarHoverAxis::Y) if !attrs.scrollbar_y.unwrap_or(false) => {
-            attrs.scrollbar_hover_axis = None;
-        }
-        _ => {}
-    }
-}
-
-fn normalize_text_input_runtime(attrs: &mut Attrs) {
-    let content_len = attrs
-        .content
-        .as_ref()
-        .map(|content| content.chars().count() as u32)
-        .unwrap_or(0);
-
-    if let Some(cursor) = attrs.text_input_cursor {
-        attrs.text_input_cursor = Some(cursor.min(content_len));
-    } else if attrs.text_input_focused.unwrap_or(false) {
-        attrs.text_input_cursor = Some(content_len);
-    }
-
-    if let Some(anchor) = attrs.text_input_selection_anchor {
-        let clamped_anchor = anchor.min(content_len);
-        let cursor = attrs.text_input_cursor.unwrap_or(content_len);
-        if clamped_anchor == cursor {
-            attrs.text_input_selection_anchor = None;
-        } else {
-            attrs.text_input_selection_anchor = Some(clamped_anchor);
-        }
-    }
-
-    if attrs.text_input_preedit.is_none() {
-        attrs.text_input_preedit_cursor = None;
-    } else if let Some((start, end)) = attrs.text_input_preedit_cursor {
-        let preedit_len = attrs
-            .text_input_preedit
-            .as_ref()
-            .map(|value| value.chars().count() as u32)
-            .unwrap_or(0);
-        let mut start = start.min(preedit_len);
-        let mut end = end.min(preedit_len);
-        if start > end {
-            std::mem::swap(&mut start, &mut end);
-        }
-        attrs.text_input_preedit_cursor = Some((start, end));
-    }
 }
 
 // =============================================================================
@@ -2019,251 +1916,5 @@ mod tests {
             attrs.mouse_over.and_then(|style| style.svg_color),
             Some(Color::Rgb { r: 1, g: 2, b: 3 })
         );
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_copies_missing_values() {
-        let mut existing = Attrs::default();
-        existing.scroll_x = Some(11.0);
-        existing.scroll_y = Some(22.0);
-        existing.scroll_x_max = Some(110.0);
-        existing.scroll_y_max = Some(220.0);
-        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
-
-        let mut incoming = Attrs::default();
-        incoming.scrollbar_x = Some(true);
-        incoming.scrollbar_y = Some(true);
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.scroll_x, Some(11.0));
-        assert_eq!(incoming.scroll_y, Some(22.0));
-        assert_eq!(incoming.scroll_x_max, Some(110.0));
-        assert_eq!(incoming.scroll_y_max, Some(220.0));
-        assert_eq!(incoming.scrollbar_hover_axis, Some(ScrollbarHoverAxis::Y));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_keeps_incoming_values() {
-        let mut existing = Attrs::default();
-        existing.scroll_x = Some(11.0);
-        existing.scroll_y = Some(22.0);
-        existing.scroll_x_max = Some(110.0);
-        existing.scroll_y_max = Some(220.0);
-        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
-
-        let mut incoming = Attrs::default();
-        incoming.scrollbar_x = Some(true);
-        incoming.scrollbar_y = Some(true);
-        incoming.scroll_x = Some(1.0);
-        incoming.scroll_y = Some(2.0);
-        incoming.scroll_x_max = Some(3.0);
-        incoming.scroll_y_max = Some(4.0);
-        incoming.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.scroll_x, Some(1.0));
-        assert_eq!(incoming.scroll_y, Some(2.0));
-        assert_eq!(incoming.scroll_x_max, Some(3.0));
-        assert_eq!(incoming.scroll_y_max, Some(4.0));
-        assert_eq!(incoming.scrollbar_hover_axis, Some(ScrollbarHoverAxis::Y));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clears_invalid_hover_axis() {
-        let mut existing = Attrs::default();
-        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::X);
-
-        let mut incoming = Attrs::default();
-        incoming.scrollbar_x = Some(false);
-        incoming.scrollbar_y = Some(true);
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.scrollbar_hover_axis, None);
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_is_idempotent() {
-        let mut existing = Attrs::default();
-        existing.scroll_x = Some(7.0);
-        existing.scroll_y = Some(9.0);
-        existing.scroll_x_max = Some(30.0);
-        existing.scroll_y_max = Some(40.0);
-        existing.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
-
-        let mut incoming = Attrs::default();
-        incoming.scrollbar_x = Some(true);
-        incoming.scrollbar_y = Some(true);
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        let after_first = (
-            incoming.scroll_x,
-            incoming.scroll_y,
-            incoming.scroll_x_max,
-            incoming.scroll_y_max,
-            incoming.scrollbar_hover_axis,
-        );
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        let after_second = (
-            incoming.scroll_x,
-            incoming.scroll_y,
-            incoming.scroll_x_max,
-            incoming.scroll_y_max,
-            incoming.scrollbar_hover_axis,
-        );
-
-        assert_eq!(after_first, after_second);
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_preserves_mouse_over_active() {
-        let mut existing = Attrs::default();
-        existing.mouse_over = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-        existing.mouse_over_active = Some(true);
-
-        let mut incoming = Attrs::default();
-        incoming.mouse_over = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        assert_eq!(incoming.mouse_over_active, Some(true));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_preserves_event_only_hover_active() {
-        let mut existing = Attrs::default();
-        existing.on_mouse_enter = Some(true);
-        existing.on_mouse_leave = Some(true);
-        existing.mouse_over_active = Some(true);
-
-        let mut incoming = Attrs::default();
-        incoming.on_mouse_enter = Some(true);
-        incoming.on_mouse_leave = Some(true);
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        assert_eq!(incoming.mouse_over_active, Some(true));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clears_mouse_over_active_without_mouse_over() {
-        let mut existing = Attrs::default();
-        existing.mouse_over = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-        existing.mouse_over_active = Some(true);
-
-        let mut incoming = Attrs::default();
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        assert_eq!(incoming.mouse_over_active, None);
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_preserves_mouse_down_active() {
-        let mut existing = Attrs::default();
-        existing.mouse_down = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-        existing.mouse_down_active = Some(true);
-
-        let mut incoming = Attrs::default();
-        incoming.mouse_down = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        assert_eq!(incoming.mouse_down_active, Some(true));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clears_mouse_down_active_without_mouse_down() {
-        let mut existing = Attrs::default();
-        existing.mouse_down = Some(MouseOverAttrs {
-            alpha: Some(0.5),
-            ..Default::default()
-        });
-        existing.mouse_down_active = Some(true);
-
-        let mut incoming = Attrs::default();
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-        assert_eq!(incoming.mouse_down_active, None);
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_preserves_text_input_runtime_state() {
-        let mut existing = Attrs::default();
-        existing.content = Some("hello".to_string());
-        existing.text_input_focused = Some(true);
-        existing.text_input_cursor = Some(4);
-        existing.text_input_selection_anchor = Some(1);
-
-        let mut incoming = Attrs::default();
-        incoming.content = Some("hello".to_string());
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.text_input_focused, Some(true));
-        assert_eq!(incoming.text_input_cursor, Some(4));
-        assert_eq!(incoming.text_input_selection_anchor, Some(1));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clears_preedit_when_content_changes() {
-        let mut existing = Attrs::default();
-        existing.content = Some("hello".to_string());
-        existing.text_input_selection_anchor = Some(1);
-        existing.text_input_preedit = Some("ka".to_string());
-        existing.text_input_preedit_cursor = Some((2, 2));
-
-        let mut incoming = Attrs::default();
-        incoming.content = Some("world".to_string());
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.text_input_selection_anchor, None);
-        assert_eq!(incoming.text_input_preedit, None);
-        assert_eq!(incoming.text_input_preedit_cursor, None);
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clamps_and_orders_preedit_cursor() {
-        let mut existing = Attrs::default();
-        existing.content = Some("hello".to_string());
-        existing.text_input_preedit = Some("abc".to_string());
-        existing.text_input_preedit_cursor = Some((5, 1));
-
-        let mut incoming = Attrs::default();
-        incoming.content = Some("hello".to_string());
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.text_input_preedit.as_deref(), Some("abc"));
-        assert_eq!(incoming.text_input_preedit_cursor, Some((1, 3)));
-    }
-
-    #[test]
-    fn test_preserve_runtime_scroll_attrs_clears_selection_when_anchor_equals_cursor() {
-        let mut existing = Attrs::default();
-        existing.content = Some("abc".to_string());
-        existing.text_input_cursor = Some(2);
-        existing.text_input_selection_anchor = Some(2);
-
-        let mut incoming = Attrs::default();
-        incoming.content = Some("abc".to_string());
-
-        preserve_runtime_scroll_attrs(&existing, &mut incoming);
-
-        assert_eq!(incoming.text_input_cursor, Some(2));
-        assert_eq!(incoming.text_input_selection_anchor, None);
     }
 }

@@ -5,13 +5,19 @@
 //! 1. Measurement (bottom-up): Compute intrinsic sizes
 //! 2. Resolution (top-down): Assign frames with constraints
 
-use super::animation::{AnimationRuntime, apply_animation_overlays, scale_animation_spec};
+use super::animation::{
+    AnimationOverlayResult, AnimationRuntime, apply_animation_overlays,
+    apply_animation_overlays_to_active, scale_animation_spec,
+};
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
-    TextFragment, effective_scrollbar_x, effective_scrollbar_y, preserve_runtime_scroll_attrs,
+    TextFragment, effective_scrollbar_x, effective_scrollbar_y,
 };
 use super::element::{
-    Element, ElementId, ElementKind, ElementTree, Frame, NearbyConstraintKind, NearbySlot,
+    Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
+    IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId, ResolveAttrs,
+    ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey, ResolveExtent,
+    SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey, TopologyDependencyKey,
 };
 use super::render::DEFAULT_TEXT_COLOR;
 use super::text_layout::{TextLayoutStyle, layout_text_lines};
@@ -60,7 +66,7 @@ impl From<f32> for AvailableSpace {
 }
 
 /// Constraint passed down during layout resolution.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Constraint {
     pub width: AvailableSpace,
     pub height: AvailableSpace,
@@ -443,23 +449,157 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> bool {
-    let Some(root_id) = tree.root.clone() else {
+    tree.reset_layout_cache_stats();
+
+    let Some(root_id) = tree.root_id() else {
         return false;
     };
 
+    let animation_result = prepare_frame_attrs(tree, scale, animation_runtime, sample_time);
+    run_layout_passes(
+        tree,
+        &root_id,
+        constraint,
+        measurer,
+        inherited,
+        &animation_result,
+    );
+
+    animation_result.active
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrameAttrsPreparation {
+    pub(crate) root_id: Option<NodeId>,
+    pub(crate) animation_result: AnimationOverlayResult,
+}
+
+pub(crate) fn prepare_frame_attrs_for_update(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> FrameAttrsPreparation {
+    tree.reset_layout_cache_stats();
+
+    FrameAttrsPreparation {
+        root_id: tree.root_id(),
+        animation_result: prepare_frame_attrs(tree, scale, animation_runtime, sample_time),
+    }
+}
+
+pub(crate) fn prepare_animation_frame_attrs_for_update(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: &AnimationRuntime,
+    sample_time: Option<Instant>,
+) -> FrameAttrsPreparation {
+    tree.reset_layout_cache_stats();
+    tree.ensure_topology();
+    tree.set_current_scale(scale);
+
+    let active_ids = animation_runtime.active_node_ids();
+    for id in &active_ids {
+        if let Some(element) = tree.get_mut(id) {
+            let scale_factor = match element.lifecycle.ghost_capture_scale {
+                Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
+                None => scale,
+            };
+            element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+            element.normalize_extracted_state();
+        }
+    }
+
+    let animation_result =
+        apply_animation_overlays_to_active(tree, animation_runtime, sample_time, scale);
+    mark_animation_refresh_effects_dirty(tree, &animation_result);
+    apply_interaction_styles_for_ids(tree, &active_ids);
+
+    FrameAttrsPreparation {
+        root_id: tree.root_id(),
+        animation_result,
+    }
+}
+
+pub(crate) fn prepared_root_has_frame(
+    tree: &ElementTree,
+    preparation: &FrameAttrsPreparation,
+) -> bool {
+    preparation
+        .root_id
+        .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+        .is_some()
+}
+
+fn prepare_frame_attrs(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> AnimationOverlayResult {
+    tree.ensure_topology();
     tree.set_current_scale(scale);
 
     // Pass 0: Scale all attributes (base_attrs -> attrs with scale applied)
-    let animations_active = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
+    let animation_result = prepare_attrs_for_frame(tree, scale, animation_runtime, sample_time);
+    mark_animation_refresh_effects_dirty(tree, &animation_result);
     apply_interaction_styles(tree);
 
+    animation_result
+}
+
+fn run_layout_passes<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    root_id: &NodeId,
+    constraint: Constraint,
+    measurer: &M,
+    inherited: &FontContext,
+    animation_result: &AnimationOverlayResult,
+) {
+    mark_animation_layout_effects_dirty(tree, animation_result);
+
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
-    measure_element(tree, &root_id, measurer, inherited);
+    measure_element(tree, root_id, measurer, inherited, true);
 
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
-    resolve_element(tree, &root_id, constraint, 0.0, 0.0, inherited, measurer);
+    resolve_element(
+        tree,
+        root_id,
+        ResolvePlacement {
+            constraint,
+            x: 0.0,
+            y: 0.0,
+            inherited,
+            use_resolve_cache: true,
+        },
+        measurer,
+    );
+}
 
-    animations_active
+fn mark_animation_refresh_effects_dirty(
+    tree: &mut ElementTree,
+    animation_result: &AnimationOverlayResult,
+) {
+    for effect in &animation_result.effects {
+        tree.mark_refresh_dirty_for_invalidation(&effect.id, effect.invalidation);
+
+        if effect.registry_refresh {
+            tree.mark_registry_refresh_dirty(&effect.id);
+        }
+    }
+}
+
+fn mark_animation_layout_effects_dirty(
+    tree: &mut ElementTree,
+    animation_result: &AnimationOverlayResult,
+) {
+    animation_result
+        .effects
+        .iter()
+        .filter(|effect| effect.invalidation.requires_recompute())
+        .for_each(|effect| {
+            tree.mark_measure_dirty_for_invalidation(&effect.id, effect.invalidation)
+        });
 }
 
 /// Layout with default Skia text measurer.
@@ -477,15 +617,14 @@ fn prepare_attrs_for_frame(
     scale: f32,
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
-) -> bool {
-    for element in tree.nodes.values_mut() {
-        let previous = element.attrs.clone();
-        let scale_factor = match element.ghost_capture_scale {
+) -> AnimationOverlayResult {
+    for element in tree.iter_nodes_mut() {
+        let scale_factor = match element.lifecycle.ghost_capture_scale {
             Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
             None => scale,
         };
-        element.attrs = scale_attrs(&element.base_attrs, scale_factor);
-        preserve_runtime_scroll_attrs(&previous, &mut element.attrs);
+        element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+        element.normalize_extracted_state();
     }
 
     apply_animation_overlays(tree, animation_runtime, sample_time, scale)
@@ -507,11 +646,14 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         scrollbar_x: attrs.scrollbar_x,
         ghost_scrollbar_y: attrs.ghost_scrollbar_y,
         ghost_scrollbar_x: attrs.ghost_scrollbar_x,
+        #[cfg(test)]
         scrollbar_hover_axis: attrs.scrollbar_hover_axis,
         scroll_x: attrs.scroll_x.map(|v| v * scale_f64),
         scroll_y: attrs.scroll_y.map(|v| v * scale_f64),
-        scroll_x_max: attrs.scroll_x_max.map(|v| v * scale_f64),
-        scroll_y_max: attrs.scroll_y_max.map(|v| v * scale_f64),
+        #[cfg(test)]
+        scroll_x_max: None,
+        #[cfg(test)]
+        scroll_y_max: None,
         on_click: attrs.on_click,
         on_mouse_down: attrs.on_mouse_down,
         on_mouse_up: attrs.on_mouse_up,
@@ -544,14 +686,22 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
             .mouse_down
             .as_ref()
             .map(|style| scale_mouse_over_attrs(style, scale_f64)),
-        mouse_over_active: attrs.mouse_over_active,
-        mouse_down_active: attrs.mouse_down_active,
-        focused_active: attrs.focused_active,
-        text_input_focused: attrs.text_input_focused,
-        text_input_cursor: attrs.text_input_cursor,
-        text_input_selection_anchor: attrs.text_input_selection_anchor,
-        text_input_preedit: attrs.text_input_preedit.clone(),
-        text_input_preedit_cursor: attrs.text_input_preedit_cursor,
+        #[cfg(test)]
+        mouse_over_active: None,
+        #[cfg(test)]
+        mouse_down_active: None,
+        #[cfg(test)]
+        focused_active: None,
+        #[cfg(test)]
+        text_input_focused: None,
+        #[cfg(test)]
+        text_input_cursor: None,
+        #[cfg(test)]
+        text_input_selection_anchor: None,
+        #[cfg(test)]
+        text_input_preedit: None,
+        #[cfg(test)]
+        text_input_preedit_cursor: None,
         background: attrs.background.clone(),
         border_radius: attrs
             .border_radius
@@ -595,6 +745,7 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         video_target: attrs.video_target.clone(),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
+        #[cfg(test)]
         paragraph_fragments: None,
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
@@ -665,24 +816,36 @@ fn scale_mouse_over_attrs(attrs: &MouseOverAttrs, scale: f64) -> MouseOverAttrs 
 }
 
 fn apply_interaction_styles(tree: &mut ElementTree) {
-    for element in tree.nodes.values_mut() {
-        if element.attrs.mouse_over_active.unwrap_or(false)
-            && let Some(mouse_over) = element.attrs.mouse_over.clone()
-        {
-            apply_decorative_style(&mut element.attrs, &mouse_over);
-        }
+    for element in tree.iter_nodes_mut() {
+        apply_interaction_style_to_element(element);
+    }
+}
 
-        if element.attrs.focused_active.unwrap_or(false)
-            && let Some(focused) = element.attrs.focused.clone()
-        {
-            apply_decorative_style(&mut element.attrs, &focused);
+fn apply_interaction_styles_for_ids(tree: &mut ElementTree, ids: &[NodeId]) {
+    for id in ids {
+        if let Some(element) = tree.get_mut(id) {
+            apply_interaction_style_to_element(element);
         }
+    }
+}
 
-        if element.attrs.mouse_down_active.unwrap_or(false)
-            && let Some(mouse_down) = element.attrs.mouse_down.clone()
-        {
-            apply_decorative_style(&mut element.attrs, &mouse_down);
-        }
+fn apply_interaction_style_to_element(element: &mut Element) {
+    if element.runtime.mouse_over_active
+        && let Some(mouse_over) = element.layout.effective.mouse_over.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &mouse_over);
+    }
+
+    if element.runtime.focused_active
+        && let Some(focused) = element.layout.effective.focused.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &focused);
+    }
+
+    if element.runtime.mouse_down_active
+        && let Some(mouse_down) = element.layout.effective.mouse_down.clone()
+    {
+        apply_decorative_style(&mut element.layout.effective, &mouse_down);
     }
 }
 
@@ -835,50 +998,86 @@ fn scale_padding(padding: &Padding, scale: f32) -> Padding {
 /// Reads from pre-scaled attrs. Inherits font context from ancestors.
 fn measure_element<M: TextMeasurer>(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     measurer: &M,
     inherited: &FontContext,
+    use_subtree_cache: bool,
 ) -> IntrinsicSize {
-    // Get element's attrs to merge with inherited context
-    let element_context = tree
-        .get(id)
-        .map(|e| inherited.merge_with_attrs(&e.attrs))
-        .unwrap_or_else(|| inherited.clone());
-
-    // First measure all children with merged font context
-    let (child_ids, nearby_ids): (Vec<ElementId>, Vec<ElementId>) = tree
-        .get(id)
-        .map(|element| {
-            let nearby_ids = element
-                .nearby
-                .iter()
-                .map(|mount| mount.id.clone())
-                .collect();
-            (element.children.clone(), nearby_ids)
+    let Some((kind, attrs, measure_dirty, measure_descendant_dirty)) =
+        tree.get(id).map(|element| {
+            (
+                element.spec.kind,
+                element.layout.effective.clone(),
+                element.layout.measure_dirty,
+                element.layout.measure_descendant_dirty,
+            )
         })
-        .unwrap_or_default();
-
-    let child_sizes: Vec<IntrinsicSize> = child_ids
-        .iter()
-        .map(|child_id| measure_element(tree, child_id, measurer, &element_context))
-        .collect();
-
-    for nearby_id in &nearby_ids {
-        let _ = measure_element(tree, nearby_id, measurer, &element_context);
-    }
-
-    // Now measure this element
-    let Some(element) = tree.get(id) else {
+    else {
         return IntrinsicSize::default();
     };
 
-    // Read from pre-scaled attrs
-    let attrs = &element.attrs;
-    let insets = LayoutInsets::from_attrs(attrs);
-    let spacing_x = spacing_x(attrs);
-    let spacing_y = spacing_y(attrs);
+    let element_context = inherited.merge_with_attrs(&attrs);
+    let child_ids = tree.child_ids(id);
+    let nearby_mounts = tree.nearby_mounts_for(id);
+    let topology_key = tree.measure_topology_dependency_key_for(id);
+    let subtree_cache_key =
+        use_subtree_cache.then(|| subtree_measure_cache_key(kind, &attrs, inherited, topology_key));
 
-    let intrinsic = match element.kind {
+    if !use_subtree_cache || measure_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
+    } else if !measure_descendant_dirty
+        && let Some(key) = subtree_cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
+    {
+        return intrinsic;
+    }
+
+    // First measure all children with merged font context.
+    let child_sizes: Vec<IntrinsicSize> = child_ids
+        .iter()
+        .map(|child_id| {
+            measure_element(
+                tree,
+                child_id,
+                measurer,
+                &element_context,
+                use_subtree_cache,
+            )
+        })
+        .collect();
+
+    for nearby_id in nearby_mounts.iter().map(|mount| mount.id) {
+        let _ = measure_element(
+            tree,
+            &nearby_id,
+            measurer,
+            &element_context,
+            use_subtree_cache,
+        );
+    }
+
+    if use_subtree_cache
+        && !measure_dirty
+        && measure_descendant_dirty
+        && let Some(key) = subtree_cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_subtree_measure_cache(tree, id, key)
+    {
+        return intrinsic;
+    }
+
+    // Read from pre-scaled attrs
+    let insets = LayoutInsets::from_attrs(&attrs);
+    let spacing_x = spacing_x(&attrs);
+    let spacing_y = spacing_y(&attrs);
+    let cache_key = intrinsic_measure_cache_key(kind, &attrs, inherited);
+
+    if let Some(key) = cache_key.as_ref()
+        && let Some(intrinsic) = try_reuse_intrinsic_measure_cache(tree, id, key)
+    {
+        return intrinsic;
+    }
+
+    let intrinsic = match kind {
         ElementKind::Text | ElementKind::TextInput => {
             let content = attrs.content.as_deref().unwrap_or("");
             // Use inherited font context for missing values
@@ -887,7 +1086,7 @@ fn measure_element<M: TextMeasurer>(
                 .map(|s| s as f32)
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
-            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let (family, weight, italic) = font_info_with_inheritance(&attrs, inherited);
             let letter_spacing = attrs
                 .font_letter_spacing
                 .map(|s| s as f32)
@@ -930,7 +1129,7 @@ fn measure_element<M: TextMeasurer>(
                 .map(|s| s as f32)
                 .or(inherited.font_size)
                 .unwrap_or(16.0);
-            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let (family, weight, italic) = font_info_with_inheritance(&attrs, inherited);
             let letter_spacing = attrs
                 .font_letter_spacing
                 .map(|s| s as f32)
@@ -1081,21 +1280,230 @@ fn measure_element<M: TextMeasurer>(
         }
     };
 
-    // Store intrinsic size in frame temporarily (will be replaced in resolve pass)
+    // Store intrinsic size separately; resolve owns the retained frame positions.
+    let measured_frame = Frame {
+        x: 0.0,
+        y: 0.0,
+        width: intrinsic.width,
+        height: intrinsic.height,
+        content_width: intrinsic.width,
+        content_height: intrinsic.height,
+    };
+    let intrinsic_measure_cache = cache_key.map(|key| {
+        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_store());
+        IntrinsicMeasureCache {
+            key,
+            frame: measured_frame,
+        }
+    });
+    let subtree_measure_cache = if use_subtree_cache {
+        subtree_cache_key.map(|key| {
+            tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_store());
+            SubtreeMeasureCache {
+                key,
+                frame: measured_frame,
+            }
+        })
+    } else {
+        None
+    };
+
     if let Some(element) = tree.get_mut(id) {
-        let measured_frame = Frame {
-            x: 0.0,
-            y: 0.0,
-            width: intrinsic.width,
-            height: intrinsic.height,
-            content_width: intrinsic.width,
-            content_height: intrinsic.height,
-        };
-        element.frame = Some(measured_frame);
-        element.measured_frame = Some(measured_frame);
+        element.layout.measured_frame = Some(measured_frame);
+        element.layout.intrinsic_measure_cache = intrinsic_measure_cache;
+        if use_subtree_cache {
+            element.layout.subtree_measure_cache = subtree_measure_cache;
+            element.layout.measure_dirty = false;
+            element.layout.measure_descendant_dirty = false;
+        }
     }
 
     intrinsic
+}
+
+fn subtree_measure_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+    topology: TopologyDependencyKey,
+) -> SubtreeMeasureCacheKey {
+    SubtreeMeasureCacheKey {
+        kind,
+        attrs: subtree_measure_attrs(attrs),
+        inherited: inherited_measure_font_key(inherited),
+        topology,
+    }
+}
+
+fn subtree_measure_attrs(attrs: &Attrs) -> SubtreeMeasureAttrs {
+    SubtreeMeasureAttrs {
+        width: attrs.width.clone(),
+        height: attrs.height.clone(),
+        padding: attrs.padding.clone(),
+        border_width: attrs.border_width.clone(),
+        spacing: attrs.spacing,
+        spacing_x: attrs.spacing_x,
+        spacing_y: attrs.spacing_y,
+        scrollbar_y: attrs.scrollbar_y,
+        scrollbar_x: attrs.scrollbar_x,
+        ghost_scrollbar_y: attrs.ghost_scrollbar_y,
+        ghost_scrollbar_x: attrs.ghost_scrollbar_x,
+        scroll_x: attrs.scroll_x,
+        scroll_y: attrs.scroll_y,
+        clip_nearby: attrs.clip_nearby,
+        content: attrs.content.clone(),
+        font_size: attrs.font_size,
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
+        font_letter_spacing: attrs.font_letter_spacing,
+        font_word_spacing: attrs.font_word_spacing,
+        image_src: attrs.image_src.clone(),
+        image_fit: attrs.image_fit,
+        image_size: attrs.image_size,
+        text_align: attrs.text_align,
+        snap_layout: attrs.snap_layout,
+        snap_text_metrics: attrs.snap_text_metrics,
+        space_evenly: attrs.space_evenly,
+        has_animation_attrs: attrs.animate.is_some()
+            || attrs.animate_enter.is_some()
+            || attrs.animate_exit.is_some(),
+    }
+}
+
+fn inherited_measure_font_key(inherited: &FontContext) -> InheritedMeasureFontKey {
+    InheritedMeasureFontKey {
+        family: inherited.font_family.clone(),
+        weight: inherited.font_weight,
+        italic: inherited.font_italic,
+        font_size: inherited.font_size,
+        letter_spacing: inherited.font_letter_spacing,
+        word_spacing: inherited.font_word_spacing,
+    }
+}
+
+fn try_reuse_subtree_measure_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &SubtreeMeasureCacheKey,
+) -> Option<IntrinsicSize> {
+    let frame = tree
+        .get(id)
+        .and_then(|element| element.layout.subtree_measure_cache.as_ref())
+        .filter(|cache| &cache.key == key)
+        .map(|cache| cache.frame);
+
+    let Some(frame) = frame else {
+        tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
+        return None;
+    };
+
+    tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_hit());
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.measured_frame = Some(frame);
+        element.layout.measure_dirty = false;
+        element.layout.measure_descendant_dirty = false;
+    }
+
+    Some(IntrinsicSize {
+        width: frame.width,
+        height: frame.height,
+    })
+}
+
+fn intrinsic_measure_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+) -> Option<IntrinsicMeasureCacheKey> {
+    match kind {
+        ElementKind::Text | ElementKind::TextInput | ElementKind::Multiline => {
+            let font_size = attrs
+                .font_size
+                .map(|s| s as f32)
+                .or(inherited.font_size)
+                .unwrap_or(16.0);
+            let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
+            let letter_spacing = attrs
+                .font_letter_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_letter_spacing)
+                .unwrap_or(0.0);
+            let word_spacing = attrs
+                .font_word_spacing
+                .map(|s| s as f32)
+                .or(inherited.font_word_spacing)
+                .unwrap_or(0.0);
+
+            Some(IntrinsicMeasureCacheKey::Text {
+                kind,
+                content: attrs.content.clone(),
+                width: attrs.width.clone(),
+                height: attrs.height.clone(),
+                padding: attrs.padding.clone(),
+                border_width: attrs.border_width.clone(),
+                family,
+                weight,
+                italic,
+                font_size,
+                letter_spacing,
+                word_spacing,
+            })
+        }
+        ElementKind::Image | ElementKind::Video => {
+            let resolved_source_size = if attrs.image_size.is_none() {
+                attrs.image_src.as_ref().and_then(|source| {
+                    assets::ensure_source(source);
+                    assets::source_dimensions(source)
+                })
+            } else {
+                None
+            };
+
+            Some(IntrinsicMeasureCacheKey::Media {
+                kind,
+                width: attrs.width.clone(),
+                height: attrs.height.clone(),
+                padding: attrs.padding.clone(),
+                border_width: attrs.border_width.clone(),
+                image_src: attrs.image_src.clone(),
+                image_size: attrs.image_size,
+                resolved_source_size,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn try_reuse_intrinsic_measure_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &IntrinsicMeasureCacheKey,
+) -> Option<IntrinsicSize> {
+    let frame = tree
+        .get(id)
+        .and_then(|element| element.layout.intrinsic_measure_cache.as_ref())
+        .filter(|cache| &cache.key == key)
+        .map(|cache| cache.frame);
+
+    let Some(frame) = frame else {
+        tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_miss());
+        return None;
+    };
+
+    tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_hit());
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.measured_frame = Some(frame);
+        element.layout.measure_dirty = false;
+        element.layout.measure_descendant_dirty = false;
+    }
+
+    Some(IntrinsicSize {
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 /// Resolve intrinsic length from attribute.
@@ -1214,7 +1622,7 @@ fn container_prefers_fill_width(
     tree: &ElementTree,
     kind: ElementKind,
     attrs: &Attrs,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     constraint: Constraint,
 ) -> bool {
     attrs.width.is_none()
@@ -1222,7 +1630,7 @@ fn container_prefers_fill_width(
         && matches!(kind, ElementKind::Column | ElementKind::TextColumn)
         && child_ids.iter().any(|child_id| {
             tree.get(child_id)
-                .map(|child| length_requests_fill(child.attrs.width.as_ref()))
+                .map(|child| length_requests_fill(child.layout.effective.width.as_ref()))
                 .unwrap_or(false)
         })
 }
@@ -1231,7 +1639,7 @@ fn container_prefers_fill_height(
     tree: &ElementTree,
     kind: ElementKind,
     attrs: &Attrs,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     constraint: Constraint,
 ) -> bool {
     attrs.height.is_none()
@@ -1242,7 +1650,7 @@ fn container_prefers_fill_height(
         )
         && child_ids.iter().any(|child_id| {
             tree.get(child_id)
-                .map(|child| length_requests_fill(child.attrs.height.as_ref()))
+                .map(|child| length_requests_fill(child.layout.effective.height.as_ref()))
                 .unwrap_or(false)
         })
 }
@@ -1256,9 +1664,9 @@ struct ContentRect {
 }
 
 struct ResolvePassParams<'a> {
-    id: &'a ElementId,
+    id: &'a NodeId,
     attrs: &'a Attrs,
-    child_ids: &'a [ElementId],
+    child_ids: &'a [NodeId],
     content: ContentRect,
     insets: LayoutInsets,
     is_scrollable: bool,
@@ -1270,6 +1678,7 @@ struct ResolvePassParams<'a> {
     align_y: AlignY,
     available_width: AvailableSpace,
     available_height: AvailableSpace,
+    use_resolve_cache: bool,
 }
 
 fn resolve_el_kind<M: TextMeasurer>(
@@ -1294,6 +1703,7 @@ fn resolve_el_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_ch > params.content.height && !params.is_scrollable {
@@ -1327,6 +1737,7 @@ fn resolve_row_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_ch > params.content.height
@@ -1356,6 +1767,7 @@ fn resolve_wrapped_row_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1385,6 +1797,7 @@ fn resolve_column_kind<M: TextMeasurer>(
         },
         element_context,
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1409,6 +1822,7 @@ fn resolve_column_kind<M: TextMeasurer>(
                 },
                 element_context,
                 measurer,
+                params.use_resolve_cache,
             );
         }
 
@@ -1434,6 +1848,7 @@ fn resolve_text_column_kind<M: TextMeasurer>(
             inherited: element_context,
         },
         measurer,
+        params.use_resolve_cache,
     );
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1461,10 +1876,11 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
         },
         measurer,
         &mut paragraph_floats,
+        params.use_resolve_cache,
     );
 
     if let Some(element) = tree.get_mut(params.id) {
-        element.attrs.paragraph_fragments = Some(fragments);
+        element.layout.paragraph_fragments = Some(fragments);
     }
 
     if actual_content_height > params.content.height && !params.is_scrollable {
@@ -1534,31 +1950,72 @@ fn resolve_multiline_kind<M: TextMeasurer>(
 /// Reads from pre-scaled attrs.
 fn resolve_element<M: TextMeasurer>(
     tree: &mut ElementTree,
-    id: &ElementId,
-    constraint: Constraint,
-    x: f32,
-    y: f32,
-    inherited: &FontContext,
+    id: &NodeId,
+    placement: ResolvePlacement<'_>,
     measurer: &M,
 ) {
+    let ResolvePlacement {
+        constraint,
+        x,
+        y,
+        inherited,
+        use_resolve_cache,
+    } = placement;
+
     let Some(element) = tree.get(id) else {
         return;
     };
 
     // Read from pre-scaled attrs
-    let attrs = element.attrs.clone();
-    let kind = element.kind;
-    let child_ids = element.children.clone();
+    let attrs = element.layout.effective.clone();
+    let kind = element.spec.kind;
+    let measured_frame = element.layout.measured_frame;
+    let resolve_dirty = element.layout.resolve_dirty;
+    let resolve_descendant_dirty = element.layout.resolve_descendant_dirty;
     let intrinsic = element
-        .frame
+        .layout
+        .measured_frame
+        .or(element.layout.frame)
         .map(|f| IntrinsicSize {
             width: f.width,
             height: f.height,
         })
         .unwrap_or_default();
+    let child_ids = tree.child_ids(id);
+    let nearby_mounts = tree.nearby_mounts_for(id);
+    let topology_key = tree.topology_dependency_key_for(id);
 
     // Merge inherited font context with this element's attrs
     let element_context = inherited.merge_with_attrs(&attrs);
+    let resolve_kind_eligible = resolve_cache_kind_eligible(kind);
+    let cache_eligible = use_resolve_cache && resolve_kind_eligible;
+
+    let cache_key = cache_eligible.then(|| {
+        resolve_cache_key(
+            kind,
+            &attrs,
+            inherited,
+            measured_frame,
+            constraint,
+            topology_key,
+        )
+    });
+
+    if resolve_descendant_dirty
+        && !resolve_dirty
+        && let Some(key) = cache_key.as_ref()
+        && try_reuse_resolve_cache_with_dirty_descendants(tree, id, key, placement, measurer)
+    {
+        return;
+    }
+
+    if !use_resolve_cache || !resolve_kind_eligible || resolve_dirty || resolve_descendant_dirty {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
+    } else if let Some(key) = cache_key.as_ref()
+        && try_reuse_resolve_cache(tree, id, key, x, y)
+    {
+        return;
+    }
 
     let insets = LayoutInsets::from_attrs(&attrs);
     let spacing_x = spacing_x(&attrs);
@@ -1592,7 +2049,7 @@ fn resolve_element<M: TextMeasurer>(
 
     // Update frame (content size will be updated after children are resolved)
     if let Some(element) = tree.get_mut(id) {
-        element.frame = Some(Frame {
+        element.layout.frame = Some(Frame {
             x,
             y,
             width,
@@ -1626,6 +2083,7 @@ fn resolve_element<M: TextMeasurer>(
         align_y,
         available_width,
         available_height,
+        use_resolve_cache,
     };
 
     match kind {
@@ -1649,22 +2107,424 @@ fn resolve_element<M: TextMeasurer>(
 
     update_paint_children(tree, id, kind);
     update_scroll_state(tree, id);
-    resolve_nearby_mounts(tree, id, &element_context, measurer);
+    resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
+
+    if use_resolve_cache
+        && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
+        && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+    {
+        let key = resolve_cache_key(
+            kind,
+            &attrs,
+            inherited,
+            measured_frame,
+            constraint,
+            topology_key,
+        );
+
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
+
+        if let Some(element) = tree.get_mut(id) {
+            element.layout.resolve_cache = Some(ResolveCache {
+                key,
+                extent: resolve_extent(frame),
+            });
+            element.layout.resolve_dirty = false;
+            element.layout.resolve_descendant_dirty = false;
+        }
+    }
 }
 
-fn update_paint_children(tree: &mut ElementTree, id: &ElementId, kind: ElementKind) {
-    let Some(element) = tree.get(id) else {
-        return;
+fn resolve_cache_key(
+    kind: ElementKind,
+    attrs: &Attrs,
+    inherited: &FontContext,
+    measured_frame: Option<Frame>,
+    constraint: Constraint,
+    topology: TopologyDependencyKey,
+) -> ResolveCacheKey {
+    ResolveCacheKey {
+        kind,
+        attrs: resolve_attrs(attrs),
+        inherited: inherited_measure_font_key(inherited),
+        measured_frame,
+        constraint: resolve_constraint_key(constraint),
+        topology,
+    }
+}
+
+fn resolve_extent(frame: Frame) -> ResolveExtent {
+    ResolveExtent {
+        width: frame.width,
+        height: frame.height,
+        content_width: frame.content_width,
+        content_height: frame.content_height,
+    }
+}
+
+fn frame_from_resolve_extent(extent: ResolveExtent, x: f32, y: f32) -> Frame {
+    Frame {
+        x,
+        y,
+        width: extent.width,
+        height: extent.height,
+        content_width: extent.content_width,
+        content_height: extent.content_height,
+    }
+}
+
+fn resolve_attrs(attrs: &Attrs) -> ResolveAttrs {
+    ResolveAttrs {
+        width: attrs.width.clone(),
+        height: attrs.height.clone(),
+        padding: attrs.padding.clone(),
+        border_width: attrs.border_width.clone(),
+        spacing: attrs.spacing,
+        spacing_x: attrs.spacing_x,
+        spacing_y: attrs.spacing_y,
+        align_x: attrs.align_x,
+        align_y: attrs.align_y,
+        scrollbar_y: attrs.scrollbar_y,
+        scrollbar_x: attrs.scrollbar_x,
+        ghost_scrollbar_y: attrs.ghost_scrollbar_y,
+        ghost_scrollbar_x: attrs.ghost_scrollbar_x,
+        scroll_x: attrs.scroll_x,
+        scroll_y: attrs.scroll_y,
+        clip_nearby: attrs.clip_nearby,
+        content: attrs.content.clone(),
+        font_size: attrs.font_size,
+        font: attrs.font.clone(),
+        font_weight: attrs.font_weight.clone(),
+        font_style: attrs.font_style.clone(),
+        font_letter_spacing: attrs.font_letter_spacing,
+        font_word_spacing: attrs.font_word_spacing,
+        image_src: attrs.image_src.clone(),
+        image_fit: attrs.image_fit,
+        image_size: attrs.image_size,
+        text_align: attrs.text_align,
+        snap_layout: attrs.snap_layout,
+        snap_text_metrics: attrs.snap_text_metrics,
+        space_evenly: attrs.space_evenly,
+        has_animation_attrs: attrs.animate.is_some()
+            || attrs.animate_enter.is_some()
+            || attrs.animate_exit.is_some(),
+    }
+}
+
+fn resolve_constraint_key(constraint: Constraint) -> ResolveConstraintKey {
+    ResolveConstraintKey {
+        width: resolve_available_space_key(constraint.width),
+        height: resolve_available_space_key(constraint.height),
+    }
+}
+
+fn resolve_available_space_key(space: AvailableSpace) -> ResolveAvailableSpaceKey {
+    match space {
+        AvailableSpace::Definite(value) => ResolveAvailableSpaceKey::Definite(value),
+        AvailableSpace::MinContent => ResolveAvailableSpaceKey::MinContent,
+        AvailableSpace::MaxContent => ResolveAvailableSpaceKey::MaxContent,
+    }
+}
+
+fn try_reuse_resolve_cache(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &ResolveCacheKey,
+    x: f32,
+    y: f32,
+) -> bool {
+    let cached_frames = tree.get(id).and_then(|element| {
+        let cache = element.layout.resolve_cache.as_ref()?;
+        if &cache.key != key {
+            return None;
+        }
+
+        Some((
+            frame_from_resolve_extent(cache.extent, x, y),
+            element.layout.frame?,
+        ))
+    });
+
+    let Some((target_frame, current_frame)) = cached_frames else {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
+        return false;
     };
 
-    let source_children = element.children.clone();
-    let mut ordered: Vec<(usize, ElementId, f32, f32)> = source_children
+    tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
+
+    shift_subtree(
+        tree,
+        id,
+        target_frame.x - current_frame.x,
+        target_frame.y - current_frame.y,
+    );
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(target_frame);
+        element.layout.resolve_dirty = false;
+        element.layout.resolve_descendant_dirty = false;
+    }
+
+    true
+}
+
+fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    key: &ResolveCacheKey,
+    placement: ResolvePlacement<'_>,
+    measurer: &M,
+) -> bool {
+    let ResolvePlacement {
+        x,
+        y,
+        inherited,
+        use_resolve_cache,
+        ..
+    } = placement;
+
+    let snapshot = tree.get(id).and_then(|element| {
+        Some((
+            element.layout.resolve_cache.as_ref()?.clone(),
+            element.layout.frame?,
+            element.layout.effective.clone(),
+            element.spec.kind,
+            element.layout.measured_frame,
+            element.layout.resolve_dirty,
+            element.layout.resolve_descendant_dirty,
+            tree.child_ids(id),
+            tree.nearby_mounts_for(id),
+        ))
+    });
+
+    let Some((
+        cache,
+        current_frame,
+        attrs,
+        kind,
+        _measured_frame,
+        resolve_dirty,
+        resolve_descendant_dirty,
+        child_ids,
+        nearby_mounts,
+    )) = snapshot
+    else {
+        return false;
+    };
+
+    if resolve_dirty
+        || !resolve_descendant_dirty
+        || !resolve_cache_key_matches_with_nearby_boundary(&cache.key, key)
+    {
+        return false;
+    }
+
+    let full_key_match = cache.key == *key;
+    let target_frame = frame_from_resolve_extent(cache.extent, x, y);
+    tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
+    shift_subtree(
+        tree,
+        id,
+        target_frame.x - current_frame.x,
+        target_frame.y - current_frame.y,
+    );
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(target_frame);
+        element.layout.resolve_dirty = false;
+    }
+
+    let element_context = inherited.merge_with_attrs(&attrs);
+    let dirty_child_ids: Vec<NodeId> = child_ids
+        .iter()
+        .filter(|child_id| node_needs_resolve_traversal(tree, child_id))
+        .copied()
+        .collect();
+
+    for child_id in &dirty_child_ids {
+        let Some((child_key, child_x, child_y)) =
+            resolve_cache_key_for_existing_frame(tree, child_id, &element_context)
+        else {
+            return false;
+        };
+
+        if !try_reuse_resolve_cache_with_dirty_descendants(
+            tree,
+            child_id,
+            &child_key,
+            ResolvePlacement {
+                constraint: constraint_from_resolve_constraint_key(child_key.constraint),
+                x: child_x,
+                y: child_y,
+                inherited: &element_context,
+                use_resolve_cache,
+            },
+            measurer,
+        ) {
+            return false;
+        }
+    }
+
+    let nearby_needs_traversal = !full_key_match
+        || nearby_mounts
+            .iter()
+            .any(|mount| node_needs_resolve_traversal(tree, &mount.id));
+
+    if nearby_needs_traversal {
+        resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
+    }
+
+    if use_resolve_cache
+        && !full_key_match
+        && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
+    {
+        tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
+        if let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+            && let Some(element) = tree.get_mut(id)
+        {
+            element.layout.resolve_cache = Some(ResolveCache {
+                key: key.clone(),
+                extent: resolve_extent(frame),
+            });
+        }
+    }
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.resolve_dirty = false;
+        element.layout.resolve_descendant_dirty = false;
+    }
+
+    true
+}
+
+fn resolve_cache_key_for_existing_frame(
+    tree: &ElementTree,
+    id: &NodeId,
+    inherited: &FontContext,
+) -> Option<(ResolveCacheKey, f32, f32)> {
+    let element = tree.get(id)?;
+    let frame = element.layout.frame?;
+    let cached_constraint = element.layout.resolve_cache.as_ref()?.key.constraint;
+    let key = resolve_cache_key(
+        element.spec.kind,
+        &element.layout.effective,
+        inherited,
+        element.layout.measured_frame,
+        constraint_from_resolve_constraint_key(cached_constraint),
+        tree.topology_dependency_key_for(id),
+    );
+
+    Some((key, frame.x, frame.y))
+}
+
+fn constraint_from_resolve_constraint_key(key: ResolveConstraintKey) -> Constraint {
+    Constraint {
+        width: available_space_from_resolve_key(key.width),
+        height: available_space_from_resolve_key(key.height),
+    }
+}
+
+fn available_space_from_resolve_key(key: ResolveAvailableSpaceKey) -> AvailableSpace {
+    match key {
+        ResolveAvailableSpaceKey::Definite(value) => AvailableSpace::Definite(value),
+        ResolveAvailableSpaceKey::MinContent => AvailableSpace::MinContent,
+        ResolveAvailableSpaceKey::MaxContent => AvailableSpace::MaxContent,
+    }
+}
+
+fn node_needs_resolve_traversal(tree: &ElementTree, id: &NodeId) -> bool {
+    tree.get(id).is_some_and(|element| {
+        element.layout.resolve_dirty || element.layout.resolve_descendant_dirty
+    })
+}
+
+fn resolve_cache_key_matches_with_nearby_boundary(
+    cached: &ResolveCacheKey,
+    current: &ResolveCacheKey,
+) -> bool {
+    cached.kind == current.kind
+        && cached.attrs == current.attrs
+        && cached.inherited == current.inherited
+        && cached.measured_frame == current.measured_frame
+        && cached.constraint == current.constraint
+        && cached.topology.children_version == current.topology.children_version
+        && cached.topology.child_count == current.topology.child_count
+}
+
+fn can_store_resolve_cache(
+    tree: &ElementTree,
+    kind: ElementKind,
+    child_ids: &[NodeId],
+    nearby: &[NearbyMount],
+) -> bool {
+    resolve_cache_kind_eligible(kind)
+        && child_ids
+            .iter()
+            .all(|child_id| child_can_be_restored_by_parent_resolve_cache(tree, kind, child_id))
+        && nearby.iter().all(|mount| {
+            tree.get(&mount.id)
+                .is_some_and(|child| child.layout.resolve_cache.is_some())
+        })
+}
+
+fn child_can_be_restored_by_parent_resolve_cache(
+    tree: &ElementTree,
+    parent_kind: ElementKind,
+    child_id: &NodeId,
+) -> bool {
+    let Some(child) = tree.get(child_id) else {
+        return false;
+    };
+
+    if parent_kind == ElementKind::Paragraph && paragraph_owns_inline_child_layout(child) {
+        return true;
+    }
+
+    if parent_kind == ElementKind::TextColumn && child.spec.kind == ElementKind::Paragraph {
+        return true;
+    }
+
+    child.layout.resolve_cache.is_some()
+}
+
+fn paragraph_owns_inline_child_layout(child: &Element) -> bool {
+    !matches!(
+        child.layout.effective.align_x,
+        Some(AlignX::Left | AlignX::Right)
+    )
+}
+
+fn resolve_cache_kind_eligible(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Text
+            | ElementKind::TextInput
+            | ElementKind::Image
+            | ElementKind::Video
+            | ElementKind::None
+            | ElementKind::El
+            | ElementKind::Row
+            | ElementKind::Column
+            | ElementKind::Multiline
+            | ElementKind::WrappedRow
+            | ElementKind::TextColumn
+            | ElementKind::Paragraph
+    )
+}
+
+fn update_paint_children(tree: &mut ElementTree, id: &NodeId, kind: ElementKind) {
+    if tree.get(id).is_none() {
+        return;
+    }
+
+    let source_children = tree.child_ids(id);
+    let mut ordered: Vec<(usize, NodeId, f32, f32)> = source_children
         .iter()
         .enumerate()
         .filter_map(|(index, child_id)| {
             tree.get(child_id)
-                .and_then(|child| child.frame)
-                .map(|frame| (index, child_id.clone(), frame.x, frame.y))
+                .and_then(|child| child.layout.frame)
+                .map(|frame| (index, *child_id, frame.x, frame.y))
         })
         .collect();
 
@@ -1713,9 +2573,7 @@ fn update_paint_children(tree: &mut ElementTree, id: &ElementId, kind: ElementKi
         source_children
     };
 
-    if let Some(element) = tree.get_mut(id) {
-        element.paint_children = paint_children;
-    }
+    let _ = tree.set_paint_children(id, paint_children);
 }
 
 /// Resolve final length from attribute, intrinsic, and constraint.
@@ -1738,43 +2596,42 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
 
 fn resolve_nearby_mounts<M: TextMeasurer>(
     tree: &mut ElementTree,
-    host_id: &ElementId,
+    host_id: &NodeId,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) {
-    let Some(host_frame) = tree.get(host_id).and_then(|element| element.frame) else {
+    let Some(host_frame) = tree.get(host_id).and_then(|element| element.layout.frame) else {
         return;
     };
 
-    let nearby_roots: Vec<(NearbySlot, ElementId)> = tree
-        .get(host_id)
-        .map(|element| {
-            element
-                .nearby
-                .iter()
-                .map(|mount| (mount.slot, mount.id.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let nearby_roots: Vec<(NearbySlot, NodeId)> = tree
+        .nearby_mounts_for(host_id)
+        .into_iter()
+        .map(|mount| (mount.slot, mount.id))
+        .collect();
 
     for (slot, nearby_id) in nearby_roots {
         let constraint = nearby_constraint(host_frame, slot);
         resolve_element(
             tree,
             &nearby_id,
-            constraint,
-            host_frame.x,
-            host_frame.y,
-            inherited,
+            ResolvePlacement {
+                constraint,
+                x: host_frame.x,
+                y: host_frame.y,
+                inherited,
+                use_resolve_cache,
+            },
             measurer,
         );
 
         let Some((nearby_frame, align_x, align_y)) = tree.get(&nearby_id).and_then(|element| {
-            element.frame.map(|frame| {
+            element.layout.frame.map(|frame| {
                 (
                     frame,
-                    element.attrs.align_x.unwrap_or_default(),
-                    element.attrs.align_y.unwrap_or_default(),
+                    element.layout.effective.align_x.unwrap_or_default(),
+                    element.layout.effective.align_y.unwrap_or_default(),
                 )
             })
         }) else {
@@ -1924,11 +2781,20 @@ struct TextFlowLayoutContext<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ChildPlacement<'a> {
+struct ResolvePlacement<'a> {
     constraint: Constraint,
     x: f32,
     y: f32,
     inherited: &'a FontContext,
+    use_resolve_cache: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RowResolveContext<'a> {
+    content: ContentRect,
+    options: RowChildrenOptions,
+    inherited: &'a FontContext,
+    use_resolve_cache: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1941,8 +2807,8 @@ struct ChildFrameSnapshot {
     content_height: f32,
 }
 
-fn child_frame_snapshot(tree: &ElementTree, child_id: &ElementId) -> Option<ChildFrameSnapshot> {
-    let frame = tree.get(child_id)?.frame?;
+fn child_frame_snapshot(tree: &ElementTree, child_id: &NodeId) -> Option<ChildFrameSnapshot> {
+    let frame = tree.get(child_id)?.layout.frame?;
     Some(ChildFrameSnapshot {
         x: frame.x,
         y: frame.y,
@@ -1955,45 +2821,37 @@ fn child_frame_snapshot(tree: &ElementTree, child_id: &ElementId) -> Option<Chil
 
 fn resolve_child_with_placement<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
-    placement: ChildPlacement<'_>,
+    child_id: &NodeId,
+    placement: ResolvePlacement<'_>,
     measurer: &M,
 ) -> Option<ChildFrameSnapshot> {
-    resolve_element(
-        tree,
-        child_id,
-        placement.constraint,
-        placement.x,
-        placement.y,
-        placement.inherited,
-        measurer,
-    );
+    resolve_element(tree, child_id, placement, measurer);
     child_frame_snapshot(tree, child_id)
 }
 
-fn child_align_x(tree: &ElementTree, child_id: &ElementId) -> AlignX {
+fn child_align_x(tree: &ElementTree, child_id: &NodeId) -> AlignX {
     tree.get(child_id)
-        .map(|child| child.attrs.align_x.unwrap_or_default())
+        .map(|child| child.layout.effective.align_x.unwrap_or_default())
         .unwrap_or_default()
 }
 
-fn child_align_y(tree: &ElementTree, child_id: &ElementId) -> AlignY {
+fn child_align_y(tree: &ElementTree, child_id: &NodeId) -> AlignY {
     tree.get(child_id)
-        .map(|child| child.attrs.align_y.unwrap_or_default())
+        .map(|child| child.layout.effective.align_y.unwrap_or_default())
         .unwrap_or_default()
 }
 
-fn child_measured_width(tree: &ElementTree, child_id: &ElementId) -> f32 {
+fn child_measured_width(tree: &ElementTree, child_id: &NodeId) -> f32 {
     tree.get(child_id)
-        .and_then(|child| child.measured_frame.or(child.frame))
+        .and_then(|child| child.layout.measured_frame.or(child.layout.frame))
         .map(|frame| frame.width)
         .unwrap_or(0.0)
         .max(0.0)
 }
 
-fn child_measured_height(tree: &ElementTree, child_id: &ElementId) -> f32 {
+fn child_measured_height(tree: &ElementTree, child_id: &NodeId) -> f32 {
     tree.get(child_id)
-        .and_then(|child| child.measured_frame.or(child.frame))
+        .and_then(|child| child.layout.measured_frame.or(child.layout.frame))
         .map(|frame| frame.height)
         .unwrap_or(0.0)
         .max(0.0)
@@ -2006,19 +2864,23 @@ fn planned_row_child_width(
     width_per_portion: f32,
 ) -> f32 {
     let portion = if allow_fill_width {
-        get_fill_weight(child.attrs.width.as_ref())
+        get_fill_weight(child.layout.effective.width.as_ref())
     } else {
         0.0
     };
 
     if portion > 0.0 {
         resolve_length(
-            child.attrs.width.as_ref(),
+            child.layout.effective.width.as_ref(),
             measured_width,
             width_per_portion * portion,
         )
     } else {
-        resolve_length(child.attrs.width.as_ref(), measured_width, measured_width)
+        resolve_length(
+            child.layout.effective.width.as_ref(),
+            measured_width,
+            measured_width,
+        )
     }
 }
 
@@ -2029,20 +2891,20 @@ fn planned_column_child_height(
     height_per_portion: f32,
 ) -> f32 {
     let portion = if allow_fill_height {
-        get_fill_weight(child.attrs.height.as_ref())
+        get_fill_weight(child.layout.effective.height.as_ref())
     } else {
         0.0
     };
 
     if portion > 0.0 {
         resolve_length(
-            child.attrs.height.as_ref(),
+            child.layout.effective.height.as_ref(),
             measured_height,
             height_per_portion * portion,
         )
     } else {
         resolve_length(
-            child.attrs.height.as_ref(),
+            child.layout.effective.height.as_ref(),
             measured_height,
             measured_height,
         )
@@ -2062,11 +2924,12 @@ fn planned_column_child_height(
 /// - Child can override with its own alignment attribute
 fn resolve_el_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: ElChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     let mut max_child_width = 0.0_f32;
     let mut max_child_height = 0.0_f32;
@@ -2077,19 +2940,28 @@ fn resolve_el_children<M: TextMeasurer>(
                 continue;
             };
             // Child can override parent alignment, otherwise use parent's
-            let ax = child.attrs.align_x.unwrap_or(options.parent_align_x);
-            let ay = child.attrs.align_y.unwrap_or(options.parent_align_y);
+            let ax = child
+                .layout
+                .effective
+                .align_x
+                .unwrap_or(options.parent_align_x);
+            let ay = child
+                .layout
+                .effective
+                .align_y
+                .unwrap_or(options.parent_align_y);
             (ax, ay)
         };
 
         let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(content.width, content.height),
                 x: 0.0,
                 y: 0.0,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) else {
@@ -2132,10 +3004,10 @@ fn resolve_el_children<M: TextMeasurer>(
 
 #[derive(Debug)]
 struct RowLayoutPlan {
-    child_widths: HashMap<ElementId, f32>,
-    left_children: Vec<ElementId>,
-    center_children: Vec<ElementId>,
-    right_children: Vec<ElementId>,
+    child_widths: HashMap<NodeId, f32>,
+    left_children: Vec<NodeId>,
+    center_children: Vec<NodeId>,
+    right_children: Vec<NodeId>,
     total_left_width: f32,
     total_center_width: f32,
     total_right_width: f32,
@@ -2151,7 +3023,7 @@ fn spacing_for_count(count: usize, spacing: f32) -> f32 {
 
 fn build_row_layout_plan(
     tree: &ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     options: RowChildrenOptions,
     content_width: f32,
 ) -> RowLayoutPlan {
@@ -2165,7 +3037,7 @@ fn build_row_layout_plan(
         };
         let measured_width = child_measured_width(tree, child_id);
         let portion = if options.allow_fill_width {
-            get_fill_weight(child.attrs.width.as_ref())
+            get_fill_weight(child.layout.effective.width.as_ref())
         } else {
             0.0
         };
@@ -2191,11 +3063,11 @@ fn build_row_layout_plan(
     };
 
     // Partition children by horizontal alignment and calculate widths.
-    let mut left_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut right_children: Vec<ElementId> = Vec::new();
+    let mut left_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut right_children: Vec<NodeId> = Vec::new();
 
-    let mut child_widths: HashMap<ElementId, f32> = HashMap::new();
+    let mut child_widths: HashMap<NodeId, f32> = HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
@@ -2211,19 +3083,19 @@ fn build_row_layout_plan(
             options.allow_fill_width,
             width_per_portion,
         );
-        child_widths.insert(child_id.clone(), width);
+        child_widths.insert(*child_id, width);
 
-        match child.attrs.align_x.unwrap_or_default() {
+        match child.layout.effective.align_x.unwrap_or_default() {
             AlignX::Left => {
-                left_children.push(child_id.clone());
+                left_children.push(*child_id);
                 total_left_width += width;
             }
             AlignX::Center => {
-                center_children.push(child_id.clone());
+                center_children.push(*child_id);
                 total_center_width += width;
             }
             AlignX::Right => {
-                right_children.push(child_id.clone());
+                right_children.push(*child_id);
                 total_right_width += width;
             }
         }
@@ -2240,15 +3112,12 @@ fn build_row_layout_plan(
     }
 }
 
-fn build_row_layout_plan_from_widths(
-    tree: &ElementTree,
-    line: &[(ElementId, f32)],
-) -> RowLayoutPlan {
-    let mut left_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut right_children: Vec<ElementId> = Vec::new();
+fn build_row_layout_plan_from_widths(tree: &ElementTree, line: &[(NodeId, f32)]) -> RowLayoutPlan {
+    let mut left_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut right_children: Vec<NodeId> = Vec::new();
 
-    let mut child_widths: HashMap<ElementId, f32> = HashMap::new();
+    let mut child_widths: HashMap<NodeId, f32> = HashMap::new();
     let mut total_left_width = 0.0_f32;
     let mut total_center_width = 0.0_f32;
     let mut total_right_width = 0.0_f32;
@@ -2258,19 +3127,19 @@ fn build_row_layout_plan_from_widths(
             continue;
         };
 
-        child_widths.insert(child_id.clone(), *width);
+        child_widths.insert(*child_id, *width);
 
-        match child.attrs.align_x.unwrap_or_default() {
+        match child.layout.effective.align_x.unwrap_or_default() {
             AlignX::Left => {
-                left_children.push(child_id.clone());
+                left_children.push(*child_id);
                 total_left_width += *width;
             }
             AlignX::Center => {
-                center_children.push(child_id.clone());
+                center_children.push(*child_id);
                 total_center_width += *width;
             }
             AlignX::Right => {
-                right_children.push(child_id.clone());
+                right_children.push(*child_id);
                 total_right_width += *width;
             }
         }
@@ -2294,6 +3163,7 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
     plan: &RowLayoutPlan,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let left_spacing = spacing_for_count(plan.left_children.len(), spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), spacing);
@@ -2312,11 +3182,12 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
         if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(child_width, content.height),
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2334,11 +3205,12 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
         if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(child_width, content.height),
                 x: right_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2361,11 +3233,12 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
             if let Some(frame) = resolve_child_with_placement(
                 tree,
                 child_id,
-                ChildPlacement {
+                ResolvePlacement {
                     constraint: Constraint::new(child_width, content.height),
                     x: center_x,
                     y: content.y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             ) {
@@ -2381,11 +3254,12 @@ fn resolve_grouped_row_line<M: TextMeasurer>(
 
 fn resolve_row_space_evenly<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
-    child_widths: &HashMap<ElementId, f32>,
+    child_widths: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     let mut max_child_height = 0.0_f32;
     let mut current_x = content.x;
@@ -2404,11 +3278,12 @@ fn resolve_row_space_evenly<M: TextMeasurer>(
         if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(child_width, content.height),
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2430,13 +3305,18 @@ fn resolve_row_space_evenly<M: TextMeasurer>(
 
 fn resolve_row_grouped<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
-    content: ContentRect,
-    options: RowChildrenOptions,
+    child_ids: &[NodeId],
     plan: &RowLayoutPlan,
-    inherited: &FontContext,
+    context: RowResolveContext<'_>,
     measurer: &M,
 ) -> (f32, f32) {
+    let RowResolveContext {
+        content,
+        options,
+        inherited,
+        use_resolve_cache,
+    } = context;
+
     let left_spacing = spacing_for_count(plan.left_children.len(), options.spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
     let right_spacing = spacing_for_count(plan.right_children.len(), options.spacing);
@@ -2456,11 +3336,12 @@ fn resolve_row_grouped<M: TextMeasurer>(
         if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(child_width, content.height),
                 x: current_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2481,11 +3362,12 @@ fn resolve_row_grouped<M: TextMeasurer>(
         if let Some(frame) = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(child_width, content.height),
                 x: right_x,
                 y: content.y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         ) {
@@ -2511,11 +3393,12 @@ fn resolve_row_grouped<M: TextMeasurer>(
             if let Some(frame) = resolve_child_with_placement(
                 tree,
                 child_id,
-                ChildPlacement {
+                ResolvePlacement {
                     constraint: Constraint::new(child_width, content.height),
                     x: center_x,
                     y: content.y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             ) {
@@ -2542,11 +3425,12 @@ fn resolve_row_grouped<M: TextMeasurer>(
 ///   Returns (actual_content_width, actual_content_height).
 fn resolve_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: RowChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> (f32, f32) {
     if child_ids.is_empty() {
         return (0.0, 0.0);
@@ -2562,10 +3446,20 @@ fn resolve_row_children<M: TextMeasurer>(
             &plan.child_widths,
             inherited,
             measurer,
+            use_resolve_cache,
         )
     } else {
         resolve_row_grouped(
-            tree, child_ids, content, options, &plan, inherited, measurer,
+            tree,
+            child_ids,
+            &plan,
+            RowResolveContext {
+                content,
+                options,
+                inherited,
+                use_resolve_cache,
+            },
+            measurer,
         )
     }
 }
@@ -2573,13 +3467,13 @@ fn resolve_row_children<M: TextMeasurer>(
 /// Apply vertical alignment to a child element.
 fn apply_vertical_alignment(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     content_y: f32,
     content_height: f32,
     align_y: AlignY,
 ) {
     if let Some(child) = tree.get(child_id)
-        && let Some(frame) = &child.frame
+        && let Some(frame) = &child.layout.frame
     {
         let aligned_y = match align_y {
             AlignY::Top => content_y,
@@ -2595,16 +3489,16 @@ fn apply_vertical_alignment(
 
 #[derive(Debug)]
 struct ColumnLayoutPlan {
-    child_heights: HashMap<ElementId, f32>,
-    top_children: Vec<ElementId>,
-    center_children: Vec<ElementId>,
-    bottom_children: Vec<ElementId>,
+    child_heights: HashMap<NodeId, f32>,
+    top_children: Vec<NodeId>,
+    center_children: Vec<NodeId>,
+    bottom_children: Vec<NodeId>,
     total_center_height: f32,
 }
 
 fn build_column_layout_plan(
     tree: &ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     options: ColumnChildrenOptions,
     content_height: f32,
 ) -> ColumnLayoutPlan {
@@ -2618,7 +3512,7 @@ fn build_column_layout_plan(
         };
         let measured_height = child_measured_height(tree, child_id);
         let portion = if options.allow_fill_height {
-            get_fill_weight(child.attrs.height.as_ref())
+            get_fill_weight(child.layout.effective.height.as_ref())
         } else {
             0.0
         };
@@ -2644,10 +3538,10 @@ fn build_column_layout_plan(
     };
 
     // Partition children by vertical alignment and calculate heights.
-    let mut top_children: Vec<ElementId> = Vec::new();
-    let mut center_children: Vec<ElementId> = Vec::new();
-    let mut bottom_children: Vec<ElementId> = Vec::new();
-    let mut child_heights: HashMap<ElementId, f32> = HashMap::new();
+    let mut top_children: Vec<NodeId> = Vec::new();
+    let mut center_children: Vec<NodeId> = Vec::new();
+    let mut bottom_children: Vec<NodeId> = Vec::new();
+    let mut child_heights: HashMap<NodeId, f32> = HashMap::new();
     let mut total_center_height = 0.0_f32;
 
     for child_id in child_ids {
@@ -2661,15 +3555,15 @@ fn build_column_layout_plan(
             options.allow_fill_height,
             height_per_portion,
         );
-        child_heights.insert(child_id.clone(), height);
+        child_heights.insert(*child_id, height);
 
-        match child.attrs.align_y.unwrap_or_default() {
-            AlignY::Top => top_children.push(child_id.clone()),
+        match child.layout.effective.align_y.unwrap_or_default() {
+            AlignY::Top => top_children.push(*child_id),
             AlignY::Center => {
-                center_children.push(child_id.clone());
+                center_children.push(*child_id);
                 total_center_height += height;
             }
-            AlignY::Bottom => bottom_children.push(child_id.clone()),
+            AlignY::Bottom => bottom_children.push(*child_id),
         }
     }
 
@@ -2684,11 +3578,12 @@ fn build_column_layout_plan(
 
 fn resolve_column_space_evenly<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
-    child_heights: &HashMap<ElementId, f32>,
+    child_heights: &HashMap<NodeId, f32>,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let mut current_y = content.y;
     let gap_count = child_ids.len().saturating_sub(1) as f32;
@@ -2707,11 +3602,12 @@ fn resolve_column_space_evenly<M: TextMeasurer>(
         let frame = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(content.width, child_height),
                 x: content.x,
                 y: current_y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         );
@@ -2739,6 +3635,7 @@ fn resolve_column_grouped<M: TextMeasurer>(
     plan: &ColumnLayoutPlan,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     let top_spacing = spacing_for_count(plan.top_children.len(), options.spacing);
     let center_spacing = spacing_for_count(plan.center_children.len(), options.spacing);
@@ -2756,11 +3653,12 @@ fn resolve_column_grouped<M: TextMeasurer>(
         let frame = resolve_child_with_placement(
             tree,
             child_id,
-            ChildPlacement {
+            ResolvePlacement {
                 constraint: Constraint::new(content.width, child_height),
                 x: content.x,
                 y: current_y,
                 inherited,
+                use_resolve_cache,
             },
             measurer,
         );
@@ -2789,11 +3687,12 @@ fn resolve_column_grouped<M: TextMeasurer>(
             let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                ChildPlacement {
+                ResolvePlacement {
                     constraint: Constraint::new(content.width, child_height),
                     x: content.x,
                     y: current_bottom_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -2819,11 +3718,12 @@ fn resolve_column_grouped<M: TextMeasurer>(
             let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                ChildPlacement {
+                ResolvePlacement {
                     constraint: Constraint::new(content.width, child_height),
                     x: content.x,
                     y: bottom_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -2867,11 +3767,12 @@ fn resolve_column_grouped<M: TextMeasurer>(
             let frame = resolve_child_with_placement(
                 tree,
                 child_id,
-                ChildPlacement {
+                ResolvePlacement {
                     constraint: Constraint::new(content.width, child_height),
                     x: content.x,
                     y: center_y,
                     inherited,
+                    use_resolve_cache,
                 },
                 measurer,
             );
@@ -2909,11 +3810,12 @@ fn resolve_column_grouped<M: TextMeasurer>(
 /// Returns the actual content height after resolution.
 fn resolve_column_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: ColumnChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -2929,9 +3831,18 @@ fn resolve_column_children<M: TextMeasurer>(
             &plan.child_heights,
             inherited,
             measurer,
+            use_resolve_cache,
         )
     } else {
-        resolve_column_grouped(tree, content, options, &plan, inherited, measurer)
+        resolve_column_grouped(
+            tree,
+            content,
+            options,
+            &plan,
+            inherited,
+            measurer,
+            use_resolve_cache,
+        )
     }
 }
 
@@ -3017,22 +3928,26 @@ fn flow_line_bounds(
 
 fn place_flow_float<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     side: AlignX,
     desired_y: f32,
     context: FlowPlacementContext<'_>,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> Option<FlowFloat> {
     let (desired_width, desired_height) = {
         let child = tree.get(child_id)?;
-        let intrinsic_width = child.frame.map(|frame| frame.width).unwrap_or(0.0);
-        let intrinsic_height = child.frame.map(|frame| frame.height).unwrap_or(0.0);
+        let intrinsic_frame = child.layout.measured_frame.or(child.layout.frame);
+        let intrinsic_width = intrinsic_frame.map(|frame| frame.width).unwrap_or(0.0);
+        let intrinsic_height = intrinsic_frame.map(|frame| frame.height).unwrap_or(0.0);
 
-        let width = resolve_intrinsic_length(child.attrs.width.as_ref(), intrinsic_width)
-            .max(0.0)
-            .min(context.content_width);
+        let width =
+            resolve_intrinsic_length(child.layout.effective.width.as_ref(), intrinsic_width)
+                .max(0.0)
+                .min(context.content_width);
         let height =
-            resolve_intrinsic_length(child.attrs.height.as_ref(), intrinsic_height).max(0.0);
+            resolve_intrinsic_length(child.layout.effective.height.as_ref(), intrinsic_height)
+                .max(0.0);
         (width, height)
     };
 
@@ -3077,14 +3992,17 @@ fn place_flow_float<M: TextMeasurer>(
     resolve_element(
         tree,
         child_id,
-        child_constraint,
-        float_x,
-        float_y,
-        context.inherited,
+        ResolvePlacement {
+            constraint: child_constraint,
+            x: float_x,
+            y: float_y,
+            inherited: context.inherited,
+            use_resolve_cache,
+        },
         measurer,
     );
 
-    let mut frame = tree.get(child_id).and_then(|child| child.frame)?;
+    let mut frame = tree.get(child_id).and_then(|child| child.layout.frame)?;
 
     if matches!(side, AlignX::Left | AlignX::Right) {
         let (left, right) = flow_line_bounds(
@@ -3120,20 +4038,24 @@ fn place_flow_float<M: TextMeasurer>(
 
 fn resolve_paragraph_with_flow<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     layout: TextFlowLayoutContext<'_>,
     y: f32,
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
+    use_resolve_cache: bool,
 ) {
     let child_constraint = Constraint::new(layout.content.width, f32::MAX);
     resolve_element(
         tree,
         child_id,
-        child_constraint,
-        layout.content.x,
-        y,
-        layout.inherited,
+        ResolvePlacement {
+            constraint: child_constraint,
+            x: layout.content.x,
+            y,
+            inherited: layout.inherited,
+            use_resolve_cache: false,
+        },
         measurer,
     );
 
@@ -3141,7 +4063,11 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         let Some(child) = tree.get(child_id) else {
             return;
         };
-        (child.children.clone(), child.attrs.clone(), child.frame)
+        (
+            tree.child_ids(child_id),
+            child.layout.effective.clone(),
+            child.layout.frame,
+        )
     };
     let Some(frame) = frame else {
         return;
@@ -3171,10 +4097,11 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         },
         measurer,
         active_floats,
+        use_resolve_cache,
     );
 
     if let Some(element) = tree.get_mut(child_id) {
-        element.attrs.paragraph_fragments = Some(fragments);
+        element.layout.paragraph_fragments = Some(fragments);
     }
 
     if actual_content_height > content_height && !is_scrollable {
@@ -3186,9 +4113,10 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
 
 fn resolve_text_column_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -3218,7 +4146,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
             let Some(child) = tree.get(child_id) else {
                 continue;
             };
-            (child.kind, child.attrs.align_x)
+            (child.spec.kind, child.layout.effective.align_x)
         };
 
         if let Some(side) = child_align_x
@@ -3237,6 +4165,7 @@ fn resolve_text_column_children<M: TextMeasurer>(
                     active_floats: &active_floats,
                 },
                 measurer,
+                use_resolve_cache,
             ) {
                 max_bottom = max_bottom.max(flow_float.bottom);
                 active_floats.push(flow_float);
@@ -3260,29 +4189,33 @@ fn resolve_text_column_children<M: TextMeasurer>(
                 child_y,
                 measurer,
                 &mut active_floats,
+                use_resolve_cache,
             );
         } else {
             let child_constraint = Constraint::new(content_width, f32::MAX);
             resolve_element(
                 tree,
                 child_id,
-                child_constraint,
-                content_x,
-                child_y,
-                inherited,
+                ResolvePlacement {
+                    constraint: child_constraint,
+                    x: content_x,
+                    y: child_y,
+                    inherited,
+                    use_resolve_cache,
+                },
                 measurer,
             );
         }
 
         let align_x = tree
             .get(child_id)
-            .map(|child| child.attrs.align_x.unwrap_or_default())
+            .map(|child| child.layout.effective.align_x.unwrap_or_default())
             .unwrap_or_default();
         apply_horizontal_alignment(tree, child_id, content_x, content_width, align_x);
 
         let child_bottom = tree
             .get(child_id)
-            .and_then(|child| child.frame.as_ref())
+            .and_then(|child| child.layout.frame.as_ref())
             .map(|frame| frame.y + frame.height)
             .unwrap_or(child_y);
 
@@ -3299,13 +4232,13 @@ fn resolve_text_column_children<M: TextMeasurer>(
 /// Apply horizontal alignment to a child element.
 fn apply_horizontal_alignment(
     tree: &mut ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     content_x: f32,
     content_width: f32,
     align_x: AlignX,
 ) {
     if let Some(child) = tree.get(child_id)
-        && let Some(frame) = &child.frame
+        && let Some(frame) = &child.layout.frame
     {
         let aligned_x = match align_x {
             AlignX::Left => content_x,
@@ -3324,11 +4257,12 @@ fn apply_horizontal_alignment(
 /// Returns the actual content height after wrapping.
 fn resolve_wrapped_row_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     content: ContentRect,
     options: WrappedRowChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
+    use_resolve_cache: bool,
 ) -> f32 {
     if child_ids.is_empty() {
         return 0.0;
@@ -3337,8 +4271,8 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     // Build lines by wrapping (attrs are pre-scaled).
     // Width determines line membership; actual heights are measured after each child
     // is resolved against its final line width.
-    let mut lines: Vec<Vec<(ElementId, f32)>> = Vec::new(); // (id, width)
-    let mut current_line: Vec<(ElementId, f32)> = Vec::new();
+    let mut lines: Vec<Vec<(NodeId, f32)>> = Vec::new(); // (id, width)
+    let mut current_line: Vec<(NodeId, f32)> = Vec::new();
     let mut current_line_width = 0.0;
 
     for child_id in child_ids {
@@ -3349,10 +4283,18 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             continue;
         };
         let intrinsic_width = child_measured_width(tree, child_id);
-        let child_width = if get_fill_weight(child.attrs.width.as_ref()) > 0.0 {
-            resolve_length(child.attrs.width.as_ref(), intrinsic_width, content.width)
+        let child_width = if get_fill_weight(child.layout.effective.width.as_ref()) > 0.0 {
+            resolve_length(
+                child.layout.effective.width.as_ref(),
+                intrinsic_width,
+                content.width,
+            )
         } else {
-            resolve_length(child.attrs.width.as_ref(), intrinsic_width, intrinsic_width)
+            resolve_length(
+                child.layout.effective.width.as_ref(),
+                intrinsic_width,
+                intrinsic_width,
+            )
         };
 
         // Check if we need to wrap
@@ -3368,7 +4310,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             current_line_width += options.spacing_x;
         }
         current_line_width += child_width;
-        current_line.push((child_id.clone(), child_width));
+        current_line.push((*child_id, child_width));
     }
 
     if !current_line.is_empty() {
@@ -3380,9 +4322,9 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
     let num_lines = lines.len();
 
     for line in lines {
-        let line_children: Vec<(ElementId, AlignY)> = line
+        let line_children: Vec<(NodeId, AlignY)> = line
             .iter()
-            .map(|(child_id, _)| (child_id.clone(), child_align_y(tree, child_id)))
+            .map(|(child_id, _)| (*child_id, child_align_y(tree, child_id)))
             .collect();
         let plan = build_row_layout_plan_from_widths(tree, &line);
         let line_height = resolve_grouped_row_line(
@@ -3397,6 +4339,7 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
             &plan,
             inherited,
             measurer,
+            use_resolve_cache,
         );
 
         for (child_id, align_y) in &line_children {
@@ -3423,25 +4366,25 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
 /// Returns (text_content, font_context) or None if child is not a text source.
 fn extract_inline_text(
     tree: &ElementTree,
-    child_id: &ElementId,
+    child_id: &NodeId,
     inherited: &FontContext,
 ) -> Option<(String, FontContext)> {
     let child = tree.get(child_id)?;
 
-    match child.kind {
+    match child.spec.kind {
         ElementKind::Text => {
-            let content = child.attrs.content.as_deref()?.to_string();
-            let font_ctx = inherited.merge_with_attrs(&child.attrs);
+            let content = child.layout.effective.content.as_deref()?.to_string();
+            let font_ctx = inherited.merge_with_attrs(&child.layout.effective);
             Some((content, font_ctx))
         }
         ElementKind::El => {
             // Look for the first text child of this el wrapper
-            let el_context = inherited.merge_with_attrs(&child.attrs);
-            for grandchild_id in &child.children {
-                let grandchild = tree.get(grandchild_id)?;
-                if grandchild.kind == ElementKind::Text {
-                    let content = grandchild.attrs.content.as_deref()?.to_string();
-                    let font_ctx = el_context.merge_with_attrs(&grandchild.attrs);
+            let el_context = inherited.merge_with_attrs(&child.layout.effective);
+            for grandchild_id in tree.child_ids(&child.id) {
+                let grandchild = tree.get(&grandchild_id)?;
+                if grandchild.spec.kind == ElementKind::Text {
+                    let content = grandchild.layout.effective.content.as_deref()?.to_string();
+                    let font_ctx = el_context.merge_with_attrs(&grandchild.layout.effective);
                     return Some((content, font_ctx));
                 }
             }
@@ -3455,10 +4398,11 @@ fn extract_inline_text(
 /// Returns (fragments, total_content_height).
 fn resolve_paragraph_children<M: TextMeasurer>(
     tree: &mut ElementTree,
-    child_ids: &[ElementId],
+    child_ids: &[NodeId],
     layout: TextFlowLayoutContext<'_>,
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
+    use_resolve_cache: bool,
 ) -> (Vec<TextFragment>, f32) {
     let content_x = layout.content.x;
     let content_y = layout.content.y;
@@ -3487,7 +4431,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     for child_id in child_ids {
         let float_side = tree
             .get(child_id)
-            .and_then(|child| child.attrs.align_x)
+            .and_then(|child| child.layout.effective.align_x)
             .filter(|side| matches!(side, AlignX::Left | AlignX::Right));
 
         if let Some(side) = float_side {
@@ -3520,6 +4464,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     active_floats,
                 },
                 measurer,
+                use_resolve_cache,
             ) {
                 local_float_bottom = local_float_bottom.max(flow_float.bottom);
                 active_floats.push(flow_float);
@@ -3881,12 +4826,12 @@ fn spacing_y(attrs: &Attrs) -> f32 {
 
 fn set_frame_content_width(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_width: f32,
     insets: LayoutInsets,
 ) {
     if let Some(element) = tree.get_mut(id)
-        && let Some(ref mut frame) = element.frame
+        && let Some(ref mut frame) = element.layout.frame
     {
         frame.content_width = insets.outer_width(actual_content_width);
     }
@@ -3894,12 +4839,12 @@ fn set_frame_content_width(
 
 fn set_frame_content_height(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_height: f32,
     insets: LayoutInsets,
 ) {
     if let Some(element) = tree.get_mut(id)
-        && let Some(ref mut frame) = element.frame
+        && let Some(ref mut frame) = element.layout.frame
     {
         frame.content_height = insets.outer_height(actual_content_height);
     }
@@ -3907,13 +4852,13 @@ fn set_frame_content_height(
 
 fn set_frame_content_size(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_width: f32,
     actual_content_height: f32,
     insets: LayoutInsets,
 ) {
     if let Some(element) = tree.get_mut(id)
-        && let Some(ref mut frame) = element.frame
+        && let Some(ref mut frame) = element.layout.frame
     {
         frame.content_width = insets.outer_width(actual_content_width);
         frame.content_height = insets.outer_height(actual_content_height);
@@ -3922,58 +4867,58 @@ fn set_frame_content_size(
 
 fn expand_frame_height_to_content(
     tree: &mut ElementTree,
-    id: &ElementId,
+    id: &NodeId,
     actual_content_height: f32,
     insets: LayoutInsets,
 ) {
     let new_height = insets.outer_height(actual_content_height);
     if let Some(element) = tree.get_mut(id)
-        && let Some(ref mut frame) = element.frame
+        && let Some(ref mut frame) = element.layout.frame
     {
         frame.height = new_height;
         frame.content_height = new_height;
     }
 }
 
-fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
+fn update_scroll_state(tree: &mut ElementTree, id: &NodeId) {
     let Some(element) = tree.get_mut(id) else {
         return;
     };
 
-    let scroll_x_enabled = effective_scrollbar_x(&element.attrs);
-    let scroll_y_enabled = effective_scrollbar_y(&element.attrs);
+    let scroll_x_enabled = effective_scrollbar_x(&element.layout.effective);
+    let scroll_y_enabled = effective_scrollbar_y(&element.layout.effective);
 
     if !scroll_x_enabled {
-        element.attrs.scroll_x = None;
-        element.attrs.scroll_x_max = None;
+        element.layout.scroll_x = 0.0;
+        element.layout.scroll_x_max = 0.0;
     }
     if !scroll_y_enabled {
-        element.attrs.scroll_y = None;
-        element.attrs.scroll_y_max = None;
+        element.layout.scroll_y = 0.0;
+        element.layout.scroll_y_max = 0.0;
     }
 
     if !(scroll_x_enabled || scroll_y_enabled) {
         return;
     }
 
-    let Some(frame) = element.frame else {
+    let Some(frame) = element.layout.frame else {
         return;
     };
 
     let max_x = (frame.content_width - frame.width).max(0.0);
     let max_y = (frame.content_height - frame.height).max(0.0);
-    let prev_max_x = element
-        .attrs
-        .scroll_x_max
-        .map(|v| v as f32)
-        .unwrap_or(max_x);
-    let prev_max_y = element
-        .attrs
-        .scroll_y_max
-        .map(|v| v as f32)
-        .unwrap_or(max_y);
-    let prev_scroll_x = element.attrs.scroll_x.unwrap_or(0.0) as f32;
-    let prev_scroll_y = element.attrs.scroll_y.unwrap_or(0.0) as f32;
+    let prev_max_x = if element.layout.scroll_x_max == 0.0 {
+        max_x
+    } else {
+        element.layout.scroll_x_max
+    };
+    let prev_max_y = if element.layout.scroll_y_max == 0.0 {
+        max_y
+    } else {
+        element.layout.scroll_y_max
+    };
+    let prev_scroll_x = element.layout.scroll_x;
+    let prev_scroll_y = element.layout.scroll_y;
 
     if scroll_x_enabled {
         let delta_x = max_x - prev_max_x;
@@ -3986,8 +4931,8 @@ fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
             prev_scroll_x
         }
         .clamp(0.0, max_x);
-        element.attrs.scroll_x = Some(next_scroll_x as f64);
-        element.attrs.scroll_x_max = Some(max_x as f64);
+        element.layout.scroll_x = next_scroll_x;
+        element.layout.scroll_x_max = max_x;
     }
 
     if scroll_y_enabled {
@@ -4001,12 +4946,12 @@ fn update_scroll_state(tree: &mut ElementTree, id: &ElementId) {
             prev_scroll_y
         }
         .clamp(0.0, max_y);
-        element.attrs.scroll_y = Some(next_scroll_y as f64);
-        element.attrs.scroll_y_max = Some(max_y as f64);
+        element.layout.scroll_y = next_scroll_y;
+        element.layout.scroll_y_max = max_y;
     }
 }
 
-fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
+fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
     if dx == 0.0 && dy == 0.0 {
         return;
     }
@@ -4015,19 +4960,19 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
         let Some(element) = tree.get_mut(id) else {
             return;
         };
-        if let Some(frame) = &mut element.frame {
+        if let Some(frame) = &mut element.layout.frame {
             frame.x += dx;
             frame.y += dy;
         }
-        if let Some(fragments) = &mut element.attrs.paragraph_fragments {
+        if let Some(fragments) = &mut element.layout.paragraph_fragments {
             for frag in fragments.iter_mut() {
                 frag.x += dx;
                 frag.y += dy;
             }
         }
 
-        let mut child_ids = element.children.clone();
-        child_ids.extend(element.nearby.iter().map(|mount| mount.id.clone()));
+        let mut child_ids = tree.child_ids(id);
+        child_ids.extend(tree.nearby_mounts_for(id).into_iter().map(|mount| mount.id));
         child_ids
     };
 
@@ -4040,7 +4985,9 @@ fn shift_subtree(tree: &mut ElementTree, id: &ElementId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree;
+#[cfg(any(test, feature = "bench-diagnostics"))]
+use super::render::render_tree_scene;
+use super::render::render_tree_scene_cached;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -4048,36 +4995,136 @@ use crate::render_scene::RenderScene;
 pub struct LayoutOutput {
     pub scene: RenderScene,
     pub event_rebuild: RegistryRebuildPayload,
+    pub event_rebuild_changed: bool,
     pub ime_enabled: bool,
     pub ime_cursor_area: Option<(f32, f32, f32, f32)>,
     pub ime_text_state: Option<TextInputState>,
     pub animations_active: bool,
 }
 
+pub struct LayoutUpdateOutput {
+    pub output: LayoutOutput,
+    pub layout_performed: bool,
+}
+
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree(tree);
-    let ime_text_state = render_output
-        .event_rebuild
-        .focused_id
-        .as_ref()
-        .and_then(|focused_id| {
-            render_output
-                .event_rebuild
-                .text_inputs
-                .get(focused_id)
-                .cloned()
-        });
+    let render_output = render_tree_scene_cached(tree);
+    refresh_from_render_output(tree, render_output)
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
+    let render_output = render_tree_scene(tree);
+    refresh_from_render_output(tree, render_output)
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn refresh_render_scene_cached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
+    let render_output = render_tree_scene_cached(tree);
+    tree.clear_render_refresh_dirty();
+    render_output.scene
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn refresh_render_scene_uncached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
+    let render_output = render_tree_scene(tree);
+    tree.clear_render_refresh_dirty();
+    render_output.scene
+}
+
+fn refresh_from_render_output(
+    tree: &mut ElementTree,
+    render_output: super::render::RenderSceneOutput,
+) -> LayoutOutput {
+    let event_rebuild = crate::events::registry_builder::build_registry_rebuild_cached(tree);
+    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+
+    tree.clear_refresh_dirty();
 
     LayoutOutput {
         scene: render_output.scene,
-        event_rebuild: render_output.event_rebuild,
+        event_rebuild,
+        event_rebuild_changed: true,
         ime_enabled: render_output.text_input_focused,
         ime_cursor_area: render_output.text_input_cursor_area,
         ime_text_state,
         animations_active: false,
     }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn refresh_reusing_clean_registry_for_benchmark(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    refresh_reusing_clean_registry(tree, cached_rebuild)
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+
+    if !can_reuse_registry {
+        return refresh_uncached_for_benchmark(tree);
+    }
+
+    let render_output = render_tree_scene(tree);
+    let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
+
+    tree.clear_render_refresh_dirty();
+
+    LayoutOutput {
+        scene: render_output.scene,
+        event_rebuild: RegistryRebuildPayload::default(),
+        event_rebuild_changed: false,
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
+        animations_active: false,
+    }
+}
+
+pub(crate) fn refresh_reusing_clean_registry(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+
+    if !can_reuse_registry {
+        return refresh(tree);
+    }
+
+    let render_output = render_tree_scene_cached(tree);
+    let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
+
+    tree.clear_render_refresh_dirty();
+
+    LayoutOutput {
+        scene: render_output.scene,
+        event_rebuild: RegistryRebuildPayload::default(),
+        event_rebuild_changed: false,
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
+        animations_active: false,
+    }
+}
+
+fn ime_text_state_from_rebuild(rebuild: &RegistryRebuildPayload) -> Option<TextInputState> {
+    rebuild
+        .focused_id
+        .as_ref()
+        .and_then(|focused_id| rebuild.text_inputs.get(focused_id).cloned())
 }
 
 /// Full layout with default Skia text measurer, followed by refresh.
@@ -4098,6 +5145,25 @@ pub fn layout_and_refresh_default(
     output
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn layout_and_refresh_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+) -> LayoutOutput {
+    let animations_active = layout_tree_default_with_animation(
+        tree,
+        constraint,
+        scale,
+        &AnimationRuntime::default(),
+        Instant::now(),
+    );
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = animations_active;
+    output
+}
+
 pub fn layout_and_refresh_default_with_animation(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -4105,11 +5171,164 @@ pub fn layout_and_refresh_default_with_animation(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutOutput {
-    let animations_active =
-        layout_tree_default_with_animation(tree, constraint, scale, runtime, sample_time);
+    let preparation = prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time));
+    layout_and_refresh_prepared_default(tree, constraint, preparation).output
+}
+
+pub fn layout_or_refresh_default_with_animation(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> LayoutUpdateOutput {
+    let can_prepare_incrementally = !runtime.is_empty()
+        && !runtime.has_transient_entries()
+        && tree
+            .root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some();
+    let preparation = if can_prepare_incrementally {
+        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
+    } else {
+        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+    };
+    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
+        && prepared_root_has_frame(tree, &preparation);
+
+    if can_refresh_without_layout {
+        refresh_prepared_default(tree, preparation)
+    } else {
+        layout_and_refresh_prepared_default(tree, constraint, preparation)
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+) -> LayoutUpdateOutput {
+    let can_prepare_incrementally = !runtime.is_empty()
+        && !runtime.has_transient_entries()
+        && tree
+            .root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some();
+    let preparation = if can_prepare_incrementally {
+        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
+    } else {
+        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+    };
+    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
+        && prepared_root_has_frame(tree, &preparation);
+
+    if can_refresh_without_layout {
+        refresh_prepared_default_uncached_for_benchmark(tree, preparation)
+    } else {
+        layout_and_refresh_prepared_default_uncached_for_benchmark(tree, constraint, preparation)
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn layout_and_refresh_prepared_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let layout_performed = if let Some(root_id) = preparation.root_id {
+        run_layout_passes(
+            tree,
+            &root_id,
+            constraint,
+            &SkiaTextMeasurer,
+            &FontContext::default(),
+            &preparation.animation_result,
+        );
+        true
+    } else {
+        false
+    };
+
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed,
+    }
+}
+
+pub(crate) fn layout_and_refresh_prepared_default(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let layout_performed = if let Some(root_id) = preparation.root_id {
+        run_layout_passes(
+            tree,
+            &root_id,
+            constraint,
+            &SkiaTextMeasurer,
+            &FontContext::default(),
+            &preparation.animation_result,
+        );
+        true
+    } else {
+        false
+    };
+
     let mut output = refresh(tree);
-    output.animations_active = animations_active;
-    output
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed,
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn refresh_prepared_default_uncached_for_benchmark(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let mut output = refresh_uncached_for_benchmark(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
+    }
+}
+
+pub(crate) fn refresh_prepared_default(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+) -> LayoutUpdateOutput {
+    let mut output = refresh(tree);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
+    }
+}
+
+pub(crate) fn refresh_prepared_default_reusing_clean_registry(
+    tree: &mut ElementTree,
+    preparation: FrameAttrsPreparation,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutUpdateOutput {
+    let mut output = refresh_reusing_clean_registry(tree, cached_rebuild);
+    output.animations_active = preparation.animation_result.active;
+
+    LayoutUpdateOutput {
+        output,
+        layout_performed: false,
+    }
 }
 
 #[cfg(test)]

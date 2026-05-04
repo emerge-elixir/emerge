@@ -1,6 +1,8 @@
 defmodule Emerge.Engine.DiffStateTest do
   use ExUnit.Case, async: true
 
+  alias Emerge.Engine.NodeId
+
   use Emerge.UI
 
   test "diff_state_update returns patches and updated state" do
@@ -114,7 +116,7 @@ defmodule Emerge.Engine.DiffStateTest do
         el([key(:dup)], text("b"))
       ])
 
-    assert_raise ArgumentError, ~r/duplicate explicit id\/key/, fn ->
+    assert_raise ArgumentError, ~r/duplicate explicit key/, fn ->
       Emerge.Engine.diff_state_update(state, layout)
     end
   end
@@ -177,7 +179,7 @@ defmodule Emerge.Engine.DiffStateTest do
         ])
       ])
 
-    assert_raise ArgumentError, ~r/duplicate explicit id\/key/, fn ->
+    assert_raise ArgumentError, ~r/duplicate explicit key/, fn ->
       Emerge.Engine.diff_state_update(state, layout)
     end
   end
@@ -211,6 +213,171 @@ defmodule Emerge.Engine.DiffStateTest do
     refute ids1["c"] == ids2["c"]
   end
 
+  test "nearby slot change preserves keyed id on the same host" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host), Nearby.below(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    host1 = hd(assigned1.children)
+    host2 = hd(assigned2.children)
+    [{slot1, tip1}] = host1.nearby
+    [{slot2, tip2}] = host2.nearby
+
+    assert slot1 == :above
+    assert slot2 == :below
+    assert tip1.key == :tip
+    assert tip2.key == :tip
+    assert tip1.id == tip2.id
+  end
+
+  test "reparenting a keyed node allocates a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      row([key(:root)], [
+        column([key(:left)], [el([key(:item)], text("Item"))]),
+        column([key(:right)], [])
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      row([key(:root)], [
+        column([key(:left)], []),
+        column([key(:right)], [el([key(:item)], text("Item"))])
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    ids1 = key_node_id_map(assigned1)
+    ids2 = key_node_id_map(assigned2)
+
+    refute ids1[:item] == ids2[:item]
+  end
+
+  test "removed keyed child reinserted in a later update gets a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:item)], text("Item"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 = column([key(:root)], [])
+
+    {_bin2, state, _assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    layout3 =
+      column([key(:root)], [
+        el([key(:item)], text("Item"))
+      ])
+
+    {_bin3, _state, assigned3} = Emerge.Engine.diff_state_update(state, layout3)
+
+    ids1 = key_node_id_map(assigned1)
+    ids3 = key_node_id_map(assigned3)
+
+    refute ids1[:item] == ids3[:item]
+  end
+
+  test "removed keyed nearby reinserted in a later update gets a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:host)], text("Host"))
+      ])
+
+    {_bin2, state, _assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    layout3 =
+      column([key(:root)], [
+        el([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], text("Host"))
+      ])
+
+    {_bin3, _state, assigned3} = Emerge.Engine.diff_state_update(state, layout3)
+
+    ids1 = key_node_id_map(assigned1)
+    ids3 = key_node_id_map(assigned3)
+
+    assert ids1[:host] == ids3[:host]
+    refute ids1[:tip] == ids3[:tip]
+  end
+
+  test "reparenting a keyed nearby node to another host allocates a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      row([key(:root)], [
+        el([key(:left), Nearby.above(el([key(:tip)], text("Tip")))], text("Left")),
+        el([key(:right)], text("Right"))
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      row([key(:root)], [
+        el([key(:left)], text("Left")),
+        el([key(:right), Nearby.above(el([key(:tip)], text("Tip")))], text("Right"))
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    ids1 = key_node_id_map(assigned1)
+    ids2 = key_node_id_map(assigned2)
+
+    assert ids1[:left] == ids2[:left]
+    assert ids1[:right] == ids2[:right]
+    refute ids1[:tip] == ids2[:tip]
+  end
+
+  test "reparenting a keyed nearby node to children allocates a fresh id" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        column([key(:host), Nearby.above(el([key(:tip)], text("Tip")))], [])
+      ])
+
+    {_bin1, state, assigned1} = Emerge.Engine.diff_state_update(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        column([key(:host)], [
+          el([key(:tip)], text("Tip"))
+        ])
+      ])
+
+    {_bin2, _state, assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+
+    ids1 = key_node_id_map(assigned1)
+    ids2 = key_node_id_map(assigned2)
+
+    assert ids1[:host] == ids2[:host]
+    refute ids1[:tip] == ids2[:tip]
+  end
+
   test "mixed insert with keys and unkeyed raises" do
     state = Emerge.Engine.diff_state_new()
 
@@ -229,7 +396,7 @@ defmodule Emerge.Engine.DiffStateTest do
   test "on_change is registered in event registry" do
     layout = Emerge.UI.Input.text([key(:field), Event.on_change({self(), :changed})], "hello")
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {pid, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
     assert pid == self()
@@ -247,7 +414,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {focus_pid, :focused}} = Emerge.Engine.lookup_event(state, id_bin, :focus)
     assert {:ok, {blur_pid, :blurred}} = Emerge.Engine.lookup_event(state, id_bin, :blur)
@@ -266,7 +433,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {pid, :pressed}} = Emerge.Engine.lookup_event(state, id_bin, :press)
     assert pid == self()
@@ -286,7 +453,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {_, :swiped_up}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_up)
     assert {:ok, {_, :swiped_down}} = Emerge.Engine.lookup_event(state, id_bin, :swipe_down)
@@ -307,7 +474,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {press_pid, :pressed}} =
              Emerge.Engine.lookup_event(
@@ -346,7 +513,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {pid, :show_alternates}} =
              Emerge.Engine.lookup_event(state, id_bin, :virtual_key_hold)
@@ -369,7 +536,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {_, :clicked}} = Emerge.Engine.lookup_event(state, id_bin, :click)
     assert {:ok, {_, :entered}} = Emerge.Engine.lookup_event(state, id_bin, :mouse_enter)
@@ -390,7 +557,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert {:ok, {_, :changed}} = Emerge.Engine.lookup_event(state, id_bin, :change)
 
@@ -407,7 +574,7 @@ defmodule Emerge.Engine.DiffStateTest do
       Emerge.UI.Input.text([key(:field), Event.on_change({self(), {:changed, :field}})], "hello")
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :change, "hello!")
     assert_receive {:changed, :field, "hello!"}
@@ -416,7 +583,7 @@ defmodule Emerge.Engine.DiffStateTest do
   test "dispatch_event with payload wraps non-tuple message" do
     layout = Emerge.UI.Input.text([key(:field), Event.on_change({self(), :changed})], "hello")
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :change, "hello!")
     assert_receive {:changed, "hello!"}
@@ -434,7 +601,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :focus)
     assert_receive :focused
@@ -451,7 +618,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :press)
     assert_receive :pressed
@@ -469,7 +636,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok ==
              Emerge.Engine.dispatch_event(
@@ -501,7 +668,7 @@ defmodule Emerge.Engine.DiffStateTest do
       )
 
     state = Emerge.Engine.diff_state_new(layout)
-    id_bin = :erlang.term_to_binary(state.tree.id)
+    id_bin = id_bin(state.tree.id)
 
     assert :ok == Emerge.Engine.dispatch_event(state, id_bin, :virtual_key_hold)
     assert_receive :show_alternates
@@ -515,4 +682,19 @@ defmodule Emerge.Engine.DiffStateTest do
     end)
     |> Map.new()
   end
+
+  defp key_node_id_map(%Emerge.Engine.Element{} = element) do
+    key_entries = if is_nil(element.key), do: [], else: [{element.key, element.id}]
+
+    child_entries = Enum.flat_map(element.children, &key_node_id_map/1)
+
+    nearby_entries =
+      Enum.flat_map(element.nearby, fn {_slot, child} ->
+        key_node_id_map(child)
+      end)
+
+    Map.new(key_entries ++ child_entries ++ nearby_entries)
+  end
+
+  defp id_bin(id), do: NodeId.encode(id)
 end

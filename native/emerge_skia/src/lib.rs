@@ -1,3 +1,6 @@
+// The inline Rust tests use mutable fixture builders heavily so each assertion
+// can show only the fields relevant to that case. Keep these shape exceptions
+// test-only; release and benchmark code still run under normal clippy gates.
 #![cfg_attr(
     test,
     allow(
@@ -7,8 +10,7 @@
         clippy::needless_lifetimes,
         clippy::nonminimal_bool,
         clippy::op_ref,
-        clippy::redundant_pattern_matching,
-        clippy::too_many_arguments
+        clippy::redundant_pattern_matching
     )
 )]
 
@@ -33,7 +35,7 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-use rustler::{Atom, Binary, Env, LocalPid, NewBinary, NifResult, ResourceArc};
+use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 pub mod actors;
 pub mod assets;
 pub mod backend;
@@ -74,20 +76,253 @@ use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
 #[cfg(all(feature = "drm", target_os = "linux"))]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
-use renderer::clear_global_caches;
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
+use renderer::{CleanSubtreeCacheConfig, RendererCacheConfig, clear_global_caches};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
-use stats::RendererStatsCollector;
+use stats::{
+    LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererTimingMetric,
+};
 use std::time::Instant;
-use tree::element::{ElementId, ElementTree};
+use tree::element::{ElementTree, NodeId};
 use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsConfigureNif {
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifTaggedEnum)]
+enum StatsCommandNif {
+    Peek,
+    Take,
+    Reset,
+    Configure(StatsConfigureNif),
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct StatsSnapshotNif {
+    version: u64,
+    kind: String,
+    enabled: bool,
+    window: StatsWindowNif,
+    frames: StatsFrameSnapshotNif,
+    timings: StatsTimingSnapshotNif,
+    counters: StatsCounterSnapshotNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsWindowNif {
+    elapsed_ms: u64,
+    reset_on_read: bool,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsFrameSnapshotNif {
+    fps: f64,
+    display_fps: f64,
+    display_frame_ms: f64,
+    frame_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsTimingSnapshotNif {
+    render: DurationStatsNif,
+    render_draw: DurationStatsNif,
+    render_flush: DurationStatsNif,
+    render_gpu_flush: DurationStatsNif,
+    render_submit: DurationStatsNif,
+    present_submit: DurationStatsNif,
+    pipeline: DurationStatsNif,
+    pipeline_submit_to_tree_start: DurationStatsNif,
+    pipeline_tree: DurationStatsNif,
+    pipeline_render_queue: DurationStatsNif,
+    pipeline_submit_to_swap: DurationStatsNif,
+    pipeline_swap_to_frame_callback: DurationStatsNif,
+    layout: DurationStatsNif,
+    refresh: DurationStatsNif,
+    event_resolve: DurationStatsNif,
+    patch_tree_process: DurationStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct DurationStatsNif {
+    count: u64,
+    avg_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsCounterSnapshotNif {
+    layout_cache: LayoutCacheStatsNif,
+    renderer_cache: RendererCacheStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct LayoutCacheStatsNif {
+    intrinsic_measure_hits: u64,
+    intrinsic_measure_misses: u64,
+    intrinsic_measure_stores: u64,
+    subtree_measure_hits: u64,
+    subtree_measure_misses: u64,
+    subtree_measure_stores: u64,
+    resolve_hits: u64,
+    resolve_misses: u64,
+    resolve_stores: u64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheStatsNif {
+    noop: RendererCacheKindStatsNif,
+    clean_subtree: RendererCacheKindStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheKindStatsNif {
+    candidates: u64,
+    visible_candidates: u64,
+    suppressed_by_parent: u64,
+    admitted: u64,
+    hits: u64,
+    misses: u64,
+    stores: u64,
+    evictions: u64,
+    stale_evictions: u64,
+    rejected: u64,
+    current_entries: u64,
+    current_bytes: u64,
+    current_gpu_payloads: u64,
+    current_cpu_payloads: u64,
+    evicted_bytes: u64,
+    stale_evicted_bytes: u64,
+    prepare: DurationStatsNif,
+    draw_hit: DurationStatsNif,
+}
+
+impl StatsSnapshotNif {
+    fn disabled(kind: &'static str) -> Self {
+        Self::from_snapshot(kind, false, false, &RendererStatsSnapshot::default())
+    }
+
+    fn from_snapshot(
+        kind: &'static str,
+        enabled: bool,
+        reset_on_read: bool,
+        snapshot: &RendererStatsSnapshot,
+    ) -> Self {
+        let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
+
+        Self {
+            version: 9,
+            kind: kind.to_string(),
+            enabled,
+            window: StatsWindowNif {
+                elapsed_ms: snapshot.window.as_millis() as u64,
+                reset_on_read,
+            },
+            frames: StatsFrameSnapshotNif {
+                fps: snapshot.fps,
+                display_fps: snapshot.display_fps,
+                display_frame_ms: snapshot.display_frame_ms,
+                frame_count: snapshot.frame_count,
+            },
+            timings: StatsTimingSnapshotNif {
+                render: timing(RendererTimingMetric::Render),
+                render_draw: timing(RendererTimingMetric::RenderDraw),
+                render_flush: timing(RendererTimingMetric::RenderFlush),
+                render_gpu_flush: timing(RendererTimingMetric::RenderGpuFlush),
+                render_submit: timing(RendererTimingMetric::RenderSubmit),
+                present_submit: timing(RendererTimingMetric::PresentSubmit),
+                pipeline: timing(RendererTimingMetric::Pipeline),
+                pipeline_submit_to_tree_start: timing(
+                    RendererTimingMetric::PipelineSubmitToTreeStart,
+                ),
+                pipeline_tree: timing(RendererTimingMetric::PipelineTree),
+                pipeline_render_queue: timing(RendererTimingMetric::PipelineRenderQueue),
+                pipeline_submit_to_swap: timing(RendererTimingMetric::PipelineSubmitToSwap),
+                pipeline_swap_to_frame_callback: timing(
+                    RendererTimingMetric::PipelineSwapToFrameCallback,
+                ),
+                layout: timing(RendererTimingMetric::Layout),
+                refresh: timing(RendererTimingMetric::Refresh),
+                event_resolve: timing(RendererTimingMetric::EventResolve),
+                patch_tree_process: timing(RendererTimingMetric::PatchTreeProcess),
+            },
+            counters: StatsCounterSnapshotNif {
+                layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
+                renderer_cache: RendererCacheStatsNif::from(snapshot.renderer_cache.clone()),
+            },
+        }
+    }
+}
+
+impl From<stats::DurationStatsSnapshot> for DurationStatsNif {
+    fn from(stats: stats::DurationStatsSnapshot) -> Self {
+        Self {
+            count: stats.count,
+            avg_ms: stats.avg_ms,
+            min_ms: stats.min_ms,
+            max_ms: stats.max_ms,
+        }
+    }
+}
+
+impl From<LayoutCacheStats> for LayoutCacheStatsNif {
+    fn from(stats: LayoutCacheStats) -> Self {
+        Self {
+            intrinsic_measure_hits: stats.intrinsic_measure_hits,
+            intrinsic_measure_misses: stats.intrinsic_measure_misses,
+            intrinsic_measure_stores: stats.intrinsic_measure_stores,
+            subtree_measure_hits: stats.subtree_measure_hits,
+            subtree_measure_misses: stats.subtree_measure_misses,
+            subtree_measure_stores: stats.subtree_measure_stores,
+            resolve_hits: stats.resolve_hits,
+            resolve_misses: stats.resolve_misses,
+            resolve_stores: stats.resolve_stores,
+        }
+    }
+}
+
+impl From<stats::RendererCacheStatsSnapshot> for RendererCacheStatsNif {
+    fn from(stats: stats::RendererCacheStatsSnapshot) -> Self {
+        Self {
+            noop: RendererCacheKindStatsNif::from(stats.noop),
+            clean_subtree: RendererCacheKindStatsNif::from(stats.clean_subtree),
+        }
+    }
+}
+
+impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
+    fn from(stats: stats::RendererCacheKindStatsSnapshot) -> Self {
+        Self {
+            candidates: stats.candidates,
+            visible_candidates: stats.visible_candidates,
+            suppressed_by_parent: stats.suppressed_by_parent,
+            admitted: stats.admitted,
+            hits: stats.hits,
+            misses: stats.misses,
+            stores: stats.stores,
+            evictions: stats.evictions,
+            stale_evictions: stats.stale_evictions,
+            rejected: stats.rejected,
+            current_entries: stats.current_entries,
+            current_bytes: stats.current_bytes,
+            current_gpu_payloads: stats.current_gpu_payloads,
+            current_cpu_payloads: stats.current_cpu_payloads,
+            evicted_bytes: stats.evicted_bytes,
+            stale_evicted_bytes: stats.stale_evicted_bytes,
+            prepare: DurationStatsNif::from(stats.prepare),
+            draw_hit: DurationStatsNif::from(stats.draw_hit),
+        }
+    }
+}
 
 // ============================================================================
 // Atoms
@@ -126,6 +361,7 @@ struct RendererResource {
     video_wake: VideoWake,
     prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
+    stats: Option<Arc<RendererStatsCollector>>,
     close_signal_log: bool,
     log_render: bool,
     log_input: bool,
@@ -206,7 +442,10 @@ impl RenderSender {
         match self.tx.try_send(msg) {
             Ok(()) => {}
             Err(TrySendError::Full(msg)) => {
-                let _ = self.drop_rx.try_recv();
+                let mut msg = msg;
+                if let Ok(dropped) = self.drop_rx.try_recv() {
+                    msg.absorb_pipeline_submitted_at(&dropped);
+                }
                 let _ = self.tx.try_send(msg);
                 if self.log_render {
                     eprintln!("render queue overwrite");
@@ -220,6 +459,7 @@ impl RenderSender {
 /// Resource for holding an element tree (for layout/rendering).
 struct TreeResource {
     tree: Mutex<ElementTree>,
+    stats: Mutex<Option<Arc<RendererStatsCollector>>>,
 }
 
 struct TestHarnessHandles {
@@ -576,7 +816,28 @@ struct StartConfig {
         )),
         allow(dead_code)
     )]
+    stats_enabled: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+        )),
+        allow(dead_code)
+    )]
     renderer_stats_log: bool,
+    #[cfg_attr(
+        not(any(all(feature = "wayland", target_os = "linux"),)),
+        allow(dead_code)
+    )]
+    renderer_animation_log: bool,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+        )),
+        allow(dead_code)
+    )]
+    renderer_cache_config: RendererCacheConfig,
 }
 
 #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
@@ -608,7 +869,23 @@ struct StartOptsNif {
     input_log: bool,
     render_log: bool,
     close_signal_log: bool,
+    stats_enabled: bool,
     renderer_stats_log: bool,
+    renderer_animation_log: bool,
+    renderer_cache: RendererCacheConfigNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct RendererCacheConfigNif {
+    max_new_payloads_per_frame: u32,
+    clean_subtree: CleanSubtreeCacheConfigNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct CleanSubtreeCacheConfigNif {
+    max_entries: u64,
+    max_bytes: u64,
+    max_entry_bytes: u64,
 }
 
 #[derive(rustler::NifMap)]
@@ -649,6 +926,23 @@ fn start_with_config(
     start_native_renderer_with_config(config, initial_log_target)
 }
 
+fn renderer_cache_config_from_nif(
+    config: RendererCacheConfigNif,
+) -> Result<RendererCacheConfig, String> {
+    let max_entries = usize::try_from(config.clean_subtree.max_entries).map_err(|_| {
+        "renderer_cache.clean_subtree.max_entries does not fit this platform".to_string()
+    })?;
+
+    Ok(RendererCacheConfig {
+        max_new_payloads_per_frame: config.max_new_payloads_per_frame,
+        clean_subtree: CleanSubtreeCacheConfig {
+            max_entries,
+            max_bytes: config.clean_subtree.max_bytes,
+            max_entry_bytes: config.clean_subtree.max_entry_bytes,
+        },
+    })
+}
+
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
@@ -669,8 +963,7 @@ fn start_native_renderer_with_config(
     let log_input = false;
     let log_render = config.render_log;
     let close_signal_log = config.close_signal_log;
-    let renderer_stats = config
-        .renderer_stats_log
+    let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
     set_render_log_enabled(log_render);
@@ -696,12 +989,17 @@ fn start_native_renderer_with_config(
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
     #[cfg(not(all(feature = "wayland", target_os = "linux")))]
     let system_clipboard = false;
+    let heartbeat_stats = if config.renderer_stats_log {
+        renderer_stats.clone()
+    } else {
+        None
+    };
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
             Arc::clone(&running_flag),
             Arc::clone(&input_target),
             Arc::clone(&native_log),
-            renderer_stats.clone(),
+            heartbeat_stats,
             backend_label,
         )),
         ..RendererHandles::default()
@@ -731,7 +1029,11 @@ fn start_native_renderer_with_config(
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let input_target_clone = Arc::clone(&input_target);
+            let native_log_clone = Arc::clone(&native_log);
             let renderer_stats_clone = renderer_stats.clone();
+            let renderer_stats_log = config.renderer_stats_log;
+            let renderer_animation_log = config.renderer_animation_log;
+            let renderer_cache_config = config.renderer_cache_config;
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -748,6 +1050,10 @@ fn start_native_renderer_with_config(
                     input_target: input_target_clone,
                     close_signal_log,
                     stats: renderer_stats_clone,
+                    renderer_stats_log,
+                    renderer_animation_log,
+                    renderer_cache_config,
+                    native_log: native_log_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
                     video_registry: video_registry_clone,
@@ -874,6 +1180,7 @@ fn start_native_renderer_with_config(
                 retry_interval_ms: config.drm_retry_interval_ms,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
+                renderer_cache_config: config.renderer_cache_config,
             };
 
             handles.backend_handle = Some(thread::spawn(move || {
@@ -1002,6 +1309,7 @@ fn start_native_renderer_with_config(
         video_wake,
         prime_video_supported,
         native_log,
+        stats: renderer_stats,
         close_signal_log,
         log_render,
         log_input,
@@ -1051,7 +1359,10 @@ fn start(
                 drm_input_log: false,
                 render_log: false,
                 close_signal_log: false,
+                stats_enabled: false,
                 renderer_stats_log: false,
+                renderer_animation_log: false,
+                renderer_cache_config: RendererCacheConfig::default(),
             },
             Some(env.pid()),
         )
@@ -1081,6 +1392,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let renderer_cache_config = renderer_cache_config_from_nif(opts.renderer_cache)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(
         StartConfig {
@@ -1098,7 +1411,10 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
             close_signal_log: opts.close_signal_log,
+            stats_enabled: opts.stats_enabled,
             renderer_stats_log: opts.renderer_stats_log,
+            renderer_animation_log: opts.renderer_animation_log,
+            renderer_cache_config,
         },
         Some(env.pid()),
     )
@@ -1164,10 +1480,14 @@ fn video_target_submit_prime(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
+    let submitted_at = Instant::now();
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::UploadTree { bytes },
+        TreeMsg::UploadTree {
+            bytes,
+            submitted_at: Some(submitted_at),
+        },
         renderer.log_render,
     );
     atoms::ok()
@@ -1175,10 +1495,14 @@ fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Ato
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
+    let submitted_at = Instant::now();
     let bytes = data.as_slice().to_vec();
     send_tree(
         &renderer.tree_tx,
-        TreeMsg::PatchTree { bytes },
+        TreeMsg::PatchTree {
+            bytes,
+            submitted_at: Some(submitted_at),
+        },
         renderer.log_render,
     );
     atoms::ok()
@@ -1283,6 +1607,121 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
     atoms::ok()
 }
 
+#[rustler::nif(name = "stats", schedule = "DirtyCpu")]
+fn stats_nif<'a>(
+    env: Env<'a>,
+    resource: Term<'a>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    if let Ok(renderer) = resource.decode::<ResourceArc<RendererResource>>() {
+        return renderer_stats_snapshot(env, renderer, command);
+    }
+
+    if let Ok(tree) = resource.decode::<ResourceArc<TreeResource>>() {
+        return tree_stats_snapshot(env, tree, command);
+    }
+
+    Err("unsupported stats resource".to_string())
+}
+
+fn renderer_stats_snapshot<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    if matches!(command, StatsCommandNif::Configure(_)) {
+        return Err("renderer stats are configured when the renderer starts".to_string());
+    }
+
+    let Some(stats) = renderer.stats.as_ref() else {
+        return Ok(StatsSnapshotNif::disabled("renderer").encode(env));
+    };
+
+    match command {
+        StatsCommandNif::Peek => {
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
+        }
+        StatsCommandNif::Take => {
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, true, &stats.take()).encode(env))
+        }
+        StatsCommandNif::Reset => {
+            stats.reset();
+            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
+        }
+        StatsCommandNif::Configure(_) => unreachable!(),
+    }
+}
+
+fn tree_stats_snapshot<'a>(
+    env: Env<'a>,
+    tree_res: ResourceArc<TreeResource>,
+    command: StatsCommandNif,
+) -> Result<Term<'a>, String> {
+    match command {
+        StatsCommandNif::Configure(config) => {
+            let next_stats = config
+                .enabled
+                .then(|| Arc::new(RendererStatsCollector::new()));
+
+            {
+                let mut stats_slot = tree_res
+                    .stats
+                    .lock()
+                    .map_err(|_| "failed to lock tree stats".to_string())?;
+                *stats_slot = next_stats.clone();
+            }
+
+            {
+                let mut tree = tree_res
+                    .tree
+                    .lock()
+                    .map_err(|_| "failed to lock tree".to_string())?;
+                tree.set_layout_cache_stats_enabled(config.enabled);
+            }
+
+            if let Some(stats) = next_stats {
+                Ok(StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek()).encode(env))
+            } else {
+                Ok(StatsSnapshotNif::disabled("tree").encode(env))
+            }
+        }
+        StatsCommandNif::Peek | StatsCommandNif::Take | StatsCommandNif::Reset => {
+            let stats = tree_res
+                .stats
+                .lock()
+                .map_err(|_| "failed to lock tree stats".to_string())?
+                .clone();
+
+            let Some(stats) = stats else {
+                return Ok(StatsSnapshotNif::disabled("tree").encode(env));
+            };
+
+            match command {
+                StatsCommandNif::Peek => {
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Take => {
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, true, &stats.take())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Reset => {
+                    stats.reset();
+                    Ok(
+                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
+                            .encode(env),
+                    )
+                }
+                StatsCommandNif::Configure(_) => unreachable!(),
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Raster NIF Functions
 // ============================================================================
@@ -1349,17 +1788,23 @@ fn replace_tree_resource(tree_res: &TreeResource, tree: ElementTree) -> Result<(
     Ok(())
 }
 
+fn upload_tree_resource(tree_res: &TreeResource, tree: ElementTree) -> Result<(), String> {
+    let mut guard = tree_res.tree.lock().map_err(|_| tree_lock_error())?;
+    guard.replace_with_uploaded(tree);
+    Ok(())
+}
+
 fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a> {
-    tree.nodes
-        .iter()
+    tree.iter_node_pairs()
         .filter_map(|(id, element)| {
             if element.is_ghost() {
                 return None;
             }
 
-            element.frame.map(|frame| {
-                let mut id_binary = NewBinary::new(env, id.0.len());
-                id_binary.as_mut_slice().copy_from_slice(&id.0);
+            element.layout.frame.map(|frame| {
+                let id_bytes = id.to_be_bytes();
+                let mut id_binary = NewBinary::new(env, id_bytes.len());
+                id_binary.as_mut_slice().copy_from_slice(&id_bytes);
                 (
                     id_binary.into(),
                     frame.x,
@@ -1381,6 +1826,7 @@ fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a
 fn tree_new() -> ResourceArc<TreeResource> {
     ResourceArc::new(TreeResource {
         tree: Mutex::new(ElementTree::new()),
+        stats: Mutex::new(None),
     })
 }
 
@@ -1389,7 +1835,7 @@ fn tree_new() -> ResourceArc<TreeResource> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn tree_upload(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
-    replace_tree_resource(&tree_res, decoded)?;
+    upload_tree_resource(&tree_res, decoded)?;
     Ok(true)
 }
 
@@ -1401,7 +1847,7 @@ fn tree_upload_roundtrip<'a>(
 ) -> Result<Binary<'a>, String> {
     let decoded = tree::deserialize::decode_tree(data.as_slice()).map_err(|e| e.to_string())?;
     let encoded = encode_tree_binary(env, &decoded);
-    replace_tree_resource(&tree_res, decoded)?;
+    upload_tree_resource(&tree_res, decoded)?;
     Ok(encoded)
 }
 
@@ -1469,9 +1915,24 @@ fn tree_layout<'a>(
     height: f64,
     scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
+    let stats = tree_res
+        .stats
+        .lock()
+        .map_err(|_| "failed to lock tree stats".to_string())?
+        .clone();
     let mut tree = clone_tree_resource(&tree_res)?;
+    tree.set_layout_cache_stats_enabled(
+        stats
+            .as_ref()
+            .is_some_and(|stats| stats.layout_cache_enabled()),
+    );
     let constraint = tree::layout::Constraint::new(width as f32, height as f32);
+    let layout_started_at = Instant::now();
     tree::layout::layout_tree_default(&mut tree, constraint, scale as f32);
+    if let Some(stats) = stats.as_ref() {
+        stats.record_layout(layout_started_at.elapsed());
+        stats.record_layout_cache(tree.layout_cache_stats());
+    }
     let frames = encode_layout_frames(env, &tree);
     replace_tree_resource(&tree_res, tree)?;
     Ok(frames)
@@ -1558,6 +2019,7 @@ fn test_harness_upload(harness: ResourceArc<TestHarnessResource>, data: Binary) 
         &harness.tree_tx,
         TreeMsg::UploadTree {
             bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
         false,
     );
@@ -1570,6 +2032,7 @@ fn test_harness_patch(harness: ResourceArc<TestHarnessResource>, data: Binary) -
         &harness.tree_tx,
         TreeMsg::PatchTree {
             bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
         false,
     );
@@ -1604,6 +2067,7 @@ fn test_harness_animation_pulse(
         TreeMsg::AnimationPulse {
             presented_at: base_instant + Duration::from_millis(presented_ms),
             predicted_next_present_at: base_instant + Duration::from_millis(predicted_ms),
+            trace: None,
         },
         false,
     );
@@ -1674,9 +2138,10 @@ fn test_harness_stop(harness: ResourceArc<TestHarnessResource>) -> Atom {
     atoms::ok()
 }
 
-fn encode_hover_msg<'a>(env: Env<'a>, element_id: &ElementId, active: bool) -> HoverMsg<'a> {
-    let mut id_binary = NewBinary::new(env, element_id.0.len());
-    id_binary.as_mut_slice().copy_from_slice(&element_id.0);
+fn encode_hover_msg<'a>(env: Env<'a>, element_id: &NodeId, active: bool) -> HoverMsg<'a> {
+    let id_bytes = element_id.to_be_bytes();
+    let mut id_binary = NewBinary::new(env, id_bytes.len());
+    id_binary.as_mut_slice().copy_from_slice(&id_bytes);
     (id_binary.into(), active)
 }
 
@@ -1693,7 +2158,7 @@ mod tests {
     use crate::events::RegistryRebuildPayload;
     use crate::events::test_support::AnimatedNearbyHitCase;
     use crate::input::InputEvent;
-    use crate::tree::element::ElementId;
+    use crate::tree::element::NodeId;
     use crossbeam_channel::RecvTimeoutError;
 
     struct LiveActorHarness {
@@ -1790,7 +2255,7 @@ mod tests {
             {}
         }
 
-        fn drain_set_mouse_over_active(&self, element_id: &ElementId) -> Vec<bool> {
+        fn drain_set_mouse_over_active(&self, element_id: &NodeId) -> Vec<bool> {
             let mut msgs = Vec::new();
             while let Ok(msg) = self.tree_tap_rx.try_recv() {
                 runtime::tree_actor::push_tree_message_flat(msg, &mut msgs);
@@ -2100,6 +2565,7 @@ mod tests {
         harness.send_tree(TreeMsg::AnimationPulse {
             presented_at: base,
             predicted_next_present_at: base,
+            trace: None,
         });
         harness.wait_for_render_settle();
         let _ = harness.drain_set_mouse_over_active(&case.target_id);
@@ -2115,6 +2581,7 @@ mod tests {
             harness.send_tree(TreeMsg::AnimationPulse {
                 presented_at: base + Duration::from_millis(sample_ms),
                 predicted_next_present_at: base + Duration::from_millis(sample_ms),
+                trace: None,
             });
             harness.wait_for_render_settle();
 
@@ -2143,6 +2610,7 @@ mod tests {
         harness.send_tree(TreeMsg::AnimationPulse {
             presented_at: base,
             predicted_next_present_at: base,
+            trace: None,
         });
         match harness.render_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(_) => {}
@@ -2161,6 +2629,7 @@ mod tests {
             harness.send_tree(TreeMsg::AnimationPulse {
                 presented_at: base + Duration::from_millis(sample_ms),
                 predicted_next_present_at: base + Duration::from_millis(sample_ms),
+                trace: None,
             });
 
             match harness.render_rx.recv_timeout(Duration::from_millis(250)) {

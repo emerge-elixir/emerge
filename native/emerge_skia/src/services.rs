@@ -96,10 +96,7 @@ fn render_tree_offscreen(
     };
     let mut backend = RasterBackend::new(&config)?;
 
-    let state = RenderState {
-        scene: output.scene,
-        ..Default::default()
-    };
+    let state = RenderState::new(output.scene, Default::default(), 0, false);
 
     let frame = backend.render(&state);
 

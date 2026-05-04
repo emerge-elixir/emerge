@@ -12,8 +12,31 @@ name = "macos_host"
 path = "src/bin/macos_host.rs"
 required-features = ["macos"]
 
+[[bench]]
+name = "layout"
+harness = false
+required-features = ["bench-diagnostics"]
+
+[[bench]]
+name = "patch"
+harness = false
+
+[[bench]]
+name = "emrg"
+harness = false
+
+[[bench]]
+name = "renderer"
+harness = false
+required-features = ["bench-diagnostics"]
+
+[[bench]]
+name = "stats"
+harness = false
+
 [features]
 default = ["wayland"]
+bench-diagnostics = []
 hover-trace = []
 macos = [
     "dep:objc2",
@@ -54,6 +77,9 @@ resvg = "0.47"
 skia-bindings = { version = "=0.93.1", default-features = false, features = ["jpeg"] }
 
 skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "pdf", "binary-cache"] }
+
+[dev-dependencies]
+criterion = "0.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", optional = true }

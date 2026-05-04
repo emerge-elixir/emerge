@@ -25,15 +25,21 @@ mod app {
         },
         input::InputEvent,
         keys::CanonicalKey,
-        renderer::{RenderFrame, RenderState, SceneRenderer},
+        renderer::{
+            CleanSubtreeCacheConfig, RenderFrame, RenderState, RendererCacheConfig, SceneRenderer,
+        },
         services::{self, OffscreenRenderOptions},
         stats::{RendererStatsCollector, format_renderer_stats_log},
         tree::{
             animation::AnimationRuntime,
             deserialize,
             element::ElementTree,
+            invalidation::{
+                RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
+            },
             layout::{
-                Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+                Constraint, LayoutOutput, layout_and_refresh_default,
+                layout_and_refresh_default_with_animation, refresh,
             },
             patch,
         },
@@ -67,7 +73,7 @@ mod app {
     };
 
     const PROTOCOL_NAME: &str = "emerge_skia_macos";
-    const PROTOCOL_VERSION: u16 = 7;
+    const PROTOCOL_VERSION: u16 = 8;
 
     const FRAME_INIT: u8 = 1;
     const FRAME_INIT_OK: u8 = 2;
@@ -361,6 +367,7 @@ mod app {
             height: u32,
             scroll_line_pixels: f32,
             renderer_stats_log: bool,
+            renderer_cache_config: RendererCacheConfig,
             macos_backend: RequestedMacosBackend,
             asset_config: StartSessionAssetConfig,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
@@ -671,7 +678,7 @@ mod app {
 
         fn send_element_event(
             &self,
-            element_id: &emerge_skia::tree::element::ElementId,
+            element_id: &emerge_skia::tree::element::NodeId,
             kind: ElementEventKind,
             payload: Option<&str>,
         ) {
@@ -1481,6 +1488,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                     reply_tx,
@@ -1498,19 +1506,20 @@ mod app {
                         }
                     };
 
-                    match create_session(
+                    match create_session(CreateSessionRequest {
                         app,
                         mtm,
                         state,
                         session_id,
-                        &title,
+                        title: &title,
                         width,
                         height,
                         scroll_line_pixels,
                         renderer_stats_log,
-                        macos_backend,
+                        renderer_cache_config,
+                        requested_backend: macos_backend,
                         ui_state,
-                    ) {
+                    }) {
                         Ok((session, selected_backend)) => {
                             let stats = session.stats.clone();
                             ui_state.borrow_mut().sessions.insert(session_id, session);
@@ -1867,8 +1876,10 @@ mod app {
                     return;
                 }
 
-                if apply_tree_messages(session, runtime_messages).unwrap_or(false) {
-                    let _ = rerender_session(session);
+                if let Err(err) = apply_tree_messages(session, runtime_messages)
+                    .and_then(|invalidation| render_session_for_invalidation(session, invalidation))
+                {
+                    eprintln!("macOS runtime tick render failed: {err}");
                 }
             });
     }
@@ -1893,34 +1904,54 @@ mod app {
                     return;
                 };
 
-                if apply_tree_messages(
+                if let Err(err) = apply_tree_messages(
                     session,
                     vec![emerge_skia::actors::TreeMsg::AnimationPulse {
                         presented_at,
                         predicted_next_present_at,
+                        trace: None,
                     }],
                 )
-                .unwrap_or(false)
+                .and_then(|invalidation| render_session_for_invalidation(session, invalidation))
                 {
-                    let _ = rerender_session(session);
+                    eprintln!("macOS animation tick render failed: {err}");
                 }
             });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn create_session(
-        app: &NSApplication,
+    struct CreateSessionRequest<'a> {
+        app: &'a NSApplication,
         mtm: MainThreadMarker,
-        state: &Arc<HostState>,
+        state: &'a Arc<HostState>,
         session_id: u64,
-        title: &str,
+        title: &'a str,
         width: u32,
         height: u32,
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
+        renderer_cache_config: RendererCacheConfig,
         requested_backend: RequestedMacosBackend,
-        ui_state: &Rc<RefCell<HostUiState>>,
+        ui_state: &'a Rc<RefCell<HostUiState>>,
+    }
+
+    fn create_session(
+        request: CreateSessionRequest<'_>,
     ) -> Result<(HostSession, SelectedMacosBackend), String> {
+        let CreateSessionRequest {
+            app,
+            mtm,
+            state,
+            session_id,
+            title,
+            width,
+            height,
+            scroll_line_pixels,
+            renderer_stats_log,
+            renderer_cache_config,
+            requested_backend,
+            ui_state,
+        } = request;
+
         let window = create_window(app, mtm, title, width, height)?;
         let initial_content_view = window
             .contentView()
@@ -1957,7 +1988,7 @@ mod app {
                 _input_view: input_view,
                 _window_delegate: window_delegate,
                 surface,
-                renderer: SceneRenderer::new(),
+                renderer: SceneRenderer::with_cache_config(renderer_cache_config),
                 tree: ElementTree::new(),
                 render_state: RenderState::default(),
                 logical_size: metrics.render_size,
@@ -2169,11 +2200,13 @@ mod app {
         surface: &mut MetalSurface,
         renderer: &mut SceneRenderer,
         render_state: &RenderState,
+        stats: Option<&RendererStatsCollector>,
     ) -> Result<(), String> {
         let Some(drawable) = surface.metal_layer.nextDrawable() else {
             return Ok(());
         };
 
+        let render_started_at = Instant::now();
         let size = surface.metal_layer.drawableSize();
         let (drawable_width, drawable_height) = (size.width.max(1.0), size.height.max(1.0));
 
@@ -2195,14 +2228,35 @@ mod app {
         )
         .ok_or_else(|| "failed to wrap CAMetalLayer drawable as Skia surface".to_string())?;
 
-        {
+        let mut render_timings = {
             let mut frame = RenderFrame::new(&mut skia_surface, Some(&mut surface.skia));
-            renderer.render(&mut frame, render_state);
+            renderer.render(&mut frame, render_state)
+        };
+
+        let extra_flush_started_at = Instant::now();
+        let extra_gpu_flush_started_at = Instant::now();
+        surface.skia.flush(None);
+        render_timings.gpu_flush += extra_gpu_flush_started_at.elapsed();
+
+        let extra_submit_started_at = Instant::now();
+        surface.skia.submit(gpu::SyncCpu::No);
+        render_timings.submit += extra_submit_started_at.elapsed();
+        render_timings.flush += extra_flush_started_at.elapsed();
+
+        if let Some(stats) = stats {
+            stats.record_render(render_started_at.elapsed());
+            stats.record_render_draw(render_timings.draw);
+            stats.record_render_flush(render_timings.flush);
+            stats.record_render_gpu_flush(render_timings.gpu_flush);
+            stats.record_render_submit(render_timings.submit);
+            if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+                stats.record_renderer_cache(*renderer_cache);
+            }
         }
 
-        surface.skia.flush_and_submit();
         drop(skia_surface);
 
+        let present_submit_started_at = Instant::now();
         let command_buffer = surface
             .command_queue
             .commandBuffer()
@@ -2211,6 +2265,11 @@ mod app {
         let drawable: Retained<ProtocolObject<dyn MTLDrawable>> = (&drawable).into();
         command_buffer.presentDrawable(&drawable);
         command_buffer.commit();
+
+        if let Some(stats) = stats {
+            stats.record_present_submit(present_submit_started_at.elapsed());
+        }
+
         Ok(())
     }
 
@@ -2218,10 +2277,24 @@ mod app {
         surface: &mut RasterLayerSurface,
         renderer: &mut SceneRenderer,
         render_state: &RenderState,
+        stats: Option<&RendererStatsCollector>,
     ) -> Result<(), String> {
-        {
+        let render_started_at = Instant::now();
+
+        let render_timings = {
             let mut frame = RenderFrame::new(&mut surface.surface, None);
-            renderer.render(&mut frame, render_state);
+            renderer.render(&mut frame, render_state)
+        };
+
+        if let Some(stats) = stats {
+            stats.record_render(render_started_at.elapsed());
+            stats.record_render_draw(render_timings.draw);
+            stats.record_render_flush(render_timings.flush);
+            stats.record_render_gpu_flush(render_timings.gpu_flush);
+            stats.record_render_submit(render_timings.submit);
+            if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+                stats.record_renderer_cache(*renderer_cache);
+            }
         }
 
         let image = surface.surface.image_snapshot();
@@ -2242,12 +2315,18 @@ mod app {
 
     fn draw_session(session: &mut HostSession) -> Result<(), String> {
         match &mut session.surface {
-            SessionSurface::Metal(surface) => {
-                draw_metal_surface(surface, &mut session.renderer, &session.render_state)?
-            }
-            SessionSurface::Raster(surface) => {
-                draw_raster_surface(surface, &mut session.renderer, &session.render_state)?
-            }
+            SessionSurface::Metal(surface) => draw_metal_surface(
+                surface,
+                &mut session.renderer,
+                &session.render_state,
+                session.stats.as_deref(),
+            )?,
+            SessionSurface::Raster(surface) => draw_raster_surface(
+                surface,
+                &mut session.renderer,
+                &session.render_state,
+                session.stats.as_deref(),
+            )?,
         }
 
         if let Some(stats) = session.stats.as_ref() {
@@ -2274,15 +2353,81 @@ mod app {
     fn upload_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
         let decoded = deserialize::decode_tree(bytes).map_err(|err| err.to_string())?;
         session.tree.replace_with_uploaded(decoded);
-        rerender_session(session)?;
-        Ok(())
+        render_session_for_invalidation(session, TreeInvalidation::Structure)
     }
 
     fn patch_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
         let patches = patch::decode_patches(bytes).map_err(|err| err.to_string())?;
-        patch::apply_patches(&mut session.tree, patches).map_err(|err| err.to_string())?;
-        rerender_session(session)?;
-        Ok(())
+        let invalidation =
+            patch::apply_patches(&mut session.tree, patches).map_err(|err| err.to_string())?;
+        render_session_for_invalidation(session, invalidation)
+    }
+
+    fn render_session_for_invalidation(
+        session: &mut HostSession,
+        invalidation: TreeInvalidation,
+    ) -> Result<(), String> {
+        match decide_refresh_action(invalidation, false, session_refresh_availability(session)) {
+            RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => Ok(()),
+            RefreshDecision::RefreshOnly => refresh_session(session),
+            RefreshDecision::Recompute => rerender_session(session),
+        }
+    }
+
+    fn session_refresh_availability(session: &HostSession) -> RefreshAvailability {
+        RefreshAvailability {
+            has_cached_rebuild: false,
+            has_root_frame: tree_has_root_frame(&session.tree),
+        }
+    }
+
+    fn tree_has_root_frame(tree: &ElementTree) -> bool {
+        tree.root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some()
+    }
+
+    fn install_layout_output(session: &mut HostSession, output: LayoutOutput) {
+        session.render_state.scene = output.scene;
+        session.render_state.render_version = session.render_state.render_version.wrapping_add(1);
+        session.render_state.animate = output.animations_active;
+        session.dirty = true;
+        session.event_runtime.install_rebuild(output.event_rebuild);
+    }
+
+    fn refresh_session(session: &mut HostSession) -> Result<(), String> {
+        let mut iterations = 0;
+
+        loop {
+            assets::ensure_tree_sources(&session.tree);
+            let refresh_started_at = std::time::Instant::now();
+            let output = refresh(&mut session.tree);
+
+            if let Some(stats) = session.stats.as_ref() {
+                stats.record_refresh(refresh_started_at.elapsed());
+            }
+
+            install_layout_output(session, output);
+            let runtime_messages = session.event_runtime.drain_tree_messages();
+
+            if runtime_messages.is_empty() {
+                return Ok(());
+            }
+
+            let invalidation = apply_tree_messages(session, runtime_messages)?;
+            iterations += 1;
+
+            if invalidation.is_none() || iterations >= 8 {
+                return Ok(());
+            }
+
+            match decide_refresh_action(invalidation, false, session_refresh_availability(session))
+            {
+                RefreshDecision::Skip | RefreshDecision::UseCachedRebuild => return Ok(()),
+                RefreshDecision::RefreshOnly => {}
+                RefreshDecision::Recompute => return rerender_session(session),
+            }
+        }
     }
 
     fn rerender_session(session: &mut HostSession) -> Result<(), String> {
@@ -2302,6 +2447,12 @@ mod app {
             let _ = session
                 .animation_runtime
                 .prune_completed_exit_ghosts(&mut session.tree, Some(sample_time));
+            session.tree.set_layout_cache_stats_enabled(
+                session
+                    .stats
+                    .as_ref()
+                    .is_some_and(|stats| stats.layout_cache_enabled()),
+            );
             let layout_started_at = std::time::Instant::now();
 
             let output = if session.animation_runtime.is_empty() {
@@ -2318,32 +2469,36 @@ mod app {
 
             if let Some(stats) = session.stats.as_ref() {
                 stats.record_layout(layout_started_at.elapsed());
+                stats.record_layout_cache(session.tree.layout_cache_stats());
             }
 
-            session.render_state.scene = output.scene;
-            session.render_state.render_version =
-                session.render_state.render_version.wrapping_add(1);
-            session.render_state.animate = output.animations_active;
-            session.dirty = true;
+            let animations_active = output.animations_active;
+            install_layout_output(session, output);
 
-            if session.animation_runtime.is_empty() || !output.animations_active {
+            if session.animation_runtime.is_empty() || !animations_active {
                 session.latest_animation_sample_time = None;
             } else {
                 session.latest_animation_sample_time = Some(sample_time);
             }
 
-            session.event_runtime.install_rebuild(output.event_rebuild);
             let runtime_messages = session.event_runtime.drain_tree_messages();
 
             if runtime_messages.is_empty() {
                 return Ok(());
             }
 
-            let changed = apply_tree_messages(session, runtime_messages)?;
+            let invalidation = apply_tree_messages(session, runtime_messages)?;
             iterations += 1;
 
-            if !changed || iterations >= 8 {
+            if invalidation.is_none() || iterations >= 8 {
                 return Ok(());
+            }
+
+            if matches!(
+                decide_refresh_action(invalidation, false, session_refresh_availability(session)),
+                RefreshDecision::RefreshOnly
+            ) {
+                return refresh_session(session);
             }
         }
     }
@@ -2356,11 +2511,8 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn handle_runtime_text_input_command(
@@ -2377,11 +2529,8 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn handle_runtime_text_input_edit(
@@ -2398,17 +2547,14 @@ mod app {
             return Ok(());
         }
 
-        if apply_tree_messages(session, runtime_messages)? {
-            rerender_session(session)?;
-        }
-
-        Ok(())
+        let invalidation = apply_tree_messages(session, runtime_messages)?;
+        render_session_for_invalidation(session, invalidation)
     }
 
     fn apply_tree_messages(
         session: &mut HostSession,
         messages: Vec<emerge_skia::actors::TreeMsg>,
-    ) -> Result<bool, String> {
+    ) -> Result<TreeInvalidation, String> {
         let mut scroll_acc = HashMap::new();
         let mut thumb_drag_x_acc = HashMap::new();
         let mut thumb_drag_y_acc = HashMap::new();
@@ -2417,23 +2563,24 @@ mod app {
         let mut mouse_over_state = HashMap::new();
         let mut mouse_down_state = HashMap::new();
         let mut focused_state = HashMap::new();
-        let mut tree_changed = false;
+        let mut invalidation = TreeInvalidation::None;
 
         for message in flatten_tree_messages(messages) {
             match message {
                 emerge_skia::actors::TreeMsg::Stop => {}
                 emerge_skia::actors::TreeMsg::Batch(_) => unreachable!(),
-                emerge_skia::actors::TreeMsg::UploadTree { bytes } => {
+                emerge_skia::actors::TreeMsg::UploadTree { bytes, .. } => {
                     let decoded =
                         deserialize::decode_tree(&bytes).map_err(|err| err.to_string())?;
                     session.tree.replace_with_uploaded(decoded);
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Structure);
                 }
                 emerge_skia::actors::TreeMsg::PatchTree { bytes, .. } => {
                     let patches = patch::decode_patches(&bytes).map_err(|err| err.to_string())?;
-                    patch::apply_patches(&mut session.tree, patches)
-                        .map_err(|err| err.to_string())?;
-                    tree_changed = true;
+                    invalidation.add(
+                        patch::apply_patches(&mut session.tree, patches)
+                            .map_err(|err| err.to_string())?,
+                    );
                 }
                 emerge_skia::actors::TreeMsg::Resize {
                     width,
@@ -2450,7 +2597,7 @@ mod app {
                         scale_factor: session.scale_factor,
                     };
                     resize_surface(session, &metrics);
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Measure);
                 }
                 emerge_skia::actors::TreeMsg::ScrollRequest { element_id, dx, dy } => {
                     let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
@@ -2490,7 +2637,7 @@ mod app {
                     element_id,
                     content,
                 } => {
-                    tree_changed |= session.tree.set_text_input_content(&element_id, content);
+                    invalidation.add(session.tree.set_text_input_content(&element_id, content));
                 }
                 emerge_skia::actors::TreeMsg::SetTextInputRuntime {
                     element_id,
@@ -2500,56 +2647,59 @@ mod app {
                     preedit,
                     preedit_cursor,
                 } => {
-                    tree_changed |= session.tree.set_text_input_runtime(
+                    invalidation.add(session.tree.set_text_input_runtime(
                         &element_id,
                         focused,
                         cursor,
                         selection_anchor,
                         preedit,
                         preedit_cursor,
-                    );
+                    ));
                 }
                 emerge_skia::actors::TreeMsg::AnimationPulse {
                     presented_at,
                     predicted_next_present_at,
+                    trace: _,
                 } => {
                     session.latest_animation_sample_time =
                         Some(predicted_next_present_at.max(presented_at));
-                    tree_changed = true;
+                    invalidation.add(TreeInvalidation::Measure);
                 }
-                emerge_skia::actors::TreeMsg::RebuildRegistry
-                | emerge_skia::actors::TreeMsg::AssetStateChanged => {
-                    tree_changed = true;
+                emerge_skia::actors::TreeMsg::RebuildRegistry => {
+                    invalidation.add(TreeInvalidation::Registry);
+                }
+                emerge_skia::actors::TreeMsg::AssetStateChanged => {
+                    invalidation.add(TreeInvalidation::Measure);
                 }
             }
         }
 
         for (id, (dx, dy)) in scroll_acc {
-            tree_changed |= session.tree.apply_scroll(&id, dx, dy);
+            invalidation.add(session.tree.apply_scroll(&id, dx, dy));
         }
         for (id, dx) in thumb_drag_x_acc {
-            tree_changed |= session.tree.apply_scroll_x(&id, dx);
+            invalidation.add(session.tree.apply_scroll_x(&id, dx));
         }
         for (id, dy) in thumb_drag_y_acc {
-            tree_changed |= session.tree.apply_scroll_y(&id, dy);
+            invalidation.add(session.tree.apply_scroll_y(&id, dy));
         }
         for (id, hovered) in hover_x_state {
-            tree_changed |= session.tree.set_scrollbar_x_hover(&id, hovered);
+            invalidation.add(session.tree.set_scrollbar_x_hover(&id, hovered));
         }
         for (id, hovered) in hover_y_state {
-            tree_changed |= session.tree.set_scrollbar_y_hover(&id, hovered);
+            invalidation.add(session.tree.set_scrollbar_y_hover(&id, hovered));
         }
         for (id, active) in mouse_over_state {
-            tree_changed |= session.tree.set_mouse_over_active(&id, active);
+            invalidation.add(session.tree.set_mouse_over_active(&id, active));
         }
         for (id, active) in mouse_down_state {
-            tree_changed |= session.tree.set_mouse_down_active(&id, active);
+            invalidation.add(session.tree.set_mouse_down_active(&id, active));
         }
         for (id, active) in focused_state {
-            tree_changed |= session.tree.set_focused_active(&id, active);
+            invalidation.add(session.tree.set_focused_active(&id, active));
         }
 
-        Ok(tree_changed)
+        Ok(invalidation)
     }
 
     fn flatten_tree_messages(
@@ -2806,7 +2956,7 @@ mod app {
     fn notify_element_event(
         state: &Arc<HostState>,
         session_id: u64,
-        element_id: &emerge_skia::tree::element::ElementId,
+        element_id: &emerge_skia::tree::element::NodeId,
         kind: ElementEventKind,
         payload: Option<&str>,
     ) {
@@ -3487,6 +3637,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                 )) = decode_start_session(&frame.payload)
@@ -3506,6 +3657,7 @@ mod app {
                     height,
                     scroll_line_pixels,
                     renderer_stats_log,
+                    renderer_cache_config,
                     macos_backend,
                     asset_config,
                     reply_tx,
@@ -3844,6 +3996,7 @@ mod app {
         u32,
         f32,
         bool,
+        RendererCacheConfig,
         RequestedMacosBackend,
         StartSessionAssetConfig,
     )> {
@@ -3853,6 +4006,7 @@ mod app {
         let height = decode_u32(payload, &mut cursor)?;
         let scroll_line_pixels = decode_f32(payload, &mut cursor)?;
         let renderer_stats_log = decode_u8(payload, &mut cursor)? != 0;
+        let renderer_cache_config = decode_renderer_cache_config(payload, &mut cursor)?;
         let backend = decode_requested_macos_backend(decode_u8(payload, &mut cursor)?)?;
         let asset_config = decode_asset_config(payload, &mut cursor)?;
         let fonts = decode_font_list(payload, &mut cursor)?;
@@ -3867,6 +4021,7 @@ mod app {
             height,
             scroll_line_pixels,
             renderer_stats_log,
+            renderer_cache_config,
             backend,
             StartSessionAssetConfig {
                 sources: asset_config.sources,
@@ -3878,6 +4033,25 @@ mod app {
                 fonts,
             },
         ))
+    }
+
+    fn decode_renderer_cache_config(
+        payload: &[u8],
+        cursor: &mut usize,
+    ) -> Option<RendererCacheConfig> {
+        let max_new_payloads_per_frame = decode_u32(payload, cursor)?;
+        let max_entries = usize::try_from(decode_u64(payload, cursor)?).ok()?;
+        let max_bytes = decode_u64(payload, cursor)?;
+        let max_entry_bytes = decode_u64(payload, cursor)?;
+
+        Some(RendererCacheConfig {
+            max_new_payloads_per_frame,
+            clean_subtree: CleanSubtreeCacheConfig {
+                max_entries,
+                max_bytes,
+                max_entry_bytes,
+            },
+        })
     }
 
     fn decode_measure_text(payload: &[u8]) -> Option<(String, f32)> {

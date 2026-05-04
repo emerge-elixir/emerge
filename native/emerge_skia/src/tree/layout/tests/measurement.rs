@@ -10,8 +10,8 @@ fn test_layout_text() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("text", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -22,7 +22,7 @@ fn test_layout_text() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    let frame = root.frame.unwrap();
+    let frame = root.layout.frame.unwrap();
     assert_eq!(frame.width, 40.0); // 5 chars * 8px
     assert_eq!(frame.height, 16.0); // font_size
 }
@@ -38,8 +38,8 @@ fn test_layout_text_letter_and_word_spacing() {
     attrs.font_word_spacing = Some(3.0);
 
     let el = make_element("text", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -50,7 +50,7 @@ fn test_layout_text_letter_and_word_spacing() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    let frame = root.frame.unwrap();
+    let frame = root.layout.frame.unwrap();
     // 3 chars * 8 + letter spacing (2 gaps * 2) + word spacing (1 gap * 3)
     assert_eq!(frame.width, 31.0);
     assert_eq!(frame.height, 10.0);
@@ -65,8 +65,8 @@ fn test_layout_multiline_defaults_to_one_line_minimum_height() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -76,7 +76,7 @@ fn test_layout_multiline_defaults_to_one_line_minimum_height() {
         &MockTextMeasurer,
     );
 
-    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    let frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
     assert_eq!(frame.height, 16.0);
     assert_eq!(frame.content_height, 16.0);
 }
@@ -91,8 +91,8 @@ fn test_layout_multiline_wraps_and_auto_grows_height() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -102,7 +102,7 @@ fn test_layout_multiline_wraps_and_auto_grows_height() {
         &MockTextMeasurer,
     );
 
-    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    let frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
     assert_eq!(frame.width, 16.0);
     assert_eq!(frame.height, 32.0);
     assert_eq!(frame.content_height, 32.0);
@@ -119,8 +119,8 @@ fn test_layout_multiline_respects_explicit_height_override() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("multiline", ElementKind::Multiline, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -130,7 +130,7 @@ fn test_layout_multiline_respects_explicit_height_override() {
         &MockTextMeasurer,
     );
 
-    let frame = tree.get(&root_id).unwrap().frame.unwrap();
+    let frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
     assert_eq!(frame.height, 16.0);
     assert_eq!(frame.content_height, 32.0);
 }
@@ -144,8 +144,8 @@ fn test_content_size_basic_element() {
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -156,7 +156,7 @@ fn test_content_size_basic_element() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    let frame = root.frame.unwrap();
+    let frame = root.layout.frame.unwrap();
 
     // For a basic element without children, content size equals frame size
     assert_eq!(frame.content_width, 100.0);
@@ -187,11 +187,11 @@ fn test_content_size_row_with_children() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let row_id = row.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let row_id = row.id;
     row.children = child_ids;
 
-    tree.root = Some(row_id.clone());
+    tree.set_root_id(row_id);
     tree.insert(row);
     for child in children {
         tree.insert(child);
@@ -204,7 +204,7 @@ fn test_content_size_row_with_children() {
         &MockTextMeasurer,
     );
 
-    let row_frame = tree.get(&row_id).unwrap().frame.unwrap();
+    let row_frame = tree.get(&row_id).unwrap().layout.frame.unwrap();
 
     // Frame size is the specified size
     assert_eq!(row_frame.width, 300.0);
@@ -241,11 +241,11 @@ fn test_content_size_column_with_children() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let col_id = col.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let col_id = col.id;
     col.children = child_ids;
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     for child in children {
         tree.insert(child);
@@ -258,7 +258,7 @@ fn test_content_size_column_with_children() {
         &MockTextMeasurer,
     );
 
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
 
     // Frame size is the specified size
     assert_eq!(col_frame.width, 100.0);
@@ -294,11 +294,11 @@ fn test_content_size_scrollable_column() {
         })
         .collect();
 
-    let child_ids: Vec<_> = children.iter().map(|c| c.id.clone()).collect();
-    let col_id = col.id.clone();
+    let child_ids: Vec<_> = children.iter().map(|c| c.id).collect();
+    let col_id = col.id;
     col.children = child_ids;
 
-    tree.root = Some(col_id.clone());
+    tree.set_root_id(col_id);
     tree.insert(col);
     for child in children {
         tree.insert(child);
@@ -311,7 +311,7 @@ fn test_content_size_scrollable_column() {
         &MockTextMeasurer,
     );
 
-    let col_frame = tree.get(&col_id).unwrap().frame.unwrap();
+    let col_frame = tree.get(&col_id).unwrap().layout.frame.unwrap();
 
     // Frame stays at specified size (clipped/scrollable)
     assert_eq!(col_frame.width, 100.0);
@@ -320,9 +320,9 @@ fn test_content_size_scrollable_column() {
     // Content height reflects actual content: 5 * 50 + 4 * 10 = 290px
     assert_eq!(col_frame.content_height, 290.0);
 
-    let col_attrs = &tree.get(&col_id).unwrap().attrs;
-    assert_eq!(col_attrs.scroll_y, Some(0.0));
-    assert_eq!(col_attrs.scroll_y_max, Some(140.0));
+    let col_layout = &tree.get(&col_id).unwrap().layout;
+    assert_eq!(col_layout.scroll_y, 0.0);
+    assert_eq!(col_layout.scroll_y_max, 140.0);
 }
 
 #[test]
@@ -343,11 +343,11 @@ fn test_content_size_el_with_child() {
         a
     });
 
-    let child_id = child.id.clone();
-    let el_id = el.id.clone();
+    let child_id = child.id;
+    let el_id = el.id;
     el.children = vec![child_id];
 
-    tree.root = Some(el_id.clone());
+    tree.set_root_id(el_id);
     tree.insert(el);
     tree.insert(child);
 
@@ -358,7 +358,7 @@ fn test_content_size_el_with_child() {
         &MockTextMeasurer,
     );
 
-    let el_frame = tree.get(&el_id).unwrap().frame.unwrap();
+    let el_frame = tree.get(&el_id).unwrap().layout.frame.unwrap();
 
     // Frame is the specified size
     assert_eq!(el_frame.width, 200.0);
@@ -379,8 +379,8 @@ fn test_content_size_image_intrinsic_includes_padding_and_border() {
     attrs.border_width = Some(BorderWidth::Uniform(2.0));
 
     let image = make_element("image", ElementKind::Image, attrs);
-    let image_id = image.id.clone();
-    tree.root = Some(image_id.clone());
+    let image_id = image.id;
+    tree.set_root_id(image_id);
     tree.insert(image);
 
     layout_tree(
@@ -390,7 +390,7 @@ fn test_content_size_image_intrinsic_includes_padding_and_border() {
         &MockTextMeasurer,
     );
 
-    let frame = tree.get(&image_id).unwrap().frame.unwrap();
+    let frame = tree.get(&image_id).unwrap().layout.frame.unwrap();
 
     // Inset each side = padding(5) + border(2) = 7
     // width = image(30) + 14, height = image(20) + 14

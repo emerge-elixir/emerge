@@ -9,7 +9,8 @@ defmodule Emerge.Engine.Tree do
   alias Emerge.Engine.Tree.Nearby
 
   @type id_state :: %{
-          explicit_seen: term()
+          explicit_seen: term(),
+          next_id: non_neg_integer()
         }
 
   @doc """
@@ -20,16 +21,18 @@ defmodule Emerge.Engine.Tree do
 
   def assign_ids(%Element{} = element, state) do
     state = reset_explicit_seen(state)
-    {_, assigned} = Reconcile.assign_ids(element)
-    {assigned, state}
+    next_id = Map.get(state, :next_id, 1)
+    {_, assigned, next_id} = Reconcile.assign_ids(element, next_id)
+    {assigned, %{state | next_id: next_id}}
   end
 
   def assign_ids(elements, state) when is_list(elements) do
     state = reset_explicit_seen(state)
 
     Enum.map_reduce(elements, state, fn element, acc ->
-      {_, assigned} = Reconcile.assign_ids(element)
-      {assigned, acc}
+      next_id = Map.get(acc, :next_id, 1)
+      {_, assigned, next_id} = Reconcile.assign_ids(element, next_id)
+      {assigned, %{acc | next_id: next_id}}
     end)
   end
 
@@ -43,7 +46,7 @@ defmodule Emerge.Engine.Tree do
   end
 
   def default_id_state do
-    %{explicit_seen: MapSet.new()}
+    %{explicit_seen: MapSet.new(), next_id: 1}
   end
 
   @doc """

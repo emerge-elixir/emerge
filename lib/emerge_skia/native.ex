@@ -101,7 +101,17 @@ defmodule EmergeSkia.Native do
           required(:input_log) => boolean(),
           required(:render_log) => boolean(),
           required(:close_signal_log) => boolean(),
-          required(:renderer_stats_log) => boolean()
+          required(:stats_enabled) => boolean(),
+          required(:renderer_stats_log) => boolean(),
+          required(:renderer_animation_log) => boolean(),
+          required(:renderer_cache) => %{
+            required(:max_new_payloads_per_frame) => non_neg_integer(),
+            required(:clean_subtree) => %{
+              required(:max_entries) => non_neg_integer(),
+              required(:max_bytes) => non_neg_integer(),
+              required(:max_entry_bytes) => non_neg_integer()
+            }
+          }
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
@@ -263,6 +273,96 @@ defmodule EmergeSkia.Native do
   @spec set_log_target(reference(), pid() | nil) :: :ok
   def set_log_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
 
+  @type stats_command ::
+          :peek | :take | :reset | {:configure, %{required(:enabled) => boolean()}}
+
+  @type duration_stats :: %{
+          required(:count) => non_neg_integer(),
+          required(:avg_ms) => float(),
+          required(:min_ms) => float(),
+          required(:max_ms) => float()
+        }
+
+  @type layout_cache_stats :: %{
+          required(:intrinsic_measure_hits) => non_neg_integer(),
+          required(:intrinsic_measure_misses) => non_neg_integer(),
+          required(:intrinsic_measure_stores) => non_neg_integer(),
+          required(:subtree_measure_hits) => non_neg_integer(),
+          required(:subtree_measure_misses) => non_neg_integer(),
+          required(:subtree_measure_stores) => non_neg_integer(),
+          required(:resolve_hits) => non_neg_integer(),
+          required(:resolve_misses) => non_neg_integer(),
+          required(:resolve_stores) => non_neg_integer()
+        }
+
+  @type renderer_cache_kind_stats :: %{
+          required(:candidates) => non_neg_integer(),
+          required(:visible_candidates) => non_neg_integer(),
+          required(:suppressed_by_parent) => non_neg_integer(),
+          required(:admitted) => non_neg_integer(),
+          required(:hits) => non_neg_integer(),
+          required(:misses) => non_neg_integer(),
+          required(:stores) => non_neg_integer(),
+          required(:evictions) => non_neg_integer(),
+          required(:stale_evictions) => non_neg_integer(),
+          required(:rejected) => non_neg_integer(),
+          required(:current_entries) => non_neg_integer(),
+          required(:current_bytes) => non_neg_integer(),
+          required(:current_gpu_payloads) => non_neg_integer(),
+          required(:current_cpu_payloads) => non_neg_integer(),
+          required(:evicted_bytes) => non_neg_integer(),
+          required(:stale_evicted_bytes) => non_neg_integer(),
+          required(:prepare) => duration_stats(),
+          required(:draw_hit) => duration_stats()
+        }
+
+  @type renderer_cache_stats :: %{
+          required(:noop) => renderer_cache_kind_stats(),
+          required(:clean_subtree) => renderer_cache_kind_stats()
+        }
+
+  @type stats_snapshot :: %{
+          required(:version) => pos_integer(),
+          required(:kind) => String.t(),
+          required(:enabled) => boolean(),
+          required(:window) => %{
+            required(:elapsed_ms) => non_neg_integer(),
+            required(:reset_on_read) => boolean()
+          },
+          required(:frames) => %{
+            required(:fps) => float(),
+            required(:display_fps) => float(),
+            required(:display_frame_ms) => float(),
+            required(:frame_count) => non_neg_integer()
+          },
+          required(:timings) => %{
+            required(:render) => duration_stats(),
+            required(:render_draw) => duration_stats(),
+            required(:render_flush) => duration_stats(),
+            required(:render_gpu_flush) => duration_stats(),
+            required(:render_submit) => duration_stats(),
+            required(:present_submit) => duration_stats(),
+            required(:pipeline) => duration_stats(),
+            required(:pipeline_submit_to_tree_start) => duration_stats(),
+            required(:pipeline_tree) => duration_stats(),
+            required(:pipeline_render_queue) => duration_stats(),
+            required(:pipeline_submit_to_swap) => duration_stats(),
+            required(:pipeline_swap_to_frame_callback) => duration_stats(),
+            required(:layout) => duration_stats(),
+            required(:refresh) => duration_stats(),
+            required(:event_resolve) => duration_stats(),
+            required(:patch_tree_process) => duration_stats()
+          },
+          required(:counters) => %{
+            required(:layout_cache) => layout_cache_stats(),
+            required(:renderer_cache) => renderer_cache_stats()
+          }
+        }
+
+  @doc false
+  @spec stats(reference(), stats_command()) :: {:ok, stats_snapshot()} | {:error, String.t()}
+  def stats(_resource, _command), do: :erlang.nif_error(:nif_not_loaded)
+
   # ===========================================================================
   # Tree Functions (Emerge Integration)
   # ===========================================================================
@@ -322,7 +422,7 @@ defmodule EmergeSkia.Native do
   Compute layout for the tree with given width/height constraints and scale factor.
 
   Returns a list of `{id_binary, x, y, width, height}` tuples for all elements.
-  The id_binary is the Erlang term_to_binary of the element ID.
+  The `id_binary` is the element `id` encoded as `<<id::unsigned-big-64>>`.
 
   Scale is applied to all pixel-based attributes (px sizes, padding, spacing,
   border radius, border width, font size). Use scale > 1.0 for high-DPI displays.

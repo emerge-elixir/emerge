@@ -16,8 +16,8 @@ fn test_layout_with_scale() {
     attrs.font_size = Some(16.0);
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     // With scale=2.0, frame pixel values should double
@@ -29,19 +29,19 @@ fn test_layout_with_scale() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    let frame = root.frame.unwrap();
+    let frame = root.layout.frame.unwrap();
     // width: 100 * 2 = 200
     // height: 50 * 2 = 100
     assert_eq!(frame.width, 200.0);
     assert_eq!(frame.height, 100.0);
 
     // base_attrs should remain unchanged (original unscaled values)
-    assert_eq!(root.base_attrs.padding, Some(Padding::Uniform(10.0)));
-    assert_eq!(root.base_attrs.font_size, Some(16.0));
+    assert_eq!(root.spec.declared.padding, Some(Padding::Uniform(10.0)));
+    assert_eq!(root.spec.declared.font_size, Some(16.0));
 
     // attrs should be scaled (for render to read)
-    assert_eq!(root.attrs.padding, Some(Padding::Uniform(20.0)));
-    assert_eq!(root.attrs.font_size, Some(32.0));
+    assert_eq!(root.layout.effective.padding, Some(Padding::Uniform(20.0)));
+    assert_eq!(root.layout.effective.font_size, Some(32.0));
 }
 
 #[test]
@@ -55,8 +55,8 @@ fn test_layout_with_scale_scales_font_spacing() {
     attrs.font_word_spacing = Some(3.0);
 
     let el = make_element("root", ElementKind::Text, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     layout_tree(
@@ -67,10 +67,10 @@ fn test_layout_with_scale_scales_font_spacing() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    assert_eq!(root.base_attrs.font_letter_spacing, Some(2.0));
-    assert_eq!(root.base_attrs.font_word_spacing, Some(3.0));
-    assert_eq!(root.attrs.font_letter_spacing, Some(4.0));
-    assert_eq!(root.attrs.font_word_spacing, Some(6.0));
+    assert_eq!(root.spec.declared.font_letter_spacing, Some(2.0));
+    assert_eq!(root.spec.declared.font_word_spacing, Some(3.0));
+    assert_eq!(root.layout.effective.font_letter_spacing, Some(4.0));
+    assert_eq!(root.layout.effective.font_word_spacing, Some(6.0));
 }
 
 #[test]
@@ -83,8 +83,8 @@ fn test_layout_scale_minimum_maximum() {
     attrs.height = Some(Length::Maximum(200.0, Box::new(Length::Fill)));
 
     let el = make_element("root", ElementKind::El, attrs);
-    let root_id = el.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = el.id;
+    tree.set_root_id(root_id);
     tree.insert(el);
 
     // With scale=2.0:
@@ -98,7 +98,7 @@ fn test_layout_scale_minimum_maximum() {
     );
 
     let root = tree.get(&root_id).unwrap();
-    let frame = root.frame.unwrap();
+    let frame = root.layout.frame.unwrap();
     assert_eq!(frame.width, 800.0); // fill = 800, min 200 doesn't apply
     assert_eq!(frame.height, 400.0); // fill = 600, clamped to max 400
 }
@@ -149,8 +149,8 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
     attrs.mouse_over_active = Some(true);
 
     let root = make_element("root", ElementKind::El, attrs);
-    let root_id = root.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -162,11 +162,11 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
 
     let updated = tree.get(&root_id).unwrap();
     assert_eq!(
-        updated.attrs.border_radius,
+        updated.layout.effective.border_radius,
         Some(BorderRadius::Uniform(6.0))
     );
     assert_eq!(
-        updated.attrs.border_width,
+        updated.layout.effective.border_width,
         Some(BorderWidth::Sides {
             top: 1.0,
             right: 2.0,
@@ -174,26 +174,32 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
             left: 4.0,
         })
     );
-    assert_eq!(updated.attrs.border_style, Some(BorderStyle::Dashed));
-    assert_eq!(updated.attrs.font, Some(Font::Atom("display".to_string())));
     assert_eq!(
-        updated.attrs.font_weight,
+        updated.layout.effective.border_style,
+        Some(BorderStyle::Dashed)
+    );
+    assert_eq!(
+        updated.layout.effective.font,
+        Some(Font::Atom("display".to_string()))
+    );
+    assert_eq!(
+        updated.layout.effective.font_weight,
         Some(FontWeight("bold".to_string()))
     );
     assert_eq!(
-        updated.attrs.font_style,
+        updated.layout.effective.font_style,
         Some(FontStyle("italic".to_string()))
     );
-    assert_eq!(updated.attrs.font_size, Some(22.0));
-    assert_eq!(updated.attrs.font_underline, Some(true));
-    assert_eq!(updated.attrs.font_strike, Some(true));
-    assert_eq!(updated.attrs.font_letter_spacing, Some(3.0));
-    assert_eq!(updated.attrs.font_word_spacing, Some(4.0));
-    assert_eq!(updated.attrs.text_align, Some(TextAlign::Center));
-    assert_eq!(updated.attrs.move_x, Some(5.0));
-    assert_eq!(updated.attrs.alpha, Some(0.5));
+    assert_eq!(updated.layout.effective.font_size, Some(22.0));
+    assert_eq!(updated.layout.effective.font_underline, Some(true));
+    assert_eq!(updated.layout.effective.font_strike, Some(true));
+    assert_eq!(updated.layout.effective.font_letter_spacing, Some(3.0));
+    assert_eq!(updated.layout.effective.font_word_spacing, Some(4.0));
+    assert_eq!(updated.layout.effective.text_align, Some(TextAlign::Center));
+    assert_eq!(updated.layout.effective.move_x, Some(5.0));
+    assert_eq!(updated.layout.effective.alpha, Some(0.5));
     assert_eq!(
-        updated.attrs.background,
+        updated.layout.effective.background,
         Some(crate::tree::attrs::Background::Color(
             crate::tree::attrs::Color::Rgb {
                 r: 200,
@@ -289,8 +295,8 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     attrs.mouse_down_active = Some(true);
 
     let root = make_element("root", ElementKind::TextInput, attrs);
-    let root_id = root.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -301,9 +307,9 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     );
 
     let updated = tree.get(&root_id).unwrap();
-    assert_eq!(updated.attrs.font_size, Some(30.0));
+    assert_eq!(updated.layout.effective.font_size, Some(30.0));
     assert_eq!(
-        updated.attrs.border_color,
+        updated.layout.effective.border_color,
         Some(crate::tree::attrs::Color::Rgb {
             r: 70,
             g: 90,
@@ -311,33 +317,40 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
         })
     );
     assert_eq!(
-        updated.attrs.font_color,
+        updated.layout.effective.font_color,
         Some(crate::tree::attrs::Color::Rgb {
             r: 220,
             g: 240,
             b: 255
         })
     );
-    assert_eq!(updated.attrs.border_width, Some(BorderWidth::Uniform(3.0)));
-    assert_eq!(updated.attrs.border_style, Some(BorderStyle::Dotted));
     assert_eq!(
-        updated.attrs.font,
+        updated.layout.effective.border_width,
+        Some(BorderWidth::Uniform(3.0))
+    );
+    assert_eq!(
+        updated.layout.effective.border_style,
+        Some(BorderStyle::Dotted)
+    );
+    assert_eq!(
+        updated.layout.effective.font,
         Some(Font::String("pressed".to_string()))
     );
     assert_eq!(
-        updated.attrs.font_weight,
+        updated.layout.effective.font_weight,
         Some(FontWeight("bold".to_string()))
     );
     assert_eq!(
-        updated.attrs.font_style,
+        updated.layout.effective.font_style,
         Some(FontStyle("italic".to_string()))
     );
-    assert_eq!(updated.attrs.text_align, Some(TextAlign::Right));
-    assert_eq!(updated.attrs.move_x, Some(5.0));
-    assert_eq!(updated.attrs.move_y, Some(-2.0));
-    assert_eq!(updated.attrs.alpha, Some(0.8));
+    assert_eq!(updated.layout.effective.text_align, Some(TextAlign::Right));
+    assert_eq!(updated.layout.effective.move_x, Some(5.0));
+    assert_eq!(updated.layout.effective.move_y, Some(-2.0));
+    assert_eq!(updated.layout.effective.alpha, Some(0.8));
     let shadow = updated
-        .attrs
+        .layout
+        .effective
         .box_shadows
         .as_ref()
         .and_then(|shadows| shadows.first())
@@ -380,7 +393,6 @@ fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
     attrs.move_x = Some(3.0);
     attrs.move_y = Some(-2.0);
     attrs.scroll_x = Some(5.0);
-    attrs.scroll_y_max = Some(11.0);
 
     let scaled = scale_attrs(&attrs, 1.5);
 
@@ -423,7 +435,6 @@ fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
     assert_eq!(scaled.move_x, Some(4.5));
     assert_eq!(scaled.move_y, Some(-3.0));
     assert_eq!(scaled.scroll_x, Some(7.5));
-    assert_eq!(scaled.scroll_y_max, Some(16.5));
 }
 
 #[test]
@@ -649,8 +660,8 @@ fn test_layout_uses_first_animation_keyframe_for_static_frames() {
     });
 
     let root = make_element("root", ElementKind::El, attrs);
-    let root_id = root.id.clone();
-    tree.root = Some(root_id.clone());
+    let root_id = root.id;
+    tree.set_root_id(root_id);
     tree.insert(root);
 
     layout_tree(
@@ -661,10 +672,10 @@ fn test_layout_uses_first_animation_keyframe_for_static_frames() {
     );
 
     let updated = tree.get(&root_id).unwrap();
-    let frame = updated.frame.unwrap();
+    let frame = updated.layout.frame.unwrap();
 
-    assert_eq!(updated.attrs.width, Some(Length::Px(100.0)));
-    assert_eq!(updated.attrs.move_x, Some(12.0));
+    assert_eq!(updated.layout.effective.width, Some(Length::Px(100.0)));
+    assert_eq!(updated.layout.effective.move_x, Some(12.0));
     assert_eq!(frame.width, 100.0);
 }
 
@@ -676,20 +687,38 @@ fn test_animated_nearby_hit_case_layout_geometry_matches_probe_story() {
     let mid_tree = case.tree_at(500, false);
     let late_tree = case.tree_at(1000, false);
 
-    let initial = initial_tree.get(&case.target_id).unwrap().frame.unwrap();
-    let mid = mid_tree.get(&case.target_id).unwrap().frame.unwrap();
-    let late = late_tree.get(&case.target_id).unwrap().frame.unwrap();
+    let initial = initial_tree
+        .get(&case.target_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let mid = mid_tree.get(&case.target_id).unwrap().layout.frame.unwrap();
+    let late = late_tree
+        .get(&case.target_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
     let initial_move_x = initial_tree
         .get(&case.target_id)
         .unwrap()
-        .attrs
+        .layout
+        .effective
         .move_x
         .unwrap();
-    let mid_move_x = mid_tree.get(&case.target_id).unwrap().attrs.move_x.unwrap();
+    let mid_move_x = mid_tree
+        .get(&case.target_id)
+        .unwrap()
+        .layout
+        .effective
+        .move_x
+        .unwrap();
     let late_move_x = late_tree
         .get(&case.target_id)
         .unwrap()
-        .attrs
+        .layout
+        .effective
         .move_x
         .unwrap();
 

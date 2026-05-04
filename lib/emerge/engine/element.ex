@@ -26,7 +26,8 @@ defmodule Emerge.Engine.Element do
 
   @type t :: %__MODULE__{
           type: element_type(),
-          id: term() | nil,
+          key: term() | nil,
+          id: non_neg_integer() | nil,
           attrs: map(),
           children: [t()],
           nearby: [{atom(), t()}],
@@ -35,6 +36,7 @@ defmodule Emerge.Engine.Element do
 
   defstruct [
     :type,
+    :key,
     :id,
     attrs: %{},
     children: [],

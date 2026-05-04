@@ -78,8 +78,8 @@ fn test_render_paragraph_emits_text_commands() {
 fn test_render_paragraph_renders_float_child_and_fragments() {
     use crate::tree::attrs::{AlignX, TextFragment};
 
-    let para_id = ElementId::from_term_bytes(vec![10]);
-    let float_id = ElementId::from_term_bytes(vec![11]);
+    let para_id = NodeId::from_term_bytes(vec![10]);
+    let float_id = NodeId::from_term_bytes(vec![11]);
 
     let mut para_attrs = Attrs::default();
     para_attrs.paragraph_fragments = Some(vec![TextFragment {
@@ -96,14 +96,10 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
         ascent: 12.0,
     }]);
 
-    let mut paragraph = Element::with_attrs(
-        para_id.clone(),
-        ElementKind::Paragraph,
-        Vec::new(),
-        para_attrs,
-    );
-    paragraph.children = vec![float_id.clone()];
-    paragraph.frame = Some(Frame {
+    let mut paragraph =
+        Element::with_attrs(para_id, ElementKind::Paragraph, Vec::new(), para_attrs);
+    paragraph.children = vec![float_id];
+    paragraph.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -115,9 +111,8 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     let mut float_attrs = Attrs::default();
     float_attrs.align_x = Some(AlignX::Left);
     float_attrs.background = Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 }));
-    let mut float_el =
-        Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
-    float_el.frame = Some(Frame {
+    let mut float_el = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
+    float_el.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -127,7 +122,7 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     });
 
     let mut tree = ElementTree::new();
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id);
     tree.insert(paragraph);
     tree.insert(float_el);
 
@@ -151,9 +146,9 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
 fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     use crate::tree::attrs::TextFragment;
 
-    let para_id = ElementId::from_term_bytes(vec![13]);
-    let float_id = ElementId::from_term_bytes(vec![14]);
-    let inline_id = ElementId::from_term_bytes(vec![15]);
+    let para_id = NodeId::from_term_bytes(vec![13]);
+    let float_id = NodeId::from_term_bytes(vec![14]);
+    let inline_id = NodeId::from_term_bytes(vec![15]);
 
     let mut para_attrs = Attrs::default();
     para_attrs.paragraph_fragments = Some(vec![TextFragment {
@@ -169,14 +164,10 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         strike: false,
         ascent: 12.0,
     }]);
-    let mut paragraph = Element::with_attrs(
-        para_id.clone(),
-        ElementKind::Paragraph,
-        Vec::new(),
-        para_attrs,
-    );
-    paragraph.children = vec![inline_id.clone(), float_id.clone()];
-    paragraph.frame = Some(Frame {
+    let mut paragraph =
+        Element::with_attrs(para_id, ElementKind::Paragraph, Vec::new(), para_attrs);
+    paragraph.children = vec![inline_id, float_id];
+    paragraph.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 120.0,
@@ -188,9 +179,8 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     let mut float_attrs = Attrs::default();
     float_attrs.align_x = Some(AlignX::Left);
     float_attrs.on_mouse_down = Some(true);
-    let mut float_el =
-        Element::with_attrs(float_id.clone(), ElementKind::El, Vec::new(), float_attrs);
-    float_el.frame = Some(Frame {
+    let mut float_el = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
+    float_el.layout.frame = Some(Frame {
         x: 0.0,
         y: 0.0,
         width: 20.0,
@@ -201,13 +191,8 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
 
     let mut inline_attrs = Attrs::default();
     inline_attrs.on_mouse_down = Some(true);
-    let mut inline_el = Element::with_attrs(
-        inline_id.clone(),
-        ElementKind::Text,
-        Vec::new(),
-        inline_attrs,
-    );
-    inline_el.frame = Some(Frame {
+    let mut inline_el = Element::with_attrs(inline_id, ElementKind::Text, Vec::new(), inline_attrs);
+    inline_el.layout.frame = Some(Frame {
         x: 24.0,
         y: 8.0,
         width: 32.0,
@@ -219,7 +204,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     let direct_elements = vec![paragraph.clone(), float_el.clone(), inline_el.clone()];
 
     let mut tree = ElementTree::new();
-    tree.root = Some(para_id.clone());
+    tree.set_root_id(para_id);
     tree.insert(paragraph);
     tree.insert(float_el);
     tree.insert(inline_el);
@@ -233,7 +218,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         .filter(|listener| {
             listener.matcher.kind() == ListenerMatcherKind::CursorButtonLeftPressInside
         })
-        .filter_map(|listener| listener.element_id.clone())
+        .filter_map(|listener| listener.element_id)
         .collect();
 
     let direct_press_ids: Vec<_> = registry_builder::registry_for_elements(&direct_elements)
@@ -242,13 +227,10 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         .filter(|listener| {
             listener.matcher.kind() == ListenerMatcherKind::CursorButtonLeftPressInside
         })
-        .filter_map(|listener| listener.element_id.clone())
+        .filter_map(|listener| listener.element_id)
         .collect();
 
-    assert_eq!(
-        piggyback_press_ids,
-        vec![inline_id.clone(), float_id.clone()]
-    );
+    assert_eq!(piggyback_press_ids, vec![inline_id, float_id]);
     assert_eq!(piggyback_press_ids, direct_press_ids);
 }
 

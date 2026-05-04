@@ -40,7 +40,7 @@ use crate::events::CursorIcon;
 use crate::input::InputEvent;
 use crate::linux_wait::{EventFd, poll_fds};
 use crate::native_log::NativeLogRelay;
-use crate::renderer::{RenderState, SceneRenderer};
+use crate::renderer::{RenderState, RendererCacheConfig, SceneRenderer};
 use crate::stats::RendererStatsCollector;
 use crate::video::{VideoImportContext, VideoRegistry};
 
@@ -111,9 +111,11 @@ struct CursorPlane {
 struct PreparedPrimaryFrame {
     generation: u64,
     render_version: u64,
+    pipeline_submitted_at: Option<Instant>,
     bo: BufferObject<()>,
     fb: framebuffer::Handle,
     video_needs_cleanup: bool,
+    present_submit_duration: Duration,
 }
 
 struct CurrentPrimaryFrame {
@@ -807,6 +809,7 @@ fn send_animation_pulse(
     let msg = TreeMsg::AnimationPulse {
         presented_at,
         predicted_next_present_at,
+        trace: None,
     };
 
     match tree_tx.try_send(msg) {
@@ -1209,6 +1212,7 @@ fn prepare_primary_frame(
     gbm_surface: &Surface<()>,
     card: &Card,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    stats: Option<&RendererStatsCollector>,
 ) -> Result<PreparedPrimaryFrame, String> {
     let mut frame = frame_surface.frame();
     let mut video_needs_cleanup = false;
@@ -1216,7 +1220,9 @@ fn prepare_primary_frame(
         Ok(result) => video_needs_cleanup = result.needs_cleanup,
         Err(err) => eprintln!("video sync failed: {err}"),
     }
-    renderer.render(&mut frame, render_state);
+
+    let render_started_at = Instant::now();
+    let render_timings = renderer.render(&mut frame, render_state);
     if !hw_cursor_enabled && cursor_visible {
         draw_software_cursor(
             renderer,
@@ -1226,6 +1232,19 @@ fn prepare_primary_frame(
         );
     }
     drop(frame);
+
+    if let Some(stats) = stats {
+        stats.record_render(render_started_at.elapsed());
+        stats.record_render_draw(render_timings.draw);
+        stats.record_render_flush(render_timings.flush);
+        stats.record_render_gpu_flush(render_timings.gpu_flush);
+        stats.record_render_submit(render_timings.submit);
+        if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
+            stats.record_renderer_cache(*renderer_cache);
+        }
+    }
+
+    let present_submit_started_at = Instant::now();
 
     if unsafe {
         egl_state
@@ -1243,9 +1262,11 @@ fn prepare_primary_frame(
     Ok(PreparedPrimaryFrame {
         generation,
         render_version: render_state.render_version,
+        pipeline_submitted_at: render_state.pipeline_submitted_at,
         bo,
         fb,
         video_needs_cleanup,
+        present_submit_duration: present_submit_started_at.elapsed(),
     })
 }
 
@@ -1279,6 +1300,7 @@ pub struct DrmRunConfig {
     pub retry_interval_ms: u32,
     pub hw_cursor: bool,
     pub render_log: bool,
+    pub renderer_cache_config: RendererCacheConfig,
 }
 
 pub struct DrmRunContext {
@@ -1707,7 +1729,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                 continue;
             }
         };
-        let mut renderer = SceneRenderer::new();
+        let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
         let video_import = match VideoImportContext::new_current() {
             Ok(ctx) => Some(ctx),
             Err(err) => {
@@ -1966,11 +1988,15 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
+                                        let presented_at = Instant::now();
                                         if let Some(stats) = stats.as_ref() {
                                             stats.record_frame_present();
+                                            if let Some(submitted_at) = frame.pipeline_submitted_at
+                                            {
+                                                stats.record_pipeline(submitted_at, presented_at);
+                                            }
                                         }
 
-                                        let presented_at = Instant::now();
                                         let predicted_next_present_at =
                                             present_state.observe_present(presented_at);
 
@@ -2054,11 +2080,15 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     RenderMsg::Scene {
                         scene,
                         version,
+                        pipeline_submitted_at,
                         animate,
                         ..
                     } => {
-                        render_state.scene = *scene;
+                        let scene = *scene;
+                        render_state.has_cache_candidates = scene.has_cache_candidates();
+                        render_state.scene = scene;
                         render_state.render_version = version;
+                        render_state.pipeline_submitted_at = pipeline_submitted_at;
                         render_state.animate = animate;
                         desired_primary_generation = desired_primary_generation.wrapping_add(1);
                         follow_up_primary_until = None;
@@ -2142,6 +2172,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     &gbm_surface,
                     &card,
                     &mut framebuffer_cache,
+                    stats.as_deref(),
                 ) {
                     Ok(frame) => prepared_primary = Some(frame),
                     Err(err) => {
@@ -2177,6 +2208,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
 
             if submit_primary || (submit_cursor && !defer_cursor_only) {
+                let present_submit_started_at = submit_primary.then(Instant::now);
                 let mut commit_req = atomic::AtomicModeReq::new();
                 let primary_fb = prepared_primary
                     .as_ref()
@@ -2252,13 +2284,33 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                     commit_req,
                 ) {
                     Ok(()) => {
+                        if let Some(stats) = stats.as_ref()
+                            && let (Some(present_submit_started_at), Some(frame)) = (
+                                present_submit_started_at,
+                                prepared_primary.as_ref().filter(|_| submit_primary),
+                            )
+                        {
+                            stats.record_present_submit(
+                                frame.present_submit_duration + present_submit_started_at.elapsed(),
+                            );
+                        }
+
                         retry_commit_at = None;
+                        let submitted_primary = if submit_primary {
+                            let frame = prepared_primary.take();
+                            if frame
+                                .as_ref()
+                                .and_then(|frame| frame.pipeline_submitted_at)
+                                .is_some()
+                            {
+                                render_state.pipeline_submitted_at = None;
+                            }
+                            frame
+                        } else {
+                            None
+                        };
                         in_flight = Some(InFlightCommit {
-                            primary: if submit_primary {
-                                prepared_primary.take()
-                            } else {
-                                None
-                            },
+                            primary: submitted_primary,
                             cursor: if submit_cursor {
                                 Some(SubmittedCursorState {
                                     version: if hw_cursor_enabled {

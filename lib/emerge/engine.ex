@@ -31,7 +31,7 @@ defmodule Emerge.Engine do
   """
   @spec encode_full(diff_state(), Emerge.tree()) :: {binary(), diff_state(), Emerge.tree()}
   def encode_full(%DiffState{} = state, tree) do
-    {vdom, assigned} = Reconcile.assign_ids(tree)
+    {vdom, assigned, next_id} = Reconcile.assign_ids(tree, state.next_id)
 
     {
       Serialization.encode_tree(assigned),
@@ -39,7 +39,8 @@ defmodule Emerge.Engine do
         state
         | tree: assigned,
           vdom: vdom,
-          event_registry: DiffState.build_event_registry(assigned)
+          event_registry: DiffState.build_event_registry(assigned),
+          next_id: next_id
       },
       assigned
     }

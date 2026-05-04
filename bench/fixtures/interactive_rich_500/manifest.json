@@ -1,0 +1,144 @@
+{
+  "id": "interactive_rich_500",
+  "size": 500,
+  "constraint": {
+    "width": 960.0,
+    "height": 4.0e3,
+    "scale": 1.0
+  },
+  "patches": {
+    "noop": {
+      "byte_size": 0,
+      "expected_invalidation": "none",
+      "op_count": 0,
+      "operation_counts": {},
+      "operations": []
+    },
+    "paint_attr": {
+      "byte_size": 58,
+      "expected_invalidation": "paint",
+      "op_count": 1,
+      "operation_counts": {
+        "set_attrs": 1
+      },
+      "operations": [
+        "set_attrs"
+      ]
+    },
+    "layout_attr": {
+      "byte_size": 58,
+      "expected_invalidation": "measure",
+      "op_count": 1,
+      "operation_counts": {
+        "set_attrs": 1
+      },
+      "operations": [
+        "set_attrs"
+      ]
+    },
+    "text_content": {
+      "byte_size": 58,
+      "expected_invalidation": "measure",
+      "op_count": 1,
+      "operation_counts": {
+        "set_attrs": 1
+      },
+      "operations": [
+        "set_attrs"
+      ]
+    },
+    "event_attr": {
+      "byte_size": 60,
+      "expected_invalidation": "registry",
+      "op_count": 1,
+      "operation_counts": {
+        "set_attrs": 1
+      },
+      "operations": [
+        "set_attrs"
+      ]
+    },
+    "animation_attr": {
+      "byte_size": 135,
+      "expected_invalidation": "measure",
+      "op_count": 1,
+      "operation_counts": {
+        "set_attrs": 1
+      },
+      "operations": [
+        "set_attrs"
+      ]
+    },
+    "keyed_reorder": {
+      "byte_size": 811,
+      "expected_invalidation": "structure",
+      "op_count": 1,
+      "operation_counts": {
+        "set_children": 1
+      },
+      "operations": [
+        "set_children"
+      ]
+    },
+    "insert_tail": {
+      "byte_size": 555,
+      "expected_invalidation": "structure",
+      "op_count": 1,
+      "operation_counts": {
+        "insert_subtree": 1
+      },
+      "operations": [
+        "insert_subtree"
+      ]
+    },
+    "remove_tail": {
+      "byte_size": 9,
+      "expected_invalidation": "structure",
+      "op_count": 1,
+      "operation_counts": {
+        "remove": 1
+      },
+      "operations": [
+        "remove"
+      ]
+    },
+    "nearby_slot_change": {
+      "byte_size": 20,
+      "expected_invalidation": "structure",
+      "op_count": 1,
+      "operation_counts": {
+        "set_nearby_mounts": 1
+      },
+      "operations": [
+        "set_nearby_mounts"
+      ]
+    },
+    "nearby_reorder": {
+      "byte_size": 0,
+      "expected_invalidation": "none",
+      "op_count": 0,
+      "operation_counts": {},
+      "operations": []
+    }
+  },
+  "node_count": 606,
+  "scenario": "interactive_rich",
+  "item_count": 100,
+  "text_node_count": 202,
+  "full_emrg_bytes": 54001,
+  "element_types": {
+    "text": 202,
+    "column": 2,
+    "row": 100,
+    "el": 202,
+    "text_input": 100
+  },
+  "attr_families": {
+    "event": 800,
+    "nearby": 1,
+    "layout": 1009,
+    "paint": 805,
+    "measure": 302,
+    "interaction": 400
+  }
+}

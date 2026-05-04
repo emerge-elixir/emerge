@@ -4,18 +4,20 @@ defmodule Emerge.Engine.Patch do
   """
 
   alias Emerge.Engine.Element
+  alias Emerge.Engine.NodeId
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.Engine.Tree.Nearby
 
   @type nearby_slot :: :behind | :above | :on_right | :below | :on_left | :in_front
 
   @type patch ::
-          {:set_attrs, term(), map()}
-          | {:set_children, term(), [term()]}
-          | {:set_nearby_mounts, term(), [{nearby_slot(), term()}]}
-          | {:insert_subtree, term() | nil, non_neg_integer(), Element.t()}
-          | {:insert_nearby_subtree, term(), non_neg_integer(), nearby_slot(), Element.t()}
-          | {:remove, term()}
+          {:set_attrs, non_neg_integer(), map()}
+          | {:set_children, non_neg_integer(), [non_neg_integer()]}
+          | {:set_nearby_mounts, non_neg_integer(), [{nearby_slot(), non_neg_integer()}]}
+          | {:insert_subtree, non_neg_integer() | nil, non_neg_integer(), Element.t()}
+          | {:insert_nearby_subtree, non_neg_integer(), non_neg_integer(), nearby_slot(),
+             Element.t()}
+          | {:remove, non_neg_integer()}
 
   @doc """
   Compute patches between two trees (expects numeric ids).
@@ -96,110 +98,87 @@ defmodule Emerge.Engine.Patch do
 
   defp encode_patch({:set_attrs, id, attrs}) do
     attr_bin = Emerge.Engine.AttrCodec.encode_attrs(attrs)
-    id_bin = :erlang.term_to_binary(id)
 
-    <<1, byte_size(id_bin)::unsigned-32, id_bin::binary, byte_size(attr_bin)::unsigned-32,
-      attr_bin::binary>>
+    <<1, id::unsigned-big-64, byte_size(attr_bin)::unsigned-32, attr_bin::binary>>
   end
 
   defp encode_patch({:set_children, id, children}) do
-    id_bin = :erlang.term_to_binary(id)
-
     children_bin =
       children
       |> Enum.map(fn child_id ->
-        bin = :erlang.term_to_binary(child_id)
-        [<<byte_size(bin)::unsigned-32>>, bin]
+        <<child_id::unsigned-big-64>>
       end)
       |> IO.iodata_to_binary()
 
-    <<2, byte_size(id_bin)::unsigned-32, id_bin::binary, length(children)::unsigned-16,
-      children_bin::binary>>
+    <<2, id::unsigned-big-64, length(children)::unsigned-16, children_bin::binary>>
   end
 
   defp encode_patch({:set_nearby_mounts, host_id, mounts}) do
-    host_bin = :erlang.term_to_binary(host_id)
-
     mounts_bin =
       mounts
       |> Enum.map(fn {slot, mount_id} ->
-        id_bin = :erlang.term_to_binary(mount_id)
-        [<<Nearby.slot_tag(slot)::unsigned-8, byte_size(id_bin)::unsigned-32>>, id_bin]
+        <<Nearby.slot_tag(slot)::unsigned-8, mount_id::unsigned-big-64>>
       end)
       |> IO.iodata_to_binary()
 
-    <<5, byte_size(host_bin)::unsigned-32, host_bin::binary, length(mounts)::unsigned-16,
-      mounts_bin::binary>>
+    <<5, host_id::unsigned-big-64, length(mounts)::unsigned-16, mounts_bin::binary>>
   end
 
   defp encode_patch({:insert_subtree, parent_id, index, subtree}) do
     subtree_bin = Emerge.Engine.Serialization.encode_tree(subtree)
-    parent_bin = :erlang.term_to_binary(parent_id)
 
-    <<3, byte_size(parent_bin)::unsigned-32, parent_bin::binary, index::unsigned-16,
+    <<3, NodeId.encode_parent(parent_id)::binary, index::unsigned-16,
       byte_size(subtree_bin)::unsigned-32, subtree_bin::binary>>
   end
 
   defp encode_patch({:remove, id}) do
-    id_bin = :erlang.term_to_binary(id)
-    <<4, byte_size(id_bin)::unsigned-32, id_bin::binary>>
+    <<4, id::unsigned-big-64>>
   end
 
   defp encode_patch({:insert_nearby_subtree, host_id, index, slot, subtree}) do
     subtree_bin = Emerge.Engine.Serialization.encode_tree(subtree)
-    host_bin = :erlang.term_to_binary(host_id)
 
-    <<6, byte_size(host_bin)::unsigned-32, host_bin::binary, index::unsigned-16,
-      Nearby.slot_tag(slot)::unsigned-8, byte_size(subtree_bin)::unsigned-32,
-      subtree_bin::binary>>
+    <<6, host_id::unsigned-big-64, index::unsigned-16, Nearby.slot_tag(slot)::unsigned-8,
+      byte_size(subtree_bin)::unsigned-32, subtree_bin::binary>>
   end
 
   defp decode_patches(<<>>, acc), do: acc
 
-  defp decode_patches(<<1, id_len::unsigned-32, rest::binary>>, acc) do
-    <<id_bin::binary-size(id_len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
-    <<attr_len::unsigned-32, rest::binary>> = rest
+  defp decode_patches(<<1, id::unsigned-big-64, attr_len::unsigned-32, rest::binary>>, acc) do
     <<attr_bin::binary-size(attr_len), rest::binary>> = rest
     attrs = Emerge.Engine.AttrCodec.decode_attrs(attr_bin)
     decode_patches(rest, [{:set_attrs, id, attrs} | acc])
   end
 
-  defp decode_patches(<<2, id_len::unsigned-32, rest::binary>>, acc) do
-    <<id_bin::binary-size(id_len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
-    <<count::unsigned-16, rest::binary>> = rest
+  defp decode_patches(<<2, id::unsigned-big-64, count::unsigned-16, rest::binary>>, acc) do
     {children, rest} = decode_child_ids(rest, count, [])
     decode_patches(rest, [{:set_children, id, children} | acc])
   end
 
-  defp decode_patches(<<5, host_len::unsigned-32, rest::binary>>, acc) do
-    <<host_bin::binary-size(host_len), rest::binary>> = rest
-    host_id = :erlang.binary_to_term(host_bin)
-    <<count::unsigned-16, rest::binary>> = rest
+  defp decode_patches(<<5, host_id::unsigned-big-64, count::unsigned-16, rest::binary>>, acc) do
     {mounts, rest} = decode_nearby_mounts(rest, count, [])
     decode_patches(rest, [{:set_nearby_mounts, host_id, mounts} | acc])
   end
 
-  defp decode_patches(<<3, parent_len::unsigned-32, rest::binary>>, acc) do
-    <<parent_bin::binary-size(parent_len), rest::binary>> = rest
-    parent_id = :erlang.binary_to_term(parent_bin)
-    <<index::unsigned-16, len::unsigned-32, rest::binary>> = rest
+  defp decode_patches(
+         <<3, parent_bin::binary-size(8), index::unsigned-16, len::unsigned-32, rest::binary>>,
+         acc
+       ) do
+    parent_id = NodeId.decode_parent(parent_bin)
     <<subtree_bin::binary-size(len), rest::binary>> = rest
     subtree = Emerge.Engine.Serialization.decode(subtree_bin)
     decode_patches(rest, [{:insert_subtree, parent_id, index, subtree} | acc])
   end
 
-  defp decode_patches(<<4, id_len::unsigned-32, rest::binary>>, acc) do
-    <<id_bin::binary-size(id_len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
+  defp decode_patches(<<4, id::unsigned-big-64, rest::binary>>, acc) do
     decode_patches(rest, [{:remove, id} | acc])
   end
 
-  defp decode_patches(<<6, host_len::unsigned-32, rest::binary>>, acc) do
-    <<host_bin::binary-size(host_len), rest::binary>> = rest
-    host_id = :erlang.binary_to_term(host_bin)
-    <<index::unsigned-16, slot_tag::unsigned-8, len::unsigned-32, rest::binary>> = rest
+  defp decode_patches(
+         <<6, host_id::unsigned-big-64, index::unsigned-16, slot_tag::unsigned-8,
+           len::unsigned-32, rest::binary>>,
+         acc
+       ) do
     <<subtree_bin::binary-size(len), rest::binary>> = rest
     subtree = Emerge.Engine.Serialization.decode(subtree_bin)
     slot = Nearby.slot_from_tag!(slot_tag)
@@ -212,17 +191,17 @@ defmodule Emerge.Engine.Patch do
 
   defp decode_child_ids(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
-  defp decode_child_ids(<<len::unsigned-32, rest::binary>>, count, acc) do
-    <<id_bin::binary-size(len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
+  defp decode_child_ids(<<id::unsigned-big-64, rest::binary>>, count, acc) do
     decode_child_ids(rest, count - 1, [id | acc])
   end
 
   defp decode_nearby_mounts(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
-  defp decode_nearby_mounts(<<slot_tag::unsigned-8, len::unsigned-32, rest::binary>>, count, acc) do
-    <<id_bin::binary-size(len), rest::binary>> = rest
-    id = :erlang.binary_to_term(id_bin)
+  defp decode_nearby_mounts(
+         <<slot_tag::unsigned-8, id::unsigned-big-64, rest::binary>>,
+         count,
+         acc
+       ) do
     decode_nearby_mounts(rest, count - 1, [{Nearby.slot_from_tag!(slot_tag), id} | acc])
   end
 

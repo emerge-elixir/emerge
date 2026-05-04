@@ -65,6 +65,7 @@ defmodule Emerge.MixProject do
       {:rustler, "~> 0.37.0", optional: true},
       {:rustler_precompiled, "~> 0.8.4"},
       {:jason, "~> 1.4"},
+      {:benchee, "~> 1.3", only: :dev, runtime: false},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
@@ -73,6 +74,19 @@ defmodule Emerge.MixProject do
 
   defp aliases do
     [
+      bench: ["bench.fixtures", "bench.engine", "bench.native"],
+      "bench.engine": ["bench.engine.diff", "bench.engine.serialization"],
+      "bench.engine.diff": ["run bench/engine_diff_bench.exs"],
+      "bench.engine.serialization": ["run bench/serialization_bench.exs"],
+      "bench.fixtures": ["run bench/generate_fixtures.exs"],
+      "bench.native": [
+        "bench.native.layout",
+        "bench.native.retained_layout",
+        "bench.native.patch"
+      ],
+      "bench.native.layout": ["run bench/native_layout_bench.exs"],
+      "bench.native.retained_layout": ["run bench/native_retained_layout_bench.exs"],
+      "bench.native.patch": ["run bench/native_patch_bench.exs"],
       docs: ["docs.screenshots", "docs"],
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
       "quality.fast": ["format --check-formatted", "credo --strict"]
@@ -81,6 +95,15 @@ defmodule Emerge.MixProject do
 
   defp preferred_cli_env do
     [
+      bench: :dev,
+      "bench.engine": :dev,
+      "bench.engine.diff": :dev,
+      "bench.engine.serialization": :dev,
+      "bench.fixtures": :dev,
+      "bench.native": :dev,
+      "bench.native.layout": :dev,
+      "bench.native.retained_layout": :dev,
+      "bench.native.patch": :dev,
       credo: :test,
       dialyzer: :dev,
       quality: :test,

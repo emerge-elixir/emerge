@@ -38,7 +38,7 @@ use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
-use crate::tree::element::{Element, ElementId, TextInputContentOrigin};
+use crate::tree::element::{Element, NodeId, TextInputContentOrigin};
 use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
@@ -992,7 +992,7 @@ pub enum TextInputPreeditRequest {
 
 #[derive(Clone, Debug)]
 pub struct FocusOnMountTarget {
-    pub element_id: ElementId,
+    pub element_id: NodeId,
     pub reveal_scrolls: Vec<registry_builder::FocusRevealScroll>,
     pub mounted_at_revision: u64,
 }
@@ -1012,9 +1012,9 @@ pub struct FocusOnMountTarget {
 #[derive(Default)]
 pub struct RegistryRebuildPayload {
     pub base_registry: registry_builder::Registry,
-    pub text_inputs: HashMap<ElementId, TextInputState>,
-    pub scrollbars: HashMap<(ElementId, ScrollbarAxis), ScrollbarNode>,
-    pub focused_id: Option<ElementId>,
+    pub text_inputs: HashMap<NodeId, TextInputState>,
+    pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
+    pub focused_id: Option<NodeId>,
     pub focus_on_mount: Option<FocusOnMountTarget>,
 }
 
@@ -1023,33 +1023,34 @@ fn text_input_state(
     adjusted_rect: Rect,
     screen_to_local: Option<Affine2>,
 ) -> TextInputState {
-    let content = element.base_attrs.content.clone().unwrap_or_default();
+    let content = element.spec.declared.content.clone().unwrap_or_default();
     let content_len = content.chars().count() as u32;
     let cursor = element
-        .attrs
+        .runtime
         .text_input_cursor
         .unwrap_or(content_len)
         .min(content_len);
     let selection_anchor = element
-        .attrs
+        .runtime
         .text_input_selection_anchor
         .map(|anchor| anchor.min(content_len))
         .filter(|anchor| *anchor != cursor);
-    let (inset_top, inset_right, inset_bottom, inset_left) = text_content_insets(&element.attrs);
-    let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.attrs);
+    let (inset_top, inset_right, inset_bottom, inset_left) =
+        text_content_insets(&element.layout.effective);
+    let (font_family, font_weight, font_italic) = font_info_from_attrs(&element.layout.effective);
 
     TextInputState {
         content,
-        patch_content: element.patch_content.clone(),
-        content_origin: element.text_input_content_origin,
+        patch_content: element.runtime.patch_content.clone(),
+        content_origin: element.runtime.text_input_content_origin,
         content_len,
         cursor,
         selection_anchor,
-        preedit: element.attrs.text_input_preedit.clone(),
-        preedit_cursor: element.attrs.text_input_preedit_cursor,
-        focused: element.attrs.text_input_focused.unwrap_or(false),
-        emit_change: element.attrs.on_change.unwrap_or(false),
-        multiline: element.kind == crate::tree::element::ElementKind::Multiline,
+        preedit: element.runtime.text_input_preedit.clone(),
+        preedit_cursor: element.runtime.text_input_preedit_cursor,
+        focused: element.runtime.text_input_focused,
+        emit_change: element.layout.effective.on_change.unwrap_or(false),
+        multiline: element.spec.kind == crate::tree::element::ElementKind::Multiline,
         frame_x: adjusted_rect.x,
         frame_y: adjusted_rect.y,
         frame_width: adjusted_rect.width,
@@ -1059,13 +1060,13 @@ fn text_input_state(
         inset_bottom,
         inset_right,
         screen_to_local,
-        text_align: element.attrs.text_align.unwrap_or_default(),
+        text_align: element.layout.effective.text_align.unwrap_or_default(),
         font_family,
-        font_size: element.attrs.font_size.unwrap_or(16.0) as f32,
+        font_size: element.layout.effective.font_size.unwrap_or(16.0) as f32,
         font_weight,
         font_italic,
-        letter_spacing: element.attrs.font_letter_spacing.unwrap_or(0.0) as f32,
-        word_spacing: element.attrs.font_word_spacing.unwrap_or(0.0) as f32,
+        letter_spacing: element.layout.effective.font_letter_spacing.unwrap_or(0.0) as f32,
+        word_spacing: element.layout.effective.font_word_spacing.unwrap_or(0.0) as f32,
     }
 }
 
@@ -1138,11 +1139,12 @@ fn parse_font_weight(value: &str) -> u16 {
     }
 }
 
-pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: Atom) {
-    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+pub(crate) fn send_element_event(pid: LocalPid, element_id: &NodeId, event: Atom) {
+    let id_bytes = element_id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(id_bytes.len()) else {
         return;
     };
-    bin.as_mut_slice().copy_from_slice(&element_id.0);
+    bin.as_mut_slice().copy_from_slice(&id_bytes);
 
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1153,14 +1155,15 @@ pub(crate) fn send_element_event(pid: LocalPid, element_id: &ElementId, event: A
 
 pub(crate) fn send_element_event_with_string_payload(
     pid: LocalPid,
-    element_id: &ElementId,
+    element_id: &NodeId,
     event: Atom,
     value: &str,
 ) {
-    let Some(mut bin) = OwnedBinary::new(element_id.0.len()) else {
+    let id_bytes = element_id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(id_bytes.len()) else {
         return;
     };
-    bin.as_mut_slice().copy_from_slice(&element_id.0);
+    bin.as_mut_slice().copy_from_slice(&id_bytes);
 
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1321,7 +1324,6 @@ fn log_level_atom(level: NativeLogLevel) -> Atom {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tree::attrs::Attrs;
@@ -1329,12 +1331,7 @@ mod tests {
     use crate::tree::transform::Affine2;
 
     fn make_element(id: u8, kind: ElementKind, attrs: Attrs) -> Element {
-        Element::with_attrs(
-            ElementId::from_term_bytes(vec![id]),
-            kind,
-            Vec::new(),
-            attrs,
-        )
+        Element::with_attrs(NodeId::from_term_bytes(vec![id]), kind, Vec::new(), attrs)
     }
 
     #[test]
@@ -1342,8 +1339,8 @@ mod tests {
         let mut tree = ElementTree::new();
 
         let mut root = make_element(1, ElementKind::Column, Attrs::default());
-        root.children = vec![ElementId::from_term_bytes(vec![2])];
-        root.frame = Some(Frame {
+        root.children = vec![NodeId::from_term_bytes(vec![2])];
+        root.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1359,7 +1356,7 @@ mod tests {
         attrs.scrollbar_y = Some(true);
         attrs.scroll_y = Some(10.0);
         let mut child = make_element(2, ElementKind::TextInput, attrs);
-        child.frame = Some(Frame {
+        child.layout.frame = Some(Frame {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -1368,20 +1365,17 @@ mod tests {
             content_height: 120.0,
         });
 
-        tree.root = Some(root.id.clone());
         tree.insert(root);
         tree.insert(child);
+        tree.set_root_id(NodeId::from_term_bytes(vec![1]));
 
         let rebuild = render_tree(&tree).event_rebuild;
-        assert_eq!(
-            rebuild.focused_id,
-            Some(ElementId::from_term_bytes(vec![2]))
-        );
+        assert_eq!(rebuild.focused_id, Some(NodeId::from_term_bytes(vec![2])));
         assert_eq!(rebuild.text_inputs.len(), 1);
         assert_eq!(
             rebuild
                 .text_inputs
-                .get(&ElementId::from_term_bytes(vec![2]))
+                .get(&NodeId::from_term_bytes(vec![2]))
                 .expect("text input present")
                 .content_origin,
             TextInputContentOrigin::TreePatch
@@ -1389,7 +1383,7 @@ mod tests {
         assert_eq!(
             rebuild
                 .text_inputs
-                .get(&ElementId::from_term_bytes(vec![2]))
+                .get(&NodeId::from_term_bytes(vec![2]))
                 .expect("text input present")
                 .cursor,
             2
@@ -1398,7 +1392,7 @@ mod tests {
         assert!(
             rebuild
                 .scrollbars
-                .contains_key(&(ElementId::from_term_bytes(vec![2]), ScrollbarAxis::Y))
+                .contains_key(&(NodeId::from_term_bytes(vec![2]), ScrollbarAxis::Y))
         );
     }
 
