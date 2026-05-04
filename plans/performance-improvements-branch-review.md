@@ -1,5 +1,76 @@
 # performance-improvements branch review
 
+Current review date: 2026-05-04
+
+Current branch head reviewed: `performance-improvements` at `a797532` plus the
+branch-fix plan implementation in this worktree.
+
+Comparison base: `main` at merge base
+`1ffb362385c184c2794501a3509e199491a3d6d3`.
+
+## Current Summary Verdict
+
+This section supersedes the older 2026-04-26 merge-readiness verdict below. The
+current branch is much larger than that earlier review: it is 54 commits ahead
+of `main`, with `235 files changed, 43729 insertions(+), 6950 deletions(-)`.
+The post-review work added renderer-cache lifecycle improvements, frame-latency
+work, scroll viewport culling, renderer stats/code-size cleanup, and additional
+benchmarks.
+
+The active branch-fix plan has been implemented in the current worktree:
+
+- benchmark commands now include `--features bench-diagnostics` where required
+  by `native/emerge_skia/Cargo.toml`
+- `NodeId::from_term_bytes/1` is test-only, so the byte-shaped helper is not
+  compiled into release or benchmark code
+- mixed tree-actor batches now have regression coverage for animation pulses
+  combined with paint patches, active-animation resize, structure upload plus
+  registry rebuild, and asset-state invalidation
+- the remaining crate-level clippy allowances are explicitly documented as
+  test-only fixture-shape exceptions; `too_many_arguments` was removed by
+  refactoring the two affected test helpers, and release/benchmark clippy gates
+  pass without test allowances
+- native diagnostics were classified: hard backend/asset failures stay
+  always-on, while queue/backpressure, render debug, hover trace, stats, and
+  animation cadence logging remain behind their existing runtime or compile-time
+  gates
+
+Current validation:
+
+```text
+cargo test --manifest-path native/emerge_skia/Cargo.toml
+726 passed, 0 failed
+
+mix test
+368 tests, 13 doctests, 0 failures
+
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+passed
+
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml --tests -- -D warnings
+passed
+
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml --benches --features bench-diagnostics -- -D warnings
+passed
+
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --no-run --features bench-diagnostics
+passed
+```
+
+Remaining worktree hygiene note:
+
+```text
+.codex
+image_assets_placeholder.png
+menu_alpha.png
+```
+
+These files are untracked and are not part of the branch diff. They should be
+deleted, ignored, or intentionally committed before final merge, but they were
+left untouched here because they may be user artifacts.
+
+## Historical 2026-04-26 Review
+
 Date: 2026-04-26
 
 Last revisited: 2026-04-26, after the merge-readiness implementation and

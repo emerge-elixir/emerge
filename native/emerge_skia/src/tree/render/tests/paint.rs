@@ -47,22 +47,22 @@ fn point_in_rounded_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radiu
     dx * dx + dy * dy <= r * r
 }
 
-fn point_in_inset_rounded_rect(
-    px: f32,
-    py: f32,
+#[derive(Clone, Copy)]
+struct RoundedRectSample {
     x: f32,
     y: f32,
     w: f32,
     h: f32,
     radius: f32,
-    inset: f32,
-) -> bool {
+}
+
+fn point_in_inset_rounded_rect(px: f32, py: f32, rect: RoundedRectSample, inset: f32) -> bool {
     let inset = inset.max(0.0);
-    let inset_x = x + inset;
-    let inset_y = y + inset;
-    let inset_w = (w - inset * 2.0).max(0.0);
-    let inset_h = (h - inset * 2.0).max(0.0);
-    let inset_r = (radius - inset).max(0.0);
+    let inset_x = rect.x + inset;
+    let inset_y = rect.y + inset;
+    let inset_w = (rect.w - inset * 2.0).max(0.0);
+    let inset_h = (rect.h - inset * 2.0).max(0.0);
+    let inset_r = (rect.radius - inset).max(0.0);
     point_in_rounded_rect(px, py, inset_x, inset_y, inset_w, inset_h, inset_r)
 }
 
@@ -354,12 +354,15 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
 
-            let in_inner_near_edge = point_in_inset_rounded_rect(
-                px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 0.05,
-            );
-            let in_inner_deep = point_in_inset_rounded_rect(
-                px, py, inner_x, inner_y, inner_w, inner_h, inner_r, 1.25,
-            );
+            let inner_rect = RoundedRectSample {
+                x: inner_x,
+                y: inner_y,
+                w: inner_w,
+                h: inner_h,
+                radius: inner_r,
+            };
+            let in_inner_near_edge = point_in_inset_rounded_rect(px, py, inner_rect, 0.05);
+            let in_inner_deep = point_in_inset_rounded_rect(px, py, inner_rect, 1.25);
 
             if !(in_inner_near_edge && !in_inner_deep) {
                 continue;
@@ -482,19 +485,16 @@ fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
 
             let in_outer =
                 point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, radius);
-            let away_from_outer_aa = point_in_inset_rounded_rect(
-                px, py, outer_x, outer_y, outer_w, outer_h, radius, 0.15,
-            );
-            let inside_inner_content = point_in_inset_rounded_rect(
-                px,
-                py,
-                outer_x,
-                outer_y,
-                outer_w,
-                outer_h,
+            let outer_rect = RoundedRectSample {
+                x: outer_x,
+                y: outer_y,
+                w: outer_w,
+                h: outer_h,
                 radius,
-                border + 0.15,
-            );
+            };
+            let away_from_outer_aa = point_in_inset_rounded_rect(px, py, outer_rect, 0.15);
+            let inside_inner_content =
+                point_in_inset_rounded_rect(px, py, outer_rect, border + 0.15);
 
             if !(in_outer && away_from_outer_aa && !inside_inner_content) {
                 continue;
@@ -650,7 +650,16 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
                 let in_outer =
                     point_in_rounded_rect(px, py, outer_x, outer_y, outer_w, outer_h, radius);
                 let away_from_outer_aa = point_in_inset_rounded_rect(
-                    px, py, outer_x, outer_y, outer_w, outer_h, radius, 0.15,
+                    px,
+                    py,
+                    RoundedRectSample {
+                        x: outer_x,
+                        y: outer_y,
+                        w: outer_w,
+                        h: outer_h,
+                        radius,
+                    },
+                    0.15,
                 );
                 let in_right_band = px >= outer_x + outer_w - border - 0.2;
                 let in_image_vertical = py >= draw_y + 8.0 && py <= draw_y + draw_h - 8.0;
@@ -1788,11 +1797,13 @@ fn test_render_uniform_pill_border_matches_clamped_rounded_clip() {
                 && !point_in_inset_rounded_rect(
                     px,
                     py,
-                    outer_x,
-                    outer_y,
-                    outer_w,
-                    outer_h,
-                    expected_radius,
+                    RoundedRectSample {
+                        x: outer_x,
+                        y: outer_y,
+                        w: outer_w,
+                        h: outer_h,
+                        radius: expected_radius,
+                    },
                     border,
                 ),
             "sample ({}, {}) should land inside the visible border band",
