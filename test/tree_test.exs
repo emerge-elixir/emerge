@@ -278,7 +278,7 @@ defmodule EmergeSkia.TreeTest do
       child2_node = encode_node(child2_id, 4, child_attrs)
 
       data = make_header(3) <> root_node <> child1_node <> child2_node
-      assert {:ok, :ok} = Native.tree_upload(tree, data)
+      assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
       refute disabled_stats.enabled
