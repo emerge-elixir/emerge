@@ -43,6 +43,7 @@ impl NodeId {
         self.0.to_be_bytes()
     }
 
+    #[cfg(test)]
     pub fn from_term_bytes(bytes: Vec<u8>) -> Self {
         assert!(
             bytes.len() <= 8,

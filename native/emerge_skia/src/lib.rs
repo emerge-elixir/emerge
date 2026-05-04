@@ -1,3 +1,6 @@
+// The inline Rust tests use mutable fixture builders heavily so each assertion
+// can show only the fields relevant to that case. Keep these shape exceptions
+// test-only; release and benchmark code still run under normal clippy gates.
 #![cfg_attr(
     test,
     allow(
@@ -7,8 +10,7 @@
         clippy::needless_lifetimes,
         clippy::nonminimal_bool,
         clippy::op_ref,
-        clippy::redundant_pattern_matching,
-        clippy::too_many_arguments
+        clippy::redundant_pattern_matching
     )
 )]
 

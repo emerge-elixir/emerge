@@ -299,18 +299,22 @@ fn insert_temp_line_node(
     row_id
 }
 
+struct WeatherDayCardSpec<'a> {
+    day: &'a str,
+    condition: &'a str,
+    high_c: &'a str,
+    high_f: &'a str,
+    low_c: &'a str,
+    low_f: &'a str,
+    precip: &'a str,
+}
+
 fn insert_weather_day_card_node(
     tree: &mut ElementTree,
     id: &str,
-    day: &str,
-    condition: &str,
-    high_c: &str,
-    high_f: &str,
-    low_c: &str,
-    low_f: &str,
-    precip: &str,
+    spec: &WeatherDayCardSpec<'_>,
 ) -> NodeId {
-    let day_id = insert_text_node(tree, &format!("{id}_day"), day, 12.0);
+    let day_id = insert_text_node(tree, &format!("{id}_day"), spec.day, 12.0);
 
     let icon = make_element(&format!("{id}_icon"), ElementKind::Image, {
         let mut a = Attrs::default();
@@ -332,13 +336,13 @@ fn insert_weather_day_card_node(
     icon_wrap.children = vec![icon_id];
     tree.insert(icon_wrap);
 
-    let condition_id = insert_text_node(tree, &format!("{id}_condition"), condition, 11.0);
-    let hi_id = insert_temp_line_node(tree, &format!("{id}_hi"), "HI", high_c, high_f);
-    let lo_id = insert_temp_line_node(tree, &format!("{id}_lo"), "LO", low_c, low_f);
+    let condition_id = insert_text_node(tree, &format!("{id}_condition"), spec.condition, 11.0);
+    let hi_id = insert_temp_line_node(tree, &format!("{id}_hi"), "HI", spec.high_c, spec.high_f);
+    let lo_id = insert_temp_line_node(tree, &format!("{id}_lo"), "LO", spec.low_c, spec.low_f);
     let precip_id = insert_badge_node(
         tree,
         &format!("{id}_precip"),
-        precip,
+        spec.precip,
         (3.0, 8.0, 3.0, 8.0),
         9.0,
     );
@@ -643,30 +647,76 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     });
 
     let weather_card_specs = [
-        ("Mon", "Sunny", "22C", "72F", "13C", "55F", "precip 5%"),
-        ("Tue", "Cloudy", "19C", "66F", "12C", "54F", "precip 20%"),
-        ("Wed", "Rain", "16C", "61F", "10C", "50F", "precip 70%"),
-        ("Thu", "Cloudy", "18C", "64F", "11C", "52F", "precip 25%"),
-        ("Fri", "Sunny", "24C", "75F", "14C", "57F", "precip 5%"),
-        ("Sat", "Rain", "17C", "63F", "9C", "48F", "precip 80%"),
-        ("Sun", "Sunny", "23C", "73F", "13C", "55F", "precip 10%"),
+        WeatherDayCardSpec {
+            day: "Mon",
+            condition: "Sunny",
+            high_c: "22C",
+            high_f: "72F",
+            low_c: "13C",
+            low_f: "55F",
+            precip: "precip 5%",
+        },
+        WeatherDayCardSpec {
+            day: "Tue",
+            condition: "Cloudy",
+            high_c: "19C",
+            high_f: "66F",
+            low_c: "12C",
+            low_f: "54F",
+            precip: "precip 20%",
+        },
+        WeatherDayCardSpec {
+            day: "Wed",
+            condition: "Rain",
+            high_c: "16C",
+            high_f: "61F",
+            low_c: "10C",
+            low_f: "50F",
+            precip: "precip 70%",
+        },
+        WeatherDayCardSpec {
+            day: "Thu",
+            condition: "Cloudy",
+            high_c: "18C",
+            high_f: "64F",
+            low_c: "11C",
+            low_f: "52F",
+            precip: "precip 25%",
+        },
+        WeatherDayCardSpec {
+            day: "Fri",
+            condition: "Sunny",
+            high_c: "24C",
+            high_f: "75F",
+            low_c: "14C",
+            low_f: "57F",
+            precip: "precip 5%",
+        },
+        WeatherDayCardSpec {
+            day: "Sat",
+            condition: "Rain",
+            high_c: "17C",
+            high_f: "63F",
+            low_c: "9C",
+            low_f: "48F",
+            precip: "precip 80%",
+        },
+        WeatherDayCardSpec {
+            day: "Sun",
+            condition: "Sunny",
+            high_c: "23C",
+            high_f: "73F",
+            low_c: "13C",
+            low_f: "55F",
+            precip: "precip 10%",
+        },
     ];
 
     let weather_card_ids: Vec<_> = weather_card_specs
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            insert_weather_day_card_node(
-                &mut tree,
-                &format!("weather_card_{index}"),
-                spec.0,
-                spec.1,
-                spec.2,
-                spec.3,
-                spec.4,
-                spec.5,
-                spec.6,
-            )
+            insert_weather_day_card_node(&mut tree, &format!("weather_card_{index}"), spec)
         })
         .collect();
 
