@@ -4,6 +4,9 @@
 
 #[cfg(all(feature = "drm", target_os = "linux"))]
 pub mod drm;
+#[cfg(feature = "macos")]
+pub mod macos;
+pub mod present;
 pub mod raster;
 pub mod skia_gpu;
 pub mod wake;

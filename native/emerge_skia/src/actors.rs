@@ -27,20 +27,20 @@ pub struct AnimationFrameTrace {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AnimationFrameTraceSeed {
-    pub(crate) sequence: Option<u64>,
-    pub(crate) pulse_sent_at: Option<Instant>,
-    pub(crate) tree_started_at: Instant,
-    pub(crate) presented_at: Option<Instant>,
-    pub(crate) predicted_next_present_at: Option<Instant>,
-    pub(crate) sample_time: Instant,
-    pub(crate) previous_sample_time: Option<Instant>,
-    pub(crate) animations_active: bool,
-    pub(crate) pulse_requested_sample: bool,
+pub struct AnimationFrameTraceSeed {
+    pub sequence: Option<u64>,
+    pub pulse_sent_at: Option<Instant>,
+    pub tree_started_at: Instant,
+    pub presented_at: Option<Instant>,
+    pub predicted_next_present_at: Option<Instant>,
+    pub sample_time: Instant,
+    pub previous_sample_time: Option<Instant>,
+    pub animations_active: bool,
+    pub pulse_requested_sample: bool,
 }
 
 impl AnimationFrameTraceSeed {
-    pub(crate) fn queued_at(self, render_queued_at: Instant) -> AnimationFrameTrace {
+    pub fn queued_at(self, render_queued_at: Instant) -> AnimationFrameTrace {
         AnimationFrameTrace {
             sequence: self.sequence,
             pulse_sent_at: self.pulse_sent_at,

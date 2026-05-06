@@ -53,7 +53,7 @@ mod linux_wait;
 mod native_log;
 pub mod render_scene;
 pub mod renderer;
-mod runtime;
+pub mod runtime;
 pub mod services;
 pub mod stats;
 pub mod tree;

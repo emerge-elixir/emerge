@@ -629,6 +629,17 @@ impl RendererStatsCollector {
         self.record_timing(RendererTimingMetric::RenderSubmit, duration);
     }
 
+    pub fn record_render_timings(&self, render_duration: Duration, timings: &RenderTimings) {
+        self.record_render(render_duration);
+        self.record_render_draw(timings.draw);
+        self.record_render_flush(timings.flush);
+        self.record_render_gpu_flush(timings.gpu_flush);
+        self.record_render_submit(timings.submit);
+        if let Some(renderer_cache) = timings.renderer_cache.as_deref() {
+            self.record_renderer_cache(*renderer_cache);
+        }
+    }
+
     pub fn record_present_submit(&self, duration: Duration) {
         self.record_timing(RendererTimingMetric::PresentSubmit, duration);
     }

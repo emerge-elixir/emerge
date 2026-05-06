@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-05-06.
+Last updated: 2026-05-07.
 
 This directory tracks active implementation notes and durable background
 research for native layout and renderer work. Files with an `active-` prefix are
@@ -32,6 +32,10 @@ documents below. Recently folded slices:
 - frame-latency pacing and animation-cadence fixes
 - renderer-cache engine investigation and Flutter comparison findings that have
   already landed
+- macOS/Linux runtime convergence after the macOS hover refresh bug, including
+  shared tree updates, event runtime driving, input normalization, present
+  timing, cursor state, render timing stats, render-state scene installation,
+  and macOS pipeline stats parity
 
 ### `layout-caching-roadmap.md`
 
@@ -97,12 +101,32 @@ The native layout-caching foundation is in place:
   - `renderer_animation_log: true` enables separate Wayland animation cadence
     trace logs without coupling them to renderer stats logs
   - `Native.stats/2` and `EmergeSkia.stats/2` expose peek/take/reset snapshots
+- macOS and Linux now share retained-tree update semantics through the
+  `TreeUpdateEngine`: `TreeMsg` application, animation sample timing,
+  frame-attrs preparation, refresh/recompute decisions, cached-registry reuse,
+  and asset-change refreshes all flow through the shared engine
+- macOS still owns AppKit/window/protocol responsibilities, but its direct host
+  runtime now shares the same event runtime driver behavior for input dispatch,
+  timers, registry installs, cursor requests, present timing, and coalesced
+  mouse-move bursts where synchronous AppKit text-input constraints allow it
+- shared input helpers define pointer button labels/actions, scroll delta
+  normalization, modifier packing, and text commit filtering so Wayland and
+  macOS do not maintain divergent generic `InputEvent` construction
+- Wayland, DRM, and macOS reuse the same plausible-frame-interval estimator for
+  predicted next-present timing; macOS feeds present timing back into
+  `HostEventRuntime`
+- Wayland and macOS use a shared cursor icon reducer, while DRM keeps its
+  hardware-cursor plane state backend-specific
+- render timing stats recording uses a shared `RendererStatsCollector` helper
+  for full `RenderTimings` values across Wayland, DRM, macOS Metal, and macOS
+  raster
 - renderer slow-frame diagnostics split render time into draw, GPU flush, GPU
   submit, and present-submit stages; profiled slow-frame logs now include scene
   summaries plus per-category draw timings, image details, and shadow details
 - pipeline diagnostics split patch submission into tree actor, render queue,
-  swap, and Wayland frame-callback wait so frame latency work can distinguish
-  Emerge processing from backend/compositor pacing
+  swap, and backend frame-callback/present timing so frame latency work can
+  distinguish Emerge processing from backend/compositor pacing; macOS records
+  the same split-pipeline stats from its direct dirty-frame draw path
 - profiled renderer slow-frame logs also include clip, border, and layer detail
   for direct drawing optimization work
 - direct renderer drawing benchmarks cover focused border, tint, alpha, shadow,
@@ -149,6 +173,10 @@ The native layout-caching foundation is in place:
 - refresh-only frames can reuse the cached full event registry when registry
   damage is clean
 - refresh scene rendering can reuse clean retained render subtrees
+- `RenderState::set_scene(...)` updates a scene and its derived
+  `has_cache_candidates` flag together, so Wayland, DRM, and macOS cannot
+  silently bypass renderer-cache traversal after installing a cache-candidate
+  scene
 - render-cache regression benchmarks compare cached and uncached refresh paths,
   including cold full layout+refresh after upload/switch; dirty/full rebuilds do
   not seed render caches, damaged refreshes with no existing caches use the
@@ -175,10 +203,20 @@ The native layout-caching foundation is in place:
 - focused single-line text inputs suppress the follow-up Enter text commit when
   an Enter key-down binding is handled, so app-driven clears such as todo
   create remain authoritative
+- the low-level macOS host frame/init protocol codec has Rust and Elixir fixture
+  coverage; request/notify payload families remain mirrored across Rust and
+  Elixir and should get fixtures before protocol expansion
 
 ## Next recommended implementation order
 
-### 1. Review render-cache children rollout with live traces
+### 1. Fixture macOS request/notify protocol payloads
+
+The low-level frame/init protocol now has parity fixtures. Before expanding the
+macOS protocol, add request/notify-specific fixtures for start session, raw
+input notify, element notify, asset config, and offscreen request payloads on
+both the Rust host and Elixir sides.
+
+### 2. Review render-cache children rollout with live traces
 
 The parent/child lifecycle and stale-entry slice is implemented. The next cache
 decision should start from fresh `../emerge_demo` stats: check stale eviction
@@ -186,26 +224,26 @@ churn, suppressed-by-parent counts, and whether current automatic candidates are
 too cheap or too sparse before adding complexity scoring, transform expansion,
 or a new composition-cache boundary.
 
-### 2. Watch frame latency traces instead of adding scheduler policy
+### 3. Watch frame latency traces instead of adding scheduler policy
 
 The Wayland frame-latency slice is implemented. Future work should start from
 fresh split-pipeline traces before changing scheduler behavior. If repeated
 `present submit`, `pipeline submit->swap`, or animation cadence issues return,
 investigate compositor/driver behavior first and avoid fixed timing guesses.
 
-### 3. Broaden other relayout/dependency boundaries
+### 4. Broaden other relayout/dependency boundaries
 
 Nearby overlay topology no longer forces broad host/ancestor measurement or
 resolve misses. The next layout-cache work should broaden boundaries for other
 container/dependency shapes one at a time with focused correctness tests.
 
-### 4. Revisit registry chunk seeding if profiles justify it
+### 5. Revisit registry chunk seeding if profiles justify it
 
 The guarded registry chunk infrastructure is in place. Leave damaged/no-cache
 and escape-nearby cases on the full-rebuild fallback unless a future profile
 shows registry rebuilds are the dominant cost and cheap seeding is proven safe.
 
-### 5. Repeater/viewport-aware caching
+### 6. Repeater/viewport-aware caching
 
 Later large-list work should preserve cache identity across dynamic list edits
 and viewport movement.

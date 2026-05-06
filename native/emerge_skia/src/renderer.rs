@@ -482,6 +482,11 @@ impl RenderState {
             has_cache_candidates,
         }
     }
+
+    pub fn set_scene(&mut self, scene: RenderScene) {
+        self.has_cache_candidates = scene.has_cache_candidates();
+        self.scene = scene;
+    }
 }
 
 // ============================================================================
@@ -5294,6 +5299,18 @@ mod tests {
         let state = RenderState::new(scene, Color::TRANSPARENT, 1, false);
         let mut frame = RenderFrame::new(&mut surface, None);
         renderer.render_profiled(&mut frame, &state)
+    }
+
+    #[test]
+    fn render_state_set_scene_refreshes_cache_candidate_flag() {
+        let mut state = RenderState::default();
+        assert!(!state.has_cache_candidates);
+
+        state.set_scene(translated_candidate_scene(1));
+        assert!(state.has_cache_candidates);
+
+        state.set_scene(RenderScene::default());
+        assert!(!state.has_cache_candidates);
     }
 
     #[test]

@@ -90,6 +90,66 @@ pub enum CursorIcon {
     Pointer,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorIconState {
+    requested: CursorIcon,
+    applied: CursorIcon,
+}
+
+impl CursorIconState {
+    pub fn new() -> Self {
+        Self {
+            requested: CursorIcon::Default,
+            applied: CursorIcon::Default,
+        }
+    }
+
+    pub fn requested(&self) -> CursorIcon {
+        self.requested
+    }
+
+    pub fn applied(&self) -> CursorIcon {
+        self.applied
+    }
+
+    pub fn request(&mut self, icon: CursorIcon, pointer_inside: bool) -> Option<CursorIcon> {
+        self.requested = icon;
+        self.reconcile(pointer_inside)
+    }
+
+    pub fn pointer_entered(&mut self) -> Option<CursorIcon> {
+        self.apply(CursorIcon::Default)
+    }
+
+    pub fn pointer_left(&mut self) -> Option<CursorIcon> {
+        self.apply(CursorIcon::Default)
+    }
+
+    pub fn reconcile(&mut self, pointer_inside: bool) -> Option<CursorIcon> {
+        let desired = if pointer_inside {
+            self.requested
+        } else {
+            CursorIcon::Default
+        };
+        self.apply(desired)
+    }
+
+    fn apply(&mut self, icon: CursorIcon) -> Option<CursorIcon> {
+        if self.applied == icon {
+            None
+        } else {
+            self.applied = icon;
+            Some(icon)
+        }
+    }
+}
+
+impl Default for CursorIconState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Unified text-input state used by both rebuild output and runtime editing.
 ///
 /// `TextInputState` combines:
@@ -1508,5 +1568,37 @@ mod tests {
         assert_eq!(state.appkit_displayed_text(), "aXd");
         assert_eq!(state.appkit_marked_range_utf16(), Some((1, 1)));
         assert_eq!(state.appkit_replacement_char_range(1, 1), Some((1, 3)));
+    }
+
+    #[test]
+    fn cursor_icon_state_applies_requests_only_while_inside() {
+        let mut state = CursorIconState::new();
+
+        assert_eq!(state.request(CursorIcon::Text, false), None);
+        assert_eq!(state.requested(), CursorIcon::Text);
+        assert_eq!(state.applied(), CursorIcon::Default);
+
+        assert_eq!(state.reconcile(true), Some(CursorIcon::Text));
+        assert_eq!(state.request(CursorIcon::Text, true), None);
+        assert_eq!(
+            state.request(CursorIcon::Pointer, true),
+            Some(CursorIcon::Pointer)
+        );
+    }
+
+    #[test]
+    fn cursor_icon_state_resets_on_enter_and_leave_without_forgetting_request() {
+        let mut state = CursorIconState::new();
+
+        assert_eq!(
+            state.request(CursorIcon::Text, true),
+            Some(CursorIcon::Text)
+        );
+        assert_eq!(state.pointer_left(), Some(CursorIcon::Default));
+        assert_eq!(state.requested(), CursorIcon::Text);
+        assert_eq!(state.reconcile(false), None);
+
+        assert_eq!(state.pointer_entered(), None);
+        assert_eq!(state.reconcile(true), Some(CursorIcon::Text));
     }
 }

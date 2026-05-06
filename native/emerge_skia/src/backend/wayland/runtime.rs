@@ -55,8 +55,8 @@ use crate::{
         },
         wayland_config::WaylandConfig,
     },
-    events::CursorIcon,
-    input::InputEvent,
+    events::{CursorIcon, CursorIconState},
+    input::{InputEvent, keyboard::normalize_commit_text},
     native_log::NativeLogRelay,
     renderer::{RenderState, RendererCacheConfig},
     stats::{
@@ -70,7 +70,7 @@ use super::{
     egl::{GlEnv, create_gl_env, resize_gl_env},
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
-    keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk, normalize_commit_text},
+    keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk},
     present::{DrawDecision, DrawKind, PresentState},
     protocols::ProtocolHandles,
     text_input::TextInputProtocolState,
@@ -231,7 +231,7 @@ pub(super) struct WaylandApp {
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
     input: PointerInputState,
-    current_cursor_icon: CursorIcon,
+    cursor_icon_state: CursorIconState,
     pub(super) keyboard: KeyboardInputState,
     pub(super) text_input: TextInputProtocolState,
     video_import: WaylandVideoImportState,
@@ -308,7 +308,7 @@ impl WaylandApp {
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
             input: PointerInputState::new(globals, &qh),
-            current_cursor_icon: CursorIcon::Default,
+            cursor_icon_state: CursorIconState::default(),
             keyboard: KeyboardInputState::new(),
             text_input: TextInputProtocolState::new(globals, &qh),
             video_import: WaylandVideoImportState::PendingGlInit,
@@ -431,8 +431,7 @@ impl WaylandApp {
                 } => {
                     let animation_trace = animation_trace.map(|trace| *trace);
                     let scene = *scene;
-                    self.render_state.has_cache_candidates = scene.has_cache_candidates();
-                    self.render_state.scene = scene;
+                    self.render_state.set_scene(scene);
                     self.render_state.render_version = version;
                     self.render_state.pipeline_submitted_at = pipeline_submitted_at;
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
@@ -483,10 +482,8 @@ impl WaylandApp {
         }
 
         while let Ok(icon) = self.cursor_icon_rx.try_recv() {
-            self.current_cursor_icon = icon;
-
-            if self.input.entered {
-                self.apply_current_cursor_icon(conn);
+            if let Some(cursor) = self.cursor_icon_state.request(icon, self.input.entered) {
+                self.apply_cursor_icon(conn, cursor);
             }
         }
 
@@ -518,10 +515,6 @@ impl WaylandApp {
             }
             Err(err) => eprintln!("failed to apply wayland cursor: {err}"),
         }
-    }
-
-    fn apply_current_cursor_icon(&self, conn: &Connection) {
-        self.apply_cursor_icon(conn, self.current_cursor_icon);
     }
 
     fn update_logical_size(&mut self, conn: &Connection, width: u32, height: u32) {
@@ -598,14 +591,7 @@ impl WaylandApp {
             };
 
             if let Some(stats) = self.stats.as_ref() {
-                stats.record_render(render_timings.total);
-                stats.record_render_draw(render_timings.draw);
-                stats.record_render_flush(render_timings.flush);
-                stats.record_render_gpu_flush(render_timings.gpu_flush);
-                stats.record_render_submit(render_timings.submit);
-                if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
-                    stats.record_renderer_cache(*renderer_cache);
-                }
+                stats.record_render_timings(render_timings.total, &render_timings);
             }
 
             if self.renderer_stats_log && render_frame_has_slow_stage(&render_timings) {
@@ -1282,12 +1268,14 @@ impl PointerHandler for WaylandApp {
             match event.kind {
                 Enter { .. } => {
                     self.input.entered = true;
+                    self.cursor_icon_state.pointer_entered();
                     self.apply_cursor_icon(conn, CursorIcon::Default);
                     self.send_input_event(InputEvent::CursorEntered { entered: true });
                     self.send_input_event(InputEvent::CursorPos { x, y });
                 }
                 Leave { .. } => {
                     self.input.entered = false;
+                    self.cursor_icon_state.pointer_left();
                     self.send_input_event(InputEvent::CursorEntered { entered: false });
                 }
                 Motion { .. } => {

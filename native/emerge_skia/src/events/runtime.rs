@@ -65,11 +65,162 @@ pub trait HostEventSink: Send + Sync {
     );
 }
 
-pub struct HostEventRuntime {
+struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
     tree_tx: Sender<TreeMsg>,
-    tree_rx: Receiver<TreeMsg>,
     log_render: bool,
+}
+
+impl EventRuntimeDriver {
+    fn new(
+        system_clipboard: bool,
+        backend_cursor_tx: Option<Sender<CursorIcon>>,
+        backend_wake: BackendWakeHandle,
+        tree_tx: Sender<TreeMsg>,
+        log_render: bool,
+        stats: Option<Arc<RendererStatsCollector>>,
+    ) -> Self {
+        Self {
+            runtime: DirectEventRuntime::new_with_backend_cursor(
+                system_clipboard,
+                backend_cursor_tx,
+                backend_wake,
+                stats,
+            ),
+            tree_tx,
+            log_render,
+        }
+    }
+
+    fn new_with_host_sink(
+        system_clipboard: bool,
+        backend_cursor_tx: Option<Sender<CursorIcon>>,
+        backend_wake: BackendWakeHandle,
+        host_event_sink: Arc<dyn HostEventSink>,
+        tree_tx: Sender<TreeMsg>,
+        log_render: bool,
+        stats: Option<Arc<RendererStatsCollector>>,
+    ) -> Self {
+        Self {
+            runtime: DirectEventRuntime::new_with_host_sink(
+                system_clipboard,
+                backend_cursor_tx,
+                backend_wake,
+                host_event_sink,
+                stats,
+            ),
+            tree_tx,
+            log_render,
+        }
+    }
+
+    fn set_scroll_line_pixels(&mut self, scroll_line_pixels: f32) {
+        self.runtime.set_scroll_line_pixels(scroll_line_pixels);
+    }
+
+    fn set_input_mask(&mut self, mask: u32) {
+        self.runtime.set_input_mask(mask);
+    }
+
+    fn set_input_target(&mut self, target: Option<LocalPid>) {
+        self.runtime.set_input_target(target);
+    }
+
+    fn handle_input(&mut self, event: InputEvent) {
+        self.runtime
+            .handle_input_event(event, &self.tree_tx, self.log_render);
+    }
+
+    fn install_rebuild(&mut self, rebuild: RegistryRebuildPayload) {
+        self.runtime
+            .handle_registry_update(rebuild, &self.tree_tx, self.log_render);
+    }
+
+    fn handle_timers(&mut self) {
+        self.runtime.handle_timers(&self.tree_tx, self.log_render);
+    }
+
+    fn handle_present_timing(&mut self, presented_at: Instant, predicted_next_present_at: Instant) {
+        self.runtime.handle_present_timing(
+            presented_at,
+            predicted_next_present_at,
+            &self.tree_tx,
+            self.log_render,
+        );
+    }
+
+    fn focused_text_state(&self) -> Option<TextInputState> {
+        self.runtime.focused_text_state()
+    }
+
+    fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
+        self.runtime
+            .handle_text_input_command(request, &self.tree_tx, self.log_render)
+    }
+
+    fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
+        self.runtime
+            .handle_text_input_edit(request, &self.tree_tx, self.log_render)
+    }
+
+    fn prepare_text_input_replacement_range(
+        &mut self,
+        replacement_range: Option<(u32, u32)>,
+    ) -> bool {
+        self.runtime
+            .prepare_text_input_replacement_range(replacement_range)
+    }
+
+    fn next_event_timeout(&self) -> Option<Duration> {
+        self.runtime.next_event_timeout()
+    }
+
+    fn handle_actor_message(
+        &mut self,
+        message: EventMsg,
+        event_rx: &Receiver<EventMsg>,
+        pending_message: &mut Option<EventMsg>,
+    ) -> bool {
+        match message {
+            EventMsg::InputEvent(event) => {
+                let events = drain_fresh_input_events(event, event_rx, pending_message);
+                events
+                    .into_iter()
+                    .for_each(|event| self.handle_input(event));
+                true
+            }
+            EventMsg::RegistryUpdate { rebuild } => {
+                let rebuild = if self.runtime.should_preserve_registry_transitions() {
+                    rebuild
+                } else {
+                    coalesce_registry_updates(rebuild, event_rx, pending_message).0
+                };
+                self.install_rebuild(rebuild);
+                true
+            }
+            EventMsg::PresentTiming {
+                presented_at,
+                predicted_next_present_at,
+            } => {
+                self.handle_present_timing(presented_at, predicted_next_present_at);
+                true
+            }
+            EventMsg::SetInputMask(mask) => {
+                self.set_input_mask(mask);
+                true
+            }
+            EventMsg::SetInputTarget(target) => {
+                self.set_input_target(target);
+                true
+            }
+            EventMsg::Stop => false,
+        }
+    }
+}
+
+pub struct HostEventRuntime {
+    driver: EventRuntimeDriver,
+    tree_rx: Receiver<TreeMsg>,
 }
 
 impl HostEventRuntime {
@@ -80,61 +231,81 @@ impl HostEventRuntime {
         sink: Arc<dyn HostEventSink>,
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
-        let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
-        let mut runtime = DirectEventRuntime::new_with_host_sink(
+        Self::new_with_cursor(
             system_clipboard,
-            None,
-            BackendWakeHandle::noop(),
+            scroll_line_pixels,
+            log_render,
             sink,
             stats,
-        );
-        runtime.set_scroll_line_pixels(scroll_line_pixels);
+            None,
+        )
+    }
 
-        Self {
-            runtime,
-            tree_tx,
-            tree_rx,
+    pub fn new_with_cursor(
+        system_clipboard: bool,
+        scroll_line_pixels: f32,
+        log_render: bool,
+        sink: Arc<dyn HostEventSink>,
+        stats: Option<Arc<RendererStatsCollector>>,
+        backend_cursor_tx: Option<Sender<CursorIcon>>,
+    ) -> Self {
+        let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
+        let mut driver = EventRuntimeDriver::new_with_host_sink(
+            system_clipboard,
+            backend_cursor_tx,
+            BackendWakeHandle::noop(),
+            sink,
+            tree_tx.clone(),
             log_render,
-        }
+            stats,
+        );
+        driver.set_scroll_line_pixels(scroll_line_pixels);
+
+        Self { driver, tree_rx }
     }
 
     pub fn set_input_mask(&mut self, mask: u32) {
-        self.runtime.set_input_mask(mask);
+        self.driver.set_input_mask(mask);
     }
 
     pub fn handle_input(&mut self, event: InputEvent) {
-        self.runtime
-            .handle_input_event(event, &self.tree_tx, self.log_render);
+        self.driver.handle_input(event);
     }
 
     pub fn install_rebuild(&mut self, rebuild: RegistryRebuildPayload) {
-        self.runtime
-            .handle_registry_update(rebuild, &self.tree_tx, self.log_render);
+        self.driver.install_rebuild(rebuild);
     }
 
     pub fn handle_timers(&mut self) {
-        self.runtime.handle_timers(&self.tree_tx, self.log_render);
+        self.driver.handle_timers();
+    }
+
+    pub fn handle_present_timing(
+        &mut self,
+        presented_at: Instant,
+        predicted_next_present_at: Instant,
+    ) {
+        self.driver
+            .handle_present_timing(presented_at, predicted_next_present_at);
     }
 
     pub fn focused_text_state(&self) -> Option<TextInputState> {
-        self.runtime.focused_text_state()
+        self.driver.focused_text_state()
     }
 
     pub fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
-        self.runtime
-            .handle_text_input_command(request, &self.tree_tx, self.log_render)
+        self.driver.handle_text_input_command(request)
     }
 
     pub fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
-        self.runtime
-            .handle_text_input_edit(request, &self.tree_tx, self.log_render)
+        self.driver.handle_text_input_edit(request)
     }
 
     pub fn prepare_text_input_replacement_range(
         &mut self,
         replacement_range: Option<(u32, u32)>,
     ) -> bool {
-        self.runtime
+        self.driver
             .prepare_text_input_replacement_range(replacement_range)
     }
 
@@ -2229,19 +2400,21 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
     } = config;
 
     thread::spawn(move || {
-        let mut runtime = DirectEventRuntime::new_with_backend_cursor(
+        let mut driver = EventRuntimeDriver::new(
             system_clipboard,
             backend_cursor_tx,
             backend_wake,
+            tree_tx,
+            log_render,
             stats,
         );
-        runtime.set_scroll_line_pixels(scroll_line_pixels);
+        driver.set_scroll_line_pixels(scroll_line_pixels);
         let mut pending_message: Option<EventMsg> = None;
 
         loop {
             let message = match pending_message.take() {
                 Some(message) => Some(message),
-                None => match runtime.next_event_timeout() {
+                None => match driver.next_event_timeout() {
                     Some(timeout) => match event_rx.recv_timeout(timeout) {
                         Ok(message) => Some(message),
                         Err(RecvTimeoutError::Timeout) => None,
@@ -2255,37 +2428,12 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
             };
 
             let Some(message) = message else {
-                runtime.handle_timers(&tree_tx, log_render);
+                driver.handle_timers();
                 continue;
             };
 
-            match message {
-                EventMsg::InputEvent(event) => {
-                    let events = drain_fresh_input_events(event, &event_rx, &mut pending_message);
-                    for event in events {
-                        runtime.handle_input_event(event, &tree_tx, log_render);
-                    }
-                }
-                EventMsg::RegistryUpdate { rebuild } => {
-                    let rebuild = if runtime.should_preserve_registry_transitions() {
-                        rebuild
-                    } else {
-                        coalesce_registry_updates(rebuild, &event_rx, &mut pending_message).0
-                    };
-                    runtime.handle_registry_update(rebuild, &tree_tx, log_render)
-                }
-                EventMsg::PresentTiming {
-                    presented_at,
-                    predicted_next_present_at,
-                } => runtime.handle_present_timing(
-                    presented_at,
-                    predicted_next_present_at,
-                    &tree_tx,
-                    log_render,
-                ),
-                EventMsg::SetInputMask(mask) => runtime.set_input_mask(mask),
-                EventMsg::SetInputTarget(target) => runtime.set_input_target(target),
-                EventMsg::Stop => return,
+            if !driver.handle_actor_message(message, &event_rx, &mut pending_message) {
+                return;
             }
         }
     })
@@ -2458,6 +2606,24 @@ mod tests {
             mods: 0,
             match_mode: KeyBindingMatch::Exact,
         }
+    }
+
+    struct NoopHostEventSink;
+
+    impl HostEventSink for NoopHostEventSink {
+        fn send_raw_input(&self, _event: &InputEvent) {}
+
+        fn send_element_event(
+            &self,
+            _element_id: &NodeId,
+            _kind: ElementEventKind,
+            _payload: Option<&str>,
+        ) {
+        }
+    }
+
+    fn noop_host_sink() -> Arc<dyn HostEventSink> {
+        Arc::new(NoopHostEventSink)
     }
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
@@ -2759,6 +2925,76 @@ mod tests {
             Some(EventMsg::InputEvent(InputEvent::CursorButton { button, action, .. }))
                 if button == "left" && action == crate::input::ACTION_PRESS
         ));
+    }
+
+    #[test]
+    fn event_runtime_driver_reuses_actor_input_coalescing() {
+        let (tree_tx, _tree_rx) = bounded(32);
+        let (event_tx, event_rx) = bounded(8);
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorPos {
+                x: 2.0,
+                y: 3.0,
+            }))
+            .unwrap();
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorPos {
+                x: 4.0,
+                y: 5.0,
+            }))
+            .unwrap();
+        event_tx
+            .send(EventMsg::InputEvent(InputEvent::CursorEntered {
+                entered: false,
+            }))
+            .unwrap();
+
+        let mut driver =
+            EventRuntimeDriver::new(false, None, BackendWakeHandle::noop(), tree_tx, false, None);
+        let mut pending = None;
+
+        assert!(driver.handle_actor_message(
+            EventMsg::InputEvent(InputEvent::CursorPos { x: 1.0, y: 1.0 }),
+            &event_rx,
+            &mut pending,
+        ));
+
+        assert_eq!(driver.runtime.last_cursor_pos, Some((4.0, 5.0)));
+        assert!(matches!(
+            pending,
+            Some(EventMsg::InputEvent(InputEvent::CursorEntered {
+                entered: false
+            }))
+        ));
+    }
+
+    #[test]
+    fn event_runtime_driver_handles_timers_present_timing_and_stop() {
+        let (tree_tx, _tree_rx) = bounded(32);
+        let (_event_tx, event_rx) = bounded(8);
+        let mut driver =
+            EventRuntimeDriver::new(false, None, BackendWakeHandle::noop(), tree_tx, false, None);
+        let mut pending = None;
+        let presented_at = Instant::now();
+        let predicted_next_present_at = presented_at + Duration::from_millis(16);
+
+        assert!(driver.handle_actor_message(
+            EventMsg::PresentTiming {
+                presented_at,
+                predicted_next_present_at,
+            },
+            &event_rx,
+            &mut pending,
+        ));
+        assert_eq!(
+            driver.runtime.last_present_timing,
+            Some(PresentTimingState {
+                presented_at,
+                predicted_next_present_at,
+            })
+        );
+
+        assert!(!driver.handle_actor_message(EventMsg::Stop, &event_rx, &mut pending));
     }
 
     #[test]
@@ -3512,6 +3748,78 @@ mod tests {
             .expect("inertia should continue after one frame");
         assert!(inertia.last_sample_position > first_dx);
         assert_eq!(inertia.watchdog_deadline, now + Duration::from_millis(28));
+    }
+
+    #[test]
+    fn host_runtime_present_timing_steps_inertia_with_adaptive_decay() {
+        let element_id = NodeId::from_term_bytes(vec![215]);
+        let mut runtime =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        let now = Instant::now();
+
+        runtime.driver.runtime.scrollbar_nodes.insert(
+            scrollbar_key(&element_id, ScrollbarAxis::X),
+            ScrollbarNode {
+                axis: ScrollbarAxis::X,
+                track_rect: crate::tree::geometry::Rect::default(),
+                thumb_rect: crate::tree::geometry::Rect::default(),
+                track_start: 0.0,
+                track_len: 80.0,
+                thumb_start: 0.0,
+                thumb_len: 20.0,
+                scroll_offset: 20.0,
+                scroll_range: 100.0,
+                screen_to_local: None,
+            },
+        );
+        runtime.driver.runtime.inertial_scroll = Some(InertialScrollState {
+            element_id,
+            axis: ScrollbarAxis::X,
+            simulation: AdaptiveScrollSimulation::new(0.0, 1_000.0)
+                .expect("simulation should start"),
+            started_at: now,
+            last_sample_position: 0.0,
+            watchdog_deadline: now + Duration::from_millis(18),
+        });
+
+        runtime.handle_present_timing(
+            now + Duration::from_millis(10),
+            now + Duration::from_millis(18),
+        );
+
+        let first_dx = runtime
+            .drain_tree_messages()
+            .iter()
+            .find_map(|msg| match msg {
+                TreeMsg::ScrollRequest {
+                    element_id: id,
+                    dx,
+                    dy,
+                } if *id == element_id && dy.abs() < f32::EPSILON => Some(*dx),
+                _ => None,
+            })
+            .expect("host present timing should emit inertial scroll");
+        assert!(first_dx > 0.0);
+
+        runtime.handle_present_timing(
+            now + Duration::from_millis(20),
+            now + Duration::from_millis(28),
+        );
+
+        let second_dx = runtime
+            .drain_tree_messages()
+            .iter()
+            .find_map(|msg| match msg {
+                TreeMsg::ScrollRequest {
+                    element_id: id,
+                    dx,
+                    dy,
+                } if *id == element_id && dy.abs() < f32::EPSILON => Some(*dx),
+                _ => None,
+            })
+            .expect("second host present timing should emit inertial scroll");
+        assert!(second_dx > 0.0);
+        assert!(second_dx < first_dx);
     }
 
     #[test]
@@ -5657,6 +5965,52 @@ mod tests {
         assert_eq!(cursor_rx.try_recv().ok(), Some(CursorIcon::Text));
         assert!(cursor_rx.try_recv().is_err());
         assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
+    fn host_runtime_sends_cursor_icons_to_backend_transport() {
+        let mut pressable_attrs = Attrs::default();
+        pressable_attrs.on_press = Some(true);
+        let pressable = with_interaction_rect(
+            make_element(174, ElementKind::El, pressable_attrs),
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+        );
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[pressable]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (cursor_tx, cursor_rx) = unbounded();
+        let mut runtime = HostEventRuntime::new_with_cursor(
+            false,
+            SCROLL_LINE_PIXELS,
+            false,
+            noop_host_sink(),
+            None,
+            Some(cursor_tx),
+        );
+        runtime.install_rebuild(rebuild);
+
+        runtime.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert_eq!(cursor_rx.try_recv().ok(), Some(CursorIcon::Pointer));
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(runtime.drain_tree_messages().is_empty());
+
+        runtime.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(runtime.drain_tree_messages().is_empty());
+
+        runtime.handle_input(InputEvent::CursorPos { x: 60.0, y: 10.0 });
+        assert_eq!(cursor_rx.try_recv().ok(), Some(CursorIcon::Default));
+        assert!(cursor_rx.try_recv().is_err());
+        assert!(runtime.drain_tree_messages().is_empty());
     }
 
     #[test]

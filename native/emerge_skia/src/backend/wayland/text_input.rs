@@ -13,7 +13,10 @@ use wayland_protocols::wp::text_input::zv3::client::{
     },
 };
 
-use crate::{events::TextInputState, input::InputEvent};
+use crate::{
+    events::TextInputState,
+    input::{InputEvent, keyboard::normalize_commit_text},
+};
 
 use super::{geometry::SurfaceGeometry, runtime::WaylandApp};
 
@@ -351,18 +354,6 @@ fn preedit_cursor_to_char_range(
         std::mem::swap(&mut start, &mut end);
     }
     Some((start, end))
-}
-
-fn normalize_commit_text(text: &str) -> Option<String> {
-    let filtered: String = text
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
-        .collect();
-    if filtered.is_empty() {
-        None
-    } else {
-        Some(filtered)
-    }
 }
 
 #[cfg(test)]

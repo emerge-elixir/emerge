@@ -134,7 +134,10 @@ defmodule EmergeSkia.Macos.Protocol do
   def decode_button(1), do: :left
   def decode_button(2), do: :right
   def decode_button(3), do: :middle
-  def decode_button(_other), do: :middle
+  def decode_button(4), do: :back
+  def decode_button(5), do: :forward
+  def decode_button(6), do: :other
+  def decode_button(_other), do: :other
 
   def decode_mods(bits) when is_integer(bits) do
     []
