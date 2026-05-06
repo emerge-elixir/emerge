@@ -2,86 +2,36 @@
 
 Last updated: 2026-05-06.
 
-This directory tracks current implementation notes plus the background
-investigations that led to the current native layout and renderer work. Files
-with an `active-` prefix are reserved for currently open implementation slices.
-The current active implementation slices cover layout-aware transforms,
-layout-aware transform animation, and mathematical length min/max combinators.
-Completed implementation records live in `completed/`; durable research and
-review references stay at the top level.
+This directory tracks active implementation notes and durable background
+research for native layout and renderer work. Files with an `active-` prefix are
+reserved for currently open implementation slices.
+
+There are currently no active implementation plans. Completed implementation
+records have been folded into this index or the durable reference notes below.
 
 ## Files
 
-### `active-layout-aware-transform-plan.md`
+No `active-*.md` files are present right now.
 
-Current active implementation plan for layout-aware scale and rotate. Existing
-`Transform.rotate/1` and `Transform.scale/1` remain paint-only; this plan adds
-top-level `Emerge.UI.scale/1` and `Emerge.UI.rotate/1` attrs. Scale acts like
-the current global Wayland/window scale scoped to an element subtree. Rotation
-uses unrotated authored boxes plus transformed AABB reservation, with optimized
-quarter-turn root handling and arbitrary-angle support. Hit testing is simplified
-around registry-built `HitGeometry` so runtime dispatch uses one region
-membership check.
+## Folded Work
 
-### `active-layout-aware-transform-animation-plan.md`
+The old `completed/` directory and implementation-tied investigations were
+removed after their useful state was folded into this index and the reference
+documents below. Recently folded slices:
 
-Active follow-up plan for making top-level `Emerge.UI.scale/1` and
-`Emerge.UI.rotate/1` animatable through `Animation.animate/4`,
-`Animation.animate_enter/4`, and `Animation.animate_exit/4`. It keeps
-`Transform.scale/1` and `Transform.rotate/1` paint-only, requires sampled
-layout-aware attrs to trigger real layout animation, and calls out the special
-implementation requirement that animated `layout_scale` must be sampled before
-effective attribute scaling so descendants receive the sampled scale.
-
-### `active-length-min-max-combinators-plan.md`
-
-Active plan for changing `Emerge.UI.Size.min/2` and `max/2` from pixel
-constraint wrappers into mathematical length combinators. The motivating case
-is `height(min(content(), fill()))`, which should keep a card content-sized
-until it reaches the available fill slot, then cap it so an internal scroll
-region can take over without pushing a footer out of the viewport.
-
-### `completed/performance-branch-fix-plan.md`
-
-Completed branch-fix plan for merge-readiness issues discovered by comparing
-`performance-improvements` to `main` at `a797532`. It records the implemented
-benchmark documentation fixes, test-only `NodeId` helper boundary, mixed
-animation/tree-message regression coverage, test-only clippy allowance
-classification, native diagnostics classification, validation results, and the
-remaining untracked local artifacts that were not deleted.
-
-### `completed/release-code-bloat-reduction-plan.md`
-
-Completed plan for materially reducing default release-code bloat. It accepted
-the benchmark-only `cfg` boundary, stats timing matrix, and renderer-cache
-admission helper, then records rejected benchmark-gated attempts for registry
-traversal dedupe, text edit resolver dedupe, and Elixir child/nearby
-reconciliation dedupe.
-
-### `completed/renderer-instrumentation-refactor-plan.md`
-
-Completed plan for reducing renderer release-code bloat by replacing the
-duplicated normal/profiled traversal with one shared draw traversal and
-optional instrumentation. It records the benchmark gate and the deferred
-image/vector/shadow helper follow-up.
-
-### `completed/scroll-viewport-culling-plan.md`
-
-Completed scroll viewport traversal performance slice.
-
-It now records the implemented benchmark-first shared viewport participation
-gate for render traversal and event-registry traversal plus the before/after
-benchmark results.
-
-### `completed/render-cache-children-plan.md`
-
-The most recent completed renderer-cache implementation plan.
-
-It records the implemented Flutter-inspired cache slice: parent/child cache
-accounting, stale-entry lifecycle, and the benchmark-gated decision not to add a
-new alpha-specific children-cache kind yet. It explicitly does not broaden
-rotate, scale, fractional translation, active text input, video, placeholder,
-shadow, text-blob, picture, or dirty-region cache scope.
+- layout-aware `Emerge.UI.scale/1` and `Emerge.UI.rotate/1`
+- layout-aware transform animation
+- mathematical `Emerge.UI.Size.min/2` and `max/2`
+- performance branch merge-readiness fixes
+- release-code bloat reductions for benchmark-only code, stats matrices, and
+  renderer-cache admission helpers
+- shared normal/profiled renderer draw traversal
+- scroll viewport traversal culling
+- renderer-cache parent/child lifecycle and stale-entry accounting
+- direct renderer drawing optimizations and rejected benchmark-gated attempts
+- frame-latency pacing and animation-cadence fixes
+- renderer-cache engine investigation and Flutter comparison findings that have
+  already landed
 
 ### `layout-caching-roadmap.md`
 
@@ -102,52 +52,6 @@ This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
 
-### `rendering-cache-engine-investigation.md`
-
-Cross-engine rendering-cache research notes.
-
-Use this when choosing renderer-thread performance work. It compares Flutter
-repaint boundaries/raster cache, Slint dirty-region and shadow caches, Iced
-geometry caches, Servo/WebRender display-list and tile caching, and Scenic
-Driver Skia script replay against Emerge's current renderer. It covers retained
-renderer output only; non-cache direct draw-path work lives in
-`drawing-optimization-investigation.md`.
-
-### `render-cache-flutter-comparison.md`
-
-Focused comparison between Emerge's current clean-subtree renderer cache and
-Flutter's Skia/Ganesh raster cache. Use this when deciding whether the next
-cache slice should copy Flutter concepts such as stale-entry eviction,
-layer-children caching, transform normalization, or complexity scoring.
-
-### `caching-implementation-review.md`
-
-Code-review style snapshot of all caching currently implemented in native
-layout, refresh, registry, renderer payloads, and renderer resource caches. Use
-this before adding new cache scope; it records current strengths, risks, and
-the diagnostic work that should come before additional cache complexity.
-
-### `frame-latency-implementation-notes.md`
-
-Completed frame-latency implementation notes.
-
-Use this when revisiting patch-to-visible-frame latency. The Wayland scheduler
-now disables EGL swap-interval pacing when supported, allows at most one static
-patch-derived late replacement while a frame callback is pending, and excludes
-animation-active scenes from late replacement. Animation sampling is anchored to
-Wayland frame callbacks rather than post-render swap completion. The file also
-records DRM, macOS Metal, and raster/offscreen applicability for future
-backend-specific work.
-
-### `drawing-optimization-investigation.md`
-
-Non-cache drawing optimization research notes.
-
-Use this when investigating direct draw-path improvements without introducing
-renderer caches: Skia primitive fast paths, shader/pipeline warmup, saveLayer
-reduction, template tint, opacity distribution, shadow alternatives, backend
-options, and benchmark gates for drawing optimizations.
-
 ### `native-tree-implementation-insights.md`
 
 Implementation lessons from the completed node identity, `NodeIx` storage, and
@@ -155,16 +59,6 @@ native topology cleanup work.
 
 This replaces the old separate node-identity / phase-4 / phase-5 plan files with
 a single status-and-insights document.
-
-### `performance-improvements-branch-review.md`
-
-Branch review and revisit notes for `performance-improvements`.
-
-Use this when checking merge readiness. It records the original blocker, the
-resolved fixes, and the completed merge-readiness checklist.
-The completed merge-readiness plan and one-off fix plan were folded into this
-review and removed to keep `plans/` focused on active or durable reference
-documents.
 
 ## Current repo state
 
@@ -272,6 +166,20 @@ The native layout-caching foundation is in place:
   fallback for damaged/no-retained-cache and escape-nearby cases
 - `animate_exit` removal keeps a cloned ghost subtree in active layout, with
   child, paint-child, and nearby topology remapped to ghost ids until pruning
+- top-level `Emerge.UI.scale/1` and `Emerge.UI.rotate/1` are layout-aware attrs;
+  `Emerge.UI.Transform.scale/1` and `Transform.rotate/1` remain paint-only
+- layout-aware scale composes with global scale and ancestor layout scales while
+  remaining unitless in animation keyframes
+- layout-aware rotation reserves a transformed AABB, keeps authored
+  `width`/`height` as the unrotated box, supports arbitrary angles, and has
+  quarter-turn root fast paths
+- transformed hit testing uses registry-built `HitGeometry` so pointer dispatch
+  calls one `contains` path for rects, quads, local fallback geometry, and clips
+- layout-aware scale and rotate are animatable and trigger layout-affecting
+  invalidation; paint-only transform animations keep the refresh-only path
+- `Emerge.UI.Size.min/2` and `max/2` are mathematical length combinators encoded
+  as recursive length pairs, and row/column fill planning resolves nested fill
+  leaves through a shared fill unit
 - focused single-line text inputs suppress the follow-up Enter text commit when
   an Enter key-down binding is handled, so app-driven clears such as todo
   create remain authoritative
