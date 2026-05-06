@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0] - 2026-05-06
+
+### Added
+
+- Added layout-aware `Emerge.UI.scale/1` and `Emerge.UI.rotate/1`. These top-level attrs affect layout, hit testing, scroll extents, and sibling placement, while `Emerge.UI.Transform.scale/1` and `Transform.rotate/1` remain paint-only.
+- Added animation support for layout-aware scale and rotate through `Animation.animate/4`, `Animation.animate_enter/4`, and `Animation.animate_exit/4`.
+- Added native performance diagnostics and benchmark coverage for layout, patching, rendering, and runtime stats.
+
+### Changed
+
+- Changed `Emerge.UI.Size.min/2` and `max/2` into mathematical length combinators. `min(a, b)` now resolves to the smaller length and `max(a, b)` resolves to the larger length. This does not affect normal `px/1`, `fill/0`, `fill/1`, `shrink/0`, or `content/0` usage; only code that used `min/2` or `max/2` as the previous bound wrappers needs migration.
+- Changed row/column fill planning to resolve nested `fill/1`, `min/2`, and `max/2` expressions recursively against a shared fill unit. This enables layouts such as `height(min(content(), fill()))`.
+- Improved retained layout, render refresh, and event-registry reuse so unchanged subtrees can skip more work across rerenders.
+- Improved layout-affecting animation scheduling so sampled layout changes become ordinary dirty paths and unrelated retained subtrees can keep using caches.
+- Improved Wayland frame pacing and animation timing.
+- Improved render and registry refresh by culling clipped/offscreen scroll viewport subtrees, reusing clean registry payloads, and avoiding cold render-cache seeding on dirty rebuilds.
+- Improved direct rendering performance for solid borders, template-image tinting, and simple alpha distribution where benchmarks proved a win.
+
+### Fixed
+
+- Fixed keyed reconciliation ordering for mixed insert/remove updates.
+- Fixed exit-animation ghost topology so child, paint-child, and nearby trees stay attached during removal animations.
+- Fixed nearby overlay layout reuse and hover/dropdown refresh behavior after subtree removal and reinsertion.
+- Fixed single-line text input handling so Enter key handlers can suppress the follow-up text commit.
+- Fixed macOS host element id encoding.
+
 ## [0.2.1] - 2026-04-17
 
 ### Changed
