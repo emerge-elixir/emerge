@@ -2960,14 +2960,14 @@ mod app {
         kind: ElementEventKind,
         payload: Option<&str>,
     ) {
-        let id_bytes = element_id.0.as_slice();
+        let id_bytes = element_id.to_be_bytes();
         let has_payload = if payload.is_some() { 1 } else { 0 };
         let payload = payload.unwrap_or("").as_bytes();
         let mut data = Vec::with_capacity(1 + 1 + 4 + id_bytes.len() + 4 + payload.len());
         data.push(encode_element_event_kind(kind));
         data.push(has_payload);
         data.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes());
-        data.extend_from_slice(id_bytes);
+        data.extend_from_slice(&id_bytes);
         data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         data.extend_from_slice(payload);
 
