@@ -1,12 +1,10 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use crate::{
-    actors::{
-        AnimationFrameTraceSeed, AnimationPulseTrace, TreeMsg, earliest_pipeline_submitted_at,
-    },
+    actors::{AnimationFrameTraceSeed, AnimationPulseTrace, TreeMsg},
     assets,
     events::RegistryRebuildPayload,
-    stats::RendererStatsCollector,
+    stats::{RendererStatsCollector, earliest_pipeline_instant},
     tree::{
         animation::AnimationRuntime,
         element::ElementTree,
@@ -143,7 +141,7 @@ impl TreeUpdateEngine {
                     submitted_at,
                 } => {
                     pipeline_submitted_at =
-                        earliest_pipeline_submitted_at(pipeline_submitted_at, submitted_at);
+                        earliest_pipeline_instant(pipeline_submitted_at, submitted_at);
                     match crate::tree::deserialize::decode_tree(&bytes) {
                         Ok(decoded) => {
                             self.tree.replace_with_uploaded(decoded);
@@ -162,7 +160,7 @@ impl TreeUpdateEngine {
                     submitted_at,
                 } => {
                     pipeline_submitted_at =
-                        earliest_pipeline_submitted_at(pipeline_submitted_at, submitted_at);
+                        earliest_pipeline_instant(pipeline_submitted_at, submitted_at);
                     let patch_started_at = Instant::now();
                     let patches = match crate::tree::patch::decode_patches(&bytes) {
                         Ok(patches) => patches,

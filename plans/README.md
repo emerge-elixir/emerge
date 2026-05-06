@@ -36,6 +36,8 @@ documents below. Recently folded slices:
   shared tree updates, event runtime driving, input normalization, present
   timing, cursor state, render timing stats, render-state scene installation,
   and macOS pipeline stats parity
+- cleanup of runtime-convergence scaffolding, including shared pipeline timing
+  helpers and reduced macOS host wrapper-only tests
 
 ### `layout-caching-roadmap.md`
 
@@ -127,6 +129,9 @@ The native layout-caching foundation is in place:
   swap, and backend frame-callback/present timing so frame latency work can
   distinguish Emerge processing from backend/compositor pacing; macOS records
   the same split-pipeline stats from its direct dirty-frame draw path
+- shared pipeline timing helpers now compute layout-output queue timestamps,
+  retain earliest submitted times across dropped/direct frames, and record
+  draw-start/present-complete spans for Linux actor, Wayland, and macOS paths
 - profiled renderer slow-frame logs also include clip, border, and layer detail
   for direct drawing optimization work
 - direct renderer drawing benchmarks cover focused border, tint, alpha, shadow,

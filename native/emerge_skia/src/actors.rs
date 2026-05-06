@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::input::InputEvent;
 use crate::render_scene::RenderScene;
+use crate::stats::earliest_pipeline_instant;
 use crate::tree::element::NodeId;
 
 #[derive(Debug, Clone, Copy)]
@@ -160,18 +161,6 @@ pub enum RenderMsg {
     Stop,
 }
 
-pub(crate) fn earliest_pipeline_submitted_at(
-    left: Option<Instant>,
-    right: Option<Instant>,
-) -> Option<Instant> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(if left <= right { left } else { right }),
-        (Some(left), None) => Some(left),
-        (None, Some(right)) => Some(right),
-        (None, None) => None,
-    }
-}
-
 impl RenderMsg {
     pub(crate) fn absorb_pipeline_submitted_at(&mut self, dropped: &Self) {
         let (
@@ -189,6 +178,6 @@ impl RenderMsg {
         };
 
         *pipeline_submitted_at =
-            earliest_pipeline_submitted_at(*pipeline_submitted_at, *dropped_submitted_at);
+            earliest_pipeline_instant(*pipeline_submitted_at, *dropped_submitted_at);
     }
 }

@@ -562,6 +562,52 @@ pub struct RendererStatsCollector {
     families: StatsFamilies,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipelineLayoutQueueTiming {
+    pub render_queued_at: Instant,
+    pub pipeline_submitted_at: Option<Instant>,
+    pub pipeline_render_queued_at: Option<Instant>,
+}
+
+pub fn earliest_pipeline_instant(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left <= right { left } else { right }),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+pub fn record_pipeline_layout_queued(
+    stats: Option<&RendererStatsCollector>,
+    current_pipeline_submitted_at: Option<Instant>,
+    current_pipeline_render_queued_at: Option<Instant>,
+    pipeline_submitted_at: Option<Instant>,
+    tree_started_at: Option<Instant>,
+    render_queued_at: Instant,
+) -> PipelineLayoutQueueTiming {
+    let pipeline_render_queued_at = pipeline_submitted_at
+        .map(|_| render_queued_at)
+        .or(current_pipeline_render_queued_at);
+
+    if let (Some(stats), Some(tree_started_at), Some(render_queued_at)) = (
+        stats,
+        tree_started_at,
+        pipeline_submitted_at.map(|_| render_queued_at),
+    ) {
+        stats.record_pipeline_tree(tree_started_at, render_queued_at);
+    }
+
+    PipelineLayoutQueueTiming {
+        render_queued_at,
+        pipeline_submitted_at: earliest_pipeline_instant(
+            current_pipeline_submitted_at,
+            pipeline_submitted_at,
+        ),
+        pipeline_render_queued_at,
+    }
+}
+
 impl Default for RendererStatsCollector {
     fn default() -> Self {
         Self::new()
@@ -698,6 +744,29 @@ impl RendererStatsCollector {
             swap_done_at,
             presented_at,
         );
+    }
+
+    pub fn record_pipeline_draw_started(
+        &self,
+        render_queued_at: Option<Instant>,
+        draw_started_at: Instant,
+    ) {
+        if let Some(render_queued_at) = render_queued_at {
+            self.record_pipeline_render_queue(render_queued_at, draw_started_at);
+        }
+    }
+
+    pub fn record_pipeline_presented(
+        &self,
+        submitted_at: Option<Instant>,
+        swap_done_at: Instant,
+        presented_at: Instant,
+    ) {
+        if let Some(submitted_at) = submitted_at {
+            self.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
+            self.record_pipeline(submitted_at, presented_at);
+            self.record_pipeline_swap_to_frame_callback(swap_done_at, presented_at);
+        }
     }
 
     pub fn record_layout(&self, duration: Duration) {
@@ -1249,7 +1318,8 @@ fn duration_ms(duration: Duration) -> f64 {
 mod tests {
     use super::{
         LayoutCacheStats, RendererStatsCollector, RendererTimingMetric, format_renderer_stats_log,
-        format_slow_present_frame_log, format_slow_render_frame_log, render_frame_has_slow_stage,
+        format_slow_present_frame_log, format_slow_render_frame_log, record_pipeline_layout_queued,
+        render_frame_has_slow_stage,
     };
     use crate::{
         render_scene::{DrawPrimitive, RenderNode, RenderScene},
@@ -1573,6 +1643,63 @@ mod tests {
         assert_eq!(reset_snapshot.layout_cache.resolve_hits, 0);
         assert_eq!(reset_snapshot.renderer_cache.noop.candidates, 0);
         assert_eq!(reset_snapshot.renderer_cache.clean_subtree.candidates, 0);
+    }
+
+    #[test]
+    fn pipeline_helpers_record_layout_draw_and_present_spans() {
+        let stats = RendererStatsCollector::new();
+        let submitted_at = Instant::now();
+        let tree_started_at = submitted_at + Duration::from_millis(2);
+        let render_queued_at = submitted_at + Duration::from_millis(8);
+        let draw_started_at = submitted_at + Duration::from_millis(10);
+        let swap_done_at = submitted_at + Duration::from_millis(11);
+        let presented_at = submitted_at + Duration::from_millis(18);
+
+        let timing = record_pipeline_layout_queued(
+            Some(&stats),
+            None,
+            None,
+            Some(submitted_at),
+            Some(tree_started_at),
+            render_queued_at,
+        );
+        assert_eq!(timing.pipeline_submitted_at, Some(submitted_at));
+        assert_eq!(timing.pipeline_render_queued_at, Some(render_queued_at));
+
+        let retained = record_pipeline_layout_queued(
+            None,
+            timing.pipeline_submitted_at,
+            timing.pipeline_render_queued_at,
+            None,
+            None,
+            submitted_at + Duration::from_millis(20),
+        );
+        assert_eq!(retained.pipeline_submitted_at, Some(submitted_at));
+        assert_eq!(retained.pipeline_render_queued_at, Some(render_queued_at));
+
+        stats.record_pipeline_draw_started(timing.pipeline_render_queued_at, draw_started_at);
+        stats.record_pipeline_presented(timing.pipeline_submitted_at, swap_done_at, presented_at);
+
+        let snapshot = stats.snapshot();
+        assert_timing(&snapshot, RendererTimingMetric::PipelineTree, 6.0);
+        assert_timing(&snapshot, RendererTimingMetric::PipelineRenderQueue, 2.0);
+        assert_timing(&snapshot, RendererTimingMetric::PipelineSubmitToSwap, 11.0);
+        assert_timing(&snapshot, RendererTimingMetric::Pipeline, 18.0);
+        assert_timing(
+            &snapshot,
+            RendererTimingMetric::PipelineSwapToFrameCallback,
+            7.0,
+        );
+    }
+
+    fn assert_timing(
+        snapshot: &super::RendererStatsSnapshot,
+        metric: RendererTimingMetric,
+        expected_avg_ms: f64,
+    ) {
+        let timing = snapshot.timing(metric);
+        assert_eq!(timing.count, 1);
+        assert!((timing.avg_ms - expected_avg_ms).abs() < 0.001);
     }
 
     #[test]
