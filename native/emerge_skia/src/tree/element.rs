@@ -3237,8 +3237,9 @@ fn parent_measure_depends_on_child_measure(parent: &Element) -> bool {
 fn measure_length_is_child_independent(length: Option<&Length>) -> bool {
     match length {
         Some(Length::Px(_)) => true,
-        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
-            measure_length_is_child_independent(Some(inner))
+        Some(Length::Min(left, right)) | Some(Length::Max(left, right)) => {
+            measure_length_is_child_independent(Some(left))
+                && measure_length_is_child_independent(Some(right))
         }
         Some(Length::Content) | Some(Length::Fill) | Some(Length::FillWeighted(_)) | None => false,
     }

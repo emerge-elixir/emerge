@@ -32,12 +32,14 @@ defmodule Emerge.UI.Size do
   space". If a sibling uses `fill(1)`, the `fill(2)` element gets twice as much
   of the leftover room.
 
-  ## Constraints
+  ## Min and Max
 
-  `min/2` and `max/2` wrap another length:
+  `min/2` and `max/2` combine two lengths mathematically:
 
-  - `min(px(140), shrink())` means "size to content, but never below 140px"
-  - `max(px(180), fill())` means "fill remaining space, but never above 180px"
+  - `max(px(140), shrink())` means "size to content, but never below 140px"
+  - `min(px(180), fill())` means "fill remaining space, but never above 180px"
+  - `min(content(), fill())` means "content-sized until the available fill slot
+    is smaller"
 
   ## Examples
 
@@ -66,14 +68,14 @@ defmodule Emerge.UI.Size do
 
   #{Examples.image_tag!("ui-size-weighted-fill", "Rendered weighted fill size example")}
 
-  Min and max constraints:
+  Min and max sizing:
 
   The first item never becomes narrower than `140px`, and the second fills the
   available space but stops growing once it reaches `180px`.
 
   #{Examples.code_block!("ui-size-min-max")}
 
-  #{Examples.image_tag!("ui-size-min-max", "Rendered min and max size constraint example")}
+  #{Examples.image_tag!("ui-size-min-max", "Rendered min and max sizing example")}
   """
 
   @typedoc "Fixed pixel length, for example `px(220)`."
@@ -88,11 +90,11 @@ defmodule Emerge.UI.Size do
   @typedoc "Base length accepted by `width/1` and `height/1`."
   @type base_length :: px_length() | fill_length() | content_length()
 
-  @typedoc "Length with a minimum or maximum pixel constraint wrapped around another length."
-  @type constrained_length :: {:minimum, number(), length()} | {:maximum, number(), length()}
+  @typedoc "Length that resolves to the smaller or larger of two nested lengths."
+  @type combined_length :: {:min, length(), length()} | {:max, length(), length()}
 
   @typedoc "Public length type accepted by `width/1` and `height/1`."
-  @type length :: base_length() | constrained_length()
+  @type length :: base_length() | combined_length()
 
   @typedoc "Width attribute built from a `length()`."
   @type width_attr :: {:width, length()}
@@ -106,7 +108,7 @@ defmodule Emerge.UI.Size do
   @doc """
   Apply a length to the element width.
 
-  `width/1` accepts fixed, fill, shrink/content, and constrained lengths.
+  `width/1` accepts fixed, fill, shrink/content, and combined min/max lengths.
 
   ## Example
 
@@ -126,8 +128,8 @@ defmodule Emerge.UI.Size do
   def width(:fill), do: {:width, :fill}
   def width({:fill, _} = val), do: {:width, val}
   def width(:content), do: {:width, :content}
-  def width({:minimum, _, _} = val), do: {:width, val}
-  def width({:maximum, _, _} = val), do: {:width, val}
+  def width({:min, _, _} = val), do: {:width, val}
+  def width({:max, _, _} = val), do: {:width, val}
 
   @doc """
   Apply a length to the element height.
@@ -152,8 +154,8 @@ defmodule Emerge.UI.Size do
   def height(:fill), do: {:height, :fill}
   def height({:fill, _} = val), do: {:height, val}
   def height(:content), do: {:height, :content}
-  def height({:minimum, _, _} = val), do: {:height, val}
-  def height({:maximum, _, _} = val), do: {:height, val}
+  def height({:min, _, _} = val), do: {:height, val}
+  def height({:max, _, _} = val), do: {:height, val}
 
   @doc """
   Create a fixed pixel length.
@@ -238,31 +240,7 @@ defmodule Emerge.UI.Size do
   def shrink, do: :content
 
   @doc """
-  Wrap a length in a minimum pixel constraint.
-
-  The resolved length must be at least the given `px(...)` value.
-
-  ## Example
-
-  This keeps a content-sized element from collapsing below a readable minimum.
-
-  ```elixir
-  el([width(min(px(140), shrink()))], text("At least 140px wide"))
-  ```
-  """
-  @spec min(px_length(), length()) :: constrained_length()
-  def min({:px, min_px}, length) when is_number(min_px) and min_px >= 0,
-    do: {:minimum, min_px, length}
-
-  def min(length_px, _length) do
-    raise ArgumentError,
-          "min/2 expects the first argument to be px(n) with a non-negative number, got: #{inspect(length_px)}"
-  end
-
-  @doc """
-  Wrap a length in a maximum pixel constraint.
-
-  The resolved length must be at most the given `px(...)` value.
+  Resolve to the smaller of two lengths.
 
   ## Example
 
@@ -270,15 +248,53 @@ defmodule Emerge.UI.Size do
   its final size.
 
   ```elixir
-  el([width(max(px(180), fill()))], text("Fill, but cap at 180px"))
+  el([width(min(px(180), fill()))], text("Fill, but cap at 180px"))
   ```
   """
-  @spec max(px_length(), length()) :: constrained_length()
-  def max({:px, max_px}, length) when is_number(max_px) and max_px >= 0,
-    do: {:maximum, max_px, length}
+  @spec min(length(), length()) :: combined_length()
+  def min(left, right) do
+    validate_length_arg!("min/2", left)
+    validate_length_arg!("min/2", right)
+    {:min, left, right}
+  end
 
-  def max(length_px, _length) do
+  @doc """
+  Resolve to the larger of two lengths.
+
+  ## Example
+
+  This keeps a content-sized element from collapsing below a readable minimum.
+
+  ```elixir
+  el([width(max(px(140), shrink()))], text("At least 140px wide"))
+  ```
+  """
+  @spec max(length(), length()) :: combined_length()
+  def max(left, right) do
+    validate_length_arg!("max/2", left)
+    validate_length_arg!("max/2", right)
+    {:max, left, right}
+  end
+
+  defp validate_length_arg!(_owner, :fill), do: :ok
+  defp validate_length_arg!(_owner, :content), do: :ok
+  defp validate_length_arg!(_owner, {:px, value}) when is_number(value), do: :ok
+
+  defp validate_length_arg!(_owner, {:fill, value}) when is_number(value) and value > 0,
+    do: :ok
+
+  defp validate_length_arg!(owner, {:min, left, right}) do
+    validate_length_arg!(owner, left)
+    validate_length_arg!(owner, right)
+  end
+
+  defp validate_length_arg!(owner, {:max, left, right}) do
+    validate_length_arg!(owner, left)
+    validate_length_arg!(owner, right)
+  end
+
+  defp validate_length_arg!(owner, value) do
     raise ArgumentError,
-          "max/2 expects the first argument to be px(n) with a non-negative number, got: #{inspect(length_px)}"
+          "#{owner} expects both arguments to be supported length values, got: #{inspect(value)}"
   end
 end

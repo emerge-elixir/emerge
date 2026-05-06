@@ -7,7 +7,9 @@ use emerge_skia::events::{
         build_registry_rebuild_cached_for_benchmark, build_registry_rebuild_for_benchmark,
     },
 };
-use emerge_skia::tree::animation::AnimationRuntime;
+use emerge_skia::tree::animation::{
+    AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
+};
 use emerge_skia::tree::attrs::{Attrs, Length, Padding};
 use emerge_skia::tree::deserialize::decode_tree;
 use emerge_skia::tree::element::{
@@ -340,6 +342,99 @@ fn bench_layout_aware_transform(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_layout_aware_transform_animation(c: &mut Criterion) {
+    let mut group = c.benchmark_group(format!(
+        "native/layout_aware_transform_animation/card_grid_{CARD_COUNT}"
+    ));
+    let node_count = nested_card_grid(CARD_COUNT).len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    let cases = [
+        LayoutTransformAnimationBenchCase {
+            name: "paint_only_scale",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::PaintScale(1.0, 1.12),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "paint_only_rotate",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::PaintRotate(0.0, 12.0),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "root_scale_1_to_1_25",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::RootScale(1.0, 1.25),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "root_scale_1_to_1_5",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::RootScale(1.0, 1.5),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "nested_scale_1_to_1_25",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::NestedScale(1.0, 1.25),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "root_rotate_0_to_90_portrait",
+            constraint: Constraint::new(540.0, 960.0),
+            animation: LayoutTransformAnimationCase::RootRotate(0.0, 90.0),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "root_rotate_0_to_45",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::RootRotate(0.0, 45.0),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "nested_rotate_0_to_45",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::NestedRotate(0.0, 45.0),
+        },
+        LayoutTransformAnimationBenchCase {
+            name: "nested_scale_with_width",
+            constraint: Constraint::new(960.0, 4_000.0),
+            animation: LayoutTransformAnimationCase::NestedScaleWithWidth {
+                from_scale: 1.0,
+                to_scale: 1.25,
+                from_width: 120.0,
+                to_width: 180.0,
+            },
+        },
+    ];
+
+    for case in cases {
+        group.bench_function(case.name, |b| {
+            let start = Instant::now();
+            let mut tree = nested_card_grid(CARD_COUNT);
+            configure_layout_transform_animation_case(&mut tree, case.animation);
+            let mut runtime = AnimationRuntime::default();
+            runtime.sync_with_tree(&tree, start);
+            layout_and_refresh_default_with_animation(
+                &mut tree,
+                case.constraint,
+                1.0,
+                &runtime,
+                start,
+            );
+            let mut tick = 0_u64;
+
+            b.iter(|| {
+                tick += 16;
+                let update = layout_or_refresh_default_with_animation(
+                    &mut tree,
+                    case.constraint,
+                    1.0,
+                    &runtime,
+                    start + Duration::from_millis(tick),
+                );
+                consume_layout_update_output(update)
+            });
+        });
+    }
+
+    group.finish();
+}
+
 #[derive(Clone, Copy)]
 struct LayoutTransformBenchCase {
     name: &'static str,
@@ -355,6 +450,29 @@ enum LayoutTransformCase {
     RootRotate(f64),
     NestedScale(f64),
     NestedRotate(f64),
+}
+
+#[derive(Clone, Copy)]
+struct LayoutTransformAnimationBenchCase {
+    name: &'static str,
+    constraint: Constraint,
+    animation: LayoutTransformAnimationCase,
+}
+
+#[derive(Clone, Copy)]
+enum LayoutTransformAnimationCase {
+    PaintScale(f64, f64),
+    PaintRotate(f64, f64),
+    RootScale(f64, f64),
+    RootRotate(f64, f64),
+    NestedScale(f64, f64),
+    NestedRotate(f64, f64),
+    NestedScaleWithWidth {
+        from_scale: f64,
+        to_scale: f64,
+        from_width: f64,
+        to_width: f64,
+    },
 }
 
 fn configure_layout_transform_case(tree: &mut ElementTree, transform: LayoutTransformCase) {
@@ -388,6 +506,115 @@ fn configure_layout_transform_case(tree: &mut ElementTree, transform: LayoutTran
                 child.spec.declared.layout_rotate = Some(degrees);
             }
         }
+    }
+}
+
+fn configure_layout_transform_animation_case(
+    tree: &mut ElementTree,
+    animation: LayoutTransformAnimationCase,
+) {
+    match animation {
+        LayoutTransformAnimationCase::PaintScale(from, to) => {
+            set_root_animation(tree, paint_scale_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::PaintRotate(from, to) => {
+            set_root_animation(tree, paint_rotate_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::RootScale(from, to) => {
+            set_root_animation(tree, layout_scale_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::RootRotate(from, to) => {
+            set_root_animation(tree, layout_rotate_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::NestedScale(from, to) => {
+            set_first_child_animation(tree, layout_scale_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::NestedRotate(from, to) => {
+            set_first_child_animation(tree, layout_rotate_animation_spec(from, to));
+        }
+        LayoutTransformAnimationCase::NestedScaleWithWidth {
+            from_scale,
+            to_scale,
+            from_width,
+            to_width,
+        } => {
+            set_first_child_animation(
+                tree,
+                layout_scale_with_width_animation_spec(from_scale, to_scale, from_width, to_width),
+            );
+        }
+    }
+}
+
+fn set_root_animation(tree: &mut ElementTree, spec: AnimationSpec) {
+    if let Some(root_id) = tree.root_id()
+        && let Some(root) = tree.get_mut(&root_id)
+    {
+        root.spec.declared.animate = Some(spec);
+    }
+}
+
+fn set_first_child_animation(tree: &mut ElementTree, spec: AnimationSpec) {
+    if let Some(child_id) = first_root_child_id(tree)
+        && let Some(child) = tree.get_mut(&child_id)
+    {
+        child.spec.declared.animate = Some(spec);
+    }
+}
+
+fn layout_scale_animation_spec(from: f64, to: f64) -> AnimationSpec {
+    let mut from_attrs = Attrs::default();
+    from_attrs.layout_scale = Some(from);
+    let mut to_attrs = Attrs::default();
+    to_attrs.layout_scale = Some(to);
+    animation_spec(from_attrs, to_attrs)
+}
+
+fn layout_rotate_animation_spec(from: f64, to: f64) -> AnimationSpec {
+    let mut from_attrs = Attrs::default();
+    from_attrs.layout_rotate = Some(from);
+    let mut to_attrs = Attrs::default();
+    to_attrs.layout_rotate = Some(to);
+    animation_spec(from_attrs, to_attrs)
+}
+
+fn layout_scale_with_width_animation_spec(
+    from_scale: f64,
+    to_scale: f64,
+    from_width: f64,
+    to_width: f64,
+) -> AnimationSpec {
+    let mut from_attrs = Attrs::default();
+    from_attrs.layout_scale = Some(from_scale);
+    from_attrs.width = Some(Length::Px(from_width));
+    let mut to_attrs = Attrs::default();
+    to_attrs.layout_scale = Some(to_scale);
+    to_attrs.width = Some(Length::Px(to_width));
+    animation_spec(from_attrs, to_attrs)
+}
+
+fn paint_scale_animation_spec(from: f64, to: f64) -> AnimationSpec {
+    let mut from_attrs = Attrs::default();
+    from_attrs.scale = Some(from);
+    let mut to_attrs = Attrs::default();
+    to_attrs.scale = Some(to);
+    animation_spec(from_attrs, to_attrs)
+}
+
+fn paint_rotate_animation_spec(from: f64, to: f64) -> AnimationSpec {
+    let mut from_attrs = Attrs::default();
+    from_attrs.rotate = Some(from);
+    let mut to_attrs = Attrs::default();
+    to_attrs.rotate = Some(to);
+    animation_spec(from_attrs, to_attrs)
+}
+
+fn animation_spec(from: Attrs, to: Attrs) -> AnimationSpec {
+    AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 1_000.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Loop,
     }
 }
 
@@ -1712,6 +1939,7 @@ criterion_group!(
     bench_large_text_column_retained,
     bench_nested_card_grid_retained,
     bench_layout_aware_transform,
+    bench_layout_aware_transform_animation,
     bench_animated_shadow_showcase,
     bench_scrolling_animated_shadow_showcase,
     bench_scroll_viewport_culling,

@@ -115,7 +115,8 @@ defmodule Emerge.UI.Animation do
     `Border.width_each/4`, `Border.color/1`, `Border.shadow/1`, `Border.glow/2`
   - font and svg color: `Font.size/1`, `Font.color/1`, `Font.letter_spacing/1`,
     `Font.word_spacing/1`, `Svg.color/1`
-  - transforms: `Transform.move_x/1`, `Transform.move_y/1`,
+  - layout-aware transforms: `Emerge.UI.scale/1`, `Emerge.UI.rotate/1`
+  - paint-only transforms: `Transform.move_x/1`, `Transform.move_y/1`,
     `Transform.rotate/1`, `Transform.scale/1`, `Transform.alpha/1`
 
   Other attrs, such as events, alignment, and font family/style/weight helpers,
@@ -126,8 +127,9 @@ defmodule Emerge.UI.Animation do
   Animation overlays are applied before measurement and layout each frame.
 
   That means animated layout attrs such as `width/1`, `height/1`, `padding/1`,
-  and `spacing/1` participate in relayout. The first keyframe also establishes
-  the initial layout state before any animation time has elapsed.
+  `spacing/1`, `scale/1`, and `rotate/1` participate in relayout. The first
+  keyframe also establishes the initial layout state before any animation time
+  has elapsed.
   """
 
   @type curve :: :linear | :ease_in | :ease_out | :ease_in_out

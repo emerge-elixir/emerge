@@ -19,10 +19,10 @@ pub enum Length {
     Content,
     Px(f64),
     FillWeighted(f64),
-    /// Minimum constraint: the resolved length must be at least this many pixels.
-    Minimum(f64, Box<Length>),
-    /// Maximum constraint: the resolved length must be at most this many pixels.
-    Maximum(f64, Box<Length>),
+    /// Resolve to the smaller of two lengths.
+    Min(Box<Length>, Box<Length>),
+    /// Resolve to the larger of two lengths.
+    Max(Box<Length>, Box<Length>),
 }
 
 /// Padding specification.
@@ -896,16 +896,14 @@ fn decode_length(cursor: &mut AttrCursor) -> Result<Length, DecodeError> {
         2 => Ok(Length::Px(cursor.read_f64()?)),
         3 => Ok(Length::FillWeighted(cursor.read_f64()?)),
         4 => {
-            // Minimum: min_px (f64) + inner length
-            let min_px = cursor.read_f64()?;
-            let inner = decode_length(cursor)?;
-            Ok(Length::Minimum(min_px, Box::new(inner)))
+            let left = decode_length(cursor)?;
+            let right = decode_length(cursor)?;
+            Ok(Length::Min(Box::new(left), Box::new(right)))
         }
         5 => {
-            // Maximum: max_px (f64) + inner length
-            let max_px = cursor.read_f64()?;
-            let inner = decode_length(cursor)?;
-            Ok(Length::Maximum(max_px, Box::new(inner)))
+            let left = decode_length(cursor)?;
+            let right = decode_length(cursor)?;
+            Ok(Length::Max(Box::new(left), Box::new(right)))
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown length variant: {}",
@@ -1176,6 +1174,31 @@ mod tests {
         data.extend_from_slice(&100.0_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.width, Some(Length::Px(100.0)));
+    }
+
+    #[test]
+    fn test_decode_length_min_max() {
+        let mut data = vec![0, 2, 1, 4, 2];
+        data.extend_from_slice(&120.0_f64.to_be_bytes());
+        data.push(0);
+        data.extend_from_slice(&[2, 5, 1, 3]);
+        data.extend_from_slice(&2.0_f64.to_be_bytes());
+
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(
+            attrs.width,
+            Some(Length::Min(
+                Box::new(Length::Px(120.0)),
+                Box::new(Length::Fill)
+            ))
+        );
+        assert_eq!(
+            attrs.height,
+            Some(Length::Max(
+                Box::new(Length::Content),
+                Box::new(Length::FillWeighted(2.0))
+            ))
+        );
     }
 
     #[test]

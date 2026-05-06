@@ -312,9 +312,9 @@ defmodule Emerge.UI.Internal.Validation do
   defp validate_public_attr_value!(attrs_owner, :height, value),
     do: validate_length!(attrs_owner, :height, value)
 
-  defp validate_public_attr_value!(attrs_owner, :layout_scale, value)
+  defp validate_public_attr_value!(_attrs_owner, :layout_scale, value)
        when is_number(value) and value > 0 do
-    validate_finite_number_attr!(attrs_owner, :layout_scale, value)
+    :ok
   end
 
   defp validate_public_attr_value!(attrs_owner, :layout_scale, value) do
@@ -322,8 +322,8 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects :layout_scale to be a finite positive number, got: #{inspect(value)}"
   end
 
-  defp validate_public_attr_value!(attrs_owner, :layout_rotate, value) when is_number(value) do
-    validate_finite_number_attr!(attrs_owner, :layout_rotate, value)
+  defp validate_public_attr_value!(_attrs_owner, :layout_rotate, value) when is_number(value) do
+    :ok
   end
 
   defp validate_public_attr_value!(attrs_owner, :layout_rotate, value) do
@@ -519,24 +519,14 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects #{inspect(key)} fill weight to be a positive number, got: #{inspect(value)}"
   end
 
-  defp validate_length!(attrs_owner, key, {:minimum, min_px, inner})
-       when is_number(min_px) and min_px >= 0 do
-    validate_length!(attrs_owner, key, inner)
+  defp validate_length!(attrs_owner, key, {:min, left, right}) do
+    validate_length!(attrs_owner, key, left)
+    validate_length!(attrs_owner, key, right)
   end
 
-  defp validate_length!(attrs_owner, key, {:minimum, min_px, _inner}) when is_number(min_px) do
-    raise ArgumentError,
-          "#{attrs_owner} expects #{inspect(key)} min length to be non-negative, got: #{inspect(min_px)}"
-  end
-
-  defp validate_length!(attrs_owner, key, {:maximum, max_px, inner})
-       when is_number(max_px) and max_px >= 0 do
-    validate_length!(attrs_owner, key, inner)
-  end
-
-  defp validate_length!(attrs_owner, key, {:maximum, max_px, _inner}) when is_number(max_px) do
-    raise ArgumentError,
-          "#{attrs_owner} expects #{inspect(key)} max length to be non-negative, got: #{inspect(max_px)}"
+  defp validate_length!(attrs_owner, key, {:max, left, right}) do
+    validate_length!(attrs_owner, key, left)
+    validate_length!(attrs_owner, key, right)
   end
 
   defp validate_length!(attrs_owner, key, value) do
@@ -581,19 +571,6 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects #{inspect(key)} to be a number, got: #{inspect(value)}"
   end
 
-  defp validate_finite_number_attr!(_attrs_owner, _key, value)
-       when is_integer(value),
-       do: :ok
-
-  defp validate_finite_number_attr!(_attrs_owner, _key, value)
-       when is_float(value) and value == value and value not in [:infinity, :neg_infinity],
-       do: :ok
-
-  defp validate_finite_number_attr!(attrs_owner, key, value) do
-    raise ArgumentError,
-          "#{attrs_owner} expects #{inspect(key)} to be finite, got: #{inspect(value)}"
-  end
-
   defp validate_event_payload!(_attrs_owner, _key, {pid, _message}) when is_pid(pid), do: :ok
 
   defp validate_event_payload!(attrs_owner, key, value) do
@@ -608,16 +585,34 @@ defmodule Emerge.UI.Internal.Validation do
             "#{attrs_owner} does not allow :virtual_key together with :on_click or :on_press"
     end
 
-    if Map.has_key?(attrs, :layout_scale) and Map.has_key?(attrs, :scale) do
+    has_layout_scale = attr_or_animation_key?(attrs, :layout_scale)
+    has_paint_scale = attr_or_animation_key?(attrs, :scale)
+    has_layout_rotate = attr_or_animation_key?(attrs, :layout_rotate)
+    has_paint_rotate = attr_or_animation_key?(attrs, :rotate)
+
+    if has_layout_scale and has_paint_scale do
       raise ArgumentError,
             "#{attrs_owner} does not allow layout scale/1 together with Transform.scale/1"
     end
 
-    if Map.has_key?(attrs, :layout_rotate) and Map.has_key?(attrs, :rotate) do
+    if has_layout_rotate and has_paint_rotate do
       raise ArgumentError,
             "#{attrs_owner} does not allow layout rotate/1 together with Transform.rotate/1"
     end
 
     attrs
+  end
+
+  defp attr_or_animation_key?(attrs, key) do
+    Map.has_key?(attrs, key) or animation_keyframes_have_key?(attrs, key)
+  end
+
+  defp animation_keyframes_have_key?(attrs, key) do
+    Enum.any?([:animate, :animate_enter, :animate_exit], fn animation_key ->
+      attrs
+      |> Map.get(animation_key, %{})
+      |> Map.get(:keyframes, [])
+      |> Enum.any?(&Map.has_key?(&1, key))
+    end)
   end
 end

@@ -47,6 +47,8 @@ defmodule Emerge.Engine.AttrSchema do
     :font_letter_spacing,
     :font_word_spacing,
     :svg_color,
+    :layout_scale,
+    :layout_rotate,
     :move_x,
     :move_y,
     :rotate,

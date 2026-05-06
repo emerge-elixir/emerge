@@ -10,7 +10,7 @@ row(
   [
     el(
       [
-        width(min(px(140), shrink())),
+        width(max(px(140), shrink())),
         padding(10),
         Background.color(color(:slate, 50)),
         Border.rounded(8),
@@ -22,7 +22,7 @@ row(
     ),
     el(
       [
-        width(max(px(180), fill())),
+        width(min(px(180), fill())),
         padding(10),
         Background.color(color(:slate, 100)),
         Border.rounded(8),

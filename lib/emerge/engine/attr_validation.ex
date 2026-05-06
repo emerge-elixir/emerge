@@ -259,6 +259,14 @@ defmodule Emerge.Engine.AttrValidation do
             validate_border_width!(attrs_owner, value)
             value
 
+          :layout_scale ->
+            validate_layout_scale_attr!(attrs_owner, value)
+            value
+
+          :layout_rotate ->
+            validate_layout_rotate_attr!(attrs_owner, value)
+            value
+
           _ ->
             normalize_decorative_value!(attrs_owner, key, value)
         end
@@ -277,7 +285,25 @@ defmodule Emerge.Engine.AttrValidation do
     Map.put(acc, :box_shadow, existing ++ value)
   end
 
-  defp put_animation_attr(acc, key, value), do: Map.put(acc, key, value)
+  defp put_animation_attr(acc, key, value) do
+    acc
+    |> Map.put(key, value)
+    |> validate_animation_transform_conflicts!()
+  end
+
+  defp validate_animation_transform_conflicts!(attrs) do
+    if Map.has_key?(attrs, :layout_scale) and Map.has_key?(attrs, :scale) do
+      raise ArgumentError,
+            "animation keyframes do not allow layout scale/1 together with Transform.scale/1"
+    end
+
+    if Map.has_key?(attrs, :layout_rotate) and Map.has_key?(attrs, :rotate) do
+      raise ArgumentError,
+            "animation keyframes do not allow layout rotate/1 together with Transform.rotate/1"
+    end
+
+    attrs
+  end
 
   defp skip_nil_or(nil, _fun), do: :skip
   defp skip_nil_or(_value, fun), do: fun.()
@@ -390,11 +416,11 @@ defmodule Emerge.Engine.AttrValidation do
   defp compatible_length?({:px, _}, {:px, _}), do: true
   defp compatible_length?({:fill, _}, {:fill, _}), do: true
 
-  defp compatible_length?({:minimum, _min_a, inner_a}, {:minimum, _min_b, inner_b}),
-    do: compatible_length?(inner_a, inner_b)
+  defp compatible_length?({:min, left_a, right_a}, {:min, left_b, right_b}),
+    do: compatible_length?(left_a, left_b) and compatible_length?(right_a, right_b)
 
-  defp compatible_length?({:maximum, _max_a, inner_a}, {:maximum, _max_b, inner_b}),
-    do: compatible_length?(inner_a, inner_b)
+  defp compatible_length?({:max, left_a, right_a}, {:max, left_b, right_b}),
+    do: compatible_length?(left_a, left_b) and compatible_length?(right_a, right_b)
 
   defp compatible_length?(_first, _other), do: false
 
@@ -454,6 +480,21 @@ defmodule Emerge.Engine.AttrValidation do
   defp validate_number_attr!(attrs_owner, key, value) do
     raise ArgumentError,
           "#{attrs_owner} expects #{inspect(key)} to be a number, got: #{inspect(value)}"
+  end
+
+  defp validate_layout_scale_attr!(_attrs_owner, value) when is_number(value) and value > 0,
+    do: :ok
+
+  defp validate_layout_scale_attr!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :layout_scale to be a finite positive number, got: #{inspect(value)}"
+  end
+
+  defp validate_layout_rotate_attr!(_attrs_owner, value) when is_number(value), do: :ok
+
+  defp validate_layout_rotate_attr!(attrs_owner, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :layout_rotate to be a finite number of degrees, got: #{inspect(value)}"
   end
 
   defp validate_color_attr!(attrs_owner, key, value) do
@@ -570,24 +611,14 @@ defmodule Emerge.Engine.AttrValidation do
           "#{attrs_owner} expects #{inspect(key)} fill weight to be a positive number, got: #{inspect(value)}"
   end
 
-  defp validate_length!(attrs_owner, key, {:minimum, min_px, inner})
-       when is_number(min_px) and min_px >= 0 do
-    validate_length!(attrs_owner, key, inner)
+  defp validate_length!(attrs_owner, key, {:min, left, right}) do
+    validate_length!(attrs_owner, key, left)
+    validate_length!(attrs_owner, key, right)
   end
 
-  defp validate_length!(attrs_owner, key, {:minimum, min_px, _inner}) when is_number(min_px) do
-    raise ArgumentError,
-          "#{attrs_owner} expects #{inspect(key)} min length to be non-negative, got: #{inspect(min_px)}"
-  end
-
-  defp validate_length!(attrs_owner, key, {:maximum, max_px, inner})
-       when is_number(max_px) and max_px >= 0 do
-    validate_length!(attrs_owner, key, inner)
-  end
-
-  defp validate_length!(attrs_owner, key, {:maximum, max_px, _inner}) when is_number(max_px) do
-    raise ArgumentError,
-          "#{attrs_owner} expects #{inspect(key)} max length to be non-negative, got: #{inspect(max_px)}"
+  defp validate_length!(attrs_owner, key, {:max, left, right}) do
+    validate_length!(attrs_owner, key, left)
+    validate_length!(attrs_owner, key, right)
   end
 
   defp validate_length!(attrs_owner, key, value) do
