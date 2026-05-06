@@ -23,6 +23,7 @@ use super::element::{
 use super::invalidation::{
     TreeInvalidation, attrs_change_affects_registry_refresh, classify_attrs_change,
 };
+use super::layout::effective_layout_scale_for_node;
 use std::collections::{HashMap, HashSet};
 
 /// A single patch operation.
@@ -320,9 +321,17 @@ fn apply_patch(
                 {
                     invalidation.add(TreeInvalidation::Registry);
                 }
-                (invalidation, registry_refresh_dirty)
+                (
+                    invalidation,
+                    registry_refresh_dirty,
+                    before_attrs.layout_scale != element.spec.declared.layout_scale,
+                )
             };
-            tree.mark_measure_dirty_for_invalidation(&id, invalidation.0);
+            if invalidation.2 {
+                tree.mark_layout_scale_dirty(&id);
+            } else {
+                tree.mark_measure_dirty_for_invalidation(&id, invalidation.0);
+            }
             if invalidation.1 {
                 tree.mark_registry_refresh_dirty(&id);
             }
@@ -563,7 +572,8 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
         return Ok(None);
     }
 
-    let Some(spec) = captured_exit_spec(element, tree.current_scale()) else {
+    let capture_scale = effective_layout_scale_for_node(tree, id, tree.current_scale());
+    let Some(spec) = captured_exit_spec(element, capture_scale) else {
         return Ok(None);
     };
 
@@ -578,9 +588,17 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
         return Ok(None);
     }
 
-    let capture_scale = tree.current_scale();
     let mut to_clone = Vec::new();
     collect_descendants(tree, id, &mut to_clone);
+    let capture_scales: HashMap<NodeId, f32> = to_clone
+        .iter()
+        .map(|old_id| {
+            (
+                *old_id,
+                effective_layout_scale_for_node(tree, old_id, tree.current_scale()),
+            )
+        })
+        .collect();
 
     let mut id_map = HashMap::new();
     for old_id in &to_clone {
@@ -620,6 +638,10 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
         .iter()
         .filter_map(|old_id| tree.get(old_id).cloned())
         .map(|old| {
+            let capture_scale = capture_scales
+                .get(&old.id)
+                .copied()
+                .unwrap_or(capture_scale);
             clone_as_ghost(
                 &old,
                 &id_map,
@@ -799,7 +821,9 @@ fn clone_as_ghost(
         layout: crate::tree::element::NodeLayoutState {
             effective: attrs,
             frame: old.layout.frame,
+            render_frame: old.layout.render_frame,
             measured_frame: old.layout.measured_frame,
+            measured_render_frame: old.layout.measured_render_frame,
             scroll_x: old.layout.scroll_x,
             scroll_y: old.layout.scroll_y,
             scroll_x_max: old.layout.scroll_x_max,

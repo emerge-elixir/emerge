@@ -1,5 +1,5 @@
 use super::element::{Element, Frame, RetainedPaintPhase};
-use super::geometry::{ClipShape, ShapeBounds, visible_bounds};
+use super::geometry::{ClipShape, Rect, ShapeBounds};
 use super::scrollbar as tree_scrollbar;
 use super::scrollbar::ScrollbarMetrics;
 use super::transform::{Affine2, InteractionClip, element_transform};
@@ -29,6 +29,8 @@ pub struct SceneContext {
 pub struct ResolvedNodeState {
     pub frame: Frame,
     pub adjusted_frame: Frame,
+    pub render_frame: Frame,
+    pub adjusted_render_frame: Frame,
     pub self_shape: ShapeBounds,
     pub host_clip: ClipShape,
     pub visible: bool,
@@ -58,8 +60,9 @@ impl ResolvedNodeState {
 
 pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<ResolvedNodeState> {
     let frame = element.layout.frame?;
+    let render_frame = element.layout.render_frame.unwrap_or(frame);
     let scene = local_scene_geometry(
-        frame,
+        render_frame,
         &element.layout.effective,
         (element.layout.scroll_x, element.layout.scroll_y),
         element.runtime.scrollbar_hover_axis,
@@ -70,6 +73,11 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         y: frame.y - ctx.scroll_dy,
         ..frame
     };
+    let adjusted_render_frame = Frame {
+        x: render_frame.x - ctx.scroll_dx,
+        y: render_frame.y - ctx.scroll_dy,
+        ..render_frame
+    };
     let self_shape = scene.self_shape.offset(ctx.scroll_dx, ctx.scroll_dy);
     let clip_nearby = element.layout.effective.clip_nearby.unwrap_or(false);
     let inherited_clip = if ctx.front_nearby_subtree {
@@ -77,8 +85,6 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     } else {
         ctx.visible_clip
     };
-    let visible_bounds = visible_bounds(self_shape, inherited_clip);
-    let visible = visible_bounds.width > 0.0 && visible_bounds.height > 0.0;
     let host_clip = scene.host_clip.offset(ctx.scroll_dx, ctx.scroll_dy);
     let child_visible_clip = inherited_clip
         .map(|clip| super::geometry::intersect_clip(Some(clip), host_clip))
@@ -98,13 +104,21 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     let scrollbar_y = scene
         .scrollbar_y
         .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
-    let local_transform = element_transform(adjusted_frame, &element.layout.effective);
+    let local_transform = element_transform(adjusted_render_frame, &element.layout.effective);
     let interaction_transform = ctx.interaction_transform.then(local_transform);
     let interaction_inverse = interaction_transform.inverse();
+    let visible = visible_in_inherited_clip(
+        self_shape.rect,
+        interaction_transform,
+        inherited_clip,
+        ctx.interaction_transform,
+    );
 
     Some(ResolvedNodeState {
         frame,
         adjusted_frame,
+        render_frame,
+        adjusted_render_frame,
         self_shape,
         host_clip,
         visible,
@@ -122,6 +136,25 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         interaction_clips: ctx.interaction_clips,
         nearby_interaction_clips: ctx.nearby_interaction_clips,
     })
+}
+
+fn visible_in_inherited_clip(
+    rect: Rect,
+    rect_to_screen: Affine2,
+    inherited_clip: Option<ClipShape>,
+    clip_to_screen: Affine2,
+) -> bool {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return false;
+    }
+
+    let Some(clip) = inherited_clip else {
+        return true;
+    };
+
+    let rect_bounds = rect_to_screen.map_rect_aabb(rect);
+    let clip_bounds = clip_to_screen.map_rect_aabb(clip.rect);
+    rect_bounds.intersect(clip_bounds).is_some()
 }
 
 fn local_scene_geometry(

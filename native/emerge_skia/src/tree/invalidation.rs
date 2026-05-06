@@ -140,6 +140,8 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
 
     if before.width != after.width
         || before.height != after.height
+        || before.layout_scale != after.layout_scale
+        || before.layout_rotate != after.layout_rotate
         || before.padding != after.padding
         || before.spacing != after.spacing
         || before.spacing_x != after.spacing_x
@@ -242,6 +244,7 @@ fn paint_attrs_affect_registry_refresh_changed(before: &Attrs, after: &Attrs) ->
         || before.move_y != after.move_y
         || before.rotate != after.rotate
         || before.scale != after.scale
+        || before.layout_rotate != after.layout_rotate
 }
 
 pub fn classify_interaction_style(style: Option<&MouseOverAttrs>) -> TreeInvalidation {

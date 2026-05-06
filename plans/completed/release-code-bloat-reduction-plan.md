@@ -1,6 +1,6 @@
-# Active Release Code Bloat Reduction Plan
+# Completed Release Code Bloat Reduction Plan
 
-Last updated: 2026-04-29.
+Last updated: 2026-05-06.
 
 Status: completed.
 

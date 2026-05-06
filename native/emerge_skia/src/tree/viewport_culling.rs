@@ -47,13 +47,13 @@ pub(crate) fn should_skip_element_viewport_subtree(
         return true;
     };
     let attrs = &element.layout.effective;
-    let transform = element_transform(state.adjusted_frame, attrs);
+    let transform = element_transform(state.adjusted_render_frame, attrs);
 
     should_skip_resolved_viewport_subtree(
         tree,
         ix,
         attrs,
-        state.adjusted_frame,
+        state.adjusted_render_frame,
         transform,
         scene_ctx,
     )
@@ -76,8 +76,13 @@ pub(crate) fn should_skip_resolved_viewport_subtree(
         return false;
     };
 
-    let visual_bounds = transform.map_rect_aabb(element_visual_bounds(frame, attrs));
-    visual_bounds.intersect(clip.rect).is_none() && !tree.has_nearby_mounts_ix(ix)
+    let inherited_transform = scene_ctx.interaction_transform;
+    let visual_bounds = inherited_transform
+        .then(transform)
+        .map_rect_aabb(element_visual_bounds(frame, attrs));
+    let clip_bounds = inherited_transform.map_rect_aabb(clip.rect);
+
+    visual_bounds.intersect(clip_bounds).is_none() && !tree.has_nearby_mounts_ix(ix)
 }
 
 pub(crate) fn element_visual_bounds(frame: Frame, attrs: &Attrs) -> Rect {

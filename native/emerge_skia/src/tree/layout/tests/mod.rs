@@ -2,6 +2,7 @@ mod border_box;
 mod cache;
 mod common;
 mod font;
+mod layout_transform;
 mod measurement;
 mod paragraph_flow;
 mod resolve_core;

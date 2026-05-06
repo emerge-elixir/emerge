@@ -255,6 +255,8 @@ pub struct VirtualKeySpec {
 pub struct Attrs {
     pub width: Option<Length>,
     pub height: Option<Length>,
+    pub layout_scale: Option<f64>,
+    pub layout_rotate: Option<f64>,
     pub padding: Option<Padding>,
     pub spacing: Option<f64>,
     pub spacing_x: Option<f64>,
@@ -437,6 +439,8 @@ const TAG_ON_SWIPE_RIGHT: u8 = 74;
 const TAG_VIRTUAL_KEY: u8 = 75;
 const TAG_FOCUS_ON_MOUNT: u8 = 76;
 const TAG_CLIP_NEARBY: u8 = 77;
+const TAG_LAYOUT_SCALE: u8 = 78;
+const TAG_LAYOUT_ROTATE: u8 = 79;
 
 // =============================================================================
 // Decoder
@@ -530,6 +534,8 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
     match tag {
         TAG_WIDTH => attrs.width = Some(decode_length(cursor)?),
         TAG_HEIGHT => attrs.height = Some(decode_length(cursor)?),
+        TAG_LAYOUT_SCALE => attrs.layout_scale = Some(cursor.read_f64()?),
+        TAG_LAYOUT_ROTATE => attrs.layout_rotate = Some(cursor.read_f64()?),
         TAG_PADDING => attrs.padding = Some(decode_padding(cursor)?),
         TAG_SPACING => attrs.spacing = Some(cursor.read_f64()?),
         TAG_ALIGN_X => attrs.align_x = Some(decode_align_x(cursor)?),
@@ -1170,6 +1176,24 @@ mod tests {
         data.extend_from_slice(&100.0_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.width, Some(Length::Px(100.0)));
+    }
+
+    #[test]
+    fn test_decode_layout_scale() {
+        // 1 attr, tag=78 (layout_scale), f64=1.25
+        let mut data = vec![0, 1, 78];
+        data.extend_from_slice(&1.25_f64.to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.layout_scale, Some(1.25));
+    }
+
+    #[test]
+    fn test_decode_layout_rotate() {
+        // 1 attr, tag=79 (layout_rotate), f64=-45.0
+        let mut data = vec![0, 1, 79];
+        data.extend_from_slice(&(-45.0_f64).to_be_bytes());
+        let attrs = decode_attrs(&data).unwrap();
+        assert_eq!(attrs.layout_rotate, Some(-45.0));
     }
 
     #[test]
