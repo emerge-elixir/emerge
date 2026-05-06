@@ -1,10 +1,11 @@
 use super::super::*;
 use super::common::*;
-use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
+use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
 use crate::tree::attrs::Background;
 use crate::tree::element::{NearbyMount, NearbySlot};
 use crate::tree::invalidation::TreeInvalidation;
 use crate::tree::patch::{Patch, apply_patches};
+use std::time::{Duration, Instant};
 
 fn assert_approx(actual: f32, expected: f32) {
     assert!(
@@ -257,6 +258,169 @@ fn nested_layout_scales_multiply_down_the_subtree() {
 }
 
 #[test]
+fn root_layout_scale_animation_scales_descendant_attrs() {
+    let mut tree = ElementTree::new();
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Fill);
+    root_attrs.height = Some(Length::Fill);
+    root_attrs.animate = Some(layout_scale_animation_spec(1.0, 2.0));
+    let mut root = make_element("animated_scale_root", ElementKind::Column, root_attrs);
+    let root_id = root.id;
+
+    let mut child_attrs = fixed_attrs(20.0, 10.0);
+    child_attrs.padding = Some(Padding::Uniform(2.0));
+    let child = make_element("animated_scale_child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+    root.children = vec![child_id];
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    layout_and_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(50),
+    );
+
+    assert!(update.layout_performed);
+    let child = tree.get(&child_id).unwrap();
+    assert_eq!(child.layout.effective.width, Some(Length::Px(30.0)));
+    assert_eq!(child.layout.effective.padding, Some(Padding::Uniform(3.0)));
+    assert_eq!(child.layout.frame.unwrap().width, 30.0);
+}
+
+#[test]
+fn layout_scale_animation_scales_same_frame_pixel_keyframes() {
+    let mut tree = ElementTree::new();
+
+    let mut root = make_element(
+        "animated_scale_width_root",
+        ElementKind::Column,
+        Attrs::default(),
+    );
+    let root_id = root.id;
+
+    let mut from = Attrs::default();
+    from.layout_scale = Some(1.0);
+    from.width = Some(Length::Px(20.0));
+    let mut to = Attrs::default();
+    to.layout_scale = Some(2.0);
+    to.width = Some(Length::Px(40.0));
+
+    let mut child_attrs = fixed_attrs(20.0, 10.0);
+    child_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    });
+    let child = make_element("animated_scale_width_child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+    root.children = vec![child_id];
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    layout_and_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(50),
+    );
+
+    assert!(update.layout_performed);
+    let child = tree.get(&child_id).unwrap();
+    assert_eq!(child.layout.effective.layout_scale, Some(1.5));
+    assert_eq!(child.layout.effective.width, Some(Length::Px(45.0)));
+    assert_eq!(child.layout.frame.unwrap().width, 45.0);
+}
+
+#[test]
+fn layout_rotate_animation_reserves_sampled_aabb() {
+    let mut tree = ElementTree::new();
+
+    let mut row = make_element("animated_rotate_row", ElementKind::Row, Attrs::default());
+    let row_id = row.id;
+
+    let mut from = Attrs::default();
+    from.layout_rotate = Some(0.0);
+    let mut to = Attrs::default();
+    to.layout_rotate = Some(90.0);
+    let mut child_attrs = fixed_attrs(100.0, 40.0);
+    child_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    });
+    let child = make_element("animated_rotate_child", ElementKind::El, child_attrs);
+    let child_id = child.id;
+    row.children = vec![child_id];
+
+    tree.set_root_id(row_id);
+    tree.insert(row);
+    tree.insert(child);
+
+    let start = Instant::now();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, start);
+
+    layout_and_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(300.0, 300.0),
+        1.0,
+        &runtime,
+        start,
+    );
+    let update = layout_or_refresh_default_with_animation(
+        &mut tree,
+        Constraint::new(300.0, 300.0),
+        1.0,
+        &runtime,
+        start + Duration::from_millis(50),
+    );
+
+    assert!(update.layout_performed);
+    let child = tree.get(&child_id).unwrap();
+    let layout_frame = child.layout.frame.unwrap();
+    let render_frame = child.layout.render_frame.unwrap();
+    let expected = std::f32::consts::FRAC_1_SQRT_2 * 100.0 + std::f32::consts::FRAC_1_SQRT_2 * 40.0;
+
+    assert_approx(layout_frame.width, expected);
+    assert_approx(layout_frame.height, expected);
+    assert_eq!(render_frame.width, 100.0);
+    assert_eq!(render_frame.height, 40.0);
+}
+
+#[test]
 fn root_layout_scale_nearby_exit_ghost_keeps_captured_size() {
     let mut tree = ElementTree::new();
 
@@ -391,6 +555,21 @@ fn exit_alpha_spec() -> AnimationSpec {
 
     let mut to = Attrs::default();
     to.alpha = Some(0.1);
+
+    AnimationSpec {
+        keyframes: vec![from, to],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    }
+}
+
+fn layout_scale_animation_spec(from_scale: f64, to_scale: f64) -> AnimationSpec {
+    let mut from = Attrs::default();
+    from.layout_scale = Some(from_scale);
+
+    let mut to = Attrs::default();
+    to.layout_scale = Some(to_scale);
 
     AnimationSpec {
         keyframes: vec![from, to],

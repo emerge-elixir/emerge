@@ -71,6 +71,7 @@ pub struct AnimationLayoutEffect {
     pub id: NodeId,
     pub invalidation: TreeInvalidation,
     pub registry_refresh: bool,
+    pub layout_scale_dirty: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -78,6 +79,12 @@ pub struct AnimationOverlayResult {
     pub active: bool,
     pub invalidation: TreeInvalidation,
     pub effects: Vec<AnimationLayoutEffect>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AnimationFrameSamples {
+    pub(crate) samples: HashMap<NodeId, AnimationSample>,
+    pub(crate) result: AnimationOverlayResult,
 }
 
 impl AnimationOverlayResult {
@@ -91,6 +98,7 @@ impl AnimationOverlayResult {
                 id,
                 invalidation,
                 registry_refresh: animation_attrs_affect_registry_refresh(&sample.attrs),
+                layout_scale_dirty: sample.attrs.layout_scale.is_some(),
             });
         }
     }
@@ -335,11 +343,81 @@ fn retarget_exit_keyframe_to_current_visual(first: &mut Attrs, current: &Attrs) 
     retarget_copy!(font_letter_spacing);
     retarget_copy!(font_word_spacing);
     retarget_clone!(svg_color);
+    retarget_copy!(layout_scale);
+    retarget_copy!(layout_rotate);
     retarget_copy!(move_x);
     retarget_copy!(move_y);
     retarget_copy!(rotate);
     retarget_copy!(scale);
     retarget_copy!(alpha);
+}
+
+pub(crate) fn sample_animation_overlays(
+    tree: &ElementTree,
+    runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> AnimationFrameSamples {
+    tree.iter_node_pairs().fold(
+        AnimationFrameSamples::default(),
+        |mut frame_samples, (id, element)| {
+            if let Some(sample) = sample_animation_for_element(element, runtime, sample_time) {
+                frame_samples.result.record_sample(id, &sample);
+                frame_samples.samples.insert(id, sample);
+            }
+
+            frame_samples
+        },
+    )
+}
+
+pub(crate) fn sample_animation_overlays_for_ids(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    ids: &[NodeId],
+    sample_time: Option<Instant>,
+) -> AnimationFrameSamples {
+    ids.iter()
+        .fold(AnimationFrameSamples::default(), |mut frame_samples, id| {
+            if let Some(element) = tree.get(id)
+                && let Some(sample) =
+                    sample_animation_for_element(element, Some(runtime), sample_time)
+            {
+                frame_samples.result.record_sample(*id, &sample);
+                frame_samples.samples.insert(*id, sample);
+            }
+
+            frame_samples
+        })
+}
+
+fn sample_animation_for_element(
+    element: &super::element::Element,
+    runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> Option<AnimationSample> {
+    if let Some(sample) = runtime
+        .and_then(|state| state.exit_entry(&element.id))
+        .map(|entry| sample_exit_animation_spec_raw(entry, sample_time))
+        .filter(|sample| sample.active)
+    {
+        return Some(sample);
+    }
+
+    if let Some(sample) = runtime
+        .and_then(|state| state.enter_entry(&element.id))
+        .map(|entry| sample_enter_animation_spec_raw(entry, sample_time))
+        .filter(|sample| sample.active)
+    {
+        return Some(sample);
+    }
+
+    element.spec.declared.animate.as_ref().map(|spec| {
+        sample_animation_spec(
+            spec,
+            runtime.and_then(|state| state.animate_entry(&element.id)),
+            sample_time,
+        )
+    })
 }
 
 pub fn apply_animation_overlays(
@@ -446,6 +524,8 @@ pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {
 
     if attrs.width.is_some()
         || attrs.height.is_some()
+        || attrs.layout_scale.is_some()
+        || attrs.layout_rotate.is_some()
         || attrs.padding.is_some()
         || attrs.spacing.is_some()
         || attrs.spacing_x.is_some()
@@ -493,6 +573,18 @@ fn sample_enter_animation_spec(
     sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
 }
 
+fn sample_enter_animation_spec_raw(
+    entry: &EnterAnimationRuntimeEntry,
+    sample_time: Option<Instant>,
+) -> AnimationSample {
+    let runtime_entry = AnimationRuntimeEntry {
+        spec_hash: 0,
+        started_at: entry.started_at,
+    };
+
+    sample_animation_spec(&entry.spec, Some(&runtime_entry), sample_time)
+}
+
 fn sample_exit_animation_spec(
     entry: &ExitAnimationRuntimeEntry,
     sample_time: Option<Instant>,
@@ -508,6 +600,18 @@ fn sample_exit_animation_spec(
     };
 
     sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
+}
+
+fn sample_exit_animation_spec_raw(
+    entry: &ExitAnimationRuntimeEntry,
+    sample_time: Option<Instant>,
+) -> AnimationSample {
+    let runtime_entry = AnimationRuntimeEntry {
+        spec_hash: 0,
+        started_at: entry.started_at,
+    };
+
+    sample_animation_spec(&entry.spec, Some(&runtime_entry), sample_time)
 }
 
 pub fn sample_animation_spec(
@@ -645,6 +749,8 @@ fn scale_animation_keyframe(attrs: &Attrs, scale: f64) -> Attrs {
         font_letter_spacing: attrs.font_letter_spacing.map(|value| value * scale),
         font_word_spacing: attrs.font_word_spacing.map(|value| value * scale),
         svg_color: attrs.svg_color.clone(),
+        layout_scale: attrs.layout_scale,
+        layout_rotate: attrs.layout_rotate,
         move_x: attrs.move_x.map(|value| value * scale),
         move_y: attrs.move_y.map(|value| value * scale),
         rotate: attrs.rotate,
@@ -734,6 +840,8 @@ fn interpolate_attrs(from: &Attrs, to: &Attrs, t: f64) -> Attrs {
             t,
             interpolate_color,
         ),
+        layout_scale: interpolate_opt_copy(from.layout_scale, to.layout_scale, t, lerp_f64),
+        layout_rotate: interpolate_opt_copy(from.layout_rotate, to.layout_rotate, t, lerp_f64),
         move_x: interpolate_opt_copy(from.move_x, to.move_x, t, lerp_f64),
         move_y: interpolate_opt_copy(from.move_y, to.move_y, t, lerp_f64),
         rotate: interpolate_opt_copy(from.rotate, to.rotate, t, lerp_f64),
@@ -743,7 +851,7 @@ fn interpolate_attrs(from: &Attrs, to: &Attrs, t: f64) -> Attrs {
     }
 }
 
-fn apply_sample_attrs(attrs: &mut Attrs, sample: &Attrs) {
+pub(crate) fn apply_sample_attrs(attrs: &mut Attrs, sample: &Attrs) {
     if let Some(value) = sample.width.clone() {
         attrs.width = Some(value);
     }
@@ -797,6 +905,12 @@ fn apply_sample_attrs(attrs: &mut Attrs, sample: &Attrs) {
     }
     if let Some(value) = sample.svg_color.clone() {
         attrs.svg_color = Some(value);
+    }
+    if let Some(value) = sample.layout_scale {
+        attrs.layout_scale = Some(value);
+    }
+    if let Some(value) = sample.layout_rotate {
+        attrs.layout_rotate = Some(value);
     }
     if let Some(value) = sample.move_x {
         attrs.move_x = Some(value);
@@ -861,18 +975,14 @@ fn interpolate_length(from: &Length, to: &Length, t: f64) -> Length {
         (Length::FillWeighted(from), Length::FillWeighted(to)) => {
             Length::FillWeighted(lerp_f64(*from, *to, t))
         }
-        (Length::Minimum(from_min, from_inner), Length::Minimum(to_min, to_inner)) => {
-            Length::Minimum(
-                lerp_f64(*from_min, *to_min, t),
-                Box::new(interpolate_length(from_inner, to_inner, t)),
-            )
-        }
-        (Length::Maximum(from_max, from_inner), Length::Maximum(to_max, to_inner)) => {
-            Length::Maximum(
-                lerp_f64(*from_max, *to_max, t),
-                Box::new(interpolate_length(from_inner, to_inner, t)),
-            )
-        }
+        (Length::Min(from_left, from_right), Length::Min(to_left, to_right)) => Length::Min(
+            Box::new(interpolate_length(from_left, to_left, t)),
+            Box::new(interpolate_length(from_right, to_right, t)),
+        ),
+        (Length::Max(from_left, from_right), Length::Max(to_left, to_right)) => Length::Max(
+            Box::new(interpolate_length(from_left, to_left, t)),
+            Box::new(interpolate_length(from_right, to_right, t)),
+        ),
         _ => from.clone(),
     }
 }
@@ -1060,12 +1170,14 @@ fn scale_length(value: &Length, scale: f64) -> Length {
         Length::Content => Length::Content,
         Length::Px(value) => Length::Px(value * scale),
         Length::FillWeighted(value) => Length::FillWeighted(*value),
-        Length::Minimum(min, inner) => {
-            Length::Minimum(min * scale, Box::new(scale_length(inner, scale)))
-        }
-        Length::Maximum(max, inner) => {
-            Length::Maximum(max * scale, Box::new(scale_length(inner, scale)))
-        }
+        Length::Min(left, right) => Length::Min(
+            Box::new(scale_length(left, scale)),
+            Box::new(scale_length(right, scale)),
+        ),
+        Length::Max(left, right) => Length::Max(
+            Box::new(scale_length(left, scale)),
+            Box::new(scale_length(right, scale)),
+        ),
     }
 }
 
@@ -1257,6 +1369,72 @@ mod tests {
 
         assert_eq!(sample.attrs.alpha, Some(1.0));
         assert!(!sample.active);
+    }
+
+    #[test]
+    fn sample_animation_spec_interpolates_layout_scale_and_rotate() {
+        let mut from = Attrs::default();
+        from.layout_scale = Some(1.0);
+        from.layout_rotate = Some(0.0);
+
+        let mut to = Attrs::default();
+        to.layout_scale = Some(2.0);
+        to.layout_rotate = Some(90.0);
+
+        let spec = AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 100.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        };
+        let start = Instant::now();
+        let entry = AnimationRuntimeEntry {
+            spec_hash: spec_fingerprint(&spec),
+            started_at: start,
+        };
+
+        let sample = sample_animation_spec(
+            &spec,
+            Some(&entry),
+            Some(start + std::time::Duration::from_millis(50)),
+        );
+
+        assert_eq!(sample.attrs.layout_scale, Some(1.5));
+        assert_eq!(sample.attrs.layout_rotate, Some(45.0));
+        assert_eq!(
+            classify_animation_sample_attrs(&sample.attrs),
+            TreeInvalidation::Measure
+        );
+    }
+
+    #[test]
+    fn scale_animation_spec_preserves_layout_transform_fields() {
+        let mut from = Attrs::default();
+        from.layout_scale = Some(1.25);
+        from.layout_rotate = Some(15.0);
+        from.width = Some(Length::Px(20.0));
+
+        let mut to = Attrs::default();
+        to.layout_scale = Some(1.5);
+        to.layout_rotate = Some(45.0);
+        to.width = Some(Length::Px(40.0));
+
+        let scaled = scale_animation_spec(
+            &AnimationSpec {
+                keyframes: vec![from, to],
+                duration_ms: 100.0,
+                curve: AnimationCurve::Linear,
+                repeat: AnimationRepeat::Once,
+            },
+            2.0,
+        );
+
+        assert_eq!(scaled.keyframes[0].layout_scale, Some(1.25));
+        assert_eq!(scaled.keyframes[1].layout_scale, Some(1.5));
+        assert_eq!(scaled.keyframes[0].layout_rotate, Some(15.0));
+        assert_eq!(scaled.keyframes[1].layout_rotate, Some(45.0));
+        assert_eq!(scaled.keyframes[0].width, Some(Length::Px(40.0)));
+        assert_eq!(scaled.keyframes[1].width, Some(Length::Px(80.0)));
     }
 
     #[test]

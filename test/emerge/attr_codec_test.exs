@@ -293,12 +293,16 @@ defmodule Emerge.Engine.AttrCodecTest do
           %{
             width: {:px, 100},
             padding: {6, 12, 6, 12},
+            layout_scale: 1.0,
+            layout_rotate: 0.0,
             move_x: -20,
             border_color: :white
           },
           %{
             width: {:px, 160},
             padding: {10, 18, 10, 18},
+            layout_scale: 1.25,
+            layout_rotate: 90.0,
             move_x: 24,
             border_color: {:color_rgb, {10, 20, 30}}
           }

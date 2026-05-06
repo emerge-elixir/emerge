@@ -535,11 +535,11 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_length({:px, value}), do: <<2, encode_f64(value)::binary>>
   defp encode_length({:fill, value}), do: <<3, encode_f64(value)::binary>>
 
-  defp encode_length({:minimum, min_px, inner}),
-    do: <<4, encode_f64(min_px)::binary, encode_length(inner)::binary>>
+  defp encode_length({:min, left, right}),
+    do: <<4, encode_length(left)::binary, encode_length(right)::binary>>
 
-  defp encode_length({:maximum, max_px, inner}),
-    do: <<5, encode_f64(max_px)::binary, encode_length(inner)::binary>>
+  defp encode_length({:max, left, right}),
+    do: <<5, encode_length(left)::binary, encode_length(right)::binary>>
 
   defp decode_length(<<0, rest::binary>>), do: {:fill, rest}
   defp decode_length(<<1, rest::binary>>), do: {:content, rest}
@@ -555,15 +555,15 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_length(<<4, rest::binary>>) do
-    {min_px, rest} = decode_f64(rest)
-    {inner, rest} = decode_length(rest)
-    {{:minimum, min_px, inner}, rest}
+    {left, rest} = decode_length(rest)
+    {right, rest} = decode_length(rest)
+    {{:min, left, right}, rest}
   end
 
   defp decode_length(<<5, rest::binary>>) do
-    {max_px, rest} = decode_f64(rest)
-    {inner, rest} = decode_length(rest)
-    {{:maximum, max_px, inner}, rest}
+    {left, rest} = decode_length(rest)
+    {right, rest} = decode_length(rest)
+    {{:max, left, right}, rest}
   end
 
   defp encode_padding(value) when is_number(value) do

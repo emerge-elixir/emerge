@@ -68,11 +68,14 @@ fn test_layout_el_shrink_to_content() {
 fn test_layout_minimum_constraint() {
     let mut tree = ElementTree::new();
 
-    // Element with width = minimum(200, fill())
-    // When constraint is 800px, fill() = 800px, but minimum clamps to at least 200px
+    // Element with width = max(200px, fill())
+    // When constraint is 800px, fill() = 800px, so fill wins.
     // Result should be 800px (fill wins since 800 > 200)
     let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Minimum(200.0, Box::new(Length::Fill)));
+    attrs.width = Some(Length::Max(
+        Box::new(Length::Px(200.0)),
+        Box::new(Length::Fill),
+    ));
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
@@ -96,10 +99,13 @@ fn test_layout_minimum_constraint() {
 fn test_layout_minimum_constraint_enforced() {
     let mut tree = ElementTree::new();
 
-    // Element with width = minimum(200, content)
-    // When content is small, minimum should enforce 200px
+    // Element with width = max(200px, content)
+    // When content is small, max should enforce 200px
     let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Minimum(200.0, Box::new(Length::Content)));
+    attrs.width = Some(Length::Max(
+        Box::new(Length::Px(200.0)),
+        Box::new(Length::Content),
+    ));
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);
@@ -123,10 +129,13 @@ fn test_layout_minimum_constraint_enforced() {
 fn test_layout_maximum_constraint() {
     let mut tree = ElementTree::new();
 
-    // Element with width = maximum(300, fill())
-    // When constraint is 800px, fill() = 800px, but maximum clamps to 300px
+    // Element with width = min(300px, fill())
+    // When constraint is 800px, fill() = 800px, but min caps to 300px
     let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Maximum(300.0, Box::new(Length::Fill)));
+    attrs.width = Some(Length::Min(
+        Box::new(Length::Px(300.0)),
+        Box::new(Length::Fill),
+    ));
     attrs.height = Some(Length::Px(50.0));
 
     let el = make_element("root", ElementKind::El, attrs);

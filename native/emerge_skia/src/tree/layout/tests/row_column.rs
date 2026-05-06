@@ -753,7 +753,10 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
 
     let mut centered_wrapper = make_element("centered_wrapper", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Maximum(960.0, Box::new(Length::Fill)));
+        a.width = Some(Length::Min(
+            Box::new(Length::Px(960.0)),
+            Box::new(Length::Fill),
+        ));
         a.align_x = Some(AlignX::Center);
         a
     });
@@ -1492,7 +1495,10 @@ fn test_layout_row_with_max_width_child() {
 
     let child2 = make_element("c2", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Maximum(100.0, Box::new(Length::Fill)));
+        a.width = Some(Length::Min(
+            Box::new(Length::Px(100.0)),
+            Box::new(Length::Fill),
+        ));
         a.height = Some(Length::Px(30.0));
         a
     });
@@ -1781,7 +1787,10 @@ fn test_wrapped_row_inside_fill_chain_wraps_cards() {
 
     let mut wrapper = make_element("wrapper", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Maximum(960.0, Box::new(Length::Fill)));
+        a.width = Some(Length::Min(
+            Box::new(Length::Px(960.0)),
+            Box::new(Length::Fill),
+        ));
         a.align_x = Some(AlignX::Center);
         a
     });
@@ -1911,7 +1920,10 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
     fn build_line_spacing_card(id: &str, text_id: &str) -> (Element, Element, Element, Element) {
         let mut column = make_element(id, ElementKind::Column, {
             let mut a = Attrs::default();
-            a.width = Some(Length::Maximum(320.0, Box::new(Length::Fill)));
+            a.width = Some(Length::Min(
+                Box::new(Length::Px(320.0)),
+                Box::new(Length::Fill),
+            ));
             a.spacing = Some(6.0);
             a
         });
@@ -2381,7 +2393,10 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
 
     let mut centered_wrapper = make_element("centered_wrapper", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Maximum(960.0, Box::new(Length::Fill)));
+        a.width = Some(Length::Min(
+            Box::new(Length::Px(960.0)),
+            Box::new(Length::Fill),
+        ));
         a.align_x = Some(AlignX::Center);
         a
     });
@@ -3461,7 +3476,7 @@ fn test_row_with_mixed_alignments_and_vertical() {
 }
 
 #[test]
-fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
+fn test_row_weighted_fill_with_max_length_floors_individual_child() {
     let mut tree = ElementTree::new();
 
     let mut row_attrs = Attrs::default();
@@ -3472,7 +3487,10 @@ fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
 
     let min_fill = make_element("min_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.width = Some(Length::Minimum(180.0, Box::new(Length::FillWeighted(1.0))));
+        a.width = Some(Length::Max(
+            Box::new(Length::Px(180.0)),
+            Box::new(Length::FillWeighted(1.0)),
+        ));
         a.height = Some(Length::Px(20.0));
         a
     });
@@ -3503,14 +3521,14 @@ fn test_row_weighted_fill_with_minimum_wrapper_clamps_individual_child() {
     let first = tree.get(&min_fill_id).unwrap().layout.frame.unwrap();
     let second = tree.get(&plain_fill_id).unwrap().layout.frame.unwrap();
 
-    // Base fill share is 150/150, but Minimum(180, weighted fill 1) clamps first child.
+    // Base fill share is 150/150, but max(180px, weighted fill 1) floors first child.
     assert_eq!(first.width, 180.0);
     assert_eq!(second.width, 150.0);
     assert_eq!(second.x, 180.0);
 }
 
 #[test]
-fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
+fn test_column_weighted_fill_with_min_length_caps_individual_child() {
     let mut tree = ElementTree::new();
 
     let mut col_attrs = Attrs::default();
@@ -3521,7 +3539,10 @@ fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
 
     let max_fill = make_element("max_fill", ElementKind::El, {
         let mut a = Attrs::default();
-        a.height = Some(Length::Maximum(60.0, Box::new(Length::FillWeighted(1.0))));
+        a.height = Some(Length::Min(
+            Box::new(Length::Px(60.0)),
+            Box::new(Length::FillWeighted(1.0)),
+        ));
         a.width = Some(Length::Px(40.0));
         a
     });
@@ -3552,8 +3573,215 @@ fn test_column_weighted_fill_with_maximum_wrapper_clamps_individual_child() {
     let first = tree.get(&max_fill_id).unwrap().layout.frame.unwrap();
     let second = tree.get(&plain_fill_id).unwrap().layout.frame.unwrap();
 
-    // Base fill share is 150/150, but Maximum(60, weighted fill 1) clamps first child.
+    // Base fill share is 150/150, but min(60px, weighted fill 1) caps first child.
     assert_eq!(first.height, 60.0);
     assert_eq!(second.height, 150.0);
     assert_eq!(second.y, 60.0);
+}
+
+#[test]
+fn test_row_min_length_resolves_multiple_fill_leaves_recursively() {
+    let mut tree = ElementTree::new();
+
+    let mut row = make_element("row", ElementKind::Row, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(300.0));
+        a.height = Some(Length::Px(40.0));
+        a
+    });
+
+    let first = make_element("first", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Min(
+            Box::new(Length::FillWeighted(2.0)),
+            Box::new(Length::FillWeighted(1.0)),
+        ));
+        a.height = Some(Length::Px(20.0));
+        a
+    });
+    let second = make_element("second", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::FillWeighted(1.0));
+        a.height = Some(Length::Px(20.0));
+        a
+    });
+
+    let row_id = row.id;
+    let first_id = first.id;
+    let second_id = second.id;
+    row.children = vec![first_id, second_id];
+
+    tree.set_root_id(row_id);
+    tree.insert(row);
+    tree.insert(first);
+    tree.insert(second);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let first = tree.get(&first_id).unwrap().layout.frame.unwrap();
+    let second = tree.get(&second_id).unwrap().layout.frame.unwrap();
+
+    assert_eq!(first.width, 150.0);
+    assert_eq!(second.width, 150.0);
+    assert_eq!(second.x, 150.0);
+}
+
+#[test]
+fn test_row_max_length_resolves_multiple_fill_leaves_recursively() {
+    let mut tree = ElementTree::new();
+
+    let mut row = make_element("row", ElementKind::Row, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(300.0));
+        a.height = Some(Length::Px(40.0));
+        a
+    });
+
+    let first = make_element("first", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Max(
+            Box::new(Length::FillWeighted(2.0)),
+            Box::new(Length::FillWeighted(1.0)),
+        ));
+        a.height = Some(Length::Px(20.0));
+        a
+    });
+    let second = make_element("second", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::FillWeighted(1.0));
+        a.height = Some(Length::Px(20.0));
+        a
+    });
+
+    let row_id = row.id;
+    let first_id = first.id;
+    let second_id = second.id;
+    row.children = vec![first_id, second_id];
+
+    tree.set_root_id(row_id);
+    tree.insert(row);
+    tree.insert(first);
+    tree.insert(second);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let first = tree.get(&first_id).unwrap().layout.frame.unwrap();
+    let second = tree.get(&second_id).unwrap().layout.frame.unwrap();
+
+    assert_eq!(first.width, 200.0);
+    assert_eq!(second.width, 100.0);
+    assert_eq!(second.x, 200.0);
+}
+
+#[test]
+fn test_column_min_content_fill_caps_scroll_region_before_footer() {
+    let mut tree = ElementTree::new();
+
+    let mut root = make_element("root", ElementKind::Column, {
+        let mut a = Attrs::default();
+        a.width = Some(Length::Px(200.0));
+        a.height = Some(Length::Px(300.0));
+        a
+    });
+    let title = make_element("title", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Px(50.0));
+        a.width = Some(Length::Fill);
+        a
+    });
+    let mut app = make_element("app", ElementKind::Column, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Min(
+            Box::new(Length::Content),
+            Box::new(Length::Fill),
+        ));
+        a.width = Some(Length::Fill);
+        a
+    });
+    let input = make_element("input", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Px(50.0));
+        a.width = Some(Length::Fill);
+        a
+    });
+    let mut entries = make_element("entries", ElementKind::Column, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Fill);
+        a.width = Some(Length::Fill);
+        a.scrollbar_y = Some(true);
+        a
+    });
+    let controls = make_element("controls", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Px(30.0));
+        a.width = Some(Length::Fill);
+        a
+    });
+    let footer = make_element("footer", ElementKind::El, {
+        let mut a = Attrs::default();
+        a.height = Some(Length::Px(20.0));
+        a.width = Some(Length::Fill);
+        a
+    });
+
+    let row_ids: Vec<NodeId> = (0..6)
+        .map(|index| {
+            let row = make_element(&format!("row_{index}"), ElementKind::El, {
+                let mut a = Attrs::default();
+                a.height = Some(Length::Px(50.0));
+                a.width = Some(Length::Fill);
+                a
+            });
+            let id = row.id;
+            tree.insert(row);
+            id
+        })
+        .collect();
+
+    let root_id = root.id;
+    let title_id = title.id;
+    let app_id = app.id;
+    let input_id = input.id;
+    let entries_id = entries.id;
+    let controls_id = controls.id;
+    let footer_id = footer.id;
+
+    entries.children = row_ids;
+    app.children = vec![input_id, entries_id, controls_id];
+    root.children = vec![title_id, app_id, footer_id];
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(title);
+    tree.insert(app);
+    tree.insert(input);
+    tree.insert(entries);
+    tree.insert(controls);
+    tree.insert(footer);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(200.0, 300.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let app_frame = tree.get(&app_id).unwrap().layout.frame.unwrap();
+    let entries_frame = tree.get(&entries_id).unwrap().layout.frame.unwrap();
+    let footer_frame = tree.get(&footer_id).unwrap().layout.frame.unwrap();
+
+    assert_eq!(app_frame.height, 230.0);
+    assert_eq!(entries_frame.height, 150.0);
+    assert_eq!(entries_frame.content_height, 300.0);
+    assert_eq!(footer_frame.y, 280.0);
 }
