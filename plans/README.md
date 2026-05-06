@@ -1,17 +1,28 @@
 # Plans
 
-Last updated: 2026-05-04.
+Last updated: 2026-05-06.
 
 This directory tracks current implementation notes plus the background
 investigations that led to the current native layout and renderer work. Files
 with an `active-` prefix are reserved for currently open implementation slices.
-There is no open active implementation slice after the performance branch-fix
-pass. The active-prefixed documents listed below are implemented and retained as
-completed active-plan records until the next cleanup pass.
+The current active implementation slice is layout-aware scale and rotate.
+Completed implementation records live in `completed/`; durable research and
+review references stay at the top level.
 
 ## Files
 
-### `active-performance-branch-fix-plan.md`
+### `active-layout-aware-transform-plan.md`
+
+Current active implementation plan for layout-aware scale and rotate. Existing
+`Transform.rotate/1` and `Transform.scale/1` remain paint-only; this plan adds
+top-level `Emerge.UI.scale/1` and `Emerge.UI.rotate/1` attrs. Scale acts like
+the current global Wayland/window scale scoped to an element subtree. Rotation
+uses unrotated authored boxes plus transformed AABB reservation, with optimized
+quarter-turn root handling and arbitrary-angle support. Hit testing is simplified
+around registry-built `HitGeometry` so runtime dispatch uses one region
+membership check.
+
+### `completed/performance-branch-fix-plan.md`
 
 Completed branch-fix plan for merge-readiness issues discovered by comparing
 `performance-improvements` to `main` at `a797532`. It records the implemented
@@ -20,7 +31,7 @@ animation/tree-message regression coverage, test-only clippy allowance
 classification, native diagnostics classification, validation results, and the
 remaining untracked local artifacts that were not deleted.
 
-### `active-release-code-bloat-reduction-plan.md`
+### `completed/release-code-bloat-reduction-plan.md`
 
 Completed plan for materially reducing default release-code bloat. It accepted
 the benchmark-only `cfg` boundary, stats timing matrix, and renderer-cache
@@ -28,14 +39,14 @@ admission helper, then records rejected benchmark-gated attempts for registry
 traversal dedupe, text edit resolver dedupe, and Elixir child/nearby
 reconciliation dedupe.
 
-### `active-renderer-instrumentation-refactor-plan.md`
+### `completed/renderer-instrumentation-refactor-plan.md`
 
 Completed plan for reducing renderer release-code bloat by replacing the
 duplicated normal/profiled traversal with one shared draw traversal and
 optional instrumentation. It records the benchmark gate and the deferred
 image/vector/shadow helper follow-up.
 
-### `active-scroll-viewport-culling-plan.md`
+### `completed/scroll-viewport-culling-plan.md`
 
 Completed scroll viewport traversal performance slice.
 
@@ -43,7 +54,7 @@ It now records the implemented benchmark-first shared viewport participation
 gate for render traversal and event-registry traversal plus the before/after
 benchmark results.
 
-### `active-render-cache-children-plan.md`
+### `completed/render-cache-children-plan.md`
 
 The most recent completed renderer-cache implementation plan.
 

@@ -204,6 +204,59 @@ impl<'a> RegistryView<'a> {
     }
 }
 
+pub(crate) fn reconcile_hover_stack(
+    base: &Registry,
+    current: &[HoverTracker],
+) -> Vec<HoverTracker> {
+    let active = active_hover_trackers(base);
+
+    if current.is_empty() {
+        return active;
+    }
+
+    current
+        .iter()
+        .filter_map(|tracker| {
+            active
+                .iter()
+                .find(|active| active.element_id == tracker.element_id)
+                .cloned()
+        })
+        .collect()
+}
+
+fn active_hover_trackers(base: &Registry) -> Vec<HoverTracker> {
+    let mut trackers: Vec<_> = base
+        .view()
+        .iter_precedence()
+        .filter_map(active_hover_tracker_from_listener)
+        .collect();
+    trackers.reverse();
+    trackers
+}
+
+fn active_hover_tracker_from_listener(listener: &Listener) -> Option<HoverTracker> {
+    let element_id = listener.element_id?;
+    let ListenerMatcher::HoverLeaveCurrentOwner { region } = &listener.matcher else {
+        return None;
+    };
+    let ListenerCompute::Static { actions } = &listener.compute else {
+        return None;
+    };
+
+    let mut hasher = DefaultHasher::new();
+    element_id.hash(&mut hasher);
+    hash_pointer_region(&mut hasher, region);
+
+    Some(HoverTracker {
+        element_id,
+        region: region.clone(),
+        enter_actions: Vec::new(),
+        leave_actions: actions.clone(),
+        cache_hash: hasher.finish(),
+    })
+}
+
 /// Precedence-ordered read view over a higher-priority registry layered above a
 /// lower-priority registry.
 ///
@@ -276,24 +329,111 @@ pub(crate) struct VirtualKeyTracker {
     pub phase: VirtualKeyPhase,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct HoverTracker {
+    pub element_id: NodeId,
+    pub region: PointerRegion,
+    pub enter_actions: Vec<ListenerAction>,
+    pub leave_actions: Vec<ListenerAction>,
+    cache_hash: u64,
+}
+
+impl PartialEq for HoverTracker {
+    fn eq(&self, other: &Self) -> bool {
+        self.element_id == other.element_id
+            && self.region == other.region
+            && self.cache_hash == other.cache_hash
+    }
+}
+
 /// Pointer-sensitive region backed by element interaction geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PointerRegion {
     visible: bool,
+    hit_geometry: HitGeometry,
     local_shape: ShapeBounds,
     screen_to_local: Option<Affine2>,
     screen_bounds: Rect,
     clip_chain: Vec<InteractionClip>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum HitGeometry {
+    Rect(Rect),
+    Local {
+        local_shape: ShapeBounds,
+        screen_to_local: Option<Affine2>,
+        screen_bounds: Rect,
+    },
+}
+
+impl HitGeometry {
+    fn for_shape(
+        local_shape: ShapeBounds,
+        local_to_screen: Affine2,
+        screen_to_local: Option<Affine2>,
+    ) -> Self {
+        let screen_bounds = local_to_screen.map_rect_aabb(local_shape.rect);
+        if local_shape.radii.is_none() && local_to_screen.maps_rects_to_axis_aligned_rects() {
+            Self::Rect(screen_bounds)
+        } else {
+            Self::Local {
+                local_shape,
+                screen_to_local,
+                screen_bounds,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn local(
+        local_shape: ShapeBounds,
+        screen_to_local: Option<Affine2>,
+        screen_bounds: Rect,
+    ) -> Self {
+        Self::Local {
+            local_shape,
+            screen_to_local,
+            screen_bounds,
+        }
+    }
+
+    fn contains(&self, x: f32, y: f32) -> bool {
+        match self {
+            Self::Rect(rect) => rect.contains(x, y),
+            Self::Local {
+                local_shape,
+                screen_to_local,
+                screen_bounds,
+            } => {
+                if !screen_bounds.contains(x, y) {
+                    return false;
+                }
+
+                let Some(screen_to_local) = screen_to_local else {
+                    return false;
+                };
+                let local = screen_to_local.map_point(Point { x, y });
+                point_hits_shape(*local_shape, local.x, local.y)
+            }
+        }
+    }
+}
+
 impl PointerRegion {
     fn for_state(state: &ResolvedNodeState) -> Self {
         let local_shape = state.self_shape;
+        let screen_bounds = state.interaction_transform.map_rect_aabb(local_shape.rect);
         Self {
             visible: state.visible && state.interaction_inverse.is_some(),
+            hit_geometry: HitGeometry::for_shape(
+                local_shape,
+                state.interaction_transform,
+                state.interaction_inverse,
+            ),
             local_shape,
             screen_to_local: state.interaction_inverse,
-            screen_bounds: state.interaction_transform.map_rect_aabb(local_shape.rect),
+            screen_bounds,
             clip_chain: state.interaction_clips.clone(),
         }
     }
@@ -303,17 +443,23 @@ impl PointerRegion {
             rect: bounds,
             radii: radii.map(|value| clamp_radii(bounds, value)),
         };
+        let screen_bounds = state.interaction_transform.map_rect_aabb(local_shape.rect);
         Self {
             visible: state.visible && state.interaction_inverse.is_some(),
+            hit_geometry: HitGeometry::for_shape(
+                local_shape,
+                state.interaction_transform,
+                state.interaction_inverse,
+            ),
             local_shape,
             screen_to_local: state.interaction_inverse,
-            screen_bounds: state.interaction_transform.map_rect_aabb(local_shape.rect),
+            screen_bounds,
             clip_chain: state.interaction_clips.clone(),
         }
     }
 
     fn contains(&self, x: f32, y: f32) -> bool {
-        if !self.visible || !self.screen_bounds.contains(x, y) {
+        if !self.visible {
             return false;
         }
 
@@ -325,11 +471,7 @@ impl PointerRegion {
             return false;
         }
 
-        let Some(screen_to_local) = self.screen_to_local else {
-            return false;
-        };
-        let local = screen_to_local.map_point(Point { x, y });
-        point_hits_shape(self.local_shape, local.x, local.y)
+        self.hit_geometry.contains(x, y)
     }
 }
 
@@ -388,6 +530,7 @@ struct RegistrySubtreeKey {
     attrs_hash: u64,
     runtime_hash: u64,
     frame_hash: u64,
+    hover_stack_hash: u64,
     scene_context_hash: u64,
     scroll_contexts_hash: u64,
     topology: RenderTopologyDependencyKey,
@@ -486,6 +629,7 @@ pub(crate) struct ScrollContext {
 struct DeferredSubtree {
     element_id: NodeId,
     scroll_contexts: Vec<ScrollContext>,
+    hover_stack: Vec<HoverTracker>,
     scene_ctx: crate::tree::scene::SceneContext,
 }
 
@@ -1198,7 +1342,8 @@ fn runtime_virtual_key_leave_cancel_listener(tracker: &VirtualKeyTracker) -> Opt
         matcher: ListenerMatcher::CursorLocationLeaveBoundary {
             region: tracker.region.clone(),
         },
-        compute: ListenerCompute::DispatchBaseThenStatic {
+        compute: ListenerCompute::DispatchBaseSkipThenStatic {
+            skip_matchers: vec![ListenerMatcherKind::HoverLeaveCurrentOwner],
             actions: vec![ListenerAction::RuntimeChange(
                 RuntimeChange::CancelVirtualKeyTracker,
             )],
@@ -1381,8 +1526,8 @@ pub(crate) trait ListenerComputeCtx {
         None
     }
 
-    fn hover_owner(&self) -> Option<&NodeId> {
-        None
+    fn hover_stack(&self) -> &[HoverTracker] {
+        &[]
     }
 
     fn text_input_state(&self, _element_id: &NodeId) -> Option<TextInputState> {
@@ -1401,7 +1546,7 @@ pub(crate) trait ListenerComputeCtx {
         Vec::new()
     }
 
-    fn dispatch_effective_skip(
+    fn dispatch_base_skip(
         &mut self,
         _input: &ListenerInput,
         _skip_matchers: &[ListenerMatcherKind],
@@ -1409,20 +1554,12 @@ pub(crate) trait ListenerComputeCtx {
         Vec::new()
     }
 
-    fn base_first_match_listener(
-        &self,
+    fn dispatch_effective_skip(
+        &mut self,
         _input: &ListenerInput,
         _skip_matchers: &[ListenerMatcherKind],
-    ) -> Option<Listener> {
-        None
-    }
-
-    fn base_source_listener(
-        &self,
-        _element_id: &NodeId,
-        _matcher_kind: ListenerMatcherKind,
-    ) -> Option<Listener> {
-        None
+    ) -> Vec<ListenerAction> {
+        Vec::new()
     }
 }
 
@@ -1458,6 +1595,13 @@ pub enum ListenerInput {
         window_left: bool,
     },
     PointerEnter {
+        x: f32,
+        y: f32,
+    },
+    DragScroll {
+        locked_axis: Option<GestureAxis>,
+        from_x: f32,
+        from_y: f32,
         x: f32,
         y: f32,
     },
@@ -1623,8 +1767,8 @@ pub(crate) enum ListenerMatcher {
     WindowResized,
     /// Match leaving `region` via cursor or left-button location changes, or window-leave.
     CursorLocationLeaveBoundary { region: PointerRegion },
-    /// Source-only hover leave listener for the current hover owner.
-    HoverLeaveCurrentOwner,
+    /// Source-only hover leave listener for an active hover region.
+    HoverLeaveCurrentOwner { region: PointerRegion },
 }
 
 /// Stable matcher identity for source lookup.
@@ -1747,7 +1891,9 @@ impl ListenerMatcher {
             ListenerMatcher::CursorLocationLeaveBoundary { .. } => {
                 ListenerMatcherKind::CursorLocationLeaveBoundary
             }
-            ListenerMatcher::HoverLeaveCurrentOwner => ListenerMatcherKind::HoverLeaveCurrentOwner,
+            ListenerMatcher::HoverLeaveCurrentOwner { .. } => {
+                ListenerMatcherKind::HoverLeaveCurrentOwner
+            }
         }
     }
 
@@ -1842,15 +1988,9 @@ impl ListenerMatcher {
                         }) if button == "left"
                 )
             }
-            ListenerMatcher::CursorScrollInsideDirection { region, direction } => matches!(
-                input,
-                ListenerInput::ScrollDirection {
-                    direction: matched,
-                    x,
-                    y,
-                    ..
-                } if matched == direction && region.contains(*x, *y)
-            ),
+            ListenerMatcher::CursorScrollInsideDirection { region, direction } => {
+                cursor_scroll_direction_matches(input, region, *direction)
+            }
             ListenerMatcher::KeyEnterPressNoCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
@@ -2017,7 +2157,12 @@ impl ListenerMatcher {
                 }
                 _ => false,
             },
-            ListenerMatcher::HoverLeaveCurrentOwner => false,
+            ListenerMatcher::HoverLeaveCurrentOwner { region } => match input {
+                ListenerInput::PointerLeave { x, y, window_left } => {
+                    *window_left || !region.contains(*x, *y)
+                }
+                _ => false,
+            },
         }
     }
 }
@@ -2051,7 +2196,8 @@ fn listener_compute_contains_key_press_tracker(
 ) -> bool {
     let actions = match compute {
         ListenerCompute::Static { actions }
-        | ListenerCompute::DispatchBaseThenStatic { actions } => Some(actions.as_slice()),
+        | ListenerCompute::DispatchBaseThenStatic { actions }
+        | ListenerCompute::DispatchBaseSkipThenStatic { actions, .. } => Some(actions.as_slice()),
         _ => None,
     };
 
@@ -2161,7 +2307,11 @@ pub(crate) enum RuntimeChange {
     /// End drag tracking on pointer release.
     ClearDragTracker,
     /// Update active drag pointer position after a cursor move.
-    UpdateDragTrackerPointer { last_x: f32, last_y: f32 },
+    UpdateDragTrackerPointer {
+        last_x: f32,
+        last_y: f32,
+        axis_delta: Option<f32>,
+    },
     /// Drop click/press release followup tracking.
     ClearClickPressTracker,
     /// Begin swipe followup tracking.
@@ -2196,8 +2346,8 @@ pub(crate) enum RuntimeChange {
     },
     /// Track an expected content value coming back from an Elixir tree patch.
     ExpectTextInputPatchValue { element_id: NodeId, content: String },
-    /// Update the runtime's current hover owner.
-    SetHoverOwner { element_id: Option<NodeId> },
+    /// Replace active hover trackers.
+    SetHoverStack { stack: Vec<HoverTracker> },
 }
 
 impl RuntimeChange {
@@ -2247,6 +2397,11 @@ pub(crate) enum ListenerCompute {
     Static { actions: Vec<ListenerAction> },
     /// Dispatch base listeners, then append fixed actions.
     DispatchBaseThenStatic { actions: Vec<ListenerAction> },
+    /// Dispatch base listeners except specific matcher kinds, then append fixed actions.
+    DispatchBaseSkipThenStatic {
+        skip_matchers: Vec<ListenerMatcherKind>,
+        actions: Vec<ListenerAction>,
+    },
     /// Fixed actions plus left-press runtime bootstrap from matching input.
     StaticWithLeftPressRuntimeAugment {
         actions: Vec<ListenerAction>,
@@ -2285,10 +2440,13 @@ pub(crate) enum ListenerCompute {
     RedispatchScrollInput,
     /// Split one raw pointer lifecycle input into synthetic leave/raw/enter passes.
     RedispatchPointerLifecycle,
+    /// Activate the hover tracker stack carried by the topmost hovered element.
+    HoverEnter { stack: Vec<HoverTracker> },
     /// Build one `TreeMsg::ScrollRequest` from a directional scroll input.
     ScrollTreeMsgFromCursorScrollDirection {
         element_id: NodeId,
         direction: ScrollDirection,
+        region: PointerRegion,
     },
     /// Build `TreeMsg::Resize` from a resize input.
     WindowResizeToTree,
@@ -2359,6 +2517,14 @@ impl ListenerCompute {
             ListenerCompute::Static { actions } => actions.clone(),
             ListenerCompute::DispatchBaseThenStatic { actions } => ctx
                 .dispatch_base(input)
+                .into_iter()
+                .chain(actions.iter().cloned())
+                .collect(),
+            ListenerCompute::DispatchBaseSkipThenStatic {
+                skip_matchers,
+                actions,
+            } => ctx
+                .dispatch_base_skip(input, skip_matchers)
                 .into_iter()
                 .chain(actions.iter().cloned())
                 .collect(),
@@ -2504,11 +2670,9 @@ impl ListenerCompute {
                     let dx = *x - *origin_x;
                     let dy = *y - *origin_y;
 
-                    let Some(locked_axis) = gesture_axis_intent_from_delta(dx, dy) else {
-                        return Vec::new();
-                    };
-
-                    if drag_scroll_can_activate_on_axis(locked_axis, dx, dy, *x, *y, ctx) {
+                    if let Some(locked_axis) =
+                        drag_scroll_activation_axis(*origin_x, *origin_y, *x, *y, ctx)
+                    {
                         vec![
                             ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
                                 element_id: *element_id,
@@ -2519,7 +2683,9 @@ impl ListenerCompute {
                             }),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                         ]
-                    } else if swipe_handlers.any_for_axis(locked_axis) {
+                    } else if let Some(locked_axis) = gesture_axis_intent_from_delta(dx, dy)
+                        && swipe_handlers.any_for_axis(locked_axis)
+                    {
                         vec![
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
@@ -2534,10 +2700,12 @@ impl ListenerCompute {
                                 },
                             }),
                         ]
-                    } else {
+                    } else if gesture_axis_intent_from_delta(dx, dy).is_some() {
                         vec![ListenerAction::RuntimeChange(
                             RuntimeChange::ClearDragTracker,
                         )]
+                    } else {
+                        Vec::new()
                     }
                 }
                 _ => Vec::new(),
@@ -2550,10 +2718,12 @@ impl ListenerCompute {
                 Some(input) => redispatch_pointer_lifecycle_from_input(input, ctx),
                 None => Vec::new(),
             },
+            ListenerCompute::HoverEnter { stack } => hover_enter_actions(stack, ctx),
             ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
                 element_id,
                 direction,
-            } => scroll_tree_actions_from_directional_input(input, element_id, *direction),
+                region,
+            } => scroll_tree_actions_from_directional_input(input, element_id, *direction, region),
             ListenerCompute::WindowResizeToTree => match input.raw() {
                 Some(InputEvent::Resized {
                     width,
@@ -2880,37 +3050,6 @@ fn split_scroll_components(input: &InputEvent) -> Vec<ListenerInput> {
     }
 }
 
-fn scroll_component_for_axis(
-    axis: GestureAxis,
-    dx: f32,
-    dy: f32,
-    x: f32,
-    y: f32,
-) -> Option<ListenerInput> {
-    match axis {
-        GestureAxis::Horizontal => scroll_component(
-            if dx < 0.0 {
-                ScrollDirection::XNeg
-            } else {
-                ScrollDirection::XPos
-            },
-            dx,
-            x,
-            y,
-        ),
-        GestureAxis::Vertical => scroll_component(
-            if dy < 0.0 {
-                ScrollDirection::YNeg
-            } else {
-                ScrollDirection::YPos
-            },
-            dy,
-            x,
-            y,
-        ),
-    }
-}
-
 fn redispatch_scroll_components_from_input<C: ListenerComputeCtx>(
     input: &InputEvent,
     ctx: &mut C,
@@ -2921,79 +3060,148 @@ fn redispatch_scroll_components_from_input<C: ListenerComputeCtx>(
         .collect()
 }
 
-fn redispatch_scroll_component_for_axis<C: ListenerComputeCtx>(
-    axis: GestureAxis,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollComponentDelta {
+    direction: ScrollDirection,
     dx: f32,
     dy: f32,
-    x: f32,
-    y: f32,
-    ctx: &mut C,
-) -> Vec<ListenerAction> {
-    scroll_component_for_axis(axis, dx, dy, x, y)
-        .into_iter()
-        .flat_map(|component| ctx.dispatch_base(&component))
-        .collect()
 }
 
-fn drag_scroll_can_activate_on_axis<C: ListenerComputeCtx>(
+fn scroll_component_delta_for_axis(
     axis: GestureAxis,
     dx: f32,
     dy: f32,
+) -> Option<ScrollComponentDelta> {
+    match axis {
+        GestureAxis::Horizontal => (dx.abs() > f32::EPSILON).then_some(ScrollComponentDelta {
+            direction: if dx < 0.0 {
+                ScrollDirection::XNeg
+            } else {
+                ScrollDirection::XPos
+            },
+            dx,
+            dy: 0.0,
+        }),
+        GestureAxis::Vertical => (dy.abs() > f32::EPSILON).then_some(ScrollComponentDelta {
+            direction: if dy < 0.0 {
+                ScrollDirection::YNeg
+            } else {
+                ScrollDirection::YPos
+            },
+            dx: 0.0,
+            dy,
+        }),
+    }
+}
+
+fn pointer_region_local_delta(
+    region: &PointerRegion,
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<(f32, f32)> {
+    let screen_to_local = region.screen_to_local?;
+    let from = screen_to_local.map_point(Point {
+        x: from_x,
+        y: from_y,
+    });
+    let to = screen_to_local.map_point(Point { x, y });
+    Some((to.x - from.x, to.y - from.y))
+}
+
+fn drag_scroll_component_for_region(
+    region: &PointerRegion,
+    locked_axis: Option<GestureAxis>,
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<ScrollComponentDelta> {
+    if !region.contains(x, y) {
+        return None;
+    }
+
+    let (dx, dy) = pointer_region_local_delta(region, from_x, from_y, x, y)?;
+    let axis = locked_axis.or_else(|| gesture_axis_intent_from_delta(dx, dy))?;
+    scroll_component_delta_for_axis(axis, dx, dy)
+}
+
+fn cursor_scroll_direction_matches(
+    input: &ListenerInput,
+    region: &PointerRegion,
+    direction: ScrollDirection,
+) -> bool {
+    match input {
+        ListenerInput::ScrollDirection {
+            direction: matched,
+            x,
+            y,
+            ..
+        } => *matched == direction && region.contains(*x, *y),
+        ListenerInput::DragScroll {
+            locked_axis,
+            from_x,
+            from_y,
+            x,
+            y,
+        } => drag_scroll_component_for_region(region, *locked_axis, *from_x, *from_y, *x, *y)
+            .is_some_and(|component| component.direction == direction),
+        _ => false,
+    }
+}
+
+fn drag_scroll_activation_axis<C: ListenerComputeCtx>(
+    from_x: f32,
+    from_y: f32,
     x: f32,
     y: f32,
     ctx: &mut C,
-) -> bool {
-    scroll_component_for_axis(axis, dx, dy, x, y)
-        .is_some_and(|component| !ctx.dispatch_base(&component).is_empty())
+) -> Option<GestureAxis> {
+    let input = ListenerInput::DragScroll {
+        locked_axis: None,
+        from_x,
+        from_y,
+        x,
+        y,
+    };
+
+    ctx.dispatch_base(&input).into_iter().find_map(|action| {
+        let ListenerAction::TreeMsg(TreeMsg::ScrollRequest { dx, dy, .. }) = action else {
+            return None;
+        };
+
+        if dx.abs() > f32::EPSILON {
+            Some(GestureAxis::Horizontal)
+        } else if dy.abs() > f32::EPSILON {
+            Some(GestureAxis::Vertical)
+        } else {
+            None
+        }
+    })
 }
 
 fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
     input: &InputEvent,
     ctx: &mut C,
 ) -> Vec<ListenerAction> {
-    let skip = [ListenerMatcherKind::RawPointerLifecycle];
+    let raw_skip = [ListenerMatcherKind::RawPointerLifecycle];
+    let leave_skip = [ListenerMatcherKind::HoverLeaveCurrentOwner];
 
     fn dispatch_sequence<C: ListenerComputeCtx>(
         ctx: &mut C,
-        skip: &[ListenerMatcherKind],
+        raw_skip: &[ListenerMatcherKind],
+        leave_skip: &[ListenerMatcherKind],
         leave_input: ListenerInput,
         raw_input: ListenerInput,
         enter_input: Option<ListenerInput>,
     ) -> Vec<ListenerAction> {
-        let current_hover_id = ctx.hover_owner().cloned();
-        let next_hover_listener = enter_input
-            .as_ref()
-            .and_then(|input| ctx.base_first_match_listener(input, &[]));
-        let next_hover_id = next_hover_listener
-            .as_ref()
-            .and_then(|listener| listener.element_id);
-        let hover_owner_changed = current_hover_id != next_hover_id;
+        let mut out = hover_leave_actions(&leave_input, ctx.hover_stack());
+        out.extend(ctx.dispatch_effective_skip(&leave_input, leave_skip));
+        out.extend(ctx.dispatch_effective_skip(&raw_input, raw_skip));
 
-        let mut out = ctx.dispatch_effective_skip(&leave_input, skip);
-
-        if hover_owner_changed
-            && let Some(current_hover_id) = current_hover_id.as_ref()
-            && let Some(listener) = ctx.base_source_listener(
-                current_hover_id,
-                ListenerMatcherKind::HoverLeaveCurrentOwner,
-            )
-        {
-            out.extend(listener.compute_listener_input_with_ctx(&leave_input, ctx));
-        }
-
-        out.extend(ctx.dispatch_effective_skip(&raw_input, skip));
-
-        if hover_owner_changed {
-            if let (Some(enter_input), Some(listener)) = (enter_input.as_ref(), next_hover_listener)
-            {
-                out.extend(listener.compute_listener_input_with_ctx(enter_input, ctx));
-            }
-
-            out.push(ListenerAction::RuntimeChange(
-                RuntimeChange::SetHoverOwner {
-                    element_id: next_hover_id,
-                },
-            ));
+        if let Some(enter_input) = enter_input.as_ref() {
+            out.extend(ctx.dispatch_effective_skip(enter_input, &[]));
         }
 
         out
@@ -3002,7 +3210,8 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
     match input {
         InputEvent::CursorPos { x, y } => dispatch_sequence(
             ctx,
-            &skip,
+            &raw_skip,
+            &leave_skip,
             ListenerInput::PointerLeave {
                 x: *x,
                 y: *y,
@@ -3019,7 +3228,8 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
             ..
         } if button == "left" && *action == ACTION_RELEASE => dispatch_sequence(
             ctx,
-            &skip,
+            &raw_skip,
+            &leave_skip,
             ListenerInput::PointerLeave {
                 x: *x,
                 y: *y,
@@ -3030,7 +3240,8 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
         ),
         InputEvent::CursorEntered { entered } if !*entered => dispatch_sequence(
             ctx,
-            &skip,
+            &raw_skip,
+            &leave_skip,
             ListenerInput::PointerLeave {
                 x: 0.0,
                 y: 0.0,
@@ -3043,25 +3254,97 @@ fn redispatch_pointer_lifecycle_from_input<C: ListenerComputeCtx>(
     }
 }
 
+fn hover_leave_actions(input: &ListenerInput, stack: &[HoverTracker]) -> Vec<ListenerAction> {
+    let ListenerInput::PointerLeave { x, y, window_left } = input else {
+        return Vec::new();
+    };
+
+    let mut retained = Vec::with_capacity(stack.len());
+    let mut actions = Vec::new();
+
+    for tracker in stack {
+        if *window_left || !tracker.region.contains(*x, *y) {
+            actions.extend(tracker.leave_actions.iter().cloned());
+        } else {
+            retained.push(tracker.clone());
+        }
+    }
+
+    if retained.len() != stack.len() {
+        actions.push(ListenerAction::RuntimeChange(
+            RuntimeChange::SetHoverStack { stack: retained },
+        ));
+    }
+
+    actions
+}
+
+fn hover_enter_actions<C: ListenerComputeCtx>(
+    stack: &[HoverTracker],
+    ctx: &C,
+) -> Vec<ListenerAction> {
+    let current = ctx.hover_stack();
+    let mut actions: Vec<_> = stack
+        .iter()
+        .filter(|tracker| {
+            !current
+                .iter()
+                .any(|active| active.element_id == tracker.element_id)
+        })
+        .flat_map(|tracker| tracker.enter_actions.iter().cloned())
+        .collect();
+
+    if hover_stack_ids_changed(current, stack) {
+        actions.push(ListenerAction::RuntimeChange(
+            RuntimeChange::SetHoverStack {
+                stack: stack.to_vec(),
+            },
+        ));
+    }
+
+    actions
+}
+
+fn hover_stack_ids_changed(current: &[HoverTracker], next: &[HoverTracker]) -> bool {
+    current.len() != next.len()
+        || current
+            .iter()
+            .zip(next.iter())
+            .any(|(current, next)| current.element_id != next.element_id)
+}
+
 fn scroll_tree_actions_from_directional_input(
     input: &ListenerInput,
     element_id: &NodeId,
     direction: ScrollDirection,
+    region: &PointerRegion,
 ) -> Vec<ListenerAction> {
-    match input {
+    let delta = match input {
         ListenerInput::ScrollDirection {
             direction: matched_direction,
             dx,
             dy,
             ..
-        } if *matched_direction == direction => {
-            vec![ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
-                element_id: *element_id,
-                dx: *dx,
-                dy: *dy,
-            })]
-        }
-        _ => Vec::new(),
+        } if *matched_direction == direction => Some((*dx, *dy)),
+        ListenerInput::DragScroll {
+            locked_axis,
+            from_x,
+            from_y,
+            x,
+            y,
+        } => drag_scroll_component_for_region(region, *locked_axis, *from_x, *from_y, *x, *y)
+            .filter(|component| component.direction == direction)
+            .map(|component| (component.dx, component.dy)),
+        _ => None,
+    };
+
+    match delta {
+        Some((dx, dy)) => vec![ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
+            element_id: *element_id,
+            dx,
+            dy,
+        })],
+        None => Vec::new(),
     }
 }
 
@@ -3173,10 +3456,24 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
 
     let moved = dx != 0.0 || dy != 0.0;
     let actions = if moved {
-        redispatch_scroll_component_for_axis(locked_axis, dx, dy, *x, *y, ctx)
+        ctx.dispatch_base(&ListenerInput::DragScroll {
+            locked_axis: Some(locked_axis),
+            from_x: last_x,
+            from_y: last_y,
+            x: *x,
+            y: *y,
+        })
     } else {
         Vec::new()
     };
+    let axis_delta = actions.iter().find_map(|action| match action {
+        ListenerAction::TreeMsg(TreeMsg::ScrollRequest { dx, dy, .. }) => match locked_axis {
+            GestureAxis::Horizontal if dx.abs() > f32::EPSILON => Some(*dx),
+            GestureAxis::Vertical if dy.abs() > f32::EPSILON => Some(*dy),
+            _ => None,
+        },
+        _ => None,
+    });
 
     actions
         .into_iter()
@@ -3184,6 +3481,7 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
             RuntimeChange::UpdateDragTrackerPointer {
                 last_x: *x,
                 last_y: *y,
+                axis_delta,
             },
         )))
         .collect()
@@ -4740,6 +5038,25 @@ fn tracks_hover_inside(element: &Element) -> bool {
         || attrs.on_mouse_leave.unwrap_or(false)
 }
 
+fn hover_tracker_for_element(
+    element: &Element,
+    state: Option<&ResolvedNodeState>,
+) -> Option<HoverTracker> {
+    let state = state?;
+    let region = pointer_region_for_element(state)?;
+
+    tracks_hover_inside(element).then(|| {
+        let cache_hash = hover_tracker_cache_hash(element, &region);
+        HoverTracker {
+            element_id: element.id,
+            region,
+            enter_actions: hover::inside_actions(element),
+            leave_actions: hover::leave_actions(element),
+            cache_hash,
+        }
+    })
+}
+
 fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bool {
     let attrs = &element.layout.effective;
     cursor_icon_for_element(element).is_some()
@@ -4876,6 +5193,7 @@ fn emit_element_listeners_with_focus_meta(
     element: &Element,
     state: Option<&ResolvedNodeState>,
     focus_meta: Option<&ElementFocusMeta>,
+    hover_stack: &[HoverTracker],
     out: &mut PrecedenceEmitter<'_>,
 ) {
     // Reordering these emissions changes per-element precedence. This function
@@ -4888,7 +5206,7 @@ fn emit_element_listeners_with_focus_meta(
             .iter()
             .filter_map(|build| build(element, state)),
     );
-    emit_cursor_state_listeners(element, state, out);
+    emit_cursor_state_listeners(element, state, hover_stack, out);
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
@@ -4904,9 +5222,10 @@ fn emit_element_listeners_with_focus_meta(
 fn emit_cursor_state_listeners(
     element: &Element,
     state: Option<&ResolvedNodeState>,
+    hover_stack: &[HoverTracker],
     out: &mut PrecedenceEmitter<'_>,
 ) {
-    out.emit_opt(slot_hover_pointer_enter(element, state));
+    out.emit_opt(slot_hover_pointer_enter(element, state, hover_stack));
     out.emit_opt(slot_cursor_pos_inside(element, state));
     out.emit_opt(slot_cursor_pos_outside(element, state));
     out.emit_opt(slot_hover_leave_owner(element, state));
@@ -5126,7 +5445,8 @@ pub(crate) fn accumulate_element_rebuild(
     element: &Element,
     state: Option<&ResolvedNodeState>,
     scroll_contexts: &[ScrollContext],
-) -> Vec<ScrollContext> {
+    hover_stack: &[HoverTracker],
+) -> (Vec<ScrollContext>, Vec<HoverTracker>) {
     if acc.focused_id.is_none() && element.runtime.focused_active {
         acc.focused_id = Some(element.id);
     }
@@ -5178,11 +5498,27 @@ pub(crate) fn accumulate_element_rebuild(
         consider_focus_on_mount_candidate(acc, element, focus_meta);
     }
 
+    let next_hover_stack = hover_tracker_for_element(element, state)
+        .map(|tracker| {
+            hover_stack
+                .iter()
+                .cloned()
+                .chain([tracker])
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| hover_stack.to_vec());
+
     acc.registry.in_precedence_order(|out| {
-        emit_element_listeners_with_focus_meta(element, state, local_focus_meta.as_ref(), out)
+        emit_element_listeners_with_focus_meta(
+            element,
+            state,
+            local_focus_meta.as_ref(),
+            &next_hover_stack,
+            out,
+        )
     });
 
-    next_scroll_contexts
+    (next_scroll_contexts, next_hover_stack)
 }
 
 fn accumulate_subtree_rebuild_local(
@@ -5190,6 +5526,7 @@ fn accumulate_subtree_rebuild_local(
     element_id: &NodeId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
+    hover_stack: &[HoverTracker],
     scene_ctx: crate::tree::scene::SceneContext,
 ) -> Vec<DeferredSubtree> {
     let Some(element) = tree.get(element_id) else {
@@ -5197,8 +5534,8 @@ fn accumulate_subtree_rebuild_local(
     };
 
     let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
-    let next_scroll_contexts =
-        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts);
+    let (next_scroll_contexts, next_hover_stack) =
+        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts, hover_stack);
 
     let mut deferred = Vec::new();
 
@@ -5215,6 +5552,7 @@ fn accumulate_subtree_rebuild_local(
             &mount_id,
             acc,
             scroll_contexts,
+            hover_stack,
             state
                 .clone()
                 .map(|resolved| {
@@ -5238,6 +5576,7 @@ fn accumulate_subtree_rebuild_local(
                 &child.id,
                 acc,
                 &next_scroll_contexts,
+                &next_hover_stack,
                 child_scene_ctx.clone(),
             ));
         }
@@ -5250,6 +5589,7 @@ fn accumulate_subtree_rebuild_local(
         deferred.push(DeferredSubtree {
             element_id: mount_id,
             scroll_contexts: scroll_contexts.to_vec(),
+            hover_stack: hover_stack.to_vec(),
             scene_ctx: state
                 .clone()
                 .map(|resolved| {
@@ -5276,6 +5616,7 @@ fn drain_deferred_subtrees(
             &subtree.element_id,
             acc,
             &subtree.scroll_contexts,
+            &subtree.hover_stack,
             subtree.scene_ctx,
         );
         drain_deferred_subtrees(tree, acc, child_deferred);
@@ -5294,6 +5635,7 @@ fn drain_deferred_subtrees_cached(
             &subtree.element_id,
             acc,
             &subtree.scroll_contexts,
+            &subtree.hover_stack,
             subtree.scene_ctx,
             cache_budget,
         );
@@ -5306,6 +5648,7 @@ fn accumulate_subtree_rebuild_local_cached(
     element_id: &NodeId,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
+    hover_stack: &[HoverTracker],
     scene_ctx: crate::tree::scene::SceneContext,
     cache_budget: &Cell<usize>,
 ) -> Vec<DeferredSubtree> {
@@ -5330,7 +5673,14 @@ fn accumulate_subtree_rebuild_local_cached(
             .and_then(|element| element.refresh.registry_cache.as_ref())
             .and_then(|cache| {
                 let element = tree.get_ix(ix)?;
-                let key = registry_subtree_key(tree, ix, element, scroll_contexts, &scene_ctx);
+                let key = registry_subtree_key(
+                    tree,
+                    ix,
+                    element,
+                    scroll_contexts,
+                    hover_stack,
+                    &scene_ctx,
+                );
                 (cache.key == key).then(|| cache.chunk.clone())
             });
 
@@ -5345,13 +5695,15 @@ fn accumulate_subtree_rebuild_local_cached(
         let Some(element) = tree.get_ix(ix).map(Element::render_snapshot) else {
             return Vec::new();
         };
-        let key = registry_subtree_key(tree, ix, &element, scroll_contexts, &scene_ctx);
+        let key =
+            registry_subtree_key(tree, ix, &element, scroll_contexts, hover_stack, &scene_ctx);
         let mut local_acc = RegistryBuildAcc::for_revision(acc.current_revision);
         let deferred = accumulate_subtree_rebuild_local_cached_uncached(
             tree,
             &element,
             &mut local_acc,
             scroll_contexts,
+            hover_stack,
             scene_ctx,
             cache_budget,
         );
@@ -5374,6 +5726,7 @@ fn accumulate_subtree_rebuild_local_cached(
         &element,
         acc,
         scroll_contexts,
+        hover_stack,
         scene_ctx,
         cache_budget,
     )
@@ -5386,12 +5739,13 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
     element: &Element,
     acc: &mut RegistryBuildAcc,
     scroll_contexts: &[ScrollContext],
+    hover_stack: &[HoverTracker],
     scene_ctx: crate::tree::scene::SceneContext,
     cache_budget: &Cell<usize>,
 ) -> Vec<DeferredSubtree> {
     let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
-    let next_scroll_contexts =
-        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts);
+    let (next_scroll_contexts, next_hover_stack) =
+        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts, hover_stack);
 
     let mut deferred = Vec::new();
 
@@ -5408,6 +5762,7 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
             &mount_id,
             acc,
             scroll_contexts,
+            hover_stack,
             state
                 .clone()
                 .map(|resolved| {
@@ -5435,6 +5790,7 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
                     &child.id,
                     acc,
                     &next_scroll_contexts,
+                    &next_hover_stack,
                     child_scene_ctx.clone(),
                     cache_budget,
                 ));
@@ -5449,6 +5805,7 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
         deferred.push(DeferredSubtree {
             element_id: mount_id,
             scroll_contexts: scroll_contexts.to_vec(),
+            hover_stack: hover_stack.to_vec(),
             scene_ctx: state
                 .clone()
                 .map(|resolved| {
@@ -5490,6 +5847,7 @@ fn registry_subtree_key(
     ix: crate::tree::element::NodeIx,
     element: &Element,
     scroll_contexts: &[ScrollContext],
+    hover_stack: &[HoverTracker],
     scene_ctx: &crate::tree::scene::SceneContext,
 ) -> RegistrySubtreeKey {
     RegistrySubtreeKey {
@@ -5497,6 +5855,7 @@ fn registry_subtree_key(
         attrs_hash: registry_attrs_hash(element),
         runtime_hash: hash_value(&element.runtime),
         frame_hash: registry_frame_hash(element),
+        hover_stack_hash: hash_hover_stack(hover_stack),
         scene_context_hash: hash_scene_context(scene_ctx),
         scroll_contexts_hash: hash_scroll_contexts(scroll_contexts),
         topology: tree.render_topology_dependency_key_ix(ix),
@@ -5506,6 +5865,24 @@ fn registry_subtree_key(
 fn hash_value(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hover_tracker_cache_hash(element: &Element, region: &PointerRegion) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    element.id.hash(&mut hasher);
+    element.spec.attrs_raw.hash(&mut hasher);
+    element.runtime.mouse_over_active.hash(&mut hasher);
+    hash_pointer_region(&mut hasher, region);
+    hasher.finish()
+}
+
+fn hash_hover_stack(stack: &[HoverTracker]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    stack.iter().for_each(|tracker| {
+        tracker.element_id.hash(&mut hasher);
+        tracker.cache_hash.hash(&mut hasher);
+    });
     hasher.finish()
 }
 
@@ -5640,6 +6017,34 @@ fn hash_interaction_clip(hasher: &mut DefaultHasher, clip: &InteractionClip) {
     }
 }
 
+fn hash_pointer_region(hasher: &mut DefaultHasher, region: &PointerRegion) {
+    region.visible.hash(hasher);
+    hash_shape_bounds(hasher, region.local_shape);
+    match region.screen_to_local {
+        Some(transform) => {
+            true.hash(hasher);
+            hash_affine(hasher, transform);
+        }
+        None => false.hash(hasher),
+    }
+    hash_rect(hasher, region.screen_bounds);
+    region
+        .clip_chain
+        .iter()
+        .for_each(|clip| hash_interaction_clip(hasher, clip));
+}
+
+fn hash_shape_bounds(hasher: &mut DefaultHasher, shape: ShapeBounds) {
+    hash_rect(hasher, shape.rect);
+    match shape.radii {
+        Some(radii) => {
+            true.hash(hasher);
+            hash_corner_radii(hasher, radii);
+        }
+        None => false.hash(hasher),
+    }
+}
+
 fn hash_scene_context(scene_ctx: &crate::tree::scene::SceneContext) -> u64 {
     let mut hasher = DefaultHasher::new();
     hash_f32(&mut hasher, scene_ctx.scroll_dx);
@@ -5707,7 +6112,7 @@ pub(crate) fn accumulate_subtree_rebuild(
     scene_ctx: crate::tree::scene::SceneContext,
 ) {
     let deferred =
-        accumulate_subtree_rebuild_local(tree, element_id, acc, scroll_contexts, scene_ctx);
+        accumulate_subtree_rebuild_local(tree, element_id, acc, scroll_contexts, &[], scene_ctx);
     drain_deferred_subtrees(tree, acc, deferred);
 }
 
@@ -5724,6 +6129,7 @@ fn accumulate_subtree_rebuild_cached(
         element_id,
         acc,
         scroll_contexts,
+        &[],
         scene_ctx,
         cache_budget,
     );
@@ -5878,7 +6284,16 @@ pub(crate) fn listeners_for_element(element: &Element) -> Vec<Listener> {
     let (focus_meta, _) = local_focus_meta_for_element(element, state.as_ref(), &[]);
     let mut registry = Registry::default();
     registry.in_precedence_order(|out| {
-        emit_element_listeners_with_focus_meta(element, state.as_ref(), focus_meta.as_ref(), out)
+        let hover_stack = hover_tracker_for_element(element, state.as_ref())
+            .into_iter()
+            .collect::<Vec<_>>();
+        emit_element_listeners_with_focus_meta(
+            element,
+            state.as_ref(),
+            focus_meta.as_ref(),
+            &hover_stack,
+            out,
+        )
     });
     registry.precedence_listeners()
 }
@@ -6526,15 +6941,16 @@ fn slot_cursor_pos_inside(
 fn slot_hover_pointer_enter(
     element: &Element,
     state: Option<&ResolvedNodeState>,
+    hover_stack: &[HoverTracker],
 ) -> Option<Listener> {
     let state = state?;
     let region = pointer_region_for_element(state)?;
-    let actions = hover::inside_actions(element);
+    let stack = hover_stack.to_vec();
 
     tracks_hover_inside(element).then_some(Listener {
         element_id: Some(element.id),
         matcher: ListenerMatcher::PointerEnterInside { region },
-        compute: ListenerCompute::Static { actions },
+        compute: ListenerCompute::HoverEnter { stack },
     })
 }
 
@@ -6739,13 +7155,14 @@ fn slot_cursor_pos_outside(
 
 fn slot_hover_leave_owner(
     element: &Element,
-    _state: Option<&ResolvedNodeState>,
+    state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
+    let region = pointer_region_for_element(state?)?;
     let actions = hover::leave_actions(element);
 
     (!actions.is_empty()).then_some(Listener {
         element_id: Some(element.id),
-        matcher: ListenerMatcher::HoverLeaveCurrentOwner,
+        matcher: ListenerMatcher::HoverLeaveCurrentOwner { region },
         compute: ListenerCompute::Static { actions },
     })
 }
@@ -6772,6 +7189,7 @@ fn emit_scroll_listeners_for_element(
                 compute: ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
                     element_id: element.id,
                     direction,
+                    region: region.clone(),
                 },
             }),
     );
@@ -7225,20 +7643,22 @@ mod tests {
     use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot, NodeId};
     use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
     use crate::tree::layout::{
-        Constraint, layout_and_refresh_default_with_animation, layout_tree_default_with_animation,
+        Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+        layout_tree_default_with_animation,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
     use crate::tree::transform::{Affine2, InteractionClip};
     use std::time::{Duration, Instant};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, GestureAxis, KeyPressFollowup,
-        KeyPressTracker, Listener, ListenerAction, ListenerCompute, ListenerComputeCtx,
-        ListenerInput, ListenerMatcher, ListenerMatcherKind, NoopListenerComputeCtx, PointerRegion,
-        RuntimeChange, RuntimeOverlayState, ScrollDirection, ScrollbarDragTracker,
-        ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker, TextDragTracker,
-        VirtualKeyPhase, VirtualKeyTracker, compose_combined_registry, listeners_for_element,
-        registry_for_elements, runtime_listeners_for_overlay, window_listeners,
+        ClickPressTracker, DragTrackerState, ElixirEvent, GestureAxis, HitGeometry, HoverTracker,
+        KeyPressFollowup, KeyPressTracker, Listener, ListenerAction, ListenerCompute,
+        ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
+        NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
+        ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
+        TextDragTracker, VirtualKeyPhase, VirtualKeyTracker, compose_combined_registry,
+        listeners_for_element, registry_for_elements, runtime_listeners_for_overlay,
+        window_listeners,
     };
     use crate::events::{CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState};
 
@@ -7279,6 +7699,11 @@ mod tests {
 
         PointerRegion {
             visible,
+            hit_geometry: HitGeometry::local(
+                ShapeBounds { rect, radii: None },
+                Some(Affine2::identity()),
+                rect,
+            ),
             local_shape: ShapeBounds { rect, radii: None },
             screen_to_local: Some(Affine2::identity()),
             screen_bounds: rect,
@@ -7296,6 +7721,11 @@ mod tests {
 
         PointerRegion {
             visible: true,
+            hit_geometry: HitGeometry::local(
+                ShapeBounds { rect, radii: None },
+                Some(Affine2::identity()),
+                rect,
+            ),
             local_shape: ShapeBounds { rect, radii: None },
             screen_to_local: Some(Affine2::identity()),
             screen_bounds: rect,
@@ -7319,11 +7749,13 @@ mod tests {
         bounds: Rect,
         radii: Option<CornerRadii>,
     ) -> PointerRegion {
+        let local_shape = ShapeBounds {
+            rect: bounds,
+            radii: radii.map(|value| clamp_radii(bounds, value)),
+        };
         PointerRegion {
-            local_shape: ShapeBounds {
-                rect: bounds,
-                radii: radii.map(|value| clamp_radii(bounds, value)),
-            },
+            hit_geometry: HitGeometry::local(local_shape, region.screen_to_local, bounds),
+            local_shape,
             screen_bounds: bounds,
             ..region
         }
@@ -7512,7 +7944,7 @@ mod tests {
     #[derive(Default)]
     struct TestComputeCtx {
         focused_id: Option<NodeId>,
-        hovered_id: Option<NodeId>,
+        hover_stack: Vec<HoverTracker>,
         text_inputs: HashMap<NodeId, TextInputState>,
         clipboard: HashMap<ClipboardTarget, Option<String>>,
         base_registry: Option<super::Registry>,
@@ -7524,8 +7956,8 @@ mod tests {
             self.focused_id.as_ref()
         }
 
-        fn hover_owner(&self) -> Option<&NodeId> {
-            self.hovered_id.as_ref()
+        fn hover_stack(&self) -> &[HoverTracker] {
+            &self.hover_stack
         }
 
         fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
@@ -7543,6 +7975,17 @@ mod tests {
             registry.view().first_match(input, &[], self)
         }
 
+        fn dispatch_base_skip(
+            &mut self,
+            input: &ListenerInput,
+            skip_matchers: &[ListenerMatcherKind],
+        ) -> Vec<ListenerAction> {
+            let Some(registry) = self.base_registry.clone() else {
+                return Vec::new();
+            };
+            registry.view().first_match(input, skip_matchers, self)
+        }
+
         fn dispatch_effective_skip(
             &mut self,
             input: &ListenerInput,
@@ -7552,33 +7995,6 @@ mod tests {
                 return Vec::new();
             };
             registry.view().first_match(input, skip_matchers, self)
-        }
-
-        fn base_first_match_listener(
-            &self,
-            input: &ListenerInput,
-            skip_matchers: &[ListenerMatcherKind],
-        ) -> Option<Listener> {
-            self.base_registry
-                .as_ref()?
-                .view()
-                .matching_listener(input, skip_matchers)
-                .cloned()
-        }
-
-        fn base_source_listener(
-            &self,
-            element_id: &NodeId,
-            matcher_kind: ListenerMatcherKind,
-        ) -> Option<Listener> {
-            self.base_registry
-                .as_ref()?
-                .view()
-                .find_precedence(|listener| {
-                    listener.element_id.as_ref() == Some(element_id)
-                        && listener.matcher.kind() == matcher_kind
-                })
-                .cloned()
         }
     }
 
@@ -7817,7 +8233,7 @@ mod tests {
 
         let actions = enter_listener
             .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 3);
         assert!(matches!(
             actions[0],
             ListenerAction::ElixirEvent(ElixirEvent {
@@ -7828,6 +8244,10 @@ mod tests {
         assert!(matches!(
             actions[1],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive { active: true, .. })
+        ));
+        assert!(matches!(
+            actions[2],
+            ListenerAction::RuntimeChange(RuntimeChange::SetHoverStack { .. })
         ));
 
         let raw_actions =
@@ -7847,7 +8267,10 @@ mod tests {
         let listeners = listeners_for_element(&element);
         assert_eq!(listeners.len(), 3);
         let leave_listener = listener_matching(&listeners, |listener| {
-            matches!(listener.matcher, ListenerMatcher::HoverLeaveCurrentOwner)
+            matches!(
+                listener.matcher,
+                ListenerMatcher::HoverLeaveCurrentOwner { .. }
+            )
         });
 
         let actions = leave_listener.compute_listener_input_actions(&ListenerInput::PointerLeave {
@@ -7884,7 +8307,7 @@ mod tests {
         let actions = enter_listener
             .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
 
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 3);
         assert!(matches!(
             actions[0],
             ListenerAction::ElixirEvent(ElixirEvent {
@@ -7899,10 +8322,14 @@ mod tests {
                 active,
             }) if *element_id == NodeId::from_term_bytes(vec![22]) && active
         ));
+        assert!(matches!(
+            actions[2],
+            ListenerAction::RuntimeChange(RuntimeChange::SetHoverStack { .. })
+        ));
 
         let release_actions = enter_listener
             .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
-        assert_eq!(release_actions.len(), 2);
+        assert_eq!(release_actions.len(), 3);
     }
 
     #[test]
@@ -7920,13 +8347,17 @@ mod tests {
         let actions = enter_listener
             .compute_listener_input_actions(&ListenerInput::PointerEnter { x: 10.0, y: 10.0 });
 
-        assert_eq!(actions.len(), 1);
+        assert_eq!(actions.len(), 2);
         assert!(matches!(
             actions[0],
             ListenerAction::TreeMsg(TreeMsg::SetMouseOverActive {
                 ref element_id,
                 active,
             }) if *element_id == NodeId::from_term_bytes(vec![24]) && active
+        ));
+        assert!(matches!(
+            actions[1],
+            ListenerAction::RuntimeChange(RuntimeChange::SetHoverStack { .. })
         ));
 
         let inside_listener = listener_matching(&listeners, |listener| {
@@ -7964,7 +8395,10 @@ mod tests {
 
         let listeners = listeners_for_element(&element);
         let leave_listener = listener_matching(&listeners, |listener| {
-            matches!(listener.matcher, ListenerMatcher::HoverLeaveCurrentOwner)
+            matches!(
+                listener.matcher,
+                ListenerMatcher::HoverLeaveCurrentOwner { .. }
+            )
         });
         let actions = leave_listener.compute_listener_input_actions(&ListenerInput::PointerLeave {
             x: 0.0,
@@ -8016,6 +8450,103 @@ mod tests {
             x: 10.0,
             y: 2.0,
         }));
+    }
+
+    #[test]
+    fn registry_hit_testing_uses_layout_rotate_inverse_geometry() {
+        let mut tree = ElementTree::new();
+        let mut attrs = Attrs::default();
+        attrs.width = Some(Length::Px(100.0));
+        attrs.height = Some(Length::Px(40.0));
+        attrs.layout_rotate = Some(45.0);
+        attrs.on_mouse_down = Some(true);
+
+        let root = make_element(125, attrs);
+        let root_id = root.id;
+        tree.set_root_id(root_id);
+        tree.insert(root);
+
+        let registry = layout_and_refresh_default(&mut tree, Constraint::new(200.0, 200.0), 1.0)
+            .event_rebuild
+            .base_registry;
+
+        let hit_actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 50.0,
+                y: 50.0,
+            },
+        );
+        assert!(matches!(
+            actions_without_cursor(&hit_actions).as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent {
+                kind: ElementEventKind::MouseDown,
+                ..
+            })]
+        ));
+
+        let miss_actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 1.0,
+                y: 1.0,
+            },
+        );
+        assert!(actions_without_cursor(&miss_actions).is_empty());
+    }
+
+    #[test]
+    fn registry_hit_testing_keeps_root_rotated_nearby_reachable() {
+        let mut tree = ElementTree::new();
+        let menu_id = NodeId::from_term_bytes(vec![127]);
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Fill);
+        root_attrs.height = Some(Length::Fill);
+        root_attrs.clip_nearby = Some(true);
+        root_attrs.layout_rotate = Some(90.0);
+        let mut root = make_element(126, root_attrs);
+        let root_id = root.id;
+        root.nearby.set(NearbySlot::InFront, Some(menu_id));
+
+        let mut menu_attrs = Attrs::default();
+        menu_attrs.width = Some(Length::Px(40.0));
+        menu_attrs.height = Some(Length::Px(40.0));
+        menu_attrs.on_mouse_down = Some(true);
+        let menu = Element::with_attrs(menu_id, ElementKind::El, Vec::new(), menu_attrs);
+
+        tree.set_root_id(root_id);
+        tree.insert(root);
+        tree.insert(menu);
+
+        let registry = layout_and_refresh_default(&mut tree, Constraint::new(480.0, 320.0), 1.0)
+            .event_rebuild
+            .base_registry;
+        let actions = first_matching_actions(
+            &registry,
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 460.0,
+                y: 20.0,
+            },
+        );
+
+        assert!(matches!(
+            actions_without_cursor(&actions).as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::MouseDown,
+                ..
+            })] if *element_id == menu_id
+        ));
     }
 
     #[test]
@@ -9609,6 +10140,112 @@ mod tests {
     }
 
     #[test]
+    fn compose_combined_registry_drag_scroll_uses_rotated_local_axis() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(20.0);
+        attrs.scroll_y_max = Some(100.0);
+        attrs.layout_rotate = Some(90.0);
+        let element = with_frame(
+            make_element(32, attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 200.0,
+            },
+        );
+        let base = registry_for_elements(&[element]);
+
+        let candidate_runtime = RuntimeOverlayState {
+            click_press: None,
+            virtual_key: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: NodeId::from_term_bytes(vec![32]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 50.0,
+                origin_y: 50.0,
+                swipe_handlers: SwipeHandlers::default(),
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &candidate_runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let promote_actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 35.0, y: 50.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            promote_actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
+                    element_id,
+                    locked_axis,
+                    ..
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+            ] if *element_id == NodeId::from_term_bytes(vec![32])
+                && *locked_axis == GestureAxis::Vertical
+        ));
+
+        let active_runtime = RuntimeOverlayState {
+            drag: DragTrackerState::Active {
+                element_id: NodeId::from_term_bytes(vec![32]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                last_x: 35.0,
+                last_y: 50.0,
+                locked_axis: GestureAxis::Vertical,
+            },
+            ..candidate_runtime
+        };
+        let combined = compose_combined_registry(&base, &active_runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let scroll_actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 20.0, y: 50.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            scroll_actions.as_slice(),
+            [
+                ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
+                    element_id,
+                    dx,
+                    dy,
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
+                    last_x,
+                    last_y,
+                    axis_delta,
+                }),
+            ] if *element_id == NodeId::from_term_bytes(vec![32])
+                && dx.abs() < f32::EPSILON
+                && (*dy - 15.0).abs() < 0.001
+                && (*last_x - 20.0).abs() < f32::EPSILON
+                && (*last_y - 50.0).abs() < f32::EPSILON
+                && matches!(axis_delta, Some(delta) if (*delta - 15.0).abs() < 0.001)
+        ));
+    }
+
+    #[test]
     fn listeners_for_element_on_swipe_starts_drag_tracker_without_click_press_tracker() {
         let mut attrs = Attrs::default();
         attrs.on_swipe_right = Some(true);
@@ -10280,6 +10917,24 @@ mod tests {
                 element_id: NodeId::from_term_bytes(vec![74]),
                 region: PointerRegion {
                     visible: true,
+                    hit_geometry: HitGeometry::local(
+                        ShapeBounds {
+                            rect: Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: 100.0,
+                                height: 40.0,
+                            },
+                            radii: None,
+                        },
+                        Some(Affine2::identity()),
+                        Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 100.0,
+                            height: 40.0,
+                        },
+                    ),
                     local_shape: ShapeBounds {
                         rect: Rect {
                             x: 0.0,
@@ -12383,12 +13038,14 @@ mod tests {
                 ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
                     last_x,
                     last_y,
+                    axis_delta,
                 }),
             ] if *element_id == NodeId::from_term_bytes(vec![48])
                 && (*dx - 14.0).abs() < f32::EPSILON
                 && dy.abs() < f32::EPSILON
                 && (*last_x - 24.0).abs() < f32::EPSILON
                 && (*last_y - 12.0).abs() < f32::EPSILON
+                && matches!(axis_delta, Some(delta) if (*delta - 14.0).abs() < f32::EPSILON)
         ));
     }
 
@@ -12442,7 +13099,9 @@ mod tests {
             [ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
                 last_x,
                 last_y,
+                axis_delta,
             })] if (*last_x - 10.0).abs() < f32::EPSILON && (*last_y - 24.0).abs() < f32::EPSILON
+                && axis_delta.is_none()
         ));
     }
 
@@ -12711,6 +13370,7 @@ mod tests {
         let compute = ListenerCompute::ScrollTreeMsgFromCursorScrollDirection {
             element_id,
             direction: ScrollDirection::YNeg,
+            region: build_pointer_region(true),
         };
 
         let actions = compute.compute_input(

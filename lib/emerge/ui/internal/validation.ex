@@ -16,6 +16,8 @@ defmodule Emerge.UI.Internal.Validation do
                       :clip_nearby,
                       :width,
                       :height,
+                      :layout_scale,
+                      :layout_rotate,
                       :padding,
                       :spacing,
                       :spacing_xy,
@@ -310,6 +312,25 @@ defmodule Emerge.UI.Internal.Validation do
   defp validate_public_attr_value!(attrs_owner, :height, value),
     do: validate_length!(attrs_owner, :height, value)
 
+  defp validate_public_attr_value!(attrs_owner, :layout_scale, value)
+       when is_number(value) and value > 0 do
+    validate_finite_number_attr!(attrs_owner, :layout_scale, value)
+  end
+
+  defp validate_public_attr_value!(attrs_owner, :layout_scale, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :layout_scale to be a finite positive number, got: #{inspect(value)}"
+  end
+
+  defp validate_public_attr_value!(attrs_owner, :layout_rotate, value) when is_number(value) do
+    validate_finite_number_attr!(attrs_owner, :layout_rotate, value)
+  end
+
+  defp validate_public_attr_value!(attrs_owner, :layout_rotate, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects :layout_rotate to be a finite number of degrees, got: #{inspect(value)}"
+  end
+
   defp validate_public_attr_value!(attrs_owner, :padding, value),
     do: validate_padding!(attrs_owner, value)
 
@@ -560,6 +581,19 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects #{inspect(key)} to be a number, got: #{inspect(value)}"
   end
 
+  defp validate_finite_number_attr!(_attrs_owner, _key, value)
+       when is_integer(value),
+       do: :ok
+
+  defp validate_finite_number_attr!(_attrs_owner, _key, value)
+       when is_float(value) and value == value and value not in [:infinity, :neg_infinity],
+       do: :ok
+
+  defp validate_finite_number_attr!(attrs_owner, key, value) do
+    raise ArgumentError,
+          "#{attrs_owner} expects #{inspect(key)} to be finite, got: #{inspect(value)}"
+  end
+
   defp validate_event_payload!(_attrs_owner, _key, {pid, _message}) when is_pid(pid), do: :ok
 
   defp validate_event_payload!(attrs_owner, key, value) do
@@ -572,6 +606,16 @@ defmodule Emerge.UI.Internal.Validation do
          (Map.has_key?(attrs, :on_click) or Map.has_key?(attrs, :on_press)) do
       raise ArgumentError,
             "#{attrs_owner} does not allow :virtual_key together with :on_click or :on_press"
+    end
+
+    if Map.has_key?(attrs, :layout_scale) and Map.has_key?(attrs, :scale) do
+      raise ArgumentError,
+            "#{attrs_owner} does not allow layout scale/1 together with Transform.scale/1"
+    end
+
+    if Map.has_key?(attrs, :layout_rotate) and Map.has_key?(attrs, :rotate) do
+      raise ArgumentError,
+            "#{attrs_owner} does not allow layout rotate/1 together with Transform.rotate/1"
     end
 
     attrs

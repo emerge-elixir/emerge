@@ -261,6 +261,141 @@ fn bench_nested_card_grid_retained(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_layout_aware_transform(c: &mut Criterion) {
+    let mut group = c.benchmark_group(format!(
+        "native/layout_aware_transform/card_grid_{CARD_COUNT}"
+    ));
+    let node_count = nested_card_grid(CARD_COUNT).len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    let cases = [
+        LayoutTransformBenchCase {
+            name: "no_transform",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::None,
+        },
+        LayoutTransformBenchCase {
+            name: "global_scale_1_25",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.25,
+            transform: LayoutTransformCase::None,
+        },
+        LayoutTransformBenchCase {
+            name: "root_scale_1_25",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::RootScale(1.25),
+        },
+        LayoutTransformBenchCase {
+            name: "root_scale_1_5",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::RootScale(1.5),
+        },
+        LayoutTransformBenchCase {
+            name: "nested_scale_1_25",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::NestedScale(1.25),
+        },
+        LayoutTransformBenchCase {
+            name: "root_rotate_90_portrait",
+            constraint: Constraint::new(540.0, 960.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::RootRotate(90.0),
+        },
+        LayoutTransformBenchCase {
+            name: "root_rotate_45",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::RootRotate(45.0),
+        },
+        LayoutTransformBenchCase {
+            name: "nested_rotate_45",
+            constraint: Constraint::new(960.0, 4_000.0),
+            global_scale: 1.0,
+            transform: LayoutTransformCase::NestedRotate(45.0),
+        },
+    ];
+
+    for case in cases {
+        group.bench_function(case.name, |b| {
+            b.iter_batched(
+                || {
+                    let mut tree = nested_card_grid(CARD_COUNT);
+                    configure_layout_transform_case(&mut tree, case.transform);
+                    tree
+                },
+                |mut tree| {
+                    let output =
+                        layout_and_refresh_default(&mut tree, case.constraint, case.global_scale);
+                    consume_layout_output(output)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+#[derive(Clone, Copy)]
+struct LayoutTransformBenchCase {
+    name: &'static str,
+    constraint: Constraint,
+    global_scale: f32,
+    transform: LayoutTransformCase,
+}
+
+#[derive(Clone, Copy)]
+enum LayoutTransformCase {
+    None,
+    RootScale(f64),
+    RootRotate(f64),
+    NestedScale(f64),
+    NestedRotate(f64),
+}
+
+fn configure_layout_transform_case(tree: &mut ElementTree, transform: LayoutTransformCase) {
+    match transform {
+        LayoutTransformCase::None => {}
+        LayoutTransformCase::RootScale(scale) => {
+            if let Some(root_id) = tree.root_id()
+                && let Some(root) = tree.get_mut(&root_id)
+            {
+                root.spec.declared.layout_scale = Some(scale);
+            }
+        }
+        LayoutTransformCase::RootRotate(degrees) => {
+            if let Some(root_id) = tree.root_id()
+                && let Some(root) = tree.get_mut(&root_id)
+            {
+                root.spec.declared.layout_rotate = Some(degrees);
+            }
+        }
+        LayoutTransformCase::NestedScale(scale) => {
+            if let Some(child_id) = first_root_child_id(tree)
+                && let Some(child) = tree.get_mut(&child_id)
+            {
+                child.spec.declared.layout_scale = Some(scale);
+            }
+        }
+        LayoutTransformCase::NestedRotate(degrees) => {
+            if let Some(child_id) = first_root_child_id(tree)
+                && let Some(child) = tree.get_mut(&child_id)
+            {
+                child.spec.declared.layout_rotate = Some(degrees);
+            }
+        }
+    }
+}
+
+fn first_root_child_id(tree: &ElementTree) -> Option<NodeId> {
+    tree.root_id()
+        .and_then(|root_id| tree.child_ids(&root_id).into_iter().next())
+}
+
 // Apply each patch during setup so the timed body is the first layout after invalidation.
 fn bench_animated_shadow_showcase(c: &mut Criterion) {
     let mut group = c.benchmark_group("native/layout_animation_paint_only/shadow_showcase");
@@ -1576,6 +1711,7 @@ criterion_group!(
     bench_nested_card_grid,
     bench_large_text_column_retained,
     bench_nested_card_grid_retained,
+    bench_layout_aware_transform,
     bench_animated_shadow_showcase,
     bench_scrolling_animated_shadow_showcase,
     bench_scroll_viewport_culling,

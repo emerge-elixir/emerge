@@ -1,8 +1,8 @@
-# Active Scroll Viewport Culling Plan
+# Completed Scroll Viewport Culling Plan
 
-Last updated: 2026-04-29.
+Last updated: 2026-05-06.
 
-Status: implemented, pending normal plan cleanup. Benchmark baseline and the
+Status: completed. Benchmark baseline and the
 shared render/registry viewport participation gate are implemented.
 
 ## Purpose

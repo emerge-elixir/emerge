@@ -126,12 +126,14 @@ pub struct Frame {
 pub struct IntrinsicMeasureCache {
     pub key: IntrinsicMeasureCacheKey,
     pub frame: Frame,
+    pub render_frame: Frame,
 }
 
 #[derive(Clone, Debug)]
 pub struct SubtreeMeasureCache {
     pub key: SubtreeMeasureCacheKey,
     pub frame: Frame,
+    pub render_frame: Frame,
 }
 
 #[derive(Clone, Debug)]
@@ -146,6 +148,12 @@ pub struct ResolveExtent {
     pub height: f32,
     pub content_width: f32,
     pub content_height: f32,
+    pub render_x: f32,
+    pub render_y: f32,
+    pub render_width: f32,
+    pub render_height: f32,
+    pub render_content_width: f32,
+    pub render_content_height: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +183,8 @@ pub enum ResolveAvailableSpaceKey {
 pub struct ResolveAttrs {
     pub width: Option<Length>,
     pub height: Option<Length>,
+    pub layout_scale: Option<f64>,
+    pub layout_rotate: Option<f64>,
     pub padding: Option<Padding>,
     pub border_width: Option<BorderWidth>,
     pub spacing: Option<f64>,
@@ -245,6 +255,7 @@ pub struct RenderSubtreeKey {
     pub attrs_hash: u64,
     pub runtime_hash: u64,
     pub frame: Option<Frame>,
+    pub render_frame: Option<Frame>,
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub scroll_x_max: f32,
@@ -270,6 +281,8 @@ pub struct RenderSubtreeCache {
 pub struct SubtreeMeasureAttrs {
     pub width: Option<Length>,
     pub height: Option<Length>,
+    pub layout_scale: Option<f64>,
+    pub layout_rotate: Option<f64>,
     pub padding: Option<Padding>,
     pub border_width: Option<BorderWidth>,
     pub spacing: Option<f64>,
@@ -660,8 +673,15 @@ pub struct NodeLayoutState {
     /// Computed layout frame (populated after layout pass).
     pub frame: Option<Frame>,
 
+    /// Frame used for painting and transformed hit geometry.
+    pub render_frame: Option<Frame>,
+
     /// Intrinsic frame captured during measurement pass before resolution mutates `frame`.
     pub measured_frame: Option<Frame>,
+
+    /// Unrotated intrinsic frame used by resolution when `frame` stores a
+    /// layout-aware rotated AABB.
+    pub measured_render_frame: Option<Frame>,
 
     pub scroll_x: f32,
     pub scroll_y: f32,
@@ -683,7 +703,9 @@ impl Default for NodeLayoutState {
         Self {
             effective: Attrs::default(),
             frame: None,
+            render_frame: None,
             measured_frame: None,
+            measured_render_frame: None,
             scroll_x: 0.0,
             scroll_y: 0.0,
             scroll_x_max: 0.0,
@@ -809,7 +831,9 @@ impl Element {
                 topology_versions: LayoutTopologyVersions::default(),
                 effective: attrs,
                 frame: None,
+                render_frame: None,
                 measured_frame: None,
+                measured_render_frame: None,
                 intrinsic_measure_cache: None,
                 subtree_measure_cache: None,
                 measure_dirty: true,
@@ -843,7 +867,9 @@ impl Element {
             layout: NodeLayoutState {
                 effective: self.layout.effective.clone(),
                 frame: self.layout.frame,
+                render_frame: self.layout.render_frame,
                 measured_frame: self.layout.measured_frame,
+                measured_render_frame: self.layout.measured_render_frame,
                 scroll_x: self.layout.scroll_x,
                 scroll_y: self.layout.scroll_y,
                 scroll_x_max: self.layout.scroll_x_max,
@@ -1974,6 +2000,14 @@ impl ElementTree {
         });
     }
 
+    pub fn mark_layout_scale_dirty(&mut self, id: &NodeId) {
+        if let Some(ix) = self.ix_of(id) {
+            self.mark_render_and_registry_refresh_dirty_ix(ix);
+            self.mark_measure_dirty_with_boundaries_ix(ix);
+            self.mark_measure_dirty_subtree_ix(ix);
+        }
+    }
+
     pub fn mark_all_resolve_dirty(&mut self) {
         self.iter_nodes_mut().for_each(|element| {
             element.layout.resolve_dirty = true;
@@ -2090,6 +2124,32 @@ impl ElementTree {
             element.layout.measure_descendant_dirty = false;
             element.layout.resolve_dirty = true;
             element.layout.resolve_descendant_dirty = false;
+        }
+    }
+
+    fn mark_measure_dirty_subtree_ix(&mut self, ix: NodeIx) {
+        let child_ixs = self.child_ixs(ix);
+        let nearby_ixs: Vec<NodeIx> = self
+            .nearby_ixs(ix)
+            .into_iter()
+            .map(|mount| mount.ix)
+            .collect();
+
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.layout.measure_dirty = true;
+            element.layout.measure_descendant_dirty = false;
+            element.layout.resolve_dirty = true;
+            element.layout.resolve_descendant_dirty = false;
+            element.refresh.render_dirty = true;
+            element.refresh.render_descendant_dirty = false;
+            element.refresh.render_cache = None;
+            element.refresh.registry_dirty = true;
+            element.refresh.registry_descendant_dirty = false;
+            element.refresh.registry_cache = None;
+        }
+
+        for child_ix in child_ixs.into_iter().chain(nearby_ixs) {
+            self.mark_measure_dirty_subtree_ix(child_ix);
         }
     }
 
@@ -3126,7 +3186,7 @@ impl ElementTree {
     }
 }
 
-fn parent_ix_from_link(parent_link: Option<ParentLink>) -> Option<NodeIx> {
+pub(crate) fn parent_ix_from_link(parent_link: Option<ParentLink>) -> Option<NodeIx> {
     parent_link.map(|parent_link| match parent_link {
         ParentLink::Child { parent } => parent,
         ParentLink::Nearby { host, .. } => host,

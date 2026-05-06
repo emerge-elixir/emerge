@@ -23,7 +23,7 @@ Related plans:
 - `layout-caching-roadmap.md`
 - `rendering-cache-engine-investigation.md`
 - `render-cache-flutter-comparison.md`
-- `active-render-cache-children-plan.md`
+- `completed/render-cache-children-plan.md`
 
 ## Terminology
 

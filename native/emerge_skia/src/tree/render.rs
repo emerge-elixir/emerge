@@ -498,7 +498,7 @@ fn build_element_subtree(
     let scene_state = resolve_node_state(element, traversal.scene_ctx.clone());
     let render_frame = scene_state
         .as_ref()
-        .map(|state| state.adjusted_frame)
+        .map(|state| state.adjusted_render_frame)
         .unwrap_or(frame);
     let transform = element_transform(render_frame, attrs);
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
@@ -636,7 +636,7 @@ fn build_element_subtree_cached(
     let scene_state = resolve_node_state(&element, traversal.scene_ctx.clone());
     let render_frame = scene_state
         .as_ref()
-        .map(|state| state.adjusted_frame)
+        .map(|state| state.adjusted_render_frame)
         .unwrap_or(frame);
     let transform = element_transform(render_frame, attrs);
     let alpha = attrs.alpha.unwrap_or(1.0) as f32;
@@ -861,6 +861,7 @@ fn should_emit_clean_subtree_candidate(
     (RENDER_CLEAN_SUBTREE_CANDIDATE_MIN_RENDER_NODES..=RENDER_SUBTREE_CACHE_MAX_RENDER_NODES)
         .contains(&node_count)
         && attrs.rotate.unwrap_or(0.0) == 0.0
+        && attrs.layout_rotate.unwrap_or(0.0) == 0.0
         && attrs.scale.unwrap_or(1.0) == 1.0
 }
 
@@ -1145,6 +1146,7 @@ fn render_subtree_key(
         attrs_hash: render_attrs_hash(&element.layout.effective),
         runtime_hash: debug_hash(&element.runtime),
         frame: element.layout.frame,
+        render_frame: element.layout.render_frame,
         scroll_x: element.layout.scroll_x,
         scroll_y: element.layout.scroll_y,
         scroll_x_max: element.layout.scroll_x_max,
@@ -1185,6 +1187,8 @@ fn render_attrs_hash(attrs: &Attrs) -> u64 {
     let mut hasher = DefaultHasher::new();
     debug_hash_into(&mut hasher, &attrs.width);
     debug_hash_into(&mut hasher, &attrs.height);
+    debug_hash_into(&mut hasher, &attrs.layout_scale);
+    debug_hash_into(&mut hasher, &attrs.layout_rotate);
     debug_hash_into(&mut hasher, &attrs.padding);
     debug_hash_into(&mut hasher, &attrs.spacing);
     debug_hash_into(&mut hasher, &attrs.spacing_x);

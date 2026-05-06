@@ -140,6 +140,12 @@ impl Affine2 {
         }
     }
 
+    pub fn maps_rects_to_axis_aligned_rects(self) -> bool {
+        const EPSILON: f32 = 0.0001;
+        (self.xy.abs() <= EPSILON && self.yx.abs() <= EPSILON)
+            || (self.xx.abs() <= EPSILON && self.yy.abs() <= EPSILON)
+    }
+
     pub fn inverse(self) -> Option<Self> {
         let det = self.xx * self.yy - self.xy * self.yx;
         if det.abs() <= f32::EPSILON {
@@ -197,7 +203,7 @@ impl InteractionClip {
 pub fn element_transform(frame: Frame, attrs: &Attrs) -> Affine2 {
     let move_x = attrs.move_x.unwrap_or(0.0) as f32;
     let move_y = attrs.move_y.unwrap_or(0.0) as f32;
-    let rotate = attrs.rotate.unwrap_or(0.0) as f32;
+    let rotate = attrs.layout_rotate.or(attrs.rotate).unwrap_or(0.0) as f32;
     let scale = attrs.scale.unwrap_or(1.0) as f32;
     let center_x = frame.x + frame.width / 2.0;
     let center_y = frame.y + frame.height / 2.0;

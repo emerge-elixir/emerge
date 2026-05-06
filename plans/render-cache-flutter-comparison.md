@@ -570,7 +570,7 @@ has not yet been shown to admit too many cheap entries or reject useful ones.
 ## Recommendations
 
 The lifecycle and parent/child recommendations below were implemented in
-`active-render-cache-children-plan.md`. The alpha children-cache expansion was
+`completed/render-cache-children-plan.md`. The alpha children-cache expansion was
 measured and rejected for this slice.
 
 ### 1. Do not broaden eligibility without a fresh plan
