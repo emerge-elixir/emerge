@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 use smithay_client_toolkit::shell::{WaylandSurface, xdg::window::Window};
 use wayland_client::QueueHandle;
 
+use crate::backend::present::{FrameIntervalEstimator, plausible_frame_interval};
+
 use super::runtime::WaylandApp;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,10 +27,6 @@ pub(super) enum DrawDecision {
     Draw(DrawKind),
 }
 
-fn plausible_frame_interval(interval: Duration) -> bool {
-    interval >= Duration::from_millis(4) && interval <= Duration::from_millis(100)
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PresentState {
     pub(super) configured: bool,
@@ -37,7 +35,7 @@ pub(super) struct PresentState {
     last_frame_callback_at: Option<Instant>,
     last_frame_callback_time_ms: Option<u32>,
     ready_frame_callback_at: Option<Instant>,
-    estimated_frame_interval: Duration,
+    frame_interval: FrameIntervalEstimator,
     latest_received_render_version: Option<u64>,
     latest_received_from_patch: bool,
     latest_received_animation_active: bool,
@@ -54,7 +52,7 @@ impl Default for PresentState {
             last_frame_callback_at: None,
             last_frame_callback_time_ms: None,
             ready_frame_callback_at: None,
-            estimated_frame_interval: Duration::from_millis(16),
+            frame_interval: FrameIntervalEstimator::default(),
             latest_received_render_version: None,
             latest_received_from_patch: false,
             latest_received_animation_active: false,
@@ -135,7 +133,7 @@ impl PresentState {
             .or(observed_from_arrival)
             .filter(|interval| plausible_frame_interval(*interval))
         {
-            self.estimated_frame_interval = observed;
+            self.frame_interval.observe_interval(observed);
         }
 
         self.last_frame_callback_at = Some(received_at);
@@ -164,11 +162,14 @@ impl PresentState {
             .ready_frame_callback_at
             .take()
             .unwrap_or(fallback_presented_at);
-        (presented_at, presented_at + self.estimated_frame_interval)
+        (
+            presented_at,
+            self.frame_interval.predict_next_present_after(presented_at),
+        )
     }
 
     pub(super) fn estimated_frame_interval(&self) -> Duration {
-        self.estimated_frame_interval
+        self.frame_interval.estimated_frame_interval()
     }
 
     pub(super) fn clear_ready_frame_callback_timing_if_idle(&mut self) {

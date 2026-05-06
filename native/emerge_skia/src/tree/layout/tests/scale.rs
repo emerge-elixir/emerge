@@ -217,6 +217,54 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
 }
 
 #[test]
+fn test_refresh_with_frame_attrs_applies_mouse_over_styles() {
+    let mut tree = ElementTree::new();
+
+    let mut attrs = Attrs::default();
+    attrs.width = Some(Length::Px(100.0));
+    attrs.height = Some(Length::Px(40.0));
+    attrs.background = Some(crate::tree::attrs::Background::Color(
+        crate::tree::attrs::Color::Rgb {
+            r: 10,
+            g: 20,
+            b: 30,
+        },
+    ));
+    attrs.mouse_over = Some(MouseOverAttrs {
+        background: Some(crate::tree::attrs::Background::Color(
+            crate::tree::attrs::Color::Rgb {
+                r: 200,
+                g: 100,
+                b: 50,
+            },
+        )),
+        ..Default::default()
+    });
+
+    let root = make_element("root", ElementKind::El, attrs);
+    let root_id = root.id;
+    tree.set_root_id(root_id);
+    tree.insert(root);
+
+    layout_and_refresh_default(&mut tree, Constraint::new(300.0, 200.0), 1.0);
+    tree.set_mouse_over_active(&root_id, true);
+
+    refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
+
+    let updated = tree.get(&root_id).unwrap();
+    assert_eq!(
+        updated.layout.effective.background,
+        Some(crate::tree::attrs::Background::Color(
+            crate::tree::attrs::Color::Rgb {
+                r: 200,
+                g: 100,
+                b: 50
+            }
+        ))
+    );
+}
+
+#[test]
 fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     let mut tree = ElementTree::new();
 

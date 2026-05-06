@@ -5512,6 +5512,16 @@ pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
     refresh_from_render_output(tree, render_output)
 }
 
+pub fn refresh_default_with_frame_attrs(
+    tree: &mut ElementTree,
+    scale: f32,
+    runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+) -> LayoutOutput {
+    let preparation = prepare_frame_attrs_for_update(tree, scale, runtime, sample_time);
+    refresh_prepared_default(tree, preparation).output
+}
+
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {

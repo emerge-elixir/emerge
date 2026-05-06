@@ -49,11 +49,11 @@ defmodule EmergeSkia.Macos.Launcher do
     bundled_binary = Path.join(project_root(), "priv/native/macos_host")
 
     cond do
-      File.regular?(cached_binary) ->
-        {:ok, cached_binary}
-
       File.regular?(bundled_binary) ->
         {:ok, bundled_binary}
+
+      File.regular?(cached_binary) ->
+        {:ok, cached_binary}
 
       true ->
         ensure_downloaded_host_binary(target, cached_binary)

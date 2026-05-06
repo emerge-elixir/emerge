@@ -10,7 +10,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::QueueHandle;
 
-use crate::input::{ACTION_PRESS, ACTION_RELEASE, InputEvent};
+use crate::input::{InputEvent, pointer};
 
 use super::runtime::WaylandApp;
 
@@ -40,12 +40,12 @@ impl PointerInputState {
 
 pub(super) fn pointer_button_name(button: u32) -> &'static str {
     match button {
-        BTN_LEFT => "left",
-        BTN_RIGHT => "right",
-        BTN_MIDDLE => "middle",
-        BTN_SIDE | BTN_BACK => "back",
-        BTN_EXTRA | BTN_FORWARD => "forward",
-        _ => "other",
+        BTN_LEFT => pointer::BUTTON_LEFT,
+        BTN_RIGHT => pointer::BUTTON_RIGHT,
+        BTN_MIDDLE => pointer::BUTTON_MIDDLE,
+        BTN_SIDE | BTN_BACK => pointer::BUTTON_BACK,
+        BTN_EXTRA | BTN_FORWARD => pointer::BUTTON_FORWARD,
+        _ => pointer::BUTTON_OTHER,
     }
 }
 
@@ -55,17 +55,7 @@ pub(super) fn pointer_button_event(
     mods: u8,
     position: (f32, f32),
 ) -> InputEvent {
-    InputEvent::CursorButton {
-        button: pointer_button_name(button).to_string(),
-        action: if pressed {
-            ACTION_PRESS
-        } else {
-            ACTION_RELEASE
-        },
-        mods,
-        x: position.0,
-        y: position.1,
-    }
+    pointer::cursor_button_event(pointer_button_name(button), pressed, mods, position)
 }
 
 pub(super) fn pointer_scroll_event(

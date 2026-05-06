@@ -1,7 +1,7 @@
 use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
 use wayland_client::protocol::wl_keyboard;
 
-use crate::input::{MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT};
+use crate::input::keyboard as input_keyboard;
 use crate::keys::CanonicalKey;
 
 pub(super) struct KeyboardInputState {
@@ -23,35 +23,12 @@ impl KeyboardInputState {
 }
 
 pub(super) fn mods_from_sctk(modifiers: Modifiers) -> u8 {
-    let mut mods = 0;
-
-    if modifiers.shift {
-        mods |= MOD_SHIFT;
-    }
-    if modifiers.ctrl {
-        mods |= MOD_CTRL;
-    }
-    if modifiers.alt {
-        mods |= MOD_ALT;
-    }
-    if modifiers.logo {
-        mods |= MOD_META;
-    }
-
-    mods
-}
-
-pub(super) fn normalize_commit_text(text: &str) -> Option<String> {
-    let filtered: String = text
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
-        .collect();
-
-    if filtered.is_empty() {
-        None
-    } else {
-        Some(filtered)
-    }
+    input_keyboard::modifier_bits(
+        modifiers.shift,
+        modifiers.ctrl,
+        modifiers.alt,
+        modifiers.logo,
+    )
 }
 
 pub(super) fn key_from_keysym(keysym: Keysym) -> CanonicalKey {
@@ -190,6 +167,7 @@ fn non_keypad_canonical_key(keysym: Keysym) -> Option<CanonicalKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::{MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT};
 
     #[test]
     fn mods_from_sctk_maps_supported_modifier_bits() {
@@ -249,8 +227,14 @@ mod tests {
 
     #[test]
     fn normalize_commit_text_filters_control_characters() {
-        assert_eq!(normalize_commit_text("ab\ncd"), Some("ab\ncd".to_string()));
-        assert_eq!(normalize_commit_text("ab\tcd"), Some("ab\tcd".to_string()));
-        assert_eq!(normalize_commit_text("\u{7f}"), None);
+        assert_eq!(
+            input_keyboard::normalize_commit_text("ab\ncd"),
+            Some("ab\ncd".to_string())
+        );
+        assert_eq!(
+            input_keyboard::normalize_commit_text("ab\tcd"),
+            Some("ab\tcd".to_string())
+        );
+        assert_eq!(input_keyboard::normalize_commit_text("\u{7f}"), None);
     }
 }

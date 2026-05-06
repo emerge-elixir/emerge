@@ -33,6 +33,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use crate::DrmCursorOverrideConfig;
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
+use crate::backend::present::PresentPredictionState;
 use crate::backend::skia_gpu::GlFrameSurface;
 use crate::backend::wake::BackendWake;
 use crate::cursor::{CursorState, SharedCursorState};
@@ -140,28 +141,18 @@ struct InFlightCommit {
 const FOLLOW_UP_PRIMARY_WINDOW: Duration = Duration::from_millis(4);
 
 struct DrmPresentState {
-    last_present_at: Option<Instant>,
-    estimated_frame_interval: Duration,
+    prediction: PresentPredictionState,
 }
 
 impl DrmPresentState {
     fn new(initial_frame_interval: Duration) -> Self {
         Self {
-            last_present_at: None,
-            estimated_frame_interval: initial_frame_interval,
+            prediction: PresentPredictionState::new(initial_frame_interval),
         }
     }
 
     fn observe_present(&mut self, presented_at: Instant) -> Instant {
-        if let Some(last_present_at) = self.last_present_at {
-            let observed = presented_at.saturating_duration_since(last_present_at);
-            if observed >= Duration::from_millis(4) && observed <= Duration::from_millis(100) {
-                self.estimated_frame_interval = observed;
-            }
-        }
-
-        self.last_present_at = Some(presented_at);
-        presented_at + self.estimated_frame_interval
+        self.prediction.observe_present(presented_at)
     }
 }
 
@@ -1234,14 +1225,7 @@ fn prepare_primary_frame(
     drop(frame);
 
     if let Some(stats) = stats {
-        stats.record_render(render_started_at.elapsed());
-        stats.record_render_draw(render_timings.draw);
-        stats.record_render_flush(render_timings.flush);
-        stats.record_render_gpu_flush(render_timings.gpu_flush);
-        stats.record_render_submit(render_timings.submit);
-        if let Some(renderer_cache) = render_timings.renderer_cache.as_deref() {
-            stats.record_renderer_cache(*renderer_cache);
-        }
+        stats.record_render_timings(render_started_at.elapsed(), &render_timings);
     }
 
     let present_submit_started_at = Instant::now();
@@ -2085,8 +2069,7 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
                         ..
                     } => {
                         let scene = *scene;
-                        render_state.has_cache_candidates = scene.has_cache_candidates();
-                        render_state.scene = scene;
+                        render_state.set_scene(scene);
                         render_state.render_version = version;
                         render_state.pipeline_submitted_at = pipeline_submitted_at;
                         render_state.animate = animate;
