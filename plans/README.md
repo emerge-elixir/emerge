@@ -52,14 +52,6 @@ This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
 
-### `native-tree-implementation-insights.md`
-
-Implementation lessons from the completed node identity, `NodeIx` storage, and
-native topology cleanup work.
-
-This replaces the old separate node-identity / phase-4 / phase-5 plan files with
-a single status-and-insights document.
-
 ## Current repo state
 
 The native layout-caching foundation is in place:

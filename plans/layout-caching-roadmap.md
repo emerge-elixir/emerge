@@ -3,9 +3,8 @@
 Last updated: 2026-04-28.
 
 This is the active roadmap for native retained-layout caching. It intentionally
-references the fuller research notes in `layout-caching-engine-insights.md` and
-the implementation lessons in `native-tree-implementation-insights.md` instead
-of repeating them all here.
+references the fuller research notes in `layout-caching-engine-insights.md`
+instead of repeating them all here.
 
 ## Current implementation status
 
@@ -73,6 +72,28 @@ The remaining work is about making reuse broader, cheaper, and more precise:
 - registry chunk-cache infrastructure exists but stays conservative; damaged
   no-cache and escape-nearby rebuilds still fall back to the full registry path
 - dynamic list / viewport cache preservation is not specialized yet
+
+### Native identity rules
+
+These rules were folded in from the old native-tree implementation notes:
+
+- `key` is semantic/user identity on the Elixir side
+- `NodeId` is the stable runtime handle shared across Elixir, EMRG, Rust,
+  events, patches, animations, and input/runtime maps
+- `NodeIx` is native-only dense storage/traversal identity and must not cross
+  the BEAM/native boundary
+- runtime ids should not encode reconciliation semantics; reconciliation decides
+  whether identity is reused
+- keyed children preserve identity only within the same parent/host scope and
+  compatible kind
+- unkeyed children remain positional
+- nearby slot changes on the same host should not break identity
+- reparenting is remove+insert for now
+- boundary APIs may stay `NodeId`-based when they face protocol/runtime maps,
+  but hot topology-heavy native traversal should resolve to `NodeIx` once and
+  stay ix-native internally
+- exit-animation ghosts use generated runtime ids, preserve cloned subtree
+  topology, and stay in active layout until pruning
 
 ## Current benchmark signal
 
@@ -502,6 +523,7 @@ This should build on:
 - prefer centralized cache logic over scattered per-kind special cases
 - choose work from invalidation/damage class, not from update source such as
   animation pulse, scroll, patch, hover, or focus
+- keep stable runtime identity separate from native storage identity
 
 ## Validation
 
