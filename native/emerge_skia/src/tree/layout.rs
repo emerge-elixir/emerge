@@ -6,8 +6,8 @@
 //! 2. Resolution (top-down): Assign frames with constraints
 
 use super::animation::{
-    AnimationOverlayResult, AnimationRuntime, apply_animation_overlays,
-    apply_animation_overlays_to_active, scale_animation_spec,
+    AnimationFrameSamples, AnimationOverlayResult, AnimationRuntime, apply_sample_attrs,
+    sample_animation_overlays, sample_animation_overlays_for_ids, scale_animation_spec,
 };
 use super::attrs::{
     AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
@@ -499,18 +499,20 @@ pub(crate) fn prepare_animation_frame_attrs_for_update(
     tree.set_current_scale(scale);
 
     let active_ids = animation_runtime.active_node_ids();
-    for id in &active_ids {
-        let scale_factor = effective_layout_scale_for_node(tree, id, scale);
-        if let Some(element) = tree.get_mut(id) {
-            element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
-            element.normalize_extracted_state();
-        }
-    }
-
-    let animation_result =
-        apply_animation_overlays_to_active(tree, animation_runtime, sample_time, scale);
+    let frame_samples =
+        sample_animation_overlays_for_ids(tree, animation_runtime, &active_ids, sample_time);
+    prepare_active_attrs_for_frame(tree, scale, &active_ids, &frame_samples);
+    let animation_result = frame_samples.result;
     mark_animation_refresh_effects_dirty(tree, &animation_result);
-    apply_interaction_styles_for_ids(tree, &active_ids);
+    if frame_samples
+        .samples
+        .values()
+        .any(|sample| sample.attrs.layout_scale.is_some())
+    {
+        apply_interaction_styles(tree);
+    } else {
+        apply_interaction_styles_for_ids(tree, &active_ids);
+    }
 
     FrameAttrsPreparation {
         root_id: tree.root_id(),
@@ -600,7 +602,11 @@ fn mark_animation_layout_effects_dirty(
         .iter()
         .filter(|effect| effect.invalidation.requires_recompute())
         .for_each(|effect| {
-            tree.mark_measure_dirty_for_invalidation(&effect.id, effect.invalidation)
+            if effect.layout_scale_dirty {
+                tree.mark_layout_scale_dirty(&effect.id);
+            } else {
+                tree.mark_measure_dirty_for_invalidation(&effect.id, effect.invalidation);
+            }
         });
 }
 
@@ -620,52 +626,104 @@ fn prepare_attrs_for_frame(
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> AnimationOverlayResult {
+    let frame_samples = sample_animation_overlays(tree, animation_runtime, sample_time);
+    prepare_all_attrs_for_frame(tree, scale, &frame_samples.samples);
+    frame_samples.result
+}
+
+fn prepare_all_attrs_for_frame(
+    tree: &mut ElementTree,
+    scale: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) {
     let root_id = tree.root_id();
     let root_layout_scale = root_id
         .and_then(|id| tree.get(&id))
-        .and_then(|root| valid_layout_scale(root.spec.declared.layout_scale));
+        .and_then(|root| valid_layout_scale(frame_layout_scale(root, samples)));
     let flat_scale = (scale as f64 * root_layout_scale.unwrap_or(1.0)) as f32;
-    let has_descendant_layout_scale = prepare_attrs_flat(tree, flat_scale, root_id);
+    let has_descendant_layout_scale = prepare_attrs_flat(tree, flat_scale, root_id, samples);
 
     if has_descendant_layout_scale && let Some(root_id) = root_id {
-        prepare_attrs_for_subtree(tree, root_id, scale);
+        prepare_attrs_for_subtree(tree, root_id, scale, samples);
     }
-
-    apply_animation_overlays(tree, animation_runtime, sample_time, scale)
 }
 
 fn valid_layout_scale(scale: Option<f64>) -> Option<f64> {
     scale.filter(|scale| scale.is_finite() && *scale > 0.0)
 }
 
-fn prepare_attrs_flat(tree: &mut ElementTree, scale: f32, root_id: Option<NodeId>) -> bool {
+fn prepare_attrs_flat(
+    tree: &mut ElementTree,
+    scale: f32,
+    root_id: Option<NodeId>,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) -> bool {
     let mut has_descendant_layout_scale = false;
     for element in tree.iter_nodes_mut() {
-        has_descendant_layout_scale |= root_id != Some(element.id)
-            && valid_layout_scale(element.spec.declared.layout_scale).is_some();
+        let frame_attrs = frame_declared_attrs(element, samples);
+        has_descendant_layout_scale |=
+            root_id != Some(element.id) && valid_layout_scale(frame_attrs.layout_scale).is_some();
         let scale_factor = match element.lifecycle.ghost_capture_scale {
             Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
             None => scale,
         };
-        element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+        element.layout.effective = scale_attrs(&frame_attrs, scale_factor);
         element.normalize_extracted_state();
     }
     has_descendant_layout_scale
 }
 
-fn prepare_attrs_for_subtree(tree: &mut ElementTree, id: NodeId, inherited_scale: f32) {
+fn prepare_active_attrs_for_frame(
+    tree: &mut ElementTree,
+    scale: f32,
+    active_ids: &[NodeId],
+    frame_samples: &AnimationFrameSamples,
+) {
+    let layout_scale_roots: Vec<NodeId> = frame_samples
+        .samples
+        .iter()
+        .filter_map(|(id, sample)| sample.attrs.layout_scale.is_some().then_some(*id))
+        .collect();
+
+    if tree
+        .root_id()
+        .is_some_and(|root_id| layout_scale_roots.contains(&root_id))
+    {
+        prepare_all_attrs_for_frame(tree, scale, &frame_samples.samples);
+        return;
+    }
+
+    for id in &layout_scale_roots {
+        let inherited_scale =
+            inherited_layout_scale_for_node(tree, id, scale, &frame_samples.samples);
+        prepare_attrs_for_subtree(tree, *id, inherited_scale, &frame_samples.samples);
+    }
+
+    for id in active_ids {
+        let scale_factor =
+            effective_layout_scale_for_node_with_samples(tree, id, scale, &frame_samples.samples);
+        prepare_attrs_for_single_node(tree, id, scale_factor, &frame_samples.samples);
+    }
+}
+
+fn prepare_attrs_for_subtree(
+    tree: &mut ElementTree,
+    id: NodeId,
+    inherited_scale: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) {
     let Some((next_scale, child_ids, nearby_ids)) =
-        prepare_attrs_for_node(tree, id, inherited_scale)
+        prepare_attrs_for_node(tree, id, inherited_scale, samples)
     else {
         return;
     };
 
     for child_id in child_ids {
-        prepare_attrs_for_subtree(tree, child_id, next_scale);
+        prepare_attrs_for_subtree(tree, child_id, next_scale, samples);
     }
 
     for nearby_id in nearby_ids {
-        prepare_attrs_for_subtree(tree, nearby_id, next_scale);
+        prepare_attrs_for_subtree(tree, nearby_id, next_scale, samples);
     }
 }
 
@@ -673,10 +731,11 @@ fn prepare_attrs_for_node(
     tree: &mut ElementTree,
     id: NodeId,
     inherited_scale: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
 ) -> Option<(f32, Vec<NodeId>, Vec<NodeId>)> {
     let local_scale = tree
         .get(&id)
-        .and_then(|element| element.spec.declared.layout_scale)
+        .and_then(|element| frame_layout_scale(element, samples))
         .and_then(|scale| valid_layout_scale(Some(scale)))
         .unwrap_or(1.0) as f32;
     let next_scale = (inherited_scale * local_scale).max(f32::EPSILON);
@@ -687,7 +746,8 @@ fn prepare_attrs_for_node(
         .unwrap_or(next_scale);
 
     if let Some(element) = tree.get_mut(&id) {
-        element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+        let frame_attrs = frame_declared_attrs(element, samples);
+        element.layout.effective = scale_attrs(&frame_attrs, scale_factor);
         element.normalize_extracted_state();
     } else {
         return None;
@@ -701,6 +761,40 @@ fn prepare_attrs_for_node(
         .collect();
 
     Some((next_scale, child_ids, nearby_ids))
+}
+
+fn prepare_attrs_for_single_node(
+    tree: &mut ElementTree,
+    id: &NodeId,
+    scale_factor: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) {
+    if let Some(element) = tree.get_mut(id) {
+        let frame_attrs = frame_declared_attrs(element, samples);
+        element.layout.effective = scale_attrs(&frame_attrs, scale_factor);
+        element.normalize_extracted_state();
+    }
+}
+
+fn frame_declared_attrs(
+    element: &Element,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) -> Attrs {
+    let mut attrs = element.spec.declared.clone();
+    if let Some(sample) = samples.get(&element.id) {
+        apply_sample_attrs(&mut attrs, &sample.attrs);
+    }
+    attrs
+}
+
+fn frame_layout_scale(
+    element: &Element,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) -> Option<f64> {
+    samples
+        .get(&element.id)
+        .and_then(|sample| sample.attrs.layout_scale)
+        .or(element.spec.declared.layout_scale)
 }
 
 pub(crate) fn effective_layout_scale_for_node(
@@ -734,6 +828,81 @@ pub(crate) fn effective_layout_scale_for_node(
                         .spec
                         .declared
                         .layout_scale
+                        .and_then(|scale| valid_layout_scale(Some(scale)))
+                        .unwrap_or(1.0) as f32;
+                    let current_total = (inherited * local).max(f32::EPSILON);
+                    let factor = element
+                        .lifecycle
+                        .ghost_capture_scale
+                        .map(|capture_scale| current_total / capture_scale.max(f32::EPSILON))
+                        .unwrap_or(current_total);
+                    (current_total, factor)
+                })
+                .unwrap_or((inherited, inherited))
+        })
+        .1
+}
+
+fn inherited_layout_scale_for_node(
+    tree: &ElementTree,
+    id: &NodeId,
+    global_scale: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) -> f32 {
+    let Some(mut ix) = tree.ix_of(id) else {
+        return global_scale;
+    };
+
+    let mut lineage = Vec::new();
+    while let Some(parent_ix) = tree
+        .parent_link_of(ix)
+        .and_then(|parent_link| super::element::parent_ix_from_link(Some(parent_link)))
+    {
+        lineage.push(parent_ix);
+        ix = parent_ix;
+    }
+
+    lineage.into_iter().rev().fold(global_scale, |scale, ix| {
+        tree.get_ix(ix)
+            .map(|element| {
+                let local = frame_layout_scale(element, samples)
+                    .and_then(|scale| valid_layout_scale(Some(scale)))
+                    .unwrap_or(1.0) as f32;
+                (scale * local).max(f32::EPSILON)
+            })
+            .unwrap_or(scale)
+    })
+}
+
+fn effective_layout_scale_for_node_with_samples(
+    tree: &ElementTree,
+    id: &NodeId,
+    global_scale: f32,
+    samples: &HashMap<NodeId, super::animation::AnimationSample>,
+) -> f32 {
+    let Some(mut ix) = tree.ix_of(id) else {
+        return global_scale;
+    };
+
+    let mut lineage = Vec::new();
+    loop {
+        lineage.push(ix);
+        let Some(parent_ix) = tree
+            .parent_link_of(ix)
+            .and_then(|parent_link| super::element::parent_ix_from_link(Some(parent_link)))
+        else {
+            break;
+        };
+        ix = parent_ix;
+    }
+
+    lineage
+        .into_iter()
+        .rev()
+        .fold((global_scale, global_scale), |(inherited, _factor), ix| {
+            tree.get_ix(ix)
+                .map(|element| {
+                    let local = frame_layout_scale(element, samples)
                         .and_then(|scale| valid_layout_scale(Some(scale)))
                         .unwrap_or(1.0) as f32;
                     let current_total = (inherited * local).max(f32::EPSILON);
@@ -1075,17 +1244,19 @@ fn scale_border_radius(
     }
 }
 
-/// Scale pixel values within a Length, recursively handling Minimum/Maximum.
+/// Scale pixel values within a Length, recursively handling nested min/max.
 fn scale_length(length: &Length, scale: f32) -> Length {
     let scale_f64 = scale as f64;
     match length {
         Length::Px(val) => Length::Px(*val * scale_f64),
-        Length::Minimum(min_px, inner) => {
-            Length::Minimum(*min_px * scale_f64, Box::new(scale_length(inner, scale)))
-        }
-        Length::Maximum(max_px, inner) => {
-            Length::Maximum(*max_px * scale_f64, Box::new(scale_length(inner, scale)))
-        }
+        Length::Min(left, right) => Length::Min(
+            Box::new(scale_length(left, scale)),
+            Box::new(scale_length(right, scale)),
+        ),
+        Length::Max(left, right) => Length::Max(
+            Box::new(scale_length(left, scale)),
+            Box::new(scale_length(right, scale)),
+        ),
         Length::Fill => Length::Fill,
         Length::Content => Length::Content,
         Length::FillWeighted(weight) => Length::FillWeighted(*weight),
@@ -1645,14 +1816,10 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
         Some(Length::Px(px)) => *px as f32,
         Some(Length::Content) | None => intrinsic,
         Some(Length::Fill) | Some(Length::FillWeighted(_)) => intrinsic, // Will expand in resolve
-        Some(Length::Minimum(min_px, inner)) => {
-            let inner_size = resolve_intrinsic_length(Some(inner), intrinsic);
-            inner_size.max(*min_px as f32)
-        }
-        Some(Length::Maximum(max_px, inner)) => {
-            let inner_size = resolve_intrinsic_length(Some(inner), intrinsic);
-            inner_size.min(*max_px as f32)
-        }
+        Some(Length::Min(left, right)) => resolve_intrinsic_length(Some(left), intrinsic)
+            .min(resolve_intrinsic_length(Some(right), intrinsic)),
+        Some(Length::Max(left, right)) => resolve_intrinsic_length(Some(left), intrinsic)
+            .max(resolve_intrinsic_length(Some(right), intrinsic)),
     }
 }
 
@@ -1665,7 +1832,7 @@ fn layout_rotate_degrees(attrs: &Attrs) -> Option<f32> {
         .layout_rotate
         .map(|degrees| degrees as f32)
         .filter(|degrees| degrees.is_finite())
-        .map(|degrees| normalize_degrees(degrees))
+        .map(normalize_degrees)
         .filter(|degrees| degrees.abs() > f32::EPSILON)
 }
 
@@ -1770,32 +1937,25 @@ fn resolve_element_sizing(
 
     // Resolve final dimensions.
     // Use intrinsic size as default for content-based constraints.
-    let available_width = if text_should_fill_width || prefer_fill_width {
+    let available_width = if text_should_fill_width
+        || prefer_fill_width
+        || length_requests_fill(attrs.width.as_ref())
+    {
         // Text with alignment should fill available width.
         constraint.width
     } else if kind == ElementKind::Paragraph && is_content_length(attrs.width.as_ref()) {
         // Paragraphs wrap text within parent's available width (like <p> in HTML).
         constraint.width
     } else if is_content_length(attrs.width.as_ref()) {
-        match attrs.width.as_ref() {
-            Some(Length::Minimum(_, inner)) if is_content_length(Some(inner)) => {
-                AvailableSpace::MinContent
-            }
-            _ => AvailableSpace::MaxContent,
-        }
+        AvailableSpace::MaxContent
     } else {
         constraint.width
     };
 
-    let available_height = if prefer_fill_height {
+    let available_height = if prefer_fill_height || length_requests_fill(attrs.height.as_ref()) {
         constraint.height
     } else if is_content_length(attrs.height.as_ref()) {
-        match attrs.height.as_ref() {
-            Some(Length::Minimum(_, inner)) if is_content_length(Some(inner)) => {
-                AvailableSpace::MinContent
-            }
-            _ => AvailableSpace::MaxContent,
-        }
+        AvailableSpace::MaxContent
     } else {
         constraint.height
     };
@@ -1823,8 +1983,8 @@ fn resolve_element_sizing(
 fn length_requests_fill(length: Option<&Length>) -> bool {
     match length {
         Some(Length::Fill) | Some(Length::FillWeighted(_)) => true,
-        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
-            length_requests_fill(Some(inner))
+        Some(Length::Min(left, right)) | Some(Length::Max(left, right)) => {
+            length_requests_fill(Some(left)) || length_requests_fill(Some(right))
         }
         _ => false,
     }
@@ -1920,7 +2080,7 @@ fn resolve_el_kind<M: TextMeasurer>(
 
     if actual_ch > params.content.height
         && !params.is_scrollable
-        && is_content_length(params.attrs.height.as_ref())
+        && length_allows_content_expansion(params.attrs.height.as_ref())
     {
         expand_frame_height_to_content(tree, params.id, actual_ch, params.insets);
         set_frame_content_width(tree, params.id, actual_cw, params.insets);
@@ -1957,7 +2117,7 @@ fn resolve_row_kind<M: TextMeasurer>(
 
     if actual_ch > params.content.height
         && !params.is_scrollable
-        && is_content_length(params.attrs.height.as_ref())
+        && length_allows_content_expansion(params.attrs.height.as_ref())
     {
         expand_frame_height_to_content(tree, params.id, actual_ch, params.insets);
         set_frame_content_width(tree, params.id, actual_cw, params.insets);
@@ -1985,7 +2145,10 @@ fn resolve_wrapped_row_kind<M: TextMeasurer>(
         params.use_resolve_cache,
     );
 
-    if actual_content_height > params.content.height && !params.is_scrollable {
+    if actual_content_height > params.content.height
+        && !params.is_scrollable
+        && length_allows_content_expansion(params.attrs.height.as_ref())
+    {
         expand_frame_height_to_content(tree, params.id, actual_content_height, params.insets);
     } else {
         set_frame_content_height(tree, params.id, actual_content_height, params.insets);
@@ -2015,7 +2178,10 @@ fn resolve_column_kind<M: TextMeasurer>(
         params.use_resolve_cache,
     );
 
-    if actual_content_height > params.content.height && !params.is_scrollable {
+    if actual_content_height > params.content.height
+        && !params.is_scrollable
+        && length_allows_content_expansion(params.attrs.height.as_ref())
+    {
         // For content-height columns, a first pass can expand children and increase
         // total height. Re-resolve once using the expanded height so bottom/center
         // aligned children are positioned against the final content box.
@@ -2066,7 +2232,10 @@ fn resolve_text_column_kind<M: TextMeasurer>(
         params.use_resolve_cache,
     );
 
-    if actual_content_height > params.content.height && !params.is_scrollable {
+    if actual_content_height > params.content.height
+        && !params.is_scrollable
+        && length_allows_content_expansion(params.attrs.height.as_ref())
+    {
         expand_frame_height_to_content(tree, params.id, actual_content_height, params.insets);
     } else {
         set_frame_content_height(tree, params.id, actual_content_height, params.insets);
@@ -2098,7 +2267,10 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
         element.layout.paragraph_fragments = Some(fragments);
     }
 
-    if actual_content_height > params.content.height && !params.is_scrollable {
+    if actual_content_height > params.content.height
+        && !params.is_scrollable
+        && length_allows_content_expansion(params.attrs.height.as_ref())
+    {
         expand_frame_height_to_content(tree, params.id, actual_content_height, params.insets);
     } else {
         set_frame_content_height(tree, params.id, actual_content_height, params.insets);
@@ -2146,7 +2318,7 @@ fn resolve_multiline_kind<M: TextMeasurer>(
 
     if layout.total_height > params.content.height
         && !params.is_scrollable
-        && is_content_length(params.attrs.height.as_ref())
+        && length_allows_content_expansion(params.attrs.height.as_ref())
     {
         expand_frame_height_to_content(tree, params.id, layout.total_height, params.insets);
         set_frame_content_width(tree, params.id, layout.max_width, params.insets);
@@ -2856,14 +3028,10 @@ fn resolve_length(length: Option<&Length>, intrinsic: f32, constraint: f32) -> f
         Some(Length::Content) | None => intrinsic.min(constraint),
         Some(Length::Fill) => constraint,
         Some(Length::FillWeighted(_)) => constraint, // Simplified: treat as fill
-        Some(Length::Minimum(min_px, inner)) => {
-            let inner_size = resolve_length(Some(inner), intrinsic, constraint);
-            inner_size.max(*min_px as f32)
-        }
-        Some(Length::Maximum(max_px, inner)) => {
-            let inner_size = resolve_length(Some(inner), intrinsic, constraint);
-            inner_size.min(*max_px as f32)
-        }
+        Some(Length::Min(left, right)) => resolve_length(Some(left), intrinsic, constraint)
+            .min(resolve_length(Some(right), intrinsic, constraint)),
+        Some(Length::Max(left, right)) => resolve_length(Some(left), intrinsic, constraint)
+            .max(resolve_length(Some(right), intrinsic, constraint)),
     }
 }
 
@@ -2999,10 +3167,25 @@ fn aligned_y_in_slot(slot_y: f32, slot_height: f32, nearby_height: f32, align_y:
 fn is_content_length(length: Option<&Length>) -> bool {
     match length {
         None | Some(Length::Content) => true,
-        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
-            is_content_length(Some(inner))
+        Some(Length::Min(left, right)) | Some(Length::Max(left, right)) => {
+            is_content_length(Some(left)) || is_content_length(Some(right))
         }
         _ => false,
+    }
+}
+
+fn length_allows_content_expansion(length: Option<&Length>) -> bool {
+    match length {
+        None | Some(Length::Content) => true,
+        Some(Length::Min(left, right)) => {
+            length_allows_content_expansion(Some(left))
+                && length_allows_content_expansion(Some(right))
+        }
+        Some(Length::Max(left, right)) => {
+            length_allows_content_expansion(Some(left))
+                || length_allows_content_expansion(Some(right))
+        }
+        Some(Length::Px(_)) | Some(Length::Fill) | Some(Length::FillWeighted(_)) => false,
     }
 }
 
@@ -3012,11 +3195,29 @@ fn get_fill_weight(length: Option<&Length>) -> f32 {
     match length {
         Some(Length::Fill) => 1.0,
         Some(Length::FillWeighted(weight)) => *weight as f32,
-        Some(Length::Minimum(_, inner)) | Some(Length::Maximum(_, inner)) => {
-            get_fill_weight(Some(inner))
-        }
+        Some(Length::Min(left, right)) => match (
+            get_fill_weight_opt(Some(left)),
+            get_fill_weight_opt(Some(right)),
+        ) {
+            (Some(left), Some(right)) => left.min(right),
+            (Some(weight), None) | (None, Some(weight)) => weight,
+            (None, None) => 0.0,
+        },
+        Some(Length::Max(left, right)) => match (
+            get_fill_weight_opt(Some(left)),
+            get_fill_weight_opt(Some(right)),
+        ) {
+            (Some(left), Some(right)) => left.max(right),
+            (Some(weight), None) | (None, Some(weight)) => weight,
+            (None, None) => 0.0,
+        },
         _ => 0.0,
     }
+}
+
+fn get_fill_weight_opt(length: Option<&Length>) -> Option<f32> {
+    let weight = get_fill_weight(length);
+    (weight > 0.0).then_some(weight)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3137,7 +3338,7 @@ fn planned_row_child_width(
     child: &Element,
     measured_width: f32,
     allow_fill_width: bool,
-    width_per_portion: f32,
+    fill_unit: f32,
 ) -> f32 {
     let portion = if allow_fill_width {
         get_fill_weight(child.layout.effective.width.as_ref())
@@ -3146,19 +3347,15 @@ fn planned_row_child_width(
     };
 
     if portion > 0.0 {
-        resolve_length(
+        resolve_planned_length(
             child.layout.effective.width.as_ref(),
             measured_width,
-            width_per_portion * portion,
+            Some(fill_unit),
         )
     } else if layout_rotate_degrees(&child.layout.effective).is_some() {
         measured_width
     } else {
-        resolve_length(
-            child.layout.effective.width.as_ref(),
-            measured_width,
-            measured_width,
-        )
+        resolve_planned_length(child.layout.effective.width.as_ref(), measured_width, None)
     }
 }
 
@@ -3166,7 +3363,7 @@ fn planned_column_child_height(
     child: &Element,
     measured_height: f32,
     allow_fill_height: bool,
-    height_per_portion: f32,
+    fill_unit: f32,
 ) -> f32 {
     let portion = if allow_fill_height {
         get_fill_weight(child.layout.effective.height.as_ref())
@@ -3175,19 +3372,34 @@ fn planned_column_child_height(
     };
 
     if portion > 0.0 {
-        resolve_length(
+        resolve_planned_length(
             child.layout.effective.height.as_ref(),
             measured_height,
-            height_per_portion * portion,
+            Some(fill_unit),
         )
     } else if layout_rotate_degrees(&child.layout.effective).is_some() {
         measured_height
     } else {
-        resolve_length(
+        resolve_planned_length(
             child.layout.effective.height.as_ref(),
             measured_height,
-            measured_height,
+            None,
         )
+    }
+}
+
+fn resolve_planned_length(length: Option<&Length>, intrinsic: f32, fill_unit: Option<f32>) -> f32 {
+    match length {
+        Some(Length::Px(px)) => *px as f32,
+        Some(Length::Content) | None => intrinsic,
+        Some(Length::Fill) => fill_unit.unwrap_or(intrinsic),
+        Some(Length::FillWeighted(weight)) => fill_unit
+            .map(|unit| unit * *weight as f32)
+            .unwrap_or(intrinsic),
+        Some(Length::Min(left, right)) => resolve_planned_length(Some(left), intrinsic, fill_unit)
+            .min(resolve_planned_length(Some(right), intrinsic, fill_unit)),
+        Some(Length::Max(left, right)) => resolve_planned_length(Some(left), intrinsic, fill_unit)
+            .max(resolve_planned_length(Some(right), intrinsic, fill_unit)),
     }
 }
 

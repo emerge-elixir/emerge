@@ -74,13 +74,19 @@ fn test_layout_with_scale_scales_font_spacing() {
 }
 
 #[test]
-fn test_layout_scale_minimum_maximum() {
+fn test_layout_scale_min_max_lengths() {
     let mut tree = ElementTree::new();
 
-    // Element with width=minimum(100, fill), height=maximum(200, fill)
+    // Element with width=max(100px, fill), height=min(200px, fill)
     let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Minimum(100.0, Box::new(Length::Fill)));
-    attrs.height = Some(Length::Maximum(200.0, Box::new(Length::Fill)));
+    attrs.width = Some(Length::Max(
+        Box::new(Length::Px(100.0)),
+        Box::new(Length::Fill),
+    ));
+    attrs.height = Some(Length::Min(
+        Box::new(Length::Px(200.0)),
+        Box::new(Length::Fill),
+    ));
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -88,8 +94,8 @@ fn test_layout_scale_minimum_maximum() {
     tree.insert(el);
 
     // With scale=2.0:
-    // width: minimum(200, fill) -> fill=800, clamped to min 200 -> 800
-    // height: maximum(400, fill) -> fill=600, clamped to max 400 -> 400
+    // width: max(200, fill) -> fill=800, max floor does not apply -> 800
+    // height: min(400, fill) -> fill=600, capped to 400
     layout_tree(
         &mut tree,
         Constraint::new(800.0, 600.0),
@@ -366,9 +372,12 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
 #[test]
 fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
     let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Minimum(
-        10.0,
-        Box::new(Length::Maximum(20.0, Box::new(Length::Px(30.0)))),
+    attrs.width = Some(Length::Max(
+        Box::new(Length::Px(10.0)),
+        Box::new(Length::Min(
+            Box::new(Length::Px(20.0)),
+            Box::new(Length::Px(30.0)),
+        )),
     ));
     attrs.border_width = Some(BorderWidth::Sides {
         top: 1.0,
@@ -398,9 +407,12 @@ fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
 
     assert_eq!(
         scaled.width,
-        Some(Length::Minimum(
-            15.0,
-            Box::new(Length::Maximum(30.0, Box::new(Length::Px(45.0)))),
+        Some(Length::Max(
+            Box::new(Length::Px(15.0)),
+            Box::new(Length::Min(
+                Box::new(Length::Px(30.0)),
+                Box::new(Length::Px(45.0)),
+            )),
         ))
     );
     assert_eq!(

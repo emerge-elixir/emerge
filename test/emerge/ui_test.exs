@@ -179,8 +179,9 @@ defmodule Emerge.UITest do
     assert fill(2) == {:fill, 2}
     assert width(fill(2)) == {:width, {:fill, 2}}
     assert height(fill(1.5)) == {:height, {:fill, 1.5}}
-    assert min(px(50), fill()) == {:minimum, 50, :fill}
-    assert max(px(120), shrink()) == {:maximum, 120, :content}
+    assert min(px(50), fill()) == {:min, {:px, 50}, :fill}
+    assert max(px(120), shrink()) == {:max, {:px, 120}, :content}
+    assert height(min(content(), fill())) == {:height, {:min, :content, :fill}}
   end
 
   test "layout-aware transform helpers return top-level attrs" do
@@ -198,7 +199,7 @@ defmodule Emerge.UITest do
     end
   end
 
-  test "size helpers reject invalid fill and clamp values" do
+  test "size helpers reject invalid fill and min/max length values" do
     assert_raise ArgumentError, ~r/fill\/1 expects a positive number/, fn ->
       fill(0)
     end
@@ -208,29 +209,29 @@ defmodule Emerge.UITest do
     end
 
     assert_raise ArgumentError,
-                 ~r/min\/2 expects the first argument to be px\(n\) with a non-negative number/,
+                 ~r/min\/2 expects both arguments to be supported length values/,
                  fn ->
-                   min(px(-10), fill())
+                   min(:bad, fill())
                  end
 
     assert_raise ArgumentError,
-                 ~r/max\/2 expects the first argument to be px\(n\) with a non-negative number/,
+                 ~r/max\/2 expects both arguments to be supported length values/,
                  fn ->
-                   max(px(-10), shrink())
+                   max(px(10), {:fill, 0})
                  end
   end
 
-  test "length validation rejects invalid fill and clamp tuples" do
+  test "length validation rejects invalid fill and min/max tuples" do
     assert_raise ArgumentError, ~r/fill weight to be a positive number/, fn ->
       el([width({:fill, 0})], text("bad"))
     end
 
-    assert_raise ArgumentError, ~r/min length to be non-negative/, fn ->
-      el([width({:minimum, -10, :fill})], text("bad"))
+    assert_raise ArgumentError, ~r/to be a supported length value/, fn ->
+      el([width({:min, :content, :bad})], text("bad"))
     end
 
-    assert_raise ArgumentError, ~r/max length to be non-negative/, fn ->
-      el([height({:maximum, -10, :content})], text("bad"))
+    assert_raise ArgumentError, ~r/to be a supported length value/, fn ->
+      el([{:height, {:maximum, 10, :content}}], text("bad"))
     end
   end
 
@@ -365,6 +366,33 @@ defmodule Emerge.UITest do
            }
   end
 
+  test "animate accepts layout-aware scale and rotate keyframes" do
+    element =
+      el(
+        [
+          Animation.animate(
+            [
+              [scale(1.0), rotate(0)],
+              [scale(1.25), rotate(90)]
+            ],
+            180,
+            :ease_out
+          )
+        ],
+        text("hi")
+      )
+
+    assert element.attrs.animate == %{
+             keyframes: [
+               %{layout_scale: 1.0, layout_rotate: 0},
+               %{layout_scale: 1.25, layout_rotate: 90}
+             ],
+             duration: 180,
+             curve: :ease_out,
+             repeat: :once
+           }
+  end
+
   test "animate keyframes ignore nil attrs" do
     element =
       el(
@@ -464,6 +492,47 @@ defmodule Emerge.UITest do
   test "animate rejects incompatible width variants" do
     assert_raise ArgumentError, ~r/same length variant/, fn ->
       el([Animation.animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
+    end
+  end
+
+  test "animate rejects invalid layout-aware scale and rotate values" do
+    assert_raise ArgumentError, ~r/:layout_scale to be a finite positive number/, fn ->
+      el(
+        [Animation.animate([[{:layout_scale, 1.0}], [{:layout_scale, 0}]], 200, :linear)],
+        text("bad")
+      )
+    end
+
+    assert_raise ArgumentError, ~r/:layout_rotate to be a finite number of degrees/, fn ->
+      el(
+        [Animation.animate([[{:layout_rotate, 0}], [{:layout_rotate, :bad}]], 200, :linear)],
+        text("bad")
+      )
+    end
+  end
+
+  test "animate rejects layout-aware and paint-only transform conflicts" do
+    assert_raise ArgumentError, ~r/layout scale\/1 together with Transform.scale\/1/, fn ->
+      el(
+        [
+          Animation.animate(
+            [[scale(1.0), Transform.scale(1.0)], [scale(1.2), Transform.scale(1.1)]],
+            200,
+            :linear
+          )
+        ],
+        text("bad")
+      )
+    end
+
+    assert_raise ArgumentError, ~r/layout rotate\/1 together with Transform.rotate\/1/, fn ->
+      el(
+        [
+          rotate(0),
+          Animation.animate([[Transform.rotate(0)], [Transform.rotate(10)]], 200, :linear)
+        ],
+        text("bad")
+      )
     end
   end
 

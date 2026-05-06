@@ -5,7 +5,8 @@ Last updated: 2026-05-06.
 This directory tracks current implementation notes plus the background
 investigations that led to the current native layout and renderer work. Files
 with an `active-` prefix are reserved for currently open implementation slices.
-The current active implementation slice is layout-aware scale and rotate.
+The current active implementation slices cover layout-aware transforms,
+layout-aware transform animation, and mathematical length min/max combinators.
 Completed implementation records live in `completed/`; durable research and
 review references stay at the top level.
 
@@ -21,6 +22,24 @@ uses unrotated authored boxes plus transformed AABB reservation, with optimized
 quarter-turn root handling and arbitrary-angle support. Hit testing is simplified
 around registry-built `HitGeometry` so runtime dispatch uses one region
 membership check.
+
+### `active-layout-aware-transform-animation-plan.md`
+
+Active follow-up plan for making top-level `Emerge.UI.scale/1` and
+`Emerge.UI.rotate/1` animatable through `Animation.animate/4`,
+`Animation.animate_enter/4`, and `Animation.animate_exit/4`. It keeps
+`Transform.scale/1` and `Transform.rotate/1` paint-only, requires sampled
+layout-aware attrs to trigger real layout animation, and calls out the special
+implementation requirement that animated `layout_scale` must be sampled before
+effective attribute scaling so descendants receive the sampled scale.
+
+### `active-length-min-max-combinators-plan.md`
+
+Active plan for changing `Emerge.UI.Size.min/2` and `max/2` from pixel
+constraint wrappers into mathematical length combinators. The motivating case
+is `height(min(content(), fill()))`, which should keep a card content-sized
+until it reaches the available fill slot, then cap it so an internal scroll
+region can take over without pushing a footer out of the viewport.
 
 ### `completed/performance-branch-fix-plan.md`
 

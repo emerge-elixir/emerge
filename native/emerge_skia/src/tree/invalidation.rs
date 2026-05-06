@@ -207,6 +207,7 @@ pub fn attrs_change_affects_registry_refresh(before: &Attrs, after: &Attrs) -> b
 
 pub fn animation_attrs_affect_registry_refresh(attrs: &Attrs) -> bool {
     attrs.border_radius.is_some()
+        || attrs.layout_rotate.is_some()
         || attrs.move_x.is_some()
         || attrs.move_y.is_some()
         || attrs.rotate.is_some()
