@@ -46,8 +46,8 @@ use super::{
     key_down_atom, key_press_atom, key_up_atom, mouse_down_atom, mouse_enter_atom,
     mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
     registry_builder::{
-        self, GestureAxis, ListenerAction, ListenerComputeCtx, ListenerInput, ListenerMatcherKind,
-        RuntimeChange, RuntimeOverlayState,
+        self, GestureAxis, HoverTracker, ListenerAction, ListenerComputeCtx, ListenerInput,
+        ListenerMatcherKind, RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
     send_element_event, send_element_event_with_string_payload, send_input_event,
@@ -372,7 +372,7 @@ struct RuntimeListenerComputeCtx<'a> {
     base_registry: &'a registry_builder::Registry,
     overlay_registry: &'a registry_builder::Registry,
     focused_id: Option<&'a NodeId>,
-    hovered_id: Option<&'a NodeId>,
+    hover_stack: &'a [HoverTracker],
     text_states: &'a HashMap<NodeId, TextInputState>,
     text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
     clipboard: &'a mut ClipboardManager,
@@ -383,8 +383,8 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
         self.focused_id
     }
 
-    fn hover_owner(&self) -> Option<&NodeId> {
-        self.hovered_id
+    fn hover_stack(&self) -> &[HoverTracker] {
+        self.hover_stack
     }
 
     fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
@@ -409,6 +409,16 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
         self.base_registry.view().first_match(input, &[], self)
     }
 
+    fn dispatch_base_skip(
+        &mut self,
+        input: &ListenerInput,
+        skip_matchers: &[ListenerMatcherKind],
+    ) -> Vec<ListenerAction> {
+        self.base_registry
+            .view()
+            .first_match(input, skip_matchers, self)
+    }
+
     fn dispatch_effective_skip(
         &mut self,
         input: &ListenerInput,
@@ -416,31 +426,6 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
     ) -> Vec<ListenerAction> {
         registry_builder::LayeredRegistryView::new(self.overlay_registry, self.base_registry)
             .first_match(input, skip_matchers, self)
-    }
-
-    fn base_first_match_listener(
-        &self,
-        input: &ListenerInput,
-        skip_matchers: &[ListenerMatcherKind],
-    ) -> Option<registry_builder::Listener> {
-        self.base_registry
-            .view()
-            .matching_listener(input, skip_matchers)
-            .cloned()
-    }
-
-    fn base_source_listener(
-        &self,
-        element_id: &NodeId,
-        matcher_kind: ListenerMatcherKind,
-    ) -> Option<registry_builder::Listener> {
-        self.base_registry
-            .view()
-            .find_precedence(|listener| {
-                listener.element_id.as_ref() == Some(element_id)
-                    && listener.matcher.kind() == matcher_kind
-            })
-            .cloned()
     }
 }
 
@@ -510,7 +495,7 @@ struct DirectEventRuntime {
     backend_wake: BackendWakeHandle,
     last_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
-    hovered_id: Option<NodeId>,
+    hover_stack: Vec<HoverTracker>,
     current_cursor_icon: CursorIcon,
     virtual_key_deadline: Option<Instant>,
     last_present_timing: Option<PresentTimingState>,
@@ -557,7 +542,7 @@ impl DirectEventRuntime {
             backend_wake,
             last_cursor_pos: None,
             cursor_in_window: false,
-            hovered_id: None,
+            hover_stack: Vec::new(),
             current_cursor_icon: CursorIcon::Default,
             virtual_key_deadline: None,
             last_present_timing: None,
@@ -699,6 +684,19 @@ impl DirectEventRuntime {
         };
 
         let next_axis = Self::pointer_axis_value(motion.axis, last_x, last_y);
+        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+    }
+
+    fn update_drag_motion_by_delta(&mut self, axis_delta: f32, now: Instant) {
+        let Some(motion) = self.drag_motion.as_mut() else {
+            return;
+        };
+
+        let next_axis = motion.last_pointer_axis + axis_delta;
+        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+    }
+
+    fn update_drag_motion_axis_sample(motion: &mut DragMotionState, next_axis: f32, now: Instant) {
         let dt = now.saturating_duration_since(motion.last_sample_at);
         if dt >= DRAG_VELOCITY_SAMPLE_MIN_DT {
             let dt_secs = dt.as_secs_f32();
@@ -928,7 +926,7 @@ impl DirectEventRuntime {
                 base_registry: &self.base_registry,
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
-                hovered_id: self.hovered_id.as_ref(),
+                hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
@@ -966,7 +964,7 @@ impl DirectEventRuntime {
                 base_registry: &self.base_registry,
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
-                hovered_id: self.hovered_id.as_ref(),
+                hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
@@ -1308,7 +1306,7 @@ impl DirectEventRuntime {
                 base_registry: &self.base_registry,
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
-                hovered_id: self.hovered_id.as_ref(),
+                hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
@@ -1449,7 +1447,11 @@ impl DirectEventRuntime {
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
                 self.maybe_start_inertial_scroll(now);
             }
-            RuntimeChange::UpdateDragTrackerPointer { last_x, last_y } => {
+            RuntimeChange::UpdateDragTrackerPointer {
+                last_x,
+                last_y,
+                axis_delta,
+            } => {
                 if let registry_builder::DragTrackerState::Active {
                     last_x: ref mut current_x,
                     last_y: ref mut current_y,
@@ -1459,7 +1461,11 @@ impl DirectEventRuntime {
                     *current_x = last_x;
                     *current_y = last_y;
                 }
-                self.update_drag_motion(last_x, last_y, now);
+                if let Some(axis_delta) = axis_delta {
+                    self.update_drag_motion_by_delta(axis_delta, now);
+                } else {
+                    self.update_drag_motion(last_x, last_y, now);
+                }
             }
             RuntimeChange::ClearClickPressTracker => {
                 self.runtime_overlay.click_press = None;
@@ -1525,8 +1531,8 @@ impl DirectEventRuntime {
             } => {
                 self.enqueue_pending_text_patch(element_id, content);
             }
-            RuntimeChange::SetHoverOwner { element_id } => {
-                self.hovered_id = element_id;
+            RuntimeChange::SetHoverStack { stack } => {
+                self.hover_stack = stack;
             }
         }
     }
@@ -1657,13 +1663,8 @@ impl DirectEventRuntime {
             self.inertial_scroll = None;
         }
 
-        self.hovered_id = self
-            .base_registry
-            .view()
-            .find_precedence(|listener| {
-                listener.matcher.kind() == ListenerMatcherKind::HoverLeaveCurrentOwner
-            })
-            .and_then(|listener| listener.element_id);
+        self.hover_stack =
+            registry_builder::reconcile_hover_stack(&self.base_registry, &self.hover_stack);
     }
 }
 
@@ -2420,6 +2421,14 @@ mod tests {
             push_tree_msg_flat(msg, &mut out);
         }
         out
+    }
+
+    fn hover_stack_ids(runtime: &DirectEventRuntime) -> Vec<NodeId> {
+        runtime
+            .hover_stack
+            .iter()
+            .map(|tracker| tracker.element_id)
+            .collect()
     }
 
     fn apply_focus_to_without_host(
@@ -3332,6 +3341,66 @@ mod tests {
                 if *element_id == NodeId::from_term_bytes(vec![43])
                     && (*dx - 6.0).abs() < f32::EPSILON
                     && dy.abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_rotated_drag_scroll_uses_local_scroll_axis() {
+        let mut attrs = Attrs::default();
+        attrs.scrollbar_y = Some(true);
+        attrs.scroll_y = Some(20.0);
+        attrs.scroll_y_max = Some(100.0);
+        attrs.layout_rotate = Some(90.0);
+        let element = with_frame(
+            make_element(45, ElementKind::El, attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+                content_width: 100.0,
+                content_height: 200.0,
+            },
+        );
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 50.0,
+                y: 50.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 35.0, y: 50.0 }, &tree_tx, false);
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 20.0, y: 50.0 }, &tree_tx, false);
+
+        assert!(runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == NodeId::from_term_bytes(vec![45])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy - 15.0).abs() < 0.001
         )));
     }
 
@@ -5223,7 +5292,7 @@ mod tests {
 
         let msgs = drain_msgs(&tree_rx);
         assert!(runtime.listener_lane.is_stale());
-        assert_eq!(runtime.hovered_id, Some(parent_id));
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(parent_id));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
@@ -5238,7 +5307,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_child_hover_beats_parent_hover() {
+    fn direct_runtime_child_and_parent_hover_activate_together() {
         let parent_id = NodeId::from_term_bytes(vec![64]);
         let child_id = NodeId::from_term_bytes(vec![65]);
 
@@ -5268,22 +5337,21 @@ mod tests {
 
         let msgs = drain_msgs(&tree_rx);
         assert!(runtime.listener_lane.is_stale());
-        assert_eq!(runtime.hovered_id, Some(child_id));
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == child_id && *active
         )));
-        assert!(msgs.iter().all(|msg| {
-            !matches!(
-                msg,
-                TreeMsg::SetMouseOverActive { element_id, .. } if *element_id == parent_id
-            )
-        }));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id, active }
+                if *element_id == parent_id && *active
+        )));
     }
 
     #[test]
-    fn direct_runtime_hover_handoff_switches_from_parent_to_child() {
+    fn direct_runtime_hover_handoff_keeps_parent_active_when_entering_child() {
         let parent_id = NodeId::from_term_bytes(vec![66]);
         let child_id = NodeId::from_term_bytes(vec![67]);
 
@@ -5320,7 +5388,7 @@ mod tests {
         runtime.handle_registry_update(initial_rebuild, &tree_tx, false);
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
 
-        assert_eq!(runtime.hovered_id, Some(parent_id));
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(parent_id));
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
@@ -5360,8 +5428,64 @@ mod tests {
             })
             .collect();
         assert!(runtime.listener_lane.is_stale());
-        assert_eq!(runtime.hovered_id, Some(child_id));
-        assert_eq!(hover_msgs, vec![(parent_id, false), (child_id, true)]);
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
+        assert_eq!(hover_msgs, vec![(child_id, true)]);
+    }
+
+    #[test]
+    fn direct_runtime_child_hover_does_not_trigger_parent_mouse_leave() {
+        let parent_id = NodeId::from_term_bytes(vec![68]);
+        let child_id = NodeId::from_term_bytes(vec![69]);
+
+        let mut parent_attrs = Attrs::default();
+        parent_attrs.on_mouse_leave = Some(true);
+        parent_attrs.mouse_over_active = Some(true);
+        let mut parent = with_interaction_rect(
+            make_element(68, ElementKind::El, parent_attrs),
+            0.0,
+            0.0,
+            120.0,
+            80.0,
+        );
+        parent.children = vec![child_id];
+
+        let mut child_attrs = Attrs::default();
+        child_attrs.mouse_over = Some(MouseOverAttrs::default());
+        child_attrs.mouse_over_active = Some(false);
+        let child = with_interaction_rect(
+            make_element(69, ElementKind::El, child_attrs),
+            16.0,
+            44.0,
+            88.0,
+            24.0,
+        );
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[parent, child]),
+            text_inputs: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(parent_id));
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 24.0, y: 52.0 }, &tree_tx, false);
+
+        let hover_msgs: Vec<_> = drain_msgs(&tree_rx)
+            .into_iter()
+            .filter_map(|msg| match msg {
+                TreeMsg::SetMouseOverActive { element_id, active } => Some((element_id, active)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(runtime.listener_lane.is_stale());
+        assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
+        assert_eq!(hover_msgs, vec![(child_id, true)]);
     }
 
     #[test]

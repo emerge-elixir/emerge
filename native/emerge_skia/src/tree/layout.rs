@@ -500,11 +500,8 @@ pub(crate) fn prepare_animation_frame_attrs_for_update(
 
     let active_ids = animation_runtime.active_node_ids();
     for id in &active_ids {
+        let scale_factor = effective_layout_scale_for_node(tree, id, scale);
         if let Some(element) = tree.get_mut(id) {
-            let scale_factor = match element.lifecycle.ghost_capture_scale {
-                Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
-                None => scale,
-            };
             element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
             element.normalize_extracted_state();
         }
@@ -561,12 +558,17 @@ fn run_layout_passes<M: TextMeasurer>(
     // Pass 1: Measure (bottom-up) - uses pre-scaled attrs
     measure_element(tree, root_id, measurer, inherited, true);
 
+    let root_constraint = tree
+        .get(root_id)
+        .map(|root| root_logical_constraint(&root.layout.effective, constraint))
+        .unwrap_or(constraint);
+
     // Pass 2: Resolve (top-down) - uses pre-scaled attrs
     resolve_element(
         tree,
         root_id,
         ResolvePlacement {
-            constraint,
+            constraint: root_constraint,
             x: 0.0,
             y: 0.0,
             inherited,
@@ -618,7 +620,29 @@ fn prepare_attrs_for_frame(
     animation_runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> AnimationOverlayResult {
+    let root_id = tree.root_id();
+    let root_layout_scale = root_id
+        .and_then(|id| tree.get(&id))
+        .and_then(|root| valid_layout_scale(root.spec.declared.layout_scale));
+    let flat_scale = (scale as f64 * root_layout_scale.unwrap_or(1.0)) as f32;
+    let has_descendant_layout_scale = prepare_attrs_flat(tree, flat_scale, root_id);
+
+    if has_descendant_layout_scale && let Some(root_id) = root_id {
+        prepare_attrs_for_subtree(tree, root_id, scale);
+    }
+
+    apply_animation_overlays(tree, animation_runtime, sample_time, scale)
+}
+
+fn valid_layout_scale(scale: Option<f64>) -> Option<f64> {
+    scale.filter(|scale| scale.is_finite() && *scale > 0.0)
+}
+
+fn prepare_attrs_flat(tree: &mut ElementTree, scale: f32, root_id: Option<NodeId>) -> bool {
+    let mut has_descendant_layout_scale = false;
     for element in tree.iter_nodes_mut() {
+        has_descendant_layout_scale |= root_id != Some(element.id)
+            && valid_layout_scale(element.spec.declared.layout_scale).is_some();
         let scale_factor = match element.lifecycle.ghost_capture_scale {
             Some(capture_scale) => scale / capture_scale.max(f32::EPSILON),
             None => scale,
@@ -626,8 +650,103 @@ fn prepare_attrs_for_frame(
         element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
         element.normalize_extracted_state();
     }
+    has_descendant_layout_scale
+}
 
-    apply_animation_overlays(tree, animation_runtime, sample_time, scale)
+fn prepare_attrs_for_subtree(tree: &mut ElementTree, id: NodeId, inherited_scale: f32) {
+    let Some((next_scale, child_ids, nearby_ids)) =
+        prepare_attrs_for_node(tree, id, inherited_scale)
+    else {
+        return;
+    };
+
+    for child_id in child_ids {
+        prepare_attrs_for_subtree(tree, child_id, next_scale);
+    }
+
+    for nearby_id in nearby_ids {
+        prepare_attrs_for_subtree(tree, nearby_id, next_scale);
+    }
+}
+
+fn prepare_attrs_for_node(
+    tree: &mut ElementTree,
+    id: NodeId,
+    inherited_scale: f32,
+) -> Option<(f32, Vec<NodeId>, Vec<NodeId>)> {
+    let local_scale = tree
+        .get(&id)
+        .and_then(|element| element.spec.declared.layout_scale)
+        .and_then(|scale| valid_layout_scale(Some(scale)))
+        .unwrap_or(1.0) as f32;
+    let next_scale = (inherited_scale * local_scale).max(f32::EPSILON);
+    let scale_factor = tree
+        .get(&id)
+        .and_then(|element| element.lifecycle.ghost_capture_scale)
+        .map(|capture_scale| next_scale / capture_scale.max(f32::EPSILON))
+        .unwrap_or(next_scale);
+
+    if let Some(element) = tree.get_mut(&id) {
+        element.layout.effective = scale_attrs(&element.spec.declared, scale_factor);
+        element.normalize_extracted_state();
+    } else {
+        return None;
+    }
+
+    let child_ids = tree.child_ids(&id);
+    let nearby_ids = tree
+        .nearby_mounts_for(&id)
+        .into_iter()
+        .map(|mount| mount.id)
+        .collect();
+
+    Some((next_scale, child_ids, nearby_ids))
+}
+
+pub(crate) fn effective_layout_scale_for_node(
+    tree: &ElementTree,
+    id: &NodeId,
+    global_scale: f32,
+) -> f32 {
+    let Some(mut ix) = tree.ix_of(id) else {
+        return global_scale;
+    };
+
+    let mut lineage = Vec::new();
+    loop {
+        lineage.push(ix);
+        let Some(parent_ix) = tree
+            .parent_link_of(ix)
+            .and_then(|parent_link| super::element::parent_ix_from_link(Some(parent_link)))
+        else {
+            break;
+        };
+        ix = parent_ix;
+    }
+
+    lineage
+        .into_iter()
+        .rev()
+        .fold((global_scale, global_scale), |(inherited, _factor), ix| {
+            tree.get_ix(ix)
+                .map(|element| {
+                    let local = element
+                        .spec
+                        .declared
+                        .layout_scale
+                        .and_then(|scale| valid_layout_scale(Some(scale)))
+                        .unwrap_or(1.0) as f32;
+                    let current_total = (inherited * local).max(f32::EPSILON);
+                    let factor = element
+                        .lifecycle
+                        .ghost_capture_scale
+                        .map(|capture_scale| current_total / capture_scale.max(f32::EPSILON))
+                        .unwrap_or(current_total);
+                    (current_total, factor)
+                })
+                .unwrap_or((inherited, inherited))
+        })
+        .1
 }
 
 /// Scale all pixel-based attributes in an Attrs struct.
@@ -636,6 +755,8 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
     Attrs {
         width: attrs.width.as_ref().map(|l| scale_length(l, scale)),
         height: attrs.height.as_ref().map(|l| scale_length(l, scale)),
+        layout_scale: attrs.layout_scale,
+        layout_rotate: attrs.layout_rotate,
         padding: attrs.padding.as_ref().map(|p| scale_padding(p, scale)),
         spacing: attrs.spacing.map(|s| s * scale_f64),
         spacing_x: attrs.spacing_x.map(|s| s * scale_f64),
@@ -1281,7 +1402,7 @@ fn measure_element<M: TextMeasurer>(
     };
 
     // Store intrinsic size separately; resolve owns the retained frame positions.
-    let measured_frame = Frame {
+    let measured_render_frame = Frame {
         x: 0.0,
         y: 0.0,
         width: intrinsic.width,
@@ -1289,11 +1410,13 @@ fn measure_element<M: TextMeasurer>(
         content_width: intrinsic.width,
         content_height: intrinsic.height,
     };
+    let measured_frame = layout_frame_for_rotation(measured_render_frame, &attrs);
     let intrinsic_measure_cache = cache_key.map(|key| {
         tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_store());
         IntrinsicMeasureCache {
             key,
             frame: measured_frame,
+            render_frame: measured_render_frame,
         }
     });
     let subtree_measure_cache = if use_subtree_cache {
@@ -1302,6 +1425,7 @@ fn measure_element<M: TextMeasurer>(
             SubtreeMeasureCache {
                 key,
                 frame: measured_frame,
+                render_frame: measured_render_frame,
             }
         })
     } else {
@@ -1310,6 +1434,8 @@ fn measure_element<M: TextMeasurer>(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(measured_frame);
+        element.layout.measured_render_frame =
+            distinct_render_frame(measured_frame, measured_render_frame);
         element.layout.intrinsic_measure_cache = intrinsic_measure_cache;
         if use_subtree_cache {
             element.layout.subtree_measure_cache = subtree_measure_cache;
@@ -1318,7 +1444,10 @@ fn measure_element<M: TextMeasurer>(
         }
     }
 
-    intrinsic
+    IntrinsicSize {
+        width: measured_frame.width,
+        height: measured_frame.height,
+    }
 }
 
 fn subtree_measure_cache_key(
@@ -1339,6 +1468,8 @@ fn subtree_measure_attrs(attrs: &Attrs) -> SubtreeMeasureAttrs {
     SubtreeMeasureAttrs {
         width: attrs.width.clone(),
         height: attrs.height.clone(),
+        layout_scale: attrs.layout_scale,
+        layout_rotate: attrs.layout_rotate,
         padding: attrs.padding.clone(),
         border_width: attrs.border_width.clone(),
         spacing: attrs.spacing,
@@ -1391,9 +1522,9 @@ fn try_reuse_subtree_measure_cache(
         .get(id)
         .and_then(|element| element.layout.subtree_measure_cache.as_ref())
         .filter(|cache| &cache.key == key)
-        .map(|cache| cache.frame);
+        .map(|cache| (cache.frame, cache.render_frame));
 
-    let Some(frame) = frame else {
+    let Some((frame, render_frame)) = frame else {
         tree.record_layout_cache_stats(|stats| stats.record_subtree_measure_miss());
         return None;
     };
@@ -1402,6 +1533,7 @@ fn try_reuse_subtree_measure_cache(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
+        element.layout.measured_render_frame = distinct_render_frame(frame, render_frame);
         element.layout.measure_dirty = false;
         element.layout.measure_descendant_dirty = false;
     }
@@ -1485,9 +1617,9 @@ fn try_reuse_intrinsic_measure_cache(
         .get(id)
         .and_then(|element| element.layout.intrinsic_measure_cache.as_ref())
         .filter(|cache| &cache.key == key)
-        .map(|cache| cache.frame);
+        .map(|cache| (cache.frame, cache.render_frame));
 
-    let Some(frame) = frame else {
+    let Some((frame, render_frame)) = frame else {
         tree.record_layout_cache_stats(|stats| stats.record_intrinsic_measure_miss());
         return None;
     };
@@ -1496,6 +1628,7 @@ fn try_reuse_intrinsic_measure_cache(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.measured_frame = Some(frame);
+        element.layout.measured_render_frame = distinct_render_frame(frame, render_frame);
         element.layout.measure_dirty = false;
         element.layout.measure_descendant_dirty = false;
     }
@@ -1525,6 +1658,85 @@ fn resolve_intrinsic_length(length: Option<&Length>, intrinsic: f32) -> f32 {
 
 fn resolve_outer_intrinsic_length(length: Option<&Length>, content_size: f32, insets: f32) -> f32 {
     resolve_intrinsic_length(length, content_size + insets)
+}
+
+fn layout_rotate_degrees(attrs: &Attrs) -> Option<f32> {
+    attrs
+        .layout_rotate
+        .map(|degrees| degrees as f32)
+        .filter(|degrees| degrees.is_finite())
+        .map(|degrees| normalize_degrees(degrees))
+        .filter(|degrees| degrees.abs() > f32::EPSILON)
+}
+
+fn normalize_degrees(degrees: f32) -> f32 {
+    let mut normalized = degrees % 360.0;
+    if normalized > 180.0 {
+        normalized -= 360.0;
+    } else if normalized <= -180.0 {
+        normalized += 360.0;
+    }
+    normalized
+}
+
+fn quarter_turns(degrees: f32) -> Option<i32> {
+    let normalized = normalize_degrees(degrees);
+    let turns = (normalized / 90.0).round();
+    ((normalized - turns * 90.0).abs() <= 0.0001).then_some(turns as i32)
+}
+
+fn rotated_aabb_size(width: f32, height: f32, degrees: f32) -> (f32, f32) {
+    match quarter_turns(degrees).map(|turns| turns.rem_euclid(4)) {
+        Some(0) => (width, height),
+        Some(1 | 3) => (height, width),
+        Some(2) => (width, height),
+        _ => {
+            let radians = degrees.to_radians();
+            let sin = radians.sin().abs();
+            let cos = radians.cos().abs();
+            (cos * width + sin * height, sin * width + cos * height)
+        }
+    }
+}
+
+fn layout_frame_for_rotation(unrotated: Frame, attrs: &Attrs) -> Frame {
+    let Some(degrees) = layout_rotate_degrees(attrs) else {
+        return unrotated;
+    };
+    let (width, height) = rotated_aabb_size(unrotated.width, unrotated.height, degrees);
+    let (content_width, content_height) =
+        rotated_aabb_size(unrotated.content_width, unrotated.content_height, degrees);
+
+    Frame {
+        width,
+        height,
+        content_width,
+        content_height,
+        ..unrotated
+    }
+}
+
+fn render_frame_inside_layout_frame(layout_frame: Frame, unrotated: Frame) -> Frame {
+    Frame {
+        x: layout_frame.x + (layout_frame.width - unrotated.width) / 2.0,
+        y: layout_frame.y + (layout_frame.height - unrotated.height) / 2.0,
+        ..unrotated
+    }
+}
+
+fn distinct_render_frame(layout_frame: Frame, render_frame: Frame) -> Option<Frame> {
+    (layout_frame != render_frame).then_some(render_frame)
+}
+
+fn root_logical_constraint(attrs: &Attrs, physical: Constraint) -> Constraint {
+    let Some(degrees) = layout_rotate_degrees(attrs) else {
+        return physical;
+    };
+
+    match quarter_turns(degrees).map(|turns| turns.rem_euclid(4)) {
+        Some(1 | 3) => Constraint::with_space(physical.height, physical.width),
+        _ => physical,
+    }
 }
 
 // =============================================================================
@@ -1706,7 +1918,10 @@ fn resolve_el_kind<M: TextMeasurer>(
         params.use_resolve_cache,
     );
 
-    if actual_ch > params.content.height && !params.is_scrollable {
+    if actual_ch > params.content.height
+        && !params.is_scrollable
+        && is_content_length(params.attrs.height.as_ref())
+    {
         expand_frame_height_to_content(tree, params.id, actual_ch, params.insets);
         set_frame_content_width(tree, params.id, actual_cw, params.insets);
     } else {
@@ -1974,7 +2189,9 @@ fn resolve_element<M: TextMeasurer>(
     let resolve_descendant_dirty = element.layout.resolve_descendant_dirty;
     let intrinsic = element
         .layout
-        .measured_frame
+        .measured_render_frame
+        .or(element.layout.render_frame)
+        .or(element.layout.measured_frame)
         .or(element.layout.frame)
         .map(|f| IntrinsicSize {
             width: f.width,
@@ -2105,13 +2322,17 @@ fn resolve_element<M: TextMeasurer>(
         ElementKind::Multiline => resolve_multiline_kind(tree, &params, &element_context, measurer),
     }
 
+    apply_layout_rotation_to_resolved_element(tree, id, &attrs);
     update_paint_children(tree, id, kind);
     update_scroll_state(tree, id);
     resolve_nearby_mounts(tree, id, &element_context, measurer, use_resolve_cache);
 
     if use_resolve_cache
         && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
-        && let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
+        && let Some((frame, render_frame)) = tree.get(id).and_then(|element| {
+            let frame = element.layout.frame?;
+            Some((frame, element.layout.render_frame.unwrap_or(frame)))
+        })
     {
         let key = resolve_cache_key(
             kind,
@@ -2127,10 +2348,41 @@ fn resolve_element<M: TextMeasurer>(
         if let Some(element) = tree.get_mut(id) {
             element.layout.resolve_cache = Some(ResolveCache {
                 key,
-                extent: resolve_extent(frame),
+                extent: resolve_extent(frame, render_frame),
             });
             element.layout.resolve_dirty = false;
             element.layout.resolve_descendant_dirty = false;
+        }
+    }
+}
+
+fn apply_layout_rotation_to_resolved_element(tree: &mut ElementTree, id: &NodeId, attrs: &Attrs) {
+    let Some(unrotated_frame) = tree.get(id).and_then(|element| element.layout.frame) else {
+        return;
+    };
+
+    if layout_rotate_degrees(attrs).is_none() {
+        if let Some(element) = tree.get_mut(id) {
+            element.layout.render_frame = None;
+        }
+        return;
+    }
+
+    let layout_frame = layout_frame_for_rotation(unrotated_frame, attrs);
+    let render_frame = render_frame_inside_layout_frame(layout_frame, unrotated_frame);
+    let dx = render_frame.x - unrotated_frame.x;
+    let dy = render_frame.y - unrotated_frame.y;
+
+    if let Some(element) = tree.get_mut(id) {
+        element.layout.frame = Some(layout_frame);
+        element.layout.render_frame = Some(render_frame);
+    }
+
+    if dx != 0.0 || dy != 0.0 {
+        let mut child_ids = tree.child_ids(id);
+        child_ids.extend(tree.nearby_mounts_for(id).into_iter().map(|mount| mount.id));
+        for child_id in child_ids {
+            shift_subtree(tree, &child_id, dx, dy);
         }
     }
 }
@@ -2153,30 +2405,47 @@ fn resolve_cache_key(
     }
 }
 
-fn resolve_extent(frame: Frame) -> ResolveExtent {
+fn resolve_extent(frame: Frame, render_frame: Frame) -> ResolveExtent {
     ResolveExtent {
         width: frame.width,
         height: frame.height,
         content_width: frame.content_width,
         content_height: frame.content_height,
+        render_x: render_frame.x - frame.x,
+        render_y: render_frame.y - frame.y,
+        render_width: render_frame.width,
+        render_height: render_frame.height,
+        render_content_width: render_frame.content_width,
+        render_content_height: render_frame.content_height,
     }
 }
 
-fn frame_from_resolve_extent(extent: ResolveExtent, x: f32, y: f32) -> Frame {
-    Frame {
+fn frames_from_resolve_extent(extent: ResolveExtent, x: f32, y: f32) -> (Frame, Frame) {
+    let frame = Frame {
         x,
         y,
         width: extent.width,
         height: extent.height,
         content_width: extent.content_width,
         content_height: extent.content_height,
-    }
+    };
+    let render_frame = Frame {
+        x: x + extent.render_x,
+        y: y + extent.render_y,
+        width: extent.render_width,
+        height: extent.render_height,
+        content_width: extent.render_content_width,
+        content_height: extent.render_content_height,
+    };
+    (frame, render_frame)
 }
 
 fn resolve_attrs(attrs: &Attrs) -> ResolveAttrs {
     ResolveAttrs {
         width: attrs.width.clone(),
         height: attrs.height.clone(),
+        layout_scale: attrs.layout_scale,
+        layout_rotate: attrs.layout_rotate,
         padding: attrs.padding.clone(),
         border_width: attrs.border_width.clone(),
         spacing: attrs.spacing,
@@ -2240,12 +2509,12 @@ fn try_reuse_resolve_cache(
         }
 
         Some((
-            frame_from_resolve_extent(cache.extent, x, y),
+            frames_from_resolve_extent(cache.extent, x, y),
             element.layout.frame?,
         ))
     });
 
-    let Some((target_frame, current_frame)) = cached_frames else {
+    let Some(((target_frame, target_render_frame), current_frame)) = cached_frames else {
         tree.record_layout_cache_stats(|stats| stats.record_resolve_miss());
         return false;
     };
@@ -2261,6 +2530,7 @@ fn try_reuse_resolve_cache(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.frame = Some(target_frame);
+        element.layout.render_frame = distinct_render_frame(target_frame, target_render_frame);
         element.layout.resolve_dirty = false;
         element.layout.resolve_descendant_dirty = false;
     }
@@ -2320,7 +2590,7 @@ fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
     }
 
     let full_key_match = cache.key == *key;
-    let target_frame = frame_from_resolve_extent(cache.extent, x, y);
+    let (target_frame, target_render_frame) = frames_from_resolve_extent(cache.extent, x, y);
     tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
     shift_subtree(
         tree,
@@ -2331,6 +2601,7 @@ fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
 
     if let Some(element) = tree.get_mut(id) {
         element.layout.frame = Some(target_frame);
+        element.layout.render_frame = distinct_render_frame(target_frame, target_render_frame);
         element.layout.resolve_dirty = false;
     }
 
@@ -2379,12 +2650,14 @@ fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
         && can_store_resolve_cache(tree, kind, &child_ids, &nearby_mounts)
     {
         tree.record_layout_cache_stats(|stats| stats.record_resolve_store());
-        if let Some(frame) = tree.get(id).and_then(|element| element.layout.frame)
-            && let Some(element) = tree.get_mut(id)
+        if let Some((frame, render_frame)) = tree.get(id).and_then(|element| {
+            let frame = element.layout.frame?;
+            Some((frame, element.layout.render_frame.unwrap_or(frame)))
+        }) && let Some(element) = tree.get_mut(id)
         {
             element.layout.resolve_cache = Some(ResolveCache {
                 key: key.clone(),
-                extent: resolve_extent(frame),
+                extent: resolve_extent(frame, render_frame),
             });
         }
     }
@@ -2601,7 +2874,10 @@ fn resolve_nearby_mounts<M: TextMeasurer>(
     measurer: &M,
     use_resolve_cache: bool,
 ) {
-    let Some(host_frame) = tree.get(host_id).and_then(|element| element.layout.frame) else {
+    let Some(host_frame) = tree.get(host_id).and_then(|element| {
+        let frame = element.layout.frame?;
+        Some(element.layout.render_frame.unwrap_or(frame))
+    }) else {
         return;
     };
 
@@ -2875,6 +3151,8 @@ fn planned_row_child_width(
             measured_width,
             width_per_portion * portion,
         )
+    } else if layout_rotate_degrees(&child.layout.effective).is_some() {
+        measured_width
     } else {
         resolve_length(
             child.layout.effective.width.as_ref(),
@@ -2902,6 +3180,8 @@ fn planned_column_child_height(
             measured_height,
             height_per_portion * portion,
         )
+    } else if layout_rotate_degrees(&child.layout.effective).is_some() {
+        measured_height
     } else {
         resolve_length(
             child.layout.effective.height.as_ref(),
@@ -4289,6 +4569,8 @@ fn resolve_wrapped_row_children<M: TextMeasurer>(
                 intrinsic_width,
                 content.width,
             )
+        } else if layout_rotate_degrees(&child.layout.effective).is_some() {
+            intrinsic_width
         } else {
             resolve_length(
                 child.layout.effective.width.as_ref(),
@@ -4961,6 +5243,10 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
             return;
         };
         if let Some(frame) = &mut element.layout.frame {
+            frame.x += dx;
+            frame.y += dy;
+        }
+        if let Some(frame) = &mut element.layout.render_frame {
             frame.x += dx;
             frame.y += dy;
         }

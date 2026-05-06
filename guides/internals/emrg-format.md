@@ -79,7 +79,7 @@ The attr block continues to use the typed attr encoding from
 Notable tag coverage includes:
 
 ```text
-width, height, padding, spacing, spacing_xy
+width, height, layout_scale, layout_rotate, padding, spacing, spacing_xy
 align_x, align_y, text_align
 scrollbar_x, scrollbar_y, scroll_x, scroll_y
 background, border_radius, border_width, border_style, border_color, box_shadow

@@ -1,8 +1,8 @@
-# Active Render Cache Children Plan
+# Completed Render Cache Children Plan
 
-Last updated: 2026-04-28.
+Last updated: 2026-05-06.
 
-Status: implemented, pending normal plan cleanup.
+Status: completed.
 
 ## Purpose
 

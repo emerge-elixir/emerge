@@ -183,6 +183,21 @@ defmodule Emerge.UITest do
     assert max(px(120), shrink()) == {:maximum, 120, :content}
   end
 
+  test "layout-aware transform helpers return top-level attrs" do
+    assert scale(1.25) == {:layout_scale, 1.25}
+    assert rotate(90) == {:layout_rotate, 90}
+  end
+
+  test "layout-aware transforms cannot be combined with paint-only transforms" do
+    assert_raise ArgumentError, ~r/layout scale\/1 together with Transform.scale\/1/, fn ->
+      el([scale(1.25), Transform.scale(0.95)], text("bad"))
+    end
+
+    assert_raise ArgumentError, ~r/layout rotate\/1 together with Transform.rotate\/1/, fn ->
+      el([rotate(90), Transform.rotate(-4)], text("bad"))
+    end
+  end
+
   test "size helpers reject invalid fill and clamp values" do
     assert_raise ArgumentError, ~r/fill\/1 expects a positive number/, fn ->
       fill(0)

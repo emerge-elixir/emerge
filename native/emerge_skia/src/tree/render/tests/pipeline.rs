@@ -1,6 +1,9 @@
 use super::common::*;
 use super::*;
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
+use crate::tree::layout::{
+    Constraint, layout_tree_default, refresh_render_scene_cached_for_benchmark,
+};
 use crate::tree::transform::{Affine2, element_transform};
 
 fn build_two_child_tree(
@@ -1706,6 +1709,143 @@ fn test_render_clip_nearby_clips_escape_overlay() {
 
     assert_eq!(rgba_at(&pixels, 200, 65, 35), (0, 0, 0, 255));
     assert_eq!(rgba_at(&pixels, 200, 65, 55), (255, 0, 0, 255));
+}
+
+#[test]
+fn test_render_rotated_root_paints_in_front_nearby_from_logical_render_frame() {
+    let mut root_attrs = solid_fill_attrs((0, 0, 0));
+    root_attrs.clip_nearby = Some(true);
+    root_attrs.layout_rotate = Some(90.0);
+
+    let mut tree = build_tree_with_frame(
+        root_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 480.0,
+            height: 320.0,
+            content_width: 480.0,
+            content_height: 320.0,
+        },
+    );
+    let root_id = tree.root_id().unwrap();
+    tree.get_mut(&root_id).unwrap().layout.render_frame = Some(Frame {
+        x: 80.0,
+        y: -80.0,
+        width: 320.0,
+        height: 480.0,
+        content_width: 320.0,
+        content_height: 480.0,
+    });
+
+    mount_nearby(
+        &mut tree,
+        &root_id,
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        Frame {
+            x: 80.0,
+            y: -80.0,
+            width: 72.0,
+            height: 72.0,
+            content_width: 72.0,
+            content_height: 72.0,
+        },
+        90,
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(480, 320, &tree);
+
+    assert_eq!(rgba_at(&pixels, 480, 440, 20), (255, 0, 0, 255));
+}
+
+#[test]
+fn test_render_rotated_root_keeps_nested_fill_column_content_visible() {
+    let root_id = NodeId::from_u64(910_000);
+    let screen_id = NodeId::from_u64(910_001);
+    let column_id = NodeId::from_u64(910_002);
+    let header_id = NodeId::from_u64(910_003);
+    let body_id = NodeId::from_u64(910_004);
+    let panel_id = NodeId::from_u64(910_005);
+    let content_id = NodeId::from_u64(910_006);
+
+    let mut root_attrs = Attrs::default();
+    root_attrs.width = Some(Length::Fill);
+    root_attrs.height = Some(Length::Fill);
+    root_attrs.layout_rotate = Some(90.0);
+
+    let mut screen_attrs = solid_fill_attrs((243, 244, 247));
+    screen_attrs.width = Some(Length::Fill);
+    screen_attrs.height = Some(Length::Fill);
+
+    let mut column_attrs = Attrs::default();
+    column_attrs.width = Some(Length::Fill);
+    column_attrs.height = Some(Length::Fill);
+
+    let mut header_attrs = solid_fill_attrs((255, 0, 0));
+    header_attrs.width = Some(Length::Fill);
+    header_attrs.height = Some(Length::Px(96.0));
+
+    let mut body_attrs = Attrs::default();
+    body_attrs.width = Some(Length::Fill);
+    body_attrs.height = Some(Length::Fill);
+    body_attrs.padding = Some(Padding::Uniform(16.0));
+
+    let mut panel_attrs = solid_fill_attrs((255, 255, 255));
+    panel_attrs.width = Some(Length::Fill);
+    panel_attrs.height = Some(Length::Fill);
+    panel_attrs.padding = Some(Padding::Uniform(24.0));
+    panel_attrs.scrollbar_y = Some(true);
+    panel_attrs.border_radius = Some(BorderRadius::Uniform(24.0));
+    panel_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 16.0,
+        blur: 40.0,
+        size: 0.0,
+        color: Color::Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 20,
+        },
+        inset: false,
+    }]);
+
+    let mut content_attrs = solid_fill_attrs((0, 255, 0));
+    content_attrs.width = Some(Length::Fill);
+    content_attrs.height = Some(Length::Px(1600.0));
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![screen_id];
+    let mut screen = Element::with_attrs(screen_id, ElementKind::El, Vec::new(), screen_attrs);
+    screen.children = vec![column_id];
+    let mut column = Element::with_attrs(column_id, ElementKind::Column, Vec::new(), column_attrs);
+    column.children = vec![header_id, body_id];
+    let header = Element::with_attrs(header_id, ElementKind::El, Vec::new(), header_attrs);
+    let mut body = Element::with_attrs(body_id, ElementKind::El, Vec::new(), body_attrs);
+    body.children = vec![panel_id];
+    let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), panel_attrs);
+    panel.children = vec![content_id];
+    let content = Element::with_attrs(content_id, ElementKind::El, Vec::new(), content_attrs);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(screen);
+    tree.insert(column);
+    tree.insert(header);
+    tree.insert(body);
+    tree.insert(panel);
+    tree.insert(content);
+
+    layout_tree_default(&mut tree, Constraint::new(480.0, 320.0), 1.0);
+
+    let scene = refresh_render_scene_cached_for_benchmark(&mut tree);
+    let pixels = render_scene_to_pixels(480, 320, scene);
+
+    assert_eq!(rgba_at(&pixels, 480, 440, 24), (255, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 480, 180, 160), (0, 255, 0, 255));
 }
 
 #[test]

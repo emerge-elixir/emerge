@@ -13,7 +13,7 @@ document for deciding the next renderer-performance slice.
 For a focused post-implementation comparison between Emerge's current
 clean-subtree cache and Flutter's Skia/Ganesh raster cache, see
 `render-cache-flutter-comparison.md`. The implemented follow-up record from
-that comparison is `active-render-cache-children-plan.md`.
+that comparison is `completed/render-cache-children-plan.md`.
 
 ## Why this exists
 

@@ -10,6 +10,8 @@ defmodule Emerge.Engine.AttrCodecTest do
     attrs = %{
       width: {:px, 120},
       height: :fill,
+      layout_scale: 1.25,
+      layout_rotate: 90.0,
       padding: {1, 2, 3, 4},
       spacing: 8,
       align_x: :center,
@@ -59,6 +61,13 @@ defmodule Emerge.Engine.AttrCodecTest do
 
   test "encode/decode transform attrs" do
     attrs = %{move_x: 12.5, move_y: -4.0, rotate: 15.0, scale: 1.2, alpha: 0.0}
+    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+
+    assert normalize_attrs(decoded) == normalize_attrs(attrs)
+  end
+
+  test "encode/decode layout-aware transform attrs" do
+    attrs = %{layout_scale: 1.5, layout_rotate: -45.0}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
 
     assert normalize_attrs(decoded) == normalize_attrs(attrs)

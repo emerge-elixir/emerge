@@ -104,6 +104,8 @@ defmodule Emerge.UI do
   submodules:
 
   - `key/1` for stable sibling identity
+  - `scale/1` for layout-aware subtree scaling
+  - `rotate/1` for layout-aware element rotation
   - `focus_on_mount/0` to focus an element on first mount
   - `clip_nearby/0` to clip nearby escapes under the host
   - `image_fit/1` for `image/2` and `video/2`
@@ -172,6 +174,8 @@ defmodule Emerge.UI do
   @type video_target :: EmergeSkia.VideoTarget.t()
 
   @type key_attr :: {:key, key()}
+  @type layout_scale_attr :: {:layout_scale, number()}
+  @type layout_rotate_attr :: {:layout_rotate, number()}
   @type focus_on_mount_attr :: {:focus_on_mount, true}
   @type clip_nearby_attr :: {:clip_nearby, true}
   @type image_fit_attr :: {:image_fit, image_fit_mode()}
@@ -469,6 +473,33 @@ defmodule Emerge.UI do
   """
   @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}
+
+  @doc """
+  Scale this element and its subtree during layout.
+
+  This is equivalent to the renderer/window scale applied today, but scoped to
+  this element. Pixel-based attrs such as width, height, padding, border width,
+  shadows, font size, image size, scroll offsets, and motion offsets are scaled
+  before layout measures and places the subtree.
+
+  Use `Transform.scale/1` when the element should only be painted larger or
+  smaller without affecting layout.
+  """
+  @spec scale(number()) :: layout_scale_attr()
+  def scale(value) when is_number(value) and value > 0, do: {:layout_scale, value}
+
+  @doc """
+  Rotate this element during layout.
+
+  `width/1` and `height/1` still describe the authored unrotated box. The parent
+  reserves the rotated axis-aligned bounds, while rendering and hit testing use
+  the rotated shape.
+
+  Use `Transform.rotate/1` when rotation should be paint-only and should not
+  affect sibling placement or scroll extents.
+  """
+  @spec rotate(number()) :: layout_rotate_attr()
+  def rotate(value) when is_number(value), do: {:layout_rotate, value}
 
   @doc """
   Focus this element once when it is first mounted into the tree.
