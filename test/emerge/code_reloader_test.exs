@@ -7,6 +7,8 @@ defmodule Emerge.Runtime.CodeReloaderTest do
   alias Emerge.Runtime.CodeReloader
   alias Emerge.Runtime.CodeReloader.MixListener
 
+  @reload_timeout 1_000
+
   defmodule FakeRenderer do
     @behaviour Emerge.Runtime.Viewport.Renderer
 
@@ -138,7 +140,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
 
     def emit(pid, path) when is_pid(pid) and is_binary(path) do
-      GenServer.cast(pid, {:emit, path})
+      GenServer.call(pid, {:emit, path})
     end
 
     @impl true
@@ -148,9 +150,9 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
 
     @impl true
-    def handle_cast({:emit, path}, state) do
+    def handle_call({:emit, path}, _from, state) do
       send(state.target, {:emerge_code_reloader, :file_changed, path})
-      {:noreply, state}
+      {:reply, :ok, state}
     end
   end
 
@@ -200,7 +202,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.ex")
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.txt")
 
-    assert_receive {:compiler_reloaded, [:emerge], paths}, 300
+    assert_receive {:compiler_reloaded, [:emerge], paths}, @reload_timeout
 
     assert paths == [
              "/workspace/emerge/lib/emerge/code_reloader.ex",
@@ -232,7 +234,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
 
-    assert_receive {:compiler_reloaded, [:emerge], _paths}, 300
+    assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
 
     assert_eventually(fn -> patch_count(renderer) == 1 end)
 
@@ -260,7 +262,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
 
-    assert_receive {:compiler_reloaded, [:emerge], _paths}, 300
+    assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
 
     assert_eventually(fn -> patch_count(renderer) == 1 end)
 
@@ -290,7 +292,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
         FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
 
-        assert_receive {:compiler_reloaded, [:emerge], _paths}
+        assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
         Process.sleep(50)
         assert patch_count(renderer) == 0
 
