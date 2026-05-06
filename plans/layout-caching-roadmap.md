@@ -59,8 +59,7 @@ Relevant files:
 ### What remains
 
 The merge-readiness plan is complete and has been folded into
-`performance-improvements-branch-review.md`, then removed as a completed
-one-off plan. Broader cache work can now resume.
+`plans/README.md`. Broader cache work can now resume.
 
 The remaining work is about making reuse broader, cheaper, and more precise:
 
@@ -451,9 +450,6 @@ Interpretation:
 
 Follow-up:
 
-- renderer-cache implementation status is folded into
-  `rendering-cache-engine-investigation.md` and
-  `render-cache-flutter-comparison.md`
 - the current renderer-cache direction is GPU-first clean-subtree payloads with
   Flutter-like prepare-before-draw lifecycle
 - admitted clean subtrees should be rendered into an offscreen GPU cache target
