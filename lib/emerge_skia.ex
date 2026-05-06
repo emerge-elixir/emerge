@@ -645,7 +645,6 @@ defmodule EmergeSkia do
     |> apply(:stats, [renderer, command])
   end
 
-  defp normalize_native_ok(:ok), do: :ok
   defp normalize_native_ok({:ok, _}), do: :ok
   defp normalize_native_ok({:error, reason}), do: {:error, reason}
 end
