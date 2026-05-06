@@ -44,7 +44,7 @@ mod app {
             TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
         },
         services::{self, OffscreenRenderOptions},
-        stats::{RendererStatsCollector, format_renderer_stats_log},
+        stats::{RendererStatsCollector, format_renderer_stats_log, record_pipeline_layout_queued},
         tree::layout::LayoutOutput,
     };
     use objc2::{
@@ -2320,23 +2320,22 @@ mod app {
             return Ok(());
         };
 
-        let pipeline_submitted_at = record_macos_pipeline_draw_started(
-            session.stats.as_deref(),
-            &mut session.render_state,
-            draw_started_at,
-        );
+        let pipeline_submitted_at = session.render_state.pipeline_submitted_at.take();
+        if let Some(stats) = session.stats.as_ref() {
+            stats.record_pipeline_draw_started(
+                session.render_state.pipeline_render_queued_at.take(),
+                draw_started_at,
+            );
+        }
 
         if let Some(stats) = session.stats.as_ref() {
             stats.record_frame_present();
         }
 
         let presented_at = std::time::Instant::now();
-        record_macos_pipeline_presented(
-            session.stats.as_deref(),
-            pipeline_submitted_at,
-            swap_done_at,
-            presented_at,
-        );
+        if let Some(stats) = session.stats.as_ref() {
+            stats.record_pipeline_presented(pipeline_submitted_at, swap_done_at, presented_at);
+        }
         let predicted_next_present_at = session.present.observe_present(presented_at);
 
         if let Some(stats) = session.stats.as_ref() {
@@ -2357,45 +2356,6 @@ mod app {
         }
 
         Ok(())
-    }
-
-    pub(super) fn record_macos_pipeline_draw_started(
-        stats: Option<&RendererStatsCollector>,
-        render_state: &mut RenderState,
-        draw_started_at: Instant,
-    ) -> Option<Instant> {
-        if let (Some(stats), Some(render_queued_at)) =
-            (stats, render_state.pipeline_render_queued_at.take())
-        {
-            stats.record_pipeline_render_queue(render_queued_at, draw_started_at);
-        }
-
-        render_state.pipeline_submitted_at.take()
-    }
-
-    pub(super) fn record_macos_pipeline_presented(
-        stats: Option<&RendererStatsCollector>,
-        submitted_at: Option<Instant>,
-        swap_done_at: Instant,
-        presented_at: Instant,
-    ) {
-        if let (Some(stats), Some(submitted_at)) = (stats, submitted_at) {
-            stats.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
-            stats.record_pipeline(submitted_at, presented_at);
-            stats.record_pipeline_swap_to_frame_callback(swap_done_at, presented_at);
-        }
-    }
-
-    fn earliest_macos_pipeline_submitted_at(
-        left: Option<Instant>,
-        right: Option<Instant>,
-    ) -> Option<Instant> {
-        match (left, right) {
-            (Some(left), Some(right)) => Some(if left <= right { left } else { right }),
-            (Some(left), None) => Some(left),
-            (None, Some(right)) => Some(right),
-            (None, None) => None,
-        }
     }
 
     fn drain_cursor_icon_changes(session: &mut HostSession) {
@@ -2434,22 +2394,17 @@ mod app {
         let event_rebuild = output
             .event_rebuild_changed
             .then(|| output.event_rebuild.clone());
-        let render_queued_at = Instant::now();
-        if let (Some(stats), Some(tree_started_at), Some(_submitted_at)) = (
-            session.stats.as_ref(),
-            tree_batch_started_at,
-            pipeline_submitted_at,
-        ) {
-            stats.record_pipeline_tree(tree_started_at, render_queued_at);
-        }
-        session.render_state.set_scene(output.scene);
-        session.render_state.pipeline_submitted_at = earliest_macos_pipeline_submitted_at(
+        let pipeline = record_pipeline_layout_queued(
+            session.stats.as_deref(),
             session.render_state.pipeline_submitted_at,
+            session.render_state.pipeline_render_queued_at,
             pipeline_submitted_at,
+            tree_batch_started_at,
+            Instant::now(),
         );
-        if pipeline_submitted_at.is_some() {
-            session.render_state.pipeline_render_queued_at = Some(render_queued_at);
-        }
+        session.render_state.set_scene(output.scene);
+        session.render_state.pipeline_submitted_at = pipeline.pipeline_submitted_at;
+        session.render_state.pipeline_render_queued_at = pipeline.pipeline_render_queued_at;
         session.render_state.render_version = session.render_state.render_version.wrapping_add(1);
         session.render_state.animate = output.animations_active;
         session.dirty = true;
@@ -3154,11 +3109,11 @@ mod app {
         }
     }
 
-    pub(super) fn precise_scroll_deltas(dx: f32, dy: f32, scale_factor: f32) -> (f32, f32) {
+    fn precise_scroll_deltas(dx: f32, dy: f32, scale_factor: f32) -> (f32, f32) {
         input_pointer::precise_scroll_deltas(dx, dy, scale_factor)
     }
 
-    pub(super) fn line_scroll_deltas(dx: f32, dy: f32, scroll_line_pixels: f32) -> (f32, f32) {
+    fn line_scroll_deltas(dx: f32, dy: f32, scroll_line_pixels: f32) -> (f32, f32) {
         input_pointer::line_scroll_deltas(dx, dy, scroll_line_pixels)
     }
 
@@ -3277,20 +3232,6 @@ mod app {
         } else {
             ACTION_RELEASE
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn text_commit_from_key_and_text(
-        key: CanonicalKey,
-        mods: u8,
-        text: &str,
-    ) -> Option<String> {
-        input_keyboard::text_commit_from_key_and_text(key, mods, text)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn suppress_text_commit_for_key(key: CanonicalKey) -> bool {
-        input_keyboard::suppress_text_commit_for_key(key)
     }
 
     fn listener_thread(
@@ -4056,50 +3997,12 @@ fn main() {
 #[cfg(all(test, feature = "macos", target_os = "macos"))]
 mod tests {
     use super::app::{
-        TextInputSelectorAction, decode_button_name, encode_button, line_scroll_deltas,
-        precise_scroll_deltas, record_macos_pipeline_draw_started, record_macos_pipeline_presented,
-        render_point_for_view_point, render_size_for_view, should_ignore_text_input_selector,
-        should_interpret_key_event, suppress_text_commit_for_key, text_commit_from_key_and_text,
+        TextInputSelectorAction, decode_button_name, encode_button, render_point_for_view_point,
+        render_size_for_view, should_ignore_text_input_selector, should_interpret_key_event,
         text_input_selector_action, view_rect_for_render_rect,
     };
     use emerge_skia::events::{TextInputCommandRequest, TextInputEditRequest};
     use emerge_skia::keys::CanonicalKey;
-    use emerge_skia::renderer::RenderState;
-    use emerge_skia::stats::{RendererStatsCollector, RendererTimingMetric};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn text_commit_suppresses_arrow_keys() {
-        assert!(suppress_text_commit_for_key(CanonicalKey::ArrowLeft));
-        assert_eq!(
-            text_commit_from_key_and_text(CanonicalKey::ArrowLeft, 0, "\u{f702}"),
-            None
-        );
-    }
-
-    #[test]
-    fn text_commit_preserves_printable_text() {
-        assert_eq!(
-            text_commit_from_key_and_text(CanonicalKey::A, 0, "a"),
-            Some("a".to_string())
-        );
-        assert_eq!(
-            text_commit_from_key_and_text(CanonicalKey::Space, 0, " "),
-            Some(" ".to_string())
-        );
-    }
-
-    #[test]
-    fn text_commit_blocks_meta_and_ctrl_shortcuts() {
-        assert_eq!(
-            text_commit_from_key_and_text(CanonicalKey::V, 0x02, "v"),
-            None
-        );
-        assert_eq!(
-            text_commit_from_key_and_text(CanonicalKey::V, 0x08, "v"),
-            None
-        );
-    }
 
     #[test]
     fn pointer_button_labels_include_linux_back_forward_and_other() {
@@ -4192,63 +4095,5 @@ mod tests {
             view_rect_for_render_rect((200.0, 100.0, 80.0, 40.0), 2.0),
             (100.0, 50.0, 40.0, 20.0)
         );
-    }
-
-    #[test]
-    fn precise_scroll_deltas_scale_into_render_pixels() {
-        assert_eq!(precise_scroll_deltas(3.0, -4.0, 2.0), (6.0, -8.0));
-        assert_eq!(precise_scroll_deltas(3.0, -4.0, 1.0), (3.0, -4.0));
-    }
-
-    #[test]
-    fn line_scroll_deltas_use_configured_line_distance() {
-        assert_eq!(line_scroll_deltas(1.0, -2.0, 45.0), (45.0, -90.0));
-    }
-
-    #[test]
-    fn macos_pipeline_helpers_record_full_pipeline_segments() {
-        let stats = RendererStatsCollector::new();
-        let mut render_state = RenderState::default();
-        let submitted_at = Instant::now();
-        let render_queued_at = submitted_at + Duration::from_millis(8);
-        let draw_started_at = submitted_at + Duration::from_millis(11);
-        let swap_done_at = submitted_at + Duration::from_millis(15);
-        let presented_at = submitted_at + Duration::from_millis(21);
-
-        render_state.pipeline_submitted_at = Some(submitted_at);
-        render_state.pipeline_render_queued_at = Some(render_queued_at);
-
-        let pipeline_submitted_at =
-            record_macos_pipeline_draw_started(Some(&stats), &mut render_state, draw_started_at);
-        record_macos_pipeline_presented(
-            Some(&stats),
-            pipeline_submitted_at,
-            swap_done_at,
-            presented_at,
-        );
-
-        assert_eq!(pipeline_submitted_at, Some(submitted_at));
-        assert!(render_state.pipeline_submitted_at.is_none());
-        assert!(render_state.pipeline_render_queued_at.is_none());
-
-        let snapshot = stats.snapshot();
-        assert_timing(&snapshot, RendererTimingMetric::PipelineRenderQueue, 3.0);
-        assert_timing(&snapshot, RendererTimingMetric::PipelineSubmitToSwap, 15.0);
-        assert_timing(&snapshot, RendererTimingMetric::Pipeline, 21.0);
-        assert_timing(
-            &snapshot,
-            RendererTimingMetric::PipelineSwapToFrameCallback,
-            6.0,
-        );
-    }
-
-    fn assert_timing(
-        snapshot: &emerge_skia::stats::RendererStatsSnapshot,
-        metric: RendererTimingMetric,
-        expected_avg_ms: f64,
-    ) {
-        let timing = snapshot.timing(metric);
-        assert_eq!(timing.count, 1);
-        assert!((timing.avg_ms - expected_avg_ms).abs() < 0.001);
     }
 }

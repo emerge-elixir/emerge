@@ -45,10 +45,7 @@ use wayland_client::{
 
 use crate::{
     InputTargetRelay,
-    actors::{
-        AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg,
-        earliest_pipeline_submitted_at,
-    },
+    actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
         wake::{
             BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
@@ -60,8 +57,8 @@ use crate::{
     native_log::NativeLogRelay,
     renderer::{RenderState, RendererCacheConfig},
     stats::{
-        RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, format_slow_present_frame_log,
-        format_slow_render_frame_log, render_frame_has_slow_stage,
+        RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, earliest_pipeline_instant,
+        format_slow_present_frame_log, format_slow_render_frame_log, render_frame_has_slow_stage,
     },
     video::{VideoImportContext, VideoRegistry},
 };
@@ -454,11 +451,9 @@ impl WaylandApp {
                             ),
                         );
                     }
-                    if let (Some(stats), Some(render_queued_at)) =
-                        (self.stats.as_ref(), pipeline_render_queued_at)
-                    {
-                        stats.record_pipeline_render_queue(
-                            render_queued_at,
+                    if let Some(stats) = self.stats.as_ref() {
+                        stats.record_pipeline_draw_started(
+                            pipeline_render_queued_at,
                             std::time::Instant::now(),
                         );
                     }
@@ -640,7 +635,7 @@ impl WaylandApp {
         if self.render_state.pipeline_submitted_at.is_some() {
             self.pending_pipeline_swap_done_at = Some(swap_done_at);
         }
-        self.pending_pipeline_submitted_at = earliest_pipeline_submitted_at(
+        self.pending_pipeline_submitted_at = earliest_pipeline_instant(
             self.pending_pipeline_submitted_at,
             self.render_state.pipeline_submitted_at.take(),
         );

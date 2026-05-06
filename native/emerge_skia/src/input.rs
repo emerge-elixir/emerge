@@ -536,6 +536,13 @@ mod tests {
     }
 
     #[test]
+    fn pointer_scroll_delta_helpers_match_backend_units() {
+        assert_eq!(pointer::precise_scroll_deltas(3.0, -4.0, 2.0), (6.0, -8.0));
+        assert_eq!(pointer::precise_scroll_deltas(3.0, -4.0, 1.0), (3.0, -4.0));
+        assert_eq!(pointer::line_scroll_deltas(1.0, -2.0, 45.0), (45.0, -90.0));
+    }
+
+    #[test]
     fn keyboard_helpers_pack_modifiers_and_filter_text() {
         assert_eq!(
             keyboard::modifier_bits(true, true, false, true),

@@ -14,7 +14,7 @@ use crate::{
     actors::{AnimationFrameTraceSeed, EventMsg, RenderMsg, TreeMsg},
     backend::wake::BackendWakeHandle,
     events,
-    stats::RendererStatsCollector,
+    stats::{RendererStatsCollector, record_pipeline_layout_queued},
     tree::{element::ElementTree, layout::LayoutOutput},
 };
 
@@ -101,7 +101,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             render_sender: &render_sender,
                             render_counter: &render_counter,
                             window_wake: &window_wake,
-                            stats: stats.as_ref(),
+                            stats: stats.as_deref(),
                             log_input,
                         },
                         *output,
@@ -143,7 +143,7 @@ struct LayoutOutputPublishTargets<'a> {
     render_sender: &'a RenderSender,
     render_counter: &'a Arc<AtomicU64>,
     window_wake: &'a BackendWakeHandle,
-    stats: Option<&'a Arc<RendererStatsCollector>>,
+    stats: Option<&'a RendererStatsCollector>,
     log_input: bool,
 }
 
@@ -159,21 +159,21 @@ fn publish_layout_output(
     }
 
     let version = targets.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    let render_queued_at = Instant::now();
-    let pipeline_render_queued_at = pipeline_submitted_at.map(|_| render_queued_at);
-    if let (Some(stats), Some(tree_started_at), Some(render_queued_at)) = (
+    let pipeline = record_pipeline_layout_queued(
         targets.stats,
+        None,
+        None,
+        pipeline_submitted_at,
         pipeline_tree_started_at,
-        pipeline_render_queued_at,
-    ) {
-        stats.record_pipeline_tree(tree_started_at, render_queued_at);
-    }
+        Instant::now(),
+    );
     targets.render_sender.send_latest(RenderMsg::Scene {
         scene: Box::new(output.scene),
         version,
-        pipeline_submitted_at,
-        pipeline_render_queued_at,
-        animation_trace: animation_trace.map(|trace| Box::new(trace.queued_at(render_queued_at))),
+        pipeline_submitted_at: pipeline.pipeline_submitted_at,
+        pipeline_render_queued_at: pipeline.pipeline_render_queued_at,
+        animation_trace: animation_trace
+            .map(|trace| Box::new(trace.queued_at(pipeline.render_queued_at))),
         animate: output.animations_active,
         ime_enabled: output.ime_enabled,
         ime_cursor_area: output.ime_cursor_area,

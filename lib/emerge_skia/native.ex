@@ -3,14 +3,15 @@ defmodule EmergeSkia.Native do
   NIF bindings for the Skia renderer.
   """
 
-  @version Mix.Project.config()[:version]
-  @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
-  @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
-  @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
   @checksum_only EmergeSkia.BuildConfig.checksum_only_mode?()
   @load_native_runtime EmergeSkia.BuildConfig.load_native_runtime?()
 
   if @checksum_only do
+    @version Mix.Project.config()[:version]
+    @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
+    @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
+    @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
+
     # Checksum generation only needs RustlerPrecompiled metadata, not a built or downloaded NIF.
     :ok =
       EmergeSkia.ChecksumMetadata.ensure_written!(
@@ -24,22 +25,26 @@ defmodule EmergeSkia.Native do
         variants: EmergeSkia.BuildConfig.precompiled_variants()
       )
   else
-    @rustler_opts Mix.Project.config()[:rustler_opts] || []
-    @crate_path Path.expand("../../native/emerge_skia", __DIR__)
-    @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
-    @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
-    @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
-    @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
-                      @compiled_backends
-                    )
-    @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
-                   checksum_path: @checksum_path,
-                   compiled_backends: @compiled_backends,
-                   targets: @precompiled_targets,
-                   nif_versions: @precompiled_nif_versions
-                 )
-
     if @load_native_runtime do
+      @rustler_opts Mix.Project.config()[:rustler_opts] || []
+      @crate_path Path.expand("../../native/emerge_skia", __DIR__)
+      @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
+      @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
+      @version Mix.Project.config()[:version]
+      @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
+      @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
+      @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
+      @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
+      @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
+                        @compiled_backends
+                      )
+      @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
+                     checksum_path: @checksum_path,
+                     compiled_backends: @compiled_backends,
+                     targets: @precompiled_targets,
+                     nif_versions: @precompiled_nif_versions
+                   )
+
       use RustlerPrecompiled,
           Keyword.merge(
             [
