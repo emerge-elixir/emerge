@@ -14,7 +14,7 @@ Add `:emerge` to your dependencies:
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.2.1"}
+    {:emerge, "~> 0.3.0"}
   ]
 end
 ```
@@ -147,7 +147,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - Reuse UI with ordinary Elixir functions, data transforms, and `Enum`
 - Handle buttons, text input, keyboard, pointer events, and interactive states
 - Render images, SVGs, backgrounds, borders, text, and font assets
-- Use scroll containers, nearby overlays, paint-time transforms, and animation
+- Use scroll containers, nearby overlays, paint-time and layout-aware transforms, and animation
 - Run the same renderer on macOS, Wayland, DRM, and raster backends with high-DPI rendering and efficient tree updates
 
 ## Backends
@@ -157,7 +157,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - **DRM** for embedded, kiosk, and Nerves deployments
 - **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
 
-Initial macOS support in `0.2.1` does not include `video_target`.
+The macOS backend does not currently include `video_target`.
 
 For runtime backend selection and multi-backend setup, see [Set up a viewport](guides/tutorials/set_up_viewport.md).
 
