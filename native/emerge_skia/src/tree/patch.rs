@@ -18,7 +18,7 @@ use super::deserialize::{DecodeError, decode_tree};
 use super::element::NearbyMounts;
 use super::element::{
     Element, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbySlot, NodeId,
-    NodeResidency, ParentLink, TextInputContentOrigin,
+    NodeResidency, ParentLink, SliderValueOrigin, TextInputContentOrigin,
 };
 use super::invalidation::{
     TreeInvalidation, attrs_change_affects_registry_refresh, classify_attrs_change,
@@ -291,6 +291,8 @@ fn apply_patch(
                 let before_attrs = element.spec.declared.clone();
                 let before_patch_content = element.runtime.patch_content.clone();
                 let before_content_origin = element.runtime.text_input_content_origin;
+                let before_slider_patch_value = element.runtime.slider_patch_value;
+                let before_slider_value_origin = element.runtime.slider_value_origin;
 
                 element.spec.attrs_raw = attrs_raw.clone();
                 let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
@@ -298,6 +300,10 @@ fn apply_patch(
                     element.spec.kind.is_text_input_family() && decoded.content.is_some();
                 let text_input_is_focused =
                     element.spec.kind.is_text_input_family() && element.runtime.text_input_focused;
+                let slider_value_is_from_patch =
+                    element.spec.kind == ElementKind::Slider && decoded.slider_value.is_some();
+                let slider_value_is_runtime_owned = element.spec.kind == ElementKind::Slider
+                    && element.runtime.slider_value_origin == SliderValueOrigin::Event;
 
                 if content_is_from_patch && text_input_is_focused {
                     element.runtime.patch_content = decoded.content.clone();
@@ -306,11 +312,21 @@ fn apply_patch(
                     element.runtime.patch_content = None;
                 }
 
+                if slider_value_is_from_patch && slider_value_is_runtime_owned {
+                    element.runtime.slider_patch_value = decoded.slider_value.map(f64::to_bits);
+                    decoded.slider_value = element.spec.declared.slider_value;
+                } else if element.spec.kind == ElementKind::Slider {
+                    element.runtime.slider_patch_value = None;
+                }
+
                 element.spec.declared = decoded.clone();
                 element.layout.effective = decoded;
                 element.normalize_extracted_state();
                 if content_is_from_patch && !text_input_is_focused {
                     element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
+                }
+                if slider_value_is_from_patch && !slider_value_is_runtime_owned {
+                    element.runtime.slider_value_origin = SliderValueOrigin::TreePatch;
                 }
 
                 let mut invalidation = classify_attrs_change(&before_attrs, &element.spec.declared);
@@ -318,6 +334,8 @@ fn apply_patch(
                     attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
                 if before_patch_content != element.runtime.patch_content
                     || before_content_origin != element.runtime.text_input_content_origin
+                    || before_slider_patch_value != element.runtime.slider_patch_value
+                    || before_slider_value_origin != element.runtime.slider_value_origin
                 {
                     invalidation.add(TreeInvalidation::Registry);
                 }
@@ -813,6 +831,8 @@ fn clone_as_ghost(
             text_input_selection_anchor: None,
             text_input_preedit: None,
             text_input_preedit_cursor: None,
+            slider_value_origin: old.runtime.slider_value_origin,
+            slider_patch_value: old.runtime.slider_patch_value,
             mouse_over_active: false,
             mouse_down_active: false,
             focused_active: false,

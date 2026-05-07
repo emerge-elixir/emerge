@@ -334,6 +334,10 @@ pub struct Attrs {
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
+    pub slider_min: Option<f64>,
+    pub slider_max: Option<f64>,
+    pub slider_value: Option<f64>,
+    pub slider_step: Option<f64>,
     pub video_target: Option<String>,
     pub text_align: Option<TextAlign>,
     pub content: Option<String>,
@@ -441,6 +445,10 @@ const TAG_FOCUS_ON_MOUNT: u8 = 76;
 const TAG_CLIP_NEARBY: u8 = 77;
 const TAG_LAYOUT_SCALE: u8 = 78;
 const TAG_LAYOUT_ROTATE: u8 = 79;
+const TAG_SLIDER_MIN: u8 = 80;
+const TAG_SLIDER_MAX: u8 = 81;
+const TAG_SLIDER_VALUE: u8 = 82;
+const TAG_SLIDER_STEP: u8 = 83;
 
 // =============================================================================
 // Decoder
@@ -536,6 +544,10 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_HEIGHT => attrs.height = Some(decode_length(cursor)?),
         TAG_LAYOUT_SCALE => attrs.layout_scale = Some(cursor.read_f64()?),
         TAG_LAYOUT_ROTATE => attrs.layout_rotate = Some(cursor.read_f64()?),
+        TAG_SLIDER_MIN => attrs.slider_min = Some(cursor.read_f64()?),
+        TAG_SLIDER_MAX => attrs.slider_max = Some(cursor.read_f64()?),
+        TAG_SLIDER_VALUE => attrs.slider_value = Some(cursor.read_f64()?),
+        TAG_SLIDER_STEP => attrs.slider_step = Some(cursor.read_f64()?),
         TAG_PADDING => attrs.padding = Some(decode_padding(cursor)?),
         TAG_SPACING => attrs.spacing = Some(cursor.read_f64()?),
         TAG_ALIGN_X => attrs.align_x = Some(decode_align_x(cursor)?),

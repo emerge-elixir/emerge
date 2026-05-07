@@ -236,6 +236,13 @@ impl RenderBuildContext {
         }
     }
 
+    fn within_local_transform(&self) -> Self {
+        Self {
+            scene_bounds: self.scene_bounds,
+            ..Self::default()
+        }
+    }
+
     fn full_clip_shapes(&self) -> Vec<ClipShape> {
         self.inherited_host_clips
             .iter()
@@ -525,6 +532,11 @@ fn build_element_subtree(
 
     let background_nodes = build_background_nodes(render_frame, attrs);
     let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
+    let local_transform_render_ctx =
+        (!transform.is_identity()).then(|| traversal.render_ctx.within_local_transform());
+    let host_content_render_ctx = local_transform_render_ctx
+        .as_ref()
+        .unwrap_or(traversal.render_ctx);
     let host_content = build_host_content_subtree(
         tree,
         HostContentBuild {
@@ -537,7 +549,7 @@ fn build_element_subtree(
         &mut outputs.reborrow(),
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
-            render_ctx: traversal.render_ctx,
+            render_ctx: host_content_render_ctx,
             cache_store_budget: traversal.cache_store_budget,
         },
     );
@@ -663,6 +675,11 @@ fn build_element_subtree_cached(
 
     let background_nodes = build_background_nodes(render_frame, attrs);
     let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
+    let local_transform_render_ctx =
+        (!transform.is_identity()).then(|| traversal.render_ctx.within_local_transform());
+    let host_content_render_ctx = local_transform_render_ctx
+        .as_ref()
+        .unwrap_or(traversal.render_ctx);
     let host_content = build_host_content_subtree_cached(
         tree,
         &element,
@@ -671,7 +688,7 @@ fn build_element_subtree_cached(
         &element_context,
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
-            render_ctx: traversal.render_ctx,
+            render_ctx: host_content_render_ctx,
             cache_store_budget: traversal.cache_store_budget,
         },
         scene_state.clone(),
@@ -1823,10 +1840,7 @@ fn wrap_with_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderN
         return nodes;
     }
 
-    vec![RenderNode::Clip {
-        clips,
-        children: nodes,
-    }]
+    wrap_with_clip_kind(nodes, clips, false)
 }
 
 fn wrap_with_relaxed_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec<RenderNode> {
@@ -1838,10 +1852,52 @@ fn wrap_with_relaxed_clips(nodes: Vec<RenderNode>, clips: Vec<ClipShape>) -> Vec
         return nodes;
     }
 
-    vec![RenderNode::RelaxedClip {
-        clips,
-        children: nodes,
-    }]
+    wrap_with_clip_kind(nodes, clips, true)
+}
+
+fn wrap_with_clip_kind(
+    nodes: Vec<RenderNode>,
+    clips: Vec<ClipShape>,
+    relaxed: bool,
+) -> Vec<RenderNode> {
+    let mut out = Vec::new();
+    let mut clipped = Vec::new();
+
+    for node in nodes {
+        if matches!(node, RenderNode::ShadowPass { .. }) {
+            push_clipped_group(&mut out, &clips, relaxed, &mut clipped);
+            out.push(node);
+        } else {
+            clipped.push(node);
+        }
+    }
+
+    push_clipped_group(&mut out, &clips, relaxed, &mut clipped);
+    out
+}
+
+fn push_clipped_group(
+    out: &mut Vec<RenderNode>,
+    clips: &[ClipShape],
+    relaxed: bool,
+    clipped: &mut Vec<RenderNode>,
+) {
+    if clipped.is_empty() {
+        return;
+    }
+
+    let children = std::mem::take(clipped);
+    if relaxed {
+        out.push(RenderNode::RelaxedClip {
+            clips: clips.to_vec(),
+            children,
+        });
+    } else {
+        out.push(RenderNode::Clip {
+            clips: clips.to_vec(),
+            children,
+        });
+    }
 }
 
 fn wrap_with_shadow_pass(nodes: Vec<RenderNode>) -> Vec<RenderNode> {

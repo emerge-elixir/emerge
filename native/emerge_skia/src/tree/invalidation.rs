@@ -163,6 +163,10 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         || before.image_src != after.image_src
         || before.image_fit != after.image_fit
         || before.image_size != after.image_size
+        || before.slider_min != after.slider_min
+        || before.slider_max != after.slider_max
+        || before.slider_value != after.slider_value
+        || before.slider_step != after.slider_step
         || before.text_align != after.text_align
         || before.content != after.content
         || before.snap_layout != after.snap_layout
