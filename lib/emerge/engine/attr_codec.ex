@@ -78,7 +78,11 @@ defmodule Emerge.Engine.AttrCodec do
     on_swipe_right: 74,
     virtual_key: 75,
     focus_on_mount: 76,
-    clip_nearby: 77
+    clip_nearby: 77,
+    slider_min: 80,
+    slider_max: 81,
+    slider_value: 82,
+    slider_step: 83
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -121,6 +125,10 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:height, value), do: encode_length(value)
   defp encode_value(:layout_scale, value), do: encode_f64(value)
   defp encode_value(:layout_rotate, value), do: encode_f64(value)
+  defp encode_value(:slider_min, value), do: encode_f64(value)
+  defp encode_value(:slider_max, value), do: encode_f64(value)
+  defp encode_value(:slider_value, value), do: encode_f64(value)
+  defp encode_value(:slider_step, value), do: encode_f64(value)
   defp encode_value(:padding, value), do: encode_padding(value)
   defp encode_value(:spacing, value), do: encode_f64(value)
   defp encode_value(:spacing_xy, value), do: encode_spacing_xy(value)
@@ -192,6 +200,10 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:height, rest), do: decode_length(rest)
   defp decode_value(:layout_scale, rest), do: decode_f64(rest)
   defp decode_value(:layout_rotate, rest), do: decode_f64(rest)
+  defp decode_value(:slider_min, rest), do: decode_f64(rest)
+  defp decode_value(:slider_max, rest), do: decode_f64(rest)
+  defp decode_value(:slider_value, rest), do: decode_f64(rest)
+  defp decode_value(:slider_step, rest), do: decode_f64(rest)
   defp decode_value(:padding, rest), do: decode_padding(rest)
   defp decode_value(:spacing, rest), do: decode_f64(rest)
   defp decode_value(:spacing_xy, rest), do: decode_spacing_xy(rest)

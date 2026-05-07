@@ -582,6 +582,9 @@ defmodule EmergeSkia do
   `:press`, `:click`, `:swipe_up`, `:swipe_down`, `:swipe_left`,
   `:swipe_right`, `:change`, `:key_down`, `:key_up`, or `:key_press`.
 
+  Text-input `:change` payloads are binaries. Slider `:change` payloads are
+  floats.
+
   Routed `:key_down`, `:key_up`, and `:key_press` payloads currently carry an
   opaque binding route id used by higher-level runtimes.
 

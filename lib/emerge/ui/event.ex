@@ -16,8 +16,8 @@ defmodule Emerge.UI.Event do
 
   ## Payload Routing
 
-  Some element events include a payload. Today the main public example is
-  `on_change/1` for text-input value changes.
+  Some element events include a payload. The main public example is
+  `on_change/1` for text-input and slider value changes.
 
   When a payload-bearing event is delivered through a viewport, the payload is
   wrapped into the stored message using the viewport's `wrap_payload/3`
@@ -78,10 +78,10 @@ defmodule Emerge.UI.Event do
 
   ## Input And Focus
 
-  `on_change/1` is intended for text inputs.
+  `on_change/1` is intended for controlled inputs.
 
-  Text editing still works without `on_change/1`; the handler only controls
-  whether a change message is emitted.
+  Text editing and slider dragging still work without `on_change/1`; the
+  handler only controls whether a change message is emitted.
 
   `on_focus/1` and `on_blur/1` work on focusable elements, not only text inputs.
 
@@ -592,17 +592,19 @@ defmodule Emerge.UI.Event do
   def on_mouse_move(message), do: on_mouse_move({self(), message})
 
   @doc """
-  Register a value-change payload for a text input.
+  Register a value-change payload for a controlled input.
 
   Use `on_change/1` with `Emerge.UI.Input.text/2` or
-  `Emerge.UI.Input.multiline/2`.
+  `Emerge.UI.Input.multiline/2` to receive a binary payload. Use it with
+  `Emerge.UI.Input.slider/2` to receive a numeric payload.
 
-  Text editing still works without this handler; `on_change/1` only controls
-  whether a message is emitted when the value changes.
+  Text editing and slider dragging still work without this handler;
+  `on_change/1` only controls whether a message is emitted when the value
+  changes.
 
   When delivered through a viewport, the changed value is wrapped into the
   stored message using `wrap_payload/3`. Multiline values use the same payload
-  shape; newline characters remain part of the emitted binary.
+  shape as text values; newline characters remain part of the emitted binary.
 
   ## Examples
 

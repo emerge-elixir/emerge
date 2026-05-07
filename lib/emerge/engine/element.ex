@@ -12,6 +12,7 @@ defmodule Emerge.Engine.Element do
           | :text
           | :text_input
           | :multiline
+          | :slider
           | :image
           | :video
           | :none
