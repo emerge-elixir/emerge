@@ -31,6 +31,7 @@ mod app {
         events::{
             CursorIcon, CursorIconState, ElementEventKind, HostEventRuntime, HostEventSink,
             TextInputCommandRequest, TextInputEditRequest, TextInputState,
+            registry_builder::ElixirEventPayload,
         },
         input::{
             ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
@@ -671,7 +672,7 @@ mod app {
             &self,
             element_id: &emerge_skia::tree::element::NodeId,
             kind: ElementEventKind,
-            payload: Option<&str>,
+            payload: Option<&ElixirEventPayload>,
         ) {
             notify_element_event(&self.state, self.session_id, element_id, kind, payload);
         }
@@ -2764,11 +2765,16 @@ mod app {
         session_id: u64,
         element_id: &emerge_skia::tree::element::NodeId,
         kind: ElementEventKind,
-        payload: Option<&str>,
+        payload: Option<&ElixirEventPayload>,
     ) {
         let id_bytes = element_id.to_be_bytes();
         let has_payload = if payload.is_some() { 1 } else { 0 };
-        let payload = payload.unwrap_or("").as_bytes();
+        let payload = match payload {
+            Some(ElixirEventPayload::String(value)) => value.clone(),
+            Some(ElixirEventPayload::Float(value)) => value.to_string(),
+            None => String::new(),
+        };
+        let payload = payload.as_bytes();
         let mut data = Vec::with_capacity(1 + 1 + 4 + id_bytes.len() + 4 + payload.len());
         data.push(encode_element_event_kind(kind));
         data.push(has_payload);

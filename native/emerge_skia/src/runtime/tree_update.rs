@@ -261,6 +261,9 @@ impl TreeUpdateEngine {
                         preedit_cursor,
                     ));
                 }
+                TreeMsg::SetSliderValue { element_id, value } => {
+                    invalidation.add(self.tree.set_slider_value(&element_id, value));
+                }
                 TreeMsg::AnimationPulse {
                     presented_at,
                     predicted_next_present_at,

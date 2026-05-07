@@ -35,24 +35,24 @@ use crate::{
     keys::CanonicalKey,
     stats::RendererStatsCollector,
     tree::{
-        element::{NodeId, TextInputContentOrigin},
+        element::{NodeId, SliderValueOrigin, TextInputContentOrigin},
         scrollbar::ScrollbarAxis,
     },
 };
 
 use super::{
-    CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputCommandRequest,
-    TextInputEditRequest, TextInputState, blur_atom, change_atom, click_atom, focus_atom,
-    key_down_atom, key_press_atom, key_up_atom, mouse_down_atom, mouse_enter_atom,
+    CursorIcon, ElementEventKind, RegistryRebuildPayload, SliderState, TextInputCommandRequest,
+    TextInputEditRequest, TextInputState, blur_atom, change_atom, click_atom, f64_values_equal,
+    focus_atom, key_down_atom, key_press_atom, key_up_atom, mouse_down_atom, mouse_enter_atom,
     mouse_leave_atom, mouse_move_atom, mouse_up_atom, press_atom,
     registry_builder::{
-        self, GestureAxis, HoverTracker, ListenerAction, ListenerComputeCtx, ListenerInput,
-        ListenerMatcherKind, RuntimeChange, RuntimeOverlayState,
+        self, ElixirEventPayload, GestureAxis, HoverTracker, ListenerAction, ListenerComputeCtx,
+        ListenerInput, ListenerMatcherKind, RuntimeChange, RuntimeOverlayState,
     },
     scrollbar::ScrollbarNode,
-    send_element_event, send_element_event_with_string_payload, send_input_event,
-    send_running_message, swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom,
-    virtual_key_hold_atom,
+    send_element_event, send_element_event_with_float_payload,
+    send_element_event_with_string_payload, send_input_event, send_running_message,
+    swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
 pub trait HostEventSink: Send + Sync {
@@ -61,7 +61,7 @@ pub trait HostEventSink: Send + Sync {
         &self,
         element_id: &NodeId,
         kind: ElementEventKind,
-        payload: Option<&str>,
+        payload: Option<&ElixirEventPayload>,
     );
 }
 
@@ -422,6 +422,12 @@ struct PendingTextPatch {
     expires_at: Instant,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PendingSliderPatch {
+    value: f64,
+    expires_at: Instant,
+}
+
 /// Deferred effects collected from one listener dispatch.
 ///
 /// Listener actions are processed in two phases:
@@ -545,6 +551,7 @@ struct RuntimeListenerComputeCtx<'a> {
     focused_id: Option<&'a NodeId>,
     hover_stack: &'a [HoverTracker],
     text_states: &'a HashMap<NodeId, TextInputState>,
+    slider_states: &'a HashMap<NodeId, SliderState>,
     text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
     clipboard: &'a mut ClipboardManager,
 }
@@ -560,6 +567,10 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 
     fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
         self.text_states.get(element_id).cloned()
+    }
+
+    fn slider_state(&self, element_id: &NodeId) -> Option<SliderState> {
+        self.slider_states.get(element_id).cloned()
     }
 
     fn clipboard_text(&mut self, target: ClipboardTarget) -> Option<String> {
@@ -655,8 +666,10 @@ struct DirectEventRuntime {
     last_focus_on_mount_revision: u64,
     focused_id: Option<NodeId>,
     text_states: HashMap<NodeId, TextInputState>,
+    slider_states: HashMap<NodeId, SliderState>,
     text_commit_suppressions: Vec<TextCommitSuppression>,
     pending_text_patches: HashMap<NodeId, VecDeque<PendingTextPatch>>,
+    pending_slider_patches: HashMap<NodeId, VecDeque<PendingSliderPatch>>,
     scrollbar_nodes: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
@@ -702,8 +715,10 @@ impl DirectEventRuntime {
             last_focus_on_mount_revision: 0,
             focused_id: None,
             text_states: HashMap::new(),
+            slider_states: HashMap::new(),
             text_commit_suppressions: Vec::new(),
             pending_text_patches: HashMap::new(),
+            pending_slider_patches: HashMap::new(),
             scrollbar_nodes: HashMap::new(),
             input_handler: InputHandler::new(),
             input_target: None,
@@ -1099,6 +1114,7 @@ impl DirectEventRuntime {
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
+                slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
             };
@@ -1137,6 +1153,7 @@ impl DirectEventRuntime {
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
+                slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
             };
@@ -1218,16 +1235,18 @@ impl DirectEventRuntime {
         let RegistryRebuildPayload {
             base_registry,
             text_inputs,
+            sliders,
             scrollbars,
             focused_id,
             focus_on_mount,
         } = rebuild;
 
         self.prune_expired_pending_text_patches();
+        self.prune_expired_pending_slider_patches();
         self.base_registry = base_registry;
         self.scrollbar_nodes = scrollbars;
 
-        self.reconcile_runtime_overlay(&text_inputs);
+        self.reconcile_runtime_overlay(&text_inputs, &sliders);
         self.recompose_overlay_registry();
         self.focused_id = focused_id;
         self.text_commit_suppressions.retain(|suppression| {
@@ -1241,6 +1260,13 @@ impl DirectEventRuntime {
             &mut self.text_states,
             &mut self.pending_text_patches,
             &self.focused_id,
+            tree_tx,
+            log_render,
+        );
+        changed_tree |= reconcile_slider_states(
+            &sliders,
+            &mut self.slider_states,
+            &mut self.pending_slider_patches,
             tree_tx,
             log_render,
         );
@@ -1443,6 +1469,7 @@ impl DirectEventRuntime {
             || self.runtime_overlay.swipe.is_some()
             || self.runtime_overlay.scrollbar.is_some()
             || self.runtime_overlay.text_drag.is_some()
+            || self.runtime_overlay.slider_drag.is_some()
     }
 
     fn apply_cursor_request(&mut self, icon: CursorIcon) {
@@ -1479,6 +1506,7 @@ impl DirectEventRuntime {
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
                 text_states: &self.text_states,
+                slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
             };
@@ -1532,7 +1560,7 @@ impl DirectEventRuntime {
 
     fn send_elixir_event(&self, event: registry_builder::ElixirEvent) {
         if let Some(sink) = self.host_event_sink.as_deref() {
-            sink.send_element_event(&event.element_id, event.kind, event.payload.as_deref());
+            sink.send_element_event(&event.element_id, event.kind, event.payload.as_ref());
             return;
         }
 
@@ -1541,9 +1569,12 @@ impl DirectEventRuntime {
         };
 
         let atom = event_kind_to_atom(event.kind);
-        match event.payload.as_deref() {
-            Some(value) => {
-                send_element_event_with_string_payload(pid, &event.element_id, atom, value)
+        match event.payload {
+            Some(ElixirEventPayload::String(value)) => {
+                send_element_event_with_string_payload(pid, &event.element_id, atom, &value)
+            }
+            Some(ElixirEventPayload::Float(value)) => {
+                send_element_event_with_float_payload(pid, &event.element_id, atom, value)
             }
             None => send_element_event(pid, &event.element_id, atom),
         }
@@ -1686,11 +1717,26 @@ impl DirectEventRuntime {
                     matcher_kind,
                 });
             }
+            RuntimeChange::StartSliderDragTracker {
+                element_id,
+                matcher_kind,
+            } => {
+                self.runtime_overlay.slider_drag = Some(registry_builder::SliderDragTracker {
+                    element_id,
+                    matcher_kind,
+                });
+            }
             RuntimeChange::ClearTextDragTracker => {
                 self.runtime_overlay.text_drag = None;
             }
+            RuntimeChange::ClearSliderDragTracker => {
+                self.runtime_overlay.slider_drag = None;
+            }
             RuntimeChange::SetTextInputState { element_id, state } => {
                 self.apply_text_input_state(&element_id, state);
+            }
+            RuntimeChange::SetSliderState { element_id, state } => {
+                self.apply_slider_state(&element_id, state);
             }
             RuntimeChange::ArmTextCommitSuppression { element_id, key } => {
                 self.text_commit_suppressions
@@ -1702,6 +1748,9 @@ impl DirectEventRuntime {
             } => {
                 self.enqueue_pending_text_patch(element_id, content);
             }
+            RuntimeChange::ExpectSliderPatchValue { element_id, value } => {
+                self.enqueue_pending_slider_patch(element_id, value);
+            }
             RuntimeChange::SetHoverStack { stack } => {
                 self.hover_stack = stack;
             }
@@ -1710,6 +1759,10 @@ impl DirectEventRuntime {
 
     fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
         self.text_states.insert(*element_id, state);
+    }
+
+    fn apply_slider_state(&mut self, element_id: &NodeId, state: SliderState) {
+        self.slider_states.insert(*element_id, state);
     }
 
     fn clear_text_commit_suppressions_for_event(&mut self, event: &InputEvent) {
@@ -1743,6 +1796,24 @@ impl DirectEventRuntime {
         }
     }
 
+    fn enqueue_pending_slider_patch(&mut self, element_id: NodeId, value: f64) {
+        let now = Instant::now();
+        let ttl = self.pending_text_patch_ttl();
+        let queue = self.pending_slider_patches.entry(element_id).or_default();
+        prune_expired_pending_slider_patch_queue(queue, now);
+
+        if let Some(existing) = queue.back_mut()
+            && f64_values_equal(existing.value, value)
+        {
+            existing.expires_at = now + ttl;
+        } else {
+            queue.push_back(PendingSliderPatch {
+                value,
+                expires_at: now + ttl,
+            });
+        }
+    }
+
     fn prune_expired_pending_text_patches(&mut self) {
         let now = Instant::now();
         self.pending_text_patches.retain(|_, queue| {
@@ -1751,7 +1822,19 @@ impl DirectEventRuntime {
         });
     }
 
-    fn reconcile_runtime_overlay(&mut self, text_inputs: &HashMap<NodeId, TextInputState>) {
+    fn prune_expired_pending_slider_patches(&mut self) {
+        let now = Instant::now();
+        self.pending_slider_patches.retain(|_, queue| {
+            prune_expired_pending_slider_patch_queue(queue, now);
+            !queue.is_empty()
+        });
+    }
+
+    fn reconcile_runtime_overlay(
+        &mut self,
+        text_inputs: &HashMap<NodeId, TextInputState>,
+        sliders: &HashMap<NodeId, SliderState>,
+    ) {
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
             && !base_has_source_listener(
                 &self.base_registry,
@@ -1809,6 +1892,12 @@ impl DirectEventRuntime {
             && !text_inputs.contains_key(&text_drag.element_id)
         {
             self.runtime_overlay.text_drag = None;
+        }
+
+        if let Some(slider_drag) = self.runtime_overlay.slider_drag.as_ref()
+            && !sliders.contains_key(&slider_drag.element_id)
+        {
+            self.runtime_overlay.slider_drag = None;
         }
 
         if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
@@ -1958,7 +2047,36 @@ fn send_content_update(
     true
 }
 
+fn send_slider_value_update(
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+    element_id: &NodeId,
+    value: f64,
+) -> bool {
+    send_tree(
+        tree_tx,
+        TreeMsg::SetSliderValue {
+            element_id: *element_id,
+            value,
+        },
+        log_render,
+    );
+    true
+}
+
 fn prune_expired_pending_text_patch_queue(queue: &mut VecDeque<PendingTextPatch>, now: Instant) {
+    while queue
+        .front()
+        .is_some_and(|pending| pending.expires_at <= now)
+    {
+        queue.pop_front();
+    }
+}
+
+fn prune_expired_pending_slider_patch_queue(
+    queue: &mut VecDeque<PendingSliderPatch>,
+    now: Instant,
+) {
     while queue
         .front()
         .is_some_and(|pending| pending.expires_at <= now)
@@ -1990,6 +2108,34 @@ fn consume_pending_text_patch_match(
         .is_some_and(|queue| queue.is_empty())
     {
         pending_text_patches.remove(element_id);
+    }
+
+    matched
+}
+
+fn consume_pending_slider_patch_match(
+    pending_slider_patches: &mut HashMap<NodeId, VecDeque<PendingSliderPatch>>,
+    element_id: &NodeId,
+    value: f64,
+) -> bool {
+    let matched = pending_slider_patches
+        .get_mut(element_id)
+        .and_then(|queue| {
+            let match_index = queue
+                .iter()
+                .position(|pending| f64_values_equal(pending.value, value))?;
+            (0..=match_index).for_each(|_| {
+                queue.pop_front();
+            });
+            Some(())
+        })
+        .is_some();
+
+    if pending_slider_patches
+        .get(element_id)
+        .is_some_and(|queue| queue.is_empty())
+    {
+        pending_slider_patches.remove(element_id);
     }
 
     matched
@@ -2142,6 +2288,76 @@ fn reconcile_text_input_states(
             && focused.as_ref().is_some_and(|focused_id| focused_id == id)
             && !queue.is_empty()
     });
+    changed_tree
+}
+
+fn reconcile_slider_states(
+    sliders: &HashMap<NodeId, SliderState>,
+    states: &mut HashMap<NodeId, SliderState>,
+    pending_slider_patches: &mut HashMap<NodeId, VecDeque<PendingSliderPatch>>,
+    tree_tx: &Sender<TreeMsg>,
+    log_render: bool,
+) -> bool {
+    fn preserve_runtime_slider(
+        element_id: &NodeId,
+        rebuild_state: &SliderState,
+        state: &mut SliderState,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        state.copy_rebuild_metadata_from(rebuild_state);
+        state.set_value(state.value);
+        let had_patch_value = state.patch_value.take().is_some();
+        let changed_tree = had_patch_value || !f64_values_equal(state.value, rebuild_state.value);
+        if changed_tree {
+            send_slider_value_update(tree_tx, log_render, element_id, state.value)
+        } else {
+            false
+        }
+    }
+
+    fn accept_tree_patch_slider(
+        element_id: &NodeId,
+        rebuild_state: &SliderState,
+        state: &mut SliderState,
+        patch_value: f64,
+        tree_tx: &Sender<TreeMsg>,
+        log_render: bool,
+    ) -> bool {
+        state.copy_rebuild_metadata_from(rebuild_state);
+        state.value_origin = SliderValueOrigin::Event;
+        state.patch_value = None;
+        state.set_value(patch_value);
+        send_slider_value_update(tree_tx, log_render, element_id, state.value)
+    }
+
+    let mut changed_tree = false;
+
+    for (id, rebuild_state) in sliders {
+        let id = *id;
+        let state = states.entry(id).or_insert_with(|| rebuild_state.clone());
+        let patch_value = rebuild_state.patch_value;
+        let preserve_runtime = patch_value.is_none_or(|patch_value| {
+            consume_pending_slider_patch_match(pending_slider_patches, &id, patch_value)
+        });
+
+        if preserve_runtime {
+            changed_tree |= preserve_runtime_slider(&id, rebuild_state, state, tree_tx, log_render);
+        } else {
+            pending_slider_patches.remove(&id);
+            changed_tree |= accept_tree_patch_slider(
+                &id,
+                rebuild_state,
+                state,
+                patch_value.expect("slider patch reconcile requires patch_value"),
+                tree_tx,
+                log_render,
+            );
+        }
+    }
+
+    states.retain(|id, _| sliders.contains_key(id));
+    pending_slider_patches.retain(|id, queue| sliders.contains_key(id) && !queue.is_empty());
     changed_tree
 }
 
@@ -2563,6 +2779,34 @@ mod tests {
         state
     }
 
+    fn make_slider_state(value: f64, min: f64, max: f64, step: f64) -> SliderState {
+        make_slider_state_with_patch(value, None, SliderValueOrigin::TreePatch, min, max, step)
+    }
+
+    fn make_slider_state_with_patch(
+        value: f64,
+        patch_value: Option<f64>,
+        value_origin: SliderValueOrigin,
+        min: f64,
+        max: f64,
+        step: f64,
+    ) -> SliderState {
+        SliderState {
+            value,
+            patch_value,
+            value_origin,
+            emit_change: true,
+            min,
+            max,
+            step,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 100.0,
+            frame_height: 20.0,
+            screen_to_local: Some(crate::tree::transform::Affine2::identity()),
+        }
+    }
+
     fn drain_msgs(rx: &Receiver<TreeMsg>) -> Vec<TreeMsg> {
         let mut out = Vec::new();
         while let Ok(msg) = rx.try_recv() {
@@ -2617,7 +2861,7 @@ mod tests {
             &self,
             _element_id: &NodeId,
             _kind: ElementEventKind,
-            _payload: Option<&str>,
+            _payload: Option<&registry_builder::ElixirEventPayload>,
         ) {
         }
     }
@@ -3154,6 +3398,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry,
             text_inputs: HashMap::from([(input_id, descriptor.clone())]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -3280,6 +3525,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -3321,6 +3567,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -3357,6 +3604,7 @@ mod tests {
         let active_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(element_id),
             focus_on_mount: None,
@@ -3399,6 +3647,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[first, second]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![30])),
             focus_on_mount: None,
@@ -3442,6 +3691,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -3473,6 +3723,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(element_id),
             focus_on_mount: None,
@@ -3539,6 +3790,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -3601,6 +3853,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -3951,6 +4204,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4005,6 +4259,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4046,6 +4301,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4110,6 +4366,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4214,6 +4471,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4276,6 +4534,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -4309,6 +4568,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![50]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![50])),
             focus_on_mount: None,
@@ -4531,6 +4791,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![150]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![150])),
             focus_on_mount: None,
@@ -4601,6 +4862,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![151]), state)]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![151])),
             focus_on_mount: None,
@@ -4643,6 +4905,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(element_id, state)]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(element_id),
             focus_on_mount: None,
@@ -4704,6 +4967,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![152]), state)]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![152])),
             focus_on_mount: None,
@@ -4752,6 +5016,7 @@ mod tests {
         let initial_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("task", 4, None, true))]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -4769,6 +5034,7 @@ mod tests {
                     true,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -4785,6 +5051,7 @@ mod tests {
                 input_id,
                 make_text_input_state_with_origin("", TextInputContentOrigin::Event, 0, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -4867,6 +5134,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![80]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![80])),
             focus_on_mount: None,
@@ -4958,6 +5226,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![180]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![180])),
             focus_on_mount: None,
@@ -5042,6 +5311,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![82]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![82])),
             focus_on_mount: None,
@@ -5103,6 +5373,7 @@ mod tests {
                     true,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![82])),
             focus_on_mount: None,
@@ -5152,6 +5423,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![51]),
                 make_text_input_state("ab", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![51])),
             focus_on_mount: None,
@@ -5201,6 +5473,7 @@ mod tests {
         let rebuild_ab = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("ab", 2, None, true))]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -5209,6 +5482,7 @@ mod tests {
         let rebuild_abc = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abc", 3, None, true))]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -5286,6 +5560,7 @@ mod tests {
                     true,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -5345,6 +5620,7 @@ mod tests {
                     true,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -5398,6 +5674,7 @@ mod tests {
                     true,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(input_id),
             focus_on_mount: None,
@@ -5436,6 +5713,111 @@ mod tests {
     }
 
     #[test]
+    fn slider_tree_patch_matching_pending_value_preserves_runtime_value() {
+        let slider_id = NodeId::from_term_bytes(vec![58]);
+        let rebuild_echo = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(
+                    60.0,
+                    Some(40.0),
+                    SliderValueOrigin::Event,
+                    0.0,
+                    100.0,
+                    5.0,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime
+            .slider_states
+            .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
+        let ttl = runtime.pending_text_patch_ttl();
+        runtime.pending_slider_patches.insert(
+            slider_id,
+            VecDeque::from([PendingSliderPatch {
+                value: 40.0,
+                expires_at: Instant::now() + ttl,
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild_echo, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("slider state preserved");
+        assert!((state.value - 60.0).abs() < f64::EPSILON);
+        assert_eq!(state.patch_value, None);
+        assert!(!runtime.pending_slider_patches.contains_key(&slider_id));
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetSliderValue { element_id, value }
+                if *element_id == slider_id && (*value - 60.0).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
+    fn slider_tree_patch_non_pending_value_is_accepted() {
+        let slider_id = NodeId::from_term_bytes(vec![59]);
+        let rebuild_remote = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(
+                    60.0,
+                    Some(25.0),
+                    SliderValueOrigin::Event,
+                    0.0,
+                    100.0,
+                    5.0,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime
+            .slider_states
+            .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
+        let ttl = runtime.pending_text_patch_ttl();
+        runtime.pending_slider_patches.insert(
+            slider_id,
+            VecDeque::from([PendingSliderPatch {
+                value: 60.0,
+                expires_at: Instant::now() + ttl,
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild_remote, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("slider patch accepted");
+        assert!((state.value - 25.0).abs() < f64::EPSILON);
+        assert_eq!(state.value_origin, SliderValueOrigin::Event);
+        assert_eq!(state.patch_value, None);
+        assert!(!runtime.pending_slider_patches.contains_key(&slider_id));
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetSliderValue { element_id, value }
+                if *element_id == slider_id && (*value - 25.0).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
     fn unfocused_rebuild_clears_pending_text_patches() {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
@@ -5450,6 +5832,7 @@ mod tests {
                     false,
                 ),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5484,6 +5867,7 @@ mod tests {
                 NodeId::from_term_bytes(vec![54]),
                 make_text_input_state("abcd", 2, None, true),
             )]),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: Some(NodeId::from_term_bytes(vec![54])),
             focus_on_mount: None,
@@ -5528,6 +5912,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5549,6 +5934,7 @@ mod tests {
         let active_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5588,6 +5974,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5633,6 +6020,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5686,6 +6074,7 @@ mod tests {
                 child.clone(),
             ]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5718,6 +6107,7 @@ mod tests {
         let active_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[active_parent, active_child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5771,6 +6161,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5814,6 +6205,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5829,6 +6221,7 @@ mod tests {
         let moved_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5889,6 +6282,7 @@ mod tests {
                 mouse_down_only,
             ]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5932,6 +6326,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[text_input]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -5982,6 +6377,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[pressable]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6025,6 +6421,7 @@ mod tests {
         let initial_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6043,6 +6440,7 @@ mod tests {
         let moved_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6081,6 +6479,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6110,6 +6509,7 @@ mod tests {
         let active_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6128,6 +6528,7 @@ mod tests {
         let moved_away_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[moved_away]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6336,6 +6737,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6360,6 +6762,7 @@ mod tests {
         let active_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6388,6 +6791,7 @@ mod tests {
         let inactive_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[inactive_element]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6419,6 +6823,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6434,6 +6839,7 @@ mod tests {
         let moved_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6471,6 +6877,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6486,6 +6893,7 @@ mod tests {
         let moved_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6519,6 +6927,7 @@ mod tests {
         let hovered_rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[hovered]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,
@@ -6576,6 +6985,7 @@ mod tests {
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),
             text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
             scrollbars: HashMap::new(),
             focused_id: None,
             focus_on_mount: None,

@@ -66,7 +66,7 @@ use crate::tree::transform::{Affine2, InteractionClip, Point};
 use crate::tree::viewport_culling::should_skip_registry_viewport_subtree;
 
 use super::{
-    CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload,
+    CursorIcon, ElementEventKind, FocusOnMountTarget, RegistryRebuildPayload, SliderState,
     TextInputCommandRequest, TextInputEditRequest, TextInputPreeditRequest, TextInputState,
     scrollbar::{ScrollbarHitArea, ScrollbarNode, scrollbar_node_from_metrics},
     text_ops,
@@ -553,6 +553,7 @@ pub(crate) struct RegistryBuildAcc {
     current_revision: u64,
     registry: Registry,
     text_inputs: HashMap<NodeId, TextInputState>,
+    sliders: HashMap<NodeId, SliderState>,
     scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     focused_id: Option<NodeId>,
     focus_entries: Vec<FocusEntry>,
@@ -584,6 +585,11 @@ impl RegistryBuildAcc {
         for (id, state) in acc.text_inputs {
             let previous = self.text_inputs.insert(id, state);
             debug_assert!(previous.is_none(), "duplicate text input rebuild state");
+        }
+
+        for (id, state) in acc.sliders {
+            let previous = self.sliders.insert(id, state);
+            debug_assert!(previous.is_none(), "duplicate slider rebuild state");
         }
 
         for (key, scrollbar) in acc.scrollbars {
@@ -715,6 +721,13 @@ pub struct TextDragTracker {
     pub matcher_kind: ListenerMatcherKind,
 }
 
+/// Slider drag tracker state used to rematerialize value followups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SliderDragTracker {
+    pub element_id: NodeId,
+    pub matcher_kind: ListenerMatcherKind,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SwipeTracker {
     pub element_id: NodeId,
@@ -739,6 +752,7 @@ pub(crate) struct RuntimeOverlayState {
     pub swipe: Option<SwipeTracker>,
     pub scrollbar: Option<ScrollbarDragTracker>,
     pub text_drag: Option<TextDragTracker>,
+    pub slider_drag: Option<SliderDragTracker>,
 }
 
 fn emit_runtime_overlay_listeners(
@@ -832,6 +846,24 @@ fn emit_runtime_overlay_listeners(
     out.emit_opt(runtime_scrollbar_drag_move_listener(&runtime.scrollbar));
     out.emit_opt(
         runtime
+            .slider_drag
+            .as_ref()
+            .and_then(|tracker| runtime_slider_drag_release_clear_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
+            .slider_drag
+            .as_ref()
+            .and_then(|tracker| runtime_slider_drag_move_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
+            .slider_drag
+            .as_ref()
+            .and_then(|tracker| runtime_slider_drag_window_blur_clear_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
             .text_drag
             .as_ref()
             .and_then(|tracker| runtime_text_drag_release_clear_listener(base, tracker)),
@@ -875,6 +907,12 @@ fn emit_runtime_overlay_listeners(
             .text_drag
             .as_ref()
             .and_then(|tracker| runtime_text_drag_window_leave_clear_listener(base, tracker)),
+    );
+    out.emit_opt(
+        runtime
+            .slider_drag
+            .as_ref()
+            .and_then(|tracker| runtime_slider_drag_window_leave_clear_listener(base, tracker)),
     );
 }
 
@@ -1137,6 +1175,73 @@ fn runtime_scrollbar_drag_move_listener(
         matcher: ListenerMatcher::CursorPosAnywhere,
         compute: ListenerCompute::ScrollbarDragMove {
             tracker: tracker.clone(),
+        },
+    })
+}
+
+fn runtime_slider_drag_release_clear_listener(
+    base: &Registry,
+    tracker: &SliderDragTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id),
+        matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSliderDragTracker,
+            )],
+        },
+    })
+}
+
+fn runtime_slider_drag_move_listener(
+    base: &Registry,
+    tracker: &SliderDragTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id),
+        matcher: ListenerMatcher::CursorPosAnywhere,
+        compute: ListenerCompute::StaticWithSliderValueRuntime {
+            actions: Vec::new(),
+            element_id: tracker.element_id,
+        },
+    })
+}
+
+fn runtime_slider_drag_window_blur_clear_listener(
+    base: &Registry,
+    tracker: &SliderDragTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id),
+        matcher: ListenerMatcher::WindowBlurred,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSliderDragTracker,
+            )],
+        },
+    })
+}
+
+fn runtime_slider_drag_window_leave_clear_listener(
+    base: &Registry,
+    tracker: &SliderDragTracker,
+) -> Option<Listener> {
+    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+
+    Some(Listener {
+        element_id: Some(tracker.element_id),
+        matcher: ListenerMatcher::WindowCursorLeft,
+        compute: ListenerCompute::Static {
+            actions: vec![ListenerAction::RuntimeChange(
+                RuntimeChange::ClearSliderDragTracker,
+            )],
         },
     })
 }
@@ -1504,6 +1609,16 @@ pub(crate) enum TextInputKeyEditKind {
     End,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SliderKeyEditKind {
+    Decrement,
+    Increment,
+    DecrementLarge,
+    IncrementLarge,
+    Min,
+    Max,
+}
+
 fn runtime_source_listener<'a>(
     base: &'a Registry,
     element_id: &NodeId,
@@ -1531,6 +1646,10 @@ pub(crate) trait ListenerComputeCtx {
     }
 
     fn text_input_state(&self, _element_id: &NodeId) -> Option<TextInputState> {
+        None
+    }
+
+    fn slider_state(&self, _element_id: &NodeId) -> Option<SliderState> {
         None
     }
 
@@ -1719,6 +1838,10 @@ pub(crate) enum ListenerMatcher {
     KeyUpPressNoCtrlAltMeta,
     /// Match Down key press when Ctrl/Alt/Meta are not held.
     KeyDownPressNoCtrlAltMeta,
+    /// Match PageUp key press when Ctrl/Alt/Meta are not held.
+    KeyPageUpPressNoCtrlAltMeta,
+    /// Match PageDown key press when Ctrl/Alt/Meta are not held.
+    KeyPageDownPressNoCtrlAltMeta,
     /// Match Tab key press when Shift/Ctrl/Alt/Meta are not held.
     KeyTabPressNoShiftCtrlAltMeta,
     /// Match Shift+Tab key press when Ctrl/Alt/Meta are not held.
@@ -1794,6 +1917,8 @@ pub enum ListenerMatcherKind {
     KeyEndPressNoCtrlAltMeta,
     KeyUpPressNoCtrlAltMeta,
     KeyDownPressNoCtrlAltMeta,
+    KeyPageUpPressNoCtrlAltMeta,
+    KeyPageDownPressNoCtrlAltMeta,
     KeyTabPressNoShiftCtrlAltMeta,
     KeyShiftTabPressNoCtrlAltMeta,
     KeyAPressCtrlOrMeta,
@@ -1863,6 +1988,12 @@ impl ListenerMatcher {
             }
             ListenerMatcher::KeyDownPressNoCtrlAltMeta => {
                 ListenerMatcherKind::KeyDownPressNoCtrlAltMeta
+            }
+            ListenerMatcher::KeyPageUpPressNoCtrlAltMeta => {
+                ListenerMatcherKind::KeyPageUpPressNoCtrlAltMeta
+            }
+            ListenerMatcher::KeyPageDownPressNoCtrlAltMeta => {
+                ListenerMatcherKind::KeyPageDownPressNoCtrlAltMeta
             }
             ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta => {
                 ListenerMatcherKind::KeyTabPressNoShiftCtrlAltMeta
@@ -2040,6 +2171,20 @@ impl ListenerMatcher {
                         && *key == CanonicalKey::ArrowDown
                         && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
             ),
+            ListenerMatcher::KeyPageUpPressNoCtrlAltMeta => matches!(
+                input.raw(),
+                Some(InputEvent::Key { key, action, mods })
+                    if *action == ACTION_PRESS
+                        && *key == CanonicalKey::PageUp
+                        && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
+            ),
+            ListenerMatcher::KeyPageDownPressNoCtrlAltMeta => matches!(
+                input.raw(),
+                Some(InputEvent::Key { key, action, mods })
+                    if *action == ACTION_PRESS
+                        && *key == CanonicalKey::PageDown
+                        && (*mods & (MOD_CTRL | MOD_ALT | MOD_META)) == 0
+            ),
             ListenerMatcher::KeyTabPressNoShiftCtrlAltMeta => matches!(
                 input.raw(),
                 Some(InputEvent::Key { key, action, mods })
@@ -2183,7 +2328,7 @@ fn key_press_followup_actions(tracker: &KeyPressTracker) -> Vec<ListenerAction> 
                 ListenerAction::ElixirEvent(ElixirEvent {
                     element_id: *element_id,
                     kind: ElementEventKind::KeyPress,
-                    payload: Some(route.clone()),
+                    payload: Some(ElixirEventPayload::String(route.clone())),
                 })
             }
         })
@@ -2267,6 +2412,10 @@ pub enum SemanticAction {
         element_id: NodeId,
         request: TextInputPreeditRequest,
     },
+    /// Request a slider value update.
+    SliderValue { element_id: NodeId, value: f64 },
+    /// Request a slider value update from a pointer position.
+    SliderPointer { element_id: NodeId, x: f32, y: f32 },
 }
 
 /// Transient event-runtime state changes.
@@ -2304,6 +2453,11 @@ pub(crate) enum RuntimeChange {
         element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
     },
+    /// Begin slider drag tracking.
+    StartSliderDragTracker {
+        element_id: NodeId,
+        matcher_kind: ListenerMatcherKind,
+    },
     /// End drag tracking on pointer release.
     ClearDragTracker,
     /// Update active drag pointer position after a cursor move.
@@ -2334,6 +2488,13 @@ pub(crate) enum RuntimeChange {
     ClearScrollbarDrag,
     /// End text-selection drag tracking.
     ClearTextDragTracker,
+    /// End slider drag tracking.
+    ClearSliderDragTracker,
+    /// Mirror full slider state into runtime state.
+    SetSliderState {
+        element_id: NodeId,
+        state: SliderState,
+    },
     /// Mirror full text input state into runtime state.
     SetTextInputState {
         element_id: NodeId,
@@ -2346,6 +2507,8 @@ pub(crate) enum RuntimeChange {
     },
     /// Track an expected content value coming back from an Elixir tree patch.
     ExpectTextInputPatchValue { element_id: NodeId, content: String },
+    /// Track an expected slider value coming back from an Elixir tree patch.
+    ExpectSliderPatchValue { element_id: NodeId, value: f64 },
     /// Replace active hover trackers.
     SetHoverStack { stack: Vec<HoverTracker> },
 }
@@ -2360,6 +2523,7 @@ impl RuntimeChange {
                 | RuntimeChange::StartDragTracker { .. }
                 | RuntimeChange::PromoteDragTracker { .. }
                 | RuntimeChange::StartTextDragTracker { .. }
+                | RuntimeChange::StartSliderDragTracker { .. }
                 | RuntimeChange::ClearDragTracker
                 | RuntimeChange::UpdateDragTrackerPointer { .. }
                 | RuntimeChange::ClearClickPressTracker
@@ -2373,19 +2537,27 @@ impl RuntimeChange {
                 | RuntimeChange::UpdateScrollbarDragCurrentScroll { .. }
                 | RuntimeChange::ClearScrollbarDrag
                 | RuntimeChange::ClearTextDragTracker
+                | RuntimeChange::ClearSliderDragTracker
         )
     }
 }
 
+/// Typed payload for Elixir-facing element events.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ElixirEventPayload {
+    String(String),
+    Float(f64),
+}
+
 /// Elixir-facing element event.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ElixirEvent {
     /// Target element id.
     pub element_id: NodeId,
     /// Logical event kind.
     pub kind: ElementEventKind,
-    /// Optional string payload.
-    pub payload: Option<String>,
+    /// Optional typed payload.
+    pub payload: Option<ElixirEventPayload>,
 }
 
 /// Computes output sink actions for a matched listener.
@@ -2408,12 +2580,18 @@ pub(crate) enum ListenerCompute {
         pointer_drag: Option<PointerDragBootstrap>,
         text_cursor_element_id: Option<NodeId>,
         text_drag: Option<TextDragTracker>,
+        slider_drag: Option<SliderDragTracker>,
     },
     /// Fixed actions plus a text-input cursor action derived from matched input.
     StaticWithTextInputCursorRuntime {
         actions: Vec<ListenerAction>,
         element_id: NodeId,
         extend_selection: bool,
+    },
+    /// Fixed actions plus a slider value action derived from matched input.
+    StaticWithSliderValueRuntime {
+        actions: Vec<ListenerAction>,
+        element_id: NodeId,
     },
     /// Emit pointer click/press followups, then redispatch raw release into the base registry.
     ClickPressReleaseFollowupToBase {
@@ -2474,6 +2652,11 @@ pub(crate) enum ListenerCompute {
         element_id: NodeId,
         kind: TextInputKeyEditKind,
     },
+    /// Build a key-driven slider value action from live slider state.
+    SliderKeyEditToRuntime {
+        element_id: NodeId,
+        kind: SliderKeyEditKind,
+    },
     /// Build a fixed text-edit action only when it changes content/state.
     TextInputEditToRuntimeMaybe {
         element_id: NodeId,
@@ -2533,6 +2716,7 @@ impl ListenerCompute {
                 pointer_drag,
                 text_cursor_element_id,
                 text_drag,
+                slider_drag,
             } => match input.raw() {
                 Some(InputEvent::CursorButton {
                     button,
@@ -2567,6 +2751,15 @@ impl ListenerCompute {
                             matcher_kind: text_drag.matcher_kind,
                         })
                     }))
+                    .chain(slider_drag.as_ref().and_then(|slider_drag| {
+                        slider_value_action_from_input(input.raw(), &slider_drag.element_id)
+                    }))
+                    .chain(slider_drag.as_ref().map(|slider_drag| {
+                        ListenerAction::RuntimeChange(RuntimeChange::StartSliderDragTracker {
+                            element_id: slider_drag.element_id,
+                            matcher_kind: slider_drag.matcher_kind,
+                        })
+                    }))
                     .collect(),
                 _ => actions.clone(),
             },
@@ -2582,6 +2775,14 @@ impl ListenerCompute {
                     element_id,
                     *extend_selection,
                 ))
+                .collect(),
+            ListenerCompute::StaticWithSliderValueRuntime {
+                actions,
+                element_id,
+            } => actions
+                .iter()
+                .cloned()
+                .chain(slider_value_action_from_input(input.raw(), element_id))
                 .collect(),
             ListenerCompute::ClickPressReleaseFollowupToBase {
                 element_id,
@@ -2771,6 +2972,16 @@ impl ListenerCompute {
                     })]
                 })
                 .unwrap_or_default(),
+            ListenerCompute::SliderKeyEditToRuntime { element_id, kind } => ctx
+                .slider_state(element_id)
+                .and_then(|snapshot| slider_key_value(&snapshot, *kind))
+                .map(|value| {
+                    vec![ListenerAction::Semantic(SemanticAction::SliderValue {
+                        element_id: *element_id,
+                        value,
+                    })]
+                })
+                .unwrap_or_default(),
             ListenerCompute::TextInputEditToRuntimeMaybe {
                 element_id,
                 request,
@@ -2883,6 +3094,29 @@ fn text_cursor_action_from_input(
     Some(action)
 }
 
+fn slider_value_action_from_input(
+    input: Option<&InputEvent>,
+    element_id: &NodeId,
+) -> Option<ListenerAction> {
+    match input? {
+        InputEvent::CursorButton { action, x, y, .. } if *action == ACTION_PRESS => {
+            Some(ListenerAction::Semantic(SemanticAction::SliderPointer {
+                element_id: *element_id,
+                x: *x,
+                y: *y,
+            }))
+        }
+        InputEvent::CursorPos { x, y } => {
+            Some(ListenerAction::Semantic(SemanticAction::SliderPointer {
+                element_id: *element_id,
+                x: *x,
+                y: *y,
+            }))
+        }
+        _ => None,
+    }
+}
+
 fn text_key_edit_request(
     snapshot: &TextInputState,
     kind: TextInputKeyEditKind,
@@ -2940,6 +3174,30 @@ fn text_key_edit_request(
             can_move.then_some(TextInputEditRequest::MoveEnd { extend_selection })
         }
     }
+}
+
+fn slider_key_value(snapshot: &SliderState, kind: SliderKeyEditKind) -> Option<f64> {
+    let range = snapshot.max - snapshot.min;
+    if !range.is_finite() || range <= 0.0 {
+        return None;
+    }
+
+    let step = if snapshot.step.is_finite() && snapshot.step > 0.0 {
+        snapshot.step
+    } else {
+        range / 100.0
+    };
+
+    let value = match kind {
+        SliderKeyEditKind::Decrement => snapshot.value - step,
+        SliderKeyEditKind::Increment => snapshot.value + step,
+        SliderKeyEditKind::DecrementLarge => snapshot.value - step * 10.0,
+        SliderKeyEditKind::IncrementLarge => snapshot.value + step * 10.0,
+        SliderKeyEditKind::Min => snapshot.min,
+        SliderKeyEditKind::Max => snapshot.max,
+    };
+
+    Some(snapshot.normalized_value(value))
 }
 
 fn text_preedit_action_from_input(
@@ -3581,6 +3839,7 @@ struct SemanticComputeState<'a, C> {
     ctx: &'a mut C,
     focused_id: Option<NodeId>,
     snapshots: HashMap<NodeId, Option<TextInputState>>,
+    slider_snapshots: HashMap<NodeId, Option<SliderState>>,
     clipboard: HashMap<ClipboardTarget, Option<String>>,
 }
 
@@ -3590,6 +3849,7 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
             focused_id: ctx.focused_id().cloned(),
             ctx,
             snapshots: HashMap::new(),
+            slider_snapshots: HashMap::new(),
             clipboard: HashMap::new(),
         }
     }
@@ -3598,6 +3858,13 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         self.snapshots
             .entry(*element_id)
             .or_insert_with(|| self.ctx.text_input_state(element_id))
+            .as_mut()
+    }
+
+    fn slider_snapshot(&mut self, element_id: &NodeId) -> Option<&mut SliderState> {
+        self.slider_snapshots
+            .entry(*element_id)
+            .or_insert_with(|| self.ctx.slider_state(element_id))
             .as_mut()
     }
 
@@ -3653,6 +3920,11 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                         preedit.clone(),
                         *preedit_cursor,
                     );
+                }
+            }
+            ListenerAction::TreeMsg(TreeMsg::SetSliderValue { element_id, value }) => {
+                if let Some(snapshot) = self.slider_snapshot(element_id) {
+                    snapshot.set_value(*value);
                 }
             }
             _ => {}
@@ -3776,6 +4048,12 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                 element_id,
                 request,
             } => self.resolve_text_preedit(element_id, request),
+            SemanticAction::SliderValue { element_id, value } => {
+                self.resolve_slider_value(element_id, value)
+            }
+            SemanticAction::SliderPointer { element_id, x, y } => {
+                self.resolve_slider_pointer(element_id, x, y)
+            }
         }
     }
 
@@ -4566,6 +4844,56 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         }
     }
 
+    fn resolve_slider_pointer(
+        &mut self,
+        element_id: NodeId,
+        x: f32,
+        y: f32,
+    ) -> Vec<ListenerAction> {
+        let Some(value) = self
+            .slider_snapshot(&element_id)
+            .and_then(|snapshot| snapshot.value_from_screen_point(x, y))
+        else {
+            return Vec::new();
+        };
+
+        self.resolve_slider_value(element_id, value)
+    }
+
+    fn resolve_slider_value(&mut self, element_id: NodeId, value: f64) -> Vec<ListenerAction> {
+        let Some(snapshot) = self.slider_snapshot(&element_id) else {
+            return Vec::new();
+        };
+
+        if !snapshot.set_value(value) {
+            return Vec::new();
+        }
+
+        let value = snapshot.value;
+        let mut actions = Vec::new();
+        actions.push(ListenerAction::TreeMsg(TreeMsg::SetSliderValue {
+            element_id,
+            value,
+        }));
+        if snapshot.emit_change {
+            actions.push(ListenerAction::RuntimeChange(
+                RuntimeChange::ExpectSliderPatchValue { element_id, value },
+            ));
+            actions.push(ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::Change,
+                payload: Some(ElixirEventPayload::Float(value)),
+            }));
+        }
+        actions.push(ListenerAction::RuntimeChange(
+            RuntimeChange::SetSliderState {
+                element_id,
+                state: snapshot.clone(),
+            },
+        ));
+        actions
+    }
+
     fn resolve_text_preedit(
         &mut self,
         element_id: NodeId,
@@ -4701,7 +5029,7 @@ fn content_change_actions(
         ListenerAction::ElixirEvent(ElixirEvent {
             element_id: *element_id,
             kind: ElementEventKind::Change,
-            payload: Some(payload),
+            payload: Some(ElixirEventPayload::String(payload)),
         })
     }))
     .chain([text_runtime_mirror_change(element_id, snapshot)])
@@ -4924,6 +5252,8 @@ const ELEMENT_LISTENER_SLOTS: &[ElementSlotBuilder] = &[
     slot_key_down_press,
     slot_key_home_press,
     slot_key_end_press,
+    slot_key_page_up_press,
+    slot_key_page_down_press,
     slot_key_select_all_press,
     slot_key_copy_press,
     slot_key_cut_press,
@@ -4994,6 +5324,14 @@ fn focused_text_input_id(element: &Element) -> Option<NodeId> {
     Some(element.id)
 }
 
+fn focused_slider_id(element: &Element) -> Option<NodeId> {
+    if element.spec.kind != ElementKind::Slider || !element.runtime.focused_active {
+        return None;
+    }
+
+    Some(element.id)
+}
+
 fn text_input_emit_change(element: &Element) -> Option<bool> {
     element
         .spec
@@ -5005,7 +5343,8 @@ fn text_input_emit_change(element: &Element) -> Option<bool> {
 fn cursor_icon_for_element(element: &Element) -> Option<CursorIcon> {
     if element.spec.kind.is_text_input_family() {
         Some(CursorIcon::Text)
-    } else if element.layout.effective.on_click.unwrap_or(false)
+    } else if element.spec.kind == ElementKind::Slider
+        || element.layout.effective.on_click.unwrap_or(false)
         || element.layout.effective.on_press.unwrap_or(false)
         || element.layout.effective.on_mouse_down.unwrap_or(false)
         || has_swipe_listener(element)
@@ -5073,6 +5412,7 @@ fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bo
 fn is_focusable(element: &Element) -> bool {
     element.layout.effective.virtual_key.is_none()
         && (element.spec.kind.is_text_input_family()
+            || element.spec.kind == ElementKind::Slider
             || element.layout.effective.on_press.unwrap_or(false)
             || element.layout.effective.on_focus.unwrap_or(false)
             || element.layout.effective.on_blur.unwrap_or(false)
@@ -5198,7 +5538,7 @@ fn emit_element_listeners_with_focus_meta(
 ) {
     // Reordering these emissions changes per-element precedence. This function
     // is the element-side precedence table in code form.
-    if element.spec.kind.is_text_input_family() {
+    if element.spec.kind.is_text_input_family() || element.spec.kind == ElementKind::Slider {
         emit_key_binding_listeners_for_element(element, out);
     }
     out.emit_all(
@@ -5210,7 +5550,7 @@ fn emit_element_listeners_with_focus_meta(
     out.emit_opt(slot_primary_left_press(element, state, focus_meta));
     emit_scroll_listeners_for_element(element, state, out);
     emit_key_scroll_listeners_for_element(element, out);
-    if !element.spec.kind.is_text_input_family() {
+    if !element.spec.kind.is_text_input_family() && element.spec.kind != ElementKind::Slider {
         emit_key_binding_listeners_for_element(element, out);
     }
     out.emit_opt(slot_middle_paste_primary_press(element, state, focus_meta));
@@ -5442,6 +5782,7 @@ fn local_focus_meta_for_element(
 
 pub(crate) fn accumulate_element_rebuild(
     acc: &mut RegistryBuildAcc,
+    tree: &ElementTree,
     element: &Element,
     state: Option<&ResolvedNodeState>,
     scroll_contexts: &[ScrollContext],
@@ -5486,6 +5827,16 @@ pub(crate) fn accumulate_element_rebuild(
             );
             debug_assert!(previous.is_none(), "duplicate text input rebuild state");
         }
+
+        if element.spec.kind == ElementKind::Slider {
+            let adjusted_render_rect = slider_value_rect(tree, element, state)
+                .unwrap_or_else(|| Rect::from_frame(state.adjusted_render_frame));
+            let previous = acc.sliders.insert(
+                element.id,
+                super::slider_state(element, adjusted_render_rect, state.interaction_inverse),
+            );
+            debug_assert!(previous.is_none(), "duplicate slider rebuild state");
+        }
     }
 
     if let Some(focus_meta) = local_focus_meta.as_ref() {
@@ -5521,6 +5872,31 @@ pub(crate) fn accumulate_element_rebuild(
     (next_scroll_contexts, next_hover_stack)
 }
 
+fn slider_value_rect(
+    tree: &ElementTree,
+    element: &Element,
+    state: &ResolvedNodeState,
+) -> Option<Rect> {
+    let mut track_id = None;
+    element.for_each_retained_child(tree, |child| {
+        if track_id.is_none() {
+            track_id = Some(child.id);
+        }
+    });
+    let track_id = track_id?;
+    let track = tree.get(&track_id)?;
+    let track_frame = track.layout.render_frame.or(track.layout.frame)?;
+    let dx = state.adjusted_render_frame.x - state.render_frame.x;
+    let dy = state.adjusted_render_frame.y - state.render_frame.y;
+
+    Some(Rect {
+        x: track_frame.x + dx,
+        y: track_frame.y + dy,
+        width: track_frame.width,
+        height: track_frame.height,
+    })
+}
+
 fn accumulate_subtree_rebuild_local(
     tree: &ElementTree,
     element_id: &NodeId,
@@ -5534,8 +5910,14 @@ fn accumulate_subtree_rebuild_local(
     };
 
     let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
-    let (next_scroll_contexts, next_hover_stack) =
-        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts, hover_stack);
+    let (next_scroll_contexts, next_hover_stack) = accumulate_element_rebuild(
+        acc,
+        tree,
+        element,
+        state.as_ref(),
+        scroll_contexts,
+        hover_stack,
+    );
 
     let mut deferred = Vec::new();
 
@@ -5744,8 +6126,14 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
     cache_budget: &Cell<usize>,
 ) -> Vec<DeferredSubtree> {
     let state = crate::tree::scene::resolve_node_state(element, scene_ctx);
-    let (next_scroll_contexts, next_hover_stack) =
-        accumulate_element_rebuild(acc, element, state.as_ref(), scroll_contexts, hover_stack);
+    let (next_scroll_contexts, next_hover_stack) = accumulate_element_rebuild(
+        acc,
+        tree,
+        element,
+        state.as_ref(),
+        scroll_contexts,
+        hover_stack,
+    );
 
     let mut deferred = Vec::new();
 
@@ -6170,6 +6558,7 @@ pub(crate) fn assert_registry_rebuild_payloads_equivalent(
 
     assert_eq!(left_listeners, right_listeners);
     assert_eq!(left.text_inputs, right.text_inputs);
+    assert_eq!(left.sliders, right.sliders);
     assert_eq!(left.scrollbars, right.scrollbars);
     assert_eq!(left.focused_id, right.focused_id);
     assert_eq!(
@@ -6237,6 +6626,7 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
     RegistryRebuildPayload {
         base_registry: low_registry,
         text_inputs: acc.text_inputs,
+        sliders: acc.sliders,
         scrollbars: acc.scrollbars,
         focused_id: acc.focused_id,
         focus_on_mount: acc.focus_on_mount,
@@ -6423,7 +6813,7 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                 ListenerAction::ElixirEvent(ElixirEvent {
                     element_id: element.id,
                     kind: ElementEventKind::KeyDown,
-                    payload: Some(binding.route.clone()),
+                    payload: Some(ElixirEventPayload::String(binding.route.clone())),
                 }),
             );
 
@@ -6473,7 +6863,7 @@ fn emit_key_binding_listeners_for_element(element: &Element, out: &mut Precedenc
                 ListenerAction::ElixirEvent(ElixirEvent {
                     element_id: element.id,
                     kind: ElementEventKind::KeyUp,
-                    payload: Some(binding.route.clone()),
+                    payload: Some(ElixirEventPayload::String(binding.route.clone())),
                 }),
             );
         });
@@ -6753,23 +7143,32 @@ fn slot_primary_left_press(
             element_id: element.id,
             matcher_kind,
         });
+    let slider_drag = (element.spec.kind == ElementKind::Slider).then_some(SliderDragTracker {
+        element_id: element.id,
+        matcher_kind,
+    });
 
     (!actions.is_empty()
         || pointer_drag.is_some()
         || text_cursor_element_id.is_some()
-        || text_drag.is_some())
+        || text_drag.is_some()
+        || slider_drag.is_some())
     .then(|| {
-        let compute =
-            if pointer_drag.is_some() || text_cursor_element_id.is_some() || text_drag.is_some() {
-                ListenerCompute::StaticWithLeftPressRuntimeAugment {
-                    actions,
-                    pointer_drag,
-                    text_cursor_element_id,
-                    text_drag,
-                }
-            } else {
-                ListenerCompute::Static { actions }
-            };
+        let compute = if pointer_drag.is_some()
+            || text_cursor_element_id.is_some()
+            || text_drag.is_some()
+            || slider_drag.is_some()
+        {
+            ListenerCompute::StaticWithLeftPressRuntimeAugment {
+                actions,
+                pointer_drag,
+                text_cursor_element_id,
+                text_drag,
+                slider_drag,
+            }
+        } else {
+            ListenerCompute::Static { actions }
+        };
 
         Listener {
             element_id: Some(element.id),
@@ -6786,6 +7185,13 @@ fn slot_key_left_press(element: &Element, _state: Option<&ResolvedNodeState>) ->
         ListenerMatcher::KeyLeftPressNoCtrlAltMeta,
         TextInputKeyEditKind::Left,
     )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyLeftPressNoCtrlAltMeta,
+            SliderKeyEditKind::Decrement,
+        )
+    })
 }
 
 /// Build Right-key listener for focused text inputs.
@@ -6795,6 +7201,13 @@ fn slot_key_right_press(element: &Element, _state: Option<&ResolvedNodeState>) -
         ListenerMatcher::KeyRightPressNoCtrlAltMeta,
         TextInputKeyEditKind::Right,
     )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyRightPressNoCtrlAltMeta,
+            SliderKeyEditKind::Increment,
+        )
+    })
 }
 
 fn slot_key_up_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
@@ -6803,6 +7216,13 @@ fn slot_key_up_press(element: &Element, _state: Option<&ResolvedNodeState>) -> O
         ListenerMatcher::KeyUpPressNoCtrlAltMeta,
         TextInputKeyEditKind::Up,
     )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyUpPressNoCtrlAltMeta,
+            SliderKeyEditKind::Increment,
+        )
+    })
 }
 
 fn slot_key_down_press(element: &Element, _state: Option<&ResolvedNodeState>) -> Option<Listener> {
@@ -6811,6 +7231,13 @@ fn slot_key_down_press(element: &Element, _state: Option<&ResolvedNodeState>) ->
         ListenerMatcher::KeyDownPressNoCtrlAltMeta,
         TextInputKeyEditKind::Down,
     )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyDownPressNoCtrlAltMeta,
+            SliderKeyEditKind::Decrement,
+        )
+    })
 }
 
 /// Build Home-key listener for focused text inputs.
@@ -6820,6 +7247,13 @@ fn slot_key_home_press(element: &Element, _state: Option<&ResolvedNodeState>) ->
         ListenerMatcher::KeyHomePressNoCtrlAltMeta,
         TextInputKeyEditKind::Home,
     )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyHomePressNoCtrlAltMeta,
+            SliderKeyEditKind::Min,
+        )
+    })
 }
 
 /// Build End-key listener for focused text inputs.
@@ -6828,6 +7262,35 @@ fn slot_key_end_press(element: &Element, _state: Option<&ResolvedNodeState>) -> 
         element,
         ListenerMatcher::KeyEndPressNoCtrlAltMeta,
         TextInputKeyEditKind::End,
+    )
+    .or_else(|| {
+        slot_slider_key_edit(
+            element,
+            ListenerMatcher::KeyEndPressNoCtrlAltMeta,
+            SliderKeyEditKind::Max,
+        )
+    })
+}
+
+fn slot_key_page_up_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    slot_slider_key_edit(
+        element,
+        ListenerMatcher::KeyPageUpPressNoCtrlAltMeta,
+        SliderKeyEditKind::IncrementLarge,
+    )
+}
+
+fn slot_key_page_down_press(
+    element: &Element,
+    _state: Option<&ResolvedNodeState>,
+) -> Option<Listener> {
+    slot_slider_key_edit(
+        element,
+        ListenerMatcher::KeyPageDownPressNoCtrlAltMeta,
+        SliderKeyEditKind::DecrementLarge,
     )
 }
 
@@ -6842,6 +7305,20 @@ fn slot_text_key_edit(
         element_id: Some(element_id),
         matcher,
         compute: ListenerCompute::TextInputKeyEditToRuntime { element_id, kind },
+    })
+}
+
+fn slot_slider_key_edit(
+    element: &Element,
+    matcher: ListenerMatcher,
+    kind: SliderKeyEditKind,
+) -> Option<Listener> {
+    let element_id = focused_slider_id(element)?;
+
+    Some(Listener {
+        element_id: Some(element_id),
+        matcher,
+        compute: ListenerCompute::SliderKeyEditToRuntime { element_id, kind },
     })
 }
 
@@ -7624,6 +8101,7 @@ mod tests {
 
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
+    use crate::events::registry_builder::ElixirEventPayload;
     use crate::events::test_support::{
         AnimatedNearbyHitCase, SampledRegistrySource, assert_registry_probe_matrix,
     };
@@ -7640,14 +8118,16 @@ mod tests {
         AlignX, AlignY, Attrs, KeyBindingMatch, KeyBindingSpec, Length, MouseOverAttrs,
         ScrollbarHoverAxis, VirtualKeyHoldMode, VirtualKeySpec, VirtualKeyTapAction,
     };
-    use crate::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot, NodeId};
+    use crate::tree::element::{
+        Element, ElementKind, ElementTree, Frame, NearbySlot, NodeId, SliderValueOrigin,
+    };
     use crate::tree::geometry::{ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii};
     use crate::tree::layout::{
         Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
         layout_tree_default_with_animation,
     };
     use crate::tree::scrollbar::ScrollbarAxis;
-    use crate::tree::transform::{Affine2, InteractionClip};
+    use crate::tree::transform::{Affine2, InteractionClip, Point, element_transform};
     use std::time::{Duration, Instant};
 
     use super::{
@@ -7660,7 +8140,9 @@ mod tests {
         listeners_for_element, registry_for_elements, runtime_listeners_for_overlay,
         window_listeners,
     };
-    use crate::events::{CursorIcon, ElementEventKind, RegistryRebuildPayload, TextInputState};
+    use crate::events::{
+        CursorIcon, ElementEventKind, RegistryRebuildPayload, SliderState, TextInputState,
+    };
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -7675,6 +8157,15 @@ mod tests {
         Element::with_attrs(
             NodeId::from_term_bytes(vec![id]),
             ElementKind::TextInput,
+            Vec::new(),
+            attrs,
+        )
+    }
+
+    fn make_slider_element(id: u8, attrs: Attrs) -> Element {
+        Element::with_attrs(
+            NodeId::from_term_bytes(vec![id]),
+            ElementKind::Slider,
             Vec::new(),
             attrs,
         )
@@ -7946,6 +8437,7 @@ mod tests {
         focused_id: Option<NodeId>,
         hover_stack: Vec<HoverTracker>,
         text_inputs: HashMap<NodeId, TextInputState>,
+        sliders: HashMap<NodeId, SliderState>,
         clipboard: HashMap<ClipboardTarget, Option<String>>,
         base_registry: Option<super::Registry>,
         combined_registry: Option<super::Registry>,
@@ -7962,6 +8454,10 @@ mod tests {
 
         fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
             self.text_inputs.get(element_id).cloned()
+        }
+
+        fn slider_state(&self, element_id: &NodeId) -> Option<SliderState> {
+            self.sliders.get(element_id).cloned()
         }
 
         fn clipboard_text(&mut self, target: ClipboardTarget) -> Option<String> {
@@ -8033,6 +8529,29 @@ mod tests {
             font_italic: false,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+        }
+    }
+
+    fn make_slider_state(
+        value: f64,
+        min: f64,
+        max: f64,
+        step: f64,
+        emit_change: bool,
+    ) -> SliderState {
+        SliderState {
+            value,
+            patch_value: None,
+            value_origin: SliderValueOrigin::TreePatch,
+            emit_change,
+            min,
+            max,
+            step,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 100.0,
+            frame_height: 20.0,
+            screen_to_local: Some(Affine2::identity()),
         }
     }
 
@@ -8212,6 +8731,168 @@ mod tests {
             })]
         ));
         assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Pointer]);
+    }
+
+    #[test]
+    fn listeners_for_element_slider_press_sets_value_and_starts_drag() {
+        let mut attrs = Attrs::default();
+        attrs.slider_min = Some(0.0);
+        attrs.slider_max = Some(100.0);
+        attrs.slider_value = Some(0.0);
+        attrs.slider_step = Some(5.0);
+        attrs.on_change = Some(true);
+        let element = with_interaction(make_slider_element(81, attrs), true);
+        let element_id = NodeId::from_term_bytes(vec![81]);
+
+        let listeners = listeners_for_element(&element);
+        let listener = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::CursorButtonLeftPressInside { .. }
+            )
+        });
+
+        let mut ctx = TestComputeCtx::default();
+        ctx.sliders
+            .insert(element_id, make_slider_state(0.0, 0.0, 100.0, 5.0, true));
+
+        let actions = listener.compute_actions_with_ctx(
+            &InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 52.0,
+                y: 10.0,
+            },
+            &mut ctx,
+        );
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::TreeMsg(TreeMsg::SetSliderValue { element_id: id, value })
+                if *id == NodeId::from_term_bytes(vec![81]) && (*value - 50.0).abs() < f64::EPSILON
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::ElixirEvent(ElixirEvent {
+                element_id: id,
+                kind: ElementEventKind::Change,
+                payload: Some(ElixirEventPayload::Float(value)),
+            }) if *id == NodeId::from_term_bytes(vec![81]) && (*value - 50.0).abs() < f64::EPSILON
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::RuntimeChange(RuntimeChange::ExpectSliderPatchValue {
+                element_id: id,
+                value,
+            }) if *id == NodeId::from_term_bytes(vec![81]) && (*value - 50.0).abs() < f64::EPSILON
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::RuntimeChange(RuntimeChange::StartSliderDragTracker {
+                element_id: id,
+                ..
+            }) if *id == NodeId::from_term_bytes(vec![81])
+        )));
+    }
+
+    #[test]
+    fn listeners_for_element_focused_slider_keys_update_value() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(true);
+        attrs.slider_min = Some(0.0);
+        attrs.slider_max = Some(100.0);
+        attrs.slider_value = Some(50.0);
+        attrs.slider_step = Some(5.0);
+        attrs.on_change = Some(true);
+        let element = with_interaction(make_slider_element(82, attrs), true);
+        let element_id = NodeId::from_term_bytes(vec![82]);
+        let listeners = listeners_for_element(&element);
+
+        let mut ctx = TestComputeCtx::default();
+        ctx.sliders
+            .insert(element_id, make_slider_state(50.0, 0.0, 100.0, 5.0, true));
+
+        let right_actions = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyRightPressNoCtrlAltMeta
+            )
+        })
+        .compute_actions_with_ctx(
+            &InputEvent::Key {
+                key: CanonicalKey::ArrowRight,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &mut ctx,
+        );
+
+        assert!(right_actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::TreeMsg(TreeMsg::SetSliderValue { element_id: id, value })
+                if *id == NodeId::from_term_bytes(vec![82]) && (*value - 55.0).abs() < f64::EPSILON
+        )));
+
+        let page_up_actions = listener_matching(&listeners, |listener| {
+            matches!(
+                listener.matcher,
+                ListenerMatcher::KeyPageUpPressNoCtrlAltMeta
+            )
+        })
+        .compute_actions_with_ctx(
+            &InputEvent::Key {
+                key: CanonicalKey::PageUp,
+                action: ACTION_PRESS,
+                mods: 0,
+            },
+            &mut ctx,
+        );
+
+        assert!(page_up_actions.iter().any(|action| matches!(
+            action,
+            ListenerAction::TreeMsg(TreeMsg::SetSliderValue { element_id: id, value })
+                if *id == NodeId::from_term_bytes(vec![82]) && (*value - 100.0).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
+    fn listeners_for_element_slider_user_key_binding_precedes_builtin_key() {
+        let mut attrs = Attrs::default();
+        attrs.focused_active = Some(true);
+        attrs.slider_min = Some(0.0);
+        attrs.slider_max = Some(100.0);
+        attrs.slider_value = Some(50.0);
+        attrs.slider_step = Some(5.0);
+        attrs.on_key_down = Some(vec![KeyBindingSpec {
+            route: "key_down:arrow_right:exact:0".to_string(),
+            key: CanonicalKey::ArrowRight,
+            mods: 0,
+            match_mode: KeyBindingMatch::Exact,
+        }]);
+        let element = with_interaction(make_slider_element(83, attrs), true);
+
+        let listeners = listeners_for_element(&element);
+        let input = InputEvent::Key {
+            key: CanonicalKey::ArrowRight,
+            action: ACTION_PRESS,
+            mods: 0,
+        };
+        let first_match = listeners
+            .iter()
+            .find(|listener| listener.matcher.matches(&input))
+            .expect("expected focused slider key listener");
+        let actions = first_match.compute_actions(&input);
+
+        assert!(matches!(
+            actions.as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent {
+                element_id,
+                kind: ElementEventKind::KeyDown,
+                payload: Some(ElixirEventPayload::String(route)),
+            })] if *element_id == NodeId::from_term_bytes(vec![83])
+                && route == "key_down:arrow_right:exact:0"
+        ));
     }
 
     #[test]
@@ -8499,6 +9180,82 @@ mod tests {
             },
         );
         assert!(actions_without_cursor(&miss_actions).is_empty());
+    }
+
+    #[test]
+    fn slider_pointer_value_uses_layout_rotated_render_frame_geometry() {
+        let mut tree = ElementTree::new();
+
+        let mut root_attrs = Attrs::default();
+        root_attrs.width = Some(Length::Px(240.0));
+        root_attrs.height = Some(Length::Px(140.0));
+        let mut root = make_element(128, root_attrs);
+        let root_id = root.id;
+
+        let mut slider_attrs = Attrs::default();
+        slider_attrs.width = Some(Length::Px(180.0));
+        slider_attrs.height = Some(Length::Px(38.0));
+        slider_attrs.layout_rotate = Some(-90.0);
+        slider_attrs.slider_min = Some(0.0);
+        slider_attrs.slider_max = Some(100.0);
+        slider_attrs.slider_value = Some(0.0);
+        let mut slider = make_slider_element(129, slider_attrs);
+        let slider_id = slider.id;
+        let track_id = NodeId::from_term_bytes(vec![130]);
+        let filled_id = NodeId::from_term_bytes(vec![131]);
+        let thumb_id = NodeId::from_term_bytes(vec![132]);
+        slider.children = vec![track_id, filled_id, thumb_id];
+        root.children = vec![slider_id];
+
+        let mut track_attrs = Attrs::default();
+        track_attrs.height = Some(Length::Px(8.0));
+        let track = Element::with_attrs(track_id, ElementKind::El, Vec::new(), track_attrs);
+
+        let mut filled_attrs = Attrs::default();
+        filled_attrs.height = Some(Length::Px(8.0));
+        let filled = Element::with_attrs(filled_id, ElementKind::El, Vec::new(), filled_attrs);
+
+        let mut thumb_attrs = Attrs::default();
+        thumb_attrs.width = Some(Length::Px(24.0));
+        thumb_attrs.height = Some(Length::Px(24.0));
+        let thumb = Element::with_attrs(thumb_id, ElementKind::El, Vec::new(), thumb_attrs);
+
+        tree.set_root_id(root_id);
+        tree.insert(root);
+        tree.insert(slider);
+        tree.insert(track);
+        tree.insert(filled);
+        tree.insert(thumb);
+
+        let payload =
+            layout_and_refresh_default(&mut tree, Constraint::new(240.0, 140.0), 1.0).event_rebuild;
+        let slider_state = payload
+            .sliders
+            .get(&slider_id)
+            .expect("expected slider rebuild state");
+        let slider = tree.get(&slider_id).expect("expected slider element");
+        let render_frame = slider
+            .layout
+            .render_frame
+            .expect("layout rotation should keep an unrotated render frame");
+        let track_frame = tree
+            .get(&track_id)
+            .and_then(|track| track.layout.frame)
+            .expect("expected track frame");
+        let transform = element_transform(render_frame, &slider.layout.effective);
+        let point = transform.map_point(Point {
+            x: track_frame.x + track_frame.width * 0.75,
+            y: track_frame.y + track_frame.height / 2.0,
+        });
+
+        let value = slider_state
+            .value_from_screen_point(point.x, point.y)
+            .expect("expected value from rotated pointer point");
+
+        assert!(
+            (value - 75.0).abs() < 0.001,
+            "expected pointer value near 75.0, got {value}"
+        );
     }
 
     #[test]
@@ -9792,6 +10549,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
 
         let listeners = runtime_listeners_for_overlay(&base, &runtime);
@@ -9844,6 +10602,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -9898,6 +10657,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -9943,6 +10703,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10002,6 +10763,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
 
@@ -10058,6 +10820,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10109,6 +10872,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10173,6 +10937,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &candidate_runtime);
         let mut ctx = TestComputeCtx {
@@ -10320,6 +11085,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10373,6 +11139,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10461,6 +11228,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10542,6 +11310,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10598,6 +11367,7 @@ mod tests {
             }),
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10660,6 +11430,7 @@ mod tests {
             }),
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10718,6 +11489,7 @@ mod tests {
             }),
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -10964,6 +11736,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
 
         let listeners = runtime_listeners_for_overlay(&base, &runtime);
@@ -11043,7 +11816,11 @@ mod tests {
                 kind: ElementEventKind::KeyDown,
                 payload,
             })] if *element_id == NodeId::from_term_bytes(vec![37])
-                && payload.as_deref() == Some("key_down:enter:exact:0")
+                && matches!(
+                    payload.as_ref(),
+                    Some(ElixirEventPayload::String(route))
+                        if route == "key_down:enter:exact:0"
+                )
         ));
 
         let key_up_listener = listener_matching(&listeners, |listener| {
@@ -11070,7 +11847,11 @@ mod tests {
                 kind: ElementEventKind::KeyUp,
                 payload,
             })] if *element_id == NodeId::from_term_bytes(vec![37])
-                && payload.as_deref() == Some("key_up:escape:exact:2")
+                && matches!(
+                    payload.as_ref(),
+                    Some(ElixirEventPayload::String(route))
+                        if route == "key_up:escape:exact:2"
+                )
         ));
     }
 
@@ -11188,7 +11969,11 @@ mod tests {
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::StartKeyPressTracker { tracker }),
             ] if *element_id == NodeId::from_term_bytes(vec![39])
-                && payload.as_deref() == Some("key_down:space:exact:0")
+                && matches!(
+                    payload.as_ref(),
+                    Some(ElixirEventPayload::String(route))
+                        if route == "key_down:space:exact:0"
+                )
                 && tracker.key == CanonicalKey::Space
                 && tracker.source_element_id == Some(NodeId::from_term_bytes(vec![39]))
                 && matches!(
@@ -11235,6 +12020,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -11267,8 +12053,16 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearKeyPressTrackersForKey { key }),
-            ] if key_up_route.as_deref() == Some("key_up:space:exact:0")
-                && key_press_route.as_deref() == Some("key_press:space:exact:0")
+            ] if matches!(
+                    key_up_route.as_ref(),
+                    Some(ElixirEventPayload::String(route))
+                        if route == "key_up:space:exact:0"
+                )
+                && matches!(
+                    key_press_route.as_ref(),
+                    Some(ElixirEventPayload::String(route))
+                        if route == "key_press:space:exact:0"
+                )
                 && *key == CanonicalKey::Space
         ));
     }
@@ -12377,6 +13171,7 @@ mod tests {
                 element_id: NodeId::from_term_bytes(vec![33]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
             }),
+            slider_drag: None,
         };
 
         let listeners = runtime_listeners_for_overlay(&base, &runtime);
@@ -12436,6 +13231,7 @@ mod tests {
                 element_id: NodeId::from_term_bytes(vec![34]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
             }),
+            slider_drag: None,
         };
 
         let listeners = runtime_listeners_for_overlay(&base, &runtime);
@@ -13020,6 +13816,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -13082,6 +13879,7 @@ mod tests {
             swipe: None,
             scrollbar: None,
             text_drag: None,
+            slider_drag: None,
         };
         let combined = compose_combined_registry(&base, &runtime);
         let mut ctx = TestComputeCtx {
@@ -13125,6 +13923,7 @@ mod tests {
                 screen_to_local: Some(Affine2::identity()),
             }),
             text_drag: None,
+            slider_drag: None,
         };
         let listeners = runtime_listeners_for_overlay(&registry_for_elements(&[]), &runtime);
         assert!(
