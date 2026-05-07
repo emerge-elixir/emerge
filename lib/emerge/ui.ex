@@ -186,7 +186,7 @@ defmodule Emerge.UI do
   This imports the core constructors from `Emerge.UI` and the frequently used
   helpers from `Color`, `Size`, `Space`, `Scroll`, and `Align`. It also aliases
   the grouped styling and behavior modules such as `Background`, `Border`,
-  `Font`, `Input`, `Event`, and `Nearby`.
+  `Font`, `Input`, `Slider`, `Event`, and `Nearby`.
   """
   @spec __using__(term()) :: Macro.t()
   defmacro __using__(_opts) do
@@ -207,6 +207,7 @@ defmodule Emerge.UI do
         Event,
         Font,
         Input,
+        Input.Slider,
         Interactive,
         Nearby,
         Svg,

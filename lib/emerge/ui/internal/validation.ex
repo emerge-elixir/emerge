@@ -84,7 +84,18 @@ defmodule Emerge.UI.Internal.Validation do
 
   @reserved_attr_keys MapSet.new(
                         TreeAttrs.runtime_attrs() ++
-                          [:id, :content, :image_src, :image_size, :video_target, :svg_expected]
+                          [
+                            :id,
+                            :content,
+                            :image_src,
+                            :image_size,
+                            :video_target,
+                            :svg_expected,
+                            :slider_min,
+                            :slider_max,
+                            :slider_step,
+                            :slider_value
+                          ]
                       )
 
   @override_warning_store_key :emerge_ui_override_warnings
@@ -280,7 +291,10 @@ defmodule Emerge.UI.Internal.Validation do
       key == :virtual_key ->
         skip_nil_or(value, fn -> {key, Event.normalize_virtual_key!(value)} end)
 
-      MapSet.member?(@public_attr_keys, key) or MapSet.member?(extra_public_attr_keys, key) ->
+      MapSet.member?(extra_public_attr_keys, key) ->
+        skip_nil_or(value, fn -> {key, value} end)
+
+      MapSet.member?(@public_attr_keys, key) ->
         skip_nil_or(value, fn ->
           validate_public_attr_value!(attrs_owner, key, value)
           {key, value}

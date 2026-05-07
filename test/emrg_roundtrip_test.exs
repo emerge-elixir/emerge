@@ -100,6 +100,13 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               text("C")
             )
           ]),
+          Input.slider(
+            [
+              width({:px, 240.0}),
+              Slider.config(min: -10, max: 10, step: 0.5)
+            ],
+            2.25
+          ),
           el(
             [
               padding(8.0),

@@ -21,7 +21,8 @@ defmodule Emerge.Engine.Serialization do
     image: 9,
     text_input: 10,
     video: 11,
-    multiline: 12
+    multiline: 12,
+    slider: 13
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)

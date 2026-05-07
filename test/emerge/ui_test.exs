@@ -29,6 +29,59 @@ defmodule Emerge.UITest do
              element.children
   end
 
+  test "slider builds controlled range input with Slider.config alias" do
+    element =
+      Input.slider(
+        [
+          width(fill()),
+          Slider.config(min: 0, max: 100, step: 5),
+          Event.on_change(:changed)
+        ],
+        42
+      )
+
+    assert element.type == :slider
+    assert element.attrs.width == :fill
+    assert element.attrs.height == {:px, 32}
+    assert element.attrs.slider_min == 0.0
+    assert element.attrs.slider_max == 100.0
+    assert element.attrs.slider_step == 5.0
+    assert element.attrs.slider_value == 40.0
+    assert element.attrs.on_change == {self(), :changed}
+    assert Enum.map(element.children, & &1.type) == [:el, :el, :el]
+
+    continuous = Input.slider([Slider.config(min: 0, max: 100, step: :any)], 42.5)
+    assert continuous.attrs.slider_step == 0.0
+    assert continuous.attrs.slider_value == 42.5
+  end
+
+  test "slider accepts custom standard element slots but owns track widths" do
+    track = el([height(px(6)), Background.color(:gray)], none())
+    filled = el([height(px(6)), Background.color(:blue)], none())
+    thumb = el([width(px(20)), height(px(20)), Background.color(:white)], none())
+
+    element =
+      Input.slider([Slider.config(track: track, filled_track: filled, thumb: thumb)], 0.5)
+
+    assert element.children == [track, filled, thumb]
+
+    assert_raise ArgumentError, ~r/does not allow Slider.config\/1 :track to set width/, fn ->
+      Input.slider([Slider.config(track: el([width(px(10))], none()))], 0.5)
+    end
+
+    assert_raise ArgumentError,
+                 ~r/does not allow Slider.config\/1 :filled_track to set width/,
+                 fn ->
+                   Input.slider([Slider.config(filled_track: el([width(px(10))], none()))], 0.5)
+                 end
+  end
+
+  test "Slider.config attr is only accepted by Input.slider" do
+    assert_raise ArgumentError, ~r/el\/2 does not support attribute :slider_config/, fn ->
+      el([Slider.config(min: 0, max: 10)], text("bad"))
+    end
+  end
+
   test "mouse_over stores decorative attrs" do
     element =
       el(

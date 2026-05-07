@@ -2,10 +2,11 @@ defmodule Emerge.UI.Input do
   @moduledoc """
   Input element helpers.
 
-  `Emerge.UI.Input` provides the two main interactive element constructors:
+  `Emerge.UI.Input` provides interactive element constructors:
 
   - `text/2` for editable single-line text input
   - `multiline/2` for auto-growing multiline text input
+  - `slider/2` for controlled numeric range input
   - `button/2` for button-like interaction around any single child element
 
   These helpers provide input behavior, not default visuals. Style them with the
@@ -79,6 +80,7 @@ defmodule Emerge.UI.Input do
   ```
   """
 
+  alias Emerge.UI.Input.Slider
   alias Emerge.UI.Internal.Builder
   alias Emerge.UI.Internal.Validation
 
@@ -179,6 +181,55 @@ defmodule Emerge.UI.Input do
     attrs
     |> Map.put(:content, value)
     |> Builder.build_element(nearby, :multiline, [])
+  end
+
+  @doc """
+  Build a controlled numeric slider.
+
+  `value` is the current numeric value shown by the slider. Pair it with
+  `Emerge.UI.Event.on_change/1` to receive updated numeric values and treat the
+  second argument as the source of truth for the currently rendered value.
+
+  Configure the range and visual slots with `Slider.config/1`. Track, filled
+  track, and thumb slots are regular Emerge elements. The slider owns track
+  widths, so the root `:track` and `:filled_track` elements must not set
+  `width(...)`.
+
+  ## Example
+
+  ```elixir
+  Input.slider(
+    [
+      width(fill()),
+      Slider.config(min: 0, max: 100, step: 5),
+      Event.on_change(:volume_changed)
+    ],
+    state.volume
+  )
+  ```
+  """
+  @spec slider(Emerge.UI.attrs(), number()) :: t()
+  def slider(attrs, value) do
+    {attrs, nearby} =
+      Builder.prepare_attrs!("Input.slider/2", attrs, extra_public_attr_keys: [:slider_config])
+
+    {config, attrs} = Map.pop(attrs, :slider_config, %{})
+    config = Slider.normalize_config!("Input.slider/2", config, value)
+
+    attrs =
+      attrs
+      |> Map.put_new(:width, :fill)
+      |> Map.put_new(:height, {:px, 32})
+      |> Map.put(:slider_min, config.min)
+      |> Map.put(:slider_max, config.max)
+      |> Map.put(:slider_step, config.step)
+      |> Map.put(:slider_value, config.value)
+
+    Builder.build_element(attrs, nearby, :slider, [
+      config.track,
+      config.filled_track,
+      config.thumb
+    ])
   end
 
   @doc """

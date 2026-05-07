@@ -183,6 +183,47 @@ defmodule Emerge.Engine.SerializationTest do
     assert [%{key: :enter, mods: [], match: :exact}] = decoded.attrs.on_key_down
   end
 
+  test "slider roundtrip preserves range, value, handlers, and slots" do
+    track = el([height(px(6)), Background.color(:gray)], none())
+    filled = el([height(px(6)), Background.color(:blue)], none())
+    thumb = el([width(px(18)), height(px(18)), Background.color(:white)], none())
+
+    layout =
+      Emerge.UI.Input.slider(
+        [
+          width(px(280)),
+          Slider.config(
+            min: 0,
+            max: 100,
+            step: 5,
+            track: track,
+            filled_track: filled,
+            thumb: thumb
+          ),
+          Event.on_change({self(), :changed})
+        ],
+        42
+      )
+
+    {binary, _tree} = Serialization.encode(layout)
+    decoded = Serialization.decode(binary)
+
+    assert decoded.type == :slider
+    assert decoded.attrs.slider_min == 0.0
+    assert decoded.attrs.slider_max == 100.0
+    assert decoded.attrs.slider_step == 5.0
+    assert decoded.attrs.slider_value == 40.0
+    assert decoded.attrs.on_change == true
+    assert [decoded_track, decoded_filled, decoded_thumb] = decoded.children
+    assert decoded_track.attrs.background == :gray
+    assert decoded_track.attrs.height == {:px, 6.0}
+    assert decoded_filled.attrs.background == :blue
+    assert decoded_filled.attrs.height == {:px, 6.0}
+    assert decoded_thumb.attrs.background == :white
+    assert decoded_thumb.attrs.width == {:px, 18.0}
+    assert decoded_thumb.attrs.height == {:px, 18.0}
+  end
+
   test "input button roundtrip preserves press and focus handlers" do
     layout =
       Emerge.UI.Input.button(
