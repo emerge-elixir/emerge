@@ -1,6 +1,6 @@
 # Cross-Engine Layout Caching Insights
 
-Last updated: 2026-04-26.
+Last updated: 2026-05-07.
 
 This document preserves the cross-engine investigation that informed Emerge's
 layout-caching work. It is research/reference material, not the active
@@ -242,7 +242,11 @@ Emerge takeaway:
 - let `refresh(tree)` skip clean subtrees
 - track whether scene/event data actually needs rebuilding
 
-Emerge status: not implemented yet.
+Emerge status: implemented for the current refresh pipeline. Refresh-specific
+render and registry damage are tracked separately from layout-cache dirtiness,
+refresh-only frames can reuse a clean full event registry, and clean retained
+render subtrees can be reused during scene refresh. Broader registry chunk
+seeding remains a future profiling-driven optimization.
 
 ### What not to copy
 

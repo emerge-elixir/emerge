@@ -125,7 +125,7 @@ Goal: Implement elm-ui API one feature at a time until layout + rendering covera
 | Input.checkbox | ❌ | |
 | Input.text | ✅ | Single-line controlled text input |
 | Input.multiline | ✅ | Wrapped multiline input with auto-grow and multiline editing |
-| Input.slider | ❌ | |
+| Input.slider | ✅ | Controlled numeric slider with custom track/fill/thumb slots |
 | Input.radio | ❌ | |
 
 ## Possible Layout Engine Improvements

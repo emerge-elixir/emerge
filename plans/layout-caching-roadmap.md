@@ -1,10 +1,12 @@
 # Layout Caching Roadmap
 
-Last updated: 2026-04-28.
+Last updated: 2026-05-07.
 
-This is the active roadmap for native retained-layout caching. It intentionally
-references the fuller research notes in `layout-caching-engine-insights.md`
-instead of repeating them all here.
+This is the durable roadmap for native retained-layout caching. It is not an
+active implementation slice; create an `active-*.md` file only while a focused
+piece of work is open. This document intentionally references the fuller
+research notes in `layout-caching-engine-insights.md` instead of repeating them
+all here.
 
 ## Current implementation status
 
