@@ -38,7 +38,7 @@ use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
-use crate::tree::element::{Element, NodeId, TextInputContentOrigin};
+use crate::tree::element::{Element, NodeId, SliderValueOrigin, TextInputContentOrigin};
 use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
@@ -955,6 +955,75 @@ impl TextInputState {
     }
 }
 
+/// Runtime slider state retained across rebuilds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SliderState {
+    pub value: f64,
+    pub patch_value: Option<f64>,
+    pub value_origin: SliderValueOrigin,
+    pub emit_change: bool,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub frame_x: f32,
+    pub frame_y: f32,
+    pub frame_width: f32,
+    pub frame_height: f32,
+    pub screen_to_local: Option<Affine2>,
+}
+
+impl SliderState {
+    pub fn copy_rebuild_metadata_from(&mut self, other: &Self) {
+        self.patch_value = other.patch_value;
+        self.emit_change = other.emit_change;
+        self.min = other.min;
+        self.max = other.max;
+        self.step = other.step;
+        self.frame_x = other.frame_x;
+        self.frame_y = other.frame_y;
+        self.frame_width = other.frame_width;
+        self.frame_height = other.frame_height;
+        self.screen_to_local = other.screen_to_local;
+    }
+
+    pub fn normalized_value(&self, value: f64) -> f64 {
+        let clamped = if value.is_finite() {
+            value.clamp(self.min, self.max)
+        } else {
+            self.min
+        };
+        if !self.step.is_finite() || self.step <= 0.0 {
+            return clamped;
+        }
+
+        let units = ((clamped - self.min) / self.step).round();
+        (self.min + units * self.step).clamp(self.min, self.max)
+    }
+
+    pub fn set_value(&mut self, value: f64) -> bool {
+        let value = self.normalized_value(value);
+        if f64_values_equal(self.value, value) {
+            return false;
+        }
+
+        self.value = value;
+        true
+    }
+
+    pub fn value_from_screen_point(&self, x: f32, y: f32) -> Option<f64> {
+        if self.frame_width <= f32::EPSILON {
+            return None;
+        }
+
+        let local = self
+            .screen_to_local
+            .map(|transform| transform.map_point(Point { x, y }))
+            .unwrap_or(Point { x, y });
+        let ratio = ((local.x - self.frame_x) / self.frame_width).clamp(0.0, 1.0);
+        Some(self.normalized_value(self.min + f64::from(ratio) * (self.max - self.min)))
+    }
+}
+
 fn char_index_to_utf16_offset(text: &str, char_index: u32) -> usize {
     text.chars()
         .take(char_index as usize)
@@ -1073,6 +1142,7 @@ pub struct FocusOnMountTarget {
 pub struct RegistryRebuildPayload {
     pub base_registry: registry_builder::Registry,
     pub text_inputs: HashMap<NodeId, TextInputState>,
+    pub sliders: HashMap<NodeId, SliderState>,
     pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     pub focused_id: Option<NodeId>,
     pub focus_on_mount: Option<FocusOnMountTarget>,
@@ -1128,6 +1198,52 @@ fn text_input_state(
         letter_spacing: element.layout.effective.font_letter_spacing.unwrap_or(0.0) as f32,
         word_spacing: element.layout.effective.font_word_spacing.unwrap_or(0.0) as f32,
     }
+}
+
+fn slider_state(
+    element: &Element,
+    adjusted_rect: Rect,
+    screen_to_local: Option<Affine2>,
+) -> SliderState {
+    let (min, max) = slider_range(&element.layout.effective);
+    let step = element
+        .layout
+        .effective
+        .slider_step
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .unwrap_or(0.0);
+    let patch_value = element.runtime.slider_patch_value.map(f64::from_bits);
+    let mut state = SliderState {
+        value: element.layout.effective.slider_value.unwrap_or(min),
+        patch_value,
+        value_origin: element.runtime.slider_value_origin,
+        emit_change: element.layout.effective.on_change.unwrap_or(false),
+        min,
+        max,
+        step,
+        frame_x: adjusted_rect.x,
+        frame_y: adjusted_rect.y,
+        frame_width: adjusted_rect.width,
+        frame_height: adjusted_rect.height,
+        screen_to_local,
+    };
+    state.value = state.normalized_value(state.value);
+    state.patch_value = state.patch_value.map(|value| state.normalized_value(value));
+    state
+}
+
+fn slider_range(attrs: &crate::tree::attrs::Attrs) -> (f64, f64) {
+    let min = attrs.slider_min.unwrap_or(0.0);
+    let max = attrs.slider_max.unwrap_or(1.0);
+    if min.is_finite() && max.is_finite() && max > min {
+        (min, max)
+    } else {
+        (0.0, 1.0)
+    }
+}
+
+pub(crate) fn f64_values_equal(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits() || (left - right).abs() <= f64::EPSILON
 }
 
 fn text_content_insets(attrs: &crate::tree::attrs::Attrs) -> (f32, f32, f32, f32) {
@@ -1229,6 +1345,25 @@ pub(crate) fn send_element_event_with_string_payload(
     let _ = env.send_and_clear(&pid, |inner_env| {
         let id_bin = bin.release(inner_env);
         (emerge_skia_event(), (id_bin, event, value.to_string())).encode(inner_env)
+    });
+}
+
+pub(crate) fn send_element_event_with_float_payload(
+    pid: LocalPid,
+    element_id: &NodeId,
+    event: Atom,
+    value: f64,
+) {
+    let id_bytes = element_id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(id_bytes.len()) else {
+        return;
+    };
+    bin.as_mut_slice().copy_from_slice(&id_bytes);
+
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |inner_env| {
+        let id_bin = bin.release(inner_env);
+        (emerge_skia_event(), (id_bin, event, value)).encode(inner_env)
     });
 }
 

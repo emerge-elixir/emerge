@@ -117,6 +117,10 @@ pub enum TreeMsg {
         preedit: Option<String>,
         preedit_cursor: Option<(u32, u32)>,
     },
+    SetSliderValue {
+        element_id: NodeId,
+        value: f64,
+    },
     AnimationPulse {
         presented_at: Instant,
         predicted_next_present_at: Instant,
