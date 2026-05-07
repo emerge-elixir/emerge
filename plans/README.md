@@ -3,41 +3,15 @@
 Last updated: 2026-05-07.
 
 This directory tracks active implementation notes and durable background
-research for native layout and renderer work. Files with an `active-` prefix are
-reserved for currently open implementation slices.
+research for native layout, renderer, and input/runtime work. Files with an
+`active-` prefix are reserved for currently open implementation slices.
 
-There are currently no active implementation plans. Completed implementation
-records have been folded into this index or the durable reference notes below.
+There are currently no active implementation plans. Completed active plans have
+been folded into this index or the durable reference notes below.
 
 ## Files
 
 No `active-*.md` files are present right now.
-
-## Folded Work
-
-The old `completed/` directory and implementation-tied investigations were
-removed after their useful state was folded into this index and the reference
-documents below. Recently folded slices:
-
-- layout-aware `Emerge.UI.scale/1` and `Emerge.UI.rotate/1`
-- layout-aware transform animation
-- mathematical `Emerge.UI.Size.min/2` and `max/2`
-- performance branch merge-readiness fixes
-- release-code bloat reductions for benchmark-only code, stats matrices, and
-  renderer-cache admission helpers
-- shared normal/profiled renderer draw traversal
-- scroll viewport traversal culling
-- renderer-cache parent/child lifecycle and stale-entry accounting
-- direct renderer drawing optimizations and rejected benchmark-gated attempts
-- frame-latency pacing and animation-cadence fixes
-- renderer-cache engine investigation and Flutter comparison findings that have
-  already landed
-- macOS/Linux runtime convergence after the macOS hover refresh bug, including
-  shared tree updates, event runtime driving, input normalization, present
-  timing, cursor state, render timing stats, render-state scene installation,
-  and macOS pipeline stats parity
-- cleanup of runtime-convergence scaffolding, including shared pipeline timing
-  helpers and reduced macOS host wrapper-only tests
 
 ### `layout-caching-roadmap.md`
 
@@ -57,6 +31,36 @@ Cross-engine research notes.
 This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
+
+## Folded Work
+
+The old `completed/` directory and implementation-tied investigations were
+removed after their useful state was folded into this index and the reference
+documents below. Recently folded slices:
+
+- first-class `Emerge.UI.Input.slider/2`, including `Slider.config/1`, standard
+  Emerge element slots for track, filled track, and thumb, typed float change
+  events, text-input-style controlled reconciliation, rotated hit testing,
+  endpoint thumb reservation, and shadow bleed fixes
+- layout-aware `Emerge.UI.scale/1` and `Emerge.UI.rotate/1`
+- layout-aware transform animation
+- mathematical `Emerge.UI.Size.min/2` and `max/2`
+- performance branch merge-readiness fixes
+- release-code bloat reductions for benchmark-only code, stats matrices, and
+  renderer-cache admission helpers
+- shared normal/profiled renderer draw traversal
+- scroll viewport traversal culling
+- renderer-cache parent/child lifecycle and stale-entry accounting
+- direct renderer drawing optimizations and rejected benchmark-gated attempts
+- frame-latency pacing and animation-cadence fixes
+- renderer-cache engine investigation and Flutter comparison findings that have
+  already landed
+- macOS/Linux runtime convergence after the macOS hover refresh bug, including
+  shared tree updates, event runtime driving, input normalization, present
+  timing, cursor state, render timing stats, render-state scene installation,
+  and macOS pipeline stats parity
+- cleanup of runtime-convergence scaffolding, including shared pipeline timing
+  helpers and reduced macOS host wrapper-only tests
 
 ## Current repo state
 
@@ -211,6 +215,18 @@ The native layout-caching foundation is in place:
 - the low-level macOS host frame/init protocol codec has Rust and Elixir fixture
   coverage; request/notify payload families remain mirrored across Rust and
   Elixir and should get fixtures before protocol expansion
+- `Emerge.UI.Input.slider/2` is implemented as a first-class controlled numeric
+  input with `Emerge.UI.Input.Slider.config/1` aliased by `use Emerge.UI`
+- slider track, filled-track, and thumb slots are normal Emerge elements; the
+  slider owns track widths while callers control cross-axis sizing and visuals
+- slider interactions support pointer press/drag, track click, focus, keyboard
+  arrows, Home/End, PageUp/PageDown, typed float `:change` payloads, and
+  controlled-value reconciliation parallel to text inputs
+- slider geometry is horizontal in local coordinates; rotated presentations use
+  existing layout-aware rotation and transformed hit testing
+- slider layout reserves endpoint thumb space, supports custom SVG/image slots,
+  and lets focus/shadow effects bleed outside non-scroll ancestor clips while
+  preserving scroll-axis clipping
 
 ## Next recommended implementation order
 
