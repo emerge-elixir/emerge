@@ -1032,6 +1032,10 @@ fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         image_size: attrs
             .image_size
             .map(|(w, h)| (w * scale_f64, h * scale_f64)),
+        slider_min: attrs.slider_min,
+        slider_max: attrs.slider_max,
+        slider_value: attrs.slider_value,
+        slider_step: attrs.slider_step,
         video_target: attrs.video_target.clone(),
         text_align: attrs.text_align,
         content: attrs.content.clone(),
@@ -1485,7 +1489,7 @@ fn measure_element<M: TextMeasurer>(
             }
         }
 
-        ElementKind::El | ElementKind::None => {
+        ElementKind::El | ElementKind::None | ElementKind::Slider => {
             // Single child container: intrinsic = max child size + padding + border
             let max_child_width = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
             let max_child_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
@@ -1663,6 +1667,10 @@ fn subtree_measure_attrs(attrs: &Attrs) -> SubtreeMeasureAttrs {
         image_src: attrs.image_src.clone(),
         image_fit: attrs.image_fit,
         image_size: attrs.image_size,
+        slider_min: attrs.slider_min,
+        slider_max: attrs.slider_max,
+        slider_value: attrs.slider_value,
+        slider_step: attrs.slider_step,
         text_align: attrs.text_align,
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
@@ -2089,6 +2097,120 @@ fn resolve_el_kind<M: TextMeasurer>(
     }
 }
 
+fn resolve_slider_kind<M: TextMeasurer>(
+    tree: &mut ElementTree,
+    params: &ResolvePassParams<'_>,
+    element_context: &FontContext,
+    measurer: &M,
+) {
+    if params.child_ids.is_empty() {
+        set_frame_content_size(
+            tree,
+            params.id,
+            params.content.width,
+            params.content.height,
+            params.insets,
+        );
+        return;
+    }
+
+    let ratio = slider_ratio(params.attrs);
+    let content_width = params.content.width.max(0.0);
+    let content_height = params.content.height.max(0.0);
+    let thumb_frame = params.child_ids.get(2).and_then(|thumb_id| {
+        resolve_child_with_placement(
+            tree,
+            thumb_id,
+            ResolvePlacement {
+                constraint: Constraint::new(content_width, content_height),
+                x: 0.0,
+                y: 0.0,
+                inherited: element_context,
+                use_resolve_cache: params.use_resolve_cache,
+            },
+            measurer,
+        )
+        .map(|frame| (*thumb_id, frame))
+    });
+    let thumb_width = thumb_frame
+        .as_ref()
+        .map(|(_, frame)| frame.width.max(0.0))
+        .unwrap_or(0.0);
+    let track_x = params.content.x + thumb_width / 2.0;
+    let track_width = (content_width - thumb_width).max(0.0);
+    let filled_width = track_width * ratio;
+    let mut max_child_height = thumb_frame
+        .as_ref()
+        .map(|(_, frame)| frame.height.max(0.0))
+        .unwrap_or(0.0);
+
+    if let Some(track_id) = params.child_ids.first() {
+        force_child_width(tree, track_id, track_width);
+        if let Some(frame) = resolve_child_with_placement(
+            tree,
+            track_id,
+            ResolvePlacement {
+                constraint: Constraint::new(track_width, content_height),
+                x: 0.0,
+                y: 0.0,
+                inherited: element_context,
+                use_resolve_cache: params.use_resolve_cache,
+            },
+            measurer,
+        ) {
+            max_child_height = max_child_height.max(frame.height);
+            shift_subtree(
+                tree,
+                track_id,
+                track_x - frame.x,
+                params.content.y + (content_height - frame.height) / 2.0 - frame.y,
+            );
+        }
+    }
+
+    if let Some(filled_track_id) = params.child_ids.get(1) {
+        force_child_width(tree, filled_track_id, filled_width);
+        if let Some(frame) = resolve_child_with_placement(
+            tree,
+            filled_track_id,
+            ResolvePlacement {
+                constraint: Constraint::new(filled_width, content_height),
+                x: 0.0,
+                y: 0.0,
+                inherited: element_context,
+                use_resolve_cache: params.use_resolve_cache,
+            },
+            measurer,
+        ) {
+            max_child_height = max_child_height.max(frame.height);
+            shift_subtree(
+                tree,
+                filled_track_id,
+                track_x - frame.x,
+                params.content.y + (content_height - frame.height) / 2.0 - frame.y,
+            );
+        }
+    }
+
+    if let Some((thumb_id, frame)) = thumb_frame {
+        let thumb_center_x = track_x + filled_width;
+        shift_subtree(
+            tree,
+            &thumb_id,
+            thumb_center_x - frame.width / 2.0 - frame.x,
+            params.content.y + (content_height - frame.height) / 2.0 - frame.y,
+        );
+    }
+
+    set_frame_content_size(
+        tree,
+        params.id,
+        content_width,
+        content_height.max(max_child_height),
+        params.insets,
+    );
+}
+
 fn resolve_row_kind<M: TextMeasurer>(
     tree: &mut ElementTree,
     params: &ResolvePassParams<'_>,
@@ -2482,6 +2604,7 @@ fn resolve_element<M: TextMeasurer>(
         | ElementKind::Video
         | ElementKind::None => {}
         ElementKind::El => resolve_el_kind(tree, &params, &element_context, measurer),
+        ElementKind::Slider => resolve_slider_kind(tree, &params, &element_context, measurer),
         ElementKind::Row => resolve_row_kind(tree, &params, &element_context, measurer),
         ElementKind::WrappedRow => {
             resolve_wrapped_row_kind(tree, &params, &element_context, measurer)
@@ -2642,6 +2765,10 @@ fn resolve_attrs(attrs: &Attrs) -> ResolveAttrs {
         image_src: attrs.image_src.clone(),
         image_fit: attrs.image_fit,
         image_size: attrs.image_size,
+        slider_min: attrs.slider_min,
+        slider_max: attrs.slider_max,
+        slider_value: attrs.slider_value,
+        slider_step: attrs.slider_step,
         text_align: attrs.text_align,
         snap_layout: attrs.snap_layout,
         snap_text_metrics: attrs.snap_text_metrics,
@@ -2948,6 +3075,7 @@ fn resolve_cache_kind_eligible(kind: ElementKind) -> bool {
             | ElementKind::Video
             | ElementKind::None
             | ElementKind::El
+            | ElementKind::Slider
             | ElementKind::Row
             | ElementKind::Column
             | ElementKind::Multiline
@@ -3400,6 +3528,44 @@ fn resolve_planned_length(length: Option<&Length>, intrinsic: f32, fill_unit: Op
             .min(resolve_planned_length(Some(right), intrinsic, fill_unit)),
         Some(Length::Max(left, right)) => resolve_planned_length(Some(left), intrinsic, fill_unit)
             .max(resolve_planned_length(Some(right), intrinsic, fill_unit)),
+    }
+}
+
+fn force_child_width(tree: &mut ElementTree, child_id: &NodeId, width: f32) {
+    if let Some(child) = tree.get_mut(child_id) {
+        child.layout.effective.width = Some(Length::Px(width.max(0.0) as f64));
+    }
+}
+
+fn slider_ratio(attrs: &Attrs) -> f32 {
+    let (min, max) = slider_range(attrs);
+    let value = normalize_slider_value(attrs, attrs.slider_value.unwrap_or(min));
+    ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
+}
+
+fn normalize_slider_value(attrs: &Attrs, value: f64) -> f64 {
+    let (min, max) = slider_range(attrs);
+    let clamped = if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        min
+    };
+    let step = attrs.slider_step.unwrap_or(0.0);
+    if !step.is_finite() || step <= 0.0 {
+        return clamped;
+    }
+
+    let units = ((clamped - min) / step).round();
+    (min + units * step).clamp(min, max)
+}
+
+fn slider_range(attrs: &Attrs) -> (f64, f64) {
+    let min = attrs.slider_min.unwrap_or(0.0);
+    let max = attrs.slider_max.unwrap_or(1.0);
+    if min.is_finite() && max.is_finite() && max > min {
+        (min, max)
+    } else {
+        (0.0, 1.0)
     }
 }
 

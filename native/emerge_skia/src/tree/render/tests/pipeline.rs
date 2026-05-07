@@ -4,7 +4,7 @@ use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
 use crate::tree::layout::{
     Constraint, layout_tree_default, refresh_render_scene_cached_for_benchmark,
 };
-use crate::tree::transform::{Affine2, element_transform};
+use crate::tree::transform::{Affine2, Point, element_transform};
 
 fn build_two_child_tree(
     root_attrs: Attrs,
@@ -999,6 +999,164 @@ fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
 }
 
 #[test]
+fn test_zero_offset_outer_glow_paints_all_sides() {
+    let parent_id = NodeId::from_u64(914_000);
+    let child_id = NodeId::from_u64(914_001);
+
+    let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
+    parent.children = vec![child_id];
+    parent.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 180.0,
+        height: 100.0,
+        content_width: 180.0,
+        content_height: 100.0,
+    });
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 4.0,
+        size: 2.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
+    child.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 30.0,
+        width: 80.0,
+        height: 30.0,
+        content_width: 80.0,
+        content_height: 30.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(parent_id);
+    tree.insert(parent);
+    tree.insert(child);
+
+    let (_output, pixels) = render_tree_to_pixels(180, 100, &tree);
+    let left = rgba_at(&pixels, 180, 37, 45).3;
+    let right = rgba_at(&pixels, 180, 123, 45).3;
+    let top = rgba_at(&pixels, 180, 80, 27).3;
+    let bottom = rgba_at(&pixels, 180, 80, 63).3;
+
+    assert!(left > 0, "left glow should paint");
+    assert!(right > 0, "right glow should paint");
+    assert!(top > 0, "top glow should paint");
+    assert!(bottom > 0, "bottom glow should paint");
+}
+
+#[test]
+fn test_slider_thumb_outer_glow_bleeds_past_slider_frame() {
+    let root_id = NodeId::from_u64(914_100);
+    let slider_id = NodeId::from_u64(914_101);
+    let track_id = NodeId::from_u64(914_102);
+    let filled_id = NodeId::from_u64(914_103);
+    let thumb_id = NodeId::from_u64(914_104);
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+    root.children = vec![slider_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 560.0,
+        height: 120.0,
+        content_width: 560.0,
+        content_height: 120.0,
+    });
+
+    let mut slider =
+        Element::with_attrs(slider_id, ElementKind::Slider, Vec::new(), Attrs::default());
+    slider.children = vec![track_id, filled_id, thumb_id];
+    slider.layout.frame = Some(Frame {
+        x: 240.0,
+        y: 46.0,
+        width: 280.0,
+        height: 38.0,
+        content_width: 280.0,
+        content_height: 38.0,
+    });
+
+    let mut track = Element::with_attrs(track_id, ElementKind::El, Vec::new(), Attrs::default());
+    track.layout.frame = Some(Frame {
+        x: 252.0,
+        y: 61.0,
+        width: 256.0,
+        height: 8.0,
+        content_width: 256.0,
+        content_height: 8.0,
+    });
+
+    let mut filled = Element::with_attrs(filled_id, ElementKind::El, Vec::new(), Attrs::default());
+    filled.layout.frame = Some(Frame {
+        x: 252.0,
+        y: 61.0,
+        width: 256.0,
+        height: 8.0,
+        content_width: 256.0,
+        content_height: 8.0,
+    });
+
+    let mut thumb_attrs = solid_fill_attrs((242, 246, 255));
+    thumb_attrs.border_radius = Some(BorderRadius::Uniform(999.0));
+    thumb_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        size: 10.0,
+        color: Color::Rgba {
+            r: 255,
+            g: 220,
+            b: 120,
+            a: 204,
+        },
+        inset: false,
+    }]);
+    let mut thumb = Element::with_attrs(thumb_id, ElementKind::El, Vec::new(), thumb_attrs);
+    thumb.layout.frame = Some(Frame {
+        x: 496.0,
+        y: 53.0,
+        width: 24.0,
+        height: 24.0,
+        content_width: 24.0,
+        content_height: 24.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(slider);
+    tree.insert(track);
+    tree.insert(filled);
+    tree.insert(thumb);
+
+    let trace = trace_tree(&tree);
+    let shadow = only_draw(&trace.draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+    assert!(
+        clip_scope_chain(&trace, shadow).is_empty(),
+        "thumb glow should not inherit the slider host clip"
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(560, 120, &tree);
+    assert!(
+        rgba_at(&pixels, 560, 524, 65).3 > 0,
+        "thumb glow should paint to the right of the slider frame"
+    );
+    assert!(
+        rgba_at(&pixels, 560, 508, 44).3 > 0,
+        "thumb glow should paint above the slider frame"
+    );
+}
+
+#[test]
 fn test_tree_clip_scope_does_not_clip_following_sibling_pixels() {
     let tree = build_two_child_tree(
         Attrs::default(),
@@ -1848,6 +2006,136 @@ fn test_render_rotated_root_keeps_nested_fill_column_content_visible() {
     assert_eq!(rgba_at(&pixels, 480, 180, 160), (0, 255, 0, 255));
 }
 
+fn rotated_slider_tree(value: f64) -> (ElementTree, NodeId) {
+    let root_id = NodeId::from_u64(911_000);
+    let slider_id = NodeId::from_u64(911_001);
+    let track_id = NodeId::from_u64(911_002);
+    let filled_id = NodeId::from_u64(911_003);
+    let thumb_id = NodeId::from_u64(911_004);
+
+    let mut root_attrs = solid_fill_attrs((10, 10, 10));
+    root_attrs.width = Some(Length::Px(96.0));
+    root_attrs.height = Some(Length::Px(228.0));
+    root_attrs.padding = Some(Padding::Uniform(14.0));
+
+    let mut slider_attrs = Attrs::default();
+    slider_attrs.width = Some(Length::Px(180.0));
+    slider_attrs.height = Some(Length::Px(38.0));
+    slider_attrs.align_x = Some(AlignX::Center);
+    slider_attrs.align_y = Some(AlignY::Center);
+    slider_attrs.layout_rotate = Some(-90.0);
+    slider_attrs.slider_min = Some(0.0);
+    slider_attrs.slider_max = Some(100.0);
+    slider_attrs.slider_value = Some(value);
+
+    let mut track_attrs = solid_fill_attrs((68, 84, 92));
+    track_attrs.height = Some(Length::Px(8.0));
+
+    let mut filled_attrs = solid_fill_attrs((126, 204, 176));
+    filled_attrs.height = Some(Length::Px(8.0));
+
+    let mut thumb_attrs = solid_fill_attrs((228, 252, 242));
+    thumb_attrs.width = Some(Length::Px(24.0));
+    thumb_attrs.height = Some(Length::Px(24.0));
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![slider_id];
+    let mut slider = Element::with_attrs(slider_id, ElementKind::Slider, Vec::new(), slider_attrs);
+    slider.children = vec![track_id, filled_id, thumb_id];
+    let track = Element::with_attrs(track_id, ElementKind::El, Vec::new(), track_attrs);
+    let filled = Element::with_attrs(filled_id, ElementKind::El, Vec::new(), filled_attrs);
+    let thumb = Element::with_attrs(thumb_id, ElementKind::El, Vec::new(), thumb_attrs);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(slider);
+    tree.insert(track);
+    tree.insert(filled);
+    tree.insert(thumb);
+    layout_tree_default(&mut tree, Constraint::new(96.0, 228.0), 1.0);
+    (tree, slider_id)
+}
+
+fn rotated_slider_child_center(
+    tree: &ElementTree,
+    slider_id: NodeId,
+    child_index: usize,
+) -> (u32, u32) {
+    let slider = tree.get(&slider_id).expect("slider should exist");
+    let child_id = slider
+        .children
+        .get(child_index)
+        .copied()
+        .expect("slider child should exist");
+    let child_frame = tree
+        .get(&child_id)
+        .and_then(|child| child.layout.frame)
+        .expect("slider child should have a frame");
+    let render_frame = slider
+        .layout
+        .render_frame
+        .expect("rotated slider should keep render frame");
+    let transform = element_transform(render_frame, &slider.layout.effective);
+    let point = transform.map_point(Point {
+        x: child_frame.x + child_frame.width / 2.0,
+        y: child_frame.y + child_frame.height / 2.0,
+    });
+
+    (point.x.round() as u32, point.y.round() as u32)
+}
+
+fn assert_rotated_slider_thumb_inside_render_frame(tree: &ElementTree, slider_id: NodeId) {
+    let slider = tree.get(&slider_id).expect("slider should exist");
+    let render_frame = slider
+        .layout
+        .render_frame
+        .expect("rotated slider should keep render frame");
+    let thumb_id = slider.children[2];
+    let thumb_frame = tree
+        .get(&thumb_id)
+        .and_then(|thumb| thumb.layout.frame)
+        .expect("thumb should have a frame");
+
+    assert!(thumb_frame.x >= render_frame.x);
+    assert!(thumb_frame.x + thumb_frame.width <= render_frame.x + render_frame.width);
+    assert!(thumb_frame.y >= render_frame.y);
+    assert!(thumb_frame.y + thumb_frame.height <= render_frame.y + render_frame.height);
+}
+
+#[test]
+fn test_render_rotated_slider_paints_track_and_thumb_near_range_edges() {
+    let (low_tree, low_slider_id) = rotated_slider_tree(0.0);
+    assert_rotated_slider_thumb_inside_render_frame(&low_tree, low_slider_id);
+    let (_low_output, low_pixels) = render_tree_to_pixels(96, 228, &low_tree);
+    let low_track = rotated_slider_child_center(&low_tree, low_slider_id, 0);
+    let low_thumb = rotated_slider_child_center(&low_tree, low_slider_id, 2);
+
+    assert_eq!(
+        rgba_at(&low_pixels, 96, low_thumb.0, low_thumb.1),
+        (228, 252, 242, 255)
+    );
+    assert_eq!(
+        rgba_at(&low_pixels, 96, low_track.0, low_track.1),
+        (68, 84, 92, 255)
+    );
+
+    let (high_tree, high_slider_id) = rotated_slider_tree(100.0);
+    assert_rotated_slider_thumb_inside_render_frame(&high_tree, high_slider_id);
+    let (_high_output, high_pixels) = render_tree_to_pixels(96, 228, &high_tree);
+    let high_filled = rotated_slider_child_center(&high_tree, high_slider_id, 1);
+    let high_thumb = rotated_slider_child_center(&high_tree, high_slider_id, 2);
+
+    assert_eq!(
+        rgba_at(&high_pixels, 96, high_thumb.0, high_thumb.1),
+        (228, 252, 242, 255)
+    );
+    assert_eq!(
+        rgba_at(&high_pixels, 96, high_filled.0, high_filled.1),
+        (126, 204, 176, 255)
+    );
+}
+
 #[test]
 fn test_render_earlier_child_escape_paints_after_later_normal_sibling() {
     let mut tree = build_two_child_tree(
@@ -2508,6 +2796,61 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
 }
 
 #[test]
+fn test_outer_shadow_escapes_nested_non_scrollable_ancestor_clips() {
+    let root_attrs = Attrs::default();
+    let parent_attrs = Attrs::default();
+    let mut child_attrs = Attrs::default();
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 8.0,
+        size: 4.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let tree = build_nested_child_tree(
+        root_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 80.0,
+            content_width: 120.0,
+            content_height: 80.0,
+        },
+        parent_attrs,
+        Frame {
+            x: 16.0,
+            y: 16.0,
+            width: 80.0,
+            height: 40.0,
+            content_width: 80.0,
+            content_height: 40.0,
+        },
+        child_attrs,
+        Frame {
+            x: 84.0,
+            y: 20.0,
+            width: 24.0,
+            height: 20.0,
+            content_width: 24.0,
+            content_height: 20.0,
+        },
+    );
+
+    let trace = trace_tree(&tree);
+    let shadow = only_draw(&trace.draws, |draw| {
+        matches!(draw.primitive, DrawPrimitive::Shadow(..))
+    });
+
+    assert!(
+        clip_scope_chain(&trace, shadow).is_empty(),
+        "outer shadow should bleed through every non-scroll ancestor clip"
+    );
+}
+
+#[test]
 fn test_outer_shadow_bleeds_into_parent_padding() {
     let mut parent_attrs = Attrs::default();
     parent_attrs.padding = Some(Padding::Uniform(10.0));
@@ -2565,6 +2908,61 @@ fn test_outer_shadow_bleeds_into_parent_padding() {
     assert_eq!(
         outside.3, 0,
         "pixels outside the outer shadow halo should stay transparent"
+    );
+}
+
+#[test]
+fn test_outer_shadow_bleeds_into_parent_top_and_right_padding() {
+    let mut parent_attrs = Attrs::default();
+    parent_attrs.padding = Some(Padding::Uniform(10.0));
+
+    let mut child_attrs = Attrs::default();
+    child_attrs.background = Some(Background::Color(Color::Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    }));
+    child_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        size: 4.0,
+        color: Color::Named("black".to_string()),
+        inset: false,
+    }]);
+
+    let tree = build_tree_with_child_frame(
+        parent_attrs,
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 60.0,
+            height: 30.0,
+            content_width: 60.0,
+            content_height: 30.0,
+        },
+        child_attrs,
+        Frame {
+            x: 30.0,
+            y: 10.0,
+            width: 20.0,
+            height: 10.0,
+            content_width: 20.0,
+            content_height: 10.0,
+        },
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(60, 30, &tree);
+    let top_padding_shadow = rgba_at(&pixels, 60, 40, 8);
+    let right_padding_shadow = rgba_at(&pixels, 60, 52, 14);
+
+    assert!(
+        top_padding_shadow.3 > 0,
+        "outer shadow should remain visible in the parent's top padding"
+    );
+    assert!(
+        right_padding_shadow.3 > 0,
+        "outer shadow should remain visible in the parent's right padding"
     );
 }
 

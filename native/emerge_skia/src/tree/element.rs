@@ -63,6 +63,13 @@ pub enum TextInputContentOrigin {
     TreePatch,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SliderValueOrigin {
+    Event,
+    #[default]
+    TreePatch,
+}
+
 /// The type/kind of an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementKind {
@@ -74,6 +81,7 @@ pub enum ElementKind {
     Text,
     TextInput,
     Multiline,
+    Slider,
     Image,
     Video,
     None,
@@ -96,6 +104,7 @@ impl ElementKind {
             10 => Some(Self::TextInput),
             11 => Some(Self::Video),
             12 => Some(Self::Multiline),
+            13 => Some(Self::Slider),
             _ => None,
         }
     }
@@ -209,6 +218,10 @@ pub struct ResolveAttrs {
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
+    pub slider_min: Option<f64>,
+    pub slider_max: Option<f64>,
+    pub slider_value: Option<f64>,
+    pub slider_step: Option<f64>,
     pub text_align: Option<TextAlign>,
     pub snap_layout: Option<bool>,
     pub snap_text_metrics: Option<bool>,
@@ -305,6 +318,10 @@ pub struct SubtreeMeasureAttrs {
     pub image_src: Option<ImageSource>,
     pub image_fit: Option<ImageFit>,
     pub image_size: Option<(f64, f64)>,
+    pub slider_min: Option<f64>,
+    pub slider_max: Option<f64>,
+    pub slider_value: Option<f64>,
+    pub slider_step: Option<f64>,
     pub text_align: Option<TextAlign>,
     pub snap_layout: Option<bool>,
     pub snap_text_metrics: Option<bool>,
@@ -615,6 +632,8 @@ pub struct NodeRuntime {
     pub text_input_selection_anchor: Option<u32>,
     pub text_input_preedit: Option<String>,
     pub text_input_preedit_cursor: Option<(u32, u32)>,
+    pub slider_value_origin: SliderValueOrigin,
+    pub slider_patch_value: Option<u64>,
 
     pub mouse_over_active: bool,
     pub mouse_down_active: bool,
@@ -796,6 +815,8 @@ impl Element {
                 text_input_preedit_cursor: attrs.text_input_preedit_cursor,
                 #[cfg(not(test))]
                 text_input_preedit_cursor: None,
+                slider_value_origin: SliderValueOrigin::TreePatch,
+                slider_patch_value: None,
                 #[cfg(test)]
                 mouse_over_active: attrs.mouse_over_active.unwrap_or(false),
                 #[cfg(not(test))]
@@ -964,6 +985,11 @@ impl Element {
             self.runtime.text_input_selection_anchor = None;
             self.runtime.text_input_preedit = None;
             self.runtime.text_input_preedit_cursor = None;
+        }
+
+        if self.spec.kind != ElementKind::Slider {
+            self.runtime.slider_value_origin = SliderValueOrigin::TreePatch;
+            self.runtime.slider_patch_value = None;
         }
 
         self.runtime.scrollbar_hover_axis = match self.runtime.scrollbar_hover_axis {
@@ -3116,6 +3142,45 @@ impl ElementTree {
         invalidation
     }
 
+    pub fn set_slider_value(&mut self, id: &NodeId, value: f64) -> TreeInvalidation {
+        let changed = {
+            let Some(element) = self.get_mut(id) else {
+                return TreeInvalidation::None;
+            };
+
+            if element.spec.kind != ElementKind::Slider {
+                return TreeInvalidation::None;
+            }
+
+            let value = normalize_slider_value(&element.layout.effective, value);
+            let prev_base = element.spec.declared.slider_value.unwrap_or(0.0);
+            let prev_attrs = element.layout.effective.slider_value.unwrap_or(0.0);
+            let mut changed =
+                !f64_values_equal(prev_base, value) || !f64_values_equal(prev_attrs, value);
+
+            element.spec.declared.slider_value = Some(value);
+            element.layout.effective.slider_value = Some(value);
+
+            if element.runtime.slider_patch_value.take().is_some() {
+                changed = true;
+            }
+
+            if element.runtime.slider_value_origin != SliderValueOrigin::Event {
+                element.runtime.slider_value_origin = SliderValueOrigin::Event;
+                changed = true;
+            }
+
+            changed
+        };
+
+        if changed {
+            self.mark_measure_dirty(id);
+            TreeInvalidation::Measure
+        } else {
+            TreeInvalidation::None
+        }
+    }
+
     fn apply_scroll_axis(&mut self, id: &NodeId, delta: f32, axis: ScrollAxis) -> TreeInvalidation {
         let Some(element) = self.get_mut(id) else {
             return TreeInvalidation::None;
@@ -3249,6 +3314,36 @@ fn text_char_len(content: &str) -> u32 {
     content.chars().count() as u32
 }
 
+fn normalize_slider_value(attrs: &Attrs, value: f64) -> f64 {
+    let (min, max) = slider_range(attrs);
+    let clamped = if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        min
+    };
+    let step = attrs.slider_step.unwrap_or(0.0);
+    if !step.is_finite() || step <= 0.0 {
+        return clamped;
+    }
+
+    let units = ((clamped - min) / step).round();
+    (min + units * step).clamp(min, max)
+}
+
+fn slider_range(attrs: &Attrs) -> (f64, f64) {
+    let min = attrs.slider_min.unwrap_or(0.0);
+    let max = attrs.slider_max.unwrap_or(1.0);
+    if min.is_finite() && max.is_finite() && max > min {
+        (min, max)
+    } else {
+        (0.0, 1.0)
+    }
+}
+
+fn f64_values_equal(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits() || (left - right).abs() <= f64::EPSILON
+}
+
 fn normalize_preedit_cursor(text: Option<&str>, cursor: Option<(u32, u32)>) -> Option<(u32, u32)> {
     let text_len = text.map(text_char_len)?;
     let (mut start, mut end) = cursor?;
@@ -3279,6 +3374,7 @@ mod tests {
         assert_eq!(ElementKind::from_tag(10), Some(ElementKind::TextInput));
         assert_eq!(ElementKind::from_tag(11), Some(ElementKind::Video));
         assert_eq!(ElementKind::from_tag(12), Some(ElementKind::Multiline));
+        assert_eq!(ElementKind::from_tag(13), Some(ElementKind::Slider));
     }
 
     #[test]

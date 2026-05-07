@@ -86,14 +86,20 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         ctx.visible_clip
     };
     let host_clip = scene.host_clip.offset(ctx.scroll_dx, ctx.scroll_dy);
-    let child_visible_clip = inherited_clip
-        .map(|clip| super::geometry::intersect_clip(Some(clip), host_clip))
-        .unwrap_or(host_clip);
+    let local_transform = element_transform(adjusted_render_frame, &element.layout.effective);
+    let child_visible_clip = if local_transform.is_identity() {
+        inherited_clip
+            .map(|clip| super::geometry::intersect_clip(Some(clip), host_clip))
+            .unwrap_or(host_clip)
+    } else {
+        host_clip
+    };
     let nearby_visible_clip = if clip_nearby {
-        Some(super::geometry::intersect_clip(
-            ctx.nearby_visible_clip,
-            host_clip,
-        ))
+        Some(if local_transform.is_identity() {
+            super::geometry::intersect_clip(ctx.nearby_visible_clip, host_clip)
+        } else {
+            host_clip
+        })
     } else {
         ctx.nearby_visible_clip
     };
@@ -104,7 +110,6 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     let scrollbar_y = scene
         .scrollbar_y
         .map(|metrics| offset_scrollbar_metrics(metrics, &ctx));
-    let local_transform = element_transform(adjusted_render_frame, &element.layout.effective);
     let interaction_transform = ctx.interaction_transform.then(local_transform);
     let interaction_inverse = interaction_transform.inverse();
     let visible = visible_in_inherited_clip(
