@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1] - 2026-05-07
+
+### Added
+
+- Added first-class `Emerge.UI.Input.slider/2` with native pointer, keyboard, focus, and custom track/thumb support.
+
+### Changed
+
+- Converged macOS and native runtime update paths around shared tree update processing, input normalization, presentation timing, cursor state, and render timing stats.
+
+### Fixed
+
+- Fixed macOS `mouse_over` behavior so hover-driven state and cursor updates refresh correctly.
+
 ## [0.3.0] - 2026-05-06
 
 ### Added
