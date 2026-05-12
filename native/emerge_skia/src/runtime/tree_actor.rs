@@ -277,10 +277,12 @@ mod tests {
 
     fn fixed_listener_tree(id: NodeId) -> ElementTree {
         let attrs_raw = fixed_listener_attrs_raw();
-        let mut attrs = Attrs::default();
-        attrs.width = Some(Length::Px(64.0));
-        attrs.height = Some(Length::Px(32.0));
-        attrs.on_mouse_move = Some(true);
+        let attrs = Attrs {
+            width: Some(Length::Px(64.0)),
+            height: Some(Length::Px(32.0)),
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        };
         single_node_tree(id, attrs_raw, attrs)
     }
 

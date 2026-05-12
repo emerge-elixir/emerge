@@ -8,7 +8,7 @@ use crate::{
     render_scene::RenderSceneSummary,
     renderer::{
         RenderDrawTimings, RenderImageDrawProfile, RenderShadowDrawProfile, RenderTimings,
-        RendererCacheFrameStats, RendererCacheKindFrameStats,
+        RendererCacheFrameStats, RendererCachePaintLayerFrameStats,
     },
 };
 
@@ -218,24 +218,26 @@ impl RendererStatsSnapshot {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RendererCacheStatsSnapshot {
-    pub noop: RendererCacheKindStatsSnapshot,
-    pub clean_subtree: RendererCacheKindStatsSnapshot,
+    pub paint_layer: RendererCachePaintLayerStatsSnapshot,
 }
 
 impl RendererCacheStatsSnapshot {
     pub fn is_empty(&self) -> bool {
-        self.noop.is_empty() && self.clean_subtree.is_empty()
+        self.paint_layer.is_empty()
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct RendererCacheKindStatsSnapshot {
+pub struct RendererCachePaintLayerStatsSnapshot {
     pub candidates: u64,
     pub visible_candidates: u64,
+
     pub suppressed_by_parent: u64,
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
+    pub moved_hits: u64,
+    pub moved_misses: u64,
     pub stores: u64,
     pub evictions: u64,
     pub stale_evictions: u64,
@@ -255,11 +257,17 @@ pub struct RendererCacheKindStatsSnapshot {
     pub rejected_admission: u64,
     pub rejected_oversized: u64,
     pub rejected_payload_budget: u64,
+    pub rejected_fractional_placement: u64,
+    pub rejected_unsupported_transform: u64,
     pub prepare: DurationStatsSnapshot,
     pub draw_hit: DurationStatsSnapshot,
+    pub payload_copy: DurationStatsSnapshot,
+    pub dirty_draw: DurationStatsSnapshot,
+    pub child_layer: DurationStatsSnapshot,
+    pub direct_fallback: DurationStatsSnapshot,
 }
 
-impl RendererCacheKindStatsSnapshot {
+impl RendererCachePaintLayerStatsSnapshot {
     pub fn is_empty(&self) -> bool {
         self.candidates == 0
             && self.visible_candidates == 0
@@ -267,6 +275,8 @@ impl RendererCacheKindStatsSnapshot {
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
+            && self.moved_hits == 0
+            && self.moved_misses == 0
             && self.stores == 0
             && self.evictions == 0
             && self.stale_evictions == 0
@@ -286,8 +296,14 @@ impl RendererCacheKindStatsSnapshot {
             && self.rejected_admission == 0
             && self.rejected_oversized == 0
             && self.rejected_payload_budget == 0
+            && self.rejected_fractional_placement == 0
+            && self.rejected_unsupported_transform == 0
             && self.prepare.count == 0
             && self.draw_hit.count == 0
+            && self.payload_copy.count == 0
+            && self.dirty_draw.count == 0
+            && self.child_layer.count == 0
+            && self.direct_fallback.count == 0
     }
 }
 
@@ -321,6 +337,22 @@ impl DurationStatsWindow {
         self.total_ns = self.total_ns.saturating_add(u128::from(ns));
         self.min_ns = Some(self.min_ns.map(|current| current.min(ns)).unwrap_or(ns));
         self.max_ns = self.max_ns.max(ns);
+    }
+
+    fn record_many(&mut self, total: Duration, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let total_ns = total.as_nanos();
+        let avg_ns = (total_ns / u128::from(count)).min(u128::from(u64::MAX)) as u64;
+        self.count = self.count.saturating_add(count);
+        self.total_ns = self.total_ns.saturating_add(total_ns);
+        self.min_ns = Some(
+            self.min_ns
+                .map(|current| current.min(avg_ns))
+                .unwrap_or(avg_ns),
+        );
+        self.max_ns = self.max_ns.max(avg_ns);
     }
 
     fn snapshot(&self) -> DurationStatsSnapshot {
@@ -416,32 +448,32 @@ impl RendererStatsWindow {
 
 #[derive(Default)]
 struct RendererCacheStatsWindow {
-    noop: RendererCacheKindStatsWindow,
-    clean_subtree: RendererCacheKindStatsWindow,
+    paint_layer: RendererCachePaintLayerStatsWindow,
 }
 
 impl RendererCacheStatsWindow {
     fn record(&mut self, stats: RendererCacheFrameStats) {
-        self.noop.record(stats.noop);
-        self.clean_subtree.record(stats.clean_subtree);
+        self.paint_layer.record(stats.paint_layer);
     }
 
     fn snapshot(&self) -> RendererCacheStatsSnapshot {
         RendererCacheStatsSnapshot {
-            noop: self.noop.snapshot(),
-            clean_subtree: self.clean_subtree.snapshot(),
+            paint_layer: self.paint_layer.snapshot(),
         }
     }
 }
 
 #[derive(Default)]
-struct RendererCacheKindStatsWindow {
+struct RendererCachePaintLayerStatsWindow {
     candidates: u64,
     visible_candidates: u64,
+
     suppressed_by_parent: u64,
     admitted: u64,
     hits: u64,
     misses: u64,
+    moved_hits: u64,
+    moved_misses: u64,
     stores: u64,
     evictions: u64,
     stale_evictions: u64,
@@ -461,12 +493,18 @@ struct RendererCacheKindStatsWindow {
     rejected_admission: u64,
     rejected_oversized: u64,
     rejected_payload_budget: u64,
+    rejected_fractional_placement: u64,
+    rejected_unsupported_transform: u64,
     prepare: DurationStatsWindow,
     draw_hit: DurationStatsWindow,
+    payload_copy: DurationStatsWindow,
+    dirty_draw: DurationStatsWindow,
+    child_layer: DurationStatsWindow,
+    direct_fallback: DurationStatsWindow,
 }
 
-impl RendererCacheKindStatsWindow {
-    fn record(&mut self, stats: RendererCacheKindFrameStats) {
+impl RendererCachePaintLayerStatsWindow {
+    fn record(&mut self, stats: RendererCachePaintLayerFrameStats) {
         self.candidates = self.candidates.saturating_add(stats.candidates);
         self.visible_candidates = self
             .visible_candidates
@@ -477,6 +515,8 @@ impl RendererCacheKindStatsWindow {
         self.admitted = self.admitted.saturating_add(stats.admitted);
         self.hits = self.hits.saturating_add(stats.hits);
         self.misses = self.misses.saturating_add(stats.misses);
+        self.moved_hits = self.moved_hits.saturating_add(stats.moved_hits);
+        self.moved_misses = self.moved_misses.saturating_add(stats.moved_misses);
         self.stores = self.stores.saturating_add(stats.stores);
         self.evictions = self.evictions.saturating_add(stats.evictions);
         self.stale_evictions = self.stale_evictions.saturating_add(stats.stale_evictions);
@@ -514,24 +554,46 @@ impl RendererCacheKindStatsWindow {
         self.rejected_payload_budget = self
             .rejected_payload_budget
             .saturating_add(stats.rejected_payload_budget);
+        self.rejected_fractional_placement = self
+            .rejected_fractional_placement
+            .saturating_add(stats.rejected_fractional_placement);
+        self.rejected_unsupported_transform = self
+            .rejected_unsupported_transform
+            .saturating_add(stats.rejected_unsupported_transform);
 
-        if stats.stores > 0 {
-            self.prepare.record(stats.prepare_time);
+        if stats.prepare_successes > 0 {
+            self.prepare
+                .record_many(stats.prepare_time, stats.prepare_successes);
         }
 
         if stats.hits > 0 {
-            self.draw_hit.record(stats.draw_hit_time);
+            self.draw_hit.record_many(stats.draw_hit_time, stats.hits);
+        }
+
+        if !stats.payload_copy_time.is_zero() {
+            self.payload_copy.record(stats.payload_copy_time);
+        }
+        if !stats.dirty_draw_time.is_zero() {
+            self.dirty_draw.record(stats.dirty_draw_time);
+        }
+        if !stats.child_layer_time.is_zero() {
+            self.child_layer.record(stats.child_layer_time);
+        }
+        if !stats.direct_fallback_time.is_zero() {
+            self.direct_fallback.record(stats.direct_fallback_time);
         }
     }
 
-    fn snapshot(&self) -> RendererCacheKindStatsSnapshot {
-        RendererCacheKindStatsSnapshot {
+    fn snapshot(&self) -> RendererCachePaintLayerStatsSnapshot {
+        RendererCachePaintLayerStatsSnapshot {
             candidates: self.candidates,
             visible_candidates: self.visible_candidates,
             suppressed_by_parent: self.suppressed_by_parent,
             admitted: self.admitted,
             hits: self.hits,
             misses: self.misses,
+            moved_hits: self.moved_hits,
+            moved_misses: self.moved_misses,
             stores: self.stores,
             evictions: self.evictions,
             stale_evictions: self.stale_evictions,
@@ -551,8 +613,14 @@ impl RendererCacheKindStatsWindow {
             rejected_admission: self.rejected_admission,
             rejected_oversized: self.rejected_oversized,
             rejected_payload_budget: self.rejected_payload_budget,
+            rejected_fractional_placement: self.rejected_fractional_placement,
+            rejected_unsupported_transform: self.rejected_unsupported_transform,
             prepare: self.prepare.snapshot(),
             draw_hit: self.draw_hit.snapshot(),
+            payload_copy: self.payload_copy.snapshot(),
+            dirty_draw: self.dirty_draw.snapshot(),
+            child_layer: self.child_layer.snapshot(),
+            direct_fallback: self.direct_fallback.snapshot(),
         }
     }
 }
@@ -906,25 +974,31 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
     );
 
     message.push_str("\n\n  renderer cache\n");
-    if !snapshot.renderer_cache.noop.is_empty() {
-        message.push_str(&format_renderer_cache_kind_line(
-            "noop",
-            &snapshot.renderer_cache.noop,
-            snapshot.frame_count,
-        ));
-    }
+    let paint_layer = combined_renderer_cache_snapshot(&snapshot.renderer_cache);
     message.push_str(&format_renderer_cache_kind_line(
-        "clean_subtree",
-        &snapshot.renderer_cache.clean_subtree,
+        "paint_layer",
+        &paint_layer,
         snapshot.frame_count,
     ));
 
     message
 }
 
+fn combined_renderer_cache_snapshot(
+    stats: &RendererCacheStatsSnapshot,
+) -> RendererCachePaintLayerStatsSnapshot {
+    stats.paint_layer.clone()
+}
+
+fn combined_renderer_cache_frame_stats(
+    stats: &RendererCacheFrameStats,
+) -> RendererCachePaintLayerFrameStats {
+    stats.paint_layer
+}
+
 fn format_renderer_cache_kind_line(
     label: &str,
-    stats: &RendererCacheKindStatsSnapshot,
+    stats: &RendererCachePaintLayerStatsSnapshot,
     frame_count: u64,
 ) -> String {
     let unknown_payloads = stats.current_entries.saturating_sub(
@@ -939,17 +1013,8 @@ fn format_renderer_cache_kind_line(
             count as f64 / frame_count as f64
         }
     };
-    format!(
-        concat!(
-            "    {}\n",
-            "      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
-            "      per_frame: candidates={:.2} visible={:.2} hits={:.2} misses={:.2} stores={:.2} rejected={:.2}\n",
-            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
-            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
-            "      prepare: success={} failure={} avg={:.3} ms count={}\n",
-            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
-            "      hit_draw: avg={:.3} ms count={}\n"
-        ),
+    let mut message = format!(
+        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
         label,
         stats.candidates,
         stats.visible_candidates,
@@ -961,6 +1026,22 @@ fn format_renderer_cache_kind_line(
         stats.evictions,
         stats.stale_evictions,
         stats.rejected,
+    );
+    if stats.moved_hits > 0 || stats.moved_misses > 0 {
+        message.push_str(&format!(
+            "      placement: moved_hits={} moved_misses={}\n",
+            stats.moved_hits, stats.moved_misses,
+        ));
+    }
+    message.push_str(&format!(
+        concat!(
+            "      per_frame: candidates={:.2} visible={:.2} hits={:.2} misses={:.2} stores={:.2} rejected={:.2}\n",
+            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
+            "      prepare: success={} failure={} avg={:.3} ms count={}\n",
+            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={} fractional_placement={} unsupported_transform={}}}\n",
+            "      hit_draw: avg={:.3} ms count={}\n"
+        ),
         per_frame(stats.candidates),
         per_frame(stats.visible_candidates),
         per_frame(stats.hits),
@@ -985,9 +1066,29 @@ fn format_renderer_cache_kind_line(
         stats.rejected_admission,
         stats.rejected_oversized,
         stats.rejected_payload_budget,
+        stats.rejected_fractional_placement,
+        stats.rejected_unsupported_transform,
         stats.draw_hit.avg_ms,
         stats.draw_hit.count,
-    )
+    ));
+    if stats.payload_copy.count > 0
+        || stats.dirty_draw.count > 0
+        || stats.child_layer.count > 0
+        || stats.direct_fallback.count > 0
+    {
+        message.push_str(&format!(
+            "      draw_split: payload_copy avg={:.3} ms count={} dynamic_draw avg={:.3} ms count={} child_layer avg={:.3} ms count={} direct_fallback avg={:.3} ms count={}\n",
+            stats.payload_copy.avg_ms,
+            stats.payload_copy.count,
+            stats.dirty_draw.avg_ms,
+            stats.dirty_draw.count,
+            stats.child_layer.avg_ms,
+            stats.child_layer.count,
+            stats.direct_fallback.avg_ms,
+            stats.direct_fallback.count,
+        ));
+    }
+    message
 }
 
 pub fn format_slow_render_frame_log(
@@ -1032,35 +1133,25 @@ fn format_renderer_cache_frame_detail(stats: Option<&RendererCacheFrameStats>) -
     };
 
     let mut message = String::from("  renderer cache\n");
-    if !stats.noop.is_empty() {
-        message.push_str(&format_renderer_cache_kind_frame_line("noop", &stats.noop));
-    }
+    let paint_layer = combined_renderer_cache_frame_stats(stats);
     message.push_str(&format_renderer_cache_kind_frame_line(
-        "clean_subtree",
-        &stats.clean_subtree,
+        "paint_layer",
+        &paint_layer,
     ));
     message
 }
 
 fn format_renderer_cache_kind_frame_line(
     label: &str,
-    stats: &RendererCacheKindFrameStats,
+    stats: &RendererCachePaintLayerFrameStats,
 ) -> String {
     let unknown_payloads = stats.current_entries.saturating_sub(
         stats
             .current_gpu_payloads
             .saturating_add(stats.current_cpu_payloads),
     );
-    format!(
-        concat!(
-            "    {}\n",
-            "      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
-            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
-            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
-            "      prepare: success={} failure={} time={:.3} ms\n",
-            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={}}}\n",
-            "      hit_draw: time={:.3} ms\n"
-        ),
+    let mut message = format!(
+        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
         label,
         stats.candidates,
         stats.visible_candidates,
@@ -1072,6 +1163,21 @@ fn format_renderer_cache_kind_frame_line(
         stats.evictions,
         stats.stale_evictions,
         stats.rejected,
+    );
+    if stats.moved_hits > 0 || stats.moved_misses > 0 {
+        message.push_str(&format!(
+            "      placement: moved_hits={} moved_misses={}\n",
+            stats.moved_hits, stats.moved_misses,
+        ));
+    }
+    message.push_str(&format!(
+        concat!(
+            "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
+            "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
+            "      prepare: success={} failure={} time={:.3} ms\n",
+            "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={} fractional_placement={} unsupported_transform={}}}\n",
+            "      hit_draw: time={:.3} ms\n"
+        ),
         stats.current_entries,
         stats.current_bytes,
         stats.current_gpu_payloads,
@@ -1089,8 +1195,24 @@ fn format_renderer_cache_kind_frame_line(
         stats.rejected_admission,
         stats.rejected_oversized,
         stats.rejected_payload_budget,
+        stats.rejected_fractional_placement,
+        stats.rejected_unsupported_transform,
         duration_ms(stats.draw_hit_time),
-    )
+    ));
+    if !stats.payload_copy_time.is_zero()
+        || !stats.dirty_draw_time.is_zero()
+        || !stats.child_layer_time.is_zero()
+        || !stats.direct_fallback_time.is_zero()
+    {
+        message.push_str(&format!(
+            "      draw_split: payload_copy={:.3} ms dynamic_draw={:.3} ms child_layer={:.3} ms direct_fallback={:.3} ms\n",
+            duration_ms(stats.payload_copy_time),
+            duration_ms(stats.dirty_draw_time),
+            duration_ms(stats.child_layer_time),
+            duration_ms(stats.direct_fallback_time),
+        ));
+    }
+    message
 }
 
 pub fn format_slow_present_frame_log(
@@ -1327,7 +1449,7 @@ mod tests {
             RenderBorderDrawSummary, RenderClipDrawSummary, RenderDrawTimings,
             RenderImageAssetKind, RenderImageDrawProfile, RenderLayerDrawSummary,
             RenderShadowDrawPath, RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
-            RendererCacheKindFrameStats,
+            RendererCachePaintLayerFrameStats,
         },
     };
     use std::time::{Duration, Instant};
@@ -1377,36 +1499,31 @@ mod tests {
         stats.record_event_resolve(Duration::from_millis(1));
         stats.record_patch_tree_process(Duration::from_millis(9));
         stats.record_renderer_cache(RendererCacheFrameStats {
-            noop: RendererCacheKindFrameStats {
-                candidates: 2,
-                visible_candidates: 1,
-                admitted: 1,
+            paint_layer: RendererCachePaintLayerFrameStats {
+                candidates: 6,
+                visible_candidates: 5,
+                admitted: 2,
                 hits: 1,
                 misses: 1,
-                stores: 1,
-                current_entries: 1,
-                current_bytes: 128,
-                current_cpu_payloads: 1,
-                cpu_payload_stores: 1,
-                prepare_successes: 1,
-                prepare_time: Duration::from_micros(20),
-                draw_hit_time: Duration::from_micros(10),
-                ..RendererCacheKindFrameStats::default()
-            },
-            clean_subtree: RendererCacheKindFrameStats {
-                candidates: 4,
-                visible_candidates: 4,
-                admitted: 1,
-                stores: 1,
+                stores: 2,
                 evictions: 1,
-                current_entries: 1,
-                current_bytes: 512,
+                rejected: 1,
+                current_entries: 2,
+                current_bytes: 640,
                 current_gpu_payloads: 1,
+                current_cpu_payloads: 1,
                 evicted_bytes: 128,
                 gpu_payload_stores: 1,
-                prepare_successes: 1,
-                prepare_time: Duration::from_micros(30),
-                ..RendererCacheKindFrameStats::default()
+                cpu_payload_stores: 1,
+                prepare_successes: 2,
+                rejected_ineligible: 1,
+                prepare_time: Duration::from_micros(50),
+                draw_hit_time: Duration::from_micros(10),
+                payload_copy_time: Duration::from_micros(4),
+                dirty_draw_time: Duration::from_micros(5),
+                child_layer_time: Duration::from_micros(6),
+                direct_fallback_time: Duration::from_micros(7),
+                ..RendererCachePaintLayerFrameStats::default()
             },
         });
         stats.record_layout_cache(LayoutCacheStats {
@@ -1527,34 +1644,37 @@ mod tests {
         );
         assert_eq!(snapshot.layout_cache.resolve_hits, 5);
         assert_eq!(snapshot.layout_cache.subtree_measure_hits, 3);
-        assert_eq!(snapshot.renderer_cache.noop.candidates, 2);
-        assert_eq!(snapshot.renderer_cache.noop.visible_candidates, 1);
-        assert_eq!(snapshot.renderer_cache.noop.cpu_payload_stores, 1);
-        assert_eq!(snapshot.renderer_cache.noop.prepare_successes, 1);
-        assert_eq!(snapshot.renderer_cache.noop.prepare.count, 1);
-        assert_eq!(snapshot.renderer_cache.noop.prepare.avg_ms, 0.02);
-        assert_eq!(snapshot.renderer_cache.noop.draw_hit.count, 1);
-        assert_eq!(snapshot.renderer_cache.noop.draw_hit.avg_ms, 0.01);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.candidates, 4);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.visible_candidates, 4);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.stores, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.evictions, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.current_entries, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.current_bytes, 512);
+        assert_eq!(snapshot.renderer_cache.paint_layer.candidates, 6);
+        assert_eq!(snapshot.renderer_cache.paint_layer.visible_candidates, 5);
+        assert_eq!(snapshot.renderer_cache.paint_layer.current_entries, 2);
+        assert_eq!(snapshot.renderer_cache.paint_layer.current_bytes, 640);
+        assert_eq!(snapshot.renderer_cache.paint_layer.current_gpu_payloads, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.current_cpu_payloads, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.evicted_bytes, 128);
+        assert_eq!(snapshot.renderer_cache.paint_layer.gpu_payload_stores, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.cpu_payload_stores, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.prepare_successes, 2);
+        assert_eq!(snapshot.renderer_cache.paint_layer.prepare.count, 2);
+        assert_eq!(snapshot.renderer_cache.paint_layer.prepare.avg_ms, 0.025);
+        assert_eq!(snapshot.renderer_cache.paint_layer.draw_hit.count, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.draw_hit.avg_ms, 0.01);
+        assert_eq!(snapshot.renderer_cache.paint_layer.payload_copy.count, 1);
         assert_eq!(
-            snapshot.renderer_cache.clean_subtree.current_gpu_payloads,
-            1
+            snapshot.renderer_cache.paint_layer.payload_copy.avg_ms,
+            0.004
         );
+        assert_eq!(snapshot.renderer_cache.paint_layer.dirty_draw.count, 1);
+        assert_eq!(snapshot.renderer_cache.paint_layer.dirty_draw.avg_ms, 0.005);
+        assert_eq!(snapshot.renderer_cache.paint_layer.child_layer.count, 1);
         assert_eq!(
-            snapshot.renderer_cache.clean_subtree.current_cpu_payloads,
-            0
+            snapshot.renderer_cache.paint_layer.child_layer.avg_ms,
+            0.006
         );
-        assert_eq!(snapshot.renderer_cache.clean_subtree.evicted_bytes, 128);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.gpu_payload_stores, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare_successes, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare.count, 1);
-        assert_eq!(snapshot.renderer_cache.clean_subtree.prepare.avg_ms, 0.03);
-
+        assert_eq!(snapshot.renderer_cache.paint_layer.direct_fallback.count, 1);
+        assert_eq!(
+            snapshot.renderer_cache.paint_layer.direct_fallback.avg_ms,
+            0.007
+        );
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
         assert_eq!(reset_snapshot.display_frame_ms, 16.0);
@@ -1641,8 +1761,8 @@ mod tests {
             0
         );
         assert_eq!(reset_snapshot.layout_cache.resolve_hits, 0);
-        assert_eq!(reset_snapshot.renderer_cache.noop.candidates, 0);
-        assert_eq!(reset_snapshot.renderer_cache.clean_subtree.candidates, 0);
+        assert_eq!(reset_snapshot.renderer_cache.paint_layer.candidates, 0);
+        assert_eq!(reset_snapshot.renderer_cache.paint_layer.candidates, 0);
     }
 
     #[test]
@@ -1743,42 +1863,33 @@ mod tests {
         stats.record_event_resolve(Duration::from_millis(2));
         stats.record_patch_tree_process(Duration::from_millis(7));
         stats.record_renderer_cache(RendererCacheFrameStats {
-            noop: RendererCacheKindFrameStats {
-                candidates: 3,
-                visible_candidates: 2,
-                admitted: 1,
+            paint_layer: RendererCachePaintLayerFrameStats {
+                candidates: 8,
+                visible_candidates: 7,
+                admitted: 3,
                 hits: 1,
-                misses: 1,
-                stores: 1,
-                rejected: 1,
-                current_entries: 1,
-                current_bytes: 256,
-                current_cpu_payloads: 1,
-                cpu_payload_stores: 1,
-                prepare_successes: 1,
-                rejected_ineligible: 1,
-                prepare_time: Duration::from_micros(40),
-                draw_hit_time: Duration::from_micros(12),
-                ..RendererCacheKindFrameStats::default()
-            },
-            clean_subtree: RendererCacheKindFrameStats {
-                candidates: 5,
-                visible_candidates: 5,
-                admitted: 2,
-                misses: 1,
-                stores: 1,
+                misses: 2,
+                stores: 2,
                 evictions: 1,
-                rejected: 1,
-                current_entries: 1,
-                current_bytes: 512,
+                rejected: 2,
+                current_entries: 2,
+                current_bytes: 768,
                 current_gpu_payloads: 1,
+                current_cpu_payloads: 1,
                 evicted_bytes: 128,
                 gpu_payload_stores: 1,
-                prepare_successes: 1,
+                cpu_payload_stores: 1,
+                prepare_successes: 2,
                 direct_fallbacks_after_admission: 1,
+                rejected_ineligible: 1,
                 rejected_payload_budget: 1,
-                prepare_time: Duration::from_micros(50),
-                ..RendererCacheKindFrameStats::default()
+                prepare_time: Duration::from_micros(90),
+                draw_hit_time: Duration::from_micros(12),
+                payload_copy_time: Duration::from_micros(3),
+                dirty_draw_time: Duration::from_micros(4),
+                child_layer_time: Duration::from_micros(5),
+                direct_fallback_time: Duration::from_micros(6),
+                ..RendererCachePaintLayerFrameStats::default()
             },
         });
         stats.record_layout_cache(LayoutCacheStats {
@@ -1816,50 +1927,44 @@ mod tests {
         assert!(message.contains("    subtree measure:   hits=0 misses=0 stores=0"));
         assert!(message.contains("    resolve:           hits=11 misses=0 stores=0"));
         assert!(message.contains("  renderer cache\n"));
-        assert!(message.contains("    noop\n"));
+        assert!(message.contains("    paint_layer\n"));
         assert!(message.contains(
-            "activity: candidates=3 visible=2 suppressed_by_parent=0 admitted=1 hits=1 misses=1 stores=1 evictions=0 stale_evictions=0 rejected=1"
+            "activity: candidates=8 visible=7 suppressed_by_parent=0 admitted=3 hits=1 misses=2 stores=2 evictions=1 stale_evictions=0 rejected=2"
         ));
-        assert!(message.contains(
-            "per_frame: candidates=3.00 visible=2.00 hits=1.00 misses=1.00 stores=1.00 rejected=1.00"
-        ));
-        assert!(message.contains("resident: entries=1 bytes=256 payloads={gpu=0 cpu=1 unknown=0}"));
+        assert!(!message.contains("layers: selected="));
+        assert!(!message.contains("      layer_groups:\n"));
         assert!(
-            message.contains("store_payloads: gpu=0 cpu=1 evicted_bytes=0 stale_evicted_bytes=0")
+            message.contains("per_frame: candidates=8.00 visible=7.00 hits=1.00 misses=2.00 stores=2.00 rejected=2.00")
         );
-        assert!(message.contains("    clean_subtree\n"));
-        assert!(message.contains(
-            "activity: candidates=5 visible=5 suppressed_by_parent=0 admitted=2 hits=0 misses=1 stores=1 evictions=1 stale_evictions=0 rejected=1"
-        ));
-        assert!(message.contains(
-            "per_frame: candidates=5.00 visible=5.00 hits=0.00 misses=1.00 stores=1.00 rejected=1.00"
-        ));
-        assert!(message.contains("resident: entries=1 bytes=512 payloads={gpu=1 cpu=0 unknown=0}"));
+        assert!(message.contains("resident: entries=2 bytes=768 payloads={gpu=1 cpu=1 unknown=0}"));
         assert!(
-            message.contains("store_payloads: gpu=1 cpu=0 evicted_bytes=128 stale_evicted_bytes=0")
+            message.contains("store_payloads: gpu=1 cpu=1 evicted_bytes=128 stale_evicted_bytes=0")
         );
-        assert!(message.contains("prepare: success=1 failure=0 avg=0.050 ms count=1"));
-        assert!(message.contains("prepare: success=1 failure=0 avg=0.040 ms count=1"));
-        assert!(message.contains(
-            "fallback_after_admit=1 rejections={ineligible=0 admission=0 oversized=0 budget=1}"
-        ));
+        assert!(message.contains("prepare: success=2 failure=0 avg=0.045 ms count=2"));
+        assert!(message.contains("fallback_after_admit=1 rejections="));
         assert!(message.contains("hit_draw: avg=0.012 ms count=1"));
+        assert!(message.contains(
+            "draw_split: payload_copy avg=0.003 ms count=1 dynamic_draw avg=0.004 ms count=1 child_layer avg=0.005 ms count=1 direct_fallback avg=0.006 ms count=1"
+        ));
+        assert!(!message.contains("    shell\n"));
+        assert!(!message.contains("    moving_paint_layer\n"));
     }
 
     #[test]
-    fn log_format_includes_empty_clean_subtree_renderer_cache() {
+    fn log_format_includes_empty_paint_layer_renderer_cache() {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
 
         let message = format_renderer_stats_log("wayland", &stats.snapshot());
 
         assert!(message.contains("  renderer cache\n"));
-        assert!(message.contains("    clean_subtree\n"));
+        assert!(message.contains("    paint_layer\n"));
         assert!(
             message
                 .contains("activity: candidates=0 visible=0 suppressed_by_parent=0 admitted=0 hits=0 misses=0 stores=0")
         );
-        assert!(!message.contains("    noop\n"));
+        assert!(!message.contains("    shell\n"));
+        assert!(!message.contains("    moving_paint_layer\n"));
     }
 
     #[test]
@@ -2014,7 +2119,7 @@ mod tests {
             gpu_flush: Duration::from_micros(4_400),
             submit: Duration::from_micros(100),
             renderer_cache: Some(Box::new(RendererCacheFrameStats {
-                clean_subtree: RendererCacheKindFrameStats {
+                paint_layer: RendererCachePaintLayerFrameStats {
                     candidates: 1,
                     visible_candidates: 1,
                     admitted: 1,
@@ -2023,9 +2128,8 @@ mod tests {
                     current_bytes: 4096,
                     current_gpu_payloads: 1,
                     draw_hit_time: Duration::from_micros(9),
-                    ..RendererCacheKindFrameStats::default()
+                    ..RendererCachePaintLayerFrameStats::default()
                 },
-                ..RendererCacheFrameStats::default()
             })),
             ..RenderTimings::default()
         };
@@ -2033,7 +2137,7 @@ mod tests {
         let message = format_slow_render_frame_log("wayland", &timings, scene.summary());
 
         assert!(message.contains("  renderer cache\n"));
-        assert!(message.contains("    clean_subtree\n"));
+        assert!(message.contains("    paint_layer\n"));
         assert!(
             message
                 .contains("activity: candidates=1 visible=1 suppressed_by_parent=0 admitted=1 hits=1 misses=0 stores=0")

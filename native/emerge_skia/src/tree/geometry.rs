@@ -297,8 +297,10 @@ mod tests {
 
     #[test]
     fn host_clip_shape_ignores_padding() {
-        let mut attrs = Attrs::default();
-        attrs.padding = Some(Padding::Uniform(10.0));
+        let attrs = Attrs {
+            padding: Some(Padding::Uniform(10.0)),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -324,13 +326,15 @@ mod tests {
 
     #[test]
     fn host_clip_shape_uses_inner_border_rect() {
-        let mut attrs = Attrs::default();
-        attrs.border_width = Some(BorderWidth::Sides {
-            top: 1.0,
-            right: 2.0,
-            bottom: 3.0,
-            left: 4.0,
-        });
+        let attrs = Attrs {
+            border_width: Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            }),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -382,9 +386,11 @@ mod tests {
 
     #[test]
     fn host_clip_shape_with_uniform_radius_uses_inner_radii() {
-        let mut attrs = Attrs::default();
-        attrs.border_radius = Some(BorderRadius::Uniform(10.0));
-        attrs.border_width = Some(BorderWidth::Uniform(2.0));
+        let attrs = Attrs {
+            border_radius: Some(BorderRadius::Uniform(10.0)),
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -415,14 +421,16 @@ mod tests {
 
     #[test]
     fn host_clip_shape_with_corner_radii_uses_inner_corner_radii() {
-        let mut attrs = Attrs::default();
-        attrs.border_radius = Some(BorderRadius::Corners {
-            tl: 12.0,
-            tr: 8.0,
-            br: 4.0,
-            bl: 16.0,
-        });
-        attrs.border_width = Some(BorderWidth::Uniform(3.0));
+        let attrs = Attrs {
+            border_radius: Some(BorderRadius::Corners {
+                tl: 12.0,
+                tr: 8.0,
+                br: 4.0,
+                bl: 16.0,
+            }),
+            border_width: Some(BorderWidth::Uniform(3.0)),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -453,9 +461,11 @@ mod tests {
 
     #[test]
     fn host_clip_shape_falls_back_to_rect_when_radius_consumed() {
-        let mut attrs = Attrs::default();
-        attrs.border_radius = Some(BorderRadius::Uniform(3.0));
-        attrs.border_width = Some(BorderWidth::Uniform(5.0));
+        let attrs = Attrs {
+            border_radius: Some(BorderRadius::Uniform(3.0)),
+            border_width: Some(BorderWidth::Uniform(5.0)),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,
@@ -481,8 +491,10 @@ mod tests {
 
     #[test]
     fn host_clip_shape_without_border_keeps_radius() {
-        let mut attrs = Attrs::default();
-        attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+        let attrs = Attrs {
+            border_radius: Some(BorderRadius::Uniform(8.0)),
+            ..Attrs::default()
+        };
         let frame = Frame {
             x: 0.0,
             y: 0.0,

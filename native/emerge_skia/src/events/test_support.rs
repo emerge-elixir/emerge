@@ -217,20 +217,36 @@ fn sampled_tree_for_case(
     tree
 }
 
+fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(width)),
+        height: Some(Length::Px(height)),
+        ..Attrs::default()
+    }
+}
+
+fn width_move_attrs(width: f64, move_x: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(width)),
+        move_x: Some(move_x),
+        ..Attrs::default()
+    }
+}
+
 fn source_tree_for_case(case: &AnimatedNearbyHitCase, hover_active: bool) -> ElementTree {
     let mut tree = ElementTree::new();
 
-    let mut host_attrs = Attrs::default();
-    host_attrs.width = Some(Length::Px(128.0));
-    host_attrs.height = Some(Length::Px(82.0));
+    let host_attrs = fixed_box_attrs(128.0, 82.0);
     let mut host = Element::with_attrs(case.host_id, ElementKind::El, Vec::new(), host_attrs);
     host.nearby.set(NearbySlot::InFront, Some(case.target_id));
     host.children = vec![case.underlying_id];
 
-    let mut underlying_attrs = Attrs::default();
-    underlying_attrs.width = Some(Length::Px(128.0));
-    underlying_attrs.height = Some(Length::Px(82.0));
-    underlying_attrs.on_mouse_move = Some(true);
+    let underlying_attrs = Attrs {
+        width: Some(Length::Px(128.0)),
+        height: Some(Length::Px(82.0)),
+        on_mouse_move: Some(true),
+        ..Attrs::default()
+    };
     let underlying = Element::with_attrs(
         case.underlying_id,
         ElementKind::El,
@@ -238,28 +254,26 @@ fn source_tree_for_case(case: &AnimatedNearbyHitCase, hover_active: bool) -> Ele
         underlying_attrs,
     );
 
-    let mut from = Attrs::default();
-    from.width = Some(Length::Px(96.0));
-    from.move_x = Some(-16.0);
+    let from = width_move_attrs(96.0, -16.0);
 
-    let mut to = Attrs::default();
-    to.width = Some(Length::Px(156.0));
-    to.move_x = Some(26.0);
+    let to = width_move_attrs(156.0, 26.0);
 
-    let mut target_attrs = Attrs::default();
-    target_attrs.width = Some(Length::Px(128.0));
-    target_attrs.height = Some(Length::Px(82.0));
-    target_attrs.align_x = Some(AlignX::Center);
-    target_attrs.align_y = Some(AlignY::Center);
-    target_attrs.on_mouse_move = Some(true);
-    target_attrs.mouse_over = Some(MouseOverAttrs::default());
-    target_attrs.mouse_over_active = Some(hover_active);
-    target_attrs.animate = Some(AnimationSpec {
-        keyframes: vec![from, to],
-        duration_ms: 1000.0,
-        curve: AnimationCurve::Linear,
-        repeat: AnimationRepeat::Once,
-    });
+    let target_attrs = Attrs {
+        width: Some(Length::Px(128.0)),
+        height: Some(Length::Px(82.0)),
+        align_x: Some(AlignX::Center),
+        align_y: Some(AlignY::Center),
+        on_mouse_move: Some(true),
+        mouse_over: Some(MouseOverAttrs::default()),
+        mouse_over_active: Some(hover_active),
+        animate: Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 1000.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        }),
+        ..Attrs::default()
+    };
     let target = Element::with_attrs(case.target_id, ElementKind::El, Vec::new(), target_attrs);
 
     tree.insert(host);

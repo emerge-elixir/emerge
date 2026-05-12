@@ -30,18 +30,21 @@ fn build_paragraph(
 fn test_line_spacing_row_pushes_following_heading() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(20.0));
-    col_attrs.spacing = Some(12.0);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(20.0)),
+        spacing: Some(12.0),
+        ..Attrs::default()
+    };
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Fill);
+    let row_attrs = fill_width_attrs();
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let mut para_attrs = Attrs::default();
-    para_attrs.width = Some(Length::Fill);
-    para_attrs.spacing = Some(8.0);
+    let para_attrs = Attrs {
+        width: Some(Length::Fill),
+        spacing: Some(8.0),
+        ..Attrs::default()
+    };
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
 
     let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
@@ -85,11 +88,7 @@ fn test_line_spacing_row_pushes_following_heading() {
 fn test_paragraph_single_text_no_wrap() {
     // "Hello" = 5 chars * 8px = 40px, fits within 200px
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![("t", ElementKind::Text, text_attrs("Hello"))],
     );
 
@@ -116,11 +115,7 @@ fn test_paragraph_wraps_words() {
     // "AA" (16) fits, + space (8) + "BB" (16) = 40 fits
     // + space (8) + "CC" (16) = 64 > 40, "CC" wraps
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(40.0));
-            a
-        },
+        fixed_width_attrs(40.0),
         vec![("t", ElementKind::Text, text_attrs("AA BB CC"))],
     );
 
@@ -152,17 +147,15 @@ fn test_paragraph_wraps_words() {
 
 #[test]
 fn test_paragraph_align_left_float_wraps_then_releases_width() {
-    let mut float_attrs = Attrs::default();
-    float_attrs.align_x = Some(AlignX::Left);
-    float_attrs.width = Some(Length::Px(24.0));
-    float_attrs.height = Some(Length::Px(40.0));
+    let float_attrs = Attrs {
+        align_x: Some(AlignX::Left),
+        width: Some(Length::Px(24.0)),
+        height: Some(Length::Px(40.0)),
+        ..Attrs::default()
+    };
 
     let (mut tree, para_id, child_ids) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(80.0));
-            a
-        },
+        fixed_width_attrs(80.0),
         vec![
             ("float", ElementKind::El, float_attrs),
             (
@@ -207,31 +200,26 @@ fn test_paragraph_align_left_float_wraps_then_releases_width() {
 fn test_text_column_non_paragraph_child_clears_below_active_floats() {
     let mut tree = ElementTree::new();
 
-    let mut text_col_attrs = Attrs::default();
-    text_col_attrs.width = Some(Length::Px(80.0));
-    text_col_attrs.spacing_y = Some(8.0);
+    let text_col_attrs = Attrs {
+        width: Some(Length::Px(80.0)),
+        spacing_y: Some(8.0),
+        ..Attrs::default()
+    };
     let mut text_col = make_element("text_col", ElementKind::TextColumn, text_col_attrs);
 
-    let mut float_attrs = Attrs::default();
-    float_attrs.align_x = Some(AlignX::Left);
-    float_attrs.width = Some(Length::Px(24.0));
-    float_attrs.height = Some(Length::Px(40.0));
+    let float_attrs = Attrs {
+        align_x: Some(AlignX::Left),
+        width: Some(Length::Px(24.0)),
+        height: Some(Length::Px(40.0)),
+        ..Attrs::default()
+    };
     let float_el = make_element("float", ElementKind::El, float_attrs);
 
-    let mut para = make_element("para", ElementKind::Paragraph, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a
-    });
+    let mut para = make_element("para", ElementKind::Paragraph, fill_width_attrs());
 
     let para_text = make_element("para_text", ElementKind::Text, text_attrs("AA"));
 
-    let below_block = make_element("below", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(10.0));
-        a
-    });
+    let below_block = make_element("below", ElementKind::El, fill_width_box_attrs(10.0));
 
     let text_col_id = text_col.id;
     let float_id = float_el.id;
@@ -276,11 +264,7 @@ fn test_text_column_non_paragraph_child_clears_below_active_floats() {
 fn test_paragraph_multiple_text_children() {
     // Two text children flow inline
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![
             ("t1", ElementKind::Text, text_attrs("Hello ")),
             ("t2", ElementKind::Text, text_attrs("World")),
@@ -311,10 +295,11 @@ fn test_paragraph_line_spacing() {
     // spacing_y = 5
     let (mut tree, para_id, _) = build_paragraph(
         {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(20.0));
-            a.spacing = Some(5.0);
-            a
+            Attrs {
+                width: Some(Length::Px(20.0)),
+                spacing: Some(5.0),
+                ..Attrs::default()
+            }
         },
         vec![("t", ElementKind::Text, text_attrs("AA BB"))],
     );
@@ -341,11 +326,7 @@ fn test_paragraph_expands_height() {
     // Paragraph has no explicit height; wrapping should expand it
     // "AA BB" in 20px container -> 2 lines of 16px each
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(20.0));
-            a
-        },
+        fixed_width_attrs(20.0),
         vec![("t", ElementKind::Text, text_attrs("AA BB"))],
     );
 
@@ -367,10 +348,11 @@ fn test_paragraph_with_padding() {
     // Paragraph with padding, text should be offset
     let (mut tree, para_id, _) = build_paragraph(
         {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a.padding = Some(Padding::Uniform(10.0));
-            a
+            Attrs {
+                width: Some(Length::Px(200.0)),
+                padding: Some(Padding::Uniform(10.0)),
+                ..Attrs::default()
+            }
         },
         vec![("t", ElementKind::Text, text_attrs("Hi"))],
     );
@@ -393,8 +375,10 @@ fn test_paragraph_with_padding() {
 #[test]
 fn test_paragraph_el_wrapped_text() {
     // el([Font.bold()], text("Bold")) should participate in paragraph flow
-    let mut el_attrs = Attrs::default();
-    el_attrs.font_weight = Some(FontWeight("bold".to_string()));
+    let el_attrs = Attrs {
+        font_weight: Some(FontWeight("bold".to_string())),
+        ..Attrs::default()
+    };
 
     let mut el_child = make_element("el_child", ElementKind::El, el_attrs);
     let text_child = make_element("el_text", ElementKind::Text, text_attrs("Bold"));
@@ -402,8 +386,7 @@ fn test_paragraph_el_wrapped_text() {
     el_child.children = vec![text_child_id];
 
     let mut tree = ElementTree::new();
-    let mut para_attrs = Attrs::default();
-    para_attrs.width = Some(Length::Px(200.0));
+    let para_attrs = fixed_width_attrs(200.0);
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
     let para_id = para.id;
     let el_id = el_child.id;
@@ -440,16 +423,10 @@ fn test_paragraph_el_wrapped_text() {
 #[test]
 fn test_paragraph_skips_non_text_children() {
     // Non-text, non-el children (e.g., Row) should be silently skipped
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(50.0));
-    row_attrs.height = Some(Length::Px(20.0));
+    let row_attrs = fixed_box_attrs(50.0, 20.0);
 
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![
             ("t1", ElementKind::Text, text_attrs("Hi")),
             ("r", ElementKind::Row, row_attrs),
@@ -475,11 +452,7 @@ fn test_paragraph_skips_non_text_children() {
 #[test]
 fn test_paragraph_empty_text_skipped() {
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![
             ("t1", ElementKind::Text, text_attrs("")),
             ("t2", ElementKind::Text, text_attrs("Hello")),
@@ -502,14 +475,7 @@ fn test_paragraph_empty_text_skipped() {
 
 #[test]
 fn test_paragraph_no_children() {
-    let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
-        vec![],
-    );
+    let (mut tree, para_id, _) = build_paragraph(fixed_width_attrs(200.0), vec![]);
 
     layout_tree(
         &mut tree,
@@ -528,16 +494,18 @@ fn test_paragraph_inherits_font_context() {
     // Paragraph sets font_size=20, child text has no font_size -> inherits 20
     let (mut tree, para_id, _) = build_paragraph(
         {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a.font_size = Some(20.0);
-            a
+            Attrs {
+                width: Some(Length::Px(200.0)),
+                font_size: Some(20.0),
+                ..Attrs::default()
+            }
         },
         vec![("t", ElementKind::Text, {
-            let mut a = Attrs::default();
-            a.content = Some("Hi".to_string());
             // No font_size set -> should inherit from paragraph
-            a
+            Attrs {
+                content: Some("Hi".to_string()),
+                ..Attrs::default()
+            }
         })],
     );
 
@@ -581,17 +549,15 @@ fn test_paragraph_intrinsic_width_is_sum_of_children() {
 #[test]
 fn test_paragraph_fragment_colors_from_children() {
     // Test that font_color from a child text element is used in fragment
-    let mut child_attrs = Attrs::default();
-    child_attrs.content = Some("Red".to_string());
-    child_attrs.font_size = Some(16.0);
-    child_attrs.font_color = Some(Color::Rgb { r: 255, g: 0, b: 0 });
+    let child_attrs = Attrs {
+        content: Some("Red".to_string()),
+        font_size: Some(16.0),
+        font_color: Some(Color::Rgb { r: 255, g: 0, b: 0 }),
+        ..Attrs::default()
+    };
 
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![("t", ElementKind::Text, child_attrs)],
     );
 
@@ -611,11 +577,7 @@ fn test_paragraph_fragment_colors_from_children() {
 #[test]
 fn test_paragraph_fragment_defaults_to_black() {
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(200.0));
-            a
-        },
+        fixed_width_attrs(200.0),
         vec![("t", ElementKind::Text, text_attrs("Default"))],
     );
 
@@ -639,17 +601,18 @@ fn test_paragraph_inside_el_shifts_fragments() {
     let mut tree = ElementTree::new();
 
     // Parent el with explicit size and padding
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.width = Some(Length::Px(400.0));
-    parent_attrs.height = Some(Length::Px(200.0));
-    parent_attrs.padding = Some(Padding::Uniform(12.0));
+    let parent_attrs = Attrs {
+        width: Some(Length::Px(400.0)),
+        height: Some(Length::Px(200.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        ..Attrs::default()
+    };
 
     let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
     let parent_id = parent_el.id;
 
     // Paragraph child
-    let mut para_attrs = Attrs::default();
-    para_attrs.width = Some(Length::Fill);
+    let para_attrs = fill_width_attrs();
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
     let para_id = para.id;
 
@@ -700,8 +663,7 @@ fn test_paragraph_wraps_to_parent_constraint() {
     // Line 2: "CC" (16) + space (8) + "DD" (16) = 40, fits in 50
     let mut tree = ElementTree::new();
 
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.width = Some(Length::Px(50.0));
+    let parent_attrs = fixed_width_attrs(50.0);
 
     let mut parent_el = make_element("parent", ElementKind::El, parent_attrs);
     let parent_id = parent_el.id;
@@ -759,11 +721,7 @@ fn test_paragraph_preserves_leading_space_between_nodes() {
     // " World" -> leading space (8) + "World" (40) -> cursor at 88
     // " End" -> leading space (8) + "End" (24) -> cursor at 120
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(400.0));
-            a
-        },
+        fixed_width_attrs(400.0),
         vec![
             ("t1", ElementKind::Text, text_attrs("Hello")),
             ("t2", ElementKind::Text, text_attrs(" World")),
@@ -794,25 +752,23 @@ fn test_paragraph_preserves_leading_space_between_nodes() {
 #[test]
 fn test_paragraph_left_and_right_floats_constrain_first_line_bounds() {
     let (mut tree, para_id, _) = build_paragraph(
-        {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Px(100.0));
-            a
-        },
+        fixed_width_attrs(100.0),
         vec![
             ("left_float", ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(20.0));
-                a.height = Some(Length::Px(20.0));
-                a.align_x = Some(AlignX::Left);
-                a
+                Attrs {
+                    width: Some(Length::Px(20.0)),
+                    height: Some(Length::Px(20.0)),
+                    align_x: Some(AlignX::Left),
+                    ..Attrs::default()
+                }
             }),
             ("right_float", ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(20.0));
-                a.height = Some(Length::Px(20.0));
-                a.align_x = Some(AlignX::Right);
-                a
+                Attrs {
+                    width: Some(Length::Px(20.0)),
+                    height: Some(Length::Px(20.0)),
+                    align_x: Some(AlignX::Right),
+                    ..Attrs::default()
+                }
             }),
             ("text", ElementKind::Text, text_attrs("AAAA BBBB CCCC DDDD")),
         ],

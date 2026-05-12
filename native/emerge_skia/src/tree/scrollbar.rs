@@ -160,9 +160,11 @@ mod tests {
 
     #[test]
     fn test_vertical_metrics_default_and_hover_thickness() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(50.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(50.0),
+            ..Attrs::default()
+        };
 
         let base = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs, 50.0, None).unwrap();
         assert_eq!(base.track_width, 5.0);
@@ -183,9 +185,11 @@ mod tests {
 
     #[test]
     fn test_horizontal_metrics_default_and_hover_thickness() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scroll_x = Some(30.0);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scroll_x: Some(30.0),
+            ..Attrs::default()
+        };
 
         let base = horizontal_metrics(frame(80.0, 40.0, 160.0, 40.0), &attrs, 30.0, None).unwrap();
         assert_eq!(base.track_height, 5.0);
@@ -206,8 +210,10 @@ mod tests {
 
     #[test]
     fn test_min_thumb_length_applies() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
 
         let metrics =
             vertical_metrics(frame(100.0, 50.0, 100.0, 5000.0), &attrs, 0.0, None).unwrap();
@@ -216,9 +222,11 @@ mod tests {
 
     #[test]
     fn test_scroll_offset_is_clamped_for_thumb_position() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(9999.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(9999.0),
+            ..Attrs::default()
+        };
 
         let max = vertical_metrics(frame(100.0, 50.0, 100.0, 150.0), &attrs, 9999.0, None).unwrap();
         assert!((max.thumb_start - 26.0).abs() < 0.001);

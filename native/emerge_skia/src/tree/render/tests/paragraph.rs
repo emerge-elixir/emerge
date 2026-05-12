@@ -6,35 +6,37 @@ use crate::events::registry_builder;
 fn test_render_paragraph_emits_text_commands() {
     use crate::tree::attrs::TextFragment;
 
-    let mut attrs = Attrs::default();
-    attrs.paragraph_fragments = Some(vec![
-        TextFragment {
-            x: 10.0,
-            y: 5.0,
-            text: "Hello".to_string(),
-            font_size: 16.0,
-            color: 0xFFFFFFFF,
-            family: "default".to_string(),
-            weight: 400,
-            italic: false,
-            underline: false,
-            strike: false,
-            ascent: 12.0,
-        },
-        TextFragment {
-            x: 60.0,
-            y: 5.0,
-            text: "World".to_string(),
-            font_size: 16.0,
-            color: 0xFF0000FF,
-            family: "default".to_string(),
-            weight: 700,
-            italic: false,
-            underline: false,
-            strike: false,
-            ascent: 12.0,
-        },
-    ]);
+    let attrs = Attrs {
+        paragraph_fragments: Some(vec![
+            TextFragment {
+                x: 10.0,
+                y: 5.0,
+                text: "Hello".to_string(),
+                font_size: 16.0,
+                color: 0xFFFFFFFF,
+                family: "default".to_string(),
+                weight: 400,
+                italic: false,
+                underline: false,
+                strike: false,
+                ascent: 12.0,
+            },
+            TextFragment {
+                x: 60.0,
+                y: 5.0,
+                text: "World".to_string(),
+                font_size: 16.0,
+                color: 0xFF0000FF,
+                family: "default".to_string(),
+                weight: 700,
+                italic: false,
+                underline: false,
+                strike: false,
+                ascent: 12.0,
+            },
+        ]),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 0.0,
@@ -81,20 +83,22 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     let para_id = NodeId::from_term_bytes(vec![10]);
     let float_id = NodeId::from_term_bytes(vec![11]);
 
-    let mut para_attrs = Attrs::default();
-    para_attrs.paragraph_fragments = Some(vec![TextFragment {
-        x: 24.0,
-        y: 8.0,
-        text: "AA".to_string(),
-        font_size: 16.0,
-        color: 0xFFFFFFFF,
-        family: "default".to_string(),
-        weight: 400,
-        italic: false,
-        underline: false,
-        strike: false,
-        ascent: 12.0,
-    }]);
+    let para_attrs = Attrs {
+        paragraph_fragments: Some(vec![TextFragment {
+            x: 24.0,
+            y: 8.0,
+            text: "AA".to_string(),
+            font_size: 16.0,
+            color: 0xFFFFFFFF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: false,
+            strike: false,
+            ascent: 12.0,
+        }]),
+        ..Attrs::default()
+    };
 
     let mut paragraph =
         Element::with_attrs(para_id, ElementKind::Paragraph, Vec::new(), para_attrs);
@@ -108,9 +112,11 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
         content_height: 40.0,
     });
 
-    let mut float_attrs = Attrs::default();
-    float_attrs.align_x = Some(AlignX::Left);
-    float_attrs.background = Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 }));
+    let float_attrs = Attrs {
+        align_x: Some(AlignX::Left),
+        background: Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
     let mut float_el = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
     float_el.layout.frame = Some(Frame {
         x: 0.0,
@@ -150,20 +156,22 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
     let float_id = NodeId::from_term_bytes(vec![14]);
     let inline_id = NodeId::from_term_bytes(vec![15]);
 
-    let mut para_attrs = Attrs::default();
-    para_attrs.paragraph_fragments = Some(vec![TextFragment {
-        x: 20.0,
-        y: 6.0,
-        text: "AA".to_string(),
-        font_size: 16.0,
-        color: 0xFFFFFFFF,
-        family: "default".to_string(),
-        weight: 400,
-        italic: false,
-        underline: false,
-        strike: false,
-        ascent: 12.0,
-    }]);
+    let para_attrs = Attrs {
+        paragraph_fragments: Some(vec![TextFragment {
+            x: 20.0,
+            y: 6.0,
+            text: "AA".to_string(),
+            font_size: 16.0,
+            color: 0xFFFFFFFF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: false,
+            strike: false,
+            ascent: 12.0,
+        }]),
+        ..Attrs::default()
+    };
     let mut paragraph =
         Element::with_attrs(para_id, ElementKind::Paragraph, Vec::new(), para_attrs);
     paragraph.children = vec![inline_id, float_id];
@@ -176,9 +184,11 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         content_height: 40.0,
     });
 
-    let mut float_attrs = Attrs::default();
-    float_attrs.align_x = Some(AlignX::Left);
-    float_attrs.on_mouse_down = Some(true);
+    let float_attrs = Attrs {
+        align_x: Some(AlignX::Left),
+        on_mouse_down: Some(true),
+        ..Attrs::default()
+    };
     let mut float_el = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
     float_el.layout.frame = Some(Frame {
         x: 0.0,
@@ -189,8 +199,10 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
         content_height: 20.0,
     });
 
-    let mut inline_attrs = Attrs::default();
-    inline_attrs.on_mouse_down = Some(true);
+    let inline_attrs = Attrs {
+        on_mouse_down: Some(true),
+        ..Attrs::default()
+    };
     let mut inline_el = Element::with_attrs(inline_id, ElementKind::Text, Vec::new(), inline_attrs);
     inline_el.layout.frame = Some(Frame {
         x: 24.0,
@@ -238,20 +250,22 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
 fn test_render_paragraph_underline_and_strike() {
     use crate::tree::attrs::TextFragment;
 
-    let mut attrs = Attrs::default();
-    attrs.paragraph_fragments = Some(vec![TextFragment {
-        x: 10.0,
-        y: 5.0,
-        text: "Decorated".to_string(),
-        font_size: 18.0,
-        color: 0x010203FF,
-        family: "default".to_string(),
-        weight: 400,
-        italic: false,
-        underline: true,
-        strike: true,
-        ascent: 14.0,
-    }]);
+    let attrs = Attrs {
+        paragraph_fragments: Some(vec![TextFragment {
+            x: 10.0,
+            y: 5.0,
+            text: "Decorated".to_string(),
+            font_size: 18.0,
+            color: 0x010203FF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: true,
+            strike: true,
+            ascent: 14.0,
+        }]),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 0.0,
@@ -280,8 +294,10 @@ fn test_render_paragraph_underline_and_strike() {
 
 #[test]
 fn test_render_paragraph_no_fragments() {
-    let mut attrs = Attrs::default();
-    attrs.paragraph_fragments = Some(vec![]);
+    let attrs = Attrs {
+        paragraph_fragments: Some(vec![]),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 0.0,
@@ -306,21 +322,23 @@ fn test_render_paragraph_no_fragments() {
 fn test_render_paragraph_with_background() {
     use crate::tree::attrs::TextFragment;
 
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 128 }));
-    attrs.paragraph_fragments = Some(vec![TextFragment {
-        x: 0.0,
-        y: 0.0,
-        text: "Hi".to_string(),
-        font_size: 16.0,
-        color: 0xFFFFFFFF,
-        family: "default".to_string(),
-        weight: 400,
-        italic: false,
-        underline: false,
-        strike: false,
-        ascent: 12.0,
-    }]);
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 128 })),
+        paragraph_fragments: Some(vec![TextFragment {
+            x: 0.0,
+            y: 0.0,
+            text: "Hi".to_string(),
+            font_size: 16.0,
+            color: 0xFFFFFFFF,
+            family: "default".to_string(),
+            weight: 400,
+            italic: false,
+            underline: false,
+            strike: false,
+            ascent: 12.0,
+        }]),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 0.0,

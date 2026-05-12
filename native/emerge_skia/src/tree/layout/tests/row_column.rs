@@ -16,22 +16,24 @@ fn test_row_paint_children_follow_layout_order_not_source_order() {
     let right_id = NodeId::from_u64(10_002);
     let center_id = NodeId::from_u64(10_003);
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.height = Some(Length::Px(40.0));
+    let row_attrs = fixed_box_attrs(200.0, 40.0);
     let mut row = Element::with_attrs(row_id, ElementKind::Row, Vec::new(), row_attrs);
     row.children = vec![right_id, center_id];
 
-    let mut right_attrs = Attrs::default();
-    right_attrs.width = Some(Length::Px(20.0));
-    right_attrs.height = Some(Length::Px(20.0));
-    right_attrs.align_x = Some(AlignX::Right);
+    let right_attrs = Attrs {
+        width: Some(Length::Px(20.0)),
+        height: Some(Length::Px(20.0)),
+        align_x: Some(AlignX::Right),
+        ..Attrs::default()
+    };
     let right = Element::with_attrs(right_id, ElementKind::El, Vec::new(), right_attrs);
 
-    let mut center_attrs = Attrs::default();
-    center_attrs.width = Some(Length::Px(20.0));
-    center_attrs.height = Some(Length::Px(20.0));
-    center_attrs.align_x = Some(AlignX::Center);
+    let center_attrs = Attrs {
+        width: Some(Length::Px(20.0)),
+        height: Some(Length::Px(20.0)),
+        align_x: Some(AlignX::Center),
+        ..Attrs::default()
+    };
     let center = Element::with_attrs(center_id, ElementKind::El, Vec::new(), center_attrs);
 
     let mut tree = ElementTree::new();
@@ -53,17 +55,17 @@ fn test_wrapped_row_paint_children_follow_line_then_x_order() {
     let second_id = NodeId::from_u64(10_103);
     let third_id = NodeId::from_u64(10_104);
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(150.0));
-    row_attrs.height = Some(Length::Content);
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(150.0)),
+        height: Some(Length::Content),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
     let mut row = Element::with_attrs(row_id, ElementKind::WrappedRow, Vec::new(), row_attrs);
     row.children = vec![first_id, second_id, third_id];
 
     let child = |id: NodeId| {
-        let mut attrs = Attrs::default();
-        attrs.width = Some(Length::Px(70.0));
-        attrs.height = Some(Length::Px(20.0));
+        let attrs = fixed_box_attrs(70.0, 20.0);
         Element::with_attrs(id, ElementKind::El, Vec::new(), attrs)
     };
 
@@ -88,9 +90,11 @@ fn test_exit_ghost_stays_in_active_layout_until_pruned() {
     let removed_id = NodeId::from_u64(10_202);
     let survivor_id = NodeId::from_u64(10_203);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(100.0));
-    root_attrs.height = Some(Length::Content);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Content),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
     root.children = vec![removed_id, survivor_id];
 
@@ -147,9 +151,11 @@ fn test_multiple_exit_ghosts_keep_individual_column_slots() {
         .map(|index| NodeId::from_u64(10_310 + index))
         .collect();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(100.0));
-    root_attrs.height = Some(Length::Content);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Content),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
     root.children = item_ids.clone();
 
@@ -221,19 +227,16 @@ fn test_multiple_exit_ghosts_keep_individual_column_slots() {
     );
 }
 
-fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(width));
-    attrs.height = Some(Length::Px(height));
-    attrs
-}
-
 fn exit_alpha_spec() -> AnimationSpec {
-    let mut from = Attrs::default();
-    from.alpha = Some(1.0);
+    let from = Attrs {
+        alpha: Some(1.0),
+        ..Attrs::default()
+    };
 
-    let mut to = Attrs::default();
-    to.alpha = Some(0.0);
+    let to = Attrs {
+        alpha: Some(0.0),
+        ..Attrs::default()
+    };
 
     AnimationSpec {
         keyframes: vec![from, to],
@@ -262,14 +265,15 @@ fn insert_badge_node(
     let text_id = insert_text_node(tree, &format!("{id}_text"), label, font_size);
 
     let mut badge = make_element(id, ElementKind::El, {
-        let mut a = Attrs::default();
-        a.padding = Some(Padding::Sides {
-            top: padding.0,
-            right: padding.1,
-            bottom: padding.2,
-            left: padding.3,
-        });
-        a
+        Attrs {
+            padding: Some(Padding::Sides {
+                top: padding.0,
+                right: padding.1,
+                bottom: padding.2,
+                left: padding.3,
+            }),
+            ..Attrs::default()
+        }
     });
     let badge_id = badge.id;
     badge.children = vec![text_id];
@@ -289,9 +293,10 @@ fn insert_temp_line_node(
     let secondary_id = insert_text_node(tree, &format!("{id}_secondary"), secondary, 11.0);
 
     let mut row = make_element(id, ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.spacing = Some(6.0);
-        a
+        Attrs {
+            spacing: Some(6.0),
+            ..Attrs::default()
+        }
     });
     let row_id = row.id;
     row.children = vec![label_id, primary_id, secondary_id];
@@ -316,21 +321,17 @@ fn insert_weather_day_card_node(
 ) -> NodeId {
     let day_id = insert_text_node(tree, &format!("{id}_day"), spec.day, 12.0);
 
-    let icon = make_element(&format!("{id}_icon"), ElementKind::Image, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a
-    });
+    let icon = make_element(&format!("{id}_icon"), ElementKind::Image, fill_box_attrs());
     let icon_id = icon.id;
     tree.insert(icon);
 
     let mut icon_wrap = make_element(&format!("{id}_icon_wrap"), ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(58.0));
-        a.height = Some(Length::Px(58.0));
-        a.padding = Some(Padding::Uniform(8.0));
-        a
+        Attrs {
+            width: Some(Length::Px(58.0)),
+            height: Some(Length::Px(58.0)),
+            padding: Some(Padding::Uniform(8.0)),
+            ..Attrs::default()
+        }
     });
     let icon_wrap_id = icon_wrap.id;
     icon_wrap.children = vec![icon_id];
@@ -348,21 +349,23 @@ fn insert_weather_day_card_node(
     );
 
     let mut column = make_element(&format!("{id}_column"), ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
     let column_id = column.id;
     column.children = vec![day_id, icon_wrap_id, condition_id, hi_id, lo_id, precip_id];
     tree.insert(column);
 
     let mut card = make_element(id, ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(118.0));
-        a.padding = Some(Padding::Uniform(10.0));
-        a.spacing = Some(8.0);
-        a.border_width = Some(BorderWidth::Uniform(1.0));
-        a
+        Attrs {
+            width: Some(Length::Px(118.0)),
+            padding: Some(Padding::Uniform(10.0)),
+            spacing: Some(8.0),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            ..Attrs::default()
+        }
     });
     let card_id = card.id;
     card.children = vec![column_id];
@@ -372,11 +375,11 @@ fn insert_weather_day_card_node(
 
 fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, note: &str) -> NodeId {
     let title_text_id = insert_text_node(tree, &format!("{id}_title_text"), label, 12.0);
-    let mut title_fill = make_element(&format!("{id}_title_fill"), ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a
-    });
+    let mut title_fill = make_element(
+        &format!("{id}_title_fill"),
+        ElementKind::El,
+        fill_width_attrs(),
+    );
     let title_fill_id = title_fill.id;
     title_fill.children = vec![title_text_id];
     tree.insert(title_fill);
@@ -390,10 +393,11 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
     );
 
     let mut title_row = make_element(&format!("{id}_title_row"), ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
     let title_row_id = title_row.id;
     title_row.children = vec![title_fill_id, badge_id];
@@ -405,12 +409,11 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         .into_iter()
         .enumerate()
         .map(|(index, (size, label_text))| {
-            let icon = make_element(&format!("{id}_size{index}_icon"), ElementKind::Image, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(size));
-                a.height = Some(Length::Px(size));
-                a
-            });
+            let icon = make_element(
+                &format!("{id}_size{index}_icon"),
+                ElementKind::Image,
+                fixed_box_attrs(size, size),
+            );
             let icon_id = icon.id;
             tree.insert(icon);
 
@@ -419,20 +422,22 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
 
             let mut content =
                 make_element(&format!("{id}_size{index}_content"), ElementKind::Column, {
-                    let mut a = Attrs::default();
-                    a.spacing = Some(8.0);
-                    a
+                    Attrs {
+                        spacing: Some(8.0),
+                        ..Attrs::default()
+                    }
                 });
             let content_id = content.id;
             content.children = vec![icon_id, text_id];
             tree.insert(content);
 
             let mut box_el = make_element(&format!("{id}_size{index}_box"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(86.0));
-                a.height = Some(Length::Px(118.0));
-                a.padding = Some(Padding::Uniform(8.0));
-                a
+                Attrs {
+                    width: Some(Length::Px(86.0)),
+                    height: Some(Length::Px(118.0)),
+                    padding: Some(Padding::Uniform(8.0)),
+                    ..Attrs::default()
+                }
             });
             let box_id = box_el.id;
             box_el.children = vec![content_id];
@@ -442,30 +447,33 @@ fn insert_svg_scale_card_node(tree: &mut ElementTree, id: &str, label: &str, not
         .collect();
 
     let mut sizes_row = make_element(&format!("{id}_sizes_row"), ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
     let sizes_row_id = sizes_row.id;
     sizes_row.children = size_box_ids;
     tree.insert(sizes_row);
 
     let mut column = make_element(&format!("{id}_column"), ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.spacing = Some(10.0);
-        a
+        Attrs {
+            spacing: Some(10.0),
+            ..Attrs::default()
+        }
     });
     let column_id = column.id;
     column.children = vec![title_row_id, note_id, sizes_row_id];
     tree.insert(column);
 
     let mut card = make_element(id, ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(300.0));
-        a.padding = Some(Padding::Uniform(12.0));
-        a.spacing = Some(10.0);
-        a
+        Attrs {
+            width: Some(Length::Px(300.0)),
+            padding: Some(Padding::Uniform(12.0)),
+            spacing: Some(10.0),
+            ..Attrs::default()
+        }
     });
     let card_id = card.id;
     card.children = vec![column_id];
@@ -477,51 +485,51 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     let mut tree = ElementTree::new();
 
     let mut root = make_element("root", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(20.0));
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(20.0)),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
-    let header = make_element("header", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(82.0));
-        a
-    });
+    let header = make_element("header", ElementKind::El, fill_width_box_attrs(82.0));
 
     let mut body = make_element("body", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let menu = make_element("menu", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(220.0));
-        a.height = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(12.0));
-        a
+        Attrs {
+            width: Some(Length::Px(220.0)),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(12.0)),
+            ..Attrs::default()
+        }
     });
 
     let content_panel = make_element("content_panel", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(16.0));
-        a.scrollbar_y = Some(true);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(16.0)),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        }
     });
 
     let mut page = make_element("page", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let assets_title_id = insert_text_node(&mut tree, "assets_title", "Assets", 22.0);
@@ -541,12 +549,13 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     );
 
     let mut weather_widget = make_element("weather_widget", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(16.0));
-        a.spacing = Some(14.0);
-        a.border_width = Some(BorderWidth::Uniform(1.0));
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(16.0)),
+            spacing: Some(14.0),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            ..Attrs::default()
+        }
     });
 
     let left_title_id = insert_text_node(&mut tree, "weather_title", "Weekly forecast", 22.0);
@@ -579,20 +588,22 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     );
 
     let mut left_badges = make_element("weather_left_badges", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
     let left_badges_id = left_badges.id;
     left_badges.children = vec![badge_svg_id, badge_c_id, badge_f_id];
     tree.insert(left_badges);
 
     let mut left_column = make_element("weather_left_column", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(6.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(6.0),
+            ..Attrs::default()
+        }
     });
     let left_column_id = left_column.id;
     left_column.children = vec![left_title_id, left_intro_id, left_badges_id];
@@ -613,37 +624,41 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     );
 
     let mut right_column = make_element("weather_right_column", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
     let right_column_id = right_column.id;
     right_column.children = vec![sample_badge_id, summary_text_id];
     tree.insert(right_column);
 
     let mut top_row = make_element("weather_top_row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(12.0),
+            ..Attrs::default()
+        }
     });
     let top_row_id = top_row.id;
     top_row.children = vec![left_column_id, right_column_id];
     tree.insert(top_row);
 
     let mut weather_shell = make_element("weather_shell", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(10.0));
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(10.0)),
+            ..Attrs::default()
+        }
     });
 
     let mut weather_row = make_element("weather_row", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(10.0);
-        a.spacing_y = Some(10.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(10.0),
+            spacing_y: Some(10.0),
+            ..Attrs::default()
+        }
     });
 
     let weather_card_specs = [
@@ -729,9 +744,10 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     tree.insert(weather_shell);
 
     let weather_column = make_element("weather_column", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.spacing = Some(14.0);
-        a
+        Attrs {
+            spacing: Some(14.0),
+            ..Attrs::default()
+        }
     });
     let mut weather_column = weather_column;
     let weather_column_id = weather_column.id;
@@ -752,21 +768,23 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     );
 
     let mut centered_wrapper = make_element("centered_wrapper", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Min(
-            Box::new(Length::Px(960.0)),
-            Box::new(Length::Fill),
-        ));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Min(
+                Box::new(Length::Px(960.0)),
+                Box::new(Length::Fill),
+            )),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let mut svg_row = make_element("svg_row", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(12.0);
-        a.spacing_y = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(12.0),
+            spacing_y: Some(12.0),
+            ..Attrs::default()
+        }
     });
 
     let svg_specs = [
@@ -800,10 +818,11 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     tree.insert(centered_wrapper);
 
     let mut svg_section = make_element("svg_section", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(12.0),
+            ..Attrs::default()
+        }
     });
     let svg_section_id = svg_section.id;
     svg_section.children = vec![
@@ -813,12 +832,7 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
     ];
     tree.insert(svg_section);
 
-    let footer = make_element("footer", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(180.0));
-        a
-    });
+    let footer = make_element("footer", ElementKind::El, fill_width_box_attrs(180.0));
 
     let header_id = header.id;
     let body_id = body.id;
@@ -866,25 +880,29 @@ fn build_exact_demo_assets_tree() -> (ElementTree, ExactAssetsIds) {
 fn test_layout_row_weighted_fill_with_content_parent() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Content);
-    row_attrs.height = Some(Length::Px(30.0));
+    let row_attrs = Attrs {
+        width: Some(Length::Content),
+        height: Some(Length::Px(30.0)),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let child1 = make_element("c1", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("AAAA".to_string());
-        a.font_size = Some(10.0);
-        a.width = Some(Length::FillWeighted(2.0));
-        a
+        Attrs {
+            content: Some("AAAA".to_string()),
+            font_size: Some(10.0),
+            width: Some(Length::FillWeighted(2.0)),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("BB".to_string());
-        a.font_size = Some(10.0);
-        a.width = Some(Length::FillWeighted(1.0));
-        a
+        Attrs {
+            content: Some("BB".to_string()),
+            font_size: Some(10.0),
+            width: Some(Length::FillWeighted(1.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -915,25 +933,29 @@ fn test_layout_row_weighted_fill_with_content_parent() {
 fn test_layout_column_weighted_fill_with_content_parent() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(120.0));
-    col_attrs.height = Some(Length::Content);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(120.0)),
+        height: Some(Length::Content),
+        ..Attrs::default()
+    };
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let child1 = make_element("c1", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("Hi".to_string());
-        a.font_size = Some(12.0);
-        a.height = Some(Length::FillWeighted(2.0));
-        a
+        Attrs {
+            content: Some("Hi".to_string()),
+            font_size: Some(12.0),
+            height: Some(Length::FillWeighted(2.0)),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("Yo".to_string());
-        a.font_size = Some(14.0);
-        a.height = Some(Length::FillWeighted(1.0));
-        a
+        Attrs {
+            content: Some("Yo".to_string()),
+            font_size: Some(14.0),
+            height: Some(Length::FillWeighted(1.0)),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -964,24 +986,16 @@ fn test_layout_column_weighted_fill_with_content_parent() {
 fn test_layout_row_spacing_xy_uses_horizontal() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.spacing_x = Some(12.0);
-    row_attrs.spacing_y = Some(30.0);
+    let row_attrs = Attrs {
+        spacing_x: Some(12.0),
+        spacing_y: Some(30.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(10.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(10.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(10.0, 10.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1011,24 +1025,16 @@ fn test_layout_row_spacing_xy_uses_horizontal() {
 fn test_layout_column_spacing_xy_uses_vertical() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.spacing_x = Some(5.0);
-    col_attrs.spacing_y = Some(14.0);
+    let col_attrs = Attrs {
+        spacing_x: Some(5.0),
+        spacing_y: Some(14.0),
+        ..Attrs::default()
+    };
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(10.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(10.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(10.0, 10.0));
 
     let col_id = col.id;
     let c1_id = child1.id;
@@ -1058,24 +1064,16 @@ fn test_layout_column_spacing_xy_uses_vertical() {
 fn test_layout_text_column_stacks_like_column() {
     let mut tree = ElementTree::new();
 
-    let mut text_col_attrs = Attrs::default();
-    text_col_attrs.width = Some(Length::Px(100.0));
-    text_col_attrs.spacing = Some(12.0);
+    let text_col_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        spacing: Some(12.0),
+        ..Attrs::default()
+    };
 
     let mut text_col = make_element("text_col", ElementKind::TextColumn, text_col_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(20.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fill_width_box_attrs(20.0));
+    let child2 = make_element("c2", ElementKind::El, fill_width_box_attrs(30.0));
 
     let text_col_id = text_col.id;
     let c1_id = child1.id;
@@ -1107,25 +1105,17 @@ fn test_layout_text_column_stacks_like_column() {
 fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(50.0));
-    row_attrs.spacing_x = Some(5.0);
-    row_attrs.spacing_y = Some(7.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        spacing_x: Some(5.0),
+        spacing_y: Some(7.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(40.0, 10.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(40.0, 10.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1155,31 +1145,18 @@ fn test_layout_wrapped_row_spacing_xy_uses_vertical_between_lines() {
 fn test_layout_row_space_evenly_distribution() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.height = Some(Length::Px(20.0));
-    row_attrs.space_evenly = Some(true);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(20.0)),
+        space_evenly: Some(true),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(20.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(20.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
-    let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(20.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(20.0, 20.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(20.0, 20.0));
+    let child3 = make_element("c3", ElementKind::El, fixed_box_attrs(20.0, 20.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1213,31 +1190,18 @@ fn test_layout_row_space_evenly_distribution() {
 fn test_layout_column_space_evenly_distribution() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(50.0));
-    col_attrs.height = Some(Length::Px(200.0));
-    col_attrs.space_evenly = Some(true);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        height: Some(Length::Px(200.0)),
+        space_evenly: Some(true),
+        ..Attrs::default()
+    };
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
-    let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(50.0, 20.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(50.0, 20.0));
+    let child3 = make_element("c3", ElementKind::El, fixed_box_attrs(50.0, 20.0));
 
     let col_id = col.id;
     let c1_id = child1.id;
@@ -1271,24 +1235,16 @@ fn test_layout_column_space_evenly_distribution() {
 fn test_layout_row_space_evenly_ignored_for_content_parent() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Content);
-    row_attrs.space_evenly = Some(true);
+    let row_attrs = Attrs {
+        width: Some(Length::Content),
+        space_evenly: Some(true),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(20.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(20.0));
-        a.height = Some(Length::Px(10.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(20.0, 10.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(20.0, 10.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1319,22 +1275,14 @@ fn test_layout_row() {
     let mut tree = ElementTree::new();
 
     // Create row with two children
-    let mut row_attrs = Attrs::default();
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(50.0, 30.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(50.0, 30.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1364,33 +1312,32 @@ fn test_layout_row() {
 fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.padding = Some(Padding::Uniform(10.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        padding: Some(Padding::Uniform(10.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a.padding = Some(Padding::Uniform(2.0));
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(20.0)),
+            padding: Some(Padding::Uniform(2.0)),
+            ..Attrs::default()
+        }
     });
 
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(10.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(10.0, 20.0));
 
     let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a.padding = Some(Padding::Uniform(2.0));
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(20.0)),
+            padding: Some(Padding::Uniform(2.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -1432,22 +1379,23 @@ fn test_row_padding_stays_symmetric_with_explicit_width_padded_children() {
 fn test_layout_column_fill() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.height = Some(Length::Px(100.0));
+    let col_attrs = fixed_height_attrs(100.0);
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -1482,25 +1430,23 @@ fn test_layout_row_with_max_width_child() {
     let mut tree = ElementTree::new();
 
     // Row with two children: one fill, one max(100, fill)
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Fill); // Row needs explicit fill to expand
+    let row_attrs = Attrs {
+        width: Some(Length::Fill), // Row needs explicit fill to expand
+        ..Attrs::default()
+    };
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fill_width_box_attrs(30.0));
 
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Min(
-            Box::new(Length::Px(100.0)),
-            Box::new(Length::Fill),
-        ));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::Min(
+                Box::new(Length::Px(100.0)),
+                Box::new(Length::Fill),
+            )),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -1542,31 +1488,18 @@ fn test_wrapped_row_height_with_wrapping() {
     // Line 3: child3 (50px)
     // Total height = 3 * 30 + 2 * 10 spacing = 110px
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(100.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
     // Children 50px wide, 30px tall each
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
-    let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
-    let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(50.0, 30.0));
+    let child2 = make_element("c2", ElementKind::El, fixed_box_attrs(50.0, 30.0));
+    let child3 = make_element("c3", ElementKind::El, fixed_box_attrs(50.0, 30.0));
 
     let row_id = row.id;
     let c1_id = child1.id;
@@ -1619,20 +1552,21 @@ fn test_wrapped_row_two_items_per_line() {
     // With 4 children: 2 lines
     // Total height = 2 * 30 + 1 * 10 spacing = 70px
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(120.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(120.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
     let children: Vec<_> = (0..4)
         .map(|i| {
-            make_element(&format!("c{}", i), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(50.0));
-                a.height = Some(Length::Px(30.0));
-                a
-            })
+            make_element(
+                &format!("c{}", i),
+                ElementKind::El,
+                fixed_box_attrs(50.0, 30.0),
+            )
         })
         .collect();
 
@@ -1686,46 +1620,30 @@ fn test_column_with_wrapped_row_pushes_siblings() {
     // The element should be pushed down by the wrapped_row's actual height (110px),
     // not its initial intrinsic height (30px).
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(100.0));
-    col_attrs.spacing = Some(10.0);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     // Wrapped row with 100px width constraint from parent
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Fill);
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Fill),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut wrapped_row = make_element("wrapped_row", ElementKind::WrappedRow, row_attrs);
 
     // Three children that will each wrap to their own line
-    let chip1 = make_element("chip1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
-    let chip2 = make_element("chip2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
-    let chip3 = make_element("chip3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let chip1 = make_element("chip1", ElementKind::El, fixed_box_attrs(50.0, 30.0));
+    let chip2 = make_element("chip2", ElementKind::El, fixed_box_attrs(50.0, 30.0));
+    let chip3 = make_element("chip3", ElementKind::El, fixed_box_attrs(50.0, 30.0));
 
     // Element below the wrapped row
-    let below_el = make_element("below", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let below_el = make_element("below", ElementKind::El, fill_width_box_attrs(40.0));
 
     let col_id = col.id;
     let row_id = wrapped_row.id;
@@ -1773,44 +1691,37 @@ fn test_column_with_wrapped_row_pushes_siblings() {
 fn test_wrapped_row_inside_fill_chain_wraps_cards() {
     let mut tree = ElementTree::new();
 
-    let mut root = make_element("root", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(840.0));
-        a
-    });
+    let mut root = make_element("root", ElementKind::El, fixed_width_attrs(840.0));
 
-    let mut column = make_element("column", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a
-    });
+    let mut column = make_element("column", ElementKind::Column, fill_width_attrs());
 
     let mut wrapper = make_element("wrapper", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Min(
-            Box::new(Length::Px(960.0)),
-            Box::new(Length::Fill),
-        ));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Min(
+                Box::new(Length::Px(960.0)),
+                Box::new(Length::Fill),
+            )),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let mut wrapped_row = make_element("wrapped", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(12.0);
-        a.spacing_y = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(12.0),
+            spacing_y: Some(12.0),
+            ..Attrs::default()
+        }
     });
 
     let cards: Vec<_> = (0..3)
         .map(|i| {
-            make_element(&format!("card{i}"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(300.0));
-                a.height = Some(Length::Px(120.0));
-                a
-            })
+            make_element(
+                &format!("card{i}"),
+                ElementKind::El,
+                fixed_box_attrs(300.0, 120.0),
+            )
         })
         .collect();
 
@@ -1863,22 +1774,24 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
     let mut tree = ElementTree::new();
 
     let mut wrapped_row = make_element("wrapped", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(490.0));
-        a.spacing_x = Some(10.0);
-        a.spacing_y = Some(10.0);
-        a
+        Attrs {
+            width: Some(Length::Px(490.0)),
+            spacing_x: Some(10.0),
+            spacing_y: Some(10.0),
+            ..Attrs::default()
+        }
     });
 
     let cards: Vec<_> = (0..4)
         .map(|i| {
             make_element(&format!("card{i}"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(118.0));
-                a.height = Some(Length::Px(60.0));
-                a.padding = Some(Padding::Uniform(10.0));
-                a.border_width = Some(BorderWidth::Uniform(1.0));
-                a
+                Attrs {
+                    width: Some(Length::Px(118.0)),
+                    height: Some(Length::Px(60.0)),
+                    padding: Some(Padding::Uniform(10.0)),
+                    border_width: Some(BorderWidth::Uniform(1.0)),
+                    ..Attrs::default()
+                }
             })
         })
         .collect();
@@ -1919,13 +1832,14 @@ fn test_wrapped_row_with_decorated_fixed_cards_wraps_by_occupied_width() {
 fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph() {
     fn build_line_spacing_card(id: &str, text_id: &str) -> (Element, Element, Element, Element) {
         let mut column = make_element(id, ElementKind::Column, {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Min(
-                Box::new(Length::Px(320.0)),
-                Box::new(Length::Fill),
-            ));
-            a.spacing = Some(6.0);
-            a
+            Attrs {
+                width: Some(Length::Min(
+                    Box::new(Length::Px(320.0)),
+                    Box::new(Length::Fill),
+                )),
+                spacing: Some(6.0),
+                ..Attrs::default()
+            }
         });
 
         let label = make_element(
@@ -1935,17 +1849,19 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
         );
 
         let mut box_el = make_element(&format!("{id}_box"), ElementKind::El, {
-            let mut a = Attrs::default();
-            a.width = Some(Length::Fill);
-            a.padding = Some(Padding::Uniform(10.0));
-            a
+            Attrs {
+                width: Some(Length::Fill),
+                padding: Some(Padding::Uniform(10.0)),
+                ..Attrs::default()
+            }
         });
 
         let mut paragraph = make_element(&format!("{id}_paragraph"), ElementKind::Paragraph, {
-            let mut a = Attrs::default();
-            a.spacing = Some(8.0);
-            a.font_size = Some(13.0);
-            a
+            Attrs {
+                spacing: Some(8.0),
+                font_size: Some(13.0),
+                ..Attrs::default()
+            }
         });
 
         let text = make_element(
@@ -2006,18 +1922,20 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
     let mut tree = ElementTree::new();
 
     let mut column = make_element("root_column", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(1200.0));
-        a.spacing = Some(20.0);
-        a
+        Attrs {
+            width: Some(Length::Px(1200.0)),
+            spacing: Some(20.0),
+            ..Attrs::default()
+        }
     });
 
     let mut wrapped_row = make_element("wrapped_row", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(16.0);
-        a.spacing_y = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(16.0),
+            spacing_y: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let (card_a, label_a, box_a, paragraph_a) = build_line_spacing_card("card_a", "text_a");
@@ -2038,12 +1956,7 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
         ),
     );
 
-    let below = make_element("below", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(24.0));
-        a
-    });
+    let below = make_element("below", ElementKind::El, fill_width_box_attrs(24.0));
 
     let root_id = column.id;
     let row_id = wrapped_row.id;
@@ -2091,31 +2004,30 @@ fn test_wrapped_row_expands_height_when_child_column_contains_wrapped_paragraph(
 fn test_row_weighted_fill_subtracts_decorated_fixed_outer_width() {
     let mut tree = ElementTree::new();
 
-    let mut row = make_element("row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(400.0));
-        a
-    });
+    let mut row = make_element("row", ElementKind::Row, fixed_width_attrs(400.0));
 
     let fixed = make_element("fixed", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(100.0));
-        a.height = Some(Length::Px(30.0));
-        a.padding = Some(Padding::Uniform(10.0));
-        a.border_width = Some(BorderWidth::Uniform(5.0));
-        a
+        Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(30.0)),
+            padding: Some(Padding::Uniform(10.0)),
+            border_width: Some(BorderWidth::Uniform(5.0)),
+            ..Attrs::default()
+        }
     });
     let fill_a = make_element("fill_a", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
     let fill_b = make_element("fill_b", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(2.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(2.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -2301,131 +2213,132 @@ fn test_demo_assets_fill_chain_keeps_wrapped_rows_within_content_panel() {
     let mut tree = ElementTree::new();
 
     let mut root = make_element("root", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(1024.0));
-        a.height = Some(Length::Px(768.0));
-        a.padding = Some(Padding::Uniform(20.0));
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Px(1024.0)),
+            height: Some(Length::Px(768.0)),
+            padding: Some(Padding::Uniform(20.0)),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
-    let header = make_element("header", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(80.0));
-        a
-    });
+    let header = make_element("header", ElementKind::El, fill_width_box_attrs(80.0));
 
     let mut body = make_element("body", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let menu = make_element("menu", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(220.0));
-        a.height = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(12.0));
-        a
+        Attrs {
+            width: Some(Length::Px(220.0)),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(12.0)),
+            ..Attrs::default()
+        }
     });
 
     let mut content_panel = make_element("content_panel", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(16.0));
-        a.scrollbar_y = Some(true);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(16.0)),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        }
     });
 
     let mut page = make_element("page", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(16.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let mut weather_widget = make_element("weather_widget", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(16.0));
-        a.border_width = Some(BorderWidth::Uniform(1.0));
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(16.0)),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            ..Attrs::default()
+        }
     });
 
     let mut weather_shell = make_element("weather_shell", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.padding = Some(Padding::Uniform(10.0));
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(10.0)),
+            ..Attrs::default()
+        }
     });
 
     let mut weather_row = make_element("weather_row", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(10.0);
-        a.spacing_y = Some(10.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(10.0),
+            spacing_y: Some(10.0),
+            ..Attrs::default()
+        }
     });
 
     let weather_cards: Vec<_> = (0..7)
         .map(|i| {
             make_element(&format!("weather_card{i}"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(118.0));
-                a.padding = Some(Padding::Uniform(10.0));
-                a.border_width = Some(BorderWidth::Uniform(1.0));
-                a.height = Some(Length::Px(60.0));
-                a
+                Attrs {
+                    width: Some(Length::Px(118.0)),
+                    padding: Some(Padding::Uniform(10.0)),
+                    border_width: Some(BorderWidth::Uniform(1.0)),
+                    height: Some(Length::Px(60.0)),
+                    ..Attrs::default()
+                }
             })
         })
         .collect();
 
     let mut svg_section = make_element("svg_section", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(12.0),
+            ..Attrs::default()
+        }
     });
 
     let mut centered_wrapper = make_element("centered_wrapper", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Min(
-            Box::new(Length::Px(960.0)),
-            Box::new(Length::Fill),
-        ));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Min(
+                Box::new(Length::Px(960.0)),
+                Box::new(Length::Fill),
+            )),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let mut svg_row = make_element("svg_row", ElementKind::WrappedRow, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing_x = Some(12.0);
-        a.spacing_y = Some(12.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(12.0),
+            spacing_y: Some(12.0),
+            ..Attrs::default()
+        }
     });
 
     let svg_cards: Vec<_> = (0..3)
         .map(|i| {
-            make_element(&format!("svg_card{i}"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.width = Some(Length::Px(300.0));
-                a.height = Some(Length::Px(140.0));
-                a
-            })
+            make_element(
+                &format!("svg_card{i}"),
+                ElementKind::El,
+                fixed_box_attrs(300.0, 140.0),
+            )
         })
         .collect();
 
-    let footer = make_element("footer", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(180.0));
-        a
-    });
+    let footer = make_element("footer", ElementKind::El, fill_width_box_attrs(180.0));
 
     let root_id = root.id;
     let header_id = header.id;
@@ -2561,31 +2474,28 @@ fn test_content_height_column_repositions_bottom_aligned_child_after_expansion()
 
     // Content-height column with a top child that expands during resolve
     // and a bottom-aligned child that should stay at the visual bottom.
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(20.0));
+    let col_attrs = fixed_width_attrs(20.0);
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let mut row = make_element("top_row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a
-    });
+    let mut row = make_element("top_row", ElementKind::Row, fill_width_attrs());
 
     let mut para = make_element("para", ElementKind::Paragraph, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
 
     let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
 
     let bottom = make_element("bottom", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(10.0));
-        a.align_y = Some(AlignY::Bottom);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Px(10.0)),
+            align_y: Some(AlignY::Bottom),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -2627,32 +2537,32 @@ fn test_content_height_column_repositions_bottom_aligned_child_after_expansion()
 fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(20.0));
-    col_attrs.spacing = Some(16.0);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(20.0)),
+        spacing: Some(16.0),
+        ..Attrs::default()
+    };
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let mut row = make_element("top_row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a
-    });
+    let mut row = make_element("top_row", ElementKind::Row, fill_width_attrs());
 
     let mut para = make_element("para", ElementKind::Paragraph, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.spacing = Some(8.0);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        }
     });
 
     let txt = make_element("txt", ElementKind::Text, text_attrs("AA BB"));
 
     let bottom = make_element("bottom", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(10.0));
-        a.align_y = Some(AlignY::Bottom);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Px(10.0)),
+            align_y: Some(AlignY::Bottom),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -2695,27 +2605,22 @@ fn test_content_height_column_applies_spacing_between_top_and_bottom_zones() {
 fn test_row_expands_height_when_child_paragraph_wraps() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(50.0));
-    col_attrs.spacing = Some(10.0);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Fill);
+    let row_attrs = fill_width_attrs();
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let mut para_attrs = Attrs::default();
-    para_attrs.width = Some(Length::Fill);
+    let para_attrs = fill_width_attrs();
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
 
     let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
 
-    let below = make_element("below", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let below = make_element("below", ElementKind::El, fill_width_box_attrs(20.0));
 
     let col_id = col.id;
     let row_id = row.id;
@@ -2754,36 +2659,25 @@ fn test_row_expands_height_when_child_paragraph_wraps() {
 fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(50.0));
-    col_attrs.height = Some(Length::Px(40.0));
-    col_attrs.spacing = Some(4.0);
+    let col_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        height: Some(Length::Px(40.0)),
+        spacing: Some(4.0),
+        ..Attrs::default()
+    };
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
-    let top = make_element("top", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(8.0));
-        a
-    });
+    let top = make_element("top", ElementKind::El, fill_width_box_attrs(8.0));
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Fill);
-    row_attrs.height = Some(Length::Fill);
+    let row_attrs = fill_box_attrs();
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let mut para_attrs = Attrs::default();
-    para_attrs.width = Some(Length::Fill);
+    let para_attrs = fill_width_attrs();
     let mut para = make_element("para", ElementKind::Paragraph, para_attrs);
 
     let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
 
-    let footer = make_element("footer", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Px(8.0));
-        a
-    });
+    let footer = make_element("footer", ElementKind::El, fill_width_box_attrs(8.0));
 
     let col_id = col.id;
     let top_id = top.id;
@@ -2829,28 +2723,30 @@ fn test_row_weighted_fill_distribution() {
     // - child1: weighted fill 1 -> 1/6 of 300 = 50px
     // - child2: weighted fill 2 -> 2/6 of 300 = 100px
     // - child3: weighted fill 3 -> 3/6 of 300 = 150px
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(300.0));
+    let row_attrs = fixed_width_attrs(300.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(2.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(2.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
     let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(3.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(3.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -2898,28 +2794,24 @@ fn test_row_weighted_fill_with_fixed() {
     // - child1: 100px fixed
     // - child2: weighted fill 1 -> 1/3 of remaining 300 = 100px
     // - child3: weighted fill 2 -> 2/3 of remaining 300 = 200px
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(400.0));
+    let row_attrs = fixed_width_attrs(400.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
-    let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(100.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child1 = make_element("c1", ElementKind::El, fixed_box_attrs(100.0, 30.0));
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
     let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(2.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(2.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -2962,28 +2854,30 @@ fn test_column_weighted_fill_distribution() {
     // - child1: weighted fill 1 -> 1/6 of 300 = 50px
     // - child2: weighted fill 2 -> 2/6 of 300 = 100px
     // - child3: weighted fill 3 -> 3/6 of 300 = 150px
-    let mut col_attrs = Attrs::default();
-    col_attrs.height = Some(Length::Px(300.0));
+    let col_attrs = fixed_height_attrs(300.0);
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillWeighted(1.0));
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::FillWeighted(1.0)),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillWeighted(2.0));
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::FillWeighted(2.0)),
+            ..Attrs::default()
+        }
     });
     let child3 = make_element("c3", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::FillWeighted(3.0));
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::FillWeighted(3.0)),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -3033,22 +2927,23 @@ fn test_fill_and_weighted_fill_mixed() {
     // Total portions = 1 + 3 = 4
     // c1: 400 * 1/4 = 100
     // c2: 400 * 3/4 = 300
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(400.0));
+    let row_attrs = fixed_width_attrs(400.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let child1 = make_element("c1", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill); // Equivalent to weighted fill 1
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::Fill), // Equivalent to weighted fill 1
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(3.0));
-        a.height = Some(Length::Px(30.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(3.0)),
+            height: Some(Length::Px(30.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3083,34 +2978,35 @@ fn test_row_self_alignment_zones() {
     // - left-aligned child (50px)
     // - center-aligned child (50px)
     // - right-aligned child (50px)
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(300.0));
-    row_attrs.height = Some(Length::Px(50.0));
+    let row_attrs = fixed_box_attrs(300.0, 50.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let left_child = make_element("left", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Left);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Left),
+            ..Attrs::default()
+        }
     });
 
     let center_child = make_element("center", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let right_child = make_element("right", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Right);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Right),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3153,25 +3049,23 @@ fn test_row_self_alignment_zones() {
 fn test_wrapped_row_center_alignment_on_wrapped_line() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
-    let wide_child = make_element("wide", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(160.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let wide_child = make_element("wide", ElementKind::El, fixed_box_attrs(160.0, 30.0));
 
     let centered_child = make_element("centered", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3208,25 +3102,23 @@ fn test_wrapped_row_center_alignment_on_wrapped_line() {
 fn test_wrapped_row_right_alignment_on_wrapped_line() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
-    let wide_child = make_element("wide", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(160.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let wide_child = make_element("wide", ElementKind::El, fixed_box_attrs(160.0, 30.0));
 
     let right_child = make_element("right", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Right);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Right),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3263,41 +3155,41 @@ fn test_wrapped_row_right_alignment_on_wrapped_line() {
 fn test_wrapped_row_mixed_alignment_zones_per_line() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.spacing = Some(10.0);
+    let row_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::WrappedRow, row_attrs);
 
-    let wide_child = make_element("wide", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(160.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let wide_child = make_element("wide", ElementKind::El, fixed_box_attrs(160.0, 30.0));
 
     let left_child = make_element("left", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Left);
-        a
+        Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Left),
+            ..Attrs::default()
+        }
     });
 
     let center_child = make_element("center", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Center);
-        a
+        Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Center),
+            ..Attrs::default()
+        }
     });
 
     let right_child = make_element("right", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Right);
-        a
+        Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Right),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3348,34 +3240,35 @@ fn test_column_self_alignment_zones() {
     // - top-aligned child (50px)
     // - center-aligned child (50px)
     // - bottom-aligned child (50px)
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(100.0));
-    col_attrs.height = Some(Length::Px(300.0));
+    let col_attrs = fixed_box_attrs(100.0, 300.0);
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let top_child = make_element("top", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(50.0));
-        a.align_y = Some(AlignY::Top);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(50.0)),
+            align_y: Some(AlignY::Top),
+            ..Attrs::default()
+        }
     });
 
     let center_child = make_element("center", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(50.0));
-        a.align_y = Some(AlignY::Center);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(50.0)),
+            align_y: Some(AlignY::Center),
+            ..Attrs::default()
+        }
     });
 
     let bottom_child = make_element("bottom", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(50.0));
-        a.align_y = Some(AlignY::Bottom);
-        a
+        Attrs {
+            width: Some(Length::Px(50.0)),
+            height: Some(Length::Px(50.0)),
+            align_y: Some(AlignY::Bottom),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -3419,30 +3312,30 @@ fn test_row_with_mixed_alignments_and_vertical() {
     let mut tree = ElementTree::new();
 
     // Row with children at different horizontal and vertical alignments
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(200.0));
-    row_attrs.height = Some(Length::Px(100.0));
+    let row_attrs = fixed_box_attrs(200.0, 100.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     // Left-aligned, top-aligned
     let left_top = make_element("lt", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Left);
-        a.align_y = Some(AlignY::Top);
-        a
+        Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Left),
+            align_y: Some(AlignY::Top),
+            ..Attrs::default()
+        }
     });
 
     // Right-aligned, bottom-aligned
     let right_bottom = make_element("rb", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(40.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Right);
-        a.align_y = Some(AlignY::Bottom);
-        a
+        Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Right),
+            align_y: Some(AlignY::Bottom),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3479,26 +3372,26 @@ fn test_row_with_mixed_alignments_and_vertical() {
 fn test_row_weighted_fill_with_max_length_floors_individual_child() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.width = Some(Length::Px(300.0));
-    row_attrs.height = Some(Length::Px(40.0));
+    let row_attrs = fixed_box_attrs(300.0, 40.0);
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
 
     let min_fill = make_element("min_fill", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Max(
-            Box::new(Length::Px(180.0)),
-            Box::new(Length::FillWeighted(1.0)),
-        ));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::Max(
+                Box::new(Length::Px(180.0)),
+                Box::new(Length::FillWeighted(1.0)),
+            )),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
     let plain_fill = make_element("plain_fill", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3531,26 +3424,26 @@ fn test_row_weighted_fill_with_max_length_floors_individual_child() {
 fn test_column_weighted_fill_with_min_length_caps_individual_child() {
     let mut tree = ElementTree::new();
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.width = Some(Length::Px(100.0));
-    col_attrs.height = Some(Length::Px(300.0));
+    let col_attrs = fixed_box_attrs(100.0, 300.0);
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let max_fill = make_element("max_fill", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Min(
-            Box::new(Length::Px(60.0)),
-            Box::new(Length::FillWeighted(1.0)),
-        ));
-        a.width = Some(Length::Px(40.0));
-        a
+        Attrs {
+            height: Some(Length::Min(
+                Box::new(Length::Px(60.0)),
+                Box::new(Length::FillWeighted(1.0)),
+            )),
+            width: Some(Length::Px(40.0)),
+            ..Attrs::default()
+        }
     });
     let plain_fill = make_element("plain_fill", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::FillWeighted(1.0));
-        a.width = Some(Length::Px(40.0));
-        a
+        Attrs {
+            height: Some(Length::FillWeighted(1.0)),
+            width: Some(Length::Px(40.0)),
+            ..Attrs::default()
+        }
     });
 
     let col_id = col.id;
@@ -3583,27 +3476,24 @@ fn test_column_weighted_fill_with_min_length_caps_individual_child() {
 fn test_row_min_length_resolves_multiple_fill_leaves_recursively() {
     let mut tree = ElementTree::new();
 
-    let mut row = make_element("row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(300.0));
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let mut row = make_element("row", ElementKind::Row, fixed_box_attrs(300.0, 40.0));
 
     let first = make_element("first", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Min(
-            Box::new(Length::FillWeighted(2.0)),
-            Box::new(Length::FillWeighted(1.0)),
-        ));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::Min(
+                Box::new(Length::FillWeighted(2.0)),
+                Box::new(Length::FillWeighted(1.0)),
+            )),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
     let second = make_element("second", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3635,27 +3525,24 @@ fn test_row_min_length_resolves_multiple_fill_leaves_recursively() {
 fn test_row_max_length_resolves_multiple_fill_leaves_recursively() {
     let mut tree = ElementTree::new();
 
-    let mut row = make_element("row", ElementKind::Row, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(300.0));
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let mut row = make_element("row", ElementKind::Row, fixed_box_attrs(300.0, 40.0));
 
     let first = make_element("first", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Max(
-            Box::new(Length::FillWeighted(2.0)),
-            Box::new(Length::FillWeighted(1.0)),
-        ));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::Max(
+                Box::new(Length::FillWeighted(2.0)),
+                Box::new(Length::FillWeighted(1.0)),
+            )),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
     let second = make_element("second", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::FillWeighted(1.0));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::FillWeighted(1.0)),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -3687,60 +3574,62 @@ fn test_row_max_length_resolves_multiple_fill_leaves_recursively() {
 fn test_column_min_content_fill_caps_scroll_region_before_footer() {
     let mut tree = ElementTree::new();
 
-    let mut root = make_element("root", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(200.0));
-        a.height = Some(Length::Px(300.0));
-        a
-    });
+    let mut root = make_element("root", ElementKind::Column, fixed_box_attrs(200.0, 300.0));
     let title = make_element("title", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Px(50.0));
-        a.width = Some(Length::Fill);
-        a
+        Attrs {
+            height: Some(Length::Px(50.0)),
+            width: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
     let mut app = make_element("app", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Min(
-            Box::new(Length::Content),
-            Box::new(Length::Fill),
-        ));
-        a.width = Some(Length::Fill);
-        a
+        Attrs {
+            height: Some(Length::Min(
+                Box::new(Length::Content),
+                Box::new(Length::Fill),
+            )),
+            width: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
     let input = make_element("input", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Px(50.0));
-        a.width = Some(Length::Fill);
-        a
+        Attrs {
+            height: Some(Length::Px(50.0)),
+            width: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
     let mut entries = make_element("entries", ElementKind::Column, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Fill);
-        a.width = Some(Length::Fill);
-        a.scrollbar_y = Some(true);
-        a
+        Attrs {
+            height: Some(Length::Fill),
+            width: Some(Length::Fill),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        }
     });
     let controls = make_element("controls", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Px(30.0));
-        a.width = Some(Length::Fill);
-        a
+        Attrs {
+            height: Some(Length::Px(30.0)),
+            width: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
     let footer = make_element("footer", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.height = Some(Length::Px(20.0));
-        a.width = Some(Length::Fill);
-        a
+        Attrs {
+            height: Some(Length::Px(20.0)),
+            width: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let row_ids: Vec<NodeId> = (0..6)
         .map(|index| {
             let row = make_element(&format!("row_{index}"), ElementKind::El, {
-                let mut a = Attrs::default();
-                a.height = Some(Length::Px(50.0));
-                a.width = Some(Length::Fill);
-                a
+                Attrs {
+                    height: Some(Length::Px(50.0)),
+                    width: Some(Length::Fill),
+                    ..Attrs::default()
+                }
             });
             let id = row.id;
             tree.insert(row);

@@ -14,21 +14,72 @@ fn assert_approx(actual: f32, expected: f32) {
     );
 }
 
+fn nodes_without_dynamic_paint_boundaries(
+    nodes: Vec<crate::render_scene::RenderNode>,
+) -> Vec<crate::render_scene::RenderNode> {
+    nodes
+        .into_iter()
+        .flat_map(|node| match node {
+            crate::render_scene::RenderNode::ShadowPass { children } => {
+                vec![crate::render_scene::RenderNode::ShadowPass {
+                    children: nodes_without_dynamic_paint_boundaries(children),
+                }]
+            }
+            crate::render_scene::RenderNode::Clip { clips, children } => {
+                vec![crate::render_scene::RenderNode::Clip {
+                    clips,
+                    children: nodes_without_dynamic_paint_boundaries(children),
+                }]
+            }
+            crate::render_scene::RenderNode::RelaxedClip { clips, children } => {
+                vec![crate::render_scene::RenderNode::RelaxedClip {
+                    clips,
+                    children: nodes_without_dynamic_paint_boundaries(children),
+                }]
+            }
+            crate::render_scene::RenderNode::Transform {
+                transform,
+                children,
+            } => vec![crate::render_scene::RenderNode::Transform {
+                transform,
+                children: nodes_without_dynamic_paint_boundaries(children),
+            }],
+            crate::render_scene::RenderNode::Alpha { alpha, children } => {
+                vec![crate::render_scene::RenderNode::Alpha {
+                    alpha,
+                    children: nodes_without_dynamic_paint_boundaries(children),
+                }]
+            }
+            crate::render_scene::RenderNode::PaintLayer(mut layer) => {
+                if layer.policy == crate::render_scene::PaintLayerPolicy::DynamicRedraw {
+                    nodes_without_dynamic_paint_boundaries(layer.children)
+                } else {
+                    layer.children = nodes_without_dynamic_paint_boundaries(layer.children);
+                    vec![crate::render_scene::RenderNode::PaintLayer(layer)]
+                }
+            }
+            crate::render_scene::RenderNode::Primitive(_) => vec![node],
+        })
+        .collect()
+}
+
 fn fixed_attrs(width: f64, height: f64) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(width));
-    attrs.height = Some(Length::Px(height));
-    attrs
+    Attrs {
+        width: Some(Length::Px(width)),
+        height: Some(Length::Px(height)),
+        ..Attrs::default()
+    }
 }
 
 fn root_shell_attrs(layout_scale: Option<f64>) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Fill);
-    attrs.height = Some(Length::Fill);
-    attrs.padding = Some(Padding::Uniform(12.0));
-    attrs.spacing = Some(8.0);
-    attrs.layout_scale = layout_scale;
-    attrs
+    Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        padding: Some(Padding::Uniform(12.0)),
+        spacing: Some(8.0),
+        layout_scale,
+        ..Attrs::default()
+    }
 }
 
 fn raw_root_shell_attrs(layout_scale: Option<f64>) -> Vec<u8> {
@@ -86,8 +137,10 @@ fn scaled_shell_tree(layout_scale: Option<f64>) -> (ElementTree, NodeId) {
     let title = make_element("scale_shell_title", ElementKind::Text, title_attrs);
     let title_id = title.id;
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.spacing = Some(4.0);
+    let row_attrs = Attrs {
+        spacing: Some(4.0),
+        ..Attrs::default()
+    };
     let mut row = make_element("scale_shell_row", ElementKind::Row, row_attrs);
     let row_id = row.id;
 
@@ -190,7 +243,10 @@ fn root_layout_scale_patch_matches_fresh_scaled_layout_and_render_scene() {
     let (mut fresh, _fresh_root_id) = scaled_shell_tree(Some(1.25));
     let fresh_output = layout_and_refresh_default(&mut fresh, Constraint::new(480.0, 320.0), 1.0);
 
-    assert_eq!(patched_output.scene.nodes, fresh_output.scene.nodes);
+    assert_eq!(
+        nodes_without_dynamic_paint_boundaries(patched_output.scene.nodes),
+        nodes_without_dynamic_paint_boundaries(fresh_output.scene.nodes)
+    );
 }
 
 #[test]
@@ -225,15 +281,20 @@ fn root_layout_rotate_patch_matches_fresh_rotated_layout_and_render_scene() {
         .layout_rotate = Some(90.0);
     let fresh_output = layout_and_refresh_default(&mut fresh, Constraint::new(480.0, 320.0), 1.0);
 
-    assert_eq!(patched_output.scene.nodes, fresh_output.scene.nodes);
+    assert_eq!(
+        nodes_without_dynamic_paint_boundaries(patched_output.scene.nodes),
+        nodes_without_dynamic_paint_boundaries(fresh_output.scene.nodes)
+    );
 }
 
 #[test]
 fn nested_layout_scales_multiply_down_the_subtree() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.layout_scale = Some(2.0);
+    let root_attrs = Attrs {
+        layout_scale: Some(2.0),
+        ..Attrs::default()
+    };
     let mut root = make_element("root", ElementKind::Column, root_attrs);
 
     let mut child_attrs = fixed_attrs(20.0, 10.0);
@@ -261,10 +322,12 @@ fn nested_layout_scales_multiply_down_the_subtree() {
 fn root_layout_scale_animation_scales_descendant_attrs() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Fill);
-    root_attrs.animate = Some(layout_scale_animation_spec(1.0, 2.0));
+    let root_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        animate: Some(layout_scale_animation_spec(1.0, 2.0)),
+        ..Attrs::default()
+    };
     let mut root = make_element("animated_scale_root", ElementKind::Column, root_attrs);
     let root_id = root.id;
 
@@ -315,12 +378,16 @@ fn layout_scale_animation_scales_same_frame_pixel_keyframes() {
     );
     let root_id = root.id;
 
-    let mut from = Attrs::default();
-    from.layout_scale = Some(1.0);
-    from.width = Some(Length::Px(20.0));
-    let mut to = Attrs::default();
-    to.layout_scale = Some(2.0);
-    to.width = Some(Length::Px(40.0));
+    let from = Attrs {
+        layout_scale: Some(1.0),
+        width: Some(Length::Px(20.0)),
+        ..Attrs::default()
+    };
+    let to = Attrs {
+        layout_scale: Some(2.0),
+        width: Some(Length::Px(40.0)),
+        ..Attrs::default()
+    };
 
     let mut child_attrs = fixed_attrs(20.0, 10.0);
     child_attrs.animate = Some(AnimationSpec {
@@ -370,10 +437,14 @@ fn layout_rotate_animation_reserves_sampled_aabb() {
     let mut row = make_element("animated_rotate_row", ElementKind::Row, Attrs::default());
     let row_id = row.id;
 
-    let mut from = Attrs::default();
-    from.layout_rotate = Some(0.0);
-    let mut to = Attrs::default();
-    to.layout_rotate = Some(90.0);
+    let from = Attrs {
+        layout_rotate: Some(0.0),
+        ..Attrs::default()
+    };
+    let to = Attrs {
+        layout_rotate: Some(90.0),
+        ..Attrs::default()
+    };
     let mut child_attrs = fixed_attrs(100.0, 40.0);
     child_attrs.animate = Some(AnimationSpec {
         keyframes: vec![from, to],
@@ -424,10 +495,12 @@ fn layout_rotate_animation_reserves_sampled_aabb() {
 fn root_layout_scale_nearby_exit_ghost_keeps_captured_size() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Fill);
-    root_attrs.layout_scale = Some(1.25);
+    let root_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        layout_scale: Some(1.25),
+        ..Attrs::default()
+    };
     let root = make_element("root", ElementKind::El, root_attrs);
     let root_id = root.id;
 
@@ -467,10 +540,12 @@ fn root_layout_scale_nearby_exit_ghost_keeps_captured_size() {
 fn root_layout_scale_nearby_exit_ghost_keeps_size_when_subtree_scale_pass_runs() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Fill);
-    root_attrs.layout_scale = Some(1.25);
+    let root_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        layout_scale: Some(1.25),
+        ..Attrs::default()
+    };
     let mut root = make_element("root_with_scaled_child", ElementKind::El, root_attrs);
     let root_id = root.id;
 
@@ -550,11 +625,15 @@ fn non_root_quarter_rotate_reserves_aabb_and_keeps_render_frame_centered() {
 }
 
 fn exit_alpha_spec() -> AnimationSpec {
-    let mut from = Attrs::default();
-    from.alpha = Some(1.0);
+    let from = Attrs {
+        alpha: Some(1.0),
+        ..Attrs::default()
+    };
 
-    let mut to = Attrs::default();
-    to.alpha = Some(0.1);
+    let to = Attrs {
+        alpha: Some(0.1),
+        ..Attrs::default()
+    };
 
     AnimationSpec {
         keyframes: vec![from, to],
@@ -565,11 +644,15 @@ fn exit_alpha_spec() -> AnimationSpec {
 }
 
 fn layout_scale_animation_spec(from_scale: f64, to_scale: f64) -> AnimationSpec {
-    let mut from = Attrs::default();
-    from.layout_scale = Some(from_scale);
+    let from = Attrs {
+        layout_scale: Some(from_scale),
+        ..Attrs::default()
+    };
 
-    let mut to = Attrs::default();
-    to.layout_scale = Some(to_scale);
+    let to = Attrs {
+        layout_scale: Some(to_scale),
+        ..Attrs::default()
+    };
 
     AnimationSpec {
         keyframes: vec![from, to],
@@ -606,10 +689,12 @@ fn arbitrary_rotate_uses_aabb_reservation() {
 #[test]
 fn root_quarter_rotate_swaps_logical_constraints_and_fits_physical_viewport() {
     let mut tree = ElementTree::new();
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Fill);
-    attrs.height = Some(Length::Fill);
-    attrs.layout_rotate = Some(90.0);
+    let attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        layout_rotate: Some(90.0),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id;
@@ -631,11 +716,13 @@ fn root_quarter_rotate_swaps_logical_constraints_and_fits_physical_viewport() {
 #[test]
 fn root_quarter_rotate_places_nearby_inside_logical_render_frame() {
     let mut tree = ElementTree::new();
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Fill);
-    attrs.height = Some(Length::Fill);
-    attrs.clip_nearby = Some(true);
-    attrs.layout_rotate = Some(90.0);
+    let attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        clip_nearby: Some(true),
+        layout_rotate: Some(90.0),
+        ..Attrs::default()
+    };
 
     let root = make_element("rotated_root_with_nearby", ElementKind::El, attrs);
     let root_id = root.id;

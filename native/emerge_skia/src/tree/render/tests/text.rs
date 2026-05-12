@@ -7,12 +7,14 @@ use super::*;
 
 #[test]
 fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Decorated".to_string());
-    attrs.font_size = Some(18.0);
-    attrs.font_color = Some(Color::Rgb { r: 1, g: 2, b: 3 });
-    attrs.font_underline = Some(true);
-    attrs.font_strike = Some(true);
+    let attrs = Attrs {
+        content: Some("Decorated".to_string()),
+        font_size: Some(18.0),
+        font_color: Some(Color::Rgb { r: 1, g: 2, b: 3 }),
+        font_underline: Some(true),
+        font_strike: Some(true),
+        ..Attrs::default()
+    };
 
     let tree = build_text_tree_with_frame(
         attrs,
@@ -55,9 +57,11 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
 
 #[test]
 fn test_render_text_defaults_to_black() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Default".to_string());
-    attrs.font_size = Some(16.0);
+    let attrs = Attrs {
+        content: Some("Default".to_string()),
+        font_size: Some(16.0),
+        ..Attrs::default()
+    };
 
     let tree = build_text_tree_with_frame(
         attrs,
@@ -87,11 +91,13 @@ fn test_render_text_defaults_to_black() {
 
 #[test]
 fn test_render_text_with_spacing_emits_per_glyph_commands() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("A A".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.font_letter_spacing = Some(4.0);
-    attrs.font_word_spacing = Some(6.0);
+    let attrs = Attrs {
+        content: Some("A A".to_string()),
+        font_size: Some(16.0),
+        font_letter_spacing: Some(4.0),
+        font_word_spacing: Some(6.0),
+        ..Attrs::default()
+    };
 
     let tree = build_text_tree_with_frame(
         attrs,
@@ -127,11 +133,13 @@ fn test_render_text_with_spacing_emits_per_glyph_commands() {
 
 #[test]
 fn test_render_text_insets_by_padding_and_border() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Inset".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.padding = Some(Padding::Uniform(4.0));
-    attrs.border_width = Some(BorderWidth::Uniform(3.0));
+    let attrs = Attrs {
+        content: Some("Inset".to_string()),
+        font_size: Some(16.0),
+        padding: Some(Padding::Uniform(4.0)),
+        border_width: Some(BorderWidth::Uniform(3.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_text_tree_with_frame(
         attrs,
@@ -164,10 +172,12 @@ fn test_render_text_insets_by_padding_and_border() {
 
 #[test]
 fn test_render_text_leaf_uses_host_clip() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Menu".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.font_color = Some(Color::Named("white".to_string()));
+    let attrs = Attrs {
+        content: Some("Menu".to_string()),
+        font_size: Some(16.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
 
     let tree = build_text_tree_with_frame(
         attrs,
@@ -193,13 +203,15 @@ fn test_render_text_leaf_uses_host_clip() {
 
 #[test]
 fn test_render_text_input_preedit_underlines_segment_and_reports_composition_caret() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("quick".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.text_input_focused = Some(true);
-    attrs.text_input_cursor = Some(2);
-    attrs.text_input_preedit = Some("xy".to_string());
-    attrs.text_input_preedit_cursor = Some((1, 1));
+    let attrs = Attrs {
+        content: Some("quick".to_string()),
+        font_size: Some(16.0),
+        text_input_focused: Some(true),
+        text_input_cursor: Some(2),
+        text_input_preedit: Some("xy".to_string()),
+        text_input_preedit_cursor: Some((1, 1)),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 10.0,
@@ -279,12 +291,14 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
 
 #[test]
 fn test_render_text_input_selection_emits_highlight_rect() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("hello".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.text_input_focused = Some(true);
-    attrs.text_input_cursor = Some(4);
-    attrs.text_input_selection_anchor = Some(1);
+    let attrs = Attrs {
+        content: Some("hello".to_string()),
+        font_size: Some(16.0),
+        text_input_focused: Some(true),
+        text_input_cursor: Some(4),
+        text_input_selection_anchor: Some(1),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 10.0,
@@ -310,11 +324,13 @@ fn test_render_text_input_selection_emits_highlight_rect() {
 
 #[test]
 fn test_render_multiline_text_input_places_caret_on_wrapped_second_line() {
-    let mut attrs = Attrs::default();
-    attrs.content = Some("abcd".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.text_input_focused = Some(true);
-    attrs.text_input_cursor = Some(4);
+    let attrs = Attrs {
+        content: Some("abcd".to_string()),
+        font_size: Some(16.0),
+        text_input_focused: Some(true),
+        text_input_cursor: Some(4),
+        ..Attrs::default()
+    };
 
     let frame = Frame {
         x: 10.0,
@@ -346,13 +362,15 @@ fn test_render_scrollable_text_column_emits_text_commands() {
     let row2_id = NodeId::from_term_bytes(vec![54]);
     let row2_text_id = NodeId::from_term_bytes(vec![55]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 45,
-        g: 45,
-        b: 65,
-    }));
-    root_attrs.scrollbar_y = Some(true);
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 45,
+            g: 45,
+            b: 65,
+        })),
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![column_id];
     root.layout.frame = Some(Frame {
@@ -387,10 +405,12 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         content_height: 20.0,
     });
 
-    let mut row1_text_attrs = Attrs::default();
-    row1_text_attrs.content = Some("Scrollable item 1".to_string());
-    row1_text_attrs.font_size = Some(12.0);
-    row1_text_attrs.font_color = Some(Color::Named("white".to_string()));
+    let row1_text_attrs = Attrs {
+        content: Some("Scrollable item 1".to_string()),
+        font_size: Some(12.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
     let mut row1_text =
         Element::with_attrs(row1_text_id, ElementKind::Text, Vec::new(), row1_text_attrs);
     row1_text.layout.frame = Some(Frame {
@@ -413,10 +433,12 @@ fn test_render_scrollable_text_column_emits_text_commands() {
         content_height: 20.0,
     });
 
-    let mut row2_text_attrs = Attrs::default();
-    row2_text_attrs.content = Some("Scrollable item 2".to_string());
-    row2_text_attrs.font_size = Some(12.0);
-    row2_text_attrs.font_color = Some(Color::Named("white".to_string()));
+    let row2_text_attrs = Attrs {
+        content: Some("Scrollable item 2".to_string()),
+        font_size: Some(12.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
     let mut row2_text =
         Element::with_attrs(row2_text_id, ElementKind::Text, Vec::new(), row2_text_attrs);
     row2_text.layout.frame = Some(Frame {
@@ -451,9 +473,11 @@ fn test_render_scrollable_text_column_emits_text_commands() {
 
 #[test]
 fn test_nearby_text_inherits_parent_font_context() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    attrs.font_size = Some(24.0);
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        font_size: Some(24.0),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -467,8 +491,10 @@ fn test_nearby_text_inherits_parent_font_context() {
         },
     );
     let host_id = tree.root_id().unwrap();
-    let mut nearby_attrs = Attrs::default();
-    nearby_attrs.content = Some("Hi".to_string());
+    let nearby_attrs = Attrs {
+        content: Some("Hi".to_string()),
+        ..Attrs::default()
+    };
     mount_nearby(
         &mut tree,
         &host_id,

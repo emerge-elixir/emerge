@@ -9,11 +9,13 @@ fn test_layout_with_scale() {
     let mut tree = ElementTree::new();
 
     // Element with width=100px, height=50px, padding=10px, font_size=16
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(50.0));
-    attrs.padding = Some(Padding::Uniform(10.0));
-    attrs.font_size = Some(16.0);
+    let attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(50.0)),
+        padding: Some(Padding::Uniform(10.0)),
+        font_size: Some(16.0),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -48,11 +50,13 @@ fn test_layout_with_scale() {
 fn test_layout_with_scale_scales_font_spacing() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.content = Some("a b".to_string());
-    attrs.font_size = Some(10.0);
-    attrs.font_letter_spacing = Some(2.0);
-    attrs.font_word_spacing = Some(3.0);
+    let attrs = Attrs {
+        content: Some("a b".to_string()),
+        font_size: Some(10.0),
+        font_letter_spacing: Some(2.0),
+        font_word_spacing: Some(3.0),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::Text, attrs);
     let root_id = el.id;
@@ -78,15 +82,17 @@ fn test_layout_scale_min_max_lengths() {
     let mut tree = ElementTree::new();
 
     // Element with width=max(100px, fill), height=min(200px, fill)
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Max(
-        Box::new(Length::Px(100.0)),
-        Box::new(Length::Fill),
-    ));
-    attrs.height = Some(Length::Min(
-        Box::new(Length::Px(200.0)),
-        Box::new(Length::Fill),
-    ));
+    let attrs = Attrs {
+        width: Some(Length::Max(
+            Box::new(Length::Px(100.0)),
+            Box::new(Length::Fill),
+        )),
+        height: Some(Length::Min(
+            Box::new(Length::Px(200.0)),
+            Box::new(Length::Fill),
+        )),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -113,46 +119,48 @@ fn test_layout_scale_min_max_lengths() {
 fn test_mouse_over_styles_are_applied_in_layout_pass() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(40.0));
-    attrs.background = Some(crate::tree::attrs::Background::Color(
-        crate::tree::attrs::Color::Rgb {
-            r: 10,
-            g: 20,
-            b: 30,
-        },
-    ));
-    attrs.mouse_over = Some(MouseOverAttrs {
+    let attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(40.0)),
         background: Some(crate::tree::attrs::Background::Color(
             crate::tree::attrs::Color::Rgb {
-                r: 200,
-                g: 100,
-                b: 50,
+                r: 10,
+                g: 20,
+                b: 30,
             },
         )),
-        border_radius: Some(BorderRadius::Uniform(6.0)),
-        border_width: Some(BorderWidth::Sides {
-            top: 1.0,
-            right: 2.0,
-            bottom: 3.0,
-            left: 4.0,
+        mouse_over: Some(MouseOverAttrs {
+            background: Some(crate::tree::attrs::Background::Color(
+                crate::tree::attrs::Color::Rgb {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
+            )),
+            border_radius: Some(BorderRadius::Uniform(6.0)),
+            border_width: Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            }),
+            border_style: Some(BorderStyle::Dashed),
+            font: Some(Font::Atom("display".to_string())),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_style: Some(FontStyle("italic".to_string())),
+            font_size: Some(22.0),
+            font_underline: Some(true),
+            font_strike: Some(true),
+            font_letter_spacing: Some(3.0),
+            font_word_spacing: Some(4.0),
+            text_align: Some(TextAlign::Center),
+            move_x: Some(5.0),
+            alpha: Some(0.5),
+            ..Default::default()
         }),
-        border_style: Some(BorderStyle::Dashed),
-        font: Some(Font::Atom("display".to_string())),
-        font_weight: Some(FontWeight("bold".to_string())),
-        font_style: Some(FontStyle("italic".to_string())),
-        font_size: Some(22.0),
-        font_underline: Some(true),
-        font_strike: Some(true),
-        font_letter_spacing: Some(3.0),
-        font_word_spacing: Some(4.0),
-        text_align: Some(TextAlign::Center),
-        move_x: Some(5.0),
-        alpha: Some(0.5),
-        ..Default::default()
-    });
-    attrs.mouse_over_active = Some(true);
+        mouse_over_active: Some(true),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id;
@@ -220,26 +228,28 @@ fn test_mouse_over_styles_are_applied_in_layout_pass() {
 fn test_refresh_with_frame_attrs_applies_mouse_over_styles() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(40.0));
-    attrs.background = Some(crate::tree::attrs::Background::Color(
-        crate::tree::attrs::Color::Rgb {
-            r: 10,
-            g: 20,
-            b: 30,
-        },
-    ));
-    attrs.mouse_over = Some(MouseOverAttrs {
+    let attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(40.0)),
         background: Some(crate::tree::attrs::Background::Color(
             crate::tree::attrs::Color::Rgb {
-                r: 200,
-                g: 100,
-                b: 50,
+                r: 10,
+                g: 20,
+                b: 30,
             },
         )),
-        ..Default::default()
-    });
+        mouse_over: Some(MouseOverAttrs {
+            background: Some(crate::tree::attrs::Background::Color(
+                crate::tree::attrs::Color::Rgb {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                },
+            )),
+            ..Default::default()
+        }),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id;
@@ -268,85 +278,87 @@ fn test_refresh_with_frame_attrs_applies_mouse_over_styles() {
 fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(40.0));
-    attrs.mouse_over = Some(MouseOverAttrs {
-        border_width: Some(BorderWidth::Uniform(1.0)),
-        border_style: Some(BorderStyle::Dashed),
-        border_color: Some(crate::tree::attrs::Color::Rgb {
-            r: 160,
-            g: 90,
-            b: 70,
+    let attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(40.0)),
+        mouse_over: Some(MouseOverAttrs {
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            border_style: Some(BorderStyle::Dashed),
+            border_color: Some(crate::tree::attrs::Color::Rgb {
+                r: 160,
+                g: 90,
+                b: 70,
+            }),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 0.0,
+                offset_y: 1.0,
+                blur: 4.0,
+                size: 0.0,
+                color: crate::tree::attrs::Color::Named("black".to_string()),
+                inset: false,
+            }]),
+            font: Some(Font::Atom("hover".to_string())),
+            font_size: Some(18.0),
+            text_align: Some(TextAlign::Left),
+            move_x: Some(5.0),
+            ..Default::default()
         }),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 0.0,
-            offset_y: 1.0,
-            blur: 4.0,
-            size: 0.0,
-            color: crate::tree::attrs::Color::Named("black".to_string()),
-            inset: false,
-        }]),
-        font: Some(Font::Atom("hover".to_string())),
-        font_size: Some(18.0),
-        text_align: Some(TextAlign::Left),
-        move_x: Some(5.0),
-        ..Default::default()
-    });
-    attrs.focused = Some(MouseOverAttrs {
-        border_width: Some(BorderWidth::Uniform(2.0)),
-        border_style: Some(BorderStyle::Solid),
-        border_color: Some(crate::tree::attrs::Color::Rgb {
-            r: 80,
-            g: 160,
-            b: 90,
+        focused: Some(MouseOverAttrs {
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            border_style: Some(BorderStyle::Solid),
+            border_color: Some(crate::tree::attrs::Color::Rgb {
+                r: 80,
+                g: 160,
+                b: 90,
+            }),
+            font: Some(Font::Atom("focus".to_string())),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_style: Some(FontStyle("italic".to_string())),
+            font_size: Some(24.0),
+            font_color: Some(crate::tree::attrs::Color::Rgb {
+                r: 220,
+                g: 240,
+                b: 255,
+            }),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 8.0,
+                size: 2.0,
+                color: crate::tree::attrs::Color::Named("cyan".to_string()),
+                inset: false,
+            }]),
+            text_align: Some(TextAlign::Center),
+            alpha: Some(0.8),
+            ..Default::default()
         }),
-        font: Some(Font::Atom("focus".to_string())),
-        font_weight: Some(FontWeight("bold".to_string())),
-        font_style: Some(FontStyle("italic".to_string())),
-        font_size: Some(24.0),
-        font_color: Some(crate::tree::attrs::Color::Rgb {
-            r: 220,
-            g: 240,
-            b: 255,
+        mouse_down: Some(MouseOverAttrs {
+            border_width: Some(BorderWidth::Uniform(3.0)),
+            border_style: Some(BorderStyle::Dotted),
+            border_color: Some(crate::tree::attrs::Color::Rgb {
+                r: 70,
+                g: 90,
+                b: 180,
+            }),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 0.0,
+                offset_y: 1.0,
+                blur: 6.0,
+                size: 1.0,
+                color: crate::tree::attrs::Color::Named("white".to_string()),
+                inset: true,
+            }]),
+            font: Some(Font::String("pressed".to_string())),
+            font_size: Some(30.0),
+            text_align: Some(TextAlign::Right),
+            move_y: Some(-2.0),
+            ..Default::default()
         }),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            blur: 8.0,
-            size: 2.0,
-            color: crate::tree::attrs::Color::Named("cyan".to_string()),
-            inset: false,
-        }]),
-        text_align: Some(TextAlign::Center),
-        alpha: Some(0.8),
-        ..Default::default()
-    });
-    attrs.mouse_down = Some(MouseOverAttrs {
-        border_width: Some(BorderWidth::Uniform(3.0)),
-        border_style: Some(BorderStyle::Dotted),
-        border_color: Some(crate::tree::attrs::Color::Rgb {
-            r: 70,
-            g: 90,
-            b: 180,
-        }),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 0.0,
-            offset_y: 1.0,
-            blur: 6.0,
-            size: 1.0,
-            color: crate::tree::attrs::Color::Named("white".to_string()),
-            inset: true,
-        }]),
-        font: Some(Font::String("pressed".to_string())),
-        font_size: Some(30.0),
-        text_align: Some(TextAlign::Right),
-        move_y: Some(-2.0),
-        ..Default::default()
-    });
-    attrs.mouse_over_active = Some(true);
-    attrs.focused_active = Some(true);
-    attrs.mouse_down_active = Some(true);
+        mouse_over_active: Some(true),
+        focused_active: Some(true),
+        mouse_down_active: Some(true),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::TextInput, attrs);
     let root_id = root.id;
@@ -419,37 +431,39 @@ fn test_interaction_style_merge_order_prefers_mouse_down_on_conflict() {
 
 #[test]
 fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Max(
-        Box::new(Length::Px(10.0)),
-        Box::new(Length::Min(
-            Box::new(Length::Px(20.0)),
-            Box::new(Length::Px(30.0)),
+    let attrs = Attrs {
+        width: Some(Length::Max(
+            Box::new(Length::Px(10.0)),
+            Box::new(Length::Min(
+                Box::new(Length::Px(20.0)),
+                Box::new(Length::Px(30.0)),
+            )),
         )),
-    ));
-    attrs.border_width = Some(BorderWidth::Sides {
-        top: 1.0,
-        right: 2.0,
-        bottom: 3.0,
-        left: 4.0,
-    });
-    attrs.border_radius = Some(crate::tree::attrs::BorderRadius::Corners {
-        tl: 2.0,
-        tr: 4.0,
-        br: 6.0,
-        bl: 8.0,
-    });
-    attrs.box_shadows = Some(vec![crate::tree::attrs::BoxShadow {
-        offset_x: 1.0,
-        offset_y: -2.0,
-        blur: 3.0,
-        size: 4.0,
-        color: crate::tree::attrs::Color::Named("black".to_string()),
-        inset: false,
-    }]);
-    attrs.move_x = Some(3.0);
-    attrs.move_y = Some(-2.0);
-    attrs.scroll_x = Some(5.0);
+        border_width: Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        }),
+        border_radius: Some(crate::tree::attrs::BorderRadius::Corners {
+            tl: 2.0,
+            tr: 4.0,
+            br: 6.0,
+            bl: 8.0,
+        }),
+        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+            offset_x: 1.0,
+            offset_y: -2.0,
+            blur: 3.0,
+            size: 4.0,
+            color: crate::tree::attrs::Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        move_x: Some(3.0),
+        move_y: Some(-2.0),
+        scroll_x: Some(5.0),
+        ..Attrs::default()
+    };
 
     let scaled = scale_attrs(&attrs, 1.5);
 
@@ -499,80 +513,82 @@ fn test_scale_attrs_scales_border_shadow_motion_and_scroll_fields() {
 
 #[test]
 fn test_scale_attrs_scales_mouse_over_numeric_fields() {
-    let mut attrs = Attrs::default();
-    attrs.mouse_over = Some(MouseOverAttrs {
-        border_radius: Some(BorderRadius::Corners {
-            tl: 1.0,
-            tr: 2.0,
-            br: 3.0,
-            bl: 4.0,
+    let attrs = Attrs {
+        mouse_over: Some(MouseOverAttrs {
+            border_radius: Some(BorderRadius::Corners {
+                tl: 1.0,
+                tr: 2.0,
+                br: 3.0,
+                bl: 4.0,
+            }),
+            border_width: Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            }),
+            border_style: Some(BorderStyle::Dashed),
+            font: Some(Font::Atom("display".to_string())),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_style: Some(FontStyle("italic".to_string())),
+            font_size: Some(12.0),
+            font_letter_spacing: Some(1.0),
+            font_word_spacing: Some(2.0),
+            text_align: Some(TextAlign::Center),
+            move_x: Some(-3.0),
+            move_y: Some(4.0),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 1.0,
+                offset_y: -2.0,
+                blur: 3.0,
+                size: 4.0,
+                color: crate::tree::attrs::Color::Named("black".to_string()),
+                inset: false,
+            }]),
+            ..Default::default()
         }),
-        border_width: Some(BorderWidth::Sides {
-            top: 1.0,
-            right: 2.0,
-            bottom: 3.0,
-            left: 4.0,
+        focused: Some(MouseOverAttrs {
+            border_radius: Some(BorderRadius::Uniform(5.0)),
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            border_style: Some(BorderStyle::Dotted),
+            font: Some(Font::String("mono".to_string())),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_style: Some(FontStyle("italic".to_string())),
+            font_size: Some(10.0),
+            alpha: Some(0.5),
+            text_align: Some(TextAlign::Right),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 6.0,
+                size: 1.0,
+                color: crate::tree::attrs::Color::Named("blue".to_string()),
+                inset: false,
+            }]),
+            ..Default::default()
         }),
-        border_style: Some(BorderStyle::Dashed),
-        font: Some(Font::Atom("display".to_string())),
-        font_weight: Some(FontWeight("bold".to_string())),
-        font_style: Some(FontStyle("italic".to_string())),
-        font_size: Some(12.0),
-        font_letter_spacing: Some(1.0),
-        font_word_spacing: Some(2.0),
-        text_align: Some(TextAlign::Center),
-        move_x: Some(-3.0),
-        move_y: Some(4.0),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 1.0,
-            offset_y: -2.0,
-            blur: 3.0,
-            size: 4.0,
-            color: crate::tree::attrs::Color::Named("black".to_string()),
-            inset: false,
-        }]),
-        ..Default::default()
-    });
-    attrs.focused = Some(MouseOverAttrs {
-        border_radius: Some(BorderRadius::Uniform(5.0)),
-        border_width: Some(BorderWidth::Uniform(2.0)),
-        border_style: Some(BorderStyle::Dotted),
-        font: Some(Font::String("mono".to_string())),
-        font_weight: Some(FontWeight("bold".to_string())),
-        font_style: Some(FontStyle("italic".to_string())),
-        font_size: Some(10.0),
-        alpha: Some(0.5),
-        text_align: Some(TextAlign::Right),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            blur: 6.0,
-            size: 1.0,
-            color: crate::tree::attrs::Color::Named("blue".to_string()),
-            inset: false,
-        }]),
-        ..Default::default()
-    });
-    attrs.mouse_down = Some(MouseOverAttrs {
-        border_radius: Some(BorderRadius::Uniform(2.0)),
-        border_width: Some(BorderWidth::Uniform(1.5)),
-        border_style: Some(BorderStyle::Solid),
-        font: Some(Font::Atom("serif".to_string())),
-        font_weight: Some(FontWeight("bold".to_string())),
-        font_style: Some(FontStyle("italic".to_string())),
-        move_x: Some(3.0),
-        move_y: Some(-2.0),
-        text_align: Some(TextAlign::Left),
-        box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
-            offset_x: 0.5,
-            offset_y: 1.5,
-            blur: 2.0,
-            size: 0.5,
-            color: crate::tree::attrs::Color::Named("white".to_string()),
-            inset: true,
-        }]),
-        ..Default::default()
-    });
+        mouse_down: Some(MouseOverAttrs {
+            border_radius: Some(BorderRadius::Uniform(2.0)),
+            border_width: Some(BorderWidth::Uniform(1.5)),
+            border_style: Some(BorderStyle::Solid),
+            font: Some(Font::Atom("serif".to_string())),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_style: Some(FontStyle("italic".to_string())),
+            move_x: Some(3.0),
+            move_y: Some(-2.0),
+            text_align: Some(TextAlign::Left),
+            box_shadows: Some(vec![crate::tree::attrs::BoxShadow {
+                offset_x: 0.5,
+                offset_y: 1.5,
+                blur: 2.0,
+                size: 0.5,
+                color: crate::tree::attrs::Color::Named("white".to_string()),
+                inset: true,
+            }]),
+            ..Default::default()
+        }),
+        ..Attrs::default()
+    };
 
     let scaled = scale_attrs(&attrs, 2.0);
     let hover = scaled
@@ -666,23 +682,29 @@ fn test_scale_attrs_scales_mouse_over_numeric_fields() {
 
 #[test]
 fn test_scale_attrs_scales_animation_keyframe_numeric_fields() {
-    let mut from = Attrs::default();
-    from.width = Some(Length::Px(20.0));
-    from.padding = Some(Padding::Uniform(4.0));
-    from.move_x = Some(3.0);
+    let from = Attrs {
+        width: Some(Length::Px(20.0)),
+        padding: Some(Padding::Uniform(4.0)),
+        move_x: Some(3.0),
+        ..Attrs::default()
+    };
 
-    let mut to = Attrs::default();
-    to.width = Some(Length::Px(40.0));
-    to.padding = Some(Padding::Uniform(8.0));
-    to.move_x = Some(9.0);
+    let to = Attrs {
+        width: Some(Length::Px(40.0)),
+        padding: Some(Padding::Uniform(8.0)),
+        move_x: Some(9.0),
+        ..Attrs::default()
+    };
 
-    let mut attrs = Attrs::default();
-    attrs.animate = Some(AnimationSpec {
-        keyframes: vec![from, to],
-        duration_ms: 240.0,
-        curve: AnimationCurve::Linear,
-        repeat: AnimationRepeat::Loop,
-    });
+    let attrs = Attrs {
+        animate: Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 240.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Loop,
+        }),
+        ..Attrs::default()
+    };
 
     let scaled = scale_attrs(&attrs, 2.0);
     let animate = scaled.animate.expect("scaled animation spec should exist");
@@ -699,25 +721,31 @@ fn test_scale_attrs_scales_animation_keyframe_numeric_fields() {
 fn test_layout_uses_first_animation_keyframe_for_static_frames() {
     let mut tree = ElementTree::new();
 
-    let mut from = Attrs::default();
-    from.width = Some(Length::Px(100.0));
-    from.height = Some(Length::Px(30.0));
-    from.move_x = Some(12.0);
+    let from = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(30.0)),
+        move_x: Some(12.0),
+        ..Attrs::default()
+    };
 
-    let mut to = Attrs::default();
-    to.width = Some(Length::Px(160.0));
-    to.height = Some(Length::Px(30.0));
-    to.move_x = Some(36.0);
+    let to = Attrs {
+        width: Some(Length::Px(160.0)),
+        height: Some(Length::Px(30.0)),
+        move_x: Some(36.0),
+        ..Attrs::default()
+    };
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(40.0));
-    attrs.height = Some(Length::Px(30.0));
-    attrs.animate = Some(AnimationSpec {
-        keyframes: vec![from, to],
-        duration_ms: 180.0,
-        curve: AnimationCurve::EaseInOut,
-        repeat: AnimationRepeat::Once,
-    });
+    let attrs = Attrs {
+        width: Some(Length::Px(40.0)),
+        height: Some(Length::Px(30.0)),
+        animate: Some(AnimationSpec {
+            keyframes: vec![from, to],
+            duration_ms: 180.0,
+            curve: AnimationCurve::EaseInOut,
+            repeat: AnimationRepeat::Once,
+        }),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id;

@@ -87,41 +87,50 @@ defmodule EmergeSkia.OptionsTest do
   test "build_start_native_opts! normalizes renderer cache limits" do
     assert %{
              renderer_cache: %{
-               max_new_payloads_per_frame: 1,
-               clean_subtree: %{
-                 max_entries: 128,
-                 max_bytes: 33_554_432,
-                 max_entry_bytes: 4_194_304
+               enabled: true,
+               max_new_payloads_per_frame: 16,
+               paint_layer: %{
+                 max_entries: 512,
+                 max_bytes: 671_088_640,
+                 max_entry_bytes: 268_435_456,
+                 min_visible_before_store: 1,
+                 max_stale_frames: 120
                }
              }
            } = Options.build_start_native_opts!([])
 
     assert %{
              renderer_cache: %{
+               enabled: true,
                max_new_payloads_per_frame: 0,
-               clean_subtree: %{
+               paint_layer: %{
                  max_entries: 16,
                  max_bytes: 1_048_576,
-                 max_entry_bytes: 131_072
+                 max_entry_bytes: 131_072,
+                 min_visible_before_store: 2,
+                 max_stale_frames: 30
                }
              }
            } =
              Options.build_start_native_opts!(
                renderer_cache: [
+                 enabled: true,
                  max_new_payloads_per_frame: 0,
-                 clean_subtree: [
+                 paint_layer: [
                    max_entries: 16,
                    max_bytes: 1_048_576,
-                   max_entry_bytes: 131_072
+                   max_entry_bytes: 131_072,
+                   min_visible_before_store: 2,
+                   max_stale_frames: 30
                  ]
                ]
              )
 
     assert_raise ArgumentError,
-                 ~r/:renderer_cache.clean_subtree.max_bytes must be a non-negative integer/,
+                 ~r/:renderer_cache.paint_layer.max_bytes must be a non-negative integer/,
                  fn ->
                    Options.build_start_native_opts!(
-                     renderer_cache: [clean_subtree: [max_bytes: -1]]
+                     renderer_cache: [paint_layer: [max_bytes: -1]]
                    )
                  end
   end

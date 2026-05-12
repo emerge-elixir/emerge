@@ -110,11 +110,14 @@ defmodule EmergeSkia.Native do
           required(:renderer_stats_log) => boolean(),
           required(:renderer_animation_log) => boolean(),
           required(:renderer_cache) => %{
+            required(:enabled) => boolean(),
             required(:max_new_payloads_per_frame) => non_neg_integer(),
-            required(:clean_subtree) => %{
+            required(:paint_layer) => %{
               required(:max_entries) => non_neg_integer(),
               required(:max_bytes) => non_neg_integer(),
-              required(:max_entry_bytes) => non_neg_integer()
+              required(:max_entry_bytes) => non_neg_integer(),
+              required(:min_visible_before_store) => non_neg_integer(),
+              required(:max_stale_frames) => non_neg_integer()
             }
           }
         }) :: reference() | {:ok, reference()} | {:error, term()}
@@ -307,6 +310,8 @@ defmodule EmergeSkia.Native do
           required(:admitted) => non_neg_integer(),
           required(:hits) => non_neg_integer(),
           required(:misses) => non_neg_integer(),
+          required(:moved_hits) => non_neg_integer(),
+          required(:moved_misses) => non_neg_integer(),
           required(:stores) => non_neg_integer(),
           required(:evictions) => non_neg_integer(),
           required(:stale_evictions) => non_neg_integer(),
@@ -317,13 +322,27 @@ defmodule EmergeSkia.Native do
           required(:current_cpu_payloads) => non_neg_integer(),
           required(:evicted_bytes) => non_neg_integer(),
           required(:stale_evicted_bytes) => non_neg_integer(),
+          required(:gpu_payload_stores) => non_neg_integer(),
+          required(:cpu_payload_stores) => non_neg_integer(),
+          required(:prepare_successes) => non_neg_integer(),
+          required(:prepare_failures) => non_neg_integer(),
+          required(:direct_fallbacks_after_admission) => non_neg_integer(),
+          required(:rejected_ineligible) => non_neg_integer(),
+          required(:rejected_admission) => non_neg_integer(),
+          required(:rejected_oversized) => non_neg_integer(),
+          required(:rejected_payload_budget) => non_neg_integer(),
+          required(:rejected_fractional_placement) => non_neg_integer(),
+          required(:rejected_unsupported_transform) => non_neg_integer(),
           required(:prepare) => duration_stats(),
-          required(:draw_hit) => duration_stats()
+          required(:draw_hit) => duration_stats(),
+          required(:payload_copy) => duration_stats(),
+          required(:dirty_draw) => duration_stats(),
+          required(:child_layer) => duration_stats(),
+          required(:direct_fallback) => duration_stats()
         }
 
   @type renderer_cache_stats :: %{
-          required(:noop) => renderer_cache_kind_stats(),
-          required(:clean_subtree) => renderer_cache_kind_stats()
+          required(:paint_layer) => renderer_cache_kind_stats()
         }
 
   @type stats_snapshot :: %{

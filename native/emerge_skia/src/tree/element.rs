@@ -9,7 +9,6 @@ use super::attrs::{
 };
 use super::invalidation::{TreeInvalidation, classify_interaction_style};
 use crate::events::registry_builder::RegistrySubtreeCache;
-use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -250,44 +249,6 @@ pub struct TopologyDependencyKey {
     pub nearby_version: u64,
     pub child_count: usize,
     pub nearby_count: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RenderTopologyDependencyKey {
-    pub children_version: u64,
-    pub paint_children_version: u64,
-    pub nearby_version: u64,
-    pub child_count: usize,
-    pub paint_child_count: usize,
-    pub nearby_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RenderSubtreeKey {
-    pub kind: ElementKind,
-    pub attrs_hash: u64,
-    pub runtime_hash: u64,
-    pub frame: Option<Frame>,
-    pub render_frame: Option<Frame>,
-    pub scroll_x: f32,
-    pub scroll_y: f32,
-    pub scroll_x_max: f32,
-    pub scroll_y_max: f32,
-    pub inherited_hash: u64,
-    pub scene_context_hash: u64,
-    pub render_context_hash: u64,
-    pub asset_status_generation: u64,
-    pub topology: RenderTopologyDependencyKey,
-    pub paragraph_fragments_hash: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RenderSubtreeCache {
-    pub key: RenderSubtreeKey,
-    pub local: Vec<RenderNode>,
-    pub escapes: Vec<RenderNode>,
-    pub text_input_focused: bool,
-    pub text_input_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -647,7 +608,6 @@ pub struct NodeRefreshState {
     pub render_descendant_dirty: bool,
     pub registry_dirty: bool,
     pub registry_descendant_dirty: bool,
-    pub render_cache: Option<RenderSubtreeCache>,
     pub registry_cache: Option<RegistrySubtreeCache>,
 }
 
@@ -658,7 +618,6 @@ impl Default for NodeRefreshState {
             render_descendant_dirty: false,
             registry_dirty: true,
             registry_descendant_dirty: false,
-            render_cache: None,
             registry_cache: None,
         }
     }
@@ -910,7 +869,6 @@ impl Element {
                 render_descendant_dirty: self.refresh.render_descendant_dirty,
                 registry_dirty: self.refresh.registry_dirty,
                 registry_descendant_dirty: self.refresh.registry_descendant_dirty,
-                render_cache: None,
                 registry_cache: None,
             },
             lifecycle: self.lifecycle.clone(),
@@ -1172,6 +1130,8 @@ pub struct ElementTree {
     layout_cache_stats: LayoutCacheStats,
     layout_cache_stats_enabled: bool,
     detached_layout_cache: Vec<DetachedLayoutSubtreeCache>,
+    scroll_refresh_dirty: bool,
+    scroll_cache_context_active: bool,
 
     pending_root_id: Option<NodeId>,
 
@@ -1197,6 +1157,8 @@ impl Default for ElementTree {
             layout_cache_stats: LayoutCacheStats::default(),
             layout_cache_stats_enabled: false,
             detached_layout_cache: Vec::new(),
+            scroll_refresh_dirty: false,
+            scroll_cache_context_active: false,
             pending_root_id: None,
             #[cfg(test)]
             topology: RefCell::new(TreeTopology::default()),
@@ -1472,9 +1434,31 @@ impl ElementTree {
             .any(|element| element.refresh.has_registry_damage())
     }
 
-    pub fn has_render_subtree_cache(&self) -> bool {
+    pub fn has_scroll_refresh_damage(&self) -> bool {
+        self.scroll_refresh_dirty
+    }
+
+    pub fn has_scroll_cache_context(&self) -> bool {
+        self.scroll_refresh_dirty || self.scroll_cache_context_active
+    }
+
+    pub(crate) fn reset_scroll_cache_context_for_layout(&mut self) {
+        self.scroll_cache_context_active = false;
+    }
+
+    pub(crate) fn mark_scroll_cache_context_active(&mut self) {
+        self.scroll_cache_context_active = true;
+    }
+
+    fn any_active_scroll_offset(&self) -> bool {
         self.iter_nodes()
-            .any(|element| element.refresh.render_cache.is_some())
+            .any(Self::element_has_active_scroll_offset)
+    }
+
+    fn element_has_active_scroll_offset(element: &Element) -> bool {
+        (element.layout.scroll_x > f32::EPSILON || element.layout.scroll_y > f32::EPSILON)
+            && (element.layout.scroll_x_max > f32::EPSILON
+                || element.layout.scroll_y_max > f32::EPSILON)
     }
 
     pub fn has_registry_subtree_cache(&self) -> bool {
@@ -1485,6 +1469,7 @@ impl ElementTree {
     pub fn clear_render_refresh_dirty(&mut self) {
         self.iter_nodes_mut()
             .for_each(|element| element.refresh.clear_render());
+        self.scroll_refresh_dirty = false;
     }
 
     pub fn clear_registry_refresh_dirty(&mut self) {
@@ -1497,6 +1482,7 @@ impl ElementTree {
             element.refresh.clear_render();
             element.refresh.clear_registry();
         });
+        self.scroll_refresh_dirty = false;
     }
 
     #[cfg(test)]
@@ -1619,6 +1605,23 @@ impl ElementTree {
         {
             self.topology.nodes.get(ix).and_then(|node| node.parent)
         }
+    }
+
+    pub(crate) fn is_inside_nearby_subtree(&self, id: &NodeId) -> bool {
+        self.ix_of(id)
+            .and_then(|ix| self.nearby_boundary_for_ix(ix))
+            .is_some()
+    }
+
+    fn nearby_boundary_for_ix(&self, ix: NodeIx) -> Option<(NodeIx, NodeIx)> {
+        let mut current = ix;
+        while let Some(parent_link) = self.parent_link_of(current) {
+            match parent_link {
+                ParentLink::Child { parent } => current = parent,
+                ParentLink::Nearby { host, .. } => return Some((host, current)),
+            }
+        }
+        None
     }
 
     pub fn child_ixs(&self, ix: NodeIx) -> Vec<NodeIx> {
@@ -1899,7 +1902,12 @@ impl ElementTree {
     /// Insert or update an element.
     pub fn insert(&mut self, element: Element) {
         let element_id = element.id;
+        let new_scroll_active = Self::element_has_active_scroll_offset(&element);
+        let mut removed_scroll_active = false;
         if let Some(&ix) = self.id_to_ix.get(&element.id) {
+            removed_scroll_active = self.nodes[ix]
+                .as_ref()
+                .is_some_and(Self::element_has_active_scroll_offset);
             self.nodes[ix] = Some(element);
             self.mark_measure_dirty_ix(ix);
         } else if let Some(ix) = self.free_list.pop() {
@@ -1911,6 +1919,11 @@ impl ElementTree {
             self.id_to_ix.insert(element.id, ix);
             self.nodes.push(Some(element));
             self.ensure_topology_capacity(ix);
+        }
+        if new_scroll_active {
+            self.scroll_cache_context_active = true;
+        } else if removed_scroll_active {
+            self.scroll_cache_context_active = self.any_active_scroll_offset();
         }
 
         if self.pending_root_id == Some(element_id) {
@@ -1927,6 +1940,9 @@ impl ElementTree {
 
     pub fn remove_node(&mut self, id: &NodeId) -> Option<Element> {
         let ix = self.id_to_ix.remove(id)?;
+        let removed_scroll_active = self.nodes[ix]
+            .as_ref()
+            .is_some_and(Self::element_has_active_scroll_offset);
         let dirty_parent = self
             .parent_link_of(ix)
             .map(|parent_link| match parent_link {
@@ -1951,6 +1967,9 @@ impl ElementTree {
 
         if let Some(parent_ix) = dirty_parent {
             self.mark_measure_dirty_ix(parent_ix);
+        }
+        if removed_scroll_active {
+            self.scroll_cache_context_active = self.any_active_scroll_offset();
         }
         removed
     }
@@ -1994,14 +2013,31 @@ impl ElementTree {
         id: &NodeId,
         invalidation: TreeInvalidation,
     ) {
+        let Some(ix) = self.ix_of(id) else {
+            return;
+        };
+
+        if let Some((host_ix, nearby_root_ix)) = self.nearby_boundary_for_ix(ix)
+            && invalidation.requires_resolve()
+        {
+            self.mark_nearby_layout_dirty_ix(
+                ix,
+                nearby_root_ix,
+                host_ix,
+                invalidation.requires_measure(),
+                invalidation != TreeInvalidation::Paint,
+            );
+            return;
+        }
+
         self.mark_refresh_dirty_for_invalidation(id, invalidation);
 
         if invalidation == TreeInvalidation::Structure {
-            self.mark_measure_dirty(id);
+            self.mark_measure_dirty_ix(ix);
         } else if invalidation.requires_measure() {
-            self.mark_measure_dirty_with_boundaries(id);
+            self.mark_measure_dirty_with_boundaries_ix(ix);
         } else if invalidation.requires_resolve() {
-            self.mark_resolve_dirty(id);
+            self.mark_resolve_dirty_ix(ix);
         }
     }
 
@@ -2019,7 +2055,6 @@ impl ElementTree {
             element.layout.resolve_descendant_dirty = false;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
-            element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
             element.refresh.registry_cache = None;
@@ -2040,7 +2075,6 @@ impl ElementTree {
             element.layout.resolve_descendant_dirty = false;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
-            element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
             element.refresh.registry_cache = None;
@@ -2050,12 +2084,6 @@ impl ElementTree {
     fn mark_measure_dirty_ix(&mut self, ix: NodeIx) {
         self.mark_render_and_registry_refresh_dirty_ix(ix);
         self.mark_dirty_ix(ix, true);
-    }
-
-    fn mark_measure_dirty_with_boundaries(&mut self, id: &NodeId) {
-        if let Some(ix) = self.ix_of(id) {
-            self.mark_measure_dirty_with_boundaries_ix(ix);
-        }
     }
 
     fn mark_resolve_dirty_ix(&mut self, ix: NodeIx) {
@@ -2082,7 +2110,6 @@ impl ElementTree {
         while let Some(ix) = current_ix {
             if let Some(element) = self.get_ix_mut(ix) {
                 if render {
-                    element.refresh.render_cache = None;
                     if origin {
                         element.refresh.render_dirty = true;
                         element.refresh.render_descendant_dirty = false;
@@ -2144,6 +2171,44 @@ impl ElementTree {
         }
     }
 
+    fn mark_nearby_layout_dirty_ix(
+        &mut self,
+        ix: NodeIx,
+        nearby_root_ix: NodeIx,
+        host_ix: NodeIx,
+        measure_dirty: bool,
+        registry_dirty: bool,
+    ) {
+        if registry_dirty {
+            self.mark_render_and_registry_refresh_dirty_ix(ix);
+        } else {
+            self.mark_render_refresh_dirty_ix(ix);
+        }
+
+        let mut current_ix = Some(ix);
+        while let Some(current) = current_ix {
+            if let Some(element) = self.get_ix_mut(current) {
+                if measure_dirty {
+                    element.layout.measure_dirty = true;
+                    element.layout.measure_descendant_dirty = false;
+                }
+                element.layout.resolve_dirty = true;
+                element.layout.resolve_descendant_dirty = false;
+            }
+
+            if current == nearby_root_ix {
+                break;
+            }
+
+            current_ix = match self.parent_link_of(current) {
+                Some(ParentLink::Child { parent }) => Some(parent),
+                Some(ParentLink::Nearby { .. }) | None => None,
+            };
+        }
+
+        self.mark_nearby_topology_dirty_ix(host_ix, &[], registry_dirty);
+    }
+
     fn mark_measure_dirty_local_ix(&mut self, ix: NodeIx) {
         if let Some(element) = self.get_ix_mut(ix) {
             element.layout.measure_dirty = true;
@@ -2168,7 +2233,6 @@ impl ElementTree {
             element.layout.resolve_descendant_dirty = false;
             element.refresh.render_dirty = true;
             element.refresh.render_descendant_dirty = false;
-            element.refresh.render_cache = None;
             element.refresh.registry_dirty = true;
             element.refresh.registry_descendant_dirty = false;
             element.refresh.registry_cache = None;
@@ -2291,6 +2355,8 @@ impl ElementTree {
         self.id_to_ix.clear();
         self.nodes.clear();
         self.free_list.clear();
+        self.scroll_refresh_dirty = false;
+        self.scroll_cache_context_active = false;
         self.reset_layout_cache_stats();
         self.reset_topology();
     }
@@ -2657,6 +2723,10 @@ impl ElementTree {
         for &child_ix in &child_ixs {
             self.ensure_topology_capacity(child_ix);
         }
+        let registry_dirty = self.subtree_affects_registry_ix(parent_ix)
+            || child_ixs
+                .iter()
+                .any(|&child_ix| self.subtree_affects_registry_ix(child_ix));
 
         let changed = {
             #[cfg(test)]
@@ -2685,7 +2755,17 @@ impl ElementTree {
             self.bump_children_version(parent_ix);
         }
 
-        self.mark_measure_dirty_ix(parent_ix);
+        if let Some((host_ix, nearby_root_ix)) = self.nearby_boundary_for_ix(parent_ix) {
+            self.mark_nearby_layout_dirty_ix(
+                parent_ix,
+                nearby_root_ix,
+                host_ix,
+                true,
+                registry_dirty,
+            );
+        } else {
+            self.mark_measure_dirty_ix(parent_ix);
+        }
     }
 
     fn set_paint_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
@@ -2795,25 +2875,6 @@ impl ElementTree {
             nearby_version: 0,
             child_count,
             nearby_count: 0,
-        }
-    }
-
-    pub fn render_topology_dependency_key_ix(&self, ix: NodeIx) -> RenderTopologyDependencyKey {
-        self.ensure_topology();
-
-        let versions = self
-            .get_ix(ix)
-            .map(|element| element.layout.topology_versions)
-            .unwrap_or_default();
-        let (child_count, paint_child_count, nearby_count) = self.topology_dependency_counts(ix);
-
-        RenderTopologyDependencyKey {
-            children_version: versions.children,
-            paint_children_version: versions.paint_children,
-            nearby_version: versions.nearby,
-            child_count,
-            paint_child_count,
-            nearby_count,
         }
     }
 
@@ -3209,6 +3270,13 @@ impl ElementTree {
             ScrollAxis::X => element.layout.scroll_x = next,
             ScrollAxis::Y => element.layout.scroll_y = next,
         }
+        let element_scroll_active = Self::element_has_active_scroll_offset(element);
+        self.scroll_refresh_dirty = true;
+        if element_scroll_active {
+            self.scroll_cache_context_active = true;
+        } else {
+            self.scroll_cache_context_active = self.any_active_scroll_offset();
+        }
         self.mark_render_and_registry_refresh_dirty(id);
         TreeInvalidation::Paint
     }
@@ -3532,9 +3600,11 @@ mod tests {
     #[test]
     fn test_scrollbar_hover_axis_is_tri_state() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3569,9 +3639,11 @@ mod tests {
     #[test]
     fn test_apply_scroll_axis_helpers() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3599,9 +3671,11 @@ mod tests {
     #[test]
     fn test_apply_scroll_axis_helpers_clamp_to_bounds() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3674,11 +3748,13 @@ mod tests {
     #[test]
     fn test_set_mouse_over_active_toggles_state() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.mouse_over = Some(MouseOverAttrs {
-            alpha: Some(0.6),
-            ..Default::default()
-        });
+        let attrs = Attrs {
+            mouse_over: Some(MouseOverAttrs {
+                alpha: Some(0.6),
+                ..Default::default()
+            }),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3705,9 +3781,11 @@ mod tests {
     #[test]
     fn test_set_mouse_over_active_tracks_event_only_hover() {
         let id = NodeId::from_term_bytes(vec![2]);
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_enter = Some(true);
-        attrs.on_mouse_leave = Some(true);
+        let attrs = Attrs {
+            on_mouse_enter: Some(true),
+            on_mouse_leave: Some(true),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3755,11 +3833,13 @@ mod tests {
     #[test]
     fn test_set_mouse_down_active_toggles_state() {
         let id = NodeId::from_term_bytes(vec![12]);
-        let mut attrs = Attrs::default();
-        attrs.mouse_down = Some(MouseOverAttrs {
-            alpha: Some(0.7),
-            ..Default::default()
-        });
+        let attrs = Attrs {
+            mouse_down: Some(MouseOverAttrs {
+                alpha: Some(0.7),
+                ..Default::default()
+            }),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3812,12 +3892,14 @@ mod tests {
     #[test]
     fn test_set_text_input_content_updates_and_clamps_runtime() {
         let id = NodeId::from_term_bytes(vec![2]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("hello".to_string());
-        attrs.text_input_cursor = Some(10);
-        attrs.text_input_selection_anchor = Some(10);
-        attrs.text_input_preedit = Some("pre".to_string());
-        attrs.text_input_preedit_cursor = Some((2, 2));
+        let attrs = Attrs {
+            content: Some("hello".to_string()),
+            text_input_cursor: Some(10),
+            text_input_selection_anchor: Some(10),
+            text_input_preedit: Some("pre".to_string()),
+            text_input_preedit_cursor: Some((2, 2)),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3857,8 +3939,10 @@ mod tests {
     #[test]
     fn test_set_text_input_content_marks_event_origin_without_content_change() {
         let id = NodeId::from_term_bytes(vec![14]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("same".to_string());
+        let attrs = Attrs {
+            content: Some("same".to_string()),
+            ..Attrs::default()
+        };
         let element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
 
         let mut tree = ElementTree::new();
@@ -3882,8 +3966,10 @@ mod tests {
     #[test]
     fn test_set_text_input_runtime_normalizes_focus_selection_and_preedit() {
         let id = NodeId::from_term_bytes(vec![3]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("abcd".to_string());
+        let attrs = Attrs {
+            content: Some("abcd".to_string()),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.layout.frame = Some(Frame {
             x: 0.0,
@@ -3990,8 +4076,10 @@ mod tests {
         let inline =
             Element::with_attrs(inline_id, ElementKind::Text, Vec::new(), Attrs::default());
 
-        let mut float_attrs = Attrs::default();
-        float_attrs.align_x = Some(AlignX::Left);
+        let float_attrs = Attrs {
+            align_x: Some(AlignX::Left),
+            ..Attrs::default()
+        };
         let float = Element::with_attrs(float_id, ElementKind::El, Vec::new(), float_attrs);
 
         let mut tree = ElementTree::new();

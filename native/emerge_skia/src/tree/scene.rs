@@ -313,8 +313,10 @@ mod tests {
 
     #[test]
     fn child_context_always_applies_host_clip_for_behind_content() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
         let parent = make_element(
             2,
             attrs,
@@ -356,9 +358,11 @@ mod tests {
 
     #[test]
     fn resolve_node_state_keeps_scrolled_inherited_clip_in_screen_space() {
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(20.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            ..Attrs::default()
+        };
         let parent = make_element(
             3,
             parent_attrs,
@@ -408,8 +412,10 @@ mod tests {
             content_width: 120.0,
             content_height: 140.0,
         };
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
         let mut element = make_element(8, attrs, frame);
         element.layout.frame = Some(frame);
 
@@ -425,9 +431,11 @@ mod tests {
 
     #[test]
     fn child_context_accumulates_ancestor_and_local_scroll_for_grandchildren() {
-        let mut root_attrs = Attrs::default();
-        root_attrs.scrollbar_y = Some(true);
-        root_attrs.scroll_y = Some(20.0);
+        let root_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            ..Attrs::default()
+        };
         let root = make_element(
             5,
             root_attrs,
@@ -441,9 +449,11 @@ mod tests {
             },
         );
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.scrollbar_y = Some(true);
-        child_attrs.scroll_y = Some(5.0);
+        let child_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(5.0),
+            ..Attrs::default()
+        };
         let child = make_element(
             6,
             child_attrs,

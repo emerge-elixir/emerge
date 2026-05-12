@@ -175,29 +175,43 @@ defmodule EmergeSkia.Options do
   def normalize_renderer_cache_opts!(opts) do
     opts = normalize_keyword_or_map!(opts, ":renderer_cache")
 
-    clean_subtree =
+    paint_layer =
       opts
-      |> Keyword.get(:clean_subtree, [])
-      |> normalize_keyword_or_map!(":renderer_cache.clean_subtree")
+      |> Keyword.get(:paint_layer, [])
+      |> normalize_keyword_or_map!(":renderer_cache.paint_layer")
 
     %{
+      enabled:
+        opts
+        |> Keyword.get(:enabled, true)
+        |> normalize_boolean!(":renderer_cache.enabled"),
       max_new_payloads_per_frame:
         opts
-        |> Keyword.get(:max_new_payloads_per_frame, 1)
+        |> Keyword.get(:max_new_payloads_per_frame, 16)
         |> normalize_non_negative_integer!(":renderer_cache.max_new_payloads_per_frame"),
-      clean_subtree: %{
+      paint_layer: %{
         max_entries:
-          clean_subtree
-          |> Keyword.get(:max_entries, 128)
-          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_entries"),
+          paint_layer
+          |> Keyword.get(:max_entries, 512)
+          |> normalize_non_negative_integer!(":renderer_cache.paint_layer.max_entries"),
         max_bytes:
-          clean_subtree
-          |> Keyword.get(:max_bytes, 32 * 1024 * 1024)
-          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_bytes"),
+          paint_layer
+          |> Keyword.get(:max_bytes, 640 * 1024 * 1024)
+          |> normalize_non_negative_integer!(":renderer_cache.paint_layer.max_bytes"),
         max_entry_bytes:
-          clean_subtree
-          |> Keyword.get(:max_entry_bytes, 4 * 1024 * 1024)
-          |> normalize_non_negative_integer!(":renderer_cache.clean_subtree.max_entry_bytes")
+          paint_layer
+          |> Keyword.get(:max_entry_bytes, 256 * 1024 * 1024)
+          |> normalize_non_negative_integer!(":renderer_cache.paint_layer.max_entry_bytes"),
+        min_visible_before_store:
+          paint_layer
+          |> Keyword.get(:min_visible_before_store, 1)
+          |> normalize_non_negative_integer!(
+            ":renderer_cache.paint_layer.min_visible_before_store"
+          ),
+        max_stale_frames:
+          paint_layer
+          |> Keyword.get(:max_stale_frames, 120)
+          |> normalize_non_negative_integer!(":renderer_cache.paint_layer.max_stale_frames")
       }
     }
   end

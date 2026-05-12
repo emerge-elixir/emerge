@@ -450,6 +450,7 @@ fn layout_tree_with_context_and_animation<M: TextMeasurer>(
     sample_time: Option<Instant>,
 ) -> bool {
     tree.reset_layout_cache_stats();
+    tree.reset_scroll_cache_context_for_layout();
 
     let Some(root_id) = tree.root_id() else {
         return false;
@@ -5609,6 +5610,14 @@ fn update_scroll_state(tree: &mut ElementTree, id: &NodeId) {
         element.layout.scroll_y = next_scroll_y;
         element.layout.scroll_y_max = max_y;
     }
+
+    let scroll_cache_context_active = (element.layout.scroll_x > f32::EPSILON
+        || element.layout.scroll_y > f32::EPSILON)
+        && (element.layout.scroll_x_max > f32::EPSILON
+            || element.layout.scroll_y_max > f32::EPSILON);
+    if scroll_cache_context_active {
+        tree.mark_scroll_cache_context_active();
+    }
 }
 
 fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
@@ -5649,9 +5658,7 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-#[cfg(any(test, feature = "bench-diagnostics"))]
-use super::render::render_tree_scene;
-use super::render::render_tree_scene_cached;
+use super::render::render_tree_scene_with_scroll_layers;
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -5674,7 +5681,12 @@ pub struct LayoutUpdateOutput {
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree_scene_cached(tree);
+    let render_output = render_output_for_refresh(tree);
+    refresh_from_render_output(tree, render_output)
+}
+
+fn refresh_direct(tree: &mut ElementTree) -> LayoutOutput {
+    let render_output = render_tree_scene_with_scroll_layers(tree);
     refresh_from_render_output(tree, render_output)
 }
 
@@ -5691,22 +5703,14 @@ pub fn refresh_default_with_frame_attrs(
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree_scene(tree);
+    let render_output = render_tree_scene_with_scroll_layers(tree);
     refresh_from_render_output(tree, render_output)
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
-pub fn refresh_render_scene_cached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
-    let render_output = render_tree_scene_cached(tree);
-    tree.clear_render_refresh_dirty();
-    render_output.scene
-}
-
-#[cfg(any(test, feature = "bench-diagnostics"))]
-#[doc(hidden)]
-pub fn refresh_render_scene_uncached_for_benchmark(tree: &mut ElementTree) -> RenderScene {
-    let render_output = render_tree_scene(tree);
+pub fn refresh_render_scene_for_benchmark(tree: &mut ElementTree) -> RenderScene {
+    let render_output = render_tree_scene_with_scroll_layers(tree);
     tree.clear_render_refresh_dirty();
     render_output.scene
 }
@@ -5752,7 +5756,7 @@ pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
         return refresh_uncached_for_benchmark(tree);
     }
 
-    let render_output = render_tree_scene(tree);
+    let render_output = render_tree_scene_with_scroll_layers(tree);
     let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
 
     tree.clear_render_refresh_dirty();
@@ -5778,7 +5782,7 @@ pub(crate) fn refresh_reusing_clean_registry(
         return refresh(tree);
     }
 
-    let render_output = render_tree_scene_cached(tree);
+    let render_output = render_output_for_refresh(tree);
     let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
 
     tree.clear_render_refresh_dirty();
@@ -5792,6 +5796,36 @@ pub(crate) fn refresh_reusing_clean_registry(
         ime_text_state,
         animations_active: false,
     }
+}
+
+fn refresh_direct_reusing_clean_registry(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutOutput {
+    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+
+    if !can_reuse_registry {
+        return refresh_direct(tree);
+    }
+
+    let render_output = render_tree_scene_with_scroll_layers(tree);
+    let ime_text_state = cached_rebuild.and_then(ime_text_state_from_rebuild);
+
+    tree.clear_render_refresh_dirty();
+
+    LayoutOutput {
+        scene: render_output.scene,
+        event_rebuild: RegistryRebuildPayload::default(),
+        event_rebuild_changed: false,
+        ime_enabled: render_output.text_input_focused,
+        ime_cursor_area: render_output.text_input_cursor_area,
+        ime_text_state,
+        animations_active: false,
+    }
+}
+
+fn render_output_for_refresh(tree: &mut ElementTree) -> super::render::RenderSceneOutput {
+    render_tree_scene_with_scroll_layers(tree)
 }
 
 fn ime_text_state_from_rebuild(rebuild: &RegistryRebuildPayload) -> Option<TextInputState> {
@@ -5908,6 +5942,37 @@ pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    scale: f32,
+    runtime: &AnimationRuntime,
+    sample_time: Instant,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutUpdateOutput {
+    let can_prepare_incrementally = !runtime.is_empty()
+        && !runtime.has_transient_entries()
+        && tree
+            .root_id()
+            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
+            .is_some();
+    let preparation = if can_prepare_incrementally {
+        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
+    } else {
+        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+    };
+    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
+        && prepared_root_has_frame(tree, &preparation);
+
+    if can_refresh_without_layout {
+        refresh_prepared_default_reusing_clean_registry(tree, preparation, cached_rebuild)
+    } else {
+        layout_and_refresh_prepared_default(tree, constraint, preparation)
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn layout_and_refresh_prepared_default_uncached_for_benchmark(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -5982,7 +6047,13 @@ pub(crate) fn refresh_prepared_default(
     tree: &mut ElementTree,
     preparation: FrameAttrsPreparation,
 ) -> LayoutUpdateOutput {
-    let mut output = refresh(tree);
+    let bypass_cached_render_refresh =
+        preparation.animation_result.active && tree.has_render_refresh_damage();
+    let mut output = if bypass_cached_render_refresh {
+        refresh_direct(tree)
+    } else {
+        refresh(tree)
+    };
     output.animations_active = preparation.animation_result.active;
 
     LayoutUpdateOutput {
@@ -5996,7 +6067,13 @@ pub(crate) fn refresh_prepared_default_reusing_clean_registry(
     preparation: FrameAttrsPreparation,
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutUpdateOutput {
-    let mut output = refresh_reusing_clean_registry(tree, cached_rebuild);
+    let bypass_cached_render_refresh =
+        preparation.animation_result.active && tree.has_render_refresh_damage();
+    let mut output = if bypass_cached_render_refresh {
+        refresh_direct_reusing_clean_registry(tree, cached_rebuild)
+    } else {
+        refresh_reusing_clean_registry(tree, cached_rebuild)
+    };
     output.animations_active = preparation.animation_result.active;
 
     LayoutUpdateOutput {

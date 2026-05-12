@@ -357,9 +357,14 @@ fn apply_patch(
         }
 
         Patch::SetChildren { id, children } => {
+            let nearby_local_change = tree.is_inside_nearby_subtree(&id);
             let merged_children = tree.merge_live_children_with_ghosts(&id, children);
             tree.set_children(&id, merged_children)?;
-            TreeInvalidation::Structure
+            if nearby_local_change {
+                TreeInvalidation::Resolve
+            } else {
+                TreeInvalidation::Structure
+            }
         }
 
         Patch::SetNearbyMounts { host_id, mounts } => {
@@ -1013,11 +1018,15 @@ mod tests {
     };
 
     fn exit_alpha_spec() -> AnimationSpec {
-        let mut from = Attrs::default();
-        from.alpha = Some(1.0);
+        let from = Attrs {
+            alpha: Some(1.0),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.alpha = Some(0.0);
+        let to = Attrs {
+            alpha: Some(0.0),
+            ..Attrs::default()
+        };
 
         AnimationSpec {
             keyframes: vec![from, to],
@@ -1039,8 +1048,10 @@ mod tests {
     }
 
     fn text_element(id: u8, content: &str) -> Element {
-        let mut attrs = Attrs::default();
-        attrs.content = Some(content.to_string());
+        let attrs = Attrs {
+            content: Some(content.to_string()),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(
             NodeId::from_term_bytes(vec![id]),
             ElementKind::Text,
@@ -1957,13 +1968,15 @@ mod tests {
     #[test]
     fn test_preserve_runtime_attrs_on_patch() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.scroll_x = Some(12.0);
-        attrs.scroll_y = Some(34.0);
-        attrs.scroll_x_max = Some(50.0);
-        attrs.scroll_y_max = Some(60.0);
-        attrs.scrollbar_y = Some(true);
-        attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
+        let attrs = Attrs {
+            scroll_x: Some(12.0),
+            scroll_y: Some(34.0),
+            scroll_x_max: Some(50.0),
+            scroll_y_max: Some(60.0),
+            scrollbar_y: Some(true),
+            scrollbar_hover_axis: Some(crate::tree::attrs::ScrollbarHoverAxis::Y),
+            ..Attrs::default()
+        };
 
         let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
@@ -1988,13 +2001,15 @@ mod tests {
     #[test]
     fn test_preserve_runtime_attrs_on_patch_when_axis_present() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.scroll_x = Some(12.0);
-        attrs.scroll_y = Some(34.0);
-        attrs.scroll_x_max = Some(50.0);
-        attrs.scroll_y_max = Some(60.0);
-        attrs.scrollbar_y = Some(true);
-        attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
+        let attrs = Attrs {
+            scroll_x: Some(12.0),
+            scroll_y: Some(34.0),
+            scroll_x_max: Some(50.0),
+            scroll_y_max: Some(60.0),
+            scrollbar_y: Some(true),
+            scrollbar_hover_axis: Some(crate::tree::attrs::ScrollbarHoverAxis::Y),
+            ..Attrs::default()
+        };
 
         let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
@@ -2019,9 +2034,11 @@ mod tests {
     #[test]
     fn test_patch_clears_mouse_over_active_when_mouse_over_removed() {
         let id = NodeId::from_term_bytes(vec![1]);
-        let mut attrs = Attrs::default();
-        attrs.mouse_over = Some(crate::tree::attrs::MouseOverAttrs::default());
-        attrs.mouse_over_active = Some(true);
+        let attrs = Attrs {
+            mouse_over: Some(crate::tree::attrs::MouseOverAttrs::default()),
+            mouse_over_active: Some(true),
+            ..Attrs::default()
+        };
 
         let element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
         let mut tree = ElementTree::new();
@@ -2199,8 +2216,10 @@ mod tests {
     #[test]
     fn test_set_attrs_marks_text_input_content_as_tree_patch_when_content_present() {
         let id = NodeId::from_term_bytes(vec![17]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("before".to_string());
+        let attrs = Attrs {
+            content: Some("before".to_string()),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
@@ -2228,8 +2247,10 @@ mod tests {
     #[test]
     fn test_set_attrs_preserves_text_input_content_origin_when_content_absent() {
         let id = NodeId::from_term_bytes(vec![18]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("before".to_string());
+        let attrs = Attrs {
+            content: Some("before".to_string()),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
@@ -2255,9 +2276,11 @@ mod tests {
     #[test]
     fn test_set_attrs_buffers_focused_text_input_patch_content() {
         let id = NodeId::from_term_bytes(vec![181]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("before".to_string());
-        attrs.text_input_focused = Some(true);
+        let attrs = Attrs {
+            content: Some("before".to_string()),
+            text_input_focused: Some(true),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.text_input_content_origin = TextInputContentOrigin::Event;
 
@@ -2287,8 +2310,10 @@ mod tests {
     #[test]
     fn test_set_attrs_clears_patch_content_when_unfocused_text_input_accepts_patch() {
         let id = NodeId::from_term_bytes(vec![182]);
-        let mut attrs = Attrs::default();
-        attrs.content = Some("before".to_string());
+        let attrs = Attrs {
+            content: Some("before".to_string()),
+            ..Attrs::default()
+        };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
         element.runtime.patch_content = Some("stale".to_string());
 
@@ -2411,17 +2436,19 @@ mod tests {
             Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
         parent.children = vec![child_id];
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.content = Some("ghosted".to_string());
-        child_attrs.on_click = Some(true);
-        child_attrs.mouse_over = Some(crate::tree::attrs::MouseOverAttrs::default());
-        child_attrs.mouse_over_active = Some(true);
-        child_attrs.scrollbar_y = Some(true);
-        child_attrs.scroll_y = Some(12.0);
-        child_attrs.scroll_y_max = Some(40.0);
-        child_attrs.text_input_focused = Some(true);
-        child_attrs.text_input_cursor = Some(2);
-        child_attrs.animate_exit = Some(exit_alpha_spec());
+        let child_attrs = Attrs {
+            content: Some("ghosted".to_string()),
+            on_click: Some(true),
+            mouse_over: Some(crate::tree::attrs::MouseOverAttrs::default()),
+            mouse_over_active: Some(true),
+            scrollbar_y: Some(true),
+            scroll_y: Some(12.0),
+            scroll_y_max: Some(40.0),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(2),
+            animate_exit: Some(exit_alpha_spec()),
+            ..Attrs::default()
+        };
 
         let mut child =
             Element::with_attrs(child_id, ElementKind::TextInput, Vec::new(), child_attrs);
@@ -2471,8 +2498,10 @@ mod tests {
             Element::with_attrs(parent_id, ElementKind::El, Vec::new(), Attrs::default());
         parent.children = vec![removed_id];
 
-        let mut removed_attrs = Attrs::default();
-        removed_attrs.animate_exit = Some(exit_alpha_spec());
+        let removed_attrs = Attrs {
+            animate_exit: Some(exit_alpha_spec()),
+            ..Attrs::default()
+        };
         let mut removed =
             Element::with_attrs(removed_id, ElementKind::Row, Vec::new(), removed_attrs);
         removed.children = vec![text_id];
