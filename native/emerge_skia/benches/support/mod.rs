@@ -753,6 +753,409 @@ pub fn animated_shadow_showcase() -> ElementTree {
     tree
 }
 
+pub fn rich_borders_shadow_showcase() -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(50_000);
+    tree.set_root_id(root_id);
+
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Px(960.0)),
+            padding: Some(Padding::Uniform(22.0)),
+            spacing: Some(22.0),
+            background: Some(Background::Color(Color::Rgb {
+                r: 241,
+                g: 244,
+                b: 250,
+            })),
+            ..Default::default()
+        },
+    ));
+
+    let children = vec![
+        rich_borders_intro(&mut tree, 51_000),
+        rich_borders_static_section(
+            &mut tree,
+            52_000,
+            "Border Styles",
+            "Solid, dashed, dotted, thick, thin, rounded, and square borders sit above the shadow section.",
+        ),
+        rich_borders_static_section(
+            &mut tree,
+            53_000,
+            "Pill Radius Clamp",
+            "Large radii clamp to the element height and keep fills, borders, and clips aligned.",
+        ),
+        rich_borders_static_section(
+            &mut tree,
+            54_000,
+            "Per-Edge Border Width",
+            "Asymmetric examples create the same surrounding page density as the demo showcase.",
+        ),
+        rich_box_shadow_section(&mut tree, 55_000),
+        rich_borders_static_section(
+            &mut tree,
+            56_000,
+            "Glow",
+            "Glow recipes are static but paint-heavy siblings below the animated shadow row.",
+        ),
+        rich_borders_static_section(
+            &mut tree,
+            57_000,
+            "Combined",
+            "Combined recipes add gradients, borders, glow, shadows, and inset depth around the hot path.",
+        ),
+    ];
+    tree.set_children(&root_id, children)
+        .expect("rich borders root children should exist");
+
+    tree
+}
+
+pub fn scrollable_rich_borders_shadow_showcase() -> ElementTree {
+    let mut tree = rich_borders_shadow_showcase();
+    let content_id = tree
+        .root_id()
+        .expect("rich borders showcase should have a root");
+    let scroll_id = NodeId::from_u64(49_000);
+
+    tree.insert(Element::with_attrs(
+        scroll_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Px(960.0)),
+            height: Some(Length::Px(900.0)),
+            scrollbar_y: Some(true),
+            background: Some(Background::Color(Color::Rgb {
+                r: 241,
+                g: 244,
+                b: 250,
+            })),
+            ..Default::default()
+        },
+    ));
+    tree.set_children(&scroll_id, vec![content_id])
+        .expect("scroll shell should own rich borders content");
+    tree.set_root_id(scroll_id);
+    tree
+}
+
+fn rich_borders_intro(tree: &mut ElementTree, base: u64) -> NodeId {
+    let id = NodeId::from_u64(base);
+    tree.insert(Element::with_attrs(
+        id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(18.0)),
+            spacing: Some(7.0),
+            background: Some(Background::Color(Color::Rgb {
+                r: 248,
+                g: 250,
+                b: 253,
+            })),
+            border_radius: Some(BorderRadius::Uniform(16.0)),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            border_color: Some(Color::Rgb {
+                r: 223,
+                g: 228,
+                b: 238,
+            }),
+            box_shadows: Some(vec![shadow(0.0, 10.0, 20.0, 2.0, 24)]),
+            ..Default::default()
+        },
+    ));
+    let title_id = insert_text(tree, base + 1, "Borders", 24.0);
+    let copy_id = insert_text(
+        tree,
+        base + 2,
+        "A dense showcase page with static examples around an animated shadow row.",
+        13.0,
+    );
+    tree.set_children(&id, vec![title_id, copy_id])
+        .expect("rich intro children should exist");
+    id
+}
+
+fn rich_borders_static_section(
+    tree: &mut ElementTree,
+    base: u64,
+    title: &str,
+    copy: &str,
+) -> NodeId {
+    let section_id = NodeId::from_u64(base);
+    let grid_id = NodeId::from_u64(base + 10);
+    tree.insert(Element::with_attrs(
+        section_id,
+        ElementKind::Column,
+        Vec::new(),
+        section_attrs(),
+    ));
+    tree.insert(Element::with_attrs(
+        grid_id,
+        ElementKind::WrappedRow,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(12.0),
+            spacing_y: Some(12.0),
+            ..Default::default()
+        },
+    ));
+
+    let cards = (0..9)
+        .map(|index| static_shadow_recipe_card(tree, base + 100 + index as u64 * 10, index))
+        .collect::<Vec<_>>();
+    tree.set_children(&grid_id, cards)
+        .expect("rich static grid children should exist");
+    let title_id = insert_text(tree, base + 1, title, 18.0);
+    let copy_id = insert_text(tree, base + 2, copy, 13.0);
+    tree.set_children(&section_id, vec![title_id, copy_id, grid_id])
+        .expect("rich static section children should exist");
+
+    section_id
+}
+
+fn rich_box_shadow_section(tree: &mut ElementTree, base: u64) -> NodeId {
+    let section_id = NodeId::from_u64(base);
+    let example_id = NodeId::from_u64(base + 10);
+    let code_id = NodeId::from_u64(base + 20);
+    let content_id = NodeId::from_u64(base + 30);
+    let showcase_outer_id = NodeId::from_u64(base + 40);
+    let showcase_row_id = NodeId::from_u64(base + 50);
+    let grid_id = NodeId::from_u64(base + 60);
+
+    tree.insert(Element::with_attrs(
+        section_id,
+        ElementKind::Column,
+        Vec::new(),
+        section_attrs(),
+    ));
+    tree.insert(Element::with_attrs(
+        example_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(14.0)),
+            spacing: Some(12.0),
+            background: Some(Background::Color(Color::Rgb {
+                r: 248,
+                g: 250,
+                b: 253,
+            })),
+            border_radius: Some(BorderRadius::Uniform(14.0)),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            border_color: Some(Color::Rgb {
+                r: 223,
+                g: 228,
+                b: 238,
+            }),
+            box_shadows: Some(vec![shadow(0.0, 12.0, 24.0, 3.0, 30)]),
+            ..Default::default()
+        },
+    ));
+    tree.insert(Element::with_attrs(
+        code_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(12.0)),
+            spacing: Some(4.0),
+            background: Some(Background::Color(Color::Rgb {
+                r: 34,
+                g: 38,
+                b: 54,
+            })),
+            border_radius: Some(BorderRadius::Uniform(10.0)),
+            ..Default::default()
+        },
+    ));
+    tree.insert(Element::with_attrs(
+        content_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(12.0),
+            ..Default::default()
+        },
+    ));
+    tree.insert(Element::with_attrs(
+        showcase_outer_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(16.0)),
+            background: Some(Background::Color(Color::Rgb {
+                r: 236,
+                g: 240,
+                b: 247,
+            })),
+            border_radius: Some(BorderRadius::Uniform(16.0)),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            border_color: Some(Color::Rgb {
+                r: 223,
+                g: 228,
+                b: 238,
+            }),
+            ..Default::default()
+        },
+    ));
+    tree.insert(Element::with_attrs(
+        showcase_row_id,
+        ElementKind::Row,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(18.0)),
+            spacing: Some(14.0),
+            background: Some(Background::Color(Color::Rgb {
+                r: 248,
+                g: 250,
+                b: 253,
+            })),
+            border_radius: Some(BorderRadius::Uniform(18.0)),
+            box_shadows: Some(vec![shadow(0.0, 16.0, 28.0, 6.0, 46)]),
+            ..Default::default()
+        },
+    ));
+    tree.insert(Element::with_attrs(
+        grid_id,
+        ElementKind::WrappedRow,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Fill),
+            spacing_x: Some(12.0),
+            spacing_y: Some(12.0),
+            ..Default::default()
+        },
+    ));
+
+    let code_children = [
+        "row([width(fill()), spacing(14)], [",
+        "  el([Animation.animate([...], 2800, :linear, :loop)], text(\"Stacked\")),",
+        "  el([Animation.animate([...], 2400, :linear, :loop)], text(\"Right cast\")),",
+        "  el([Animation.animate([...], 3400, :linear, :loop)], text(\"Soft spread\"))",
+        "])",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, line)| insert_text(tree, base + 21 + index as u64, line, 11.0))
+    .collect::<Vec<_>>();
+    tree.set_children(&code_id, code_children)
+        .expect("rich code children should exist");
+
+    let showcase_children = vec![
+        animated_shadow_card(
+            tree,
+            base + 10_000,
+            "Stacked",
+            "Counter-rotating",
+            Color::Rgb {
+                r: 244,
+                g: 248,
+                b: 255,
+            },
+            stacked_shadow_animation(),
+        ),
+        animated_shadow_card(
+            tree,
+            base + 11_000,
+            "Right cast",
+            "Orbiting cast",
+            Color::Rgb {
+                r: 246,
+                g: 243,
+                b: 255,
+            },
+            orbiting_shadow_animation(14.0, 2.0, 14.0, 2400.0, false),
+        ),
+        animated_shadow_card(
+            tree,
+            base + 12_000,
+            "Soft spread",
+            "Orbiting blur",
+            Color::Rgb {
+                r: 240,
+                g: 249,
+                b: 246,
+            },
+            orbiting_shadow_animation(24.0, 6.0, 12.0, 3400.0, true),
+        ),
+    ];
+    tree.set_children(&showcase_row_id, showcase_children)
+        .expect("rich showcase row children should exist");
+    tree.set_children(&showcase_outer_id, vec![showcase_row_id])
+        .expect("rich showcase outer child should exist");
+
+    let recipe_children = (0..24)
+        .map(|index| static_shadow_recipe_card(tree, base + 20_000 + index as u64 * 10, index))
+        .collect::<Vec<_>>();
+    tree.set_children(&grid_id, recipe_children)
+        .expect("rich shadow grid children should exist");
+    tree.set_children(&content_id, vec![showcase_outer_id, grid_id])
+        .expect("rich content children should exist");
+
+    let example_title_id = insert_text(
+        tree,
+        base + 11,
+        "Directional, diffuse, and stacked shadows",
+        15.0,
+    );
+    let example_copy_id = insert_text(
+        tree,
+        base + 12,
+        "Animated outer shadows are decorative paint and should not force layout.",
+        12.0,
+    );
+    tree.set_children(
+        &example_id,
+        vec![example_title_id, example_copy_id, code_id, content_id],
+    )
+    .expect("rich example children should exist");
+
+    let title_id = insert_text(tree, base + 1, "Box Shadow", 18.0);
+    let copy_id = insert_text(
+        tree,
+        base + 2,
+        "Outer shadows are decorative only. Offset, blur, spread, and multiple layers change paint, not layout.",
+        13.0,
+    );
+    tree.set_children(&section_id, vec![title_id, copy_id, example_id])
+        .expect("rich box shadow section children should exist");
+
+    section_id
+}
+
+fn section_attrs() -> Attrs {
+    Attrs {
+        width: Some(Length::Fill),
+        padding: Some(Padding::Uniform(14.0)),
+        spacing: Some(14.0),
+        background: Some(Background::Color(Color::Rgb {
+            r: 245,
+            g: 247,
+            b: 251,
+        })),
+        border_radius: Some(BorderRadius::Uniform(14.0)),
+        border_width: Some(BorderWidth::Uniform(1.0)),
+        border_color: Some(Color::Rgb {
+            r: 223,
+            g: 228,
+            b: 238,
+        }),
+        ..Default::default()
+    }
+}
+
 fn animated_shadow_card(
     tree: &mut ElementTree,
     base: u64,
@@ -897,6 +1300,7 @@ fn text_attrs_with_size(content: &str, font_size: f64) -> Attrs {
     Attrs {
         content: Some(content.to_string()),
         font_size: Some(font_size),
+        height: Some(Length::Px((font_size * 1.25).ceil())),
         ..Default::default()
     }
 }

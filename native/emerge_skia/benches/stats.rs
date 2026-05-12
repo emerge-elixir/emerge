@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use emerge_skia::renderer::{RendererCacheFrameStats, RendererCacheKindFrameStats};
+use emerge_skia::renderer::{RendererCacheFrameStats, RendererCachePaintLayerFrameStats};
 use emerge_skia::stats::RendererStatsCollector;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -61,7 +61,7 @@ fn bench_stats_collector(c: &mut Criterion) {
             stats.record_event_resolve(duration);
             stats.record_patch_tree_process(duration);
             stats.record_renderer_cache(RendererCacheFrameStats {
-                clean_subtree: RendererCacheKindFrameStats {
+                paint_layer: RendererCachePaintLayerFrameStats {
                     candidates: 4,
                     visible_candidates: 4,
                     hits: 3,
@@ -70,9 +70,8 @@ fn bench_stats_collector(c: &mut Criterion) {
                     current_bytes: 4096,
                     draw_hit_time: Duration::from_micros(12),
                     prepare_time: Duration::from_micros(40),
-                    ..RendererCacheKindFrameStats::default()
+                    ..RendererCachePaintLayerFrameStats::default()
                 },
-                ..RendererCacheFrameStats::default()
             });
         }
 
