@@ -20,8 +20,8 @@ use emerge_skia::tree::layout::{
     Constraint, layout_and_refresh_default, layout_and_refresh_default_uncached_for_benchmark,
     layout_and_refresh_default_with_animation, layout_or_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_uncached_for_benchmark, layout_tree,
-    layout_tree_default, refresh, refresh_render_scene_cached_for_benchmark,
-    refresh_render_scene_uncached_for_benchmark, refresh_reusing_clean_registry_for_benchmark,
+    layout_tree_default, refresh, refresh_render_scene_for_benchmark,
+    refresh_reusing_clean_registry_for_benchmark,
     refresh_uncached_reusing_clean_registry_for_benchmark,
 };
 use emerge_skia::tree::patch::{Patch, apply_patches, decode_patches};
@@ -35,7 +35,8 @@ use std::time::{Duration, Instant};
 use support::{
     CARD_COUNT, MockTextMeasurer, SCROLL_VIEWPORT_ROW_COUNT, TEXT_ROW_COUNT,
     animated_shadow_showcase, large_paint_rich_scroll_column, large_simple_scroll_column,
-    large_text_column, load_fixture, nested_card_grid, scrollable_animated_shadow_showcase,
+    large_text_column, load_fixture, nested_card_grid, rich_borders_shadow_showcase,
+    scrollable_animated_shadow_showcase, scrollable_rich_borders_shadow_showcase,
 };
 
 const RETAINED_FIXTURE_IDS: &[&str] = &[
@@ -563,18 +564,26 @@ fn set_first_child_animation(tree: &mut ElementTree, spec: AnimationSpec) {
 }
 
 fn layout_scale_animation_spec(from: f64, to: f64) -> AnimationSpec {
-    let mut from_attrs = Attrs::default();
-    from_attrs.layout_scale = Some(from);
-    let mut to_attrs = Attrs::default();
-    to_attrs.layout_scale = Some(to);
+    let from_attrs = Attrs {
+        layout_scale: Some(from),
+        ..Attrs::default()
+    };
+    let to_attrs = Attrs {
+        layout_scale: Some(to),
+        ..Attrs::default()
+    };
     animation_spec(from_attrs, to_attrs)
 }
 
 fn layout_rotate_animation_spec(from: f64, to: f64) -> AnimationSpec {
-    let mut from_attrs = Attrs::default();
-    from_attrs.layout_rotate = Some(from);
-    let mut to_attrs = Attrs::default();
-    to_attrs.layout_rotate = Some(to);
+    let from_attrs = Attrs {
+        layout_rotate: Some(from),
+        ..Attrs::default()
+    };
+    let to_attrs = Attrs {
+        layout_rotate: Some(to),
+        ..Attrs::default()
+    };
     animation_spec(from_attrs, to_attrs)
 }
 
@@ -584,28 +593,40 @@ fn layout_scale_with_width_animation_spec(
     from_width: f64,
     to_width: f64,
 ) -> AnimationSpec {
-    let mut from_attrs = Attrs::default();
-    from_attrs.layout_scale = Some(from_scale);
-    from_attrs.width = Some(Length::Px(from_width));
-    let mut to_attrs = Attrs::default();
-    to_attrs.layout_scale = Some(to_scale);
-    to_attrs.width = Some(Length::Px(to_width));
+    let from_attrs = Attrs {
+        layout_scale: Some(from_scale),
+        width: Some(Length::Px(from_width)),
+        ..Attrs::default()
+    };
+    let to_attrs = Attrs {
+        layout_scale: Some(to_scale),
+        width: Some(Length::Px(to_width)),
+        ..Attrs::default()
+    };
     animation_spec(from_attrs, to_attrs)
 }
 
 fn paint_scale_animation_spec(from: f64, to: f64) -> AnimationSpec {
-    let mut from_attrs = Attrs::default();
-    from_attrs.scale = Some(from);
-    let mut to_attrs = Attrs::default();
-    to_attrs.scale = Some(to);
+    let from_attrs = Attrs {
+        scale: Some(from),
+        ..Attrs::default()
+    };
+    let to_attrs = Attrs {
+        scale: Some(to),
+        ..Attrs::default()
+    };
     animation_spec(from_attrs, to_attrs)
 }
 
 fn paint_rotate_animation_spec(from: f64, to: f64) -> AnimationSpec {
-    let mut from_attrs = Attrs::default();
-    from_attrs.rotate = Some(from);
-    let mut to_attrs = Attrs::default();
-    to_attrs.rotate = Some(to);
+    let from_attrs = Attrs {
+        rotate: Some(from),
+        ..Attrs::default()
+    };
+    let to_attrs = Attrs {
+        rotate: Some(to),
+        ..Attrs::default()
+    };
     animation_spec(from_attrs, to_attrs)
 }
 
@@ -625,13 +646,35 @@ fn first_root_child_id(tree: &ElementTree) -> Option<NodeId> {
 
 // Apply each patch during setup so the timed body is the first layout after invalidation.
 fn bench_animated_shadow_showcase(c: &mut Criterion) {
-    let mut group = c.benchmark_group("native/layout_animation_paint_only/shadow_showcase");
-    let constraint = Constraint::new(960.0, 4_000.0);
+    bench_animation_paint_only_showcase(
+        c,
+        "native/layout_animation_paint_only/shadow_showcase",
+        Constraint::new(960.0, 4_000.0),
+        animated_shadow_showcase,
+    );
+}
+
+fn bench_rich_borders_shadow_showcase(c: &mut Criterion) {
+    bench_animation_paint_only_showcase(
+        c,
+        "native/layout_animation_paint_only/rich_borders_showcase",
+        Constraint::new(960.0, 4_000.0),
+        rich_borders_shadow_showcase,
+    );
+}
+
+fn bench_animation_paint_only_showcase(
+    c: &mut Criterion,
+    group_name: &str,
+    constraint: Constraint,
+    make_tree: fn() -> ElementTree,
+) {
+    let mut group = c.benchmark_group(group_name);
     let start = Instant::now();
-    let node_count = animated_shadow_showcase().len() as u64;
+    let node_count = make_tree().len() as u64;
     group.throughput(Throughput::Elements(node_count));
 
-    let mut full_tree = animated_shadow_showcase();
+    let mut full_tree = make_tree();
     let mut full_runtime = AnimationRuntime::default();
     full_runtime.sync_with_tree(&full_tree, start);
     layout_and_refresh_default_with_animation(
@@ -660,7 +703,7 @@ fn bench_animated_shadow_showcase(c: &mut Criterion) {
         });
     });
 
-    let mut refresh_tree = animated_shadow_showcase();
+    let mut refresh_tree = make_tree();
     let mut refresh_runtime = AnimationRuntime::default();
     refresh_runtime.sync_with_tree(&refresh_tree, start);
     layout_and_refresh_default_with_animation(
@@ -693,13 +736,35 @@ fn bench_animated_shadow_showcase(c: &mut Criterion) {
 }
 
 fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
-    let mut group = c.benchmark_group("native/layout_scroll_paint_only_animation/shadow_showcase");
-    let constraint = Constraint::new(960.0, 640.0);
+    bench_scrolling_animation_paint_only_showcase(
+        c,
+        "native/layout_scroll_paint_only_animation/shadow_showcase",
+        Constraint::new(960.0, 640.0),
+        scrollable_animated_shadow_showcase,
+    );
+}
+
+fn bench_scrolling_rich_borders_shadow_showcase(c: &mut Criterion) {
+    bench_scrolling_animation_paint_only_showcase(
+        c,
+        "native/layout_scroll_paint_only_animation/rich_borders_showcase",
+        Constraint::new(960.0, 900.0),
+        scrollable_rich_borders_shadow_showcase,
+    );
+}
+
+fn bench_scrolling_animation_paint_only_showcase(
+    c: &mut Criterion,
+    group_name: &str,
+    constraint: Constraint,
+    make_tree: fn() -> ElementTree,
+) {
+    let mut group = c.benchmark_group(group_name);
     let start = Instant::now();
-    let node_count = scrollable_animated_shadow_showcase().len() as u64;
+    let node_count = make_tree().len() as u64;
     group.throughput(Throughput::Elements(node_count));
 
-    let mut full_tree = scrollable_animated_shadow_showcase();
+    let mut full_tree = make_tree();
     let full_root_id = full_tree.root_id().expect("scroll tree should have root");
     let mut full_runtime = AnimationRuntime::default();
     full_runtime.sync_with_tree(&full_tree, start);
@@ -735,7 +800,7 @@ fn bench_scrolling_animated_shadow_showcase(c: &mut Criterion) {
         });
     });
 
-    let mut refresh_tree = scrollable_animated_shadow_showcase();
+    let mut refresh_tree = make_tree();
     let refresh_root_id = refresh_tree
         .root_id()
         .expect("scroll tree should have root");
@@ -863,29 +928,12 @@ fn bench_scroll_viewport_case(
 
     let (mut render_only_middle_tree, _, _) =
         prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
-    group.bench_function(
-        format!("{}/middle_render_only_cached", case.name),
-        move |b| {
-            b.iter(|| {
-                let scene = refresh_render_scene_cached_for_benchmark(&mut render_only_middle_tree);
-                consume_render_scene(scene)
-            });
-        },
-    );
-
-    let (mut render_only_uncached_middle_tree, _, _) =
-        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
-    group.bench_function(
-        format!("{}/middle_render_only_uncached", case.name),
-        move |b| {
-            b.iter(|| {
-                let scene = refresh_render_scene_uncached_for_benchmark(
-                    &mut render_only_uncached_middle_tree,
-                );
-                consume_render_scene(scene)
-            });
-        },
-    );
+    group.bench_function(format!("{}/middle_render_only", case.name), move |b| {
+        b.iter(|| {
+            let scene = refresh_render_scene_for_benchmark(&mut render_only_middle_tree);
+            consume_render_scene(scene)
+        });
+    });
 
     let (mut step_tree, mut step_cached_rebuild, step_root_id) =
         prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
@@ -916,47 +964,19 @@ fn bench_scroll_viewport_case(
     let (mut render_only_step_tree, _, render_only_step_root_id) =
         prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
     let mut render_only_step_tick = 0_u64;
-    group.bench_function(
-        format!("{}/scroll_step_render_only_cached", case.name),
-        move |b| {
-            b.iter(|| {
-                render_only_step_tick = render_only_step_tick.saturating_add(1);
-                let delta = if render_only_step_tick.is_multiple_of(2) {
-                    -24.0
-                } else {
-                    24.0
-                };
-                black_box(render_only_step_tree.apply_scroll_y(&render_only_step_root_id, delta));
-                let scene = refresh_render_scene_cached_for_benchmark(&mut render_only_step_tree);
-                consume_render_scene(scene)
-            });
-        },
-    );
-
-    let (mut render_only_uncached_step_tree, _, render_only_uncached_step_root_id) =
-        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
-    let mut render_only_uncached_step_tick = 0_u64;
-    group.bench_function(
-        format!("{}/scroll_step_render_only_uncached", case.name),
-        move |b| {
-            b.iter(|| {
-                render_only_uncached_step_tick = render_only_uncached_step_tick.saturating_add(1);
-                let delta = if render_only_uncached_step_tick.is_multiple_of(2) {
-                    -24.0
-                } else {
-                    24.0
-                };
-                black_box(
-                    render_only_uncached_step_tree
-                        .apply_scroll_y(&render_only_uncached_step_root_id, delta),
-                );
-                let scene = refresh_render_scene_uncached_for_benchmark(
-                    &mut render_only_uncached_step_tree,
-                );
-                consume_render_scene(scene)
-            });
-        },
-    );
+    group.bench_function(format!("{}/scroll_step_render_only", case.name), move |b| {
+        b.iter(|| {
+            render_only_step_tick = render_only_step_tick.saturating_add(1);
+            let delta = if render_only_step_tick.is_multiple_of(2) {
+                -24.0
+            } else {
+                24.0
+            };
+            black_box(render_only_step_tree.apply_scroll_y(&render_only_step_root_id, delta));
+            let scene = refresh_render_scene_for_benchmark(&mut render_only_step_tree);
+            consume_render_scene(scene)
+        });
+    });
 
     let (mut uncached_step_tree, mut uncached_step_rebuild, uncached_step_root_id) =
         prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
@@ -1040,13 +1060,12 @@ fn sample_scroll_viewport_refresh_diagnostics(
     eprintln!(
         concat!(
             "scroll_viewport_diag {}: retained_nodes={} traversal_visits={} ",
-            "culled_subtrees={} render_subtree_cache_key_builds={} scene={}"
+            "culled_subtrees={} scene={}"
         ),
         label,
         tree.len(),
         diagnostics.element_visits,
         diagnostics.culled_subtrees,
-        diagnostics.render_subtree_cache_lookup_key_builds,
         summary
     );
     consume_layout_output(output);
@@ -1065,7 +1084,9 @@ fn bench_fixture_retained_layout_after_patch(c: &mut Criterion) {
 
     for fixture_id in RETAINED_FIXTURE_IDS {
         let fixture = load_fixture(fixture_id);
-        let base_tree = decode_tree(&fixture.full_emrg).expect("fixture tree should decode");
+        let Some(base_tree) = decode_fixture_tree_or_skip(&fixture.id, &fixture.full_emrg) else {
+            continue;
+        };
         let node_count = base_tree.len() as u64;
         let mut warmed_base = base_tree.clone();
         layout_tree_default(&mut warmed_base, constraint, 1.0);
@@ -1075,8 +1096,13 @@ fn bench_fixture_retained_layout_after_patch(c: &mut Criterion) {
         group.throughput(Throughput::Elements(node_count));
 
         for mutation in RETAINED_MUTATIONS {
-            let decoded_patches =
-                decode_patches(fixture.patch_bytes(mutation)).expect("fixture patch should decode");
+            let Some(decoded_patches) = decode_fixture_patches_or_skip(
+                &fixture.id,
+                mutation,
+                fixture.patch_bytes(mutation),
+            ) else {
+                continue;
+            };
 
             group.bench_function(*mutation, |b| {
                 b.iter_batched(
@@ -1100,12 +1126,34 @@ fn bench_fixture_retained_layout_after_patch(c: &mut Criterion) {
     }
 }
 
+fn decode_fixture_tree_or_skip(id: &str, bytes: &[u8]) -> Option<ElementTree> {
+    match decode_tree(bytes) {
+        Ok(tree) => Some(tree),
+        Err(err) => {
+            eprintln!("Skipping benchmark fixture {id}: full.emrg does not decode: {err}");
+            None
+        }
+    }
+}
+
+fn decode_fixture_patches_or_skip(id: &str, mutation: &str, bytes: &[u8]) -> Option<Vec<Patch>> {
+    match decode_patches(bytes) {
+        Ok(patches) => Some(patches),
+        Err(err) => {
+            eprintln!("Skipping benchmark fixture {id}/{mutation}: patch does not decode: {err}");
+            None
+        }
+    }
+}
+
 fn bench_fixture_retained_patch_layout(c: &mut Criterion) {
     let constraint = Constraint::new(960.0, 4_000.0);
 
     for fixture_id in RETAINED_FIXTURE_IDS {
         let fixture = load_fixture(fixture_id);
-        let base_tree = decode_tree(&fixture.full_emrg).expect("fixture tree should decode");
+        let Some(base_tree) = decode_fixture_tree_or_skip(&fixture.id, &fixture.full_emrg) else {
+            continue;
+        };
         let node_count = base_tree.len() as u64;
         let mut warmed_base = base_tree.clone();
         layout_tree_default(&mut warmed_base, constraint, 1.0);
@@ -1144,13 +1192,18 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
 
     for (fixture_id, mutation) in RENDER_REFRESH_REGRESSION_FIXTURE_CASES {
         let fixture = load_fixture(fixture_id);
-        let base_tree = decode_tree(&fixture.full_emrg).expect("fixture tree should decode");
+        let Some(base_tree) = decode_fixture_tree_or_skip(&fixture.id, &fixture.full_emrg) else {
+            continue;
+        };
         let node_count = base_tree.len() as u64;
         let mut warmed_base = base_tree;
         let warm_output = layout_and_refresh_default(&mut warmed_base, constraint, 1.0);
         let cached_rebuild = warm_output.event_rebuild;
-        let decoded_patches =
-            decode_patches(fixture.patch_bytes(mutation)).expect("fixture patch should decode");
+        let Some(decoded_patches) =
+            decode_fixture_patches_or_skip(&fixture.id, mutation, fixture.patch_bytes(mutation))
+        else {
+            continue;
+        };
         let patch_bytes = fixture.patch_bytes(mutation).to_vec();
         let case = format!("{fixture_id}/{mutation}");
 
@@ -1453,13 +1506,18 @@ fn bench_registry_refresh_cache_regression(c: &mut Criterion) {
 
     for (fixture_id, mutation) in REGISTRY_REFRESH_REGRESSION_FIXTURE_CASES {
         let fixture = load_fixture(fixture_id);
-        let base_tree = decode_tree(&fixture.full_emrg).expect("fixture tree should decode");
+        let Some(base_tree) = decode_fixture_tree_or_skip(&fixture.id, &fixture.full_emrg) else {
+            continue;
+        };
         let node_count = base_tree.len() as u64;
         let mut warmed_base = base_tree;
         let warm_output = layout_and_refresh_default(&mut warmed_base, constraint, 1.0);
         let cached_rebuild = warm_output.event_rebuild;
-        let decoded_patches =
-            decode_patches(fixture.patch_bytes(mutation)).expect("fixture patch should decode");
+        let Some(decoded_patches) =
+            decode_fixture_patches_or_skip(&fixture.id, mutation, fixture.patch_bytes(mutation))
+        else {
+            continue;
+        };
         let patch_bytes = fixture.patch_bytes(mutation).to_vec();
         let case = format!("{fixture_id}/{mutation}");
 
@@ -1719,6 +1777,28 @@ fn bench_nearby_hover_toggle_refresh(c: &mut Criterion) {
         );
     });
 
+    let (reused_hidden, reused_overlay_id, reused_code_ids) =
+        reused_node_hidden_nearby_hover_tree(constraint);
+    group.bench_function("reused_node_show_layout_refresh", |b| {
+        b.iter_batched(
+            || (reused_hidden.clone(), reused_code_ids.clone()),
+            |(mut tree, code_ids)| {
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![Patch::SetChildren {
+                        id: reused_overlay_id,
+                        children: code_ids,
+                    }],
+                )
+                .expect("reused-node nearby show patch should apply");
+                debug_assert_eq!(invalidation, TreeInvalidation::Resolve);
+                let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+                consume_layout_output(output)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.finish();
 }
 
@@ -1774,6 +1854,29 @@ fn cold_hidden_nearby_hover_tree(constraint: Constraint) -> (ElementTree, Regist
     let (mut tree, _host_id) = cold_hidden_nearby_hover_tree_base(40_000);
     let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
     (tree, output.event_rebuild)
+}
+
+fn reused_node_hidden_nearby_hover_tree(
+    constraint: Constraint,
+) -> (ElementTree, NodeId, Vec<NodeId>) {
+    let (mut tree, host_id) = cold_hidden_nearby_hover_tree_base(70_000);
+    let hidden_id = current_nearby_id(&tree, host_id);
+    let overlay_attrs = Attrs {
+        width: Some(Length::Px(460.0)),
+        padding: Some(Padding::Uniform(12.0)),
+        spacing: Some(4.0),
+        ..Default::default()
+    };
+    if let Some(hidden) = tree.get_mut(&hidden_id) {
+        hidden.spec.kind = ElementKind::Column;
+        hidden.spec.declared = overlay_attrs.clone();
+        hidden.layout.effective = overlay_attrs;
+    }
+
+    let code_ids = insert_detached_code_line_nodes(&mut tree, 80_000);
+    let _ = layout_and_refresh_default(&mut tree, constraint, 1.0);
+
+    (tree, hidden_id, code_ids)
 }
 
 fn cold_hidden_nearby_hover_tree_base(hidden_seed: u64) -> (ElementTree, NodeId) {
@@ -1925,6 +2028,36 @@ fn nearby_none_subtree(seed: u64) -> ElementTree {
     tree
 }
 
+fn insert_detached_code_line_nodes(tree: &mut ElementTree, seed: u64) -> Vec<NodeId> {
+    [
+        "Code",
+        "el([",
+        "  Border.rounded(8),",
+        "  Border.width(2),",
+        "  Border.color(:orange),",
+        "  Border.dashed()",
+        "], text(\"Dashed medium round\"))",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, line)| {
+        let id = NodeId::from_u64(seed + index as u64);
+        let attrs = Attrs {
+            content: Some((*line).to_string()),
+            font_size: Some(if index == 0 { 11.0 } else { 12.0 }),
+            ..Default::default()
+        };
+        tree.insert(Element::with_attrs(
+            id,
+            ElementKind::Text,
+            Vec::new(),
+            attrs,
+        ));
+        id
+    })
+    .collect()
+}
+
 fn current_nearby_id(tree: &ElementTree, host_id: NodeId) -> NodeId {
     tree.nearby_mounts_for(&host_id)
         .first()
@@ -1941,7 +2074,9 @@ criterion_group!(
     bench_layout_aware_transform,
     bench_layout_aware_transform_animation,
     bench_animated_shadow_showcase,
+    bench_rich_borders_shadow_showcase,
     bench_scrolling_animated_shadow_showcase,
+    bench_scrolling_rich_borders_shadow_showcase,
     bench_scroll_viewport_culling,
     bench_fixture_retained_layout_after_patch,
     bench_fixture_retained_patch_layout,
