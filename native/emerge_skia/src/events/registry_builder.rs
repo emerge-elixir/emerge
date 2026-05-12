@@ -54,8 +54,8 @@ use crate::tree::attrs::{
     BorderRadius, KeyBindingMatch, KeyBindingSpec, Padding, VirtualKeyHoldMode, VirtualKeyTapAction,
 };
 use crate::tree::element::{
-    Element, ElementKind, ElementTree, Frame, NodeId, NodeIx, RenderTopologyDependencyKey,
-    RetainedChildMode, RetainedPaintPhase,
+    Element, ElementKind, ElementTree, Frame, NodeId, NodeIx, RetainedChildMode,
+    RetainedPaintPhase, TopologyDependencyKey,
 };
 use crate::tree::geometry::{
     ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape,
@@ -533,7 +533,7 @@ struct RegistrySubtreeKey {
     hover_stack_hash: u64,
     scene_context_hash: u64,
     scroll_contexts_hash: u64,
-    topology: RenderTopologyDependencyKey,
+    topology: TopologyDependencyKey,
 }
 
 #[derive(Clone, Debug)]
@@ -6246,7 +6246,7 @@ fn registry_subtree_key(
         hover_stack_hash: hash_hover_stack(hover_stack),
         scene_context_hash: hash_scene_context(scene_ctx),
         scroll_contexts_hash: hash_scroll_contexts(scroll_contexts),
-        topology: tree.render_topology_dependency_key_ix(ix),
+        topology: tree.topology_dependency_key_ix(ix),
     }
 }
 
@@ -8171,6 +8171,57 @@ mod tests {
         )
     }
 
+    fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
+        Attrs {
+            width: Some(Length::Px(width)),
+            height: Some(Length::Px(height)),
+            ..Attrs::default()
+        }
+    }
+
+    fn width_move_attrs(width: f64, move_x: f64) -> Attrs {
+        Attrs {
+            width: Some(Length::Px(width)),
+            move_x: Some(move_x),
+            ..Attrs::default()
+        }
+    }
+
+    fn on_mouse_down_attrs() -> Attrs {
+        Attrs {
+            on_mouse_down: Some(true),
+            ..Attrs::default()
+        }
+    }
+
+    fn on_mouse_move_attrs() -> Attrs {
+        Attrs {
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        }
+    }
+
+    fn on_click_attrs() -> Attrs {
+        Attrs {
+            on_click: Some(true),
+            ..Attrs::default()
+        }
+    }
+
+    fn on_press_attrs() -> Attrs {
+        Attrs {
+            on_press: Some(true),
+            ..Attrs::default()
+        }
+    }
+
+    fn on_focus_attrs() -> Attrs {
+        Attrs {
+            on_focus: Some(true),
+            ..Attrs::default()
+        }
+    }
+
     fn build_pointer_region(visible: bool) -> PointerRegion {
         let rect = if visible {
             Rect {
@@ -8328,34 +8379,30 @@ mod tests {
 
         let mut tree = crate::tree::element::ElementTree::new();
 
-        let mut host_attrs = Attrs::default();
-        host_attrs.width = Some(Length::Px(128.0));
-        host_attrs.height = Some(Length::Px(82.0));
+        let host_attrs = fixed_box_attrs(128.0, 82.0);
         let mut host = make_element(120, host_attrs);
         host.layout.frame = None;
         host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
-        let mut from = Attrs::default();
-        from.width = Some(Length::Px(96.0));
-        from.move_x = Some(-16.0);
+        let from = width_move_attrs(96.0, -16.0);
 
-        let mut to = Attrs::default();
-        to.width = Some(Length::Px(156.0));
-        to.move_x = Some(26.0);
+        let to = width_move_attrs(156.0, 26.0);
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.width = Some(Length::Px(128.0));
-        overlay_attrs.height = Some(Length::Px(82.0));
-        overlay_attrs.align_x = Some(AlignX::Center);
-        overlay_attrs.align_y = Some(AlignY::Center);
-        overlay_attrs.on_mouse_move = Some(true);
-        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
-        overlay_attrs.animate = Some(AnimationSpec {
-            keyframes: vec![from, to],
-            duration_ms: 1000.0,
-            curve: AnimationCurve::Linear,
-            repeat: AnimationRepeat::Once,
-        });
+        let overlay_attrs = Attrs {
+            width: Some(Length::Px(128.0)),
+            height: Some(Length::Px(82.0)),
+            align_x: Some(AlignX::Center),
+            align_y: Some(AlignY::Center),
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            animate: Some(AnimationSpec {
+                keyframes: vec![from, to],
+                duration_ms: 1000.0,
+                curve: AnimationCurve::Linear,
+                repeat: AnimationRepeat::Once,
+            }),
+            ..Attrs::default()
+        };
 
         let overlay = make_element(121, overlay_attrs);
 
@@ -8384,33 +8431,29 @@ mod tests {
 
         let mut tree = crate::tree::element::ElementTree::new();
 
-        let mut host_attrs = Attrs::default();
-        host_attrs.width = Some(Length::Px(128.0));
-        host_attrs.height = Some(Length::Px(82.0));
+        let host_attrs = fixed_box_attrs(128.0, 82.0);
         let mut host = make_element(122, host_attrs);
         host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
-        let mut from = Attrs::default();
-        from.width = Some(Length::Px(96.0));
-        from.move_x = Some(-16.0);
+        let from = width_move_attrs(96.0, -16.0);
 
-        let mut to = Attrs::default();
-        to.width = Some(Length::Px(156.0));
-        to.move_x = Some(26.0);
+        let to = width_move_attrs(156.0, 26.0);
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.width = Some(Length::Px(128.0));
-        overlay_attrs.height = Some(Length::Px(82.0));
-        overlay_attrs.align_x = Some(AlignX::Center);
-        overlay_attrs.align_y = Some(AlignY::Center);
-        overlay_attrs.on_mouse_move = Some(true);
-        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
-        overlay_attrs.animate = Some(AnimationSpec {
-            keyframes: vec![from, to],
-            duration_ms: 1000.0,
-            curve: AnimationCurve::Linear,
-            repeat: AnimationRepeat::Once,
-        });
+        let overlay_attrs = Attrs {
+            width: Some(Length::Px(128.0)),
+            height: Some(Length::Px(82.0)),
+            align_x: Some(AlignX::Center),
+            align_y: Some(AlignY::Center),
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            animate: Some(AnimationSpec {
+                keyframes: vec![from, to],
+                duration_ms: 1000.0,
+                curve: AnimationCurve::Linear,
+                repeat: AnimationRepeat::Once,
+            }),
+            ..Attrs::default()
+        };
 
         let overlay = make_element(123, overlay_attrs);
 
@@ -8645,8 +8688,7 @@ mod tests {
 
     #[test]
     fn listeners_for_element_returns_empty_for_invisible_nodes() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_down = Some(true);
+        let attrs = on_mouse_down_attrs();
         let element = with_interaction(make_element(1, attrs), false);
 
         let listeners = listeners_for_element(&element);
@@ -8655,8 +8697,7 @@ mod tests {
 
     #[test]
     fn listeners_for_element_returns_empty_when_interaction_missing() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_down = Some(true);
+        let attrs = on_mouse_down_attrs();
         let element = make_element(1, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -8665,10 +8706,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_builds_primary_pointer_listeners() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_down = Some(true);
-        attrs.on_mouse_up = Some(true);
-        attrs.on_mouse_move = Some(true);
+        let attrs = Attrs {
+            on_mouse_down: Some(true),
+            on_mouse_up: Some(true),
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(2, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -8735,12 +8778,14 @@ mod tests {
 
     #[test]
     fn listeners_for_element_slider_press_sets_value_and_starts_drag() {
-        let mut attrs = Attrs::default();
-        attrs.slider_min = Some(0.0);
-        attrs.slider_max = Some(100.0);
-        attrs.slider_value = Some(0.0);
-        attrs.slider_step = Some(5.0);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(0.0),
+            slider_step: Some(5.0),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_slider_element(81, attrs), true);
         let element_id = NodeId::from_term_bytes(vec![81]);
 
@@ -8798,13 +8843,15 @@ mod tests {
 
     #[test]
     fn listeners_for_element_focused_slider_keys_update_value() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(true);
-        attrs.slider_min = Some(0.0);
-        attrs.slider_max = Some(100.0);
-        attrs.slider_value = Some(50.0);
-        attrs.slider_step = Some(5.0);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            focused_active: Some(true),
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(50.0),
+            slider_step: Some(5.0),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_slider_element(82, attrs), true);
         let element_id = NodeId::from_term_bytes(vec![82]);
         let listeners = listeners_for_element(&element);
@@ -8858,18 +8905,20 @@ mod tests {
 
     #[test]
     fn listeners_for_element_slider_user_key_binding_precedes_builtin_key() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(true);
-        attrs.slider_min = Some(0.0);
-        attrs.slider_max = Some(100.0);
-        attrs.slider_value = Some(50.0);
-        attrs.slider_step = Some(5.0);
-        attrs.on_key_down = Some(vec![KeyBindingSpec {
-            route: "key_down:arrow_right:exact:0".to_string(),
-            key: CanonicalKey::ArrowRight,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            focused_active: Some(true),
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(50.0),
+            slider_step: Some(5.0),
+            on_key_down: Some(vec![KeyBindingSpec {
+                route: "key_down:arrow_right:exact:0".to_string(),
+                key: CanonicalKey::ArrowRight,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_slider_element(83, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -8897,10 +8946,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_builds_inside_listener_when_hover_inactive() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_enter = Some(true);
-        attrs.mouse_over = Some(MouseOverAttrs::default());
-        attrs.mouse_over_active = Some(false);
+        let attrs = Attrs {
+            on_mouse_enter: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            mouse_over_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(3, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -8939,10 +8990,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_builds_leave_listener_when_hover_active() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_leave = Some(true);
-        attrs.mouse_over = Some(MouseOverAttrs::default());
-        attrs.mouse_over_active = Some(true);
+        let attrs = Attrs {
+            on_mouse_leave: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            mouse_over_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(4, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -8975,10 +9028,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_event_only_hover_tracks_active_for_leave() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_enter = Some(true);
-        attrs.on_mouse_leave = Some(true);
-        attrs.mouse_over_active = Some(false);
+        let attrs = Attrs {
+            on_mouse_enter: Some(true),
+            on_mouse_leave: Some(true),
+            mouse_over_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(22, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9015,9 +9070,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_hover_style_without_mouse_move_still_activates_inside() {
-        let mut attrs = Attrs::default();
-        attrs.mouse_over = Some(MouseOverAttrs::default());
-        attrs.mouse_over_active = Some(false);
+        let attrs = Attrs {
+            mouse_over: Some(MouseOverAttrs::default()),
+            mouse_over_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(24, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9052,10 +9109,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_active_hover_keeps_inside_listener_for_default_cursor() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_enter = Some(true);
-        attrs.mouse_over = Some(MouseOverAttrs::default());
-        attrs.mouse_over_active = Some(true);
+        let attrs = Attrs {
+            on_mouse_enter: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            mouse_over_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(25, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9069,9 +9128,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_event_only_leave_emits_event_and_clears_hover_active() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_leave = Some(true);
-        attrs.mouse_over_active = Some(true);
+        let attrs = Attrs {
+            on_mouse_leave: Some(true),
+            mouse_over_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(23, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9136,11 +9197,13 @@ mod tests {
     #[test]
     fn registry_hit_testing_uses_layout_rotate_inverse_geometry() {
         let mut tree = ElementTree::new();
-        let mut attrs = Attrs::default();
-        attrs.width = Some(Length::Px(100.0));
-        attrs.height = Some(Length::Px(40.0));
-        attrs.layout_rotate = Some(45.0);
-        attrs.on_mouse_down = Some(true);
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(40.0)),
+            layout_rotate: Some(45.0),
+            on_mouse_down: Some(true),
+            ..Attrs::default()
+        };
 
         let root = make_element(125, attrs);
         let root_id = root.id;
@@ -9186,19 +9249,19 @@ mod tests {
     fn slider_pointer_value_uses_layout_rotated_render_frame_geometry() {
         let mut tree = ElementTree::new();
 
-        let mut root_attrs = Attrs::default();
-        root_attrs.width = Some(Length::Px(240.0));
-        root_attrs.height = Some(Length::Px(140.0));
+        let root_attrs = fixed_box_attrs(240.0, 140.0);
         let mut root = make_element(128, root_attrs);
         let root_id = root.id;
 
-        let mut slider_attrs = Attrs::default();
-        slider_attrs.width = Some(Length::Px(180.0));
-        slider_attrs.height = Some(Length::Px(38.0));
-        slider_attrs.layout_rotate = Some(-90.0);
-        slider_attrs.slider_min = Some(0.0);
-        slider_attrs.slider_max = Some(100.0);
-        slider_attrs.slider_value = Some(0.0);
+        let slider_attrs = Attrs {
+            width: Some(Length::Px(180.0)),
+            height: Some(Length::Px(38.0)),
+            layout_rotate: Some(-90.0),
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(0.0),
+            ..Attrs::default()
+        };
         let mut slider = make_slider_element(129, slider_attrs);
         let slider_id = slider.id;
         let track_id = NodeId::from_term_bytes(vec![130]);
@@ -9207,17 +9270,19 @@ mod tests {
         slider.children = vec![track_id, filled_id, thumb_id];
         root.children = vec![slider_id];
 
-        let mut track_attrs = Attrs::default();
-        track_attrs.height = Some(Length::Px(8.0));
+        let track_attrs = Attrs {
+            height: Some(Length::Px(8.0)),
+            ..Attrs::default()
+        };
         let track = Element::with_attrs(track_id, ElementKind::El, Vec::new(), track_attrs);
 
-        let mut filled_attrs = Attrs::default();
-        filled_attrs.height = Some(Length::Px(8.0));
+        let filled_attrs = Attrs {
+            height: Some(Length::Px(8.0)),
+            ..Attrs::default()
+        };
         let filled = Element::with_attrs(filled_id, ElementKind::El, Vec::new(), filled_attrs);
 
-        let mut thumb_attrs = Attrs::default();
-        thumb_attrs.width = Some(Length::Px(24.0));
-        thumb_attrs.height = Some(Length::Px(24.0));
+        let thumb_attrs = fixed_box_attrs(24.0, 24.0);
         let thumb = Element::with_attrs(thumb_id, ElementKind::El, Vec::new(), thumb_attrs);
 
         tree.set_root_id(root_id);
@@ -9263,19 +9328,23 @@ mod tests {
         let mut tree = ElementTree::new();
         let menu_id = NodeId::from_term_bytes(vec![127]);
 
-        let mut root_attrs = Attrs::default();
-        root_attrs.width = Some(Length::Fill);
-        root_attrs.height = Some(Length::Fill);
-        root_attrs.clip_nearby = Some(true);
-        root_attrs.layout_rotate = Some(90.0);
+        let root_attrs = Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            clip_nearby: Some(true),
+            layout_rotate: Some(90.0),
+            ..Attrs::default()
+        };
         let mut root = make_element(126, root_attrs);
         let root_id = root.id;
         root.nearby.set(NearbySlot::InFront, Some(menu_id));
 
-        let mut menu_attrs = Attrs::default();
-        menu_attrs.width = Some(Length::Px(40.0));
-        menu_attrs.height = Some(Length::Px(40.0));
-        menu_attrs.on_mouse_down = Some(true);
+        let menu_attrs = Attrs {
+            width: Some(Length::Px(40.0)),
+            height: Some(Length::Px(40.0)),
+            on_mouse_down: Some(true),
+            ..Attrs::default()
+        };
         let menu = Element::with_attrs(menu_id, ElementKind::El, Vec::new(), menu_attrs);
 
         tree.set_root_id(root_id);
@@ -9333,9 +9402,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_mouse_down_style_inactive_adds_press_activate() {
-        let mut attrs = Attrs::default();
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(false);
+        let attrs = Attrs {
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(5, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9367,10 +9438,12 @@ mod tests {
 
     #[test]
     fn listeners_for_element_merges_mouse_down_event_and_style_into_single_press_listener() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_down = Some(true);
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(false);
+        let attrs = Attrs {
+            on_mouse_down: Some(true),
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(10, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9409,11 +9482,13 @@ mod tests {
 
     #[test]
     fn listeners_for_element_merges_press_slot_actions_in_builder_order() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_down = Some(true);
-        attrs.on_click = Some(true);
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(false);
+        let attrs = Attrs {
+            on_mouse_down: Some(true),
+            on_click: Some(true),
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(11, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9476,9 +9551,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_mouse_down_style_active_adds_release_and_leave_clear() {
-        let mut attrs = Attrs::default();
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(true);
+        let attrs = Attrs {
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(6, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -9537,10 +9614,12 @@ mod tests {
 
     #[test]
     fn registry_for_elements_keeps_mouse_up_targeted_and_mouse_down_clear_anywhere() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_up = Some(true);
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(true);
+        let attrs = Attrs {
+            on_mouse_up: Some(true),
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(60, attrs), true);
         let registry = registry_for_elements(&[element]);
 
@@ -9597,8 +9676,7 @@ mod tests {
         host.nearby
             .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![82])));
 
-        let mut underlying_attrs = Attrs::default();
-        underlying_attrs.on_mouse_down = Some(true);
+        let underlying_attrs = on_mouse_down_attrs();
         let underlying = with_interaction_rect(
             make_element(81, underlying_attrs),
             true,
@@ -9669,8 +9747,7 @@ mod tests {
         host.nearby
             .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![85])));
 
-        let mut underlying_attrs = Attrs::default();
-        underlying_attrs.on_mouse_down = Some(true);
+        let underlying_attrs = on_mouse_down_attrs();
         let underlying = with_interaction_rect(
             make_element(84, underlying_attrs),
             true,
@@ -9682,8 +9759,7 @@ mod tests {
             },
         );
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_down = Some(true);
+        let overlay_attrs = on_mouse_down_attrs();
         let overlay = with_interaction_rect(
             make_element(85, overlay_attrs),
             true,
@@ -9717,8 +9793,10 @@ mod tests {
 
     #[test]
     fn registry_for_elements_clip_nearby_clips_escape_overlay_interaction() {
-        let mut host_attrs = Attrs::default();
-        host_attrs.clip_nearby = Some(true);
+        let host_attrs = Attrs {
+            clip_nearby: Some(true),
+            ..Attrs::default()
+        };
         let mut host = with_interaction_rect(
             make_element(86, host_attrs),
             true,
@@ -9732,8 +9810,7 @@ mod tests {
         host.nearby
             .set(NearbySlot::Above, Some(NodeId::from_term_bytes(vec![87])));
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_down = Some(true);
+        let overlay_attrs = on_mouse_down_attrs();
         let overlay = with_interaction_rect(
             make_element(87, overlay_attrs),
             true,
@@ -9791,8 +9868,7 @@ mod tests {
         );
         host.nearby.set(NearbySlot::Below, Some(overlay_id));
 
-        let mut later_attrs = Attrs::default();
-        later_attrs.on_mouse_down = Some(true);
+        let later_attrs = on_mouse_down_attrs();
         let later = with_interaction_rect(
             make_element(142, later_attrs),
             true,
@@ -9804,8 +9880,7 @@ mod tests {
             },
         );
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_down = Some(true);
+        let overlay_attrs = on_mouse_down_attrs();
         let overlay = with_interaction_rect(
             make_element(143, overlay_attrs),
             true,
@@ -9871,8 +9946,7 @@ mod tests {
             .nearby
             .set(NearbySlot::Below, Some(descendant_overlay_id));
 
-        let mut ancestor_overlay_attrs = Attrs::default();
-        ancestor_overlay_attrs.on_mouse_down = Some(true);
+        let ancestor_overlay_attrs = on_mouse_down_attrs();
         let ancestor_overlay = with_interaction_rect(
             make_element(146, ancestor_overlay_attrs),
             true,
@@ -9884,8 +9958,7 @@ mod tests {
             },
         );
 
-        let mut descendant_overlay_attrs = Attrs::default();
-        descendant_overlay_attrs.on_mouse_down = Some(true);
+        let descendant_overlay_attrs = on_mouse_down_attrs();
         let descendant_overlay = with_interaction_rect(
             make_element(147, descendant_overlay_attrs),
             true,
@@ -9936,9 +10009,11 @@ mod tests {
         );
         root.children = vec![host_id, sibling_id];
 
-        let mut host_attrs = Attrs::default();
-        host_attrs.on_focus = Some(true);
-        host_attrs.focused_active = Some(true);
+        let host_attrs = Attrs {
+            on_focus: Some(true),
+            focused_active: Some(true),
+            ..Attrs::default()
+        };
         let mut host = with_interaction_rect(
             make_element(150, host_attrs),
             true,
@@ -9951,8 +10026,7 @@ mod tests {
         );
         host.nearby.set(NearbySlot::Below, Some(overlay_id));
 
-        let mut sibling_attrs = Attrs::default();
-        sibling_attrs.on_focus = Some(true);
+        let sibling_attrs = on_focus_attrs();
         let sibling = with_interaction_rect(
             make_element(151, sibling_attrs),
             true,
@@ -9964,8 +10038,7 @@ mod tests {
             },
         );
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_focus = Some(true);
+        let overlay_attrs = on_focus_attrs();
         let overlay = with_interaction_rect(
             make_element(152, overlay_attrs),
             true,
@@ -10034,8 +10107,7 @@ mod tests {
         host.nearby
             .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![88])));
 
-        let mut underlying_attrs = Attrs::default();
-        underlying_attrs.on_mouse_move = Some(true);
+        let underlying_attrs = on_mouse_move_attrs();
         let underlying = with_interaction_rect(
             make_element(87, underlying_attrs),
             true,
@@ -10095,8 +10167,7 @@ mod tests {
         host.nearby
             .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![91])));
 
-        let mut underlying_attrs = Attrs::default();
-        underlying_attrs.on_mouse_move = Some(true);
+        let underlying_attrs = on_mouse_move_attrs();
         let underlying = with_interaction_rect(
             make_element(90, underlying_attrs),
             true,
@@ -10108,9 +10179,11 @@ mod tests {
             },
         );
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_move = Some(true);
-        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let overlay_attrs = Attrs {
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            ..Attrs::default()
+        };
         let overlay = with_interaction_rect(
             make_element(91, overlay_attrs),
             true,
@@ -10154,8 +10227,7 @@ mod tests {
         host.children = vec![under_id];
         host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
-        let mut under_attrs = Attrs::default();
-        under_attrs.on_mouse_move = Some(true);
+        let under_attrs = on_mouse_move_attrs();
         let underlying = with_frame(
             make_element(111, under_attrs),
             Frame {
@@ -10168,9 +10240,11 @@ mod tests {
             },
         );
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_move = Some(true);
-        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let overlay_attrs = Attrs {
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            ..Attrs::default()
+        };
         let overlay = with_frame(
             make_element(112, overlay_attrs),
             Frame {
@@ -10224,9 +10298,11 @@ mod tests {
         );
         host.nearby.set(NearbySlot::InFront, Some(overlay_id));
 
-        let mut overlay_attrs = Attrs::default();
-        overlay_attrs.on_mouse_move = Some(true);
-        overlay_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let overlay_attrs = Attrs {
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            ..Attrs::default()
+        };
         let mut overlay = with_frame(
             make_element(141, overlay_attrs),
             Frame {
@@ -10308,9 +10384,11 @@ mod tests {
         );
         wrapper.children = vec![target_id];
 
-        let mut target_attrs = Attrs::default();
-        target_attrs.on_mouse_move = Some(true);
-        target_attrs.mouse_over = Some(MouseOverAttrs::default());
+        let target_attrs = Attrs {
+            on_mouse_move: Some(true),
+            mouse_over: Some(MouseOverAttrs::default()),
+            ..Attrs::default()
+        };
         let target = with_frame(
             make_element(152, target_attrs),
             Frame {
@@ -10424,8 +10502,7 @@ mod tests {
 
     #[test]
     fn listeners_for_element_on_click_starts_click_and_drag_trackers() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(7, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -10483,10 +10560,12 @@ mod tests {
 
     #[test]
     fn listeners_for_scrollable_element_start_drag_tracker_without_click_handlers() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(10.0);
-        attrs.scroll_y_max = Some(100.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(70, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -10525,8 +10604,7 @@ mod tests {
 
     #[test]
     fn runtime_listeners_for_overlay_orders_runtime_followups_before_release_followup() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(30, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10584,8 +10662,7 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_click_release_followup_redispatches_base_release() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(27, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10639,8 +10716,7 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drops_click_followup_when_source_listener_missing() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(28, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10683,10 +10759,12 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_on_press_release_includes_base_mouse_down_clear() {
-        let mut attrs = Attrs::default();
-        attrs.on_press = Some(true);
-        attrs.mouse_down = Some(MouseOverAttrs::default());
-        attrs.mouse_down_active = Some(true);
+        let attrs = Attrs {
+            on_press: Some(true),
+            mouse_down: Some(MouseOverAttrs::default()),
+            mouse_down_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(91, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10739,8 +10817,7 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_active_release_precedes_and_suppresses_click_followup() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(29, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10796,8 +10873,7 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_without_scroll_match_clears_drag_only() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
+        let attrs = on_click_attrs();
         let element = with_interaction(make_element(31, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10845,11 +10921,13 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_promotes_drag_when_scroll_matches() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
-        attrs.scrollbar_x = Some(true);
-        attrs.scroll_x = Some(10.0);
-        attrs.scroll_x_max = Some(100.0);
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scroll_x: Some(10.0),
+            scroll_x_max: Some(100.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(31, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -10905,11 +10983,13 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_scroll_uses_rotated_local_axis() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(20.0);
-        attrs.scroll_y_max = Some(100.0);
-        attrs.layout_rotate = Some(90.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            scroll_y_max: Some(100.0),
+            layout_rotate: Some(90.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             make_element(32, attrs),
             Frame {
@@ -11012,8 +11092,10 @@ mod tests {
 
     #[test]
     fn listeners_for_element_on_swipe_starts_drag_tracker_without_click_press_tracker() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(71, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11063,8 +11145,10 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_starts_swipe_when_enabled() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(72, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -11117,8 +11201,10 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_waits_for_clear_axis_intent() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(75, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -11177,10 +11263,12 @@ mod tests {
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_prefers_horizontal_swipe_over_vertical_parent_scroll()
      {
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(10.0);
-        parent_attrs.scroll_y_max = Some(100.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let mut parent = with_frame(
             with_interaction(make_element(76, parent_attrs), true),
             Frame {
@@ -11194,9 +11282,11 @@ mod tests {
         );
         parent.children = vec![NodeId::from_term_bytes(vec![77])];
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.on_swipe_left = Some(true);
-        child_attrs.on_swipe_right = Some(true);
+        let child_attrs = Attrs {
+            on_swipe_left: Some(true),
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let child = with_frame(
             with_interaction(make_element(77, child_attrs), true),
             Frame {
@@ -11259,10 +11349,12 @@ mod tests {
     #[test]
     fn compose_combined_registry_drag_candidate_threshold_prefers_vertical_parent_scroll_over_horizontal_swipe()
      {
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(10.0);
-        parent_attrs.scroll_y_max = Some(100.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let mut parent = with_frame(
             with_interaction(make_element(78, parent_attrs), true),
             Frame {
@@ -11276,9 +11368,11 @@ mod tests {
         );
         parent.children = vec![NodeId::from_term_bytes(vec![79])];
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.on_swipe_left = Some(true);
-        child_attrs.on_swipe_right = Some(true);
+        let child_attrs = Attrs {
+            on_swipe_left: Some(true),
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let child = with_frame(
             with_interaction(make_element(79, child_attrs), true),
             Frame {
@@ -11343,9 +11437,11 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_swipe_release_emits_direction_and_base_mouse_up() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
-        attrs.on_mouse_up = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            on_mouse_up: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(73, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -11407,8 +11503,10 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_swipe_release_uses_locked_axis_even_with_large_off_axis_delta() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(74, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -11466,8 +11564,10 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_swipe_release_ignores_short_locked_axis_displacement() {
-        let mut attrs = Attrs::default();
-        attrs.on_swipe_right = Some(true);
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(80, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -11520,8 +11620,7 @@ mod tests {
 
     #[test]
     fn listeners_for_element_on_press_starts_pointer_press_and_drag_trackers() {
-        let mut attrs = Attrs::default();
-        attrs.on_press = Some(true);
+        let attrs = on_press_attrs();
         let element = with_interaction(make_element(8, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11594,9 +11693,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_on_press_focused_adds_key_enter_listener() {
-        let mut attrs = Attrs::default();
-        attrs.on_press = Some(true);
-        attrs.focused_active = Some(true);
+        let attrs = Attrs {
+            on_press: Some(true),
+            focused_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(12, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11625,9 +11726,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_on_press_not_focused_omits_key_enter_listener() {
-        let mut attrs = Attrs::default();
-        attrs.on_press = Some(true);
-        attrs.focused_active = Some(false);
+        let attrs = Attrs {
+            on_press: Some(true),
+            focused_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(13, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11639,14 +11742,16 @@ mod tests {
 
     #[test]
     fn listeners_for_element_virtual_key_starts_tracker_and_never_focuses() {
-        let mut attrs = Attrs::default();
-        attrs.on_focus = Some(true);
-        attrs.virtual_key = Some(VirtualKeySpec {
-            tap: VirtualKeyTapAction::Text("a".to_string()),
-            hold: VirtualKeyHoldMode::None,
-            hold_ms: 350,
-            repeat_ms: 40,
-        });
+        let attrs = Attrs {
+            on_focus: Some(true),
+            virtual_key: Some(VirtualKeySpec {
+                tap: VirtualKeyTapAction::Text("a".to_string()),
+                hold: VirtualKeyHoldMode::None,
+                hold_ms: 350,
+                repeat_ms: 40,
+            }),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(73, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11774,20 +11879,22 @@ mod tests {
 
     #[test]
     fn listeners_for_element_focused_key_bindings_emit_key_events() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(true);
-        attrs.on_key_down = Some(vec![KeyBindingSpec {
-            route: "key_down:enter:exact:0".to_string(),
-            key: CanonicalKey::Enter,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
-        attrs.on_key_up = Some(vec![KeyBindingSpec {
-            route: "key_up:escape:exact:2".to_string(),
-            key: CanonicalKey::Escape,
-            mods: MOD_CTRL,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            focused_active: Some(true),
+            on_key_down: Some(vec![KeyBindingSpec {
+                route: "key_down:enter:exact:0".to_string(),
+                key: CanonicalKey::Enter,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            on_key_up: Some(vec![KeyBindingSpec {
+                route: "key_up:escape:exact:2".to_string(),
+                key: CanonicalKey::Escape,
+                mods: MOD_CTRL,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(37, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11857,17 +11964,19 @@ mod tests {
 
     #[test]
     fn listeners_for_focused_text_input_enter_key_down_arms_text_commit_suppression() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("task".to_string());
-        attrs.text_input_focused = Some(true);
-        attrs.text_input_cursor = Some(4);
-        attrs.focused_active = Some(true);
-        attrs.on_key_down = Some(vec![KeyBindingSpec {
-            route: "key_down:enter:exact:0".to_string(),
-            key: CanonicalKey::Enter,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            content: Some("task".to_string()),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(4),
+            focused_active: Some(true),
+            on_key_down: Some(vec![KeyBindingSpec {
+                route: "key_down:enter:exact:0".to_string(),
+                key: CanonicalKey::Enter,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = make_text_input_element(137, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -11907,14 +12016,16 @@ mod tests {
 
     #[test]
     fn listeners_for_element_unfocused_key_bindings_are_omitted() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(false);
-        attrs.on_key_down = Some(vec![KeyBindingSpec {
-            route: "key_down:enter:exact:0".to_string(),
-            key: CanonicalKey::Enter,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            focused_active: Some(false),
+            on_key_down: Some(vec![KeyBindingSpec {
+                route: "key_down:enter:exact:0".to_string(),
+                key: CanonicalKey::Enter,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(38, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11925,20 +12036,22 @@ mod tests {
 
     #[test]
     fn listeners_for_element_key_down_and_key_press_share_one_slot() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(true);
-        attrs.on_key_down = Some(vec![KeyBindingSpec {
-            route: "key_down:space:exact:0".to_string(),
-            key: CanonicalKey::Space,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
-        attrs.on_key_press = Some(vec![KeyBindingSpec {
-            route: "key_press:space:exact:0".to_string(),
-            key: CanonicalKey::Space,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            focused_active: Some(true),
+            on_key_down: Some(vec![KeyBindingSpec {
+                route: "key_down:space:exact:0".to_string(),
+                key: CanonicalKey::Space,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            on_key_press: Some(vec![KeyBindingSpec {
+                route: "key_press:space:exact:0".to_string(),
+                key: CanonicalKey::Space,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(39, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -11986,20 +12099,22 @@ mod tests {
 
     #[test]
     fn key_press_release_followup_redispatches_key_up_before_key_press() {
-        let mut attrs = Attrs::default();
-        attrs.focused_active = Some(true);
-        attrs.on_key_up = Some(vec![KeyBindingSpec {
-            route: "key_up:space:exact:0".to_string(),
-            key: CanonicalKey::Space,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
-        attrs.on_key_press = Some(vec![KeyBindingSpec {
-            route: "key_press:space:exact:0".to_string(),
-            key: CanonicalKey::Space,
-            mods: 0,
-            match_mode: KeyBindingMatch::Exact,
-        }]);
+        let attrs = Attrs {
+            focused_active: Some(true),
+            on_key_up: Some(vec![KeyBindingSpec {
+                route: "key_up:space:exact:0".to_string(),
+                key: CanonicalKey::Space,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            on_key_press: Some(vec![KeyBindingSpec {
+                route: "key_press:space:exact:0".to_string(),
+                key: CanonicalKey::Space,
+                mods: 0,
+                match_mode: KeyBindingMatch::Exact,
+            }]),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(40, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -12069,9 +12184,11 @@ mod tests {
 
     #[test]
     fn listeners_for_focusable_pointer_press_emits_focus_to() {
-        let mut attrs = Attrs::default();
-        attrs.on_focus = Some(true);
-        attrs.focused_active = Some(false);
+        let attrs = Attrs {
+            on_focus: Some(true),
+            focused_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(24, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -12100,13 +12217,14 @@ mod tests {
 
     #[test]
     fn registry_for_elements_adds_concrete_tab_focus_transitions() {
-        let mut focused_attrs = Attrs::default();
-        focused_attrs.on_focus = Some(true);
-        focused_attrs.focused_active = Some(true);
+        let focused_attrs = Attrs {
+            on_focus: Some(true),
+            focused_active: Some(true),
+            ..Attrs::default()
+        };
         let focused = with_interaction(make_element(25, focused_attrs), true);
 
-        let mut next_attrs = Attrs::default();
-        next_attrs.on_focus = Some(true);
+        let next_attrs = on_focus_attrs();
         let next = with_interaction(make_element(26, next_attrs), true);
 
         let registry = registry_for_elements(&[focused, next]);
@@ -12185,8 +12303,10 @@ mod tests {
         root.lifecycle.mounted_at_revision = 1;
         root.children = vec![field_id];
 
-        let mut field_attrs = Attrs::default();
-        field_attrs.focus_on_mount = Some(true);
+        let field_attrs = Attrs {
+            focus_on_mount: Some(true),
+            ..Attrs::default()
+        };
         let mut field = with_frame(
             make_text_input_element(28, field_attrs),
             Frame {
@@ -12235,8 +12355,10 @@ mod tests {
         root.lifecycle.mounted_at_revision = 1;
         root.children = vec![existing_id, new_id];
 
-        let mut existing_attrs = Attrs::default();
-        existing_attrs.focus_on_mount = Some(true);
+        let existing_attrs = Attrs {
+            focus_on_mount: Some(true),
+            ..Attrs::default()
+        };
         let mut existing = with_frame(
             make_text_input_element(30, existing_attrs),
             Frame {
@@ -12250,8 +12372,10 @@ mod tests {
         );
         existing.lifecycle.mounted_at_revision = 1;
 
-        let mut new_attrs = Attrs::default();
-        new_attrs.focus_on_mount = Some(true);
+        let new_attrs = Attrs {
+            focus_on_mount: Some(true),
+            ..Attrs::default()
+        };
         let mut new_field = with_frame(
             make_text_input_element(31, new_attrs),
             Frame {
@@ -12302,8 +12426,10 @@ mod tests {
         root.lifecycle.mounted_at_revision = 1;
         root.children = vec![first_id, second_id];
 
-        let mut first_attrs = Attrs::default();
-        first_attrs.focus_on_mount = Some(true);
+        let first_attrs = Attrs {
+            focus_on_mount: Some(true),
+            ..Attrs::default()
+        };
         let mut first = with_frame(
             make_text_input_element(33, first_attrs),
             Frame {
@@ -12317,8 +12443,10 @@ mod tests {
         );
         first.lifecycle.mounted_at_revision = 3;
 
-        let mut second_attrs = Attrs::default();
-        second_attrs.focus_on_mount = Some(true);
+        let second_attrs = Attrs {
+            focus_on_mount: Some(true),
+            ..Attrs::default()
+        };
         let mut second = with_frame(
             make_text_input_element(34, second_attrs),
             Frame {
@@ -12348,12 +12476,10 @@ mod tests {
 
     #[test]
     fn registry_for_elements_without_focus_adds_global_tab_fallbacks() {
-        let mut first_attrs = Attrs::default();
-        first_attrs.on_focus = Some(true);
+        let first_attrs = on_focus_attrs();
         let first = with_interaction(make_element(27, first_attrs), true);
 
-        let mut last_attrs = Attrs::default();
-        last_attrs.on_focus = Some(true);
+        let last_attrs = on_focus_attrs();
         let last = with_interaction(make_element(28, last_attrs), true);
 
         let registry = registry_for_elements(&[first, last]);
@@ -12592,11 +12718,13 @@ mod tests {
 
     #[test]
     fn listeners_for_focused_text_input_add_text_edit_slots() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(true);
-        attrs.text_input_cursor = Some(2);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(2),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = make_text_input_element(17, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -12948,11 +13076,13 @@ mod tests {
 
     #[test]
     fn listeners_for_focused_text_input_without_on_change_emits_no_change_event() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(true);
-        attrs.text_input_cursor = Some(2);
-        attrs.on_change = Some(false);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(2),
+            on_change: Some(false),
+            ..Attrs::default()
+        };
         let element = make_text_input_element(18, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -13015,11 +13145,13 @@ mod tests {
 
     #[test]
     fn listeners_for_unfocused_text_input_omit_text_edit_slots() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(false);
-        attrs.text_input_cursor = Some(2);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(false),
+            text_input_cursor: Some(2),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = make_text_input_element(19, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -13045,9 +13177,11 @@ mod tests {
 
     #[test]
     fn listeners_for_text_input_left_press_sets_cursor_and_starts_text_drag() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(false);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_text_input_element(32, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -13103,10 +13237,12 @@ mod tests {
 
     #[test]
     fn listeners_for_text_input_with_interaction_add_middle_paste_primary_listener() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(false);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(false),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_text_input_element(21, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -13155,8 +13291,10 @@ mod tests {
 
     #[test]
     fn runtime_listeners_for_overlay_text_drag_adds_move_and_clear_followups() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_text_input_element(33, attrs), true);
         let base = registry_for_elements(&[element]);
 
@@ -13275,13 +13413,15 @@ mod tests {
 
     #[test]
     fn listeners_for_element_adds_key_scroll_listeners_from_scroll_position() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scroll_x = Some(10.0);
-        attrs.scroll_x_max = Some(50.0);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(0.0);
-        attrs.scroll_y_max = Some(40.0);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scroll_x: Some(10.0),
+            scroll_x_max: Some(50.0),
+            scrollbar_y: Some(true),
+            scroll_y: Some(0.0),
+            scroll_y_max: Some(40.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(40, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -13338,9 +13478,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_scrollbar_hover_uses_move_and_active_leave_only() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(10.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             with_interaction(make_element(45, attrs), true),
             Frame {
@@ -13373,10 +13515,12 @@ mod tests {
         ));
         assert_eq!(cursor_actions(&move_actions), vec![CursorIcon::Default]);
 
-        let mut hovered_attrs = Attrs::default();
-        hovered_attrs.scrollbar_y = Some(true);
-        hovered_attrs.scroll_y = Some(10.0);
-        hovered_attrs.scrollbar_hover_axis = Some(ScrollbarHoverAxis::Y);
+        let hovered_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scrollbar_hover_axis: Some(ScrollbarHoverAxis::Y),
+            ..Attrs::default()
+        };
         let hovered_element = with_frame(
             with_interaction(make_element(46, hovered_attrs), true),
             Frame {
@@ -13412,10 +13556,12 @@ mod tests {
         let wrapper_id = NodeId::from_term_bytes(vec![92]);
         let target_id = NodeId::from_term_bytes(vec![93]);
 
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(20.0);
-        parent_attrs.scroll_y_max = Some(120.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            scroll_y_max: Some(120.0),
+            ..Attrs::default()
+        };
         let mut parent = with_frame(
             make_element(91, parent_attrs),
             Frame {
@@ -13442,8 +13588,7 @@ mod tests {
         );
         wrapper.children = vec![target_id];
 
-        let mut target_attrs = Attrs::default();
-        target_attrs.on_mouse_move = Some(true);
+        let target_attrs = on_mouse_move_attrs();
         let target = with_frame(
             make_element(93, target_attrs),
             Frame {
@@ -13477,10 +13622,12 @@ mod tests {
 
     #[test]
     fn registry_for_elements_translated_hover_uses_visual_position() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_move = Some(true);
-        attrs.move_x = Some(40.0);
-        attrs.move_y = Some(15.0);
+        let attrs = Attrs {
+            on_mouse_move: Some(true),
+            move_x: Some(40.0),
+            move_y: Some(15.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             make_element(96, attrs),
             Frame {
@@ -13515,9 +13662,11 @@ mod tests {
 
     #[test]
     fn registry_for_elements_rotated_hover_uses_visual_rotation() {
-        let mut attrs = Attrs::default();
-        attrs.on_mouse_move = Some(true);
-        attrs.rotate = Some(90.0);
+        let attrs = Attrs {
+            on_mouse_move: Some(true),
+            rotate: Some(90.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             make_element(97, attrs),
             Frame {
@@ -13554,10 +13703,12 @@ mod tests {
     fn registry_for_elements_scrolled_child_scrollbar_hover_uses_screen_space_thumb_rect() {
         let child_id = NodeId::from_term_bytes(vec![95]);
 
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(40.0);
-        parent_attrs.scroll_y_max = Some(160.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(40.0),
+            scroll_y_max: Some(160.0),
+            ..Attrs::default()
+        };
         let mut parent = with_frame(
             make_element(94, parent_attrs),
             Frame {
@@ -13571,10 +13722,12 @@ mod tests {
         );
         parent.children = vec![child_id];
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.scrollbar_y = Some(true);
-        child_attrs.scroll_y = Some(10.0);
-        child_attrs.scroll_y_max = Some(100.0);
+        let child_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let child = with_frame(
             make_element(95, child_attrs),
             Frame {
@@ -13624,12 +13777,14 @@ mod tests {
 
     #[test]
     fn registry_for_elements_transformed_scrollbar_hover_uses_visual_thumb_rect() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(10.0);
-        attrs.scroll_y_max = Some(100.0);
-        attrs.move_x = Some(30.0);
-        attrs.rotate = Some(90.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            move_x: Some(30.0),
+            rotate: Some(90.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             make_element(98, attrs),
             Frame {
@@ -13672,9 +13827,11 @@ mod tests {
 
     #[test]
     fn listeners_for_element_scrollbar_press_slots_start_drag_runtime() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(20.0);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             with_interaction(make_element(47, attrs), true),
             Frame {
@@ -13747,10 +13904,12 @@ mod tests {
 
     #[test]
     fn scrollbar_thumb_press_precedes_generic_left_press_listener() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(20.0);
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             with_interaction(make_element(92, attrs), true),
             Frame {
@@ -13785,11 +13944,13 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_active_scroll_move_emits_scroll_and_updates_pointer() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
-        attrs.scrollbar_x = Some(true);
-        attrs.scroll_x = Some(10.0);
-        attrs.scroll_x_max = Some(100.0);
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scroll_x: Some(10.0),
+            scroll_x_max: Some(100.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             with_interaction(make_element(48, attrs), true),
             Frame {
@@ -13848,11 +14009,13 @@ mod tests {
 
     #[test]
     fn compose_combined_registry_drag_active_scroll_move_ignores_off_axis_delta_after_lock() {
-        let mut attrs = Attrs::default();
-        attrs.on_click = Some(true);
-        attrs.scrollbar_x = Some(true);
-        attrs.scroll_x = Some(10.0);
-        attrs.scroll_x_max = Some(100.0);
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scroll_x: Some(10.0),
+            scroll_x_max: Some(100.0),
+            ..Attrs::default()
+        };
         let element = with_frame(
             with_interaction(make_element(81, attrs), true),
             Frame {
@@ -13953,11 +14116,13 @@ mod tests {
 
     #[test]
     fn backspace_listener_emits_no_actions_when_cursor_at_start_without_selection() {
-        let mut attrs = Attrs::default();
-        attrs.content = Some("ab".to_string());
-        attrs.text_input_focused = Some(true);
-        attrs.text_input_cursor = Some(0);
-        attrs.on_change = Some(true);
+        let attrs = Attrs {
+            content: Some("ab".to_string()),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(0),
+            on_change: Some(true),
+            ..Attrs::default()
+        };
         let element = make_text_input_element(20, attrs);
 
         let listeners = listeners_for_element(&element);
@@ -13980,9 +14145,11 @@ mod tests {
 
     #[test]
     fn registry_for_elements_with_focused_node_adds_window_blur_focus_clear_listener() {
-        let mut attrs = Attrs::default();
-        attrs.on_focus = Some(true);
-        attrs.focused_active = Some(true);
+        let attrs = Attrs {
+            on_focus: Some(true),
+            focused_active: Some(true),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(15, attrs), true);
 
         let registry = registry_for_elements(&[element]);
@@ -14009,9 +14176,11 @@ mod tests {
 
     #[test]
     fn registry_for_elements_without_focused_node_omits_window_blur_focus_clear_listener() {
-        let mut attrs = Attrs::default();
-        attrs.focused = Some(MouseOverAttrs::default());
-        attrs.focused_active = Some(false);
+        let attrs = Attrs {
+            focused: Some(MouseOverAttrs::default()),
+            focused_active: Some(false),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(16, attrs), true);
 
         let registry = registry_for_elements(&[element]);
@@ -14025,11 +14194,13 @@ mod tests {
 
     #[test]
     fn listeners_for_element_scrollable_adds_cursor_scroll_listener() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_x_max = Some(50.0);
-        attrs.scroll_y_max = Some(40.0);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x_max: Some(50.0),
+            scroll_y_max: Some(40.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(9, attrs), true);
 
         let listeners = listeners_for_element(&element);
@@ -14104,13 +14275,15 @@ mod tests {
 
     #[test]
     fn listeners_for_element_omits_blocked_scroll_directions() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_x = Some(10.0);
-        attrs.scroll_x_max = Some(10.0);
-        attrs.scroll_y = Some(0.0);
-        attrs.scroll_y_max = Some(20.0);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(10.0),
+            scroll_x_max: Some(10.0),
+            scroll_y: Some(0.0),
+            scroll_y_max: Some(20.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(90, attrs), true);
 
         let directions: Vec<_> = listeners_for_element(&element)
@@ -14129,17 +14302,21 @@ mod tests {
 
     #[test]
     fn registry_for_elements_nested_child_scroll_listener_precedes_parent() {
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.scrollbar_y = Some(true);
-        parent_attrs.scroll_y = Some(10.0);
-        parent_attrs.scroll_y_max = Some(100.0);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let mut parent = with_interaction(make_element(71, parent_attrs), true);
         parent.children = vec![NodeId::from_term_bytes(vec![72])];
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.scrollbar_y = Some(true);
-        child_attrs.scroll_y = Some(20.0);
-        child_attrs.scroll_y_max = Some(100.0);
+        let child_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
         let child = with_interaction(make_element(72, child_attrs), true);
 
         let registry = registry_for_elements(&[parent, child]);
@@ -14195,11 +14372,13 @@ mod tests {
 
     #[test]
     fn runtime_scroll_splitter_redispatches_both_components() {
-        let mut attrs = Attrs::default();
-        attrs.scrollbar_x = Some(true);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_x_max = Some(50.0);
-        attrs.scroll_y_max = Some(40.0);
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x_max: Some(50.0),
+            scroll_y_max: Some(40.0),
+            ..Attrs::default()
+        };
         let element = with_interaction(make_element(91, attrs), true);
         let base = registry_for_elements(&[element]);
         let listeners = runtime_listeners_for_overlay(&base, &RuntimeOverlayState::default());

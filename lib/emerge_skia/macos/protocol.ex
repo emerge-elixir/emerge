@@ -172,12 +172,15 @@ defmodule EmergeSkia.Macos.Protocol do
   end
 
   defp encode_renderer_cache_config(renderer_cache) do
-    clean_subtree = Map.fetch!(renderer_cache, :clean_subtree)
+    paint_layer = Map.fetch!(renderer_cache, :paint_layer)
+    enabled = if Map.fetch!(renderer_cache, :enabled), do: 1, else: 0
 
-    <<Map.fetch!(renderer_cache, :max_new_payloads_per_frame)::unsigned-big-32,
-      Map.fetch!(clean_subtree, :max_entries)::unsigned-big-64,
-      Map.fetch!(clean_subtree, :max_bytes)::unsigned-big-64,
-      Map.fetch!(clean_subtree, :max_entry_bytes)::unsigned-big-64>>
+    <<Map.fetch!(renderer_cache, :max_new_payloads_per_frame)::unsigned-big-32, enabled,
+      Map.fetch!(paint_layer, :max_entries)::unsigned-big-64,
+      Map.fetch!(paint_layer, :max_bytes)::unsigned-big-64,
+      Map.fetch!(paint_layer, :max_entry_bytes)::unsigned-big-64,
+      Map.fetch!(paint_layer, :min_visible_before_store)::unsigned-big-64,
+      Map.fetch!(paint_layer, :max_stale_frames)::unsigned-big-64>>
   end
 
   def encode_configure_assets(asset_config) do

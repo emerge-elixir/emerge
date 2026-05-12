@@ -5,15 +5,19 @@ use super::common::*;
 fn test_layout_preserves_scroll_offsets() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.scrollbar_y = Some(true);
-    attrs.scroll_y = Some(40.0);
-    attrs.height = Some(Length::Px(100.0));
+    let attrs = Attrs {
+        scrollbar_y: Some(true),
+        scroll_y: Some(40.0),
+        height: Some(Length::Px(100.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::Column, attrs);
     let root_id = root.id;
-    let mut child_attrs = Attrs::default();
-    child_attrs.height = Some(Length::Px(200.0));
+    let child_attrs = Attrs {
+        height: Some(Length::Px(200.0)),
+        ..Attrs::default()
+    };
     let child = make_element("child", ElementKind::El, child_attrs);
     let child_id = child.id;
     root.children = vec![child_id];
@@ -45,17 +49,21 @@ fn test_layout_preserves_scroll_offsets() {
 fn test_layout_scroll_offset_clamps_when_max_shrinks() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.scrollbar_x = Some(true);
-    root_attrs.scroll_x = Some(60.0);
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Px(100.0));
+    let root_attrs = Attrs {
+        scrollbar_x: Some(true),
+        scroll_x: Some(60.0),
+        width: Some(Length::Fill),
+        height: Some(Length::Px(100.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::Row, root_attrs);
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.width = Some(Length::Px(200.0));
-    child_attrs.height = Some(Length::Px(50.0));
+    let child_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(50.0)),
+        ..Attrs::default()
+    };
     let child = make_element("child", ElementKind::El, child_attrs);
 
     let root_id = root.id;
@@ -91,17 +99,21 @@ fn test_layout_scroll_offset_clamps_when_max_shrinks() {
 fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.scrollbar_x = Some(true);
-    root_attrs.scroll_x = Some(0.0);
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Px(100.0));
+    let root_attrs = Attrs {
+        scrollbar_x: Some(true),
+        scroll_x: Some(0.0),
+        width: Some(Length::Fill),
+        height: Some(Length::Px(100.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::Row, root_attrs);
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.width = Some(Length::Px(200.0));
-    child_attrs.height = Some(Length::Px(50.0));
+    let child_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(50.0)),
+        ..Attrs::default()
+    };
     let child = make_element("child", ElementKind::El, child_attrs);
 
     let root_id = root.id;
@@ -137,11 +149,13 @@ fn test_layout_scroll_offset_stays_start_when_max_grows_from_zero() {
 fn test_layout_clears_scroll_when_scrollbar_disabled() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.scrollbar_x = Some(false);
-    attrs.scroll_x = Some(30.0);
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(100.0));
+    let attrs = Attrs {
+        scrollbar_x: Some(false),
+        scroll_x: Some(30.0),
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(100.0)),
+        ..Attrs::default()
+    };
 
     let root = make_element("root", ElementKind::El, attrs);
     let root_id = root.id;
@@ -163,31 +177,37 @@ fn test_layout_clears_scroll_when_scrollbar_disabled() {
 fn test_scrollable_el_uses_child_frame_height_for_content() {
     let mut tree = ElementTree::new();
 
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(100.0));
-    el_attrs.height = Some(Length::Px(30.0));
-    el_attrs.scrollbar_y = Some(true);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(30.0)),
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let mut col_attrs = Attrs::default();
-    col_attrs.spacing = Some(10.0);
+    let col_attrs = Attrs {
+        spacing: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut col = make_element("col", ElementKind::Column, col_attrs);
 
     let top = make_element("top", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(20.0));
-        a
+        Attrs {
+            width: Some(Length::Px(80.0)),
+            height: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        }
     });
 
     let bottom = make_element("bottom", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(20.0));
-        a.align_y = Some(AlignY::Bottom);
-        a
+        Attrs {
+            width: Some(Length::Px(80.0)),
+            height: Some(Length::Px(20.0)),
+            align_y: Some(AlignY::Bottom),
+            ..Attrs::default()
+        }
     });
 
     let el_id = el.id;
@@ -229,20 +249,23 @@ fn test_scrollable_el_uses_child_frame_height_for_content() {
 fn test_layout_clears_only_disabled_scroll_axis() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(80.0));
-    attrs.scrollbar_x = Some(true);
-    attrs.scrollbar_y = Some(false);
-    attrs.scroll_x = Some(12.0);
-    attrs.scroll_y = Some(15.0);
+    let attrs = Attrs {
+        width: Some(Length::Px(100.0)),
+        height: Some(Length::Px(80.0)),
+        scrollbar_x: Some(true),
+        scrollbar_y: Some(false),
+        scroll_x: Some(12.0),
+        scroll_y: Some(15.0),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, attrs);
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(300.0));
-        a.height = Some(Length::Px(200.0));
-        a
+        Attrs {
+            width: Some(Length::Px(300.0)),
+            height: Some(Length::Px(200.0)),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;

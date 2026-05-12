@@ -1615,8 +1615,7 @@ mod tests {
 
     #[test]
     fn draw_requires_gl_env_before_present_state_starts_frame() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState::configured_for_test();
         present.queue_redraw();
 
         assert_eq!(

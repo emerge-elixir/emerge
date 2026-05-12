@@ -63,6 +63,14 @@ impl Default for PresentState {
 }
 
 impl PresentState {
+    #[cfg(test)]
+    pub(super) fn configured_for_test() -> Self {
+        Self {
+            configured: true,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn queue_redraw(&mut self) {
         self.redraw_requested = true;
     }
@@ -206,8 +214,10 @@ mod tests {
 
     #[test]
     fn pending_frame_waits_when_no_new_patch_scene_arrived() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);
@@ -217,8 +227,10 @@ mod tests {
 
     #[test]
     fn allows_one_patch_late_replacement_when_swap_is_nonblocking() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);
@@ -238,8 +250,10 @@ mod tests {
 
     #[test]
     fn skips_late_replacement_when_swap_may_block() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);
@@ -250,8 +264,10 @@ mod tests {
 
     #[test]
     fn ignores_animation_only_scene_updates() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);
@@ -262,8 +278,10 @@ mod tests {
 
     #[test]
     fn skips_late_replacement_for_animation_active_patch_scene() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);
@@ -274,8 +292,10 @@ mod tests {
 
     #[test]
     fn normal_draw_requests_after_callback_even_when_replacement_was_used() {
-        let mut present = PresentState::default();
-        present.configured = true;
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
         present.queue_redraw();
         present.frame_callback_state = FrameCallbackState::Requested;
         present.last_submitted_render_version = Some(1);

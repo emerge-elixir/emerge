@@ -76,8 +76,54 @@ pub(super) fn make_element(id: &str, kind: ElementKind, attrs: Attrs) -> Element
 }
 
 pub(super) fn text_attrs(content: &str) -> Attrs {
-    let mut a = Attrs::default();
-    a.content = Some(content.to_string());
-    a.font_size = Some(16.0);
-    a
+    Attrs {
+        content: Some(content.to_string()),
+        font_size: Some(16.0),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fixed_box_attrs(width: f64, height: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(width)),
+        height: Some(Length::Px(height)),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fixed_width_attrs(width: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Px(width)),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fixed_height_attrs(height: f64) -> Attrs {
+    Attrs {
+        height: Some(Length::Px(height)),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fill_width_attrs() -> Attrs {
+    Attrs {
+        width: Some(Length::Fill),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fill_width_box_attrs(height: f64) -> Attrs {
+    Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Px(height)),
+        ..Attrs::default()
+    }
+}
+
+pub(super) fn fill_box_attrs() -> Attrs {
+    Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        ..Attrs::default()
+    }
 }

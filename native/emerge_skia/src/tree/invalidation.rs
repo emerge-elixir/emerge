@@ -311,13 +311,15 @@ mod tests {
     #[test]
     fn classify_visual_attrs_as_paint() {
         let before = Attrs::default();
-        let mut after = Attrs::default();
-        after.background = Some(Background::Color(Color::Rgba {
-            r: 255,
-            g: 0,
-            b: 0,
-            a: 255,
-        }));
+        let after = Attrs {
+            background: Some(Background::Color(Color::Rgba {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            })),
+            ..Attrs::default()
+        };
 
         assert_eq!(
             classify_attrs_change(&before, &after),
@@ -328,8 +330,10 @@ mod tests {
     #[test]
     fn classify_layout_attrs_as_measure() {
         let before = Attrs::default();
-        let mut after = Attrs::default();
-        after.border_width = Some(BorderWidth::Uniform(2.0));
+        let after = Attrs {
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            ..Attrs::default()
+        };
 
         assert_eq!(
             classify_attrs_change(&before, &after),
@@ -340,8 +344,10 @@ mod tests {
     #[test]
     fn classify_event_attrs_as_registry() {
         let before = Attrs::default();
-        let mut after = Attrs::default();
-        after.on_click = Some(true);
+        let after = Attrs {
+            on_click: Some(true),
+            ..Attrs::default()
+        };
 
         assert_eq!(
             classify_attrs_change(&before, &after),

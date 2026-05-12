@@ -96,91 +96,96 @@ fn build_scroll_panel_with_cards(
 }
 
 fn demo_glow_card_attrs(glow_color: Color, size: f64) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgba {
-        r: 45,
-        g: 45,
-        b: 68,
-        a: 255,
-    }));
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: size * 2.0,
-        size,
-        color: glow_color,
-        inset: false,
-    }]);
-    attrs
+    Attrs {
+        background: Some(Background::Color(Color::Rgba {
+            r: 45,
+            g: 45,
+            b: 68,
+            a: 255,
+        })),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: size * 2.0,
+            size,
+            color: glow_color,
+            inset: false,
+        }]),
+        ..Attrs::default()
+    }
 }
 
 fn demo_glow_card_attrs_without_glow() -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgba {
-        r: 45,
-        g: 45,
-        b: 68,
-        a: 255,
-    }));
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    attrs
+    Attrs {
+        background: Some(Background::Color(Color::Rgba {
+            r: 45,
+            g: 45,
+            b: 68,
+            a: 255,
+        })),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        ..Attrs::default()
+    }
 }
 
 fn demo_combined_glow_card_attrs() -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Gradient {
-        from: Color::Rgba {
-            r: 67,
-            g: 97,
-            b: 238,
-            a: 255,
-        },
-        to: Color::Rgba {
-            r: 114,
-            g: 9,
-            b: 183,
-            a: 255,
-        },
-        angle: 135.0,
-    });
-    attrs.border_radius = Some(BorderRadius::Uniform(10.0));
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_color = Some(Color::Named("cyan".to_string()));
-    attrs.border_style = Some(BorderStyle::Dotted);
-    attrs.box_shadows = Some(vec![
-        BoxShadow {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            blur: 6.0,
-            size: 3.0,
-            color: Color::Named("magenta".to_string()),
-            inset: false,
-        },
-        BoxShadow {
-            offset_x: 2.0,
-            offset_y: 2.0,
-            blur: 8.0,
-            size: 0.0,
-            color: Color::Named("purple".to_string()),
-            inset: true,
-        },
-    ]);
-    attrs
+    Attrs {
+        background: Some(Background::Gradient {
+            from: Color::Rgba {
+                r: 67,
+                g: 97,
+                b: 238,
+                a: 255,
+            },
+            to: Color::Rgba {
+                r: 114,
+                g: 9,
+                b: 183,
+                a: 255,
+            },
+            angle: 135.0,
+        }),
+        border_radius: Some(BorderRadius::Uniform(10.0)),
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_color: Some(Color::Named("cyan".to_string())),
+        border_style: Some(BorderStyle::Dotted),
+        box_shadows: Some(vec![
+            BoxShadow {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 6.0,
+                size: 3.0,
+                color: Color::Named("magenta".to_string()),
+                inset: false,
+            },
+            BoxShadow {
+                offset_x: 2.0,
+                offset_y: 2.0,
+                blur: 8.0,
+                size: 0.0,
+                color: Color::Named("purple".to_string()),
+                inset: true,
+            },
+        ]),
+        ..Attrs::default()
+    }
 }
 
 fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgba {
-        r: 45,
-        g: 45,
-        b: 68,
-        a: 255,
-    }));
-    attrs.border_radius = Some(BorderRadius::Uniform(10.0));
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_color = Some(Color::Named("cyan".to_string()));
-    attrs.border_style = Some(BorderStyle::Dotted);
+    let mut attrs = Attrs {
+        background: Some(Background::Color(Color::Rgba {
+            r: 45,
+            g: 45,
+            b: 68,
+            a: 255,
+        })),
+        border_radius: Some(BorderRadius::Uniform(10.0)),
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_color: Some(Color::Named("cyan".to_string())),
+        border_style: Some(BorderStyle::Dotted),
+        ..Attrs::default()
+    };
 
     let mut shadows = Vec::new();
     if with_glow {
@@ -208,9 +213,11 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 #[test]
 fn test_render_image_source_pending_emits_loading_placeholder() {
     let id = NodeId::from_term_bytes(vec![9]);
-    let mut attrs = Attrs::default();
-    attrs.image_src = Some(ImageSource::Logical("images/photo.jpg".to_string()));
-    attrs.image_fit = Some(ImageFit::Contain);
+    let attrs = Attrs {
+        image_src: Some(ImageSource::Logical("images/photo.jpg".to_string())),
+        image_fit: Some(ImageFit::Contain),
+        ..Attrs::default()
+    };
 
     let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
@@ -239,9 +246,11 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
 fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
     let image_id = "paint_cached_pending_image_becomes_ready";
     let id = NodeId::from_term_bytes(vec![90]);
-    let mut attrs = Attrs::default();
-    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-    attrs.image_fit = Some(ImageFit::Contain);
+    let attrs = Attrs {
+        image_src: Some(ImageSource::Id(image_id.to_string())),
+        image_fit: Some(ImageFit::Contain),
+        ..Attrs::default()
+    };
 
     let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
@@ -258,7 +267,7 @@ fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
     tree.insert(element);
     tree.clear_refresh_dirty();
 
-    let first_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let first_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
     let first_trace = trace_scene(&first_scene);
     assert!(first_trace.draws.iter().any(|draw| {
         matches!(
@@ -266,13 +275,11 @@ fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
             DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
         )
     }));
-    assert!(tree.has_render_subtree_cache());
-
     crate::renderer::insert_test_raster_asset_rgba(image_id, 1, 1, &[0, 255, 0, 255])
         .expect("test asset should insert");
     crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
 
-    let second_scene = super::super::render_tree_scene_cached(&mut tree).scene;
+    let second_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
     let second_trace = trace_scene(&second_scene);
 
     assert!(!second_trace.draws.iter().any(|draw| {
@@ -310,18 +317,20 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
     let inner_r = (radius - border).max(0.0);
 
     let render_scene = |background: Color| {
-        let mut attrs = Attrs::default();
-        attrs.background = Some(Background::Color(background));
-        attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-        attrs.image_fit = Some(ImageFit::Cover);
-        attrs.border_width = Some(BorderWidth::Uniform(border as f64));
-        attrs.border_radius = Some(BorderRadius::Uniform(radius as f64));
-        attrs.border_color = Some(Color::Rgba {
-            r: 214,
-            g: 220,
-            b: 236,
-            a: 221,
-        });
+        let attrs = Attrs {
+            background: Some(Background::Color(background)),
+            image_src: Some(ImageSource::Id(image_id.to_string())),
+            image_fit: Some(ImageFit::Cover),
+            border_width: Some(BorderWidth::Uniform(border as f64)),
+            border_radius: Some(BorderRadius::Uniform(radius as f64)),
+            border_color: Some(Color::Rgba {
+                r: 214,
+                g: 220,
+                b: 236,
+                a: 221,
+            }),
+            ..Attrs::default()
+        };
 
         let tree = build_image_tree_with_frame(
             attrs,
@@ -364,7 +373,7 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
             let in_inner_near_edge = point_in_inset_rounded_rect(px, py, inner_rect, 0.05);
             let in_inner_deep = point_in_inset_rounded_rect(px, py, inner_rect, 1.25);
 
-            if !(in_inner_near_edge && !in_inner_deep) {
+            if !in_inner_near_edge || in_inner_deep {
                 continue;
             }
 
@@ -421,20 +430,24 @@ fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
     let inner_h = outer_h - border * 2.0;
 
     let render_scene = |background: Color| {
-        let mut parent_attrs = Attrs::default();
-        parent_attrs.background = Some(Background::Color(background));
-        parent_attrs.border_width = Some(BorderWidth::Uniform(border as f64));
-        parent_attrs.border_radius = Some(BorderRadius::Uniform(radius as f64));
-        parent_attrs.border_color = Some(Color::Rgba {
-            r: 214,
-            g: 220,
-            b: 236,
-            a: 220,
-        });
+        let parent_attrs = Attrs {
+            background: Some(Background::Color(background)),
+            border_width: Some(BorderWidth::Uniform(border as f64)),
+            border_radius: Some(BorderRadius::Uniform(radius as f64)),
+            border_color: Some(Color::Rgba {
+                r: 214,
+                g: 220,
+                b: 236,
+                a: 220,
+            }),
+            ..Attrs::default()
+        };
 
-        let mut child_attrs = Attrs::default();
-        child_attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-        child_attrs.image_fit = Some(ImageFit::Cover);
+        let child_attrs = Attrs {
+            image_src: Some(ImageSource::Id(image_id.to_string())),
+            image_fit: Some(ImageFit::Cover),
+            ..Attrs::default()
+        };
 
         let tree = build_tree_with_image_child_frame(
             parent_attrs,
@@ -587,20 +600,24 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
         let draw_y = inner_y + (inner_h - draw_h) * 0.5;
 
         let render_scene = |background: Color| {
-            let mut parent_attrs = Attrs::default();
-            parent_attrs.background = Some(Background::Color(background));
-            parent_attrs.border_width = Some(BorderWidth::Uniform(border as f64));
-            parent_attrs.border_radius = Some(BorderRadius::Uniform(radius as f64));
-            parent_attrs.border_color = Some(Color::Rgba {
-                r: 214,
-                g: 220,
-                b: 236,
-                a: 220,
-            });
+            let parent_attrs = Attrs {
+                background: Some(Background::Color(background)),
+                border_width: Some(BorderWidth::Uniform(border as f64)),
+                border_radius: Some(BorderRadius::Uniform(radius as f64)),
+                border_color: Some(Color::Rgba {
+                    r: 214,
+                    g: 220,
+                    b: 236,
+                    a: 220,
+                }),
+                ..Attrs::default()
+            };
 
-            let mut child_attrs = Attrs::default();
-            child_attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-            child_attrs.image_fit = Some(ImageFit::Contain);
+            let child_attrs = Attrs {
+                image_src: Some(ImageSource::Id(image_id.to_string())),
+                image_fit: Some(ImageFit::Contain),
+                ..Attrs::default()
+            };
 
             let tree = build_tree_with_image_child_frame(
                 parent_attrs,
@@ -692,17 +709,19 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
 
 #[test]
 fn test_render_background_image_pending_uses_self_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Image {
-        source: ImageSource::Logical("images/background_pending_clip.png".to_string()),
-        fit: ImageFit::Cover,
-    });
-    attrs.border_radius = Some(BorderRadius::Corners {
-        tl: 6.0,
-        tr: 10.0,
-        br: 12.0,
-        bl: 8.0,
-    });
+    let attrs = Attrs {
+        background: Some(Background::Image {
+            source: ImageSource::Logical("images/background_pending_clip.png".to_string()),
+            fit: ImageFit::Cover,
+        }),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 6.0,
+            tr: 10.0,
+            br: 12.0,
+            bl: 8.0,
+        }),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -736,12 +755,14 @@ fn test_render_background_image_pending_uses_self_clip() {
 
 #[test]
 fn test_render_background_image_failed_uses_self_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Image {
-        source: ImageSource::Logical("images/background_failed_clip.png".to_string()),
-        fit: ImageFit::Cover,
-    });
-    attrs.border_radius = Some(BorderRadius::Uniform(9.0));
+    let attrs = Attrs {
+        background: Some(Background::Image {
+            source: ImageSource::Logical("images/background_failed_clip.png".to_string()),
+            fit: ImageFit::Cover,
+        }),
+        border_radius: Some(BorderRadius::Uniform(9.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     crate::assets::resolve_tree_sources_sync(&tree, None)
@@ -788,15 +809,17 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     );
 
     let id = NodeId::from_term_bytes(vec![19]);
-    let mut attrs = Attrs::default();
-    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-    attrs.image_fit = Some(ImageFit::Contain);
-    attrs.svg_expected = Some(true);
-    attrs.svg_color = Some(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    });
+    let attrs = Attrs {
+        image_src: Some(ImageSource::Id(image_id.to_string())),
+        image_fit: Some(ImageFit::Contain),
+        svg_expected: Some(true),
+        svg_color: Some(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        }),
+        ..Attrs::default()
+    };
 
     let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
@@ -829,10 +852,12 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
         .expect("test JPEG should insert");
 
     let id = NodeId::from_term_bytes(vec![20]);
-    let mut attrs = Attrs::default();
-    attrs.image_src = Some(ImageSource::Id(image_id.to_string()));
-    attrs.image_fit = Some(ImageFit::Contain);
-    attrs.svg_expected = Some(true);
+    let attrs = Attrs {
+        image_src: Some(ImageSource::Id(image_id.to_string())),
+        image_fit: Some(ImageFit::Contain),
+        svg_expected: Some(true),
+        ..Attrs::default()
+    };
 
     let mut element = Element::with_attrs(id, ElementKind::Image, Vec::new(), attrs);
     element.layout.frame = Some(Frame {
@@ -860,10 +885,12 @@ fn test_render_svg_source_rejects_raster_asset_ids() {
 
 #[test]
 fn test_render_scrollbar_y_thumb() {
-    let mut attrs = Attrs::default();
-    attrs.scrollbar_y = Some(true);
-    attrs.scroll_y = Some(50.0);
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+    let attrs = Attrs {
+        scrollbar_y: Some(true),
+        scroll_y: Some(50.0),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        ..Attrs::default()
+    };
     let frame = Frame {
         x: 0.0,
         y: 0.0,
@@ -876,13 +903,13 @@ fn test_render_scrollbar_y_thumb() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let thumb = only_draw(&draws, |draw| {
+    let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR)
@@ -919,15 +946,17 @@ fn test_render_scrollbar_y_thumb() {
 
 #[test]
 fn test_render_scrollbar_x_thumb() {
-    let mut attrs = Attrs::default();
-    attrs.scrollbar_x = Some(true);
-    attrs.scroll_x = Some(30.0);
-    attrs.border_radius = Some(BorderRadius::Corners {
-        tl: 4.0,
-        tr: 6.0,
-        br: 12.0,
-        bl: 8.0,
-    });
+    let attrs = Attrs {
+        scrollbar_x: Some(true),
+        scroll_x: Some(30.0),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 4.0,
+            tr: 6.0,
+            br: 12.0,
+            bl: 8.0,
+        }),
+        ..Attrs::default()
+    };
     let frame = Frame {
         x: 0.0,
         y: 0.0,
@@ -940,14 +969,14 @@ fn test_render_scrollbar_x_thumb() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF)
         )
     });
 
-    let thumb = only_draw(&draws, |draw| {
+    let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR)
@@ -981,10 +1010,12 @@ fn test_render_scrollbar_x_thumb() {
 
 #[test]
 fn test_render_scrollbar_hover_uses_wider_thumb() {
-    let mut attrs = Attrs::default();
-    attrs.scrollbar_y = Some(true);
-    attrs.scroll_y = Some(50.0);
-    attrs.scrollbar_hover_axis = Some(crate::tree::attrs::ScrollbarHoverAxis::Y);
+    let attrs = Attrs {
+        scrollbar_y: Some(true),
+        scroll_y: Some(50.0),
+        scrollbar_hover_axis: Some(crate::tree::attrs::ScrollbarHoverAxis::Y),
+        ..Attrs::default()
+    };
     let frame = Frame {
         x: 0.0,
         y: 0.0,
@@ -1006,10 +1037,12 @@ fn test_render_scrollbar_hover_uses_wider_thumb() {
 
 #[test]
 fn test_render_border_uniform_emits_border_cmd() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_color = Some(Color::Named("red".to_string()));
-    attrs.border_radius = Some(BorderRadius::Uniform(4.0));
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_color: Some(Color::Named("red".to_string())),
+        border_radius: Some(BorderRadius::Uniform(4.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1024,14 +1057,16 @@ fn test_render_border_uniform_emits_border_cmd() {
 
 #[test]
 fn test_render_border_edges_emits_border_edges_cmd() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Sides {
-        top: 1.0,
-        right: 2.0,
-        bottom: 3.0,
-        left: 4.0,
-    });
-    attrs.border_color = Some(Color::Named("red".to_string()));
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        }),
+        border_color: Some(Color::Named("red".to_string())),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1058,10 +1093,12 @@ fn test_render_border_edges_emits_border_edges_cmd() {
 
 #[test]
 fn test_render_border_dashed_passes_style() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_style = Some(BorderStyle::Dashed);
-    attrs.border_color = Some(Color::Named("white".to_string()));
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_style: Some(BorderStyle::Dashed),
+        border_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1076,16 +1113,18 @@ fn test_render_border_dashed_passes_style() {
 
 #[test]
 fn test_render_shadow_emits_before_background() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Named("white".to_string())));
-    attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 2.0,
-        offset_y: 2.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Named("white".to_string()))),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1108,16 +1147,18 @@ fn test_render_shadow_emits_before_background() {
 
 #[test]
 fn test_render_inset_shadow_emits_after_background() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Named("white".to_string())));
-    attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 10.0,
-        size: 0.0,
-        color: Color::Named("black".to_string()),
-        inset: true,
-    }]);
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Named("white".to_string()))),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 10.0,
+            size: 0.0,
+            color: Color::Named("black".to_string()),
+            inset: true,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1149,14 +1190,16 @@ fn test_glow_cards_in_scroll_y_panel_bleed_horizontally_at_outer_grid_edges() {
         content_height: 520.0,
     };
 
-    let mut panel_attrs = Attrs::default();
-    panel_attrs.scrollbar_y = Some(true);
-    panel_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 35,
-        g: 35,
-        b: 55,
-    }));
-    panel_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
+    let panel_attrs = Attrs {
+        scrollbar_y: Some(true),
+        background: Some(Background::Color(Color::Rgb {
+            r: 35,
+            g: 35,
+            b: 55,
+        })),
+        border_radius: Some(BorderRadius::Uniform(12.0)),
+        ..Attrs::default()
+    };
 
     let cards = vec![
         (
@@ -1295,15 +1338,17 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
             content_height: 232.0,
         };
 
-        let mut panel_attrs = Attrs::default();
-        panel_attrs.scrollbar_y = Some(true);
-        panel_attrs.padding = Some(Padding::Uniform(16.0));
-        panel_attrs.background = Some(Background::Color(Color::Rgb {
-            r: 35,
-            g: 35,
-            b: 55,
-        }));
-        panel_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
+        let panel_attrs = Attrs {
+            scrollbar_y: Some(true),
+            padding: Some(Padding::Uniform(16.0)),
+            background: Some(Background::Color(Color::Rgb {
+                r: 35,
+                g: 35,
+                b: 55,
+            })),
+            border_radius: Some(BorderRadius::Uniform(12.0)),
+            ..Attrs::default()
+        };
 
         let column_attrs = Attrs::default();
         let glow_row_attrs = Attrs::default();
@@ -1570,8 +1615,10 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
 
 #[test]
 fn test_render_no_border_without_color() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        ..Attrs::default()
+    };
     // No border_color set
 
     let tree = build_tree_with_attrs(attrs);
@@ -1587,21 +1634,23 @@ fn test_render_no_border_without_color() {
 
 #[test]
 fn test_render_gradient_with_rounded_corners_uses_self_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Gradient {
-        from: Color::Rgb {
-            r: 67,
-            g: 97,
-            b: 238,
-        },
-        to: Color::Rgb {
-            r: 114,
-            g: 9,
-            b: 183,
-        },
-        angle: 135.0,
-    });
-    attrs.border_radius = Some(BorderRadius::Uniform(10.0));
+    let attrs = Attrs {
+        background: Some(Background::Gradient {
+            from: Color::Rgb {
+                r: 67,
+                g: 97,
+                b: 238,
+            },
+            to: Color::Rgb {
+                r: 114,
+                g: 9,
+                b: 183,
+            },
+            angle: 135.0,
+        }),
+        border_radius: Some(BorderRadius::Uniform(10.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1632,16 +1681,18 @@ fn test_render_gradient_with_rounded_corners_uses_self_clip() {
 
 #[test]
 fn test_render_gradient_without_radius_has_no_self_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Gradient {
-        from: Color::Rgb { r: 0, g: 0, b: 0 },
-        to: Color::Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        },
-        angle: 90.0,
-    });
+    let attrs = Attrs {
+        background: Some(Background::Gradient {
+            from: Color::Rgb { r: 0, g: 0, b: 0 },
+            to: Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            angle: 90.0,
+        }),
+        ..Attrs::default()
+    };
     // No border_radius set
 
     let tree = build_tree_with_attrs(attrs);
@@ -1656,22 +1707,24 @@ fn test_render_gradient_without_radius_has_no_self_clip() {
 
 #[test]
 fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Gradient {
-        from: Color::Rgb { r: 0, g: 0, b: 0 },
-        to: Color::Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        },
-        angle: 0.0,
-    });
-    attrs.border_radius = Some(BorderRadius::Corners {
-        tl: 10.0,
-        tr: 5.0,
-        br: 10.0,
-        bl: 5.0,
-    });
+    let attrs = Attrs {
+        background: Some(Background::Gradient {
+            from: Color::Rgb { r: 0, g: 0, b: 0 },
+            to: Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            angle: 0.0,
+        }),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 10.0,
+            tr: 5.0,
+            br: 10.0,
+            bl: 5.0,
+        }),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1702,22 +1755,24 @@ fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
 
 #[test]
 fn test_render_gradient_with_per_corner_radius_clips_corner_pixels() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Gradient {
-        from: Color::Rgb { r: 0, g: 0, b: 0 },
-        to: Color::Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        },
-        angle: 0.0,
-    });
-    attrs.border_radius = Some(BorderRadius::Corners {
-        tl: 10.0,
-        tr: 5.0,
-        br: 10.0,
-        bl: 5.0,
-    });
+    let attrs = Attrs {
+        background: Some(Background::Gradient {
+            from: Color::Rgb { r: 0, g: 0, b: 0 },
+            to: Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            angle: 0.0,
+        }),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 10.0,
+            tr: 5.0,
+            br: 10.0,
+            bl: 5.0,
+        }),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let (_output, pixels) = render_tree_to_pixels(100, 50, &tree);
@@ -1742,19 +1797,21 @@ fn test_render_uniform_pill_border_matches_clamped_rounded_clip() {
     let border: f32 = 1.0;
     let expected_radius = (outer_w * 0.5).min(outer_h * 0.5);
 
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    attrs.border_width = Some(BorderWidth::Uniform(border as f64));
-    attrs.border_color = Some(Color::Rgb {
-        r: 214,
-        g: 220,
-        b: 236,
-    });
-    attrs.border_radius = Some(BorderRadius::Uniform(999.0));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        border_width: Some(BorderWidth::Uniform(border as f64)),
+        border_color: Some(Color::Rgb {
+            r: 214,
+            g: 220,
+            b: 236,
+        }),
+        border_radius: Some(BorderRadius::Uniform(999.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_frame(
         attrs,
@@ -1826,19 +1883,21 @@ fn test_render_uniform_pill_border_matches_clamped_rounded_clip() {
 #[test]
 fn test_render_border_edges_asymmetric_widths() {
     // Regression: thick top/bottom, thin sides should emit correct per-edge widths
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Sides {
-        top: 4.0,
-        right: 1.0,
-        bottom: 4.0,
-        left: 1.0,
-    });
-    attrs.border_color = Some(Color::Rgb {
-        r: 120,
-        g: 200,
-        b: 160,
-    });
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Sides {
+            top: 4.0,
+            right: 1.0,
+            bottom: 4.0,
+            left: 1.0,
+        }),
+        border_color: Some(Color::Rgb {
+            r: 120,
+            g: 200,
+            b: 160,
+        }),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1862,18 +1921,20 @@ fn test_render_border_edges_asymmetric_widths() {
 #[test]
 fn test_render_border_edges_bottom_only() {
     // Regression: bottom-only border should emit BorderEdges with zero for other sides
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Sides {
-        top: 0.0,
-        right: 0.0,
-        bottom: 3.0,
-        left: 0.0,
-    });
-    attrs.border_color = Some(Color::Rgb {
-        r: 200,
-        g: 180,
-        b: 100,
-    });
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Sides {
+            top: 0.0,
+            right: 0.0,
+            bottom: 3.0,
+            left: 0.0,
+        }),
+        border_color: Some(Color::Rgb {
+            r: 200,
+            g: 180,
+            b: 100,
+        }),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);
@@ -1897,15 +1958,17 @@ fn test_render_border_edges_bottom_only() {
 #[test]
 fn test_render_border_edges_with_style() {
     // Per-edge borders should forward the border style
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Sides {
-        top: 2.0,
-        right: 2.0,
-        bottom: 2.0,
-        left: 2.0,
-    });
-    attrs.border_color = Some(Color::Named("white".to_string()));
-    attrs.border_style = Some(BorderStyle::Dashed);
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Sides {
+            top: 2.0,
+            right: 2.0,
+            bottom: 2.0,
+            left: 2.0,
+        }),
+        border_color: Some(Color::Named("white".to_string())),
+        border_style: Some(BorderStyle::Dashed),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let draws = observe_tree(&tree);

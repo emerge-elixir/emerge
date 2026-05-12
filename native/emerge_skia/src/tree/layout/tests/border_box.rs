@@ -5,17 +5,20 @@ use super::common::*;
 fn test_border_box_el_insets_child() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(200.0));
-    root_attrs.height = Some(Length::Px(100.0));
-    root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+    let root_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        border_width: Some(BorderWidth::Uniform(5.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, root_attrs);
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;
@@ -43,18 +46,21 @@ fn test_border_box_el_insets_child() {
 fn test_border_box_el_with_padding_and_border() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(200.0));
-    root_attrs.height = Some(Length::Px(100.0));
-    root_attrs.padding = Some(Padding::Uniform(10.0));
-    root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+    let root_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        padding: Some(Padding::Uniform(10.0)),
+        border_width: Some(BorderWidth::Uniform(5.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, root_attrs);
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;
@@ -82,22 +88,25 @@ fn test_border_box_el_with_padding_and_border() {
 fn test_border_box_per_side_border_width() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(200.0));
-    root_attrs.height = Some(Length::Px(100.0));
-    root_attrs.border_width = Some(BorderWidth::Sides {
-        top: 2.0,
-        right: 4.0,
-        bottom: 6.0,
-        left: 8.0,
-    });
+    let root_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        border_width: Some(BorderWidth::Sides {
+            top: 2.0,
+            right: 4.0,
+            bottom: 6.0,
+            left: 8.0,
+        }),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, root_attrs);
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;
@@ -125,15 +134,18 @@ fn test_border_box_per_side_border_width() {
 fn test_border_box_intrinsic_sizing() {
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.border_width = Some(BorderWidth::Uniform(5.0));
+    let root_attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(5.0)),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, root_attrs);
     let child = make_element("child", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("Hello".to_string());
-        a.font_size = Some(16.0);
-        a
+        Attrs {
+            content: Some("Hello".to_string()),
+            font_size: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;
@@ -161,22 +173,26 @@ fn test_border_box_intrinsic_sizing() {
 fn test_border_box_row_intrinsic_with_border() {
     let mut tree = ElementTree::new();
 
-    let mut row_attrs = Attrs::default();
-    row_attrs.spacing = Some(4.0);
-    row_attrs.border_width = Some(BorderWidth::Uniform(3.0));
+    let row_attrs = Attrs {
+        spacing: Some(4.0),
+        border_width: Some(BorderWidth::Uniform(3.0)),
+        ..Attrs::default()
+    };
 
     let mut row = make_element("row", ElementKind::Row, row_attrs);
     let child1 = make_element("c1", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("Hi".to_string());
-        a.font_size = Some(16.0);
-        a
+        Attrs {
+            content: Some("Hi".to_string()),
+            font_size: Some(16.0),
+            ..Attrs::default()
+        }
     });
     let child2 = make_element("c2", ElementKind::Text, {
-        let mut a = Attrs::default();
-        a.content = Some("Lo".to_string());
-        a.font_size = Some(16.0);
-        a
+        Attrs {
+            content: Some("Lo".to_string()),
+            font_size: Some(16.0),
+            ..Attrs::default()
+        }
     });
 
     let row_id = row.id;
@@ -209,29 +225,32 @@ fn test_border_box_shadows_do_not_affect_layout() {
 
     let mut tree = ElementTree::new();
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Px(200.0));
-    root_attrs.height = Some(Length::Px(100.0));
-    root_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 10.0,
-        offset_y: 10.0,
-        blur: 20.0,
-        size: 5.0,
-        color: Color::Rgba {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 255,
-        },
-        inset: false,
-    }]);
+    let root_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 10.0,
+            offset_y: 10.0,
+            blur: 20.0,
+            size: 5.0,
+            color: Color::Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let mut root = make_element("root", ElementKind::El, root_attrs);
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Fill);
-        a.height = Some(Length::Fill);
-        a
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Attrs::default()
+        }
     });
 
     let root_id = root.id;

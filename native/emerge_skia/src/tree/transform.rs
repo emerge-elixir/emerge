@@ -249,11 +249,13 @@ mod tests {
 
     #[test]
     fn interaction_transform_keeps_center_fixed_under_rotation_and_scale() {
-        let mut attrs = Attrs::default();
-        attrs.move_x = Some(15.0);
-        attrs.move_y = Some(-10.0);
-        attrs.rotate = Some(45.0);
-        attrs.scale = Some(2.0);
+        let attrs = Attrs {
+            move_x: Some(15.0),
+            move_y: Some(-10.0),
+            rotate: Some(45.0),
+            scale: Some(2.0),
+            ..Attrs::default()
+        };
 
         let frame = Frame {
             x: 20.0,

@@ -1,9 +1,7 @@
 use super::common::*;
 use super::*;
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
-use crate::tree::layout::{
-    Constraint, layout_tree_default, refresh_render_scene_cached_for_benchmark,
-};
+use crate::tree::layout::{Constraint, layout_tree_default, refresh_render_scene_for_benchmark};
 use crate::tree::transform::{Affine2, Point, element_transform};
 
 fn build_two_child_tree(
@@ -292,12 +290,14 @@ fn test_render_nested_wrapper_children_use_host_clips() {
     let text_holder_id = NodeId::from_term_bytes(vec![42]);
     let text_id = NodeId::from_term_bytes(vec![43]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 20,
-        g: 20,
-        b: 40,
-    }));
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 20,
+            g: 20,
+            b: 40,
+        })),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![column_id];
     root.layout.frame = Some(Frame {
@@ -321,12 +321,14 @@ fn test_render_nested_wrapper_children_use_host_clips() {
         content_height: 60.0,
     });
 
-    let mut holder_attrs = Attrs::default();
-    holder_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 60,
-        g: 50,
-        b: 80,
-    }));
+    let holder_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 60,
+            g: 50,
+            b: 80,
+        })),
+        ..Attrs::default()
+    };
     let mut text_holder =
         Element::with_attrs(text_holder_id, ElementKind::El, Vec::new(), holder_attrs);
     text_holder.children = vec![text_id];
@@ -339,10 +341,12 @@ fn test_render_nested_wrapper_children_use_host_clips() {
         content_height: 40.0,
     });
 
-    let mut text_attrs = Attrs::default();
-    text_attrs.content = Some("Overview".to_string());
-    text_attrs.font_size = Some(22.0);
-    text_attrs.font_color = Some(Color::Named("white".to_string()));
+    let text_attrs = Attrs {
+        content: Some("Overview".to_string()),
+        font_size: Some(22.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
     let mut text = Element::with_attrs(text_id, ElementKind::Text, Vec::new(), text_attrs);
     text.layout.frame = Some(Frame {
         x: 24.0,
@@ -460,12 +464,14 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
     let left_id = NodeId::from_term_bytes(vec![66]);
     let right_id = NodeId::from_term_bytes(vec![67]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 20,
-        g: 20,
-        b: 40,
-    }));
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 20,
+            g: 20,
+            b: 40,
+        })),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::Row, Vec::new(), root_attrs);
     root.children = vec![left_id, right_id];
     root.layout.frame = Some(Frame {
@@ -477,14 +483,16 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         content_height: 60.0,
     });
 
-    let mut left_attrs = Attrs::default();
-    left_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 50,
-        g: 70,
-        b: 90,
-    }));
-    left_attrs.rotate = Some(-6.0);
-    left_attrs.alpha = Some(0.85);
+    let left_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 50,
+            g: 70,
+            b: 90,
+        })),
+        rotate: Some(-6.0),
+        alpha: Some(0.85),
+        ..Attrs::default()
+    };
     let mut left = Element::with_attrs(left_id, ElementKind::El, Vec::new(), left_attrs);
     left.layout.frame = Some(Frame {
         x: 0.0,
@@ -499,14 +507,16 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         &left.layout.effective,
     );
 
-    let mut right_attrs = Attrs::default();
-    right_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 70,
-        g: 60,
-        b: 90,
-    }));
-    right_attrs.scale = Some(1.06);
-    right_attrs.move_y = Some(-14.0);
+    let right_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 70,
+            g: 60,
+            b: 90,
+        })),
+        scale: Some(1.06),
+        move_y: Some(-14.0),
+        ..Attrs::default()
+    };
     let mut right = Element::with_attrs(right_id, ElementKind::El, Vec::new(), right_attrs);
     right.layout.frame = Some(Frame {
         x: 116.0,
@@ -539,13 +549,13 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
         radii: None,
     };
 
-    let left_draw = only_draw(&draws, |draw| {
+    let left_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 104.0, 60.0, 0x32465AFF)
         )
     });
-    let right_draw = only_draw(&draws, |draw| {
+    let right_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(116.0, 0.0, 104.0, 60.0, 0x463C5AFF)
@@ -590,13 +600,15 @@ fn test_render_rounded_parent_clips_child_background_corners() {
     let root_id = NodeId::from_term_bytes(vec![68]);
     let child_id = NodeId::from_term_bytes(vec![69]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    root_attrs.border_radius = Some(BorderRadius::Uniform(12.0));
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        border_radius: Some(BorderRadius::Uniform(12.0)),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
     root.children = vec![child_id];
     root.layout.frame = Some(Frame {
@@ -608,12 +620,14 @@ fn test_render_rounded_parent_clips_child_background_corners() {
         content_height: 160.0,
     });
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 240,
-        g: 237,
-        b: 248,
-    }));
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 240,
+            g: 237,
+            b: 248,
+        })),
+        ..Attrs::default()
+    };
     let mut child = Element::with_attrs(child_id, ElementKind::Row, Vec::new(), child_attrs);
     child.layout.frame = Some(Frame {
         x: 0.0,
@@ -631,7 +645,7 @@ fn test_render_rounded_parent_clips_child_background_corners() {
 
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
-    let child_rect = only_draw(&draws, |draw| {
+    let child_rect = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 365.0, 80.0, 0xF0EDF8FF)
@@ -753,9 +767,11 @@ fn test_nearby_position_calculations() {
 
 #[test]
 fn test_render_emits_translate_for_move() {
-    let mut attrs = Attrs::default();
-    attrs.move_x = Some(10.0);
-    attrs.move_y = Some(5.0);
+    let attrs = Attrs {
+        move_x: Some(10.0),
+        move_y: Some(5.0),
+        ..Attrs::default()
+    };
     let expected_transform = element_transform(
         Frame {
             x: 0.0,
@@ -771,7 +787,7 @@ fn test_render_emits_translate_for_move() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -782,8 +798,10 @@ fn test_render_emits_translate_for_move() {
 
 #[test]
 fn test_render_emits_rotate_for_rotation() {
-    let mut attrs = Attrs::default();
-    attrs.rotate = Some(45.0);
+    let attrs = Attrs {
+        rotate: Some(45.0),
+        ..Attrs::default()
+    };
     let expected_transform = element_transform(
         Frame {
             x: 0.0,
@@ -799,7 +817,7 @@ fn test_render_emits_rotate_for_rotation() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -810,8 +828,10 @@ fn test_render_emits_rotate_for_rotation() {
 
 #[test]
 fn test_render_emits_scale_for_scale() {
-    let mut attrs = Attrs::default();
-    attrs.scale = Some(1.1);
+    let attrs = Attrs {
+        scale: Some(1.1),
+        ..Attrs::default()
+    };
     let expected_transform = element_transform(
         Frame {
             x: 0.0,
@@ -827,7 +847,7 @@ fn test_render_emits_scale_for_scale() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -838,13 +858,15 @@ fn test_render_emits_scale_for_scale() {
 
 #[test]
 fn test_render_emits_alpha_layer() {
-    let mut attrs = Attrs::default();
-    attrs.alpha = Some(0.5);
+    let attrs = Attrs {
+        alpha: Some(0.5),
+        ..Attrs::default()
+    };
     let tree = build_tree_with_attrs(attrs);
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -860,8 +882,10 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
     let parent_id = NodeId::from_term_bytes(vec![90]);
     let child_id = NodeId::from_term_bytes(vec![91]);
 
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.scrollbar_y = Some(true);
+    let parent_attrs = Attrs {
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
 
     let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), parent_attrs);
     parent.children = vec![child_id];
@@ -874,21 +898,23 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
         content_height: 50.0,
     });
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    child_attrs.alpha = Some(0.5);
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 0.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        alpha: Some(0.5),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 0.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
     child.layout.frame = Some(Frame {
@@ -952,22 +978,24 @@ fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
         content_height: 50.0,
     });
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 255,
-        g: 255,
-        b: 255,
-        a: 0,
-    }));
-    child_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 6.0,
-        size: 2.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgba {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 0,
+        })),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 6.0,
+            size: 2.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
     child.layout.frame = Some(Frame {
@@ -1014,16 +1042,18 @@ fn test_zero_offset_outer_glow_paints_all_sides() {
         content_height: 100.0,
     });
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 4.0,
-        size: 2.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 4.0,
+            size: 2.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
     child.layout.frame = Some(Frame {
@@ -1362,7 +1392,7 @@ fn test_render_skips_transform_when_default() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let draw = only_draw(&draws, |resolved| {
+    let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -1374,8 +1404,10 @@ fn test_render_skips_transform_when_default() {
 
 #[test]
 fn test_render_nearby_behind_and_in_front_order() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
     let mut tree = build_tree_with_frame(
         attrs,
         Frame {
@@ -1423,19 +1455,19 @@ fn test_render_nearby_behind_and_in_front_order() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
         )
     });
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF)
@@ -1450,11 +1482,15 @@ fn test_render_nearby_behind_and_in_front_order() {
 
 #[test]
 fn test_render_behind_between_background_and_children() {
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let parent_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_child_frame(
         parent_attrs,
@@ -1497,19 +1533,19 @@ fn test_render_behind_between_background_and_children() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
         )
     });
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF)
@@ -1532,12 +1568,16 @@ fn test_render_behind_between_background_and_children() {
 
 #[test]
 fn test_render_behind_inside_host_clip() {
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    parent_attrs.padding = Some(Padding::Uniform(10.0));
+    let parent_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        padding: Some(Padding::Uniform(10.0)),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_child_frame(
         parent_attrs,
@@ -1580,13 +1620,13 @@ fn test_render_behind_inside_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let behind = only_draw(&draws, |draw| {
+    let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
         )
     });
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
@@ -1606,8 +1646,10 @@ fn test_render_behind_inside_host_clip() {
 
 #[test]
 fn test_render_nearby_above_below_order_after_parent() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -1656,19 +1698,19 @@ fn test_render_nearby_above_below_order_after_parent() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let above = only_draw(&draws, |draw| {
+    let above = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF)
         )
     });
-    let below = only_draw(&draws, |draw| {
+    let below = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF)
@@ -1683,12 +1725,16 @@ fn test_render_nearby_above_below_order_after_parent() {
 
 #[test]
 fn test_render_front_nearby_escapes_ancestor_host_clip() {
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    parent_attrs.scrollbar_y = Some(true);
+    let parent_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 }));
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 255, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_child_frame(
         parent_attrs,
@@ -1731,13 +1777,13 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let child = only_draw(&draws, |draw| {
+    let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
         )
     });
-    let nearby = only_draw(&draws, |draw| {
+    let nearby = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF)
@@ -1751,8 +1797,10 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
 
 #[test]
 fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -1802,13 +1850,13 @@ fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let first = only_draw(&draws, |draw| {
+    let first = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0xFF0000FF)
         )
     });
-    let second = only_draw(&draws, |draw| {
+    let second = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0x00FF00FF)
@@ -1822,8 +1870,10 @@ fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
 fn test_render_clip_nearby_clips_escape_overlay() {
     let parent_attrs = Attrs::default();
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.clip_nearby = Some(true);
+    let child_attrs = Attrs {
+        clip_nearby: Some(true),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_child_frame(
         parent_attrs,
@@ -1928,27 +1978,33 @@ fn test_render_rotated_root_keeps_nested_fill_column_content_visible() {
     let panel_id = NodeId::from_u64(910_005);
     let content_id = NodeId::from_u64(910_006);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.width = Some(Length::Fill);
-    root_attrs.height = Some(Length::Fill);
-    root_attrs.layout_rotate = Some(90.0);
+    let root_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        layout_rotate: Some(90.0),
+        ..Attrs::default()
+    };
 
     let mut screen_attrs = solid_fill_attrs((243, 244, 247));
     screen_attrs.width = Some(Length::Fill);
     screen_attrs.height = Some(Length::Fill);
 
-    let mut column_attrs = Attrs::default();
-    column_attrs.width = Some(Length::Fill);
-    column_attrs.height = Some(Length::Fill);
+    let column_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        ..Attrs::default()
+    };
 
     let mut header_attrs = solid_fill_attrs((255, 0, 0));
     header_attrs.width = Some(Length::Fill);
     header_attrs.height = Some(Length::Px(96.0));
 
-    let mut body_attrs = Attrs::default();
-    body_attrs.width = Some(Length::Fill);
-    body_attrs.height = Some(Length::Fill);
-    body_attrs.padding = Some(Padding::Uniform(16.0));
+    let body_attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        padding: Some(Padding::Uniform(16.0)),
+        ..Attrs::default()
+    };
 
     let mut panel_attrs = solid_fill_attrs((255, 255, 255));
     panel_attrs.width = Some(Length::Fill);
@@ -1999,7 +2055,7 @@ fn test_render_rotated_root_keeps_nested_fill_column_content_visible() {
 
     layout_tree_default(&mut tree, Constraint::new(480.0, 320.0), 1.0);
 
-    let scene = refresh_render_scene_cached_for_benchmark(&mut tree);
+    let scene = refresh_render_scene_for_benchmark(&mut tree);
     let pixels = render_scene_to_pixels(480, 320, scene);
 
     assert_eq!(rgba_at(&pixels, 480, 440, 24), (255, 0, 0, 255));
@@ -2018,15 +2074,17 @@ fn rotated_slider_tree(value: f64) -> (ElementTree, NodeId) {
     root_attrs.height = Some(Length::Px(228.0));
     root_attrs.padding = Some(Padding::Uniform(14.0));
 
-    let mut slider_attrs = Attrs::default();
-    slider_attrs.width = Some(Length::Px(180.0));
-    slider_attrs.height = Some(Length::Px(38.0));
-    slider_attrs.align_x = Some(AlignX::Center);
-    slider_attrs.align_y = Some(AlignY::Center);
-    slider_attrs.layout_rotate = Some(-90.0);
-    slider_attrs.slider_min = Some(0.0);
-    slider_attrs.slider_max = Some(100.0);
-    slider_attrs.slider_value = Some(value);
+    let slider_attrs = Attrs {
+        width: Some(Length::Px(180.0)),
+        height: Some(Length::Px(38.0)),
+        align_x: Some(AlignX::Center),
+        align_y: Some(AlignY::Center),
+        layout_rotate: Some(-90.0),
+        slider_min: Some(0.0),
+        slider_max: Some(100.0),
+        slider_value: Some(value),
+        ..Attrs::default()
+    };
 
     let mut track_attrs = solid_fill_attrs((68, 84, 92));
     track_attrs.height = Some(Length::Px(8.0));
@@ -2514,8 +2572,10 @@ fn test_render_nested_escape_submenu_paints_after_parent_menu() {
 
 #[test]
 fn test_render_in_front_fill_uses_parent_border_box_slot() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -2548,13 +2608,13 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
         )
     });
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
@@ -2567,8 +2627,10 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
 
 #[test]
 fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -2601,7 +2663,7 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF)
@@ -2611,8 +2673,10 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
 
 #[test]
 fn test_render_above_fill_width_uses_parent_slot() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -2645,7 +2709,7 @@ fn test_render_above_fill_width_uses_parent_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF)
@@ -2655,8 +2719,10 @@ fn test_render_above_fill_width_uses_parent_slot() {
 
 #[test]
 fn test_render_on_right_fill_height_uses_parent_slot() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -2689,7 +2755,7 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    only_draw(&draws, |draw| {
+    only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF)
@@ -2699,9 +2765,11 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
 
 #[test]
 fn test_render_in_front_ignores_host_clip() {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    attrs.padding = Some(Padding::Uniform(10.0));
+    let attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        padding: Some(Padding::Uniform(10.0)),
+        ..Attrs::default()
+    };
 
     let mut tree = build_tree_with_frame(
         attrs,
@@ -2734,7 +2802,7 @@ fn test_render_in_front_ignores_host_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let front = only_draw(&draws, |draw| {
+    let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
@@ -2746,15 +2814,17 @@ fn test_render_in_front_ignores_host_clip() {
 #[test]
 fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
     let parent_attrs = Attrs::default();
-    let mut child_attrs = Attrs::default();
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 2.0,
-        offset_y: 2.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_child_frame(
         parent_attrs,
@@ -2780,10 +2850,10 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -2799,15 +2869,17 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
 fn test_outer_shadow_escapes_nested_non_scrollable_ancestor_clips() {
     let root_attrs = Attrs::default();
     let parent_attrs = Attrs::default();
-    let mut child_attrs = Attrs::default();
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_nested_child_tree(
         root_attrs,
@@ -2852,29 +2924,33 @@ fn test_outer_shadow_escapes_nested_non_scrollable_ancestor_clips() {
 
 #[test]
 fn test_outer_shadow_bleeds_into_parent_padding() {
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.padding = Some(Padding::Uniform(10.0));
-    parent_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-    }));
+    let parent_attrs = Attrs {
+        padding: Some(Padding::Uniform(10.0)),
+        background: Some(Background::Color(Color::Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        })),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 0.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 0.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_child_frame(
         parent_attrs,
@@ -2913,23 +2989,27 @@ fn test_outer_shadow_bleeds_into_parent_padding() {
 
 #[test]
 fn test_outer_shadow_bleeds_into_parent_top_and_right_padding() {
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.padding = Some(Padding::Uniform(10.0));
+    let parent_attrs = Attrs {
+        padding: Some(Padding::Uniform(10.0)),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 0.0,
-        offset_y: 0.0,
-        blur: 0.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 0.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_child_frame(
         parent_attrs,
@@ -2969,17 +3049,21 @@ fn test_outer_shadow_bleeds_into_parent_top_and_right_padding() {
 #[test]
 fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     let root_attrs = Attrs::default();
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.scrollbar_y = Some(true);
-    let mut child_attrs = Attrs::default();
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 2.0,
-        offset_y: 2.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let parent_attrs = Attrs {
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
+    let child_attrs = Attrs {
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_nested_child_tree(
         root_attrs,
@@ -3014,10 +3098,10 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -3066,17 +3150,21 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
 #[test]
 fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
     let root_attrs = Attrs::default();
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.scrollbar_x = Some(true);
-    let mut child_attrs = Attrs::default();
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 2.0,
-        offset_y: 2.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let parent_attrs = Attrs {
+        scrollbar_x: Some(true),
+        ..Attrs::default()
+    };
+    let child_attrs = Attrs {
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_nested_child_tree(
         root_attrs,
@@ -3111,10 +3199,10 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -3163,19 +3251,23 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
 #[test]
 fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     let root_attrs = Attrs::default();
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.scrollbar_x = Some(true);
-    parent_attrs.scrollbar_y = Some(true);
-    parent_attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    let mut child_attrs = Attrs::default();
-    child_attrs.box_shadows = Some(vec![BoxShadow {
-        offset_x: 2.0,
-        offset_y: 2.0,
-        blur: 8.0,
-        size: 4.0,
-        color: Color::Named("black".to_string()),
-        inset: false,
-    }]);
+    let parent_attrs = Attrs {
+        scrollbar_x: Some(true),
+        scrollbar_y: Some(true),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        ..Attrs::default()
+    };
+    let child_attrs = Attrs {
+        box_shadows: Some(vec![BoxShadow {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 8.0,
+            size: 4.0,
+            color: Color::Named("black".to_string()),
+            inset: false,
+        }]),
+        ..Attrs::default()
+    };
 
     let tree = build_nested_child_tree(
         root_attrs,
@@ -3210,10 +3302,10 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let body = only_draw(&draws, |draw| {
+    let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
@@ -3264,10 +3356,12 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     let child_b_id = NodeId::from_term_bytes(vec![32]);
     let child_c_id = NodeId::from_term_bytes(vec![33]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    root_attrs.scrollbar_y = Some(true);
-    root_attrs.scroll_y = Some(10.0);
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        scrollbar_y: Some(true),
+        scroll_y: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![child_a_id, child_b_id, child_c_id];
@@ -3346,10 +3440,10 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
         "scroll rendering should not need transform wrappers"
     );
 
-    let shadow = only_draw(&draws, |draw| {
+    let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
-    let child_c = only_draw(&draws, |draw| {
+    let child_c = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 30.0, 100.0, 20.0, 0x0000FFFF)
@@ -3377,10 +3471,12 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     let inner_id = NodeId::from_term_bytes(vec![61]);
     let text_id = NodeId::from_term_bytes(vec![62]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    root_attrs.scrollbar_y = Some(true);
-    root_attrs.scroll_y = Some(150.0);
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        scrollbar_y: Some(true),
+        scroll_y: Some(150.0),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![inner_id];
     root.layout.frame = Some(Frame {
@@ -3392,14 +3488,16 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
         content_height: 400.0,
     });
 
-    let mut inner_attrs = Attrs::default();
-    inner_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    }));
-    inner_attrs.scrollbar_y = Some(true);
-    inner_attrs.scroll_y = Some(10.0);
+    let inner_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        })),
+        scrollbar_y: Some(true),
+        scroll_y: Some(10.0),
+        ..Attrs::default()
+    };
     let mut inner = Element::with_attrs(inner_id, ElementKind::El, Vec::new(), inner_attrs);
     inner.children = vec![text_id];
     inner.layout.frame = Some(Frame {
@@ -3411,10 +3509,12 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
         content_height: 120.0,
     });
 
-    let mut text_attrs = Attrs::default();
-    text_attrs.content = Some("visible".to_string());
-    text_attrs.font_size = Some(12.0);
-    text_attrs.font_color = Some(Color::Named("white".to_string()));
+    let text_attrs = Attrs {
+        content: Some("visible".to_string()),
+        font_size: Some(12.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
     let mut text = Element::with_attrs(text_id, ElementKind::Text, Vec::new(), text_attrs);
     text.layout.frame = Some(Frame {
         x: 12.0,
@@ -3435,7 +3535,7 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
     let draws = &trace.draws;
 
     let text_draw = only_draw(
-        &draws,
+        draws,
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "visible"),
     );
 
@@ -3471,10 +3571,12 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     let root_id = NodeId::from_term_bytes(vec![63]);
     let text_id = NodeId::from_term_bytes(vec![64]);
 
-    let mut root_attrs = Attrs::default();
-    root_attrs.background = Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 }));
-    root_attrs.scrollbar_y = Some(true);
-    root_attrs.scroll_y = Some(10.0);
+    let root_attrs = Attrs {
+        background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
+        scrollbar_y: Some(true),
+        scroll_y: Some(10.0),
+        ..Attrs::default()
+    };
     let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
     root.children = vec![text_id];
     root.layout.frame = Some(Frame {
@@ -3486,10 +3588,12 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
         content_height: 120.0,
     });
 
-    let mut text_attrs = Attrs::default();
-    text_attrs.content = Some("shifted".to_string());
-    text_attrs.font_size = Some(12.0);
-    text_attrs.font_color = Some(Color::Named("white".to_string()));
+    let text_attrs = Attrs {
+        content: Some("shifted".to_string()),
+        font_size: Some(12.0),
+        font_color: Some(Color::Named("white".to_string())),
+        ..Attrs::default()
+    };
     let mut text = Element::with_attrs(text_id, ElementKind::Text, Vec::new(), text_attrs);
     text.layout.frame = Some(Frame {
         x: 60.0,
@@ -3509,7 +3613,7 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
     let draws = &trace.draws;
 
     let text_draw = only_draw(
-        &draws,
+        draws,
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"),
     );
     assert!(text_draw.clips.iter().any(|clip| {
@@ -3540,14 +3644,18 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
 
 #[test]
 fn test_border_renders_after_host_clip_pops() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_color = Some(Color::Named("red".to_string()));
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
-    attrs.scrollbar_y = Some(true);
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_color: Some(Color::Named("red".to_string())),
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.background = Some(Background::Color(Color::Named("white".to_string())));
+    let child_attrs = Attrs {
+        background: Some(Background::Color(Color::Named("white".to_string()))),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_child_frame(
         attrs,
@@ -3572,13 +3680,13 @@ fn test_border_renders_after_host_clip_pops() {
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    let child_draw = only_draw(&draws, |draw| {
+    let child_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0xFFFFFFFF)
         )
     });
-    let border_draw = only_draw(&draws, |draw| {
+    let border_draw = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Border(..))
     });
     let expected_host_clip = ClipShape {
@@ -3600,7 +3708,7 @@ fn test_border_renders_after_host_clip_pops() {
     assert!(
         child_clip_scopes
             .iter()
-            .any(|scope| { clip_scope_shapes(scope).unwrap() == &[expected_host_clip] })
+            .any(|scope| { clip_scope_shapes(scope).unwrap() == [expected_host_clip] })
     );
     assert!(scope_chain(&trace, border_draw).is_empty());
     assert!(paints_before(child_draw, border_draw));
@@ -3608,13 +3716,15 @@ fn test_border_renders_after_host_clip_pops() {
 
 #[test]
 fn test_render_uses_only_background_self_clip_when_nothing_else_is_clipped() {
-    let mut attrs = Attrs::default();
-    attrs.border_radius = Some(BorderRadius::Uniform(8.0));
+    let attrs = Attrs {
+        border_radius: Some(BorderRadius::Uniform(8.0)),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_attrs(attrs);
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
-    let background = only_draw(&draws, |draw| {
+    let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
@@ -3628,11 +3738,13 @@ fn test_render_uses_only_background_self_clip_when_nothing_else_is_clipped() {
 
 #[test]
 fn test_host_clip_pushes_once_for_square_border() {
-    let mut attrs = Attrs::default();
-    attrs.border_width = Some(BorderWidth::Uniform(2.0));
-    attrs.border_color = Some(Color::Named("red".to_string()));
-    attrs.scrollbar_y = Some(true);
-    attrs.scroll_y_max = Some(20.0);
+    let attrs = Attrs {
+        border_width: Some(BorderWidth::Uniform(2.0)),
+        border_color: Some(Color::Named("red".to_string())),
+        scrollbar_y: Some(true),
+        scroll_y_max: Some(20.0),
+        ..Attrs::default()
+    };
 
     let tree = build_tree_with_frame(
         attrs,

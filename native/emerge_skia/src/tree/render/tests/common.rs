@@ -144,7 +144,7 @@ pub(super) fn render_tree_to_pixels(
     (output, pixels)
 }
 
-pub(super) fn only_draw<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> &'a ResolvedDraw
+pub(super) fn only_draw<F>(draws: &[ResolvedDraw], pred: F) -> &ResolvedDraw
 where
     F: Fn(&ResolvedDraw) -> bool,
 {
@@ -153,7 +153,7 @@ where
     matches[0]
 }
 
-pub(super) fn matching_draws<'a, F>(draws: &'a [ResolvedDraw], pred: F) -> Vec<&'a ResolvedDraw>
+pub(super) fn matching_draws<F>(draws: &[ResolvedDraw], pred: F) -> Vec<&ResolvedDraw>
 where
     F: Fn(&ResolvedDraw) -> bool,
 {
@@ -171,7 +171,7 @@ pub(super) fn shares_alpha_scope(a: &ResolvedDraw, b: &ResolvedDraw) -> bool {
         .eq(b.alpha_scopes.iter().map(|scope| scope.scope_id))
 }
 
-pub(super) fn scope<'a>(trace: &'a SceneTrace, scope_id: usize) -> &'a ScopeRecord {
+pub(super) fn scope(trace: &SceneTrace, scope_id: usize) -> &ScopeRecord {
     trace
         .scopes
         .iter()
@@ -349,8 +349,8 @@ fn trace_nodes(
                 });
                 trace_nodes(children, &next_context, state, scopes, draws);
             }
-            RenderNode::CacheCandidate(candidate) => {
-                trace_nodes(&candidate.children, context, state, scopes, draws);
+            RenderNode::PaintLayer(layer) => {
+                trace_nodes(&layer.children, context, state, scopes, draws);
             }
             RenderNode::Primitive(primitive) => {
                 draws.push(ResolvedDraw {
@@ -530,13 +530,14 @@ pub(super) fn mount_nearby(
 }
 
 pub(super) fn solid_fill_attrs(rgb: (u8, u8, u8)) -> Attrs {
-    let mut attrs = Attrs::default();
-    attrs.background = Some(Background::Color(Color::Rgb {
-        r: rgb.0,
-        g: rgb.1,
-        b: rgb.2,
-    }));
-    attrs
+    Attrs {
+        background: Some(Background::Color(Color::Rgb {
+            r: rgb.0,
+            g: rgb.1,
+            b: rgb.2,
+        })),
+        ..Attrs::default()
+    }
 }
 
 pub(super) fn nearby_origin(

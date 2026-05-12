@@ -5,9 +5,7 @@ use super::common::*;
 fn test_layout_single_el() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Px(100.0));
-    attrs.height = Some(Length::Px(50.0));
+    let attrs = fixed_box_attrs(100.0, 50.0);
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -33,14 +31,18 @@ fn test_layout_single_el() {
 fn test_layout_el_shrink_to_content() {
     let mut tree = ElementTree::new();
 
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.width = Some(Length::Content);
-    parent_attrs.height = Some(Length::Content);
-    parent_attrs.padding = Some(Padding::Uniform(10.0));
+    let parent_attrs = Attrs {
+        width: Some(Length::Content),
+        height: Some(Length::Content),
+        padding: Some(Padding::Uniform(10.0)),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.content = Some("Hi".to_string());
-    child_attrs.font_size = Some(10.0);
+    let child_attrs = Attrs {
+        content: Some("Hi".to_string()),
+        font_size: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut parent = make_element("root", ElementKind::El, parent_attrs);
     let child = make_element("child", ElementKind::Text, child_attrs);
@@ -71,12 +73,14 @@ fn test_layout_minimum_constraint() {
     // Element with width = max(200px, fill())
     // When constraint is 800px, fill() = 800px, so fill wins.
     // Result should be 800px (fill wins since 800 > 200)
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Max(
-        Box::new(Length::Px(200.0)),
-        Box::new(Length::Fill),
-    ));
-    attrs.height = Some(Length::Px(50.0));
+    let attrs = Attrs {
+        width: Some(Length::Max(
+            Box::new(Length::Px(200.0)),
+            Box::new(Length::Fill),
+        )),
+        height: Some(Length::Px(50.0)),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -101,12 +105,14 @@ fn test_layout_minimum_constraint_enforced() {
 
     // Element with width = max(200px, content)
     // When content is small, max should enforce 200px
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Max(
-        Box::new(Length::Px(200.0)),
-        Box::new(Length::Content),
-    ));
-    attrs.height = Some(Length::Px(50.0));
+    let attrs = Attrs {
+        width: Some(Length::Max(
+            Box::new(Length::Px(200.0)),
+            Box::new(Length::Content),
+        )),
+        height: Some(Length::Px(50.0)),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -131,12 +137,14 @@ fn test_layout_maximum_constraint() {
 
     // Element with width = min(300px, fill())
     // When constraint is 800px, fill() = 800px, but min caps to 300px
-    let mut attrs = Attrs::default();
-    attrs.width = Some(Length::Min(
-        Box::new(Length::Px(300.0)),
-        Box::new(Length::Fill),
-    ));
-    attrs.height = Some(Length::Px(50.0));
+    let attrs = Attrs {
+        width: Some(Length::Min(
+            Box::new(Length::Px(300.0)),
+            Box::new(Length::Fill),
+        )),
+        height: Some(Length::Px(50.0)),
+        ..Attrs::default()
+    };
 
     let el = make_element("root", ElementKind::El, attrs);
     let root_id = el.id;
@@ -202,19 +210,16 @@ fn test_el_center_x_aligns_child() {
     let mut tree = ElementTree::new();
 
     // El with center_x alignment and a smaller child
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(50.0));
-    el_attrs.align_x = Some(AlignX::Center);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(50.0)),
+        align_x: Some(AlignX::Center),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(80.0, 30.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -244,19 +249,16 @@ fn test_el_center_y_aligns_child() {
     let mut tree = ElementTree::new();
 
     // El with center_y alignment and a smaller child
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(100.0));
-    el_attrs.align_y = Some(AlignY::Center);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        align_y: Some(AlignY::Center),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(80.0, 40.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -286,20 +288,17 @@ fn test_el_center_both_axes() {
     let mut tree = ElementTree::new();
 
     // El with both center_x and center_y
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(100.0));
-    el_attrs.align_x = Some(AlignX::Center);
-    el_attrs.align_y = Some(AlignY::Center);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        align_x: Some(AlignX::Center),
+        align_y: Some(AlignY::Center),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(80.0, 40.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -328,19 +327,16 @@ fn test_el_align_right() {
     let mut tree = ElementTree::new();
 
     // El with align_right
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(50.0));
-    el_attrs.align_x = Some(AlignX::Right);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(50.0)),
+        align_x: Some(AlignX::Right),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(30.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(80.0, 30.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -368,19 +364,16 @@ fn test_el_align_bottom() {
     let mut tree = ElementTree::new();
 
     // El with align_bottom
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(100.0));
-    el_attrs.align_y = Some(AlignY::Bottom);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        align_y: Some(AlignY::Bottom),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(40.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(80.0, 40.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -408,19 +401,22 @@ fn test_child_alignment_overrides_parent() {
     let mut tree = ElementTree::new();
 
     // Parent has center_x, child has align_right - child should win
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(50.0));
-    el_attrs.align_x = Some(AlignX::Center);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(50.0)),
+        align_x: Some(AlignX::Center),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
     let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(80.0));
-        a.height = Some(Length::Px(30.0));
-        a.align_x = Some(AlignX::Right); // Child overrides parent
-        a
+        Attrs {
+            width: Some(Length::Px(80.0)),
+            height: Some(Length::Px(30.0)),
+            align_x: Some(AlignX::Right), // Child overrides parent
+            ..Attrs::default()
+        }
     });
 
     let el_id = el.id;
@@ -449,21 +445,18 @@ fn test_el_with_padding_and_center() {
     let mut tree = ElementTree::new();
 
     // El with padding and center alignment
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(200.0));
-    el_attrs.height = Some(Length::Px(100.0));
-    el_attrs.padding = Some(Padding::Uniform(20.0));
-    el_attrs.align_x = Some(AlignX::Center);
-    el_attrs.align_y = Some(AlignY::Center);
+    let el_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(100.0)),
+        padding: Some(Padding::Uniform(20.0)),
+        align_x: Some(AlignX::Center),
+        align_y: Some(AlignY::Center),
+        ..Attrs::default()
+    };
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
 
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(60.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(60.0, 20.0));
 
     let el_id = el.id;
     let child_id = child.id;
@@ -496,8 +489,7 @@ fn test_el_expands_height_for_wrapped_paragraph() {
     // wider than 50px. The paragraph wraps, and the El should expand.
     let mut tree = ElementTree::new();
 
-    let mut el_attrs = Attrs::default();
-    el_attrs.width = Some(Length::Px(50.0));
+    let el_attrs = fixed_width_attrs(50.0);
     // No height set — should shrink-to-fit then expand
 
     let mut el = make_element("el", ElementKind::El, el_attrs);
@@ -538,10 +530,12 @@ fn test_el_expands_height_for_wrapped_paragraph() {
 fn test_text_align_center_without_explicit_width_fills_constraint() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Hello".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.text_align = Some(TextAlign::Center);
+    let attrs = Attrs {
+        content: Some("Hello".to_string()),
+        font_size: Some(16.0),
+        text_align: Some(TextAlign::Center),
+        ..Attrs::default()
+    };
     // width intentionally unset
 
     let text = make_element("text", ElementKind::Text, attrs);
@@ -566,14 +560,16 @@ fn test_text_align_center_without_explicit_width_fills_constraint() {
 fn test_mouse_over_text_align_center_without_explicit_width_fills_constraint() {
     let mut tree = ElementTree::new();
 
-    let mut attrs = Attrs::default();
-    attrs.content = Some("Hello".to_string());
-    attrs.font_size = Some(16.0);
-    attrs.mouse_over = Some(MouseOverAttrs {
-        text_align: Some(TextAlign::Center),
-        ..Default::default()
-    });
-    attrs.mouse_over_active = Some(true);
+    let attrs = Attrs {
+        content: Some("Hello".to_string()),
+        font_size: Some(16.0),
+        mouse_over: Some(MouseOverAttrs {
+            text_align: Some(TextAlign::Center),
+            ..Default::default()
+        }),
+        mouse_over_active: Some(true),
+        ..Attrs::default()
+    };
 
     let text = make_element("text", ElementKind::Text, attrs);
     let text_id = text.id;
@@ -596,18 +592,22 @@ fn test_mouse_over_text_align_center_without_explicit_width_fills_constraint() {
 fn test_mouse_over_border_width_affects_content_sizing() {
     let mut tree = ElementTree::new();
 
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.width = Some(Length::Content);
-    parent_attrs.height = Some(Length::Content);
-    parent_attrs.mouse_over = Some(MouseOverAttrs {
-        border_width: Some(BorderWidth::Uniform(3.0)),
-        ..Default::default()
-    });
-    parent_attrs.mouse_over_active = Some(true);
+    let parent_attrs = Attrs {
+        width: Some(Length::Content),
+        height: Some(Length::Content),
+        mouse_over: Some(MouseOverAttrs {
+            border_width: Some(BorderWidth::Uniform(3.0)),
+            ..Default::default()
+        }),
+        mouse_over_active: Some(true),
+        ..Attrs::default()
+    };
 
-    let mut child_attrs = Attrs::default();
-    child_attrs.content = Some("Hi".to_string());
-    child_attrs.font_size = Some(10.0);
+    let child_attrs = Attrs {
+        content: Some("Hi".to_string()),
+        font_size: Some(10.0),
+        ..Attrs::default()
+    };
 
     let mut parent = make_element("root", ElementKind::El, parent_attrs);
     let child = make_element("child", ElementKind::Text, child_attrs);
@@ -635,31 +635,28 @@ fn test_mouse_over_border_width_affects_content_sizing() {
 fn test_el_alignment_uses_asymmetric_padding_and_border_content_box() {
     let mut tree = ElementTree::new();
 
-    let mut parent_attrs = Attrs::default();
-    parent_attrs.width = Some(Length::Px(200.0));
-    parent_attrs.height = Some(Length::Px(120.0));
-    parent_attrs.padding = Some(Padding::Sides {
-        top: 10.0,
-        right: 20.0,
-        bottom: 30.0,
-        left: 40.0,
-    });
-    parent_attrs.border_width = Some(BorderWidth::Sides {
-        top: 1.0,
-        right: 2.0,
-        bottom: 3.0,
-        left: 4.0,
-    });
-    parent_attrs.align_x = Some(AlignX::Right);
-    parent_attrs.align_y = Some(AlignY::Bottom);
+    let parent_attrs = Attrs {
+        width: Some(Length::Px(200.0)),
+        height: Some(Length::Px(120.0)),
+        padding: Some(Padding::Sides {
+            top: 10.0,
+            right: 20.0,
+            bottom: 30.0,
+            left: 40.0,
+        }),
+        border_width: Some(BorderWidth::Sides {
+            top: 1.0,
+            right: 2.0,
+            bottom: 3.0,
+            left: 4.0,
+        }),
+        align_x: Some(AlignX::Right),
+        align_y: Some(AlignY::Bottom),
+        ..Attrs::default()
+    };
 
     let mut parent = make_element("parent", ElementKind::El, parent_attrs);
-    let child = make_element("child", ElementKind::El, {
-        let mut a = Attrs::default();
-        a.width = Some(Length::Px(50.0));
-        a.height = Some(Length::Px(20.0));
-        a
-    });
+    let child = make_element("child", ElementKind::El, fixed_box_attrs(50.0, 20.0));
 
     let parent_id = parent.id;
     let child_id = child.id;

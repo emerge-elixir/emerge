@@ -1238,11 +1238,15 @@ mod tests {
         duration_ms: f64,
         repeat: AnimationRepeat,
     ) -> AnimationSpec {
-        let mut from = Attrs::default();
-        from.move_x = Some(from_x);
+        let from = Attrs {
+            move_x: Some(from_x),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.move_x = Some(to_x);
+        let to = Attrs {
+            move_x: Some(to_x),
+            ..Attrs::default()
+        };
 
         AnimationSpec {
             keyframes: vec![from, to],
@@ -1253,11 +1257,15 @@ mod tests {
     }
 
     fn alpha_spec(from_alpha: f64, to_alpha: f64, duration_ms: f64) -> AnimationSpec {
-        let mut from = Attrs::default();
-        from.alpha = Some(from_alpha);
+        let from = Attrs {
+            alpha: Some(from_alpha),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.alpha = Some(to_alpha);
+        let to = Attrs {
+            alpha: Some(to_alpha),
+            ..Attrs::default()
+        };
 
         AnimationSpec {
             keyframes: vec![from, to],
@@ -1290,8 +1298,10 @@ mod tests {
         let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
         root.children = vec![ghost_id];
 
-        let mut ghost_attrs = Attrs::default();
-        ghost_attrs.alpha = Some(1.0);
+        let ghost_attrs = Attrs {
+            alpha: Some(1.0),
+            ..Attrs::default()
+        };
         let mut ghost =
             Element::with_attrs(ghost_id, ElementKind::El, Vec::new(), ghost_attrs.clone());
         ghost.spec.declared = ghost_attrs;
@@ -1313,11 +1323,15 @@ mod tests {
 
     #[test]
     fn sample_animation_spec_loops_with_time() {
-        let mut from = Attrs::default();
-        from.move_x = Some(0.0);
+        let from = Attrs {
+            move_x: Some(0.0),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.move_x = Some(10.0);
+        let to = Attrs {
+            move_x: Some(10.0),
+            ..Attrs::default()
+        };
 
         let spec = AnimationSpec {
             keyframes: vec![from, to],
@@ -1343,11 +1357,15 @@ mod tests {
 
     #[test]
     fn sample_animation_spec_clamps_once_to_last_keyframe() {
-        let mut from = Attrs::default();
-        from.alpha = Some(0.0);
+        let from = Attrs {
+            alpha: Some(0.0),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.alpha = Some(1.0);
+        let to = Attrs {
+            alpha: Some(1.0),
+            ..Attrs::default()
+        };
 
         let spec = AnimationSpec {
             keyframes: vec![from, to],
@@ -1373,13 +1391,17 @@ mod tests {
 
     #[test]
     fn sample_animation_spec_interpolates_layout_scale_and_rotate() {
-        let mut from = Attrs::default();
-        from.layout_scale = Some(1.0);
-        from.layout_rotate = Some(0.0);
+        let from = Attrs {
+            layout_scale: Some(1.0),
+            layout_rotate: Some(0.0),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.layout_scale = Some(2.0);
-        to.layout_rotate = Some(90.0);
+        let to = Attrs {
+            layout_scale: Some(2.0),
+            layout_rotate: Some(90.0),
+            ..Attrs::default()
+        };
 
         let spec = AnimationSpec {
             keyframes: vec![from, to],
@@ -1409,15 +1431,19 @@ mod tests {
 
     #[test]
     fn scale_animation_spec_preserves_layout_transform_fields() {
-        let mut from = Attrs::default();
-        from.layout_scale = Some(1.25);
-        from.layout_rotate = Some(15.0);
-        from.width = Some(Length::Px(20.0));
+        let from = Attrs {
+            layout_scale: Some(1.25),
+            layout_rotate: Some(15.0),
+            width: Some(Length::Px(20.0)),
+            ..Attrs::default()
+        };
 
-        let mut to = Attrs::default();
-        to.layout_scale = Some(1.5);
-        to.layout_rotate = Some(45.0);
-        to.width = Some(Length::Px(40.0));
+        let to = Attrs {
+            layout_scale: Some(1.5),
+            layout_rotate: Some(45.0),
+            width: Some(Length::Px(40.0)),
+            ..Attrs::default()
+        };
 
         let scaled = scale_animation_spec(
             &AnimationSpec {
@@ -1439,8 +1465,10 @@ mod tests {
 
     #[test]
     fn sync_with_tree_starts_enter_animation_for_newly_mounted_nodes() {
-        let mut attrs = Attrs::default();
-        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        let attrs = Attrs {
+            animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+            ..Attrs::default()
+        };
         let (tree, id) = tree_with_element(attrs, 1, 1);
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -1460,8 +1488,10 @@ mod tests {
 
     #[test]
     fn transient_enter_animation_anchors_to_first_presented_frame_once() {
-        let mut attrs = Attrs::default();
-        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
+        let attrs = Attrs {
+            animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+            ..Attrs::default()
+        };
         let (tree, id) = tree_with_element(attrs, 1, 1);
         let patch_time = Instant::now();
         let first_presented = patch_time + std::time::Duration::from_millis(24);
@@ -1507,8 +1537,10 @@ mod tests {
 
     #[test]
     fn enter_animation_captures_spec_at_mount_time() {
-        let mut attrs = Attrs::default();
-        attrs.animate_enter = Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once));
+        let attrs = Attrs {
+            animate_enter: Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once)),
+            ..Attrs::default()
+        };
         let (mut tree, id) = tree_with_element(attrs, 1, 1);
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -1531,8 +1563,10 @@ mod tests {
 
     #[test]
     fn completed_enter_hands_off_to_base_attrs_when_no_animate_is_present() {
-        let mut attrs = Attrs::default();
-        attrs.animate_enter = Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once));
+        let attrs = Attrs {
+            animate_enter: Some(move_x_spec(0.0, 100.0, 100.0, AnimationRepeat::Once)),
+            ..Attrs::default()
+        };
         let (mut tree, id) = tree_with_element(attrs, 1, 1);
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();
@@ -1556,9 +1590,11 @@ mod tests {
 
     #[test]
     fn completed_enter_starts_regular_animation_from_zero_progress() {
-        let mut attrs = Attrs::default();
-        attrs.animate_enter = Some(alpha_spec(0.0, 1.0, 100.0));
-        attrs.animate = Some(move_x_spec(10.0, 30.0, 100.0, AnimationRepeat::Loop));
+        let attrs = Attrs {
+            animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+            animate: Some(move_x_spec(10.0, 30.0, 100.0, AnimationRepeat::Loop)),
+            ..Attrs::default()
+        };
         let (mut tree, id) = tree_with_element(attrs, 1, 1);
         let start = Instant::now();
         let mut runtime = AnimationRuntime::default();

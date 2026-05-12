@@ -110,10 +110,13 @@ defmodule EmergeSkia do
   - `fonts` (default: `[]`)
 
   `renderer_cache` options:
-  - `max_new_payloads_per_frame` (default: `1`)
-  - `clean_subtree.max_entries` (default: `128`)
-  - `clean_subtree.max_bytes` (default: `33_554_432`)
-  - `clean_subtree.max_entry_bytes` (default: `4_194_304`)
+  - `enabled` (default: `true`, GPU backends only)
+  - `max_new_payloads_per_frame` (default: `16`)
+  - `paint_layer.max_entries` (default: `512`)
+  - `paint_layer.max_bytes` (default: `671_088_640`)
+  - `paint_layer.max_entry_bytes` (default: `268_435_456`)
+  - `paint_layer.min_visible_before_store` (default: `1`)
+  - `paint_layer.max_stale_frames` (default: `120`)
 
   Set a renderer-cache limit to `0` to prevent new stores for that dimension.
 

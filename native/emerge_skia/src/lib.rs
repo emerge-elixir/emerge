@@ -1,19 +1,3 @@
-// The inline Rust tests use mutable fixture builders heavily so each assertion
-// can show only the fields relevant to that case. Keep these shape exceptions
-// test-only; release and benchmark code still run under normal clippy gates.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::cloned_ref_to_slice_refs,
-        clippy::field_reassign_with_default,
-        clippy::needless_borrow,
-        clippy::needless_lifetimes,
-        clippy::nonminimal_bool,
-        clippy::op_ref,
-        clippy::redundant_pattern_matching
-    )
-)]
-
 //! EmergeSkia NIF - Minimal Skia renderer for Elixir.
 //!
 //! This crate provides a Rustler NIF that exposes tree upload, layout,
@@ -51,6 +35,7 @@ pub mod keys;
 #[cfg(all(feature = "drm", target_os = "linux"))]
 mod linux_wait;
 mod native_log;
+pub mod paint_layer_payload_cache;
 pub mod render_scene;
 pub mod renderer;
 pub mod runtime;
@@ -81,7 +66,7 @@ use native_log::NativeLogRelay;
     all(feature = "drm", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
-use renderer::{CleanSubtreeCacheConfig, RendererCacheConfig, clear_global_caches};
+use renderer::{RendererCacheConfig, RendererPaintLayerCacheConfig, clear_global_caches};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::{
     LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererTimingMetric,
@@ -180,18 +165,19 @@ struct LayoutCacheStatsNif {
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct RendererCacheStatsNif {
-    noop: RendererCacheKindStatsNif,
-    clean_subtree: RendererCacheKindStatsNif,
+    paint_layer: RendererCachePaintLayerStatsNif,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
-struct RendererCacheKindStatsNif {
+struct RendererCachePaintLayerStatsNif {
     candidates: u64,
     visible_candidates: u64,
     suppressed_by_parent: u64,
     admitted: u64,
     hits: u64,
     misses: u64,
+    moved_hits: u64,
+    moved_misses: u64,
     stores: u64,
     evictions: u64,
     stale_evictions: u64,
@@ -202,8 +188,23 @@ struct RendererCacheKindStatsNif {
     current_cpu_payloads: u64,
     evicted_bytes: u64,
     stale_evicted_bytes: u64,
+    gpu_payload_stores: u64,
+    cpu_payload_stores: u64,
+    prepare_successes: u64,
+    prepare_failures: u64,
+    direct_fallbacks_after_admission: u64,
+    rejected_ineligible: u64,
+    rejected_admission: u64,
+    rejected_oversized: u64,
+    rejected_payload_budget: u64,
+    rejected_fractional_placement: u64,
+    rejected_unsupported_transform: u64,
     prepare: DurationStatsNif,
     draw_hit: DurationStatsNif,
+    payload_copy: DurationStatsNif,
+    dirty_draw: DurationStatsNif,
+    child_layer: DurationStatsNif,
+    direct_fallback: DurationStatsNif,
 }
 
 impl StatsSnapshotNif {
@@ -220,7 +221,7 @@ impl StatsSnapshotNif {
         let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
 
         Self {
-            version: 9,
+            version: 14,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -293,14 +294,13 @@ impl From<LayoutCacheStats> for LayoutCacheStatsNif {
 impl From<stats::RendererCacheStatsSnapshot> for RendererCacheStatsNif {
     fn from(stats: stats::RendererCacheStatsSnapshot) -> Self {
         Self {
-            noop: RendererCacheKindStatsNif::from(stats.noop),
-            clean_subtree: RendererCacheKindStatsNif::from(stats.clean_subtree),
+            paint_layer: RendererCachePaintLayerStatsNif::from(stats.paint_layer),
         }
     }
 }
 
-impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
-    fn from(stats: stats::RendererCacheKindStatsSnapshot) -> Self {
+impl From<stats::RendererCachePaintLayerStatsSnapshot> for RendererCachePaintLayerStatsNif {
+    fn from(stats: stats::RendererCachePaintLayerStatsSnapshot) -> Self {
         Self {
             candidates: stats.candidates,
             visible_candidates: stats.visible_candidates,
@@ -308,6 +308,8 @@ impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
             admitted: stats.admitted,
             hits: stats.hits,
             misses: stats.misses,
+            moved_hits: stats.moved_hits,
+            moved_misses: stats.moved_misses,
             stores: stats.stores,
             evictions: stats.evictions,
             stale_evictions: stats.stale_evictions,
@@ -318,8 +320,23 @@ impl From<stats::RendererCacheKindStatsSnapshot> for RendererCacheKindStatsNif {
             current_cpu_payloads: stats.current_cpu_payloads,
             evicted_bytes: stats.evicted_bytes,
             stale_evicted_bytes: stats.stale_evicted_bytes,
+            gpu_payload_stores: stats.gpu_payload_stores,
+            cpu_payload_stores: stats.cpu_payload_stores,
+            prepare_successes: stats.prepare_successes,
+            prepare_failures: stats.prepare_failures,
+            direct_fallbacks_after_admission: stats.direct_fallbacks_after_admission,
+            rejected_ineligible: stats.rejected_ineligible,
+            rejected_admission: stats.rejected_admission,
+            rejected_oversized: stats.rejected_oversized,
+            rejected_payload_budget: stats.rejected_payload_budget,
+            rejected_fractional_placement: stats.rejected_fractional_placement,
+            rejected_unsupported_transform: stats.rejected_unsupported_transform,
             prepare: DurationStatsNif::from(stats.prepare),
             draw_hit: DurationStatsNif::from(stats.draw_hit),
+            payload_copy: DurationStatsNif::from(stats.payload_copy),
+            dirty_draw: DurationStatsNif::from(stats.dirty_draw),
+            child_layer: DurationStatsNif::from(stats.child_layer),
+            direct_fallback: DurationStatsNif::from(stats.direct_fallback),
         }
     }
 }
@@ -877,15 +894,18 @@ struct StartOptsNif {
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct RendererCacheConfigNif {
+    enabled: bool,
     max_new_payloads_per_frame: u32,
-    clean_subtree: CleanSubtreeCacheConfigNif,
+    paint_layer: RendererPaintLayerCacheConfigNif,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
-struct CleanSubtreeCacheConfigNif {
+struct RendererPaintLayerCacheConfigNif {
     max_entries: u64,
     max_bytes: u64,
     max_entry_bytes: u64,
+    min_visible_before_store: u64,
+    max_stale_frames: u64,
 }
 
 #[derive(rustler::NifMap)]
@@ -929,16 +949,19 @@ fn start_with_config(
 fn renderer_cache_config_from_nif(
     config: RendererCacheConfigNif,
 ) -> Result<RendererCacheConfig, String> {
-    let max_entries = usize::try_from(config.clean_subtree.max_entries).map_err(|_| {
-        "renderer_cache.clean_subtree.max_entries does not fit this platform".to_string()
+    let max_entries = usize::try_from(config.paint_layer.max_entries).map_err(|_| {
+        "renderer_cache.paint_layer.max_entries does not fit this platform".to_string()
     })?;
 
     Ok(RendererCacheConfig {
+        enabled: config.enabled,
         max_new_payloads_per_frame: config.max_new_payloads_per_frame,
-        clean_subtree: CleanSubtreeCacheConfig {
+        paint_layer: RendererPaintLayerCacheConfig {
             max_entries,
-            max_bytes: config.clean_subtree.max_bytes,
-            max_entry_bytes: config.clean_subtree.max_entry_bytes,
+            max_bytes: config.paint_layer.max_bytes,
+            max_entry_bytes: config.paint_layer.max_entry_bytes,
+            min_visible_before_store: config.paint_layer.min_visible_before_store,
+            max_stale_frames: config.paint_layer.max_stale_frames,
         },
     })
 }

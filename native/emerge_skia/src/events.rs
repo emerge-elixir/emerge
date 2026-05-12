@@ -1544,12 +1544,14 @@ mod tests {
             content_height: 120.0,
         });
 
-        let mut attrs = Attrs::default();
-        attrs.content = Some("hello".to_string());
-        attrs.text_input_cursor = Some(2);
-        attrs.focused_active = Some(true);
-        attrs.scrollbar_y = Some(true);
-        attrs.scroll_y = Some(10.0);
+        let attrs = Attrs {
+            content: Some("hello".to_string()),
+            text_input_cursor: Some(2),
+            focused_active: Some(true),
+            scrollbar_y: Some(true),
+            scroll_y: Some(10.0),
+            ..Attrs::default()
+        };
         let mut child = make_element(2, ElementKind::TextInput, attrs);
         child.layout.frame = Some(Frame {
             x: 0.0,

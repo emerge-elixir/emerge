@@ -39,7 +39,8 @@ mod app {
         },
         keys::CanonicalKey,
         renderer::{
-            CleanSubtreeCacheConfig, RenderFrame, RenderState, RendererCacheConfig, SceneRenderer,
+            RenderFrame, RenderState, RendererCacheConfig, RendererPaintLayerCacheConfig,
+            SceneRenderer,
         },
         runtime::tree_update::{
             TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
@@ -3766,16 +3767,22 @@ mod app {
         cursor: &mut usize,
     ) -> Option<RendererCacheConfig> {
         let max_new_payloads_per_frame = decode_u32(payload, cursor)?;
+        let enabled = decode_u8(payload, cursor)? != 0;
         let max_entries = usize::try_from(decode_u64(payload, cursor)?).ok()?;
         let max_bytes = decode_u64(payload, cursor)?;
         let max_entry_bytes = decode_u64(payload, cursor)?;
+        let min_visible_before_store = decode_u64(payload, cursor)?;
+        let max_stale_frames = decode_u64(payload, cursor)?;
 
         Some(RendererCacheConfig {
+            enabled,
             max_new_payloads_per_frame,
-            clean_subtree: CleanSubtreeCacheConfig {
+            paint_layer: RendererPaintLayerCacheConfig {
                 max_entries,
                 max_bytes,
                 max_entry_bytes,
+                min_visible_before_store,
+                max_stale_frames,
             },
         })
     }
