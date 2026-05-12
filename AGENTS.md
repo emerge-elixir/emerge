@@ -2,15 +2,22 @@
 
 This file provides guidance to AI agents when working with code in this repository.
 
+## Communication and planning
+
+When making plans, asking question or presenting anything be brief.
+Don't use coding harness planning mode all planning is done inside of plans/ folder.
+
 ## Build & Development Commands
 
 ```bash
+./ci-tests.sh                   # Run the full CI check suite locally
+
+# Elixir
 mix deps.get                    # Install Elixir dependencies
 mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
 mix test                        # Run tests
 mix docs                        # Generate ExDoc documentation
 cd ../emerge_demo && iex -S mix # Run the standalone demo app from https://github.com/emerge-elixir/emerge_demo
-./ci-tests.sh                   # Run the full CI check suite locally
 
 # Rust-specific (from native/emerge_skia/)
 cargo clippy                    # Lint Rust code
@@ -97,35 +104,14 @@ Commands are Elixir tuples decoded in Rust:
 
 ### Platform Support
 
-Linux only (Wayland and DRM). The window backend uses smithay-client-toolkit plus EGL/Skia on Wayland.
+Linux (Wayland and DRM). The window backend uses smithay-client-toolkit plus EGL/Skia on Wayland.
+MacOS
 
-## Related Projects
-
-- **elm-ui** (`/workspace/elm-ui`) - Elm ui repository. Study this for elm-ui reference.
-
-## Target Architecture
-
-The goal is to match scenic_driver_skia's architecture: **one renderer, multiple backends**.
-
-### Backends Needed
+### Backends
 
 1. **Wayland** - Windowed EGL/Skia surface via smithay-client-toolkit
 2. **DRM** - Direct framebuffer rendering for embedded/kiosk (no window manager)
 3. **Raster** - Offscreen CPU rendering to RGB buffer (for testing/headless)
-
-### Reference: scenic_driver_skia Structure
-
-```
-native/scenic_driver_skia/src/
-├── lib.rs           # NIF entry, script parsing
-├── renderer.rs      # Core SkiaRenderer (backend-agnostic drawing)
-├── backend.rs       # Wayland backend
-├── drm_backend.rs   # DRM backend (direct framebuffer)
-├── raster_backend.rs # Offscreen RGB buffer
-└── input.rs         # Input event handling
-```
-
-Key pattern: `Renderer` struct is backend-agnostic, backends provide the Skia `Surface` and handle input/display.
 
 ## Documentation
 
@@ -137,6 +123,7 @@ Run `mix docs` to generate the full ExDoc site.
 - Default to functional composition for collection building (`map`, `filter`, `flat_map`, `fold`, `collect`) instead of mutable accumulator loops.
 - Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
 - Prefer functions that return collections over functions that mutate passed-in output collections.
+- Prefer simpler solutions and favor code simplification and removal whenver possible.
 
 ## BEAM Performance Constraints
 

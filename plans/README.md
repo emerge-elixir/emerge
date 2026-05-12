@@ -1,17 +1,15 @@
 # Plans
 
-Last updated: 2026-05-07.
+Last updated: 2026-05-13.
 
 This directory tracks active implementation notes and durable background
-research for native layout, renderer, and input/runtime work. Files with an
-`active-` prefix are reserved for currently open implementation slices.
+research for native layout, renderer, and input/runtime work.
 
-There are currently no active implementation plans. Completed active plans have
-been folded into this index or the durable reference notes below.
+There are currently no active implementation plans. Files with an `active-`
+prefix are reserved for open implementation slices; completed active plans are
+folded into this index or the durable reference notes below.
 
 ## Files
-
-No `active-*.md` files are present right now.
 
 ### `layout-caching-roadmap.md`
 
@@ -31,6 +29,13 @@ Cross-engine research notes.
 This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
+
+### `skia-ddl-paint-layer-note.md`
+
+Durable renderer note about future Skia Deferred Display List / picture
+recording options for paint-layer preparation. It records that paint layers
+could eventually be recorded in parallel, while GPU raster/upload/composition
+must stay serialized through the Skia GPU context.
 
 ## Folded Work
 
@@ -55,12 +60,27 @@ documents below. Recently folded slices:
 - frame-latency pacing and animation-cadence fixes
 - renderer-cache engine investigation and Flutter comparison findings that have
   already landed
+- renderer-diff parent-shell and clean-subtree scroll cache active plans; their
+  benchmark evidence remains useful, but the separate algorithms were removed
+  from active planning because they encode the wrong mental model for Emerge's
+  tree-derived cache boundaries
+- paint-layer cache boundary simplification, including removal of stale
+  parent-shell / clean-subtree / scroll-item cache-family code, one
+  tree-derived `RenderNode::PaintLayer` model, one shared paint-layer payload
+  cache, paint-layer stats naming, benchmark deduplication, and final cleanup
+  validation
 - macOS/Linux runtime convergence after the macOS hover refresh bug, including
   shared tree updates, event runtime driving, input normalization, present
   timing, cursor state, render timing stats, render-state scene installation,
   and macOS pipeline stats parity
 - cleanup of runtime-convergence scaffolding, including shared pipeline timing
   helpers and reduced macOS host wrapper-only tests
+- renderer refactor cleanup after paint-layer cache work, including deletion of
+  unused cache-boundary facts, consolidation of direct/cache/fixed paint-layer
+  traversal, shared paint-layer hashing, shared cache stat accounting helpers,
+  focused paint-layer cache proof benchmarks for scrolling and animation, and
+  rich Borders showcase Criterion coverage; full `./ci-tests.sh` passed on
+  2026-05-13
 
 ## Current repo state
 
@@ -181,16 +201,18 @@ The native layout-caching foundation is in place:
   bounds that account for shadows and transforms
 - refresh-only frames can reuse the cached full event registry when registry
   damage is clean
-- refresh scene rendering can reuse clean retained render subtrees
-- `RenderState::set_scene(...)` updates a scene and its derived
-  `has_cache_candidates` flag together, so Wayland, DRM, and macOS cannot
-  silently bypass renderer-cache traversal after installing a cache-candidate
-  scene
+- refresh scene rendering emits explicit paint layers from tree facts rather
+  than renderer-side diffing or retained-subtree discovery
+- paint-layer cache proof benchmarks are wired into Criterion for scrolling and
+  animation; each case asserts cache store/hit behavior before measurement. The
+  demo-like rich Borders showcase is also wired into Criterion layout animation
+  and scroll-plus-animation benchmark groups.
+- `RenderState::set_scene(...)` updates a scene and its derived paint-layer
+  presence flag together, so Wayland, DRM, and macOS cannot silently bypass
+  paint-layer cache traversal after installing a cacheable scene
 - render-cache regression benchmarks compare cached and uncached refresh paths,
-  including cold full layout+refresh after upload/switch; dirty/full rebuilds do
-  not seed render caches, damaged refreshes with no existing caches use the
-  uncached renderer, scroll-offset subtrees bypass render-cache lookup, and dirty
-  scroll containers do not store large immediately-stale render caches
+  including cold full layout+refresh after upload/switch, paint-only animation,
+  scroll-moving paint-layer reuse, and CPU neutral/no-benefit paths
 - event registry rebuilds have a conservative chunk-cache path with full-rebuild
   fallback for damaged/no-retained-cache and escape-nearby cases
 - `animate_exit` removal keeps a cloned ghost subtree in active layout, with
@@ -237,13 +259,13 @@ macOS protocol, add request/notify-specific fixtures for start session, raw
 input notify, element notify, asset config, and offscreen request payloads on
 both the Rust host and Elixir sides.
 
-### 2. Review render-cache children rollout with live traces
+### 2. Tune paint-layer cache only from live traces
 
-The parent/child lifecycle and stale-entry slice is implemented. The next cache
-decision should start from fresh `../emerge_demo` stats: check stale eviction
-churn, suppressed-by-parent counts, and whether current automatic candidates are
-too cheap or too sparse before adding complexity scoring, transform expansion,
-or a new composition-cache boundary.
+The paint-layer cache model is implemented. Any next cache decision should start
+from fresh `../emerge_demo` stats: check moved-hit reuse, stale eviction churn,
+suppressed-by-parent counts, payload budget pressure, and whether current
+paint-layer boundaries are too coarse or too fine before adding heuristics or
+new composition behavior.
 
 ### 3. Watch frame latency traces instead of adding scheduler policy
 
