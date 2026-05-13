@@ -5,11 +5,38 @@ Last updated: 2026-05-13.
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
-There are currently no active implementation plans. Files with an `active-`
-prefix are reserved for open implementation slices; completed active plans are
-folded into this index or the durable reference notes below.
+Active implementation plan:
+
+- `active-layout-refresh-optimization.md`
+  - current layout/refresh slice started on 2026-05-13 after composited
+    paint-layer rendering stabilized. It locks the accepted Borders hover,
+    layout-page visible-animation, and exact Borders screenshot numbers as
+    gates, then targets hover invalidation, dirty-child resolve splicing, and
+    refresh scene-construction simplification.
+
+Files with an `active-` prefix are reserved for open implementation slices;
+completed active plans are folded into this index or the durable reference notes
+below.
 
 ## Files
+
+### `offscreen-paint-layer-cache-hits.md`
+
+Completed plan for paint-layer cache behavior when layout-affecting animation
+is outside the visible scroll viewport. It records the benchmark proof for
+steady cache hits without per-frame fixed-layer stores/evictions or offscreen
+dynamic redraw, plus scroll-away/scroll-back cache retention.
+
+The follow-up active plan supersedes the fixed-scroll-container direction for
+the real layout page topology: stable descendants inside the scroll container
+are the reusable cache units, not the scroll-container parent payload.
+
+### `composited-paint-layer-cache.md`
+
+Completed plan for the deterministic composited paint-layer cache work. It
+records the final correctness fixes for layout-transform AABB propagation,
+scroll-container payload generation, todo/list stale extents, the exact Borders
+benchmark gates, and the `store_payloads` stats interpretation.
 
 ### `layout-caching-roadmap.md`
 
@@ -81,6 +108,11 @@ documents below. Recently folded slices:
   focused paint-layer cache proof benchmarks for scrolling and animation, and
   rich Borders showcase Criterion coverage; full `./ci-tests.sh` passed on
   2026-05-13
+- offscreen paint-layer cache-hit fixes, including payload-clip-aware fixed
+  static hashing/resource generation, visible fixed-segment preparation,
+  offscreen dynamic redraw skipping, scroll-away/scroll-back moving payload
+  retention, and Criterion proof for the layout-animation scroll viewport case;
+  full `./ci-tests.sh` passed on 2026-05-13
 
 ## Current repo state
 
