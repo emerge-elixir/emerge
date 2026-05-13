@@ -30,13 +30,11 @@ use skia_safe::{
 
 use crate::paint_layer_payload_cache::{
     PaintLayerPayloadCache, PaintLayerPayloadCacheConfig, PaintLayerPayloadKey,
-    PaintLayerPayloadPlacement as PayloadPlacement, PaintLayerPayloadStorage,
-    PaintLayerPayloadStoreRejection,
+    PaintLayerPayloadStorage, PaintLayerPayloadStoreRejection,
 };
 use crate::render_scene::{
-    DrawPrimitive, PaintLayerHashFloat, PaintLayerPlacement, PaintLayerPolicy, RenderNode,
-    RenderPaintLayer, RenderScene, hash_paint_layer_affine2, hash_paint_layer_clip_shapes,
-    hash_paint_layer_draw_primitive, hash_paint_layer_metadata,
+    DrawPrimitive, PaintLayerPolicy, PaintLayerReason, RenderNode, RenderPaintLayer, RenderScene,
+    draw_primitive_visual_bounds,
 };
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
@@ -54,7 +52,8 @@ pub struct RenderState {
     pub pipeline_submitted_at: Option<Instant>,
     pub pipeline_render_queued_at: Option<Instant>,
     pub animate: bool,
-    pub has_moving_paint_layers: bool,
+    pub has_cacheable_paint_layers: bool,
+    pub has_scroll_moving_paint_layers: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -88,6 +87,7 @@ pub struct RendererCachePaintLayerFrameStats {
     pub visible_candidates: u64,
 
     pub suppressed_by_parent: u64,
+    pub bypassed_low_value: u64,
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
@@ -105,6 +105,13 @@ pub struct RendererCachePaintLayerFrameStats {
     pub stale_evicted_bytes: u64,
     pub gpu_payload_stores: u64,
     pub cpu_payload_stores: u64,
+    pub cached_image_draws: u64,
+    pub composited_payload_pixels: u64,
+    pub composited_visible_pixels: u64,
+    pub hit_payload_pixels: u64,
+    pub hit_visible_pixels: u64,
+    pub store_payload_pixels: u64,
+    pub store_visible_pixels: u64,
     pub prepare_successes: u64,
     pub prepare_failures: u64,
     pub direct_fallbacks_after_admission: u64,
@@ -127,6 +134,7 @@ impl RendererCachePaintLayerFrameStats {
         self.candidates == 0
             && self.visible_candidates == 0
             && self.suppressed_by_parent == 0
+            && self.bypassed_low_value == 0
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
@@ -144,6 +152,13 @@ impl RendererCachePaintLayerFrameStats {
             && self.stale_evicted_bytes == 0
             && self.gpu_payload_stores == 0
             && self.cpu_payload_stores == 0
+            && self.cached_image_draws == 0
+            && self.composited_payload_pixels == 0
+            && self.composited_visible_pixels == 0
+            && self.hit_payload_pixels == 0
+            && self.hit_visible_pixels == 0
+            && self.store_payload_pixels == 0
+            && self.store_visible_pixels == 0
             && self.prepare_successes == 0
             && self.prepare_failures == 0
             && self.direct_fallbacks_after_admission == 0
@@ -159,78 +174,6 @@ impl RendererCachePaintLayerFrameStats {
             && self.dirty_draw_time.is_zero()
             && self.child_layer_time.is_zero()
             && self.direct_fallback_time.is_zero()
-    }
-
-    fn merge_from(&mut self, other: Self) {
-        self.candidates = self.candidates.saturating_add(other.candidates);
-        self.visible_candidates = self
-            .visible_candidates
-            .saturating_add(other.visible_candidates);
-        self.suppressed_by_parent = self
-            .suppressed_by_parent
-            .saturating_add(other.suppressed_by_parent);
-        self.admitted = self.admitted.saturating_add(other.admitted);
-        self.hits = self.hits.saturating_add(other.hits);
-        self.misses = self.misses.saturating_add(other.misses);
-        self.moved_hits = self.moved_hits.saturating_add(other.moved_hits);
-        self.moved_misses = self.moved_misses.saturating_add(other.moved_misses);
-        self.stores = self.stores.saturating_add(other.stores);
-        self.evictions = self.evictions.saturating_add(other.evictions);
-        self.stale_evictions = self.stale_evictions.saturating_add(other.stale_evictions);
-        self.rejected = self.rejected.saturating_add(other.rejected);
-        self.current_entries = self.current_entries.saturating_add(other.current_entries);
-        self.current_bytes = self.current_bytes.saturating_add(other.current_bytes);
-        self.current_gpu_payloads = self
-            .current_gpu_payloads
-            .saturating_add(other.current_gpu_payloads);
-        self.current_cpu_payloads = self
-            .current_cpu_payloads
-            .saturating_add(other.current_cpu_payloads);
-        self.evicted_bytes = self.evicted_bytes.saturating_add(other.evicted_bytes);
-        self.stale_evicted_bytes = self
-            .stale_evicted_bytes
-            .saturating_add(other.stale_evicted_bytes);
-        self.gpu_payload_stores = self
-            .gpu_payload_stores
-            .saturating_add(other.gpu_payload_stores);
-        self.cpu_payload_stores = self
-            .cpu_payload_stores
-            .saturating_add(other.cpu_payload_stores);
-        self.prepare_successes = self
-            .prepare_successes
-            .saturating_add(other.prepare_successes);
-        self.prepare_failures = self.prepare_failures.saturating_add(other.prepare_failures);
-        self.direct_fallbacks_after_admission = self
-            .direct_fallbacks_after_admission
-            .saturating_add(other.direct_fallbacks_after_admission);
-        self.rejected_ineligible = self
-            .rejected_ineligible
-            .saturating_add(other.rejected_ineligible);
-        self.rejected_admission = self
-            .rejected_admission
-            .saturating_add(other.rejected_admission);
-        self.rejected_oversized = self
-            .rejected_oversized
-            .saturating_add(other.rejected_oversized);
-        self.rejected_payload_budget = self
-            .rejected_payload_budget
-            .saturating_add(other.rejected_payload_budget);
-        self.rejected_fractional_placement = self
-            .rejected_fractional_placement
-            .saturating_add(other.rejected_fractional_placement);
-        self.rejected_unsupported_transform = self
-            .rejected_unsupported_transform
-            .saturating_add(other.rejected_unsupported_transform);
-        self.prepare_time = self.prepare_time.saturating_add(other.prepare_time);
-        self.draw_hit_time = self.draw_hit_time.saturating_add(other.draw_hit_time);
-        self.payload_copy_time = self
-            .payload_copy_time
-            .saturating_add(other.payload_copy_time);
-        self.dirty_draw_time = self.dirty_draw_time.saturating_add(other.dirty_draw_time);
-        self.child_layer_time = self.child_layer_time.saturating_add(other.child_layer_time);
-        self.direct_fallback_time = self
-            .direct_fallback_time
-            .saturating_add(other.direct_fallback_time);
     }
 }
 
@@ -546,14 +489,16 @@ impl Default for RenderState {
             pipeline_submitted_at: None,
             pipeline_render_queued_at: None,
             animate: false,
-            has_moving_paint_layers: false,
+            has_cacheable_paint_layers: false,
+            has_scroll_moving_paint_layers: false,
         }
     }
 }
 
 impl RenderState {
     pub fn new(scene: RenderScene, clear_color: Color, render_version: u64, animate: bool) -> Self {
-        let has_moving_paint_layers = scene.has_moving_paint_layers();
+        let has_cacheable_paint_layers = scene.has_cacheable_paint_layers();
+        let has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
         Self {
             scene,
             clear_color,
@@ -561,12 +506,14 @@ impl RenderState {
             pipeline_submitted_at: None,
             pipeline_render_queued_at: None,
             animate,
-            has_moving_paint_layers,
+            has_cacheable_paint_layers,
+            has_scroll_moving_paint_layers,
         }
     }
 
     pub fn set_scene(&mut self, scene: RenderScene) {
-        self.has_moving_paint_layers = scene.has_moving_paint_layers();
+        self.has_cacheable_paint_layers = scene.has_cacheable_paint_layers();
+        self.has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
         self.scene = scene;
     }
 }
@@ -1167,14 +1114,20 @@ impl<'a> RenderFrame<'a> {
 const RENDERER_CACHE_DEFAULT_NEW_PAYLOADS_PER_FRAME: u32 = 16;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MIN_VISIBLE_BEFORE_STORE: u64 = 1;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRIES: usize = 512;
-const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
-const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRY_BYTES: u64 = 4 * 1024 * 1024;
+const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_BYTES: u64 = 640 * 1024 * 1024;
+const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_BYTES_PER_PIXEL: u64 = 4;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_STALE_FRAMES: u64 = 120;
-const FIXED_PAINT_LAYER_PAYLOAD_MAX_BYTES: u64 = 512 * 1024 * 1024;
-const FIXED_PAINT_LAYER_PAYLOAD_MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
-const FIXED_PAINT_LAYER_PAYLOAD_MAX_STALE_FRAMES: u64 = 120;
-const PAINT_LAYER_ROOT_SCOPE_ID: u64 = 0;
+const PAINT_LAYER_SOURCE_CLIP_MIN_SAVED_PIXELS: u64 = 64 * 1024;
+const PAINT_LAYER_SOURCE_CLIP_MIN_SAVED_PERCENT: u64 = 25;
+const PAINT_LAYER_CACHE_LOW_VALUE_MIN_PIXELS: u64 = 512 * 512;
+const PAINT_LAYER_CACHE_LOW_VALUE_MIN_COST: u64 = 96;
+const PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_PIXELS: u64 = 128 * 128;
+const PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_COST: u64 = 64;
+const PAINT_LAYER_CACHE_LOW_VALUE_VERY_LARGE_PIXELS: u64 = 1024 * 1024;
+const PAINT_LAYER_CACHE_LOW_VALUE_VERY_LARGE_MIN_COST: u64 = 160;
+const PAINT_LAYER_CACHE_LOW_VALUE_MAX_PIXELS_PER_COST: u64 = 16 * 1024;
+const PAINT_LAYER_CACHE_LOW_VALUE_MAX_WASTE_RATIO: u64 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendererCacheConfig {
@@ -1206,13 +1159,10 @@ impl Default for RendererPaintLayerCacheConfig {
     fn default() -> Self {
         Self {
             max_entries: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRIES,
-            max_bytes: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_BYTES
-                .saturating_add(FIXED_PAINT_LAYER_PAYLOAD_MAX_BYTES),
-            max_entry_bytes: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRY_BYTES
-                .max(FIXED_PAINT_LAYER_PAYLOAD_MAX_ENTRY_BYTES),
+            max_bytes: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_BYTES,
+            max_entry_bytes: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRY_BYTES,
             min_visible_before_store: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MIN_VISIBLE_BEFORE_STORE,
-            max_stale_frames: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_STALE_FRAMES
-                .max(FIXED_PAINT_LAYER_PAYLOAD_MAX_STALE_FRAMES),
+            max_stale_frames: MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_STALE_FRAMES,
         }
     }
 }
@@ -1253,29 +1203,33 @@ impl PaintLayerDeviceRect {
     }
 }
 
-#[derive(Clone, Debug)]
-struct PaintLayerPayloadSegment {
-    image: Image,
+#[derive(Clone, Copy, Debug)]
+struct PaintLayerPayloadBounds {
+    origin_x: i32,
+    origin_y: i32,
+    width_px: u32,
+    height_px: u32,
     bytes: u64,
-    payload_kind: RendererCachePayloadKind,
+}
+
+impl PaintLayerPayloadBounds {
+    fn pixel_len(self) -> u64 {
+        u64::from(self.width_px).saturating_mul(u64::from(self.height_px))
+    }
+
+    fn geometry_rect(self) -> GeometryRect {
+        GeometryRect {
+            x: self.origin_x as f32,
+            y: self.origin_y as f32,
+            width: self.width_px as f32,
+            height: self.height_px as f32,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 enum PaintLayerPayload {
-    FixedSegments(Vec<PaintLayerPayloadSegment>),
-    MovingImage(Option<Image>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaintLayerCompositionStepKind {
-    Static,
-    Dynamic,
-}
-
-#[derive(Clone, Debug)]
-struct PaintLayerCompositionStep {
-    kind: PaintLayerCompositionStepKind,
-    nodes: Vec<RenderNode>,
+    Image(Option<Image>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1312,100 +1266,14 @@ impl PaintLayerMovingPayloadKey {
     pub fn byte_len(self) -> Option<u64> {
         moving_paint_layer_payload_byte_len(self.width_px, self.height_px)
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PaintLayerStablePlacementKey {
-    stable_id: u64,
-    scale_bits: u32,
-    resource_generation: u64,
-}
-
-impl From<PaintLayerMovingPayloadKey> for PaintLayerStablePlacementKey {
-    fn from(key: PaintLayerMovingPayloadKey) -> Self {
-        Self {
-            stable_id: key.stable_id,
-            scale_bits: key.scale_bits,
-            resource_generation: key.resource_generation,
-        }
+    pub fn pixel_len(self) -> u64 {
+        u64::from(self.width_px).saturating_mul(u64::from(self.height_px))
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PaintLayerPayloadOffset {
-    pub x_subpx: i64,
-    pub y_subpx: i64,
-}
-
-impl PaintLayerPayloadOffset {
-    const SUBPIXEL_SCALE: f32 = 64.0;
-
-    pub fn from_transform(transform: Affine2) -> Result<Self, PaintLayerPlacementRejection> {
-        Self::from_transform_with_fractional(transform, false)
-    }
-
-    fn from_transform_with_fractional(
-        transform: Affine2,
-        allow_fractional: bool,
-    ) -> Result<Self, PaintLayerPlacementRejection> {
-        if !approx_eq(transform.xx, 1.0)
-            || !approx_eq(transform.yx, 0.0)
-            || !approx_eq(transform.xy, 0.0)
-            || !approx_eq(transform.yy, 1.0)
-        {
-            return Err(PaintLayerPlacementRejection::UnsupportedTransform);
-        }
-
-        Self::from_translation_with_fractional(transform.tx, transform.ty, allow_fractional)
-    }
-
-    pub fn from_translation(x: f32, y: f32) -> Result<Self, PaintLayerPlacementRejection> {
-        Self::from_translation_with_fractional(x, y, false)
-    }
-
-    fn from_translation_with_fractional(
-        x: f32,
-        y: f32,
-        allow_fractional: bool,
-    ) -> Result<Self, PaintLayerPlacementRejection> {
-        if !x.is_finite() || !y.is_finite() {
-            return Err(PaintLayerPlacementRejection::NonFiniteTranslation);
-        }
-
-        let rounded_x = x.round();
-        let rounded_y = y.round();
-        if !allow_fractional && (!approx_eq(x, rounded_x) || !approx_eq(y, rounded_y)) {
-            return Err(PaintLayerPlacementRejection::FractionalTranslation);
-        }
-
-        let quantized_x = (x * Self::SUBPIXEL_SCALE).round();
-        let quantized_y = (y * Self::SUBPIXEL_SCALE).round();
-        if quantized_x < i64::MIN as f32
-            || quantized_x > i64::MAX as f32
-            || quantized_y < i64::MIN as f32
-            || quantized_y > i64::MAX as f32
-        {
-            return Err(PaintLayerPlacementRejection::OutOfRangeTranslation);
-        }
-
-        Ok(Self {
-            x_subpx: quantized_x as i64,
-            y_subpx: quantized_y as i64,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaintLayerPlacementRejection {
-    UnsupportedTransform,
-    NonFiniteTranslation,
-    FractionalTranslation,
-    OutOfRangeTranslation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaintLayerPayloadAdmissionRejection {
-    AdmissionThreshold,
     OversizedEntry,
     PayloadBudget,
 }
@@ -1431,12 +1299,13 @@ pub enum RendererCacheRejectionReason {
     AdmissionThreshold,
     OversizedEntry,
     PayloadBudget,
+    FractionalPlacement,
+    UnsupportedTransform,
 }
 
 impl From<PaintLayerPayloadAdmissionRejection> for RendererCacheRejectionReason {
     fn from(rejection: PaintLayerPayloadAdmissionRejection) -> Self {
         match rejection {
-            PaintLayerPayloadAdmissionRejection::AdmissionThreshold => Self::AdmissionThreshold,
             PaintLayerPayloadAdmissionRejection::OversizedEntry => Self::OversizedEntry,
             PaintLayerPayloadAdmissionRejection::PayloadBudget => Self::PayloadBudget,
         }
@@ -1452,127 +1321,12 @@ impl From<PaintLayerPayloadStoreRejection> for RendererCacheRejectionReason {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PaintLayerPlacementAccess {
-    visible_count: u64,
-    last_seen_frame: u64,
-    last_placement: PaintLayerPayloadOffset,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PaintLayerStablePlacementAccess {
-    last_seen_frame: u64,
-    last_placement: PaintLayerPayloadOffset,
-    last_content_generation: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PaintLayerPayloadVisibility {
-    pub visible_count: u64,
-    pub moved_since_last_seen: bool,
-    pub stable_moved_since_last_seen: bool,
-    pub stable_content_changed_since_last_seen: bool,
-}
-
-#[derive(Debug)]
-struct PaintLayerPlacementTracker {
-    visible_accesses: HashMap<PaintLayerMovingPayloadKey, PaintLayerPlacementAccess>,
-    stable_visible_accesses: HashMap<PaintLayerStablePlacementKey, PaintLayerStablePlacementAccess>,
-    min_visible_before_store: u64,
-    max_stale_frames: u64,
-}
-
-impl Default for PaintLayerPlacementTracker {
-    fn default() -> Self {
-        Self::with_config(RendererPaintLayerCacheConfig::default())
-    }
-}
-
-impl PaintLayerPlacementTracker {
-    fn with_config(config: RendererPaintLayerCacheConfig) -> Self {
-        Self {
-            visible_accesses: HashMap::new(),
-            stable_visible_accesses: HashMap::new(),
-            min_visible_before_store: config.min_visible_before_store,
-            max_stale_frames: config.max_stale_frames,
-        }
-    }
-}
-
-impl PaintLayerPlacementTracker {
-    fn clear(&mut self) {
-        self.visible_accesses.clear();
-        self.stable_visible_accesses.clear();
-    }
-
-    fn mark_visible(
-        &mut self,
-        key: PaintLayerMovingPayloadKey,
-        placement: PaintLayerPayloadOffset,
-        frame_index: u64,
-    ) -> PaintLayerPayloadVisibility {
-        let moved_since_last_seen = self
-            .visible_accesses
-            .get(&key)
-            .is_some_and(|access| access.last_placement != placement);
-        let stable_key = PaintLayerStablePlacementKey::from(key);
-        let previous_stable_access = self.stable_visible_accesses.get(&stable_key).copied();
-        let stable_moved_since_last_seen =
-            previous_stable_access.is_some_and(|access| access.last_placement != placement);
-        let stable_content_changed_since_last_seen = previous_stable_access
-            .is_some_and(|access| access.last_content_generation != key.content_generation);
-        let access = self
-            .visible_accesses
-            .entry(key)
-            .or_insert(PaintLayerPlacementAccess {
-                visible_count: 0,
-                last_seen_frame: frame_index,
-                last_placement: placement,
-            });
-        access.visible_count = access.visible_count.saturating_add(1);
-        access.last_seen_frame = frame_index;
-        access.last_placement = placement;
-        self.stable_visible_accesses.insert(
-            stable_key,
-            PaintLayerStablePlacementAccess {
-                last_seen_frame: frame_index,
-                last_placement: placement,
-                last_content_generation: key.content_generation,
-            },
-        );
-
-        PaintLayerPayloadVisibility {
-            visible_count: access.visible_count,
-            moved_since_last_seen,
-            stable_moved_since_last_seen,
-            stable_content_changed_since_last_seen,
-        }
-    }
-
-    fn touch_suppressed_by_parent(
-        &mut self,
-        key: PaintLayerMovingPayloadKey,
-        frame_index: u64,
-    ) -> bool {
-        let mut touched = false;
-        if let Some(access) = self.visible_accesses.get_mut(&key) {
-            access.last_seen_frame = frame_index;
-            touched = true;
-        }
-        touched
-    }
-
-    fn evict_stale_visibility(&mut self, frame_index: u64) {
-        self.visible_accesses.retain(|_, access| {
-            frame_index.saturating_sub(access.last_seen_frame) <= self.max_stale_frames
-        });
-        self.stable_visible_accesses.retain(|_, access| {
-            frame_index.saturating_sub(access.last_seen_frame) <= self.max_stale_frames
-        });
-    }
-}
-
 fn moving_paint_layer_payload_bounds_size(bounds: GeometryRect) -> Option<(u32, u32, u64)> {
+    let bounds = paint_layer_payload_bounds(bounds)?;
+    Some((bounds.width_px, bounds.height_px, bounds.bytes))
+}
+
+fn paint_layer_payload_bounds(bounds: GeometryRect) -> Option<PaintLayerPayloadBounds> {
     if !bounds.x.is_finite()
         || !bounds.y.is_finite()
         || !bounds.width.is_finite()
@@ -1583,16 +1337,32 @@ fn moving_paint_layer_payload_bounds_size(bounds: GeometryRect) -> Option<(u32, 
         return None;
     }
 
-    let width = bounds.width.ceil();
-    let height = bounds.height.ceil();
-    if width > u32::MAX as f32 || height > u32::MAX as f32 {
+    let left = bounds.x.floor();
+    let top = bounds.y.floor();
+    let right = (bounds.x + bounds.width).ceil();
+    let bottom = (bounds.y + bounds.height).ceil();
+    if left < i32::MIN as f32
+        || top < i32::MIN as f32
+        || right > i32::MAX as f32
+        || bottom > i32::MAX as f32
+        || right <= left
+        || bottom <= top
+    {
         return None;
     }
 
-    let width_px = width as u32;
-    let height_px = height as u32;
+    let origin_x = left as i32;
+    let origin_y = top as i32;
+    let width_px = u32::try_from((right as i32).saturating_sub(origin_x)).ok()?;
+    let height_px = u32::try_from((bottom as i32).saturating_sub(origin_y)).ok()?;
     let bytes = moving_paint_layer_payload_byte_len(width_px, height_px)?;
-    Some((width_px, height_px, bytes))
+    Some(PaintLayerPayloadBounds {
+        origin_x,
+        origin_y,
+        width_px,
+        height_px,
+        bytes,
+    })
 }
 
 fn moving_paint_layer_payload_byte_len(width_px: u32, height_px: u32) -> Option<u64> {
@@ -1601,27 +1371,7 @@ fn moving_paint_layer_payload_byte_len(width_px: u32, height_px: u32) -> Option<
         .checked_mul(MOVING_PAINT_LAYER_PAYLOAD_CACHE_BYTES_PER_PIXEL)
 }
 
-fn moving_paint_layer_payload_placement(
-    layer: &RenderPaintLayer,
-    current_transform: Affine2,
-    allow_fractional: bool,
-) -> Result<PaintLayerPayloadOffset, PaintLayerPlacementRejection> {
-    if !approx_eq(current_transform.xx, 1.0)
-        || !approx_eq(current_transform.yx, 0.0)
-        || !approx_eq(current_transform.xy, 0.0)
-        || !approx_eq(current_transform.yy, 1.0)
-    {
-        return Err(PaintLayerPlacementRejection::UnsupportedTransform);
-    }
-
-    PaintLayerPayloadOffset::from_translation_with_fractional(
-        current_transform.tx + layer.bounds.x,
-        current_transform.ty + layer.bounds.y,
-        allow_fractional,
-    )
-}
-
-fn moving_paint_layer_payload_visible_device_rect(
+fn paint_layer_payload_visible_device_rect(
     layer: &RenderPaintLayer,
     current_transform: Affine2,
     current_clip: Option<PaintLayerDeviceRect>,
@@ -1634,33 +1384,191 @@ fn moving_paint_layer_payload_visible_device_rect(
     })
 }
 
-fn moving_paint_layer_payload_children_are_cacheable(nodes: &[RenderNode]) -> bool {
-    nodes.iter().all(|node| match node {
-        RenderNode::ShadowPass { children } => {
-            moving_paint_layer_payload_children_are_cacheable(children)
+fn paint_layer_payload_visible_device_rect_for_eligibility(
+    layer: &RenderPaintLayer,
+    eligibility: MovingLayerEligibility,
+) -> Option<PaintLayerDeviceRect> {
+    if eligibility.clip_empty {
+        return None;
+    }
+
+    paint_layer_payload_visible_device_rect(
+        layer,
+        eligibility.current_transform,
+        eligibility.current_clip,
+    )
+}
+
+fn paint_layer_visible_payload_image_rect(
+    layer: &RenderPaintLayer,
+    payload_bounds: PaintLayerPayloadBounds,
+    eligibility: MovingLayerEligibility,
+) -> Option<(Rect, Rect, u64)> {
+    let clip = eligibility.current_clip?;
+    if eligibility.clip_empty
+        || !paint_layer_transform_is_axis_aligned(eligibility.current_transform)
+    {
+        return None;
+    }
+
+    let inverse = eligibility.current_transform.inverse()?;
+    let clip_local = inverse.map_rect_aabb(paint_layer_device_rect_to_geometry(clip));
+    let visible = layer
+        .bounds
+        .intersect(clip_local)?
+        .intersect(payload_bounds.geometry_rect())?;
+
+    let visible_pixels = paint_layer_geometry_rect_pixels(visible);
+    let payload_pixels = payload_bounds.pixel_len();
+    if visible_pixels == 0 || visible_pixels >= payload_pixels {
+        return None;
+    }
+
+    let saved_pixels = payload_pixels.saturating_sub(visible_pixels);
+    let saves_enough_pixels = saved_pixels >= PAINT_LAYER_SOURCE_CLIP_MIN_SAVED_PIXELS;
+    let saves_enough_ratio = saved_pixels.saturating_mul(100)
+        >= payload_pixels * PAINT_LAYER_SOURCE_CLIP_MIN_SAVED_PERCENT;
+    if !saves_enough_pixels || !saves_enough_ratio {
+        return None;
+    }
+
+    let src = Rect::from_xywh(
+        visible.x - payload_bounds.origin_x as f32,
+        visible.y - payload_bounds.origin_y as f32,
+        visible.width,
+        visible.height,
+    );
+    let dst = Rect::from_xywh(visible.x, visible.y, visible.width, visible.height);
+    Some((src, dst, visible_pixels))
+}
+
+fn paint_layer_transform_is_axis_aligned(transform: Affine2) -> bool {
+    approx_eq(transform.xy, 0.0)
+        && approx_eq(transform.yx, 0.0)
+        && transform.xx.is_finite()
+        && transform.yy.is_finite()
+        && !approx_eq(transform.xx, 0.0)
+        && !approx_eq(transform.yy, 0.0)
+}
+
+fn paint_layer_device_rect_to_geometry(rect: PaintLayerDeviceRect) -> GeometryRect {
+    GeometryRect {
+        x: rect.x as f32,
+        y: rect.y as f32,
+        width: rect.width as f32,
+        height: rect.height as f32,
+    }
+}
+
+fn paint_layer_geometry_rect_pixels(rect: GeometryRect) -> u64 {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return 0;
+    }
+
+    let width = rect.width.ceil() as u64;
+    let height = rect.height.ceil() as u64;
+    width.saturating_mul(height)
+}
+
+fn paint_layer_payload_composition_supported(
+    current_transform: Affine2,
+    gpu_composition: bool,
+) -> Result<(), RendererCacheRejectionReason> {
+    if gpu_composition {
+        return Ok(());
+    }
+
+    if !approx_eq(current_transform.xx, 1.0)
+        || !approx_eq(current_transform.yx, 0.0)
+        || !approx_eq(current_transform.xy, 0.0)
+        || !approx_eq(current_transform.yy, 1.0)
+    {
+        return Err(RendererCacheRejectionReason::UnsupportedTransform);
+    }
+
+    if !current_transform.tx.is_finite() || !current_transform.ty.is_finite() {
+        return Err(RendererCacheRejectionReason::UnsupportedTransform);
+    }
+
+    if !approx_eq(current_transform.tx, current_transform.tx.round())
+        || !approx_eq(current_transform.ty, current_transform.ty.round())
+    {
+        return Err(RendererCacheRejectionReason::FractionalPlacement);
+    }
+
+    Ok(())
+}
+
+fn render_nodes_have_shadow_pass(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::ShadowPass { .. } => true,
+        RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => render_nodes_have_shadow_pass(children),
+        RenderNode::PaintLayer(layer) => {
+            render_nodes_have_shadow_pass(&layer.own_nodes)
+                || layer
+                    .child_refs
+                    .iter()
+                    .any(|child| render_nodes_have_shadow_pass(&child.nodes))
         }
-        RenderNode::Clip { children, .. } | RenderNode::RelaxedClip { children, .. } => {
-            moving_paint_layer_payload_children_are_cacheable(children)
-        }
-        RenderNode::Transform { .. } | RenderNode::Alpha { .. } | RenderNode::PaintLayer(_) => {
-            false
-        }
-        RenderNode::Primitive(primitive) => match primitive {
-            DrawPrimitive::Video(..)
-            | DrawPrimitive::ImageLoading(..)
-            | DrawPrimitive::ImageFailed(..) => false,
-            DrawPrimitive::Rect(..)
-            | DrawPrimitive::RoundedRect(..)
-            | DrawPrimitive::Border(..)
-            | DrawPrimitive::BorderCorners(..)
-            | DrawPrimitive::BorderEdges(..)
-            | DrawPrimitive::Shadow(..)
-            | DrawPrimitive::InsetShadow(..)
-            | DrawPrimitive::TextWithFont(..)
-            | DrawPrimitive::Gradient(..)
-            | DrawPrimitive::Image(..) => true,
-        },
+        RenderNode::Primitive(_) => false,
     })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaintLayerCacheAdmissionEstimate {
+    primitive_cost: u64,
+    payload_pixels: u64,
+    visible_pixels: u64,
+}
+
+fn paint_layer_cache_admission_estimate(
+    layer: &RenderPaintLayer,
+    key: PaintLayerMovingPayloadKey,
+    visible_pixels: u64,
+) -> PaintLayerCacheAdmissionEstimate {
+    PaintLayerCacheAdmissionEstimate {
+        primitive_cost: layer.metrics.own_primitive_cost,
+        payload_pixels: key.pixel_len(),
+        visible_pixels,
+    }
+}
+
+fn paint_layer_cache_bypass_low_value(
+    estimate: PaintLayerCacheAdmissionEstimate,
+    gpu_backed: bool,
+) -> bool {
+    let tiny_and_cheap = estimate.payload_pixels <= PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_PIXELS
+        && estimate.primitive_cost <= PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_COST;
+    if gpu_backed && tiny_and_cheap {
+        return true;
+    }
+
+    if estimate.payload_pixels < PAINT_LAYER_CACHE_LOW_VALUE_MIN_PIXELS {
+        return false;
+    }
+
+    let primitive_cost = estimate.primitive_cost.max(1);
+    let pixels_per_cost = estimate.payload_pixels / primitive_cost;
+    let large_and_simple = estimate.primitive_cost < PAINT_LAYER_CACHE_LOW_VALUE_MIN_COST
+        && pixels_per_cost > PAINT_LAYER_CACHE_LOW_VALUE_MAX_PIXELS_PER_COST;
+    let very_large_and_simple = estimate.payload_pixels
+        >= PAINT_LAYER_CACHE_LOW_VALUE_VERY_LARGE_PIXELS
+        && estimate.primitive_cost < PAINT_LAYER_CACHE_LOW_VALUE_VERY_LARGE_MIN_COST;
+    let high_empty_pixel_waste = estimate.visible_pixels > 0
+        && estimate.payload_pixels / estimate.visible_pixels.max(1)
+            >= PAINT_LAYER_CACHE_LOW_VALUE_MAX_WASTE_RATIO
+        && estimate.primitive_cost < PAINT_LAYER_CACHE_LOW_VALUE_VERY_LARGE_MIN_COST;
+
+    large_and_simple || very_large_and_simple || high_empty_pixel_waste
+}
+
+fn paint_layer_own_payload_cache_enabled(layer: &RenderPaintLayer) -> bool {
+    layer.policy == PaintLayerPolicy::Cacheable
+        || (layer.policy == PaintLayerPolicy::DynamicRedraw
+            && layer.reason == PaintLayerReason::ScrollContainer)
 }
 
 fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Option<u64> {
@@ -1669,12 +1577,13 @@ fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Optio
             RenderNode::ShadowPass { children } => {
                 moving_paint_layer_payload_resource_generation(children)?
             }
-            RenderNode::Clip { children, .. } | RenderNode::RelaxedClip { children, .. } => {
+            RenderNode::Clip { children, .. }
+            | RenderNode::RelaxedClip { children, .. }
+            | RenderNode::Transform { children, .. }
+            | RenderNode::Alpha { children, .. } => {
                 moving_paint_layer_payload_resource_generation(children)?
             }
-            RenderNode::Transform { .. } | RenderNode::Alpha { .. } | RenderNode::PaintLayer(_) => {
-                return None;
-            }
+            RenderNode::PaintLayer(_) => 0,
             RenderNode::Primitive(primitive) => match primitive {
                 DrawPrimitive::Video(..)
                 | DrawPrimitive::ImageLoading(..)
@@ -1702,45 +1611,31 @@ fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Optio
     })
 }
 
-fn paint_layer_scope_id(layer: &RenderPaintLayer) -> u64 {
-    paint_layer_hash(|hasher| {
-        "paint_layer_scope".hash(hasher);
-        layer.stable_id.hash(hasher);
-        layer.placement.hash(hasher);
-        layer.policy.hash(hasher);
-        layer.reason.hash(hasher);
-    })
-}
-
-fn scene_has_explicit_render_boundaries(nodes: &[RenderNode]) -> bool {
-    nodes.iter().any(|node| match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => scene_has_explicit_render_boundaries(children),
-        RenderNode::PaintLayer(_) => true,
-        RenderNode::Primitive(_) => false,
-    })
-}
-
-fn paint_layer_apply_clip(
+fn paint_layer_apply_clip_state(
     current_transform: Affine2,
     current_clip: Option<PaintLayerDeviceRect>,
     clips: &[ClipShape],
     relaxed: bool,
-) -> Option<PaintLayerDeviceRect> {
-    clips.iter().fold(current_clip, |clip, shape| {
+) -> (Option<PaintLayerDeviceRect>, bool) {
+    let mut current_clip = current_clip;
+    for shape in clips {
         let mut rect = current_transform.map_rect_aabb(shape.rect);
         if relaxed {
             rect = paint_layer_outset_geometry_rect(rect, 1.0);
         }
-        let device_rect = paint_layer_device_rect_from_geometry(rect)?;
-        Some(match clip {
-            Some(clip) => paint_layer_intersect_device_rects(clip, device_rect)?,
-            None => device_rect,
-        })
-    })
+        let Some(device_rect) = paint_layer_device_rect_from_geometry(rect) else {
+            return (None, false);
+        };
+        current_clip = match current_clip {
+            Some(clip) => match paint_layer_intersect_device_rects(clip, device_rect) {
+                Some(intersection) => Some(intersection),
+                None => return (None, true),
+            },
+            None => Some(device_rect),
+        };
+    }
+
+    (current_clip, false)
 }
 
 fn paint_layer_outset_geometry_rect(rect: GeometryRect, outset: f32) -> GeometryRect {
@@ -1806,321 +1701,12 @@ fn paint_layer_intersect_device_rects(
     })
 }
 
-fn paint_layer_static_content_node_count(nodes: &[RenderNode]) -> usize {
-    nodes
-        .iter()
-        .map(paint_layer_static_content_node_count_of)
-        .sum()
-}
-
-fn paint_layer_static_content_node_count_of(node: &RenderNode) -> usize {
-    match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => {
-            let child_count = paint_layer_static_content_node_count(children);
-            if child_count == 0 {
-                0
-            } else {
-                child_count.saturating_add(1)
-            }
-        }
-        RenderNode::PaintLayer(_) => 0,
-        RenderNode::Primitive(_) => 1,
-    }
-}
-
-fn paint_layer_ordered_content_steps(nodes: &[RenderNode]) -> Vec<PaintLayerCompositionStep> {
-    nodes.iter().fold(Vec::new(), |mut steps, node| {
-        paint_layer_push_ordered_content_node(&mut steps, node);
-        steps
-    })
-}
-
-fn paint_layer_push_ordered_content_node(
-    steps: &mut Vec<PaintLayerCompositionStep>,
-    node: &RenderNode,
-) {
-    match node {
-        RenderNode::ShadowPass { children } => {
-            paint_layer_push_wrapped_ordered_content_steps(
-                steps,
-                paint_layer_ordered_content_steps(children),
-                |children| RenderNode::ShadowPass { children },
-            );
-        }
-        RenderNode::Clip { clips, children } => {
-            paint_layer_push_wrapped_ordered_content_steps(
-                steps,
-                paint_layer_ordered_content_steps(children),
-                |children| RenderNode::Clip {
-                    clips: clips.clone(),
-                    children,
-                },
-            );
-        }
-        RenderNode::RelaxedClip { clips, children } => {
-            paint_layer_push_wrapped_ordered_content_steps(
-                steps,
-                paint_layer_ordered_content_steps(children),
-                |children| RenderNode::RelaxedClip {
-                    clips: clips.clone(),
-                    children,
-                },
-            );
-        }
-        RenderNode::Transform {
-            transform,
-            children,
-        } => {
-            paint_layer_push_wrapped_ordered_content_steps(
-                steps,
-                paint_layer_ordered_content_steps(children),
-                |children| RenderNode::Transform {
-                    transform: *transform,
-                    children,
-                },
-            );
-        }
-        RenderNode::Alpha { alpha, children } => {
-            paint_layer_push_wrapped_ordered_content_steps(
-                steps,
-                paint_layer_ordered_content_steps(children),
-                |children| RenderNode::Alpha {
-                    alpha: *alpha,
-                    children,
-                },
-            );
-        }
-        RenderNode::PaintLayer(_) => {
-            // Dynamic and child paint layers split fixed paint-layer content into ordered
-            // static segments. Shadow damage from a dynamic boundary may
-            // overlap parent pixels without invalidating the cached parent
-            // static content, but paint order still matters: later nearby/code overlays
-            // must be composited after the dynamic boundary, not baked under it.
-            paint_layer_push_ordered_content_step(
-                steps,
-                PaintLayerCompositionStepKind::Dynamic,
-                vec![node.clone()],
-            );
-        }
-        RenderNode::Primitive(_) => {
-            paint_layer_push_ordered_content_step(
-                steps,
-                PaintLayerCompositionStepKind::Static,
-                vec![node.clone()],
-            );
-        }
-    }
-}
-
-fn paint_layer_push_wrapped_ordered_content_steps(
-    out: &mut Vec<PaintLayerCompositionStep>,
-    child_steps: Vec<PaintLayerCompositionStep>,
-    wrap: impl Fn(Vec<RenderNode>) -> RenderNode,
-) {
-    for step in child_steps {
-        paint_layer_push_ordered_content_step(out, step.kind, vec![wrap(step.nodes)]);
-    }
-}
-
-fn paint_layer_push_ordered_content_step(
-    steps: &mut Vec<PaintLayerCompositionStep>,
-    kind: PaintLayerCompositionStepKind,
-    nodes: Vec<RenderNode>,
-) {
-    if nodes.is_empty() {
-        return;
-    }
-
-    if let Some(last) = steps.last_mut()
-        && last.kind == kind
-    {
-        last.nodes.extend(nodes);
-        return;
-    }
-
-    steps.push(PaintLayerCompositionStep { kind, nodes });
-}
-
-fn paint_layer_static_segment_count(steps: &[PaintLayerCompositionStep]) -> usize {
-    steps
-        .iter()
-        .filter(|step| step.kind == PaintLayerCompositionStepKind::Static)
-        .count()
-}
-
-fn paint_layer_static_segments(
-    steps: &[PaintLayerCompositionStep],
-) -> impl Iterator<Item = &[RenderNode]> {
-    steps
-        .iter()
-        .filter(|step| step.kind == PaintLayerCompositionStepKind::Static)
-        .map(|step| step.nodes.as_slice())
-}
-
-fn paint_layer_static_content_hash(steps: &[PaintLayerCompositionStep]) -> u64 {
-    paint_layer_hash(|hasher| {
-        "explicit_static_content".hash(hasher);
-        for step in steps {
-            match step.kind {
-                PaintLayerCompositionStepKind::Static => {
-                    "static_segment".hash(hasher);
-                    paint_layer_hash_static_content_nodes(hasher, &step.nodes);
-                }
-                PaintLayerCompositionStepKind::Dynamic => {
-                    "dynamic_segment_separator".hash(hasher);
-                }
-            }
-        }
-    })
-}
-
-fn paint_layer_hash_static_content_nodes(hasher: &mut DefaultHasher, nodes: &[RenderNode]) {
-    for node in nodes {
-        paint_layer_hash_static_content_node(hasher, node);
-    }
-}
-
-fn paint_layer_hash_static_content_node(hasher: &mut DefaultHasher, node: &RenderNode) {
-    match node {
-        RenderNode::ShadowPass { children } => {
-            if paint_layer_static_content_node_count(children) > 0 {
-                "shadow_pass".hash(hasher);
-                paint_layer_hash_static_content_nodes(hasher, children);
-            }
-        }
-        RenderNode::Clip { clips, children } => {
-            if paint_layer_static_content_node_count(children) > 0 {
-                "clip".hash(hasher);
-                hash_paint_layer_clip_shapes(hasher, clips, PaintLayerHashFloat::Exact);
-                paint_layer_hash_static_content_nodes(hasher, children);
-            }
-        }
-        RenderNode::RelaxedClip { clips, children } => {
-            if paint_layer_static_content_node_count(children) > 0 {
-                "relaxed_clip".hash(hasher);
-                hash_paint_layer_clip_shapes(hasher, clips, PaintLayerHashFloat::Exact);
-                paint_layer_hash_static_content_nodes(hasher, children);
-            }
-        }
-        RenderNode::Transform {
-            transform,
-            children,
-        } => {
-            if paint_layer_static_content_node_count(children) > 0 {
-                "transform".hash(hasher);
-                hash_paint_layer_affine2(hasher, *transform, PaintLayerHashFloat::Exact);
-                paint_layer_hash_static_content_nodes(hasher, children);
-            }
-        }
-        RenderNode::Alpha { alpha, children } => {
-            if paint_layer_static_content_node_count(children) > 0 {
-                "alpha".hash(hasher);
-                PaintLayerHashFloat::Exact.hash_f32(hasher, *alpha);
-                paint_layer_hash_static_content_nodes(hasher, children);
-            }
-        }
-        RenderNode::PaintLayer(_) => {}
-        RenderNode::Primitive(primitive) => {
-            hash_paint_layer_draw_primitive(hasher, primitive, PaintLayerHashFloat::Exact);
-        }
-    }
-}
-
-fn paint_layer_dynamic_slots_hash(steps: &[PaintLayerCompositionStep]) -> u64 {
-    paint_layer_hash(|hasher| {
-        "explicit_dynamic_slots".hash(hasher);
-        for step in steps {
-            match step.kind {
-                PaintLayerCompositionStepKind::Static => {
-                    "static_segment_separator".hash(hasher);
-                }
-                PaintLayerCompositionStepKind::Dynamic => {
-                    "dynamic_segment".hash(hasher);
-                    paint_layer_hash_dynamic_slot_nodes(hasher, &step.nodes);
-                }
-            }
-        }
-    })
-}
-
-fn paint_layer_hash_dynamic_slot_nodes(hasher: &mut DefaultHasher, nodes: &[RenderNode]) {
-    for node in nodes {
-        paint_layer_hash_dynamic_slot_node(hasher, node);
-    }
-}
-
-fn paint_layer_hash_dynamic_slot_node(hasher: &mut DefaultHasher, node: &RenderNode) {
-    match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => {
-            paint_layer_hash_dynamic_slot_nodes(hasher, children);
-        }
-        RenderNode::PaintLayer(layer) => {
-            "paint_layer".hash(hasher);
-            hash_paint_layer_metadata(hasher, layer);
-        }
-        RenderNode::Primitive(_) => {}
-    }
-}
-
-fn paint_layer_static_resource_generation(nodes: &[RenderNode]) -> Option<u64> {
-    nodes.iter().try_fold(0u64, |generation, node| {
-        let node_generation = match node {
-            RenderNode::ShadowPass { children }
-            | RenderNode::Clip { children, .. }
-            | RenderNode::RelaxedClip { children, .. }
-            | RenderNode::Transform { children, .. }
-            | RenderNode::Alpha { children, .. } => {
-                paint_layer_static_resource_generation(children)?
-            }
-            RenderNode::PaintLayer(_) => 0,
-            RenderNode::Primitive(primitive) => match primitive {
-                DrawPrimitive::Video(..)
-                | DrawPrimitive::ImageLoading(..)
-                | DrawPrimitive::ImageFailed(..) => return None,
-                DrawPrimitive::TextWithFont(..) => font_cache_generation(),
-                DrawPrimitive::Image(_, _, _, _, image_id, _, _) => {
-                    cached_asset(image_id).map(|asset| asset.generation)?
-                }
-                DrawPrimitive::Rect(..)
-                | DrawPrimitive::RoundedRect(..)
-                | DrawPrimitive::Border(..)
-                | DrawPrimitive::BorderCorners(..)
-                | DrawPrimitive::BorderEdges(..)
-                | DrawPrimitive::Shadow(..)
-                | DrawPrimitive::InsetShadow(..)
-                | DrawPrimitive::Gradient(..) => 0,
-            },
-        };
-
-        Some(
-            generation
-                .wrapping_mul(1_099_511_628_211)
-                .wrapping_add(node_generation),
-        )
-    })
-}
-
-fn paint_layer_hash(hash: impl FnOnce(&mut DefaultHasher)) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash(&mut hasher);
-    hasher.finish()
-}
-
 #[derive(Debug)]
 pub struct RendererCacheManager {
     enabled: bool,
     generation: u64,
     frame_index: u64,
     payloads: PaintLayerPayloadCache<PaintLayerPayload>,
-    placement_tracker: PaintLayerPlacementTracker,
 }
 
 impl Default for RendererCacheManager {
@@ -2142,7 +1728,6 @@ impl RendererCacheManager {
             payloads: PaintLayerPayloadCache::with_config(
                 renderer_paint_layer_payload_cache_config(config),
             ),
-            placement_tracker: PaintLayerPlacementTracker::with_config(config.paint_layer),
         }
     }
 
@@ -2152,11 +1737,8 @@ impl RendererCacheManager {
         for bytes in self.payloads.begin_frame(self.frame_index) {
             stats.paint_layer.record_stale_eviction(bytes);
         }
-        self.placement_tracker
-            .evict_stale_visibility(self.frame_index);
         RendererCacheFrame {
             generation: self.generation,
-            frame_index: self.frame_index,
             stats,
         }
     }
@@ -2175,7 +1757,6 @@ impl RendererCacheManager {
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.payloads.clear();
-        self.placement_tracker.clear();
     }
 
     pub fn enabled(&self) -> bool {
@@ -2191,7 +1772,7 @@ impl RendererCacheManager {
     }
 
     fn payload_key_for_moving_layer(key: PaintLayerMovingPayloadKey) -> PaintLayerPayloadKey {
-        PaintLayerPayloadKey::scroll_moving(
+        PaintLayerPayloadKey::new(
             key.stable_id,
             key.content_generation,
             key.width_px,
@@ -2212,28 +1793,10 @@ impl RendererCacheManager {
         self.payloads.entries().fold(
             (0u64, 0u64, 0u64, 0u64),
             |(entries, bytes, gpu_payloads, cpu_payloads), entry| {
-                let (entry_gpu_payloads, entry_cpu_payloads, entry_bytes) =
-                    match &entry.payload {
-                        PaintLayerPayload::FixedSegments(segments) => segments.iter().fold(
-                            (0u64, 0u64, 0u64),
-                            |(gpu, cpu, bytes), segment| match segment.payload_kind {
-                                RendererCachePayloadKind::GpuRenderTarget => (
-                                    gpu.saturating_add(1),
-                                    cpu,
-                                    bytes.saturating_add(segment.bytes),
-                                ),
-                                RendererCachePayloadKind::CpuRaster => (
-                                    gpu,
-                                    cpu.saturating_add(1),
-                                    bytes.saturating_add(segment.bytes),
-                                ),
-                            },
-                        ),
-                        PaintLayerPayload::MovingImage(_) => match entry.storage {
-                            PaintLayerPayloadStorage::Gpu => (1, 0, entry.bytes),
-                            PaintLayerPayloadStorage::Cpu => (0, 1, entry.bytes),
-                        },
-                    };
+                let (entry_gpu_payloads, entry_cpu_payloads, entry_bytes) = match entry.storage {
+                    PaintLayerPayloadStorage::Gpu => (1, 0, entry.bytes),
+                    PaintLayerPayloadStorage::Cpu => (0, 1, entry.bytes),
+                };
                 (
                     entries.saturating_add(1),
                     bytes.saturating_add(entry_bytes),
@@ -2247,51 +1810,7 @@ impl RendererCacheManager {
     fn moving_payload_bytes(&self) -> u64 {
         self.payloads
             .entries()
-            .filter(|entry| entry.key.placement == PayloadPlacement::ScrollMoving)
             .fold(0u64, |bytes, entry| bytes.saturating_add(entry.bytes))
-    }
-
-    fn fixed_layer_payload(
-        &mut self,
-        key: PaintLayerPayloadKey,
-    ) -> Option<Vec<PaintLayerPayloadSegment>> {
-        match self.payloads.get(&key)? {
-            PaintLayerPayload::FixedSegments(segments) => Some(segments.clone()),
-            PaintLayerPayload::MovingImage(_) => None,
-        }
-    }
-
-    fn reserve_fixed_layer_payload_store(
-        &mut self,
-        bytes: u64,
-    ) -> Result<(), PaintLayerPayloadStoreRejection> {
-        self.payloads.try_reserve_store(bytes)
-    }
-
-    fn store_reserved_fixed_layer_payload(
-        &mut self,
-        key: PaintLayerPayloadKey,
-        segments: Vec<PaintLayerPayloadSegment>,
-        bytes: u64,
-    ) -> Result<Vec<u64>, PaintLayerPayloadStoreRejection> {
-        self.payloads.store_reserved(
-            key,
-            PaintLayerPayload::FixedSegments(segments),
-            bytes,
-            PaintLayerPayloadStorage::Gpu,
-        )
-    }
-
-    pub fn mark_moving_layer_visible(
-        &mut self,
-        frame: &mut RendererCacheFrame,
-        key: PaintLayerMovingPayloadKey,
-        placement: PaintLayerPayloadOffset,
-        visible: bool,
-    ) -> PaintLayerPayloadVisibility {
-        frame.mark_candidate(visible);
-        self.placement_tracker
-            .mark_visible(key, placement, frame.frame_index)
     }
 
     pub fn touch_moving_layer_suppressed_by_parent(
@@ -2300,15 +1819,16 @@ impl RendererCacheManager {
         key: PaintLayerMovingPayloadKey,
     ) -> bool {
         let payload_key = Self::payload_key_for_moving_layer(key);
-        let tracker_touched = self
-            .placement_tracker
-            .touch_suppressed_by_parent(key, frame.frame_index);
         let payload_touched = self.payloads.mark_seen(&payload_key);
-        let touched = tracker_touched || payload_touched;
-        if touched {
+        if payload_touched {
             frame.record_suppressed_by_parent();
         }
-        touched
+        payload_touched
+    }
+
+    pub fn touch_moving_layer_clipped(&mut self, key: PaintLayerMovingPayloadKey) -> bool {
+        let payload_key = Self::payload_key_for_moving_layer(key);
+        self.payloads.mark_seen(&payload_key)
     }
 
     pub fn moving_layer_payload(
@@ -2321,13 +1841,8 @@ impl RendererCacheManager {
             .payloads
             .get(&Self::payload_key_for_moving_layer(key))?
         {
-            PaintLayerPayload::MovingImage(image) => image.clone(),
-            PaintLayerPayload::FixedSegments(_) => None,
+            PaintLayerPayload::Image(image) => image.clone(),
         }
-    }
-
-    pub fn moving_layer_visible_count_allows_store(&self, visible_count: u64) -> bool {
-        visible_count >= self.placement_tracker.min_visible_before_store
     }
 
     pub fn try_store_moving_layer_metadata(
@@ -2343,12 +1858,13 @@ impl RendererCacheManager {
             .payloads
             .store_reserved(
                 Self::payload_key_for_moving_layer(key),
-                PaintLayerPayload::MovingImage(None),
+                PaintLayerPayload::Image(None),
                 bytes,
                 PaintLayerPayloadStorage::Cpu,
             )
             .map_err(Self::moving_layer_admission_rejection_from_payload_rejection)?;
         frame.record_store(bytes, RendererCachePayloadKind::CpuRaster, prepare_time);
+        frame.record_store_pixels(key.pixel_len(), 0);
         frame.record_evictions(evicted);
 
         Ok(())
@@ -2370,19 +1886,11 @@ impl RendererCacheManager {
         key: PaintLayerMovingPayloadKey,
         bytes: u64,
     ) -> Result<(), PaintLayerPayloadAdmissionRejection> {
-        let visible_count = self
-            .placement_tracker
-            .visible_accesses
-            .get(&key)
-            .map(|access| access.visible_count)
-            .unwrap_or(0);
-        if visible_count < self.placement_tracker.min_visible_before_store {
-            frame.record_rejection(RendererCacheRejectionReason::AdmissionThreshold);
-            return Err(PaintLayerPayloadAdmissionRejection::AdmissionThreshold);
-        }
-
         frame.admit_candidate();
-        if let Err(rejection) = self.payloads.try_reserve_store(bytes) {
+        if let Err(rejection) = self
+            .payloads
+            .try_reserve_store(Self::payload_key_for_moving_layer(key), bytes)
+        {
             frame.record_rejection(rejection.into());
             return Err(Self::moving_layer_admission_rejection_from_payload_rejection(rejection));
         }
@@ -2407,19 +1915,25 @@ impl RendererCacheManager {
         &mut self,
         frame: &mut RendererCacheFrame,
         key: PaintLayerMovingPayloadKey,
-        bytes: u64,
+        visible_pixels: u64,
         payload_kind: RendererCachePayloadKind,
         image: Image,
         prepare_time: Duration,
     ) {
+        let Some(bytes) = key.byte_len() else {
+            frame.record_rejection(RendererCacheRejectionReason::OversizedEntry);
+            return;
+        };
+
         match self.payloads.store_reserved(
             Self::payload_key_for_moving_layer(key),
-            PaintLayerPayload::MovingImage(Some(image)),
+            PaintLayerPayload::Image(Some(image)),
             bytes,
             Self::payload_storage_kind(payload_kind),
         ) {
             Ok(evicted) => {
                 frame.record_store(bytes, payload_kind, prepare_time);
+                frame.record_store_pixels(key.pixel_len(), visible_pixels);
                 frame.record_evictions(evicted);
             }
             Err(rejection) => {
@@ -2429,44 +1943,17 @@ impl RendererCacheManager {
     }
 
     pub fn moving_layer_entry_count(&self) -> u64 {
-        self.payloads.stats().moving_entries
+        self.payloads.stats().entries
     }
 
     pub fn moving_layer_total_bytes(&self) -> u64 {
         self.moving_payload_bytes()
-    }
-
-    #[cfg(test)]
-    fn configure_moving_paint_layer_limits_for_test(
-        &mut self,
-        max_entries: usize,
-        max_bytes: u64,
-        max_entry_bytes: u64,
-    ) {
-        let previous = self.payloads.config();
-        self.payloads = PaintLayerPayloadCache::with_config(PaintLayerPayloadCacheConfig {
-            max_entries,
-            max_bytes,
-            max_entry_bytes,
-            ..previous
-        });
-    }
-
-    #[cfg(test)]
-    fn configure_moving_paint_layer_max_stale_frames_for_test(&mut self, max_stale_frames: u64) {
-        self.placement_tracker.max_stale_frames = max_stale_frames;
-        let previous = self.payloads.config();
-        self.payloads = PaintLayerPayloadCache::with_config(PaintLayerPayloadCacheConfig {
-            max_stale_frames,
-            ..previous
-        });
     }
 }
 
 #[derive(Debug)]
 pub struct RendererCacheFrame {
     generation: u64,
-    frame_index: u64,
     stats: RendererCacheFrameStats,
 }
 
@@ -2483,20 +1970,34 @@ impl RendererCacheFrame {
         self.stats.paint_layer.record_suppressed_by_parent();
     }
 
+    pub fn record_low_value_bypass(&mut self) {
+        self.stats.paint_layer.record_low_value_bypass();
+    }
+
     pub fn record_hit(&mut self, draw_hit_time: Duration) {
         self.stats.paint_layer.record_hit(draw_hit_time);
     }
 
-    pub fn record_moved_hit(&mut self) {
-        self.stats.paint_layer.record_moved_hit();
+    pub fn record_hit_pixels(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.stats
+            .paint_layer
+            .record_hit_pixels(payload_pixels, visible_pixels);
+    }
+
+    pub fn record_cached_image_draw(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.stats
+            .paint_layer
+            .record_cached_image_draw(payload_pixels, visible_pixels);
     }
 
     pub fn record_miss(&mut self) {
         self.stats.paint_layer.record_miss();
     }
 
-    pub fn record_moved_miss(&mut self) {
-        self.stats.paint_layer.record_moved_miss();
+    pub fn record_store_pixels(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.stats
+            .paint_layer
+            .record_store_pixels(payload_pixels, visible_pixels);
     }
 
     pub fn record_store(
@@ -2534,15 +2035,6 @@ impl RendererCacheFrame {
     pub fn record_rejection(&mut self, reason: RendererCacheRejectionReason) {
         self.stats.paint_layer.record_rejection(reason);
     }
-
-    pub fn record_moving_layer_placement_rejection(
-        &mut self,
-        reason: PaintLayerPlacementRejection,
-    ) {
-        self.stats
-            .paint_layer
-            .record_moving_layer_placement_rejection(reason);
-    }
 }
 
 impl RendererCachePaintLayerFrameStats {
@@ -2561,21 +2053,37 @@ impl RendererCachePaintLayerFrameStats {
         self.suppressed_by_parent = self.suppressed_by_parent.saturating_add(1);
     }
 
+    fn record_low_value_bypass(&mut self) {
+        self.bypassed_low_value = self.bypassed_low_value.saturating_add(1);
+    }
+
     fn record_hit(&mut self, draw_hit_time: Duration) {
         self.hits = self.hits.saturating_add(1);
         self.draw_hit_time += draw_hit_time;
     }
 
-    fn record_moved_hit(&mut self) {
-        self.moved_hits = self.moved_hits.saturating_add(1);
+    fn record_hit_pixels(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.hit_payload_pixels = self.hit_payload_pixels.saturating_add(payload_pixels);
+        self.hit_visible_pixels = self.hit_visible_pixels.saturating_add(visible_pixels);
+    }
+
+    fn record_cached_image_draw(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.cached_image_draws = self.cached_image_draws.saturating_add(1);
+        self.composited_payload_pixels = self
+            .composited_payload_pixels
+            .saturating_add(payload_pixels);
+        self.composited_visible_pixels = self
+            .composited_visible_pixels
+            .saturating_add(visible_pixels);
     }
 
     fn record_miss(&mut self) {
         self.misses = self.misses.saturating_add(1);
     }
 
-    fn record_moved_miss(&mut self) {
-        self.moved_misses = self.moved_misses.saturating_add(1);
+    fn record_store_pixels(&mut self, payload_pixels: u64, visible_pixels: u64) {
+        self.store_payload_pixels = self.store_payload_pixels.saturating_add(payload_pixels);
+        self.store_visible_pixels = self.store_visible_pixels.saturating_add(visible_pixels);
     }
 
     fn record_payload_store(
@@ -2599,12 +2107,6 @@ impl RendererCachePaintLayerFrameStats {
     fn record_payload_eviction(&mut self, bytes: u64) {
         self.evictions = self.evictions.saturating_add(1);
         self.evicted_bytes = self.evicted_bytes.saturating_add(bytes);
-    }
-
-    fn record_payload_evictions(&mut self, evicted: impl IntoIterator<Item = u64>) {
-        for bytes in evicted {
-            self.record_payload_eviction(bytes);
-        }
     }
 
     fn record_resident_eviction(&mut self, bytes: u64) {
@@ -2637,6 +2139,14 @@ impl RendererCachePaintLayerFrameStats {
             RendererCacheRejectionReason::PayloadBudget => {
                 self.rejected_payload_budget = self.rejected_payload_budget.saturating_add(1);
             }
+            RendererCacheRejectionReason::FractionalPlacement => {
+                self.rejected_fractional_placement =
+                    self.rejected_fractional_placement.saturating_add(1);
+            }
+            RendererCacheRejectionReason::UnsupportedTransform => {
+                self.rejected_unsupported_transform =
+                    self.rejected_unsupported_transform.saturating_add(1);
+            }
         }
     }
 
@@ -2644,21 +2154,6 @@ impl RendererCachePaintLayerFrameStats {
         self.record_resident_eviction(bytes);
         self.stale_evictions = self.stale_evictions.saturating_add(1);
         self.stale_evicted_bytes = self.stale_evicted_bytes.saturating_add(bytes);
-    }
-
-    fn record_moving_layer_placement_rejection(&mut self, reason: PaintLayerPlacementRejection) {
-        match reason {
-            PaintLayerPlacementRejection::FractionalTranslation => {
-                self.rejected_fractional_placement =
-                    self.rejected_fractional_placement.saturating_add(1);
-            }
-            PaintLayerPlacementRejection::UnsupportedTransform
-            | PaintLayerPlacementRejection::NonFiniteTranslation
-            | PaintLayerPlacementRejection::OutOfRangeTranslation => {
-                self.rejected_unsupported_transform =
-                    self.rejected_unsupported_transform.saturating_add(1);
-            }
-        }
     }
 }
 
@@ -2794,7 +2289,6 @@ struct RenderCacheTracking<'a> {
 
 struct PreparedMovingLayerPayload {
     image: Image,
-    bytes: u64,
     payload_kind: RendererCachePayloadKind,
     prepare_time: Duration,
 }
@@ -2803,6 +2297,7 @@ struct PreparedMovingLayerPayload {
 struct MovingLayerEligibility {
     current_transform: Affine2,
     current_clip: Option<PaintLayerDeviceRect>,
+    clip_empty: bool,
     paint_attributes_eligible: bool,
 }
 
@@ -2811,6 +2306,7 @@ impl MovingLayerEligibility {
         Self {
             current_transform: Affine2::identity(),
             current_clip: None,
+            clip_empty: false,
             paint_attributes_eligible: true,
         }
     }
@@ -2823,31 +2319,224 @@ impl MovingLayerEligibility {
     }
 
     fn with_clip(self, clips: &[ClipShape], relaxed: bool) -> Self {
+        let (current_clip, clip_empty) =
+            paint_layer_apply_clip_state(self.current_transform, self.current_clip, clips, relaxed);
         Self {
-            current_clip: paint_layer_apply_clip(
-                self.current_transform,
-                self.current_clip,
-                clips,
-                relaxed,
-            ),
+            current_clip,
+            clip_empty: self.clip_empty || clip_empty,
             ..self
         }
     }
 }
 
-struct PaintLayerRenderContext<'a, 'video> {
-    renderer_cache: &'a mut RendererCacheManager,
-    options: RenderTraversalOptions<'video>,
-    width_px: u32,
-    height_px: u32,
-    bytes: u64,
-    gpu_context: Option<&'a mut gpu::DirectContext>,
-    stats: &'a mut RendererCacheFrameStats,
-    clean_cache_frame: &'a mut RendererCacheFrame,
+fn moving_layer_root_eligibility_for_surface(surface: &Surface) -> MovingLayerEligibility {
+    let dimensions = surface.image_info().dimensions();
+    let width = u32::try_from(dimensions.width.max(1)).unwrap_or(u32::MAX);
+    let height = u32::try_from(dimensions.height.max(1)).unwrap_or(u32::MAX);
+    MovingLayerEligibility {
+        current_clip: Some(PaintLayerDeviceRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }),
+        ..MovingLayerEligibility::root()
+    }
+}
+
+fn hash_visible_render_nodes(
+    nodes: &[RenderNode],
+    renderer_cache: &RendererCacheManager,
+    eligibility: MovingLayerEligibility,
+    alpha: f32,
+    hasher: &mut DefaultHasher,
+) -> bool {
+    if eligibility.clip_empty || alpha <= 0.0 {
+        return true;
+    }
+
+    nodes.iter().fold(true, |ready, node| {
+        hash_visible_render_node(node, renderer_cache, eligibility, alpha, hasher) && ready
+    })
+}
+
+fn hash_visible_render_node(
+    node: &RenderNode,
+    renderer_cache: &RendererCacheManager,
+    eligibility: MovingLayerEligibility,
+    alpha: f32,
+    hasher: &mut DefaultHasher,
+) -> bool {
+    match node {
+        RenderNode::ShadowPass { children } => {
+            hash_visible_render_nodes(children, renderer_cache, eligibility, alpha, hasher)
+        }
+        RenderNode::Clip { clips, children } => {
+            let clipped = eligibility.with_clip(clips, false);
+            hash_visible_render_nodes(children, renderer_cache, clipped, alpha, hasher)
+        }
+        RenderNode::RelaxedClip { clips, children } => {
+            let clipped = eligibility.with_clip(clips, true);
+            hash_visible_render_nodes(children, renderer_cache, clipped, alpha, hasher)
+        }
+        RenderNode::Transform {
+            transform,
+            children,
+        } => {
+            let transformed = eligibility.with_transform(*transform);
+            hash_visible_render_nodes(children, renderer_cache, transformed, alpha, hasher)
+        }
+        RenderNode::Alpha {
+            alpha: layer_alpha,
+            children,
+        } => hash_visible_render_nodes(
+            children,
+            renderer_cache,
+            eligibility,
+            alpha * layer_alpha.clamp(0.0, 1.0),
+            hasher,
+        ),
+        RenderNode::PaintLayer(layer) => {
+            hash_visible_paint_layer(layer, renderer_cache, eligibility, alpha, hasher)
+        }
+        RenderNode::Primitive(primitive) => {
+            if let Some(visible) = visible_primitive_device_rect(primitive, eligibility) {
+                "primitive".hash(hasher);
+                visible.hash(hasher);
+                hash_affine2(hasher, eligibility.current_transform);
+                eligibility.current_clip.hash(hasher);
+                hash_f32(hasher, alpha);
+                format!("{primitive:?}").hash(hasher);
+            }
+            true
+        }
+    }
+}
+
+fn hash_visible_paint_layer(
+    layer: &RenderPaintLayer,
+    renderer_cache: &RendererCacheManager,
+    eligibility: MovingLayerEligibility,
+    alpha: f32,
+    hasher: &mut DefaultHasher,
+) -> bool {
+    let has_own_nodes = layer.metrics.own_primitive_count > 0;
+    let own_visible = has_own_nodes
+        && paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility).is_some();
+    let mut ready = true;
+
+    if own_visible {
+        "paint-layer".hash(hasher);
+        layer.stable_id.hash(hasher);
+        layer.policy.hash(hasher);
+        layer.reason.hash(hasher);
+        hash_rect(hasher, layer.bounds);
+        hash_affine2(hasher, eligibility.current_transform);
+        eligibility.current_clip.hash(hasher);
+        hash_f32(hasher, alpha);
+
+        if layer.policy == PaintLayerPolicy::Cacheable {
+            let resource_generation =
+                moving_paint_layer_payload_resource_generation(&layer.own_nodes);
+            resource_generation.hash(hasher);
+            ready &= resource_generation.is_some();
+            ready &= hash_visible_render_nodes(
+                &layer.own_nodes,
+                renderer_cache,
+                eligibility,
+                alpha,
+                hasher,
+            );
+        } else {
+            layer.content_generation.hash(hasher);
+            ready &= hash_visible_render_nodes(
+                &layer.own_nodes,
+                renderer_cache,
+                eligibility,
+                alpha,
+                hasher,
+            );
+        }
+    }
+
+    let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
+    layer.child_refs.iter().fold(ready, |ready, child| {
+        hash_visible_render_nodes(
+            &child.nodes,
+            renderer_cache,
+            child_eligibility,
+            alpha,
+            hasher,
+        ) && ready
+    })
+}
+
+fn paint_layer_child_ref_eligibility(
+    layer: &RenderPaintLayer,
+    eligibility: MovingLayerEligibility,
+) -> MovingLayerEligibility {
+    paint_layer_child_ref_clip(layer)
+        .map(|clip| eligibility.with_clip(&[clip], false))
+        .unwrap_or(eligibility)
+}
+
+fn paint_layer_child_ref_clip(layer: &RenderPaintLayer) -> Option<ClipShape> {
+    matches!(layer.reason, PaintLayerReason::ScrollContainer).then_some(ClipShape {
+        rect: layer.bounds,
+        radii: None,
+    })
+}
+
+fn visible_primitive_device_rect(
+    primitive: &DrawPrimitive,
+    eligibility: MovingLayerEligibility,
+) -> Option<PaintLayerDeviceRect> {
+    let transformed = eligibility
+        .current_transform
+        .map_rect_aabb(draw_primitive_visual_bounds(primitive));
+    let bounds = paint_layer_device_rect_from_geometry(transformed)?;
+    match eligibility.current_clip {
+        Some(clip) => paint_layer_intersect_device_rects(bounds, clip),
+        None => Some(bounds),
+    }
+}
+
+fn hash_skia_color(hasher: &mut DefaultHasher, color: Color) {
+    color.a().hash(hasher);
+    color.r().hash(hasher);
+    color.g().hash(hasher);
+    color.b().hash(hasher);
+}
+
+fn hash_affine2(hasher: &mut DefaultHasher, transform: Affine2) {
+    hash_f32(hasher, transform.xx);
+    hash_f32(hasher, transform.yx);
+    hash_f32(hasher, transform.xy);
+    hash_f32(hasher, transform.yy);
+    hash_f32(hasher, transform.tx);
+    hash_f32(hasher, transform.ty);
+}
+
+fn hash_rect(hasher: &mut DefaultHasher, rect: GeometryRect) {
+    hash_f32(hasher, rect.x);
+    hash_f32(hasher, rect.y);
+    hash_f32(hasher, rect.width);
+    hash_f32(hasher, rect.height);
+}
+
+fn hash_f32(hasher: &mut DefaultHasher, value: f32) {
+    let value = if value == 0.0 { 0.0 } else { value };
+    value.to_bits().hash(hasher);
+}
+
+fn renderer_cache_diagnostics_enabled() -> bool {
+    cfg!(feature = "bench-diagnostics") && std::env::var_os("EMERGE_BENCH_DIAGNOSTICS").is_some()
 }
 
 trait RenderTraversalMode<'video> {
     const TRACK_ELIGIBILITY: bool;
+    const RENDER_PRIMITIVES: bool = true;
+    const RENDER_PAINT_LAYERS: bool = true;
 
     fn render_paint_layer<I: DrawInstrumentation>(
         &mut self,
@@ -2867,17 +2556,20 @@ struct RenderClipScope<'a> {
 
 struct DirectRenderMode;
 
+struct PaintLayerOwnRenderMode;
+
 struct CacheTrackingRenderMode<'mode, 'cache> {
     cache_tracking: &'mode mut RenderCacheTracking<'cache>,
 }
 
-struct FixedPaintLayerRenderMode<'mode, 'context, 'video> {
-    context: &'mode mut PaintLayerRenderContext<'context, 'video>,
+struct ChildPaintLayerRenderMode<'mode, 'cache> {
+    cache_tracking: &'mode mut RenderCacheTracking<'cache>,
 }
 
 pub struct SceneRenderer {
     video_state: RendererVideoState,
     renderer_cache: RendererCacheManager,
+    last_visible_frame_fingerprint: Option<u64>,
 }
 
 impl Default for SceneRenderer {
@@ -2895,6 +2587,7 @@ impl SceneRenderer {
         Self {
             video_state: RendererVideoState::default(),
             renderer_cache: RendererCacheManager::with_config(cache_config),
+            last_visible_frame_fingerprint: None,
         }
     }
 
@@ -2917,8 +2610,60 @@ impl SceneRenderer {
         if result.resources_changed {
             gr_context.reset(None);
             self.renderer_cache.clear();
+            self.invalidate_visible_frame_fingerprint();
         }
         Ok(result)
+    }
+
+    pub fn invalidate_visible_frame_fingerprint(&mut self) {
+        self.last_visible_frame_fingerprint = None;
+    }
+
+    pub fn can_skip_unchanged_visible_frame(
+        &mut self,
+        state: &RenderState,
+        surface_dimensions: (u32, u32),
+    ) -> bool {
+        if !self.renderer_cache.enabled() || !state.has_cacheable_paint_layers {
+            self.last_visible_frame_fingerprint = None;
+            return false;
+        }
+
+        let Some(fingerprint) = self.visible_frame_fingerprint(state, surface_dimensions) else {
+            self.last_visible_frame_fingerprint = None;
+            return false;
+        };
+        let unchanged = self.last_visible_frame_fingerprint == Some(fingerprint);
+        self.last_visible_frame_fingerprint = Some(fingerprint);
+        unchanged
+    }
+
+    fn visible_frame_fingerprint(
+        &self,
+        state: &RenderState,
+        surface_dimensions: (u32, u32),
+    ) -> Option<u64> {
+        let surface_clip = PaintLayerDeviceRect {
+            x: 0,
+            y: 0,
+            width: surface_dimensions.0.max(1),
+            height: surface_dimensions.1.max(1),
+        };
+        let mut hasher = DefaultHasher::new();
+        "visible-frame-v1".hash(&mut hasher);
+        hash_skia_color(&mut hasher, state.clear_color);
+        surface_clip.hash(&mut hasher);
+        let ready = hash_visible_render_nodes(
+            &state.scene.nodes,
+            &self.renderer_cache,
+            MovingLayerEligibility {
+                current_clip: Some(surface_clip),
+                ..MovingLayerEligibility::root()
+            },
+            1.0,
+            &mut hasher,
+        );
+        ready.then(|| hasher.finish())
     }
 
     /// Render the given state to the surface.
@@ -2942,25 +2687,15 @@ impl SceneRenderer {
     ) -> RenderTimings {
         let started_at = Instant::now();
         let draw_started_at = Instant::now();
-        if self.renderer_cache.enabled()
-            && frame.direct_context.is_some()
-            && scene_has_explicit_render_boundaries(&state.scene.nodes)
-            && let Some(timings) = self.render_with_explicit_paint_layer_cache(
-                frame,
-                state,
-                started_at,
-                draw_started_at,
-            )
-        {
-            return timings;
-        }
-
+        let root_eligibility = moving_layer_root_eligibility_for_surface(frame.surface);
         let canvas = frame.surface.canvas();
 
         // Keep no-candidate frames on the original renderer path. Routing every
         // frame through cache-tracking traversal regressed mixed_ui_scene by
         // 3.36%, so candidate tracking is only paid by candidate-bearing scenes.
-        if !state.has_moving_paint_layers {
+        let should_track_cache = state.has_cacheable_paint_layers
+            && (self.renderer_cache.enabled() || state.has_scroll_moving_paint_layers);
+        if !should_track_cache {
             let draw_detail = if profile_draw {
                 let mut detail = RenderDrawTimings::default();
                 let clear_started_at = Instant::now();
@@ -3034,7 +2769,7 @@ impl SceneRenderer {
                 &state.scene.nodes,
                 options,
                 &mut cache_tracking,
-                MovingLayerEligibility::root(),
+                root_eligibility,
                 &mut instrumentation,
             );
 
@@ -3058,7 +2793,7 @@ impl SceneRenderer {
                 &state.scene.nodes,
                 options,
                 &mut cache_tracking,
-                MovingLayerEligibility::root(),
+                root_eligibility,
                 &mut instrumentation,
             );
             let stats = self.renderer_cache.end_frame(cache_frame);
@@ -3113,289 +2848,6 @@ impl SceneRenderer {
         }
     }
 
-    fn render_with_explicit_paint_layer_cache(
-        &mut self,
-        frame: &mut RenderFrame<'_>,
-        state: &RenderState,
-        started_at: Instant,
-        draw_started_at: Instant,
-    ) -> Option<RenderTimings> {
-        frame.direct_context.as_ref()?;
-
-        let image_info = frame.surface.image_info();
-        let dimensions = image_info.dimensions();
-        let width_px = u32::try_from(dimensions.width).ok()?;
-        let height_px = u32::try_from(dimensions.height).ok()?;
-        if width_px == 0 || height_px == 0 {
-            return None;
-        }
-
-        let options = RenderTraversalOptions::unclipped(&self.video_state);
-        let bytes = moving_paint_layer_payload_byte_len(width_px, height_px)?;
-        let mut stats = RendererCacheFrameStats::default();
-        let mut clean_cache_frame = self.renderer_cache.begin_frame();
-
-        let canvas = frame.surface.canvas();
-        canvas.clear(state.clear_color);
-
-        {
-            let mut render_context = PaintLayerRenderContext {
-                renderer_cache: &mut self.renderer_cache,
-                options,
-                width_px,
-                height_px,
-                bytes,
-                gpu_context: frame.direct_context.as_deref_mut(),
-                stats: &mut stats,
-                clean_cache_frame: &mut clean_cache_frame,
-            };
-            Self::render_explicit_fixed_paint_layer_scope(
-                canvas,
-                &state.scene.nodes,
-                PAINT_LAYER_ROOT_SCOPE_ID,
-                &mut render_context,
-            );
-        }
-
-        let clean_stats = self.renderer_cache.end_frame(clean_cache_frame);
-        stats.paint_layer.merge_from(clean_stats.paint_layer);
-
-        let draw = draw_started_at.elapsed();
-        let flush = frame.flush();
-        Some(RenderTimings {
-            total: started_at.elapsed(),
-            draw,
-            draw_detail: None,
-            flush: flush.total,
-            gpu_flush: flush.gpu_flush,
-            submit: flush.submit,
-            renderer_cache: (!stats.is_empty()).then(|| Box::new(stats)),
-        })
-    }
-
-    fn render_explicit_fixed_paint_layer_scope(
-        canvas: &skia_safe::Canvas,
-        nodes: &[RenderNode],
-        scope_id: u64,
-        context: &mut PaintLayerRenderContext<'_, '_>,
-    ) {
-        context.stats.paint_layer.mark_candidate(true);
-
-        let static_node_count = paint_layer_static_content_node_count(nodes);
-        let content_steps = paint_layer_ordered_content_steps(nodes);
-        let static_segment_count = paint_layer_static_segment_count(&content_steps);
-
-        if static_node_count == 0 {
-            context
-                .stats
-                .paint_layer
-                .record_rejection(RendererCacheRejectionReason::Ineligible);
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        }
-
-        let Some(resource_generation) = paint_layer_static_resource_generation(nodes) else {
-            context
-                .stats
-                .paint_layer
-                .record_rejection(RendererCacheRejectionReason::Ineligible);
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        };
-
-        if context.bytes > FIXED_PAINT_LAYER_PAYLOAD_MAX_ENTRY_BYTES {
-            context
-                .stats
-                .paint_layer
-                .record_rejection(RendererCacheRejectionReason::OversizedEntry);
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        }
-        let Some(entry_bytes) = context
-            .bytes
-            .checked_mul(u64::try_from(static_segment_count).unwrap_or(u64::MAX))
-        else {
-            context
-                .stats
-                .paint_layer
-                .record_rejection(RendererCacheRejectionReason::OversizedEntry);
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        };
-        if entry_bytes > FIXED_PAINT_LAYER_PAYLOAD_MAX_ENTRY_BYTES {
-            context
-                .stats
-                .paint_layer
-                .record_rejection(RendererCacheRejectionReason::OversizedEntry);
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        }
-
-        let key = PaintLayerPayloadKey::fixed(
-            scope_id,
-            paint_layer_static_content_hash(&content_steps),
-            paint_layer_dynamic_slots_hash(&content_steps),
-            context.width_px,
-            context.height_px,
-            1.0f32.to_bits(),
-            resource_generation,
-        );
-
-        if let Some(payload_segments) = context.renderer_cache.fixed_layer_payload(key) {
-            let hit_started_at = Instant::now();
-            Self::render_explicit_fixed_paint_layer_payload_with_dynamic_slots(
-                canvas,
-                &content_steps,
-                &payload_segments,
-                context,
-            );
-            context
-                .stats
-                .paint_layer
-                .record_hit(hit_started_at.elapsed());
-            return;
-        }
-
-        if let Err(rejection) = context
-            .renderer_cache
-            .reserve_fixed_layer_payload_store(entry_bytes)
-        {
-            context.stats.paint_layer.record_rejection(rejection.into());
-            Self::paint_layer_scope_direct(canvas, nodes, context);
-            return;
-        }
-
-        context.stats.paint_layer.record_miss();
-        context.stats.paint_layer.admit_candidate();
-        let prepare_started_at = Instant::now();
-        let prepared = context.gpu_context.as_deref_mut().and_then(|gr_context| {
-            Self::prepare_fixed_paint_layer_gpu_payload_segments(
-                &content_steps,
-                context.width_px,
-                context.height_px,
-                context.bytes,
-                context.options,
-                gr_context,
-            )
-        });
-
-        if let Some(prepared) = prepared {
-            let prepared_segments = prepared;
-            Self::render_explicit_fixed_paint_layer_payload_with_dynamic_slots(
-                canvas,
-                &content_steps,
-                &prepared_segments,
-                context,
-            );
-
-            let prepared_segment_count = prepared_segments.len();
-            let evicted = match context.renderer_cache.store_reserved_fixed_layer_payload(
-                key,
-                prepared_segments,
-                entry_bytes,
-            ) {
-                Ok(evicted) => evicted,
-                Err(rejection) => {
-                    context.stats.paint_layer.record_rejection(rejection.into());
-                    return;
-                }
-            };
-            context.stats.paint_layer.record_payload_store(
-                u64::try_from(prepared_segment_count).unwrap_or(u64::MAX),
-                0,
-                prepare_started_at.elapsed(),
-            );
-            context.stats.paint_layer.record_payload_evictions(evicted);
-            return;
-        }
-
-        context.stats.paint_layer.record_prepare_failure();
-        Self::paint_layer_scope_direct(canvas, nodes, context);
-    }
-
-    fn paint_layer_scope_direct(
-        canvas: &skia_safe::Canvas,
-        nodes: &[RenderNode],
-        context: &mut PaintLayerRenderContext<'_, '_>,
-    ) {
-        let started_at = Instant::now();
-        let mut instrumentation = NoDrawInstrumentation;
-        Self::render_nodes_with_fixed_paint_layer_boundaries(
-            canvas,
-            nodes,
-            context,
-            MovingLayerEligibility::root(),
-            &mut instrumentation,
-        );
-        context.stats.paint_layer.direct_fallback_time += started_at.elapsed();
-    }
-
-    fn render_nodes_with_fixed_paint_layer_boundaries<I: DrawInstrumentation>(
-        canvas: &skia_safe::Canvas,
-        nodes: &[RenderNode],
-        context: &mut PaintLayerRenderContext<'_, '_>,
-        eligibility: MovingLayerEligibility,
-        instrumentation: &mut I,
-    ) {
-        let options = context.options;
-        let mut mode = FixedPaintLayerRenderMode { context };
-        Self::render_nodes_in_mode(
-            canvas,
-            nodes,
-            &mut mode,
-            options,
-            eligibility,
-            instrumentation,
-        );
-    }
-
-    fn render_dynamic_slot_nodes_with_cache_tracking(
-        canvas: &skia_safe::Canvas,
-        nodes: &[RenderNode],
-        context: &mut PaintLayerRenderContext<'_, '_>,
-    ) {
-        let started_at = Instant::now();
-        let mut instrumentation = NoDrawInstrumentation;
-        Self::render_nodes_with_fixed_paint_layer_boundaries(
-            canvas,
-            nodes,
-            context,
-            MovingLayerEligibility::root(),
-            &mut instrumentation,
-        );
-        context.stats.paint_layer.dirty_draw_time += started_at.elapsed();
-    }
-
-    fn render_explicit_fixed_paint_layer_payload_with_dynamic_slots(
-        canvas: &skia_safe::Canvas,
-        steps: &[PaintLayerCompositionStep],
-        payload_segments: &[PaintLayerPayloadSegment],
-        context: &mut PaintLayerRenderContext<'_, '_>,
-    ) {
-        let mut segment_index = 0usize;
-        for step in steps {
-            match step.kind {
-                PaintLayerCompositionStepKind::Static => {
-                    let Some(segment) = payload_segments.get(segment_index) else {
-                        Self::paint_layer_scope_direct(canvas, &[], context);
-                        return;
-                    };
-                    segment_index = segment_index.saturating_add(1);
-                    let started_at = Instant::now();
-                    canvas.draw_image(&segment.image, (0.0, 0.0), None);
-                    context.stats.paint_layer.payload_copy_time += started_at.elapsed();
-                }
-                PaintLayerCompositionStepKind::Dynamic => {
-                    Self::render_dynamic_slot_nodes_with_cache_tracking(
-                        canvas,
-                        &step.nodes,
-                        context,
-                    );
-                }
-            }
-        }
-    }
-
     fn render_nodes_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
@@ -3423,53 +2875,78 @@ impl SceneRenderer {
         eligibility: MovingLayerEligibility,
         instrumentation: &mut I,
     ) {
-        let resource_generation = moving_paint_layer_payload_resource_generation(&layer.children);
+        let has_own_nodes = layer.metrics.own_primitive_count > 0;
+        if !has_own_nodes {
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
+        let resource_generation = moving_paint_layer_payload_resource_generation(&layer.own_nodes);
         let key = PaintLayerMovingPayloadKey::from_layer(
             layer,
             1.0,
             resource_generation.unwrap_or_default(),
         );
-        let visible_pixels = moving_paint_layer_payload_visible_device_rect(
-            layer,
-            eligibility.current_transform,
-            eligibility.current_clip,
-        )
-        .map(PaintLayerDeviceRect::area)
-        .unwrap_or(0);
+        let visible_pixels =
+            paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
+                .map(PaintLayerDeviceRect::area)
+                .unwrap_or(0);
         if visible_pixels == 0 {
             cache_tracking.frame.mark_candidate(false);
+            if let Some(resource_generation) = resource_generation
+                && let Some(key) =
+                    PaintLayerMovingPayloadKey::from_layer(layer, 1.0, resource_generation)
+            {
+                cache_tracking
+                    .renderer_cache
+                    .touch_moving_layer_clipped(key);
+            }
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
             return;
         }
 
-        // Keep the first production cache to integer translation plus
-        // root alpha composition. Rotate/scale stay in direct fallback
-        // until their sampling behavior has parity coverage. GPU scroll
-        // items may use fractional translation because they are drawn as
-        // texture layers; CPU/raster keeps the stricter pixel-parity path.
-        let placement = moving_paint_layer_payload_placement(
-            layer,
+        if let Err(rejection) = paint_layer_payload_composition_supported(
             eligibility.current_transform,
             cache_tracking.gpu_context.is_some(),
-        );
+        ) {
+            cache_tracking.frame.mark_candidate(true);
+            cache_tracking.frame.record_rejection(rejection);
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
 
-        if !eligibility.paint_attributes_eligible
-            || !moving_paint_layer_payload_children_are_cacheable(&layer.children)
-            || resource_generation.is_none()
-            || key.is_none()
-            || placement.is_err()
+        if !eligibility.paint_attributes_eligible || resource_generation.is_none() || key.is_none()
         {
             cache_tracking.frame.mark_candidate(true);
             cache_tracking
                 .frame
                 .record_rejection(RendererCacheRejectionReason::Ineligible);
-            if let Err(rejection) = placement {
-                cache_tracking
-                    .frame
-                    .record_moving_layer_placement_rejection(rejection);
-            }
-            Self::render_nodes_with_cache_tracking(
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
                 canvas,
-                &layer.children,
+                layer,
                 options,
                 cache_tracking,
                 eligibility,
@@ -3479,49 +2956,25 @@ impl SceneRenderer {
         }
 
         let key = key.expect("moving paint-layer payload key checked above");
-        let placement = placement.expect("moving paint-layer payload placement checked above");
-        let visibility = cache_tracking.renderer_cache.mark_moving_layer_visible(
-            cache_tracking.frame,
-            key,
-            placement,
-            true,
-        );
+        cache_tracking.frame.mark_candidate(true);
 
         if let Some(image) = cache_tracking
             .renderer_cache
             .moving_layer_payload(cache_tracking.frame, key)
         {
             let hit_started_at = Instant::now();
-            canvas.draw_image(&image, (layer.bounds.x, layer.bounds.y), None);
-            Self::touch_descendant_moving_layer_payload_boundaries(&layer.children, cache_tracking);
-            if visibility.moved_since_last_seen {
-                cache_tracking.frame.record_moved_hit();
-            }
+            let composited_pixels =
+                Self::draw_paint_layer_payload_image(canvas, layer, &image, eligibility);
             cache_tracking.frame.record_hit(hit_started_at.elapsed());
-            return;
-        }
-
-        let same_content_moved_since_last_seen = visibility.moved_since_last_seen
-            || (visibility.stable_moved_since_last_seen
-                && !visibility.stable_content_changed_since_last_seen);
-        if same_content_moved_since_last_seen {
-            cache_tracking.frame.record_moved_miss();
-        }
-        cache_tracking.frame.record_miss();
-
-        if !cache_tracking
-            .renderer_cache
-            .moving_layer_visible_count_allows_store(visibility.visible_count)
-            || visibility.stable_content_changed_since_last_seen
-        {
-            if visibility.stable_content_changed_since_last_seen {
-                cache_tracking
-                    .frame
-                    .record_rejection(RendererCacheRejectionReason::AdmissionThreshold);
-            }
-            Self::render_nodes_with_cache_tracking(
+            cache_tracking
+                .frame
+                .record_hit_pixels(composited_pixels, visible_pixels);
+            cache_tracking
+                .frame
+                .record_cached_image_draw(composited_pixels, visible_pixels);
+            Self::render_paint_layer_child_refs(
                 canvas,
-                &layer.children,
+                layer,
                 options,
                 cache_tracking,
                 eligibility,
@@ -3534,9 +2987,10 @@ impl SceneRenderer {
             cache_tracking
                 .frame
                 .record_rejection(RendererCacheRejectionReason::OversizedEntry);
-            Self::render_nodes_with_cache_tracking(
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
                 canvas,
-                &layer.children,
+                layer,
                 options,
                 cache_tracking,
                 eligibility,
@@ -3545,33 +2999,106 @@ impl SceneRenderer {
             return;
         };
 
+        let admission_estimate = paint_layer_cache_admission_estimate(layer, key, visible_pixels);
+        if paint_layer_cache_bypass_low_value(
+            admission_estimate,
+            cache_tracking.gpu_context.is_some(),
+        ) {
+            cache_tracking.frame.record_low_value_bypass();
+            if renderer_cache_diagnostics_enabled() {
+                eprintln!(
+                    "[renderer_cache] paint_layer bypass stable_id={} root_id={} reason={:?} policy={:?} content_generation={} bounds={:?} payload_pixels={} visible_pixels={} own_nodes={} own_primitives={} primitive_cost={} child_refs={} key={:?}",
+                    layer.stable_id,
+                    layer.root_id,
+                    layer.reason,
+                    layer.policy,
+                    layer.content_generation,
+                    layer.bounds,
+                    admission_estimate.payload_pixels,
+                    admission_estimate.visible_pixels,
+                    layer.metrics.own_node_count,
+                    layer.metrics.own_primitive_count,
+                    admission_estimate.primitive_cost,
+                    layer.child_refs.len(),
+                    key,
+                );
+            }
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
+        cache_tracking.frame.record_miss();
+        if renderer_cache_diagnostics_enabled() {
+            eprintln!(
+                "[renderer_cache] paint_layer miss stable_id={} root_id={} reason={:?} policy={:?} content_generation={} bounds={:?} payload_pixels={} visible_pixels={} own_nodes={} own_primitives={} primitive_cost={} child_refs={} key={:?}",
+                layer.stable_id,
+                layer.root_id,
+                layer.reason,
+                layer.policy,
+                layer.content_generation,
+                layer.bounds,
+                key.pixel_len(),
+                visible_pixels,
+                layer.metrics.own_node_count,
+                layer.metrics.own_primitive_count,
+                layer.metrics.own_primitive_cost,
+                layer.child_refs.len(),
+                key,
+            );
+        }
+
         match cache_tracking
             .renderer_cache
             .reserve_moving_layer_payload_store(cache_tracking.frame, key, bytes)
         {
             Ok(()) => {
                 let prepared = if let Some(gr_context) = cache_tracking.gpu_context.as_mut() {
-                    Self::prepare_moving_layer_payload(layer, options, Some(&mut **gr_context))
+                    Self::prepare_moving_layer_payload(
+                        layer,
+                        &layer.own_nodes,
+                        options,
+                        Some(&mut **gr_context),
+                    )
                 } else {
-                    Self::prepare_moving_layer_payload(layer, options, None)
+                    Self::prepare_moving_layer_payload(layer, &layer.own_nodes, options, None)
                 };
 
                 if let Some(prepared) = prepared {
-                    canvas.draw_image(&prepared.image, (layer.bounds.x, layer.bounds.y), None);
-                    Self::touch_descendant_moving_layer_payload_boundaries(
-                        &layer.children,
-                        cache_tracking,
+                    let composited_pixels = Self::draw_paint_layer_payload_image(
+                        canvas,
+                        layer,
+                        &prepared.image,
+                        eligibility,
                     );
+                    cache_tracking
+                        .frame
+                        .record_cached_image_draw(composited_pixels, visible_pixels);
                     cache_tracking
                         .renderer_cache
                         .store_reserved_moving_layer_payload(
                             cache_tracking.frame,
                             key,
-                            prepared.bytes,
+                            visible_pixels,
                             prepared.payload_kind,
                             prepared.image,
                             prepared.prepare_time,
                         );
+                    Self::render_paint_layer_child_refs(
+                        canvas,
+                        layer,
+                        options,
+                        cache_tracking,
+                        eligibility,
+                        instrumentation,
+                    );
                     return;
                 }
 
@@ -3588,9 +3115,10 @@ impl SceneRenderer {
             Err(_) => {}
         }
 
-        Self::render_nodes_with_cache_tracking(
+        Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+        Self::render_paint_layer_child_refs(
             canvas,
-            &layer.children,
+            layer,
             options,
             cache_tracking,
             eligibility,
@@ -3598,125 +3126,95 @@ impl SceneRenderer {
         );
     }
 
-    fn touch_descendant_moving_layer_payload_boundaries(
+    fn render_paint_layer_own_nodes<I: DrawInstrumentation>(
+        canvas: &skia_safe::Canvas,
         nodes: &[RenderNode],
-        cache_tracking: &mut RenderCacheTracking<'_>,
+        options: RenderTraversalOptions<'_>,
+        instrumentation: &mut I,
     ) {
-        for node in nodes {
-            match node {
-                RenderNode::Clip { children, .. }
-                | RenderNode::RelaxedClip { children, .. }
-                | RenderNode::ShadowPass { children }
-                | RenderNode::Transform { children, .. }
-                | RenderNode::Alpha { children, .. } => {
-                    Self::touch_descendant_moving_layer_payload_boundaries(
-                        children,
-                        cache_tracking,
-                    );
-                }
-                RenderNode::PaintLayer(layer) => {
-                    if layer.policy == PaintLayerPolicy::Cacheable
-                        && layer.placement == PaintLayerPlacement::ScrollMoving
-                    {
-                        let resource_generation =
-                            moving_paint_layer_payload_resource_generation(&layer.children);
-                        if let Some(key) = resource_generation.and_then(|generation| {
-                            PaintLayerMovingPayloadKey::from_layer(layer, 1.0, generation)
-                        }) {
-                            cache_tracking
-                                .renderer_cache
-                                .touch_moving_layer_suppressed_by_parent(cache_tracking.frame, key);
-                        }
-                    }
-                    Self::touch_descendant_moving_layer_payload_boundaries(
-                        &layer.children,
-                        cache_tracking,
-                    );
-                }
-                RenderNode::Primitive(_) => {}
+        let mut mode = PaintLayerOwnRenderMode;
+        Self::render_nodes_in_mode(
+            canvas,
+            nodes,
+            &mut mode,
+            options,
+            MovingLayerEligibility::root(),
+            instrumentation,
+        );
+    }
+
+    fn render_paint_layer_child_refs<I: DrawInstrumentation>(
+        canvas: &skia_safe::Canvas,
+        layer: &RenderPaintLayer,
+        options: RenderTraversalOptions<'_>,
+        cache_tracking: &mut RenderCacheTracking<'_>,
+        eligibility: MovingLayerEligibility,
+        instrumentation: &mut I,
+    ) {
+        if layer.child_refs.is_empty() {
+            return;
+        }
+
+        let mut mode = ChildPaintLayerRenderMode { cache_tracking };
+        let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
+        if let Some(clip) = paint_layer_child_ref_clip(layer) {
+            if child_eligibility.clip_empty {
+                return;
             }
+            canvas.save();
+            apply_clip_shape(canvas, &clip);
+            layer.child_refs.iter().for_each(|child| {
+                Self::render_nodes_in_mode(
+                    canvas,
+                    &child.nodes,
+                    &mut mode,
+                    options,
+                    child_eligibility,
+                    instrumentation,
+                );
+            });
+            canvas.restore();
+        } else {
+            layer.child_refs.iter().for_each(|child| {
+                Self::render_nodes_in_mode(
+                    canvas,
+                    &child.nodes,
+                    &mut mode,
+                    options,
+                    child_eligibility,
+                    instrumentation,
+                );
+            });
         }
     }
 
     fn prepare_moving_layer_payload(
         layer: &RenderPaintLayer,
+        own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         gpu_context: Option<&mut gpu::DirectContext>,
     ) -> Option<PreparedMovingLayerPayload> {
         if let Some(gr_context) = gpu_context {
-            return Self::prepare_moving_paint_layer_gpu_payload(layer, options, gr_context);
+            return Self::prepare_moving_paint_layer_gpu_payload(
+                layer, own_nodes, options, gr_context,
+            );
         }
 
-        Self::rasterize_moving_layer_payload(layer, options)
-    }
-
-    fn prepare_fixed_paint_layer_gpu_payload_segments(
-        content_steps: &[PaintLayerCompositionStep],
-        width_px: u32,
-        height_px: u32,
-        bytes: u64,
-        options: RenderTraversalOptions<'_>,
-        gr_context: &mut gpu::DirectContext,
-    ) -> Option<Vec<PaintLayerPayloadSegment>> {
-        paint_layer_static_segments(content_steps)
-            .map(|segment_nodes| {
-                Self::prepare_fixed_paint_layer_gpu_payload_segment(
-                    segment_nodes,
-                    width_px,
-                    height_px,
-                    bytes,
-                    options,
-                    gr_context,
-                )
-            })
-            .collect()
-    }
-
-    fn prepare_fixed_paint_layer_gpu_payload_segment(
-        payload_nodes: &[RenderNode],
-        width_px: u32,
-        height_px: u32,
-        bytes: u64,
-        options: RenderTraversalOptions<'_>,
-        gr_context: &mut gpu::DirectContext,
-    ) -> Option<PaintLayerPayloadSegment> {
-        let info = skia_safe::ImageInfo::new(
-            (width_px as i32, height_px as i32),
-            skia_safe::ColorType::RGBA8888,
-            skia_safe::AlphaType::Premul,
-            None,
-        );
-        let mut surface = gpu::surfaces::render_target(
-            gr_context,
-            gpu::Budgeted::Yes,
-            &info,
-            0,
-            gpu::SurfaceOrigin::TopLeft,
-            None,
-            false,
-            false,
-        )?;
-        let canvas = surface.canvas();
-        canvas.clear(Color::TRANSPARENT);
-        let mut instrumentation = NoDrawInstrumentation;
-        Self::render_nodes(canvas, payload_nodes, options, &mut instrumentation);
-        let image = surface.image_snapshot();
-
-        Some(PaintLayerPayloadSegment {
-            image,
-            bytes,
-            payload_kind: RendererCachePayloadKind::GpuRenderTarget,
-        })
+        Self::rasterize_moving_layer_payload(layer, own_nodes, options)
     }
 
     fn prepare_moving_paint_layer_gpu_payload(
         layer: &RenderPaintLayer,
+        own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
         gr_context: &mut gpu::DirectContext,
     ) -> Option<PreparedMovingLayerPayload> {
-        let (width_px, height_px, bytes) = moving_paint_layer_payload_bounds_size(layer.bounds)?;
+        let payload_bounds = paint_layer_payload_bounds(layer.bounds)?;
         let info = skia_safe::ImageInfo::new(
-            (width_px as i32, height_px as i32),
+            (
+                payload_bounds.width_px as i32,
+                payload_bounds.height_px as i32,
+            ),
             skia_safe::ColorType::RGBA8888,
             skia_safe::AlphaType::Premul,
             None,
@@ -3735,15 +3233,17 @@ impl SceneRenderer {
         let canvas = surface.canvas();
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
-        canvas.translate((-layer.bounds.x, -layer.bounds.y));
+        canvas.translate((
+            -(payload_bounds.origin_x as f32),
+            -(payload_bounds.origin_y as f32),
+        ));
         let mut instrumentation = NoDrawInstrumentation;
-        Self::render_nodes(canvas, &layer.children, options, &mut instrumentation);
+        Self::render_paint_layer_own_nodes(canvas, own_nodes, options, &mut instrumentation);
         canvas.restore();
         let image = surface.image_snapshot();
 
         Some(PreparedMovingLayerPayload {
             image,
-            bytes,
             payload_kind: RendererCachePayloadKind::GpuRenderTarget,
             prepare_time: started_at.elapsed(),
         })
@@ -3751,11 +3251,15 @@ impl SceneRenderer {
 
     fn rasterize_moving_layer_payload(
         layer: &RenderPaintLayer,
+        own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
     ) -> Option<PreparedMovingLayerPayload> {
-        let (width_px, height_px, bytes) = moving_paint_layer_payload_bounds_size(layer.bounds)?;
+        let payload_bounds = paint_layer_payload_bounds(layer.bounds)?;
         let info = skia_safe::ImageInfo::new(
-            (width_px as i32, height_px as i32),
+            (
+                payload_bounds.width_px as i32,
+                payload_bounds.height_px as i32,
+            ),
             skia_safe::ColorType::RGBA8888,
             skia_safe::AlphaType::Premul,
             None,
@@ -3765,18 +3269,56 @@ impl SceneRenderer {
         let canvas = surface.canvas();
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
-        canvas.translate((-layer.bounds.x, -layer.bounds.y));
+        canvas.translate((
+            -(payload_bounds.origin_x as f32),
+            -(payload_bounds.origin_y as f32),
+        ));
         let mut instrumentation = NoDrawInstrumentation;
-        Self::render_nodes(canvas, &layer.children, options, &mut instrumentation);
+        Self::render_paint_layer_own_nodes(canvas, own_nodes, options, &mut instrumentation);
         canvas.restore();
         let image = surface.image_snapshot();
 
         Some(PreparedMovingLayerPayload {
             image,
-            bytes,
             payload_kind: RendererCachePayloadKind::CpuRaster,
             prepare_time: started_at.elapsed(),
         })
+    }
+
+    fn draw_paint_layer_payload_image(
+        canvas: &skia_safe::Canvas,
+        layer: &RenderPaintLayer,
+        image: &Image,
+        eligibility: MovingLayerEligibility,
+    ) -> u64 {
+        if let Some(payload_bounds) = paint_layer_payload_bounds(layer.bounds) {
+            if let Some((src, dst, pixels)) =
+                paint_layer_visible_payload_image_rect(layer, payload_bounds, eligibility)
+            {
+                let paint = Paint::default();
+                canvas.draw_image_rect_with_sampling_options(
+                    image,
+                    Some((&src, SrcRectConstraint::Strict)),
+                    dst,
+                    SamplingOptions::default(),
+                    &paint,
+                );
+                return pixels;
+            }
+
+            canvas.draw_image(
+                image,
+                (
+                    payload_bounds.origin_x as f32,
+                    payload_bounds.origin_y as f32,
+                ),
+                None,
+            );
+            payload_bounds.pixel_len()
+        } else {
+            canvas.draw_image(image, (layer.bounds.x, layer.bounds.y), None);
+            paint_layer_geometry_rect_pixels(layer.bounds)
+        }
     }
 
     fn render_nodes<I: DrawInstrumentation>(
@@ -3859,10 +3401,25 @@ impl SceneRenderer {
                     instrumentation,
                 ),
                 RenderNode::PaintLayer(layer) => {
-                    mode.render_paint_layer(canvas, layer, options, eligibility, instrumentation)
+                    if M::RENDER_PAINT_LAYERS {
+                        mode.render_paint_layer(
+                            canvas,
+                            layer,
+                            options,
+                            eligibility,
+                            instrumentation,
+                        );
+                    }
                 }
                 RenderNode::Primitive(primitive) => {
-                    Self::render_primitive_instrumented(canvas, primitive, options, instrumentation)
+                    if M::RENDER_PRIMITIVES {
+                        Self::render_primitive_instrumented(
+                            canvas,
+                            primitive,
+                            options,
+                            instrumentation,
+                        );
+                    }
                 }
             }
         }
@@ -3941,6 +3498,15 @@ impl SceneRenderer {
             return;
         }
 
+        let clipped_eligibility = if M::TRACK_ELIGIBILITY {
+            eligibility.with_clip(clips, relaxed)
+        } else {
+            eligibility
+        };
+        if clipped_eligibility.clip_empty && !render_nodes_have_shadow_pass(children) {
+            return;
+        }
+
         instrumentation.record_clip_scope(relaxed, clips);
         if clips.is_empty() {
             Self::render_nodes_in_mode(
@@ -3970,11 +3536,6 @@ impl SceneRenderer {
             }
         });
 
-        let clipped_eligibility = if M::TRACK_ELIGIBILITY {
-            eligibility.with_clip(clips, relaxed)
-        } else {
-            eligibility
-        };
         let clipped_options = options.with_solid_border_fast_paths(false);
         for child in children {
             match child {
@@ -4574,12 +4135,58 @@ impl<'video> RenderTraversalMode<'video> for DirectRenderMode {
     ) {
         SceneRenderer::render_nodes_in_mode(
             canvas,
-            &layer.children,
+            &layer.own_nodes,
             self,
             options,
             eligibility,
             instrumentation,
         );
+        let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
+        if let Some(clip) = paint_layer_child_ref_clip(layer) {
+            if child_eligibility.clip_empty {
+                return;
+            }
+            canvas.save();
+            apply_clip_shape(canvas, &clip);
+            layer.child_refs.iter().for_each(|child| {
+                SceneRenderer::render_nodes_in_mode(
+                    canvas,
+                    &child.nodes,
+                    self,
+                    options,
+                    child_eligibility,
+                    instrumentation,
+                );
+            });
+            canvas.restore();
+            return;
+        }
+
+        layer.child_refs.iter().for_each(|child| {
+            SceneRenderer::render_nodes_in_mode(
+                canvas,
+                &child.nodes,
+                self,
+                options,
+                child_eligibility,
+                instrumentation,
+            );
+        });
+    }
+}
+
+impl<'video> RenderTraversalMode<'video> for PaintLayerOwnRenderMode {
+    const TRACK_ELIGIBILITY: bool = false;
+    const RENDER_PAINT_LAYERS: bool = false;
+
+    fn render_paint_layer<I: DrawInstrumentation>(
+        &mut self,
+        _canvas: &skia_safe::Canvas,
+        _layer: &RenderPaintLayer,
+        _options: RenderTraversalOptions<'video>,
+        _eligibility: MovingLayerEligibility,
+        _instrumentation: &mut I,
+    ) {
     }
 }
 
@@ -4594,9 +4201,7 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
         eligibility: MovingLayerEligibility,
         instrumentation: &mut I,
     ) {
-        if layer.policy == PaintLayerPolicy::Cacheable
-            && layer.placement == PaintLayerPlacement::ScrollMoving
-        {
+        if paint_layer_own_payload_cache_enabled(layer) {
             SceneRenderer::render_moving_paint_layer_payload(
                 canvas,
                 layer,
@@ -4606,11 +4211,25 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
                 instrumentation,
             );
         } else {
-            SceneRenderer::render_nodes_in_mode(
+            let visible_pixels =
+                paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
+                    .map(PaintLayerDeviceRect::area)
+                    .unwrap_or(0);
+            if visible_pixels == 0 {
+                return;
+            }
+
+            SceneRenderer::render_paint_layer_own_nodes(
                 canvas,
-                &layer.children,
-                self,
+                &layer.own_nodes,
                 options,
+                instrumentation,
+            );
+            SceneRenderer::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                self.cache_tracking,
                 eligibility,
                 instrumentation,
             );
@@ -4618,8 +4237,9 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
     }
 }
 
-impl<'video> RenderTraversalMode<'video> for FixedPaintLayerRenderMode<'_, '_, 'video> {
+impl<'video> RenderTraversalMode<'video> for ChildPaintLayerRenderMode<'_, '_> {
     const TRACK_ELIGIBILITY: bool = true;
+    const RENDER_PRIMITIVES: bool = false;
 
     fn render_paint_layer<I: DrawInstrumentation>(
         &mut self,
@@ -4629,45 +4249,38 @@ impl<'video> RenderTraversalMode<'video> for FixedPaintLayerRenderMode<'_, '_, '
         eligibility: MovingLayerEligibility,
         instrumentation: &mut I,
     ) {
-        match (layer.policy, layer.placement) {
-            (PaintLayerPolicy::Cacheable, PaintLayerPlacement::ScrollMoving) => {
-                let mut cache_tracking = RenderCacheTracking {
-                    renderer_cache: &mut *self.context.renderer_cache,
-                    frame: &mut *self.context.clean_cache_frame,
-                    gpu_context: self.context.gpu_context.as_deref_mut(),
-                };
-                SceneRenderer::render_moving_paint_layer_payload(
-                    canvas,
-                    layer,
-                    options,
-                    &mut cache_tracking,
-                    eligibility,
-                    instrumentation,
-                );
+        if paint_layer_own_payload_cache_enabled(layer) {
+            SceneRenderer::render_moving_paint_layer_payload(
+                canvas,
+                layer,
+                options,
+                self.cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+        } else {
+            let visible_pixels =
+                paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
+                    .map(PaintLayerDeviceRect::area)
+                    .unwrap_or(0);
+            if visible_pixels == 0 {
+                return;
             }
-            (PaintLayerPolicy::Cacheable, PaintLayerPlacement::Fixed) => {
-                let started_at = Instant::now();
-                let previous_options = self.context.options;
-                self.context.options = options;
-                SceneRenderer::render_explicit_fixed_paint_layer_scope(
-                    canvas,
-                    &layer.children,
-                    paint_layer_scope_id(layer),
-                    self.context,
-                );
-                self.context.options = previous_options;
-                self.context.stats.paint_layer.child_layer_time += started_at.elapsed();
-            }
-            (PaintLayerPolicy::DynamicRedraw | PaintLayerPolicy::DirectOnly, _) => {
-                SceneRenderer::render_nodes_in_mode(
-                    canvas,
-                    &layer.children,
-                    self,
-                    options,
-                    eligibility,
-                    instrumentation,
-                );
-            }
+
+            SceneRenderer::render_paint_layer_own_nodes(
+                canvas,
+                &layer.own_nodes,
+                options,
+                instrumentation,
+            );
+            SceneRenderer::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                self.cache_tracking,
+                eligibility,
+                instrumentation,
+            );
         }
     }
 }
@@ -6283,7 +5896,7 @@ fn border_edge_clip_quads(rect: RectSpec, insets: EdgeInsets) -> [(f32, [(f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_scene::PaintLayerReason;
+    use crate::render_scene::{PaintLayerPlacement, PaintLayerReason};
 
     fn point_in_convex_polygon(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
         const EPS: f32 = 1.0e-4;
@@ -6379,108 +5992,15 @@ mod tests {
     }
 
     #[test]
-    fn render_state_set_scene_refreshes_moving_paint_layer_flag() {
+    fn render_state_set_scene_refreshes_cacheable_paint_layer_flag() {
         let mut state = RenderState::default();
-        assert!(!state.has_moving_paint_layers);
+        assert!(!state.has_cacheable_paint_layers);
 
         state.set_scene(translated_candidate_scene(1));
-        assert!(state.has_moving_paint_layers);
+        assert!(state.has_cacheable_paint_layers);
 
         state.set_scene(RenderScene::default());
-        assert!(!state.has_moving_paint_layers);
-    }
-
-    #[test]
-    fn fixed_paint_layer_steps_preserve_static_segments_around_dynamic_slots() {
-        let dirty = dynamic_paint_layer_node(
-            77,
-            crate::tree::geometry::Rect {
-                x: 8.0,
-                y: 8.0,
-                width: 12.0,
-                height: 12.0,
-            },
-            vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                8.0, 8.0, 12.0, 12.0, 0x2563EBFF,
-            ))],
-        );
-        let nodes = vec![
-            RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 8.0, 8.0, 0xE11D48FF)),
-            dirty,
-            RenderNode::Primitive(DrawPrimitive::Rect(24.0, 0.0, 8.0, 8.0, 0x16A34AFF)),
-        ];
-
-        let steps = paint_layer_ordered_content_steps(&nodes);
-
-        assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0].kind, PaintLayerCompositionStepKind::Static);
-        assert_eq!(steps[1].kind, PaintLayerCompositionStepKind::Dynamic);
-        assert_eq!(steps[2].kind, PaintLayerCompositionStepKind::Static);
-        assert_eq!(paint_layer_static_segment_count(&steps), 2);
-    }
-
-    #[test]
-    fn fixed_paint_layer_steps_keep_wrapper_context_when_splitting_segments() {
-        let clip = ClipShape {
-            rect: crate::tree::geometry::Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 48.0,
-                height: 48.0,
-            },
-            radii: None,
-        };
-        let nodes = vec![RenderNode::Clip {
-            clips: vec![clip],
-            children: vec![
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 8.0, 8.0, 0xE11D48FF)),
-                dynamic_paint_layer_node(
-                    88,
-                    crate::tree::geometry::Rect {
-                        x: 8.0,
-                        y: 8.0,
-                        width: 12.0,
-                        height: 12.0,
-                    },
-                    vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                        8.0, 8.0, 12.0, 12.0, 0x2563EBFF,
-                    ))],
-                ),
-                RenderNode::Primitive(DrawPrimitive::Rect(24.0, 0.0, 8.0, 8.0, 0x16A34AFF)),
-            ],
-        }];
-
-        let steps = paint_layer_ordered_content_steps(&nodes);
-
-        assert_eq!(steps.len(), 3);
-        assert!(
-            steps
-                .iter()
-                .all(|step| matches!(step.nodes.as_slice(), [RenderNode::Clip { .. }]))
-        );
-        assert_eq!(steps[0].kind, PaintLayerCompositionStepKind::Static);
-        assert_eq!(steps[1].kind, PaintLayerCompositionStepKind::Dynamic);
-        assert_eq!(steps[2].kind, PaintLayerCompositionStepKind::Static);
-    }
-
-    #[test]
-    fn paint_layer_reason_selects_distinct_cache_scope() {
-        let scroll_layer = fixed_paint_layer(
-            42,
-            PaintLayerReason::ScrollContainer,
-            GeometryRect::default(),
-            Vec::new(),
-        );
-        let nearby_layer = fixed_paint_layer(
-            42,
-            PaintLayerReason::Nearby,
-            GeometryRect::default(),
-            Vec::new(),
-        );
-        assert_ne!(
-            paint_layer_scope_id(&scroll_layer),
-            paint_layer_scope_id(&nearby_layer)
-        );
+        assert!(!state.has_cacheable_paint_layers);
     }
 
     #[test]
@@ -6503,11 +6023,20 @@ mod tests {
         assert_eq!(payload_config.max_entries, 2);
         assert_eq!(payload_config.max_bytes, 1024);
         assert_eq!(payload_config.max_entry_bytes, 128);
-        assert_eq!(cache.placement_tracker.min_visible_before_store, 2);
 
         let frame = cache.begin_frame();
         assert_eq!(
-            cache.payloads.try_reserve_store(128),
+            cache.payloads.try_reserve_store(
+                RendererCacheManager::payload_key_for_moving_layer(PaintLayerMovingPayloadKey {
+                    stable_id: 1,
+                    content_generation: 1,
+                    width_px: 8,
+                    height_px: 4,
+                    scale_bits: 1.0f32.to_bits(),
+                    resource_generation: 0,
+                }),
+                128
+            ),
             Err(PaintLayerPayloadStoreRejection::PayloadBudget)
         );
         cache.end_frame(frame);
@@ -6530,9 +6059,9 @@ mod tests {
             ..RendererCacheConfig::default()
         });
 
-        let first_scene = fixed_paint_layer_payload_test_scene(0xE11D48FF);
-        let second_scene = fixed_paint_layer_payload_test_scene(0x2563EBFF);
-        let third_scene = fixed_paint_layer_payload_test_scene(0x16A34AFF);
+        let first_scene = direct_payload_test_scene(0xE11D48FF);
+        let second_scene = direct_payload_test_scene(0x2563EBFF);
+        let third_scene = direct_payload_test_scene(0x16A34AFF);
 
         let (_first_pixels, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
             &mut renderer,
@@ -6584,9 +6113,36 @@ mod tests {
         frame.mark_candidate(false);
         frame.mark_candidate(true);
         frame.admit_candidate();
-        assert!(cache.payloads.try_reserve_store(128).is_ok());
+        assert!(
+            cache
+                .payloads
+                .try_reserve_store(
+                    RendererCacheManager::payload_key_for_moving_layer(
+                        PaintLayerMovingPayloadKey {
+                            stable_id: 1,
+                            content_generation: 1,
+                            width_px: 8,
+                            height_px: 4,
+                            scale_bits: 1.0f32.to_bits(),
+                            resource_generation: 0,
+                        }
+                    ),
+                    128
+                )
+                .is_ok()
+        );
         assert_eq!(
-            cache.payloads.try_reserve_store(128),
+            cache.payloads.try_reserve_store(
+                RendererCacheManager::payload_key_for_moving_layer(PaintLayerMovingPayloadKey {
+                    stable_id: 2,
+                    content_generation: 1,
+                    width_px: 8,
+                    height_px: 4,
+                    scale_bits: 1.0f32.to_bits(),
+                    resource_generation: 0,
+                }),
+                128
+            ),
             Err(PaintLayerPayloadStoreRejection::PayloadBudget)
         );
         frame.record_rejection(RendererCacheRejectionReason::PayloadBudget);
@@ -6616,40 +6172,6 @@ mod tests {
 
         cache.clear();
         assert_ne!(cache.generation(), initial_generation);
-    }
-
-    #[test]
-    fn paint_layer_payload_cache_tracks_fixed_segment_residency() {
-        let image = raster_image_from_rgba(1, 1, &[255, 255, 255, 255])
-            .expect("test image should be created");
-        let key =
-            PaintLayerPayloadKey::fixed(PAINT_LAYER_ROOT_SCOPE_ID, 1, 2, 1, 1, 1.0f32.to_bits(), 3);
-        let mut cache = RendererCacheManager::with_config(RendererCacheConfig {
-            enabled: true,
-            max_new_payloads_per_frame: 1,
-            ..RendererCacheConfig::default()
-        });
-        let mut frame = cache.begin_frame();
-        assert!(cache.reserve_fixed_layer_payload_store(4).is_ok());
-        let evicted = cache
-            .store_reserved_fixed_layer_payload(
-                key,
-                vec![PaintLayerPayloadSegment {
-                    image,
-                    bytes: 4,
-                    payload_kind: RendererCachePayloadKind::GpuRenderTarget,
-                }],
-                4,
-            )
-            .expect("fixed payload should store");
-        assert!(evicted.is_empty());
-        frame.record_store(4, RendererCachePayloadKind::GpuRenderTarget, Duration::ZERO);
-        let stats = cache.end_frame(frame);
-
-        assert_eq!(stats.paint_layer.current_entries, 1);
-        assert_eq!(stats.paint_layer.current_bytes, 4);
-        assert_eq!(stats.paint_layer.current_gpu_payloads, 1);
-        assert_eq!(stats.paint_layer.current_cpu_payloads, 0);
     }
 
     #[test]
@@ -6683,12 +6205,6 @@ mod tests {
         assert_eq!(key.height_px, 41);
         assert_eq!(key.byte_len(), Some(121 * 41 * 4));
 
-        let moved_left = PaintLayerPayloadOffset::from_transform(Affine2::translation(-300.0, 0.0))
-            .expect("integer move_x should be a reusable placement");
-        let moved_right = PaintLayerPayloadOffset::from_transform(Affine2::translation(300.0, 0.0))
-            .expect("integer move_x should be a reusable placement");
-        assert_ne!(moved_left, moved_right);
-
         let next_generation = RenderPaintLayer {
             content_generation: candidate.content_generation + 1,
             ..candidate.clone()
@@ -6708,286 +6224,58 @@ mod tests {
     }
 
     #[test]
-    fn moving_paint_layer_payload_placement_rejects_fractional_and_non_translation_transforms() {
-        assert_eq!(
-            PaintLayerPayloadOffset::from_translation(10.5, 0.0),
-            Err(PaintLayerPlacementRejection::FractionalTranslation)
-        );
-        assert_eq!(
-            PaintLayerPayloadOffset::from_translation(f32::NAN, 0.0),
-            Err(PaintLayerPlacementRejection::NonFiniteTranslation)
-        );
-        assert_eq!(
-            PaintLayerPayloadOffset::from_transform(Affine2::scale(1.1, 1.1)),
-            Err(PaintLayerPlacementRejection::UnsupportedTransform)
-        );
-    }
-
-    #[test]
-    fn moving_paint_layer_payload_placement_accepts_fractional_translation_when_allowed() {
-        assert_eq!(
-            PaintLayerPayloadOffset::from_translation_with_fractional(10.5, -2.25, true),
-            Ok(PaintLayerPayloadOffset {
-                x_subpx: 672,
-                y_subpx: -144,
-            })
-        );
-    }
-
-    fn mark_moving_layer_visible_for_test(
-        cache: &mut RendererCacheManager,
-        frame: &mut RendererCacheFrame,
-        key: PaintLayerMovingPayloadKey,
-    ) -> PaintLayerPayloadVisibility {
-        mark_moving_layer_visible_at_for_test(
-            cache,
-            frame,
-            key,
-            PaintLayerPayloadOffset {
-                x_subpx: 0,
-                y_subpx: 0,
+    fn paint_layer_source_clip_requires_material_pixel_savings() {
+        let layer = moving_paint_layer(
+            301,
+            1,
+            GeometryRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
             },
-        )
-    }
+            moving_paint_layer_payload_test_children(),
+        );
+        let payload_bounds =
+            paint_layer_payload_bounds(layer.bounds).expect("test layer should have bounds");
 
-    fn mark_moving_layer_visible_at_for_test(
-        cache: &mut RendererCacheManager,
-        frame: &mut RendererCacheFrame,
-        key: PaintLayerMovingPayloadKey,
-        placement: PaintLayerPayloadOffset,
-    ) -> PaintLayerPayloadVisibility {
-        cache.mark_moving_layer_visible(frame, key, placement, true)
-    }
-
-    #[test]
-    fn moving_paint_layer_payload_visibility_tracks_stable_movement_across_content_keys() {
-        let key = moving_paint_layer_payload_test_key(1);
-        let moved_content_key = PaintLayerMovingPayloadKey {
-            content_generation: key.content_generation + 1,
-            ..key
+        let small_savings = MovingLayerEligibility {
+            current_clip: Some(PaintLayerDeviceRect {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 1000,
+            }),
+            ..MovingLayerEligibility::root()
         };
-        let mut cache = RendererCacheManager::default();
-
-        let mut first_frame = cache.begin_frame();
-        let first_visibility = mark_moving_layer_visible_at_for_test(
-            &mut cache,
-            &mut first_frame,
-            key,
-            PaintLayerPayloadOffset {
-                x_subpx: 0,
-                y_subpx: 0,
-            },
+        assert!(
+            paint_layer_visible_payload_image_rect(&layer, payload_bounds, small_savings).is_none()
         );
-        assert!(!first_visibility.moved_since_last_seen);
-        assert!(!first_visibility.stable_moved_since_last_seen);
-        cache.end_frame(first_frame);
 
-        let mut second_frame = cache.begin_frame();
-        let second_visibility = mark_moving_layer_visible_at_for_test(
-            &mut cache,
-            &mut second_frame,
-            moved_content_key,
-            PaintLayerPayloadOffset {
-                x_subpx: 0,
-                y_subpx: 512,
-            },
+        let large_savings = MovingLayerEligibility {
+            current_clip: Some(PaintLayerDeviceRect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 1000,
+            }),
+            ..MovingLayerEligibility::root()
+        };
+        assert!(
+            paint_layer_visible_payload_image_rect(&layer, payload_bounds, large_savings).is_some()
         );
-        assert!(!second_visibility.moved_since_last_seen);
-        assert!(second_visibility.stable_moved_since_last_seen);
-        assert!(second_visibility.stable_content_changed_since_last_seen);
     }
 
     #[test]
-    fn moving_paint_layer_payload_cache_requires_repeated_visibility_and_tracks_eviction_stats() {
-        let key_a = moving_paint_layer_payload_test_key(1);
-        let key_b = PaintLayerMovingPayloadKey {
-            stable_id: 2,
-            ..key_a
-        };
-        let key_c = PaintLayerMovingPayloadKey {
-            stable_id: 3,
-            ..key_a
+    fn tiny_low_value_payload_bypass_is_gpu_only() {
+        let estimate = PaintLayerCacheAdmissionEstimate {
+            primitive_cost: 48,
+            payload_pixels: 9_801,
+            visible_pixels: 9_801,
         };
 
-        let mut cache = RendererCacheManager::with_config(RendererCacheConfig {
-            max_new_payloads_per_frame: 1,
-            paint_layer: RendererPaintLayerCacheConfig {
-                min_visible_before_store: 2,
-                ..RendererPaintLayerCacheConfig::default()
-            },
-            ..RendererCacheConfig::default()
-        });
-        cache.configure_moving_paint_layer_limits_for_test(1, 256, 256);
-
-        let mut first_frame = cache.begin_frame();
-        assert_eq!(
-            mark_moving_layer_visible_for_test(&mut cache, &mut first_frame, key_a).visible_count,
-            1
-        );
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut first_frame,
-                key_a,
-                128,
-                Duration::from_micros(5)
-            ),
-            Err(PaintLayerPayloadAdmissionRejection::AdmissionThreshold)
-        );
-        let first_stats = cache.end_frame(first_frame);
-        assert_eq!(first_stats.paint_layer.visible_candidates, 1);
-        assert_eq!(first_stats.paint_layer.rejected, 1);
-        assert_eq!(first_stats.paint_layer.stores, 0);
-
-        let mut second_frame = cache.begin_frame();
-        assert_eq!(
-            mark_moving_layer_visible_for_test(&mut cache, &mut second_frame, key_a).visible_count,
-            2
-        );
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut second_frame,
-                key_a,
-                128,
-                Duration::from_micros(7)
-            ),
-            Ok(())
-        );
-        let second_stats = cache.end_frame(second_frame);
-        assert_eq!(second_stats.paint_layer.admitted, 1);
-        assert_eq!(second_stats.paint_layer.stores, 1);
-        assert_eq!(second_stats.paint_layer.current_entries, 1);
-        assert_eq!(second_stats.paint_layer.current_bytes, 128);
-        assert_eq!(cache.moving_layer_entry_count(), 1);
-        assert_eq!(cache.moving_layer_total_bytes(), 128);
-
-        let mut third_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut third_frame, key_b);
-        mark_moving_layer_visible_for_test(&mut cache, &mut third_frame, key_b);
-        mark_moving_layer_visible_for_test(&mut cache, &mut third_frame, key_c);
-        mark_moving_layer_visible_for_test(&mut cache, &mut third_frame, key_c);
-
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut third_frame,
-                key_b,
-                160,
-                Duration::from_micros(11)
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut third_frame,
-                key_c,
-                160,
-                Duration::from_micros(13)
-            ),
-            Err(PaintLayerPayloadAdmissionRejection::PayloadBudget)
-        );
-
-        let third_stats = cache.end_frame(third_frame);
-        assert_eq!(third_stats.paint_layer.visible_candidates, 4);
-        assert_eq!(third_stats.paint_layer.admitted, 2);
-        assert_eq!(third_stats.paint_layer.stores, 1);
-        assert_eq!(third_stats.paint_layer.evictions, 1);
-        assert_eq!(third_stats.paint_layer.rejected, 1);
-        assert_eq!(third_stats.paint_layer.evicted_bytes, 128);
-        assert_eq!(third_stats.paint_layer.current_entries, 1);
-        assert_eq!(third_stats.paint_layer.current_bytes, 160);
-
-        cache.clear();
-        assert_eq!(cache.moving_layer_entry_count(), 0);
-        assert_eq!(cache.moving_layer_total_bytes(), 0);
-    }
-
-    #[test]
-    fn moving_paint_layer_payload_stale_eviction_waits_for_configured_window() {
-        let key_a = moving_paint_layer_payload_test_key(1);
-        let key_b = moving_paint_layer_payload_test_key(2);
-        let mut cache = RendererCacheManager::new();
-        cache.configure_moving_paint_layer_max_stale_frames_for_test(1);
-
-        let mut first_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut first_frame, key_a);
-        cache.end_frame(first_frame);
-
-        let mut second_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut second_frame, key_a);
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut second_frame,
-                key_a,
-                128,
-                Duration::from_micros(3)
-            ),
-            Ok(())
-        );
-        cache.end_frame(second_frame);
-        assert_eq!(cache.moving_layer_entry_count(), 1);
-
-        let mut third_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut third_frame, key_b);
-        let third_stats = cache.end_frame(third_frame);
-        assert_eq!(third_stats.paint_layer.stale_evictions, 0);
-        assert_eq!(third_stats.paint_layer.current_entries, 1);
-
-        let mut fourth_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut fourth_frame, key_b);
-        let fourth_stats = cache.end_frame(fourth_frame);
-        assert_eq!(fourth_stats.paint_layer.stale_evictions, 1);
-        assert_eq!(fourth_stats.paint_layer.evictions, 1);
-        assert_eq!(fourth_stats.paint_layer.stale_evicted_bytes, 128);
-        assert_eq!(fourth_stats.paint_layer.current_entries, 0);
-    }
-
-    #[test]
-    fn moving_paint_layer_payload_parent_suppressed_touch_prevents_stale_eviction() {
-        let child_key = moving_paint_layer_payload_test_key(1);
-        let other_key = moving_paint_layer_payload_test_key(2);
-        let mut cache = RendererCacheManager::new();
-        cache.configure_moving_paint_layer_max_stale_frames_for_test(1);
-
-        let mut first_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut first_frame, child_key);
-        cache.end_frame(first_frame);
-
-        let mut second_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut second_frame, child_key);
-        assert_eq!(
-            cache.try_store_moving_layer_metadata(
-                &mut second_frame,
-                child_key,
-                128,
-                Duration::from_micros(3)
-            ),
-            Ok(())
-        );
-        cache.end_frame(second_frame);
-
-        let mut third_frame = cache.begin_frame();
-        assert!(cache.touch_moving_layer_suppressed_by_parent(&mut third_frame, child_key));
-        let third_stats = cache.end_frame(third_frame);
-        assert_eq!(third_stats.paint_layer.suppressed_by_parent, 1);
-        assert_eq!(third_stats.paint_layer.stale_evictions, 0);
-        assert_eq!(third_stats.paint_layer.current_entries, 1);
-
-        let mut fourth_frame = cache.begin_frame();
-        assert!(cache.touch_moving_layer_suppressed_by_parent(&mut fourth_frame, child_key));
-        let fourth_stats = cache.end_frame(fourth_frame);
-        assert_eq!(fourth_stats.paint_layer.suppressed_by_parent, 1);
-        assert_eq!(fourth_stats.paint_layer.stale_evictions, 0);
-        assert_eq!(fourth_stats.paint_layer.current_entries, 1);
-
-        let mut fifth_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut fifth_frame, other_key);
-        let fifth_stats = cache.end_frame(fifth_frame);
-        assert_eq!(fifth_stats.paint_layer.stale_evictions, 0);
-
-        let mut sixth_frame = cache.begin_frame();
-        mark_moving_layer_visible_for_test(&mut cache, &mut sixth_frame, other_key);
-        let sixth_stats = cache.end_frame(sixth_frame);
-        assert_eq!(sixth_stats.paint_layer.stale_evictions, 1);
-        assert_eq!(sixth_stats.paint_layer.current_entries, 0);
+        assert!(paint_layer_cache_bypass_low_value(estimate, true));
+        assert!(!paint_layer_cache_bypass_low_value(estimate, false));
     }
 
     #[test]
@@ -7076,7 +6364,7 @@ mod tests {
         ]
     }
 
-    fn fixed_paint_layer_payload_test_scene(animated_color: u32) -> RenderScene {
+    fn direct_payload_test_scene(animated_color: u32) -> RenderScene {
         let nodes = (0..20)
             .map(|index| {
                 let color = if index == 9 {
@@ -7098,54 +6386,21 @@ mod tests {
         RenderScene { nodes }
     }
 
-    fn fixed_paint_layer(
-        stable_id: u64,
-        reason: PaintLayerReason,
-        bounds: GeometryRect,
-        children: Vec<RenderNode>,
-    ) -> RenderPaintLayer {
-        RenderPaintLayer {
-            stable_id,
-            bounds,
-            placement: PaintLayerPlacement::Fixed,
-            policy: PaintLayerPolicy::Cacheable,
-            reason,
-            content_generation: 0,
-            children,
-        }
-    }
-
-    fn dynamic_paint_layer_node(
-        stable_id: u64,
-        bounds: GeometryRect,
-        children: Vec<RenderNode>,
-    ) -> RenderNode {
-        RenderNode::PaintLayer(RenderPaintLayer {
-            stable_id,
-            bounds,
-            placement: PaintLayerPlacement::Fixed,
-            policy: PaintLayerPolicy::DynamicRedraw,
-            reason: PaintLayerReason::Animation,
-            content_generation: 0,
-            children,
-        })
-    }
-
     fn moving_paint_layer(
         stable_id: u64,
         content_generation: u64,
         bounds: GeometryRect,
         children: Vec<RenderNode>,
     ) -> RenderPaintLayer {
-        RenderPaintLayer {
+        RenderPaintLayer::from_children(
             stable_id,
             bounds,
-            placement: PaintLayerPlacement::ScrollMoving,
-            policy: PaintLayerPolicy::Cacheable,
-            reason: PaintLayerReason::StableSubtree,
+            PaintLayerPlacement::ScrollMoving,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
             content_generation,
             children,
-        }
+        )
     }
 
     fn moving_paint_layer_node(
@@ -7181,17 +6436,6 @@ mod tests {
             },
             children,
         )
-    }
-
-    fn moving_paint_layer_payload_test_key(stable_id: u64) -> PaintLayerMovingPayloadKey {
-        PaintLayerMovingPayloadKey {
-            stable_id,
-            content_generation: 1,
-            width_px: 8,
-            height_px: 4,
-            scale_bits: 1.0_f32.to_bits(),
-            resource_generation: 1,
-        }
     }
 
     fn assert_moving_paint_layer_fallback_matches_direct(
@@ -7274,7 +6518,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_paint_layer_traversal_rejects_fractional_translation_without_changing_pixels() {
+    fn moving_paint_layer_traversal_rejects_fractional_cpu_translation_without_changing_pixels() {
         let children = moving_paint_layer_payload_test_children();
         let transform = Affine2::translation(8.5, 5.0);
 
@@ -7306,7 +6550,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_paint_layer_traversal_rejects_rotate_and_scale_without_changing_pixels() {
+    fn moving_paint_layer_traversal_rejects_cpu_rotate_and_scale_without_changing_pixels() {
         let cases = [
             (
                 RenderNode::Transform {
@@ -7551,8 +6795,76 @@ mod tests {
             .expect("parent cache hit should produce cache stats");
         assert_eq!(stats.paint_layer.hits, 1);
         assert_eq!(stats.paint_layer.suppressed_by_parent, 0);
-        assert_eq!(stats.paint_layer.rejected, 1);
+        assert_eq!(stats.paint_layer.rejected, 0);
         assert_eq!(stats.paint_layer.misses, 0);
+    }
+
+    #[test]
+    fn child_paint_layer_survives_parent_payload_invalidation() {
+        fn child_candidate() -> RenderPaintLayer {
+            moving_paint_layer(
+                301,
+                1,
+                crate::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 22.0,
+                    height: 16.0,
+                },
+                moving_paint_layer_payload_test_children(),
+            )
+        }
+
+        let parent_scene = |content_generation, color| RenderScene {
+            nodes: vec![RenderNode::Transform {
+                transform: Affine2::translation(8.0, 5.0),
+                children: vec![moving_paint_layer_node(
+                    300,
+                    content_generation,
+                    crate::tree::geometry::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 34.0,
+                        height: 22.0,
+                    },
+                    vec![
+                        RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 34.0, 22.0, color)),
+                        RenderNode::Transform {
+                            transform: Affine2::translation(4.0, 3.0),
+                            children: vec![RenderNode::PaintLayer(child_candidate())],
+                        },
+                    ],
+                )],
+            }],
+        };
+
+        let mut renderer = SceneRenderer::new();
+        let (_, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            56,
+            40,
+            parent_scene(1, 0x111827FF),
+        );
+        let first_stats = first_timings
+            .renderer_cache
+            .expect("first parent/child frame should store both payloads");
+        assert_eq!(first_stats.paint_layer.stores, 2);
+        assert_eq!(first_stats.paint_layer.hits, 0);
+        assert_eq!(first_stats.paint_layer.suppressed_by_parent, 0);
+
+        let (_, second_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            56,
+            40,
+            parent_scene(2, 0x0F172AFF),
+        );
+        let second_stats = second_timings
+            .renderer_cache
+            .expect("parent content change should keep child payload reusable");
+        assert_eq!(second_stats.paint_layer.hits, 1);
+        assert_eq!(second_stats.paint_layer.misses, 1);
+        assert_eq!(second_stats.paint_layer.stores, 1);
+        assert_eq!(second_stats.paint_layer.suppressed_by_parent, 0);
     }
 
     #[test]
@@ -7608,6 +6920,80 @@ mod tests {
     }
 
     #[test]
+    fn visible_frame_fingerprint_skips_after_first_rendered_sample() {
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let state = RenderState::new(translated_candidate_scene(3), Color::TRANSPARENT, 1, true);
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&state, (48, 32)));
+        let _ = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            translated_candidate_scene(3),
+        );
+        assert!(renderer.can_skip_unchanged_visible_frame(&state, (48, 32)));
+
+        let changed = RenderState::new(
+            RenderScene {
+                nodes: vec![RenderNode::Transform {
+                    transform: Affine2::translation(8.0, 5.0),
+                    children: vec![RenderNode::PaintLayer(
+                        moving_paint_layer_payload_test_candidate_with_generation(
+                            vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                                0.0, 0.0, 22.0, 16.0, 0xFF0000FF,
+                            ))],
+                            4,
+                        ),
+                    )],
+                }],
+            },
+            Color::TRANSPARENT,
+            2,
+            true,
+        );
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed, (48, 32)));
+    }
+
+    #[test]
+    fn visible_frame_fingerprint_ignores_offscreen_dynamic_layer_changes() {
+        let scene = |generation: u64| RenderScene {
+            nodes: vec![
+                RenderNode::PaintLayer(moving_paint_layer_payload_test_candidate(
+                    moving_paint_layer_payload_test_children(),
+                )),
+                RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                    200,
+                    crate::tree::geometry::Rect {
+                        x: 0.0,
+                        y: 80.0,
+                        width: 22.0,
+                        height: 16.0,
+                    },
+                    crate::render_scene::PaintLayerPlacement::Fixed,
+                    PaintLayerPolicy::DynamicRedraw,
+                    crate::render_scene::PaintLayerReason::Animation,
+                    generation,
+                    moving_paint_layer_payload_test_children(),
+                )),
+            ],
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        let _ =
+            render_scene_graph_to_pixels_and_timings_with_renderer(&mut renderer, 48, 32, scene(1));
+        let first = RenderState::new(scene(1), Color::TRANSPARENT, 1, true);
+        let second = RenderState::new(scene(2), Color::TRANSPARENT, 2, true);
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (48, 32)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&second, (48, 32)));
+    }
+
+    #[test]
     fn moving_paint_layer_payload_cache_reuses_payload_after_integer_scroll_translation() {
         let candidate_scene = |scroll_y: f32| RenderScene {
             nodes: vec![RenderNode::Transform {
@@ -7656,54 +7042,12 @@ mod tests {
             .renderer_cache
             .expect("translated candidate should reuse the stored clean payload");
         assert_eq!(hit_stats.paint_layer.hits, 1);
-        assert_eq!(hit_stats.paint_layer.moved_hits, 1);
         assert_eq!(hit_stats.paint_layer.misses, 0);
         assert_eq!(hit_stats.paint_layer.stores, 0);
     }
 
     #[test]
-    fn moving_paint_layer_payload_cache_records_moved_miss_before_payload_store() {
-        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
-            paint_layer: RendererPaintLayerCacheConfig {
-                min_visible_before_store: 2,
-                ..RendererPaintLayerCacheConfig::default()
-            },
-            ..RendererCacheConfig::default()
-        });
-
-        let _ = render_scene_graph_to_pixels_and_timings_with_renderer(
-            &mut renderer,
-            48,
-            32,
-            translated_candidate_scene(3),
-        );
-        let (_, second_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
-            &mut renderer,
-            48,
-            32,
-            RenderScene {
-                nodes: vec![RenderNode::Transform {
-                    transform: Affine2::translation(8.0, 4.0),
-                    children: vec![RenderNode::PaintLayer(
-                        moving_paint_layer_payload_test_candidate(
-                            moving_paint_layer_payload_test_children(),
-                        ),
-                    )],
-                }],
-            },
-        );
-
-        let stats = second_timings
-            .renderer_cache
-            .expect("moved second frame should produce cache stats");
-        assert_eq!(stats.paint_layer.misses, 1);
-        assert_eq!(stats.paint_layer.moved_misses, 1);
-        assert_eq!(stats.paint_layer.stores, 1);
-        assert_eq!(stats.paint_layer.hits, 0);
-    }
-
-    #[test]
-    fn moving_paint_layer_payload_cache_does_not_count_content_key_change_as_moved_miss() {
+    fn moving_paint_layer_payload_cache_stores_content_key_change_immediately() {
         let candidate_scene = |content_generation: u64, y: f32| RenderScene {
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, y),
@@ -7734,10 +7078,9 @@ mod tests {
             .renderer_cache
             .expect("moved stable candidate should produce cache stats");
         assert_eq!(stats.paint_layer.misses, 1);
-        assert_eq!(stats.paint_layer.moved_misses, 0);
         assert_eq!(stats.paint_layer.hits, 0);
-        assert_eq!(stats.paint_layer.stores, 0);
-        assert_eq!(stats.paint_layer.rejected_admission, 1);
+        assert_eq!(stats.paint_layer.stores, 1);
+        assert_eq!(stats.paint_layer.rejected_admission, 0);
     }
 
     #[test]
@@ -7794,7 +7137,6 @@ mod tests {
             .renderer_cache
             .expect("nested translated candidate should reuse stored payload");
         assert_eq!(hit_stats.paint_layer.hits, 1);
-        assert_eq!(hit_stats.paint_layer.moved_hits, 1);
         assert_eq!(hit_stats.paint_layer.misses, 0);
     }
 
@@ -7861,7 +7203,6 @@ mod tests {
             .renderer_cache
             .expect("partially clipped translated candidate should reuse stored payload");
         assert_eq!(hit_stats.paint_layer.hits, 1);
-        assert_eq!(hit_stats.paint_layer.moved_hits, 1);
     }
 
     #[test]
@@ -7904,6 +7245,104 @@ mod tests {
         assert_eq!(stats.paint_layer.hits, 0);
         assert_eq!(stats.paint_layer.misses, 0);
         assert_eq!(stats.paint_layer.rejected, 0);
+    }
+
+    #[test]
+    fn moving_paint_layer_payload_cache_keeps_rendered_payload_while_clipped() {
+        let clip = ClipShape {
+            rect: crate::tree::geometry::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 48.0,
+                height: 20.0,
+            },
+            radii: None,
+        };
+        let candidate_scene = |scroll_y: f32| RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![RenderNode::Transform {
+                    transform: Affine2::translation(8.0, 2.0 - scroll_y),
+                    children: vec![RenderNode::PaintLayer(
+                        moving_paint_layer_payload_test_candidate(
+                            moving_paint_layer_payload_test_children(),
+                        ),
+                    )],
+                }],
+            }],
+        };
+        let direct_scene = RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![RenderNode::Transform {
+                    transform: Affine2::translation(8.0, 2.0),
+                    children: moving_paint_layer_payload_test_children(),
+                }],
+            }],
+        };
+        let expected_visible = render_scene_graph_to_pixels(48, 32, direct_scene);
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            paint_layer: RendererPaintLayerCacheConfig {
+                max_stale_frames: 1,
+                ..RendererPaintLayerCacheConfig::default()
+            },
+            ..RendererCacheConfig::default()
+        });
+
+        let (first_pixels, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            candidate_scene(0.0),
+        );
+        assert_eq!(first_pixels, expected_visible);
+        let first_stats = first_timings
+            .renderer_cache
+            .expect("visible frame should store the moving payload");
+        assert_eq!(first_stats.paint_layer.stores, 1);
+        assert_eq!(first_stats.paint_layer.current_entries, 1);
+
+        let (_, second_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            candidate_scene(48.0),
+        );
+        let second_stats = second_timings
+            .renderer_cache
+            .expect("clipped frame should still report resident cache stats");
+        assert_eq!(second_stats.paint_layer.visible_candidates, 0);
+        assert_eq!(second_stats.paint_layer.stale_evictions, 0);
+        assert_eq!(second_stats.paint_layer.current_entries, 1);
+
+        let (_, third_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            candidate_scene(48.0),
+        );
+        let third_stats = third_timings
+            .renderer_cache
+            .expect("second clipped frame should keep the rendered payload alive");
+        assert_eq!(third_stats.paint_layer.visible_candidates, 0);
+        assert_eq!(third_stats.paint_layer.stale_evictions, 0);
+        assert_eq!(third_stats.paint_layer.current_entries, 1);
+
+        let (return_pixels, return_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                48,
+                32,
+                candidate_scene(0.0),
+            );
+        assert_eq!(return_pixels, expected_visible);
+        let return_stats = return_timings
+            .renderer_cache
+            .expect("return frame should reuse the retained payload");
+        assert_eq!(return_stats.paint_layer.hits, 1);
+        assert_eq!(return_stats.paint_layer.misses, 0);
+        assert_eq!(return_stats.paint_layer.stores, 0);
     }
 
     #[test]

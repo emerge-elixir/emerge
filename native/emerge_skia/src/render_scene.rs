@@ -17,21 +17,46 @@ impl RenderScene {
         summary
     }
 
-    pub fn has_moving_paint_layers(&self) -> bool {
-        nodes_have_moving_paint_layers(&self.nodes)
+    pub fn has_cacheable_paint_layers(&self) -> bool {
+        nodes_have_cacheable_paint_layers(&self.nodes)
+    }
+
+    pub fn has_scroll_moving_paint_layers(&self) -> bool {
+        nodes_have_scroll_moving_paint_layers(&self.nodes)
     }
 }
 
-fn nodes_have_moving_paint_layers(nodes: &[RenderNode]) -> bool {
+fn nodes_have_cacheable_paint_layers(nodes: &[RenderNode]) -> bool {
     nodes.iter().any(|node| match node {
         RenderNode::ShadowPass { children }
         | RenderNode::Clip { children, .. }
         | RenderNode::RelaxedClip { children, .. }
         | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => nodes_have_moving_paint_layers(children),
+        | RenderNode::Alpha { children, .. } => nodes_have_cacheable_paint_layers(children),
+        RenderNode::PaintLayer(layer) => {
+            layer.policy == PaintLayerPolicy::Cacheable
+                || layer
+                    .child_refs
+                    .iter()
+                    .any(|child| nodes_have_cacheable_paint_layers(&child.nodes))
+        }
+        RenderNode::Primitive(_) => false,
+    })
+}
+
+fn nodes_have_scroll_moving_paint_layers(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => nodes_have_scroll_moving_paint_layers(children),
         RenderNode::PaintLayer(layer) => {
             layer.placement == PaintLayerPlacement::ScrollMoving
-                || nodes_have_moving_paint_layers(&layer.children)
+                || layer
+                    .child_refs
+                    .iter()
+                    .any(|child| nodes_have_scroll_moving_paint_layers(&child.nodes))
         }
         RenderNode::Primitive(_) => false,
     })
@@ -106,7 +131,11 @@ impl RenderSceneSummary {
                     if layer.placement == PaintLayerPlacement::ScrollMoving {
                         self.moving_layers += 1;
                     }
-                    self.record_nodes(&layer.children);
+                    self.record_nodes(&layer.own_nodes);
+                    layer
+                        .child_refs
+                        .iter()
+                        .for_each(|child| self.record_nodes(&child.nodes));
                 }
                 RenderNode::Primitive(primitive) => self.record_primitive(primitive),
             }
@@ -208,12 +237,479 @@ pub enum RenderNode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPaintLayer {
     pub stable_id: u64,
+    pub root_id: u64,
     pub bounds: Rect,
     pub placement: PaintLayerPlacement,
     pub policy: PaintLayerPolicy,
     pub reason: PaintLayerReason,
     pub content_generation: u64,
+    pub own_nodes: Vec<RenderNode>,
+    pub child_refs: Vec<RenderPaintLayerChildRef>,
+    pub metrics: RenderPaintLayerMetrics,
+    /// Compatibility view for tests that still inspect raw layer contents.
+    #[cfg(test)]
     pub children: Vec<RenderNode>,
+}
+
+impl RenderPaintLayer {
+    pub fn from_children(
+        stable_id: u64,
+        bounds: Rect,
+        placement: PaintLayerPlacement,
+        policy: PaintLayerPolicy,
+        reason: PaintLayerReason,
+        content_generation: u64,
+        children: Vec<RenderNode>,
+    ) -> Self {
+        #[cfg(test)]
+        let raw_children = children.clone();
+        #[cfg(not(test))]
+        let raw_children = Vec::new();
+        let content = split_paint_layer_content_owned(children);
+        Self::from_prepared_children(
+            RenderPaintLayerBuildParts {
+                stable_id,
+                root_id: stable_id,
+                bounds,
+                placement,
+                policy,
+                reason,
+                content_generation,
+                visual_bounds: None,
+            },
+            content,
+            raw_children,
+        )
+    }
+
+    pub(crate) fn from_prepared_children(
+        parts: RenderPaintLayerBuildParts,
+        content: RenderPaintLayerContent,
+        children: Vec<RenderNode>,
+    ) -> Self {
+        #[cfg(not(test))]
+        let _ = children;
+
+        let metrics = RenderPaintLayerMetrics::from_own_nodes(
+            &content.own_nodes,
+            parts.bounds,
+            parts.visual_bounds,
+        );
+
+        Self {
+            stable_id: parts.stable_id,
+            root_id: parts.root_id,
+            bounds: parts.bounds,
+            placement: parts.placement,
+            policy: parts.policy,
+            reason: parts.reason,
+            content_generation: parts.content_generation,
+            own_nodes: content.own_nodes,
+            child_refs: content.child_refs,
+            metrics,
+            #[cfg(test)]
+            children,
+        }
+    }
+
+    pub(crate) fn content_nodes(&self) -> Vec<RenderNode> {
+        self.own_nodes
+            .iter()
+            .cloned()
+            .chain(
+                self.child_refs
+                    .iter()
+                    .flat_map(|child| child.nodes.iter().cloned()),
+            )
+            .collect()
+    }
+
+    pub(crate) fn with_children(&self, children: Vec<RenderNode>) -> Self {
+        Self::from_children(
+            self.stable_id,
+            self.bounds,
+            self.placement,
+            self.policy,
+            self.reason,
+            self.content_generation,
+            children,
+        )
+    }
+
+    pub(crate) fn with_bounds_and_children(&self, bounds: Rect, children: Vec<RenderNode>) -> Self {
+        #[cfg(test)]
+        let raw_children = children.clone();
+        #[cfg(not(test))]
+        let raw_children = Vec::new();
+        let content = split_paint_layer_content_owned(children);
+        Self::from_prepared_children(
+            RenderPaintLayerBuildParts {
+                stable_id: self.stable_id,
+                root_id: self.root_id,
+                bounds,
+                placement: self.placement,
+                policy: self.policy,
+                reason: self.reason,
+                content_generation: self.content_generation,
+                visual_bounds: None,
+            },
+            content,
+            raw_children,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RenderPaintLayerBuildParts {
+    pub stable_id: u64,
+    pub root_id: u64,
+    pub bounds: Rect,
+    pub placement: PaintLayerPlacement,
+    pub policy: PaintLayerPolicy,
+    pub reason: PaintLayerReason,
+    pub content_generation: u64,
+    pub visual_bounds: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RenderPaintLayerMetrics {
+    pub own_node_count: u32,
+    pub own_primitive_count: u32,
+    pub own_primitive_cost: u64,
+    pub payload_pixels: u64,
+    pub visual_bounds: Rect,
+    pub opaque: bool,
+}
+
+impl RenderPaintLayerMetrics {
+    fn from_own_nodes(nodes: &[RenderNode], bounds: Rect, visual_bounds: Option<Rect>) -> Self {
+        let visual_bounds = visual_bounds
+            .or_else(|| render_nodes_visual_bounds(nodes, Affine2::identity()))
+            .map(|content_bounds| union_rect(bounds, content_bounds))
+            .unwrap_or(bounds);
+        let node_metrics = render_nodes_metrics(nodes);
+
+        Self {
+            own_node_count: node_metrics.node_count.min(u32::MAX as usize) as u32,
+            own_primitive_count: node_metrics.primitive_count.min(u32::MAX as usize) as u32,
+            own_primitive_cost: node_metrics.primitive_cost,
+            payload_pixels: paint_layer_payload_pixels(bounds),
+            visual_bounds,
+            opaque: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RenderPaintLayerContent {
+    pub own_nodes: Vec<RenderNode>,
+    pub child_refs: Vec<RenderPaintLayerChildRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderPaintLayerChildRef {
+    pub nodes: Vec<RenderNode>,
+}
+
+#[cfg(test)]
+pub(crate) fn split_paint_layer_content(nodes: &[RenderNode]) -> RenderPaintLayerContent {
+    nodes
+        .to_vec()
+        .into_iter()
+        .fold(RenderPaintLayerContent::default(), |mut content, node| {
+            let mut split = split_paint_layer_node(node);
+            content.own_nodes.append(&mut split.own_nodes);
+            content.child_refs.append(&mut split.child_refs);
+            content
+        })
+}
+
+pub(crate) fn split_paint_layer_content_owned(nodes: Vec<RenderNode>) -> RenderPaintLayerContent {
+    nodes
+        .into_iter()
+        .fold(RenderPaintLayerContent::default(), |mut content, node| {
+            let mut split = split_paint_layer_node(node);
+            content.own_nodes.append(&mut split.own_nodes);
+            content.child_refs.append(&mut split.child_refs);
+            content
+        })
+}
+
+pub(crate) fn paint_layer_own_content_visual_bounds(nodes: &[RenderNode]) -> Option<Rect> {
+    render_nodes_visual_bounds(nodes, Affine2::identity())
+}
+
+pub(crate) fn paint_layer_bounds_from_visual_bounds(
+    visual_bounds: Option<Rect>,
+    fallback: Rect,
+) -> Rect {
+    visual_bounds
+        .map(|bounds| union_rect(fallback, bounds))
+        .unwrap_or(fallback)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RenderNodeMetrics {
+    node_count: usize,
+    primitive_count: usize,
+    primitive_cost: u64,
+}
+
+fn render_nodes_metrics(nodes: &[RenderNode]) -> RenderNodeMetrics {
+    nodes.iter().map(render_node_metrics).fold(
+        RenderNodeMetrics::default(),
+        |mut total, metrics| {
+            total.node_count = total.node_count.saturating_add(metrics.node_count);
+            total.primitive_count = total
+                .primitive_count
+                .saturating_add(metrics.primitive_count);
+            total.primitive_cost = total.primitive_cost.saturating_add(metrics.primitive_cost);
+            total
+        },
+    )
+}
+
+fn render_node_metrics(node: &RenderNode) -> RenderNodeMetrics {
+    match node {
+        RenderNode::ShadowPass { children } => {
+            let mut metrics = render_nodes_metrics(children);
+            metrics.node_count = metrics.node_count.saturating_add(1);
+            metrics.primitive_cost = metrics.primitive_cost.saturating_add(12);
+            metrics
+        }
+        RenderNode::Clip { children, .. } | RenderNode::RelaxedClip { children, .. } => {
+            let mut metrics = render_nodes_metrics(children);
+            metrics.node_count = metrics.node_count.saturating_add(1);
+            metrics.primitive_cost = metrics.primitive_cost.saturating_add(3);
+            metrics
+        }
+        RenderNode::Transform { children, .. } | RenderNode::Alpha { children, .. } => {
+            let mut metrics = render_nodes_metrics(children);
+            metrics.node_count = metrics.node_count.saturating_add(1);
+            metrics.primitive_cost = metrics.primitive_cost.saturating_add(2);
+            metrics
+        }
+        RenderNode::PaintLayer(_) => RenderNodeMetrics {
+            node_count: 1,
+            primitive_count: 0,
+            primitive_cost: 0,
+        },
+        RenderNode::Primitive(primitive) => RenderNodeMetrics {
+            node_count: 1,
+            primitive_count: 1,
+            primitive_cost: render_primitive_cost(primitive),
+        },
+    }
+}
+
+fn render_primitive_cost(primitive: &DrawPrimitive) -> u64 {
+    match primitive {
+        DrawPrimitive::Rect(..) => 1,
+        DrawPrimitive::RoundedRect(..) => 2,
+        DrawPrimitive::Border(.., style)
+        | DrawPrimitive::BorderCorners(.., style)
+        | DrawPrimitive::BorderEdges(.., style) => match style {
+            BorderStyle::Solid => 4,
+            BorderStyle::Dashed | BorderStyle::Dotted => 16,
+        },
+        DrawPrimitive::Shadow(..) | DrawPrimitive::InsetShadow(..) => 80,
+        DrawPrimitive::TextWithFont(_, _, text, ..) => 32u64.saturating_add(text.len() as u64 / 2),
+        DrawPrimitive::Gradient(..) => 12,
+        DrawPrimitive::Image(..) => 20,
+        DrawPrimitive::Video(..) => 24,
+        DrawPrimitive::ImageLoading(..) | DrawPrimitive::ImageFailed(..) => 4,
+    }
+}
+
+fn paint_layer_payload_pixels(bounds: Rect) -> u64 {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return 0;
+    }
+
+    let width = bounds.width.ceil() as u64;
+    let height = bounds.height.ceil() as u64;
+    width.saturating_mul(height)
+}
+
+fn render_nodes_visual_bounds(nodes: &[RenderNode], transform: Affine2) -> Option<Rect> {
+    nodes
+        .iter()
+        .filter_map(|node| render_node_visual_bounds(node, transform))
+        .reduce(union_rect)
+}
+
+fn render_node_visual_bounds(node: &RenderNode, transform: Affine2) -> Option<Rect> {
+    match node {
+        RenderNode::ShadowPass { children } | RenderNode::Alpha { children, .. } => {
+            render_nodes_visual_bounds(children, transform)
+        }
+        RenderNode::Clip { clips, children } | RenderNode::RelaxedClip { clips, children } => {
+            let child_bounds = render_nodes_visual_bounds(children, transform)?;
+            let clip_bounds = clips
+                .iter()
+                .map(|clip| transform.map_rect_aabb(clip.rect))
+                .reduce(union_rect)?;
+            child_bounds.intersect(clip_bounds)
+        }
+        RenderNode::Transform {
+            transform: child_transform,
+            children,
+        } => render_nodes_visual_bounds(children, transform.then(*child_transform)),
+        RenderNode::PaintLayer(_) => None,
+        RenderNode::Primitive(primitive) => {
+            Some(transform.map_rect_aabb(draw_primitive_visual_bounds(primitive)))
+        }
+    }
+}
+
+pub(crate) fn draw_primitive_visual_bounds(primitive: &DrawPrimitive) -> Rect {
+    match primitive {
+        DrawPrimitive::Rect(x, y, w, h, _)
+        | DrawPrimitive::RoundedRect(x, y, w, h, _, _)
+        | DrawPrimitive::Gradient(x, y, w, h, _, _, _)
+        | DrawPrimitive::Image(x, y, w, h, _, _, _)
+        | DrawPrimitive::Video(x, y, w, h, _, _)
+        | DrawPrimitive::ImageLoading(x, y, w, h)
+        | DrawPrimitive::ImageFailed(x, y, w, h) => Rect {
+            x: *x,
+            y: *y,
+            width: *w,
+            height: *h,
+        },
+        DrawPrimitive::Border(x, y, w, h, _, width, _, _) => {
+            outset_rect(rect_from_xywh(*x, *y, *w, *h), *width / 2.0)
+        }
+        DrawPrimitive::BorderCorners(x, y, w, h, _, _, _, _, width, _, _) => {
+            outset_rect(rect_from_xywh(*x, *y, *w, *h), *width / 2.0)
+        }
+        DrawPrimitive::BorderEdges(x, y, w, h, _, top, right, bottom, left, _, _) => {
+            let outset = top.max(*right).max(*bottom).max(*left) / 2.0;
+            outset_rect(rect_from_xywh(*x, *y, *w, *h), outset)
+        }
+        DrawPrimitive::Shadow(x, y, w, h, offset_x, offset_y, blur, size, _, _) => {
+            let pad = blur.abs() * 2.0 + size.abs();
+            Rect {
+                x: *x + *offset_x - pad,
+                y: *y + *offset_y - pad,
+                width: *w + pad * 2.0,
+                height: *h + pad * 2.0,
+            }
+        }
+        DrawPrimitive::InsetShadow(x, y, w, h, _, _, _, _, _, _) => rect_from_xywh(*x, *y, *w, *h),
+        DrawPrimitive::TextWithFont(x, y, text, font_size, _, _, _, _) => {
+            let width = text.chars().count() as f32 * *font_size * 0.65;
+            Rect {
+                x: *x,
+                y: *y - *font_size,
+                width,
+                height: *font_size * 1.25,
+            }
+        }
+    }
+}
+
+fn rect_from_xywh(x: f32, y: f32, width: f32, height: f32) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn outset_rect(rect: Rect, outset: f32) -> Rect {
+    let outset = outset.max(0.0);
+    Rect {
+        x: rect.x - outset,
+        y: rect.y - outset,
+        width: rect.width + outset * 2.0,
+        height: rect.height + outset * 2.0,
+    }
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let min_x = a.x.min(b.x);
+    let min_y = a.y.min(b.y);
+    let max_x = (a.x + a.width).max(b.x + b.width);
+    let max_y = (a.y + a.height).max(b.y + b.height);
+    Rect {
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x,
+        height: max_y - min_y,
+    }
+}
+
+fn split_paint_layer_node(node: RenderNode) -> RenderPaintLayerContent {
+    match node {
+        RenderNode::ShadowPass { children } => {
+            split_scoped_paint_layer_content(children, |children| RenderNode::ShadowPass {
+                children,
+            })
+        }
+        RenderNode::Clip { clips, children } => {
+            split_scoped_paint_layer_content(children, |children| RenderNode::Clip {
+                clips: clips.clone(),
+                children,
+            })
+        }
+        RenderNode::RelaxedClip { clips, children } => {
+            split_scoped_paint_layer_content(children, |children| RenderNode::RelaxedClip {
+                clips: clips.clone(),
+                children,
+            })
+        }
+        RenderNode::Transform {
+            transform,
+            children,
+        } => split_scoped_paint_layer_content(children, |children| RenderNode::Transform {
+            transform,
+            children,
+        }),
+        RenderNode::Alpha { alpha, children } => {
+            split_scoped_paint_layer_content(children, |children| RenderNode::Alpha {
+                alpha,
+                children,
+            })
+        }
+        RenderNode::PaintLayer(_) => RenderPaintLayerContent {
+            own_nodes: Vec::new(),
+            child_refs: vec![RenderPaintLayerChildRef { nodes: vec![node] }],
+        },
+        RenderNode::Primitive(_) => RenderPaintLayerContent {
+            own_nodes: vec![node],
+            child_refs: Vec::new(),
+        },
+    }
+}
+
+fn split_scoped_paint_layer_content(
+    children: Vec<RenderNode>,
+    wrap: impl Fn(Vec<RenderNode>) -> RenderNode + Copy,
+) -> RenderPaintLayerContent {
+    let content = split_paint_layer_content_owned(children);
+    let own_nodes = if content.own_nodes.is_empty() {
+        Vec::new()
+    } else {
+        vec![wrap(content.own_nodes)]
+    };
+    let child_ref_nodes: Vec<_> = content
+        .child_refs
+        .into_iter()
+        .flat_map(|child| child.nodes)
+        .collect();
+    let child_refs = if child_ref_nodes.is_empty() {
+        Vec::new()
+    } else {
+        vec![RenderPaintLayerChildRef {
+            nodes: vec![wrap(child_ref_nodes)],
+        }]
+    };
+
+    RenderPaintLayerContent {
+        own_nodes,
+        child_refs,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -281,8 +777,11 @@ pub enum DrawPrimitive {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaintLayerHashFloat {
+    #[allow(dead_code)]
     Exact,
-    Quantized { scale: f64 },
+    Quantized {
+        scale: f64,
+    },
 }
 
 impl PaintLayerHashFloat {
@@ -309,61 +808,162 @@ pub(crate) fn hash_paint_layer_render_nodes<H: Hasher>(
     hasher: &mut H,
     nodes: &[RenderNode],
     float: PaintLayerHashFloat,
+    payload_bounds: Option<Rect>,
 ) {
-    nodes.len().hash(hasher);
+    let mut hashed_nodes = 0usize;
     for node in nodes {
-        hash_paint_layer_render_node(hasher, node, float);
+        if hash_paint_layer_render_node(hasher, node, float, payload_bounds) {
+            hashed_nodes += 1;
+        }
     }
+    hashed_nodes.hash(hasher);
 }
 
 pub(crate) fn hash_paint_layer_render_node<H: Hasher>(
     hasher: &mut H,
     node: &RenderNode,
     float: PaintLayerHashFloat,
-) {
+    payload_bounds: Option<Rect>,
+) -> bool {
+    if payload_bounds
+        .and_then(|bounds| {
+            render_node_visual_bounds(node, Affine2::identity())
+                .and_then(|node_bounds| node_bounds.intersect(bounds))
+        })
+        .is_none()
+        && payload_bounds.is_some()
+    {
+        return false;
+    }
+
     match node {
         RenderNode::ShadowPass { children } => {
+            if !paint_layer_render_nodes_intersect_payload(children, payload_bounds) {
+                return false;
+            }
             0u8.hash(hasher);
-            hash_paint_layer_render_nodes(hasher, children, float);
+            hash_paint_layer_render_nodes(hasher, children, float, payload_bounds);
+            true
         }
         RenderNode::Clip { clips, children } => {
+            let (clips, child_payload_bounds) = paint_layer_hash_clip_scope(clips, payload_bounds);
+            if payload_bounds.is_some() && child_payload_bounds.is_none() {
+                return false;
+            }
+            if !paint_layer_render_nodes_intersect_payload(children, child_payload_bounds) {
+                return false;
+            }
             1u8.hash(hasher);
-            hash_paint_layer_clip_shapes(hasher, clips, float);
-            hash_paint_layer_render_nodes(hasher, children, float);
+            hash_paint_layer_clip_shapes(hasher, &clips, float);
+            hash_paint_layer_render_nodes(hasher, children, float, child_payload_bounds);
+            true
         }
         RenderNode::RelaxedClip { clips, children } => {
+            let (clips, child_payload_bounds) = paint_layer_hash_clip_scope(clips, payload_bounds);
+            if payload_bounds.is_some() && child_payload_bounds.is_none() {
+                return false;
+            }
+            if !paint_layer_render_nodes_intersect_payload(children, child_payload_bounds) {
+                return false;
+            }
             2u8.hash(hasher);
-            hash_paint_layer_clip_shapes(hasher, clips, float);
-            hash_paint_layer_render_nodes(hasher, children, float);
+            hash_paint_layer_clip_shapes(hasher, &clips, float);
+            hash_paint_layer_render_nodes(hasher, children, float, child_payload_bounds);
+            true
         }
         RenderNode::Transform {
             transform,
             children,
         } => {
+            let child_payload_bounds = payload_bounds.and_then(|bounds| {
+                transform
+                    .inverse()
+                    .map(|inverse| inverse.map_rect_aabb(bounds))
+            });
+            if !paint_layer_render_nodes_intersect_payload(children, child_payload_bounds) {
+                return false;
+            }
             3u8.hash(hasher);
             hash_paint_layer_affine2(hasher, *transform, float);
-            hash_paint_layer_render_nodes(hasher, children, float);
+            hash_paint_layer_render_nodes(hasher, children, float, child_payload_bounds);
+            true
         }
         RenderNode::Alpha { alpha, children } => {
+            if !paint_layer_render_nodes_intersect_payload(children, payload_bounds) {
+                return false;
+            }
             4u8.hash(hasher);
             float.hash_f32(hasher, *alpha);
-            hash_paint_layer_render_nodes(hasher, children, float);
+            hash_paint_layer_render_nodes(hasher, children, float, payload_bounds);
+            true
         }
         RenderNode::PaintLayer(layer) => {
+            if payload_bounds
+                .and_then(|bounds| bounds.intersect(layer.bounds))
+                .is_none()
+                && payload_bounds.is_some()
+            {
+                return false;
+            }
             5u8.hash(hasher);
             hash_paint_layer_metadata(hasher, layer);
             hash_paint_layer_rect(hasher, layer.bounds, float);
-            hash_paint_layer_render_nodes(hasher, &layer.children, float);
+            true
         }
         RenderNode::Primitive(primitive) => {
+            if payload_bounds
+                .and_then(|bounds| bounds.intersect(draw_primitive_visual_bounds(primitive)))
+                .is_none()
+                && payload_bounds.is_some()
+            {
+                return false;
+            }
             6u8.hash(hasher);
             hash_paint_layer_draw_primitive(hasher, primitive, float);
+            true
         }
     }
 }
 
+fn paint_layer_render_nodes_intersect_payload(
+    nodes: &[RenderNode],
+    payload_bounds: Option<Rect>,
+) -> bool {
+    let Some(payload_bounds) = payload_bounds else {
+        return true;
+    };
+    render_nodes_visual_bounds(nodes, Affine2::identity())
+        .and_then(|bounds| bounds.intersect(payload_bounds))
+        .is_some()
+}
+
+fn paint_layer_hash_clip_scope(
+    clips: &[ClipShape],
+    payload_bounds: Option<Rect>,
+) -> (Vec<ClipShape>, Option<Rect>) {
+    let Some(payload_bounds) = payload_bounds else {
+        return (clips.to_vec(), None);
+    };
+
+    let child_payload_bounds = clips
+        .iter()
+        .try_fold(payload_bounds, |bounds, clip| bounds.intersect(clip.rect));
+    let clips = clips
+        .iter()
+        .filter_map(|clip| {
+            clip.rect.intersect(payload_bounds).map(|rect| ClipShape {
+                rect,
+                radii: clip.radii,
+            })
+        })
+        .collect();
+
+    (clips, child_payload_bounds)
+}
+
 pub(crate) fn hash_paint_layer_metadata<H: Hasher>(hasher: &mut H, layer: &RenderPaintLayer) {
     layer.stable_id.hash(hasher);
+    layer.root_id.hash(hasher);
     layer.placement.hash(hasher);
     layer.policy.hash(hasher);
     layer.reason.hash(hasher);

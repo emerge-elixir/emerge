@@ -162,6 +162,12 @@ impl PresentState {
         self.redraw_requested = video_needs_cleanup;
     }
 
+    pub(super) fn finish_noop_present(&mut self, render_version: u64) {
+        self.last_submitted_render_version = Some(render_version);
+        self.late_replacement_used = false;
+        self.redraw_requested = false;
+    }
+
     pub(super) fn present_timing_for_normal_draw(
         &mut self,
         fallback_presented_at: Instant,

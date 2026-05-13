@@ -553,6 +553,19 @@ impl WaylandApp {
             return;
         };
 
+        if matches!(sync_action, WaylandVideoSyncAction::Hold)
+            && env
+                .renderer
+                .can_skip_unchanged_visible_frame(&self.render_state, self.geometry.buffer_size)
+        {
+            self.present
+                .finish_noop_present(self.render_state.render_version);
+            self.render_state.pipeline_submitted_at = None;
+            self.render_state.pipeline_render_queued_at = None;
+            self.render_animation_trace = None;
+            return;
+        }
+
         self.present.prepare_draw(draw_kind, &self.window, &self.qh);
 
         let mut video_needs_cleanup = false;
@@ -744,6 +757,7 @@ impl WaylandApp {
             }
         } else if buffer_changed && let Some(env) = self.env.as_mut() {
             resize_gl_env(env, self.geometry.buffer_size);
+            env.renderer.invalidate_visible_frame_fingerprint();
         }
 
         if geometry_changed {

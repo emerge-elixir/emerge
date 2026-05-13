@@ -1,15 +1,31 @@
+mod support;
+
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 #[cfg(target_os = "linux")]
 use emerge_skia::backend::skia_gpu::GlFrameSurface;
+#[cfg(target_os = "linux")]
+use emerge_skia::events::RegistryRebuildPayload;
 use emerge_skia::render_scene::{
     DrawPrimitive, PaintLayerPlacement, PaintLayerPolicy, PaintLayerReason, RenderNode,
-    RenderPaintLayer, RenderScene,
+    RenderPaintLayer, RenderScene, RenderSceneSummary,
 };
 use emerge_skia::renderer::{
-    RenderFrame, RenderState, RendererCacheConfig, SceneRenderer, insert_raster_asset,
+    RenderFrame, RenderState, RendererCacheConfig, RendererCachePaintLayerFrameStats,
+    RendererPaintLayerCacheConfig, SceneRenderer, insert_raster_asset,
 };
+#[cfg(target_os = "linux")]
+use emerge_skia::tree::animation::AnimationRuntime;
 use emerge_skia::tree::attrs::{BorderStyle, ImageFit};
+#[cfg(target_os = "linux")]
+use emerge_skia::tree::deserialize::decode_tree;
+#[cfg(target_os = "linux")]
+use emerge_skia::tree::element::{ElementTree, NodeId};
 use emerge_skia::tree::geometry::{ClipShape, CornerRadii, Rect};
+#[cfg(target_os = "linux")]
+use emerge_skia::tree::layout::{
+    Constraint, layout_and_refresh_default_with_animation,
+    layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark,
+};
 use emerge_skia::tree::transform::Affine2;
 #[cfg(target_os = "linux")]
 use glutin_egl_sys::egl;
@@ -24,12 +40,59 @@ use skia_safe::{
 use std::hint::black_box;
 use std::sync::Once;
 #[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
 use std::{ffi::CString, os::raw::c_void, ptr};
+#[cfg(target_os = "linux")]
+use support::scrollable_rich_borders_shadow_showcase;
 
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
 const BENCH_IMAGE_ID: &str = "renderer_bench_static";
 static BENCH_ASSETS: Once = Once::new();
+
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_LAYOUT_EMRG: &[u8] =
+    include_bytes!("../../../bench/external_fixtures/emerge_demo_showcase_layout/full.emrg");
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_EMRG: &[u8] =
+    include_bytes!("../../../bench/external_fixtures/emerge_demo_showcase_borders/full.emrg");
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_LAYOUT_SCROLL_STEP: f32 = 8.0;
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_SCROLL_STEP: f32 = 8.0;
+#[cfg(target_os = "linux")]
+const RICH_BORDERS_SHOWCASE_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
+#[cfg(target_os = "linux")]
+const RICH_BORDERS_SHOWCASE_SCROLL_STEP: f32 = 8.0;
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH: u32 = 1909;
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT: u32 = 2148;
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE: f32 = 1.5;
+const EMERGE_DEMO_SHOWCASE_LAYOUT_VIEWPORTS: &[(u32, u32)] = &[
+    (800, 600),
+    (960, 720),
+    (1024, 768),
+    (1200, 720),
+    (1280, 720),
+    (1280, 800),
+    (1366, 768),
+    (1440, 900),
+];
+#[cfg(target_os = "linux")]
+const EMERGE_DEMO_SHOWCASE_BORDERS_VIEWPORTS: &[(u32, u32)] = &[
+    (1909, 2148),
+    (1920, 1080),
+    (1440, 900),
+    (1280, 720),
+    (960, 900),
+];
 
 fn bench_renderer_raster_direct(c: &mut Criterion) {
     let mut group = c.benchmark_group("native/renderer/raster_direct");
@@ -283,7 +346,7 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("scrolling/cache_moved_hits", |b| {
+    group.bench_function("scrolling/cache_reposition_hits", |b| {
         let states = scrolling_paint_layer_states();
         let mut state_index = 2usize;
         let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
@@ -350,6 +413,279 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
             state_index = (state_index + 1) % states.len();
             let mut frame = surface.frame();
             black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.throughput(Throughput::Elements(
+        offscreen_layout_animation_scene(0).summary().nodes as u64,
+    ));
+    group.bench_function("offscreen_layout_animation/cache_steady_hits", |b| {
+        let states = offscreen_layout_animation_states();
+        let mut state_index = 2usize;
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_offscreen_layout_animation_steady_hits(&mut renderer, &mut surface, &states);
+
+        b.iter(|| {
+            let state = &states[state_index];
+            state_index = (state_index + 1) % states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function("offscreen_layout_animation/visible_frame_noop_skip", |b| {
+        let states = offscreen_layout_animation_states();
+        let mut state_index;
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        state_index = assert_offscreen_layout_animation_visible_frame_skip(
+            &mut renderer,
+            &mut surface,
+            &states,
+        );
+
+        b.iter(|| {
+            let state = &states[state_index];
+            state_index = (state_index + 1) % states.len();
+            let skipped = renderer.can_skip_unchanged_visible_frame(state, (WIDTH, HEIGHT));
+            assert!(
+                skipped,
+                "offscreen layout animation visible frame should be skippable"
+            );
+            black_box(skipped);
+        });
+    });
+
+    group.throughput(Throughput::Elements(
+        stable_descendant_layout_animation_scene(0).summary().nodes as u64,
+    ));
+    group.bench_function(
+        "stable_descendant_layout_animation/cache_steady_hits",
+        |b| {
+            let states = stable_descendant_layout_animation_states();
+            let mut state_index = 2usize;
+            let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+                .expect("EGL surfaceless setup should stay available after probe");
+            let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+                enabled: true,
+                ..RendererCacheConfig::default()
+            });
+            assert_stable_descendant_layout_animation_hits(&mut renderer, &mut surface, &states);
+
+            b.iter(|| {
+                let state = &states[state_index];
+                state_index = (state_index + 1) % states.len();
+                let mut frame = surface.frame();
+                black_box(renderer.render(&mut frame, state));
+            });
+        },
+    );
+
+    group.throughput(Throughput::Elements(
+        scroll_return_scene(0.0).summary().nodes as u64,
+    ));
+    group.bench_function("scroll_return/cache_after_clipped_frames", |b| {
+        let states = [
+            scroll_return_state(0.0),
+            scroll_return_state(160.0),
+            scroll_return_state(160.0),
+            scroll_return_state(0.0),
+        ];
+        let mut state_index = 0usize;
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(scroll_return_cache_config());
+        assert_scroll_return_cache_reuses_after_clipped_frames(
+            &mut renderer,
+            &mut surface,
+            &states,
+        );
+
+        b.iter(|| {
+            let state = &states[state_index];
+            state_index = (state_index + 1) % states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    let page = emerge_demo_showcase_layout_page_benchmark();
+    group.throughput(Throughput::Elements(page.summary.nodes as u64));
+    group.bench_function("emerge_demo_showcase_layout_page/cache_steady_hits", |b| {
+        let mut state_index = 2usize;
+        let mut surface = EglBenchSurface::new((page.width, page.height))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_emerge_demo_showcase_layout_page_steady_hits(&mut renderer, &mut surface, &page);
+
+        b.iter(|| {
+            let state = &page.states[state_index];
+            state_index = (state_index + 1) % page.states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    group.bench_function(
+        "emerge_demo_showcase_layout_page/cache_steady_hits_8mb_entry_128mb_total",
+        |b| {
+            let mut state_index = 2usize;
+            let mut surface = EglBenchSurface::new((page.width, page.height))
+                .expect("EGL surfaceless setup should stay available after probe");
+            let mut renderer = SceneRenderer::with_cache_config(small_payload_cache_config());
+            for state in page.states.iter().take(2) {
+                let _ = render_paint_layer_cache_stats(&mut renderer, &mut surface, state);
+            }
+
+            b.iter(|| {
+                let state = &page.states[state_index];
+                state_index = (state_index + 1) % page.states.len();
+                let mut frame = surface.frame();
+                black_box(renderer.render(&mut frame, state));
+            });
+        },
+    );
+
+    let borders = rich_borders_showcase_benchmark();
+    group.throughput(Throughput::Elements(borders.summary.nodes as u64));
+    group.bench_function("rich_borders_showcase/cache_steady_hits", |b| {
+        let mut state_index = 2usize;
+        let mut surface = EglBenchSurface::new((borders.width, borders.height))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_rich_borders_showcase_cache_hits(&mut renderer, &mut surface, &borders);
+
+        b.iter(|| {
+            let state = &borders.states[state_index];
+            state_index = (state_index + 1) % borders.states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    let demo_borders = emerge_demo_showcase_borders_benchmark();
+    group.throughput(Throughput::Elements(demo_borders.summary.nodes as u64));
+    group.bench_function("emerge_demo_showcase_borders/cache_steady_hits", |b| {
+        let mut state_index = 2usize;
+        let mut surface = EglBenchSurface::new((demo_borders.width, demo_borders.height))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_emerge_demo_showcase_borders_steady_hits(&mut renderer, &mut surface, &demo_borders);
+
+        b.iter(|| {
+            let state = &demo_borders.states[state_index];
+            state_index = (state_index + 1) % demo_borders.states.len();
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, state));
+        });
+    });
+
+    let demo_borders_screenshot = emerge_demo_showcase_borders_screenshot_benchmark();
+    group.throughput(Throughput::Elements(
+        demo_borders_screenshot.summary.nodes as u64,
+    ));
+    group.bench_function(
+        "emerge_demo_showcase_borders/screenshot_1909x2148_scale_1_5/cache_steady_hits",
+        |b| {
+            let mut state_index = 2usize;
+            let mut surface = EglBenchSurface::new((
+                demo_borders_screenshot.width,
+                demo_borders_screenshot.height,
+            ))
+            .expect("EGL surfaceless setup should stay available after probe");
+            let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+                enabled: true,
+                ..RendererCacheConfig::default()
+            });
+            assert_emerge_demo_showcase_borders_steady_hits(
+                &mut renderer,
+                &mut surface,
+                &demo_borders_screenshot,
+            );
+
+            b.iter(|| {
+                let state = &demo_borders_screenshot.states[state_index];
+                state_index = (state_index + 1) % demo_borders_screenshot.states.len();
+                let mut frame = surface.frame();
+                black_box(renderer.render(&mut frame, state));
+            });
+        },
+    );
+    group.bench_function(
+        "emerge_demo_showcase_borders/screenshot_1909x2148_scale_1_5/refresh_scene",
+        |b| {
+            let mut case = emerge_demo_showcase_borders_screenshot_refresh_benchmark();
+            b.iter(|| {
+                black_box(case.refresh_next_frame());
+            });
+        },
+    );
+
+    group.throughput(Throughput::Elements(
+        large_simple_paint_layer_scene().summary().nodes as u64,
+    ));
+    group.bench_function("large_simple_layer/cache_disabled_direct", |b| {
+        let state = large_simple_paint_layer_state();
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::new();
+
+        b.iter(|| {
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.bench_function("large_simple_layer/cache_low_value_bypass", |b| {
+        let state = large_simple_paint_layer_state();
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_large_simple_layer_bypasses_cache(&mut renderer, &mut surface, &state);
+
+        b.iter(|| {
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, &state));
+        });
+    });
+
+    group.throughput(Throughput::Elements(
+        text_heavy_paint_layer_scene().summary().nodes as u64,
+    ));
+    group.bench_function("text_heavy_layer/cache_hits", |b| {
+        let state = text_heavy_paint_layer_state();
+        let mut surface = EglBenchSurface::new((WIDTH, HEIGHT))
+            .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        assert_text_heavy_layer_cache_hits(&mut renderer, &mut surface, &state);
+
+        b.iter(|| {
+            let mut frame = surface.frame();
+            black_box(renderer.render(&mut frame, &state));
         });
     });
 
@@ -896,7 +1232,7 @@ fn assert_paint_layer_cache_store_then_hit(
     first_state: &RenderState,
     second_state: &RenderState,
     label: &str,
-    expect_moved_hit: bool,
+    _expect_moved_hit: bool,
 ) {
     let first_stats = {
         let mut frame = surface.frame();
@@ -923,10 +1259,1424 @@ fn assert_paint_layer_cache_store_then_hit(
         second_stats.hits > 0,
         "{label} paint-layer cache did not hit after warmup: {second_stats:?}"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn render_paint_layer_cache_stats(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    state: &RenderState,
+) -> RendererCachePaintLayerFrameStats {
+    let mut frame = surface.frame();
+    renderer
+        .render(&mut frame, state)
+        .renderer_cache
+        .expect("paint-layer cache benchmark frame should produce cache stats")
+        .paint_layer
+}
+
+#[cfg(target_os = "linux")]
+fn steady_paint_layer_coverage(stats: RendererCachePaintLayerFrameStats) -> u64 {
+    stats.hits.saturating_add(stats.bypassed_low_value)
+}
+
+#[cfg(target_os = "linux")]
+struct EmergeDemoShowcaseLayoutPageBenchmark {
+    states: Vec<RenderState>,
+    width: u32,
+    height: u32,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct EmergeDemoShowcaseLayoutTarget {
+    width: u32,
+    height: u32,
+    scroll_id: NodeId,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+    score: usize,
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_page_benchmark() -> EmergeDemoShowcaseLayoutPageBenchmark {
+    let started_at = Instant::now();
+    let tree = decode_tree(EMERGE_DEMO_SHOWCASE_LAYOUT_EMRG)
+        .expect("emerge_demo showcase layout fixture should decode");
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+
+    let target = emerge_demo_showcase_layout_target(&tree, &runtime, started_at);
+    let states = emerge_demo_showcase_layout_states(&tree, &runtime, started_at, target);
+    let summary = states
+        .first()
+        .expect("emerge_demo showcase layout benchmark should build states")
+        .scene
+        .summary();
+
     assert!(
-        !expect_moved_hit || second_stats.moved_hits > 0,
-        "{label} paint-layer cache did not record a moved hit: {second_stats:?}"
+        summary.nodes >= 300 && summary.primitives >= 100 && summary.texts >= 50,
+        "emerge_demo showcase layout benchmark did not select the expected rich layout scene: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
     );
+    assert!(
+        summary.paint_layers >= 2,
+        "emerge_demo showcase layout benchmark did not emit paint layers: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
+    );
+
+    EmergeDemoShowcaseLayoutPageBenchmark {
+        states,
+        width: target.width,
+        height: target.height,
+        scroll_y: target.scroll_y,
+        summary,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_states(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    target: EmergeDemoShowcaseLayoutTarget,
+) -> Vec<RenderState> {
+    let mut tree = tree.clone();
+    let initial = layout_and_refresh_default_with_animation(
+        &mut tree,
+        emerge_demo_showcase_layout_constraint(target.width, target.height),
+        1.0,
+        runtime,
+        started_at,
+    );
+    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+
+    EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS
+        .iter()
+        .enumerate()
+        .map(|(index, frame_ms)| {
+            let update =
+                layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    emerge_demo_showcase_layout_constraint(target.width, target.height),
+                    1.0,
+                    runtime,
+                    started_at + Duration::from_millis(*frame_ms),
+                    Some(&initial.event_rebuild),
+                );
+            RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn assert_emerge_demo_showcase_layout_page_steady_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    page: &EmergeDemoShowcaseLayoutPageBenchmark,
+) {
+    assert!(
+        page.summary.nodes >= 300 && page.summary.primitives >= 100 && page.summary.texts >= 50,
+        "{:?}",
+        page.summary
+    );
+    assert!(
+        page.summary.moving_layers > 0,
+        "emerge_demo showcase layout page did not emit scroll-moving paint layers: \
+         size={}x{}, scroll_y={}, summary={:?}",
+        page.width,
+        page.height,
+        page.scroll_y,
+        page.summary
+    );
+
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "emerge_demo showcase layout page did not warm paint-layer payloads: \
+         scroll_y={}, summary={:?}, stats={warm_stats:?}",
+        page.scroll_y,
+        page.summary
+    );
+
+    let second_warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[1]);
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[2]);
+    assert!(
+        steady_paint_layer_coverage(steady_stats) >= warm_stats.visible_candidates,
+        "emerge_demo showcase layout page lost warmed visible paint-layer payload coverage: \
+         scroll_y={}, summary={:?}, stats={steady_stats:?}",
+        page.scroll_y,
+        page.summary
+    );
+    assert!(steady_stats.misses <= 1, "{steady_stats:?}");
+    assert!(steady_stats.stores <= 1, "{steady_stats:?}");
+    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
+    assert!(steady_stats.gpu_payload_stores <= 1, "{steady_stats:?}");
+    assert_eq!(steady_stats.dirty_draw_time, Duration::ZERO);
+
+    let mut draw_total = Duration::ZERO;
+    let mut draw_count = 0u32;
+    for state in page.states.iter().skip(3) {
+        let timings = {
+            let mut frame = surface.frame();
+            renderer.render(&mut frame, state)
+        };
+        let stats = timings
+            .renderer_cache
+            .as_ref()
+            .expect("steady paint-layer cache frame should produce cache stats")
+            .paint_layer;
+        assert!(
+            steady_paint_layer_coverage(stats) >= warm_stats.visible_candidates,
+            "{stats:?}"
+        );
+        assert!(stats.misses <= 1, "{stats:?}");
+        assert!(stats.stores <= 1, "{stats:?}");
+        assert_eq!(stats.evictions, 0, "{stats:?}");
+        assert_eq!(stats.stale_evictions, 0, "{stats:?}");
+        assert!(stats.gpu_payload_stores <= 1, "{stats:?}");
+        assert_eq!(stats.dirty_draw_time, Duration::ZERO);
+        assert_eq!(stats.child_layer_time, Duration::ZERO);
+        draw_total += timings.draw;
+        draw_count += 1;
+    }
+    let draw_avg = draw_total / draw_count;
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase layout page: scroll_y={}, summary={:?}, warm={:?}, second_warm={:?}, steady={:?}, steady_draw_avg={:?}",
+            page.scroll_y, page.summary, warm_stats, second_warm_stats, steady_stats, draw_avg
+        );
+    }
+    assert!(
+        draw_avg < Duration::from_micros(500),
+        "emerge_demo showcase layout page steady draw average exceeded target: \
+         draw_avg={draw_avg:?}, scroll_y={}, summary={:?}",
+        page.scroll_y,
+        page.summary
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct EmergeDemoShowcaseBordersBenchmark {
+    states: Vec<RenderState>,
+    width: u32,
+    height: u32,
+    scale: f32,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct EmergeDemoShowcaseBordersTarget {
+    width: u32,
+    height: u32,
+    scale: f32,
+    scroll_id: NodeId,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+    score: usize,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct EmergeDemoShowcaseBordersViewport {
+    width: u32,
+    height: u32,
+    scale: f32,
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_benchmark() -> EmergeDemoShowcaseBordersBenchmark {
+    let started_at = Instant::now();
+    let tree = decode_tree(EMERGE_DEMO_SHOWCASE_BORDERS_EMRG)
+        .expect("emerge_demo showcase Borders fixture should decode");
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+
+    let target = emerge_demo_showcase_borders_target(&tree, &runtime, started_at);
+    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let summary = states
+        .first()
+        .expect("emerge_demo showcase Borders benchmark should build states")
+        .scene
+        .summary();
+
+    assert!(
+        summary.nodes >= 500 && summary.primitives >= 150 && summary.texts >= 100,
+        "emerge_demo showcase Borders benchmark did not select the expected rich scene: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
+    );
+    assert!(
+        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        "emerge_demo showcase Borders benchmark did not select the animated Borders viewport: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
+    );
+
+    EmergeDemoShowcaseBordersBenchmark {
+        states,
+        width: target.width,
+        height: target.height,
+        scale: target.scale,
+        scroll_y: target.scroll_y,
+        summary,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_screenshot_benchmark() -> EmergeDemoShowcaseBordersBenchmark {
+    let started_at = Instant::now();
+    let tree = decode_tree(EMERGE_DEMO_SHOWCASE_BORDERS_EMRG)
+        .expect("emerge_demo showcase Borders fixture should decode");
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+
+    let target = emerge_demo_showcase_borders_exact_target(
+        &tree,
+        &runtime,
+        started_at,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE,
+    );
+    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let summary = states
+        .first()
+        .expect("emerge_demo showcase Borders screenshot benchmark should build states")
+        .scene
+        .summary();
+
+    assert!(
+        summary.nodes >= 500 && summary.primitives >= 150 && summary.texts >= 100,
+        "emerge_demo showcase Borders screenshot benchmark did not select the expected rich scene: \
+         size={}x{} scale={} scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scale,
+        target.scroll_y,
+        target.score
+    );
+    assert!(
+        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        "emerge_demo showcase Borders screenshot benchmark did not select the animated Borders viewport: \
+         size={}x{} scale={} scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scale,
+        target.scroll_y,
+        target.score
+    );
+
+    EmergeDemoShowcaseBordersBenchmark {
+        states,
+        width: target.width,
+        height: target.height,
+        scale: target.scale,
+        scroll_y: target.scroll_y,
+        summary,
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct EmergeDemoShowcaseBordersRefreshBenchmark {
+    tree: ElementTree,
+    runtime: AnimationRuntime,
+    started_at: Instant,
+    cached_rebuild: RegistryRebuildPayload,
+    width: u32,
+    height: u32,
+    scale: f32,
+    next_frame: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl EmergeDemoShowcaseBordersRefreshBenchmark {
+    fn refresh_next_frame(&mut self) -> (bool, usize) {
+        self.next_frame = self.next_frame.saturating_add(1);
+        let update = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+            &mut self.tree,
+            emerge_demo_showcase_borders_constraint(self.width, self.height),
+            self.scale,
+            &self.runtime,
+            self.started_at + Duration::from_millis(self.next_frame.saturating_mul(16)),
+            Some(&self.cached_rebuild),
+        );
+
+        (update.layout_performed, update.output.scene.nodes.len())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
+-> EmergeDemoShowcaseBordersRefreshBenchmark {
+    let started_at = Instant::now();
+    let tree = decode_tree(EMERGE_DEMO_SHOWCASE_BORDERS_EMRG)
+        .expect("emerge_demo showcase Borders fixture should decode");
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+    let target = emerge_demo_showcase_borders_exact_target(
+        &tree,
+        &runtime,
+        started_at,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE,
+    );
+
+    let mut tree = tree.clone();
+    let initial = layout_and_refresh_default_with_animation(
+        &mut tree,
+        emerge_demo_showcase_borders_constraint(target.width, target.height),
+        target.scale,
+        &runtime,
+        started_at,
+    );
+    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+    let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+        &mut tree,
+        emerge_demo_showcase_borders_constraint(target.width, target.height),
+        target.scale,
+        &runtime,
+        started_at,
+        Some(&initial.event_rebuild),
+    );
+    let cached_rebuild = if warm.output.event_rebuild_changed {
+        warm.output.event_rebuild
+    } else {
+        initial.event_rebuild
+    };
+    let second = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+        &mut tree,
+        emerge_demo_showcase_borders_constraint(target.width, target.height),
+        target.scale,
+        &runtime,
+        started_at + Duration::from_millis(16),
+        Some(&cached_rebuild),
+    );
+    assert!(
+        !second.layout_performed,
+        "emerge_demo showcase Borders screenshot refresh benchmark should stay refresh-only: \
+         target={:?}, summary={:?}",
+        (target.width, target.height, target.scale, target.scroll_y),
+        target.summary
+    );
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase Borders screenshot refresh target: size={}x{} scale={} scroll_y={} score={} summary={:?}",
+            target.width,
+            target.height,
+            target.scale,
+            target.scroll_y,
+            target.score,
+            target.summary
+        );
+    }
+
+    EmergeDemoShowcaseBordersRefreshBenchmark {
+        tree,
+        runtime,
+        started_at,
+        cached_rebuild,
+        width: target.width,
+        height: target.height,
+        scale: target.scale,
+        next_frame: 1,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_states(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    target: EmergeDemoShowcaseBordersTarget,
+) -> Vec<RenderState> {
+    let mut tree = tree.clone();
+    let initial = layout_and_refresh_default_with_animation(
+        &mut tree,
+        emerge_demo_showcase_borders_constraint(target.width, target.height),
+        target.scale,
+        runtime,
+        started_at,
+    );
+    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+
+    EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS
+        .iter()
+        .enumerate()
+        .map(|(index, frame_ms)| {
+            let update =
+                layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    emerge_demo_showcase_borders_constraint(target.width, target.height),
+                    target.scale,
+                    runtime,
+                    started_at + Duration::from_millis(*frame_ms),
+                    Some(&initial.event_rebuild),
+                );
+            RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_target(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+) -> EmergeDemoShowcaseBordersTarget {
+    let target = EMERGE_DEMO_SHOWCASE_BORDERS_VIEWPORTS
+        .iter()
+        .filter_map(|(width, height)| {
+            let mut layout_tree = tree.clone();
+            layout_and_refresh_default_with_animation(
+                &mut layout_tree,
+                emerge_demo_showcase_borders_constraint(*width, *height),
+                1.0,
+                runtime,
+                started_at,
+            );
+            let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
+            let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
+                &layout_tree,
+                scroll_id,
+                runtime,
+                started_at,
+                EmergeDemoShowcaseBordersViewport {
+                    width: *width,
+                    height: *height,
+                    scale: 1.0,
+                },
+            );
+
+            Some(EmergeDemoShowcaseBordersTarget {
+                width: *width,
+                height: *height,
+                scale: 1.0,
+                scroll_id,
+                scroll_y,
+                summary,
+                score,
+            })
+        })
+        .min_by_key(|target| target.score)
+        .expect("emerge_demo showcase Borders page should have a vertical scroll container");
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase Borders selected target: size={}x{} scroll_y={} score={} summary={:?}",
+            target.width, target.height, target.scroll_y, target.score, target.summary
+        );
+    }
+
+    target
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_exact_target(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> EmergeDemoShowcaseBordersTarget {
+    let mut layout_tree = tree.clone();
+    layout_and_refresh_default_with_animation(
+        &mut layout_tree,
+        emerge_demo_showcase_borders_constraint(width, height),
+        scale,
+        runtime,
+        started_at,
+    );
+    let scroll_id = largest_vertical_scroll_node(&layout_tree)
+        .expect("emerge_demo showcase Borders page should have a vertical scroll container");
+    let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
+        &layout_tree,
+        scroll_id,
+        runtime,
+        started_at,
+        EmergeDemoShowcaseBordersViewport {
+            width,
+            height,
+            scale,
+        },
+    );
+    let target = EmergeDemoShowcaseBordersTarget {
+        width,
+        height,
+        scale,
+        scroll_id,
+        scroll_y,
+        summary,
+        score,
+    };
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase Borders exact target: size={}x{} scale={} scroll_y={} score={} summary={:?}",
+            target.width,
+            target.height,
+            target.scale,
+            target.scroll_y,
+            target.score,
+            target.summary
+        );
+    }
+
+    target
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_target_scroll_y(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    viewport: EmergeDemoShowcaseBordersViewport,
+) -> (f32, RenderSceneSummary, usize) {
+    let max_y = tree
+        .get(&scroll_id)
+        .map(|element| element.layout.scroll_y_max.max(0.0))
+        .unwrap_or(0.0);
+    let sample_count = (max_y / EMERGE_DEMO_SHOWCASE_BORDERS_SCROLL_STEP).ceil() as usize;
+
+    (0..=sample_count)
+        .map(|sample| {
+            let scroll_y = (sample as f32 * EMERGE_DEMO_SHOWCASE_BORDERS_SCROLL_STEP).min(max_y);
+            let summary = emerge_demo_showcase_borders_summary_at_scroll(
+                tree, scroll_id, runtime, started_at, scroll_y, viewport,
+            );
+            (
+                emerge_demo_showcase_borders_target_score(summary),
+                scroll_y,
+                summary,
+            )
+        })
+        .min_by_key(|(score, _, _)| *score)
+        .map(|(score, scroll_y, summary)| (scroll_y, summary, score))
+        .unwrap_or((0.0, RenderSceneSummary::default(), usize::MAX))
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_summary_at_scroll(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    scroll_y: f32,
+    viewport: EmergeDemoShowcaseBordersViewport,
+) -> RenderSceneSummary {
+    let mut frame_tree = tree.clone();
+    frame_tree.apply_scroll_y(&scroll_id, -scroll_y);
+    layout_and_refresh_default_with_animation(
+        &mut frame_tree,
+        emerge_demo_showcase_borders_constraint(viewport.width, viewport.height),
+        viewport.scale,
+        runtime,
+        started_at,
+    )
+    .scene
+    .summary()
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_target_score(summary: RenderSceneSummary) -> usize {
+    summary.nodes.abs_diff(750)
+        + summary.primitives.abs_diff(281) * 8
+        + summary.texts.abs_diff(201) * 4
+        + summary.shadows.abs_diff(14) * 8
+        + summary.inset_shadows.abs_diff(0) * 8
+        + summary.gradients.abs_diff(0) * 8
+        + summary.borders.abs_diff(18) * 4
+        + summary.paint_layers.abs_diff(12) * 16
+        + summary.dynamic_layers.abs_diff(3) * 16
+        + summary.moving_layers.abs_diff(7) * 8
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_constraint(width: u32, height: u32) -> Constraint {
+    Constraint::new(width as f32, height as f32)
+}
+
+#[cfg(target_os = "linux")]
+fn assert_emerge_demo_showcase_borders_steady_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    page: &EmergeDemoShowcaseBordersBenchmark,
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "emerge_demo showcase Borders did not warm paint-layer payloads: \
+         scale={}, scroll_y={}, summary={:?}, stats={warm_stats:?}",
+        page.scale,
+        page.scroll_y,
+        page.summary
+    );
+
+    let second_warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[1]);
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[2]);
+    assert!(
+        steady_paint_layer_coverage(steady_stats) >= warm_stats.visible_candidates,
+        "emerge_demo showcase Borders lost warmed cache-hit coverage: \
+         scale={}, scroll_y={}, summary={:?}, stats={steady_stats:?}",
+        page.scale,
+        page.scroll_y,
+        page.summary
+    );
+    assert_eq!(steady_stats.misses, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
+
+    let mut total = Duration::ZERO;
+    let mut draw = Duration::ZERO;
+    let mut flush = Duration::ZERO;
+    let mut count = 0u32;
+    for state in page.states.iter().skip(3) {
+        let timings = {
+            let mut frame = surface.frame();
+            renderer.render(&mut frame, state)
+        };
+        let stats = timings
+            .renderer_cache
+            .as_ref()
+            .expect("steady emerge_demo Borders frame should produce cache stats")
+            .paint_layer;
+        assert!(
+            steady_paint_layer_coverage(stats) >= warm_stats.visible_candidates,
+            "{stats:?}"
+        );
+        assert_eq!(stats.misses, 0, "{stats:?}");
+        assert_eq!(stats.stores, 0, "{stats:?}");
+        assert_eq!(stats.evictions, 0, "{stats:?}");
+        assert_eq!(stats.stale_evictions, 0, "{stats:?}");
+        total += timings.total;
+        draw += timings.draw;
+        flush += timings.flush;
+        count += 1;
+    }
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase Borders: scale={}, scroll_y={}, summary={:?}, warm={:?}, second_warm={:?}, steady={:?}, steady_total_avg={:?}, steady_draw_avg={:?}, steady_flush_avg={:?}",
+            page.scale,
+            page.scroll_y,
+            page.summary,
+            warm_stats,
+            second_warm_stats,
+            steady_stats,
+            total / count,
+            draw / count,
+            flush / count
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct RichBordersShowcaseBenchmark {
+    states: Vec<RenderState>,
+    width: u32,
+    height: u32,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct RichBordersShowcaseTarget {
+    width: u32,
+    height: u32,
+    scroll_id: NodeId,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+    score: usize,
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
+    let started_at = Instant::now();
+    let tree = scrollable_rich_borders_shadow_showcase();
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+
+    let target = rich_borders_showcase_target(&tree, &runtime, started_at);
+    let states = rich_borders_showcase_states(&tree, &runtime, started_at, target);
+    let summary = states
+        .first()
+        .expect("rich borders showcase benchmark should build states")
+        .scene
+        .summary();
+
+    assert!(
+        summary.nodes >= 500 && summary.primitives >= 150 && summary.texts >= 100,
+        "rich borders benchmark did not select the expected rich viewport: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
+    );
+    assert!(
+        summary.dynamic_layers > 0,
+        "rich borders benchmark should select the animated-shadow viewport: \
+         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
+        target.width,
+        target.height,
+        target.scroll_y,
+        target.score
+    );
+
+    RichBordersShowcaseBenchmark {
+        states,
+        width: target.width,
+        height: target.height,
+        scroll_y: target.scroll_y,
+        summary,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_states(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    target: RichBordersShowcaseTarget,
+) -> Vec<RenderState> {
+    let mut tree = tree.clone();
+    let initial = layout_and_refresh_default_with_animation(
+        &mut tree,
+        rich_borders_showcase_constraint(target.width, target.height),
+        1.0,
+        runtime,
+        started_at,
+    );
+    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+
+    RICH_BORDERS_SHOWCASE_FRAME_MS
+        .iter()
+        .enumerate()
+        .map(|(index, frame_ms)| {
+            let update =
+                layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    rich_borders_showcase_constraint(target.width, target.height),
+                    1.0,
+                    runtime,
+                    started_at + Duration::from_millis(*frame_ms),
+                    Some(&initial.event_rebuild),
+                );
+            RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_target(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+) -> RichBordersShowcaseTarget {
+    let width = 960;
+    let height = 900;
+    let mut layout_tree = tree.clone();
+    layout_and_refresh_default_with_animation(
+        &mut layout_tree,
+        rich_borders_showcase_constraint(width, height),
+        1.0,
+        runtime,
+        started_at,
+    );
+    let scroll_id = largest_vertical_scroll_node(&layout_tree)
+        .expect("rich borders showcase should have a vertical scroll container");
+    let (scroll_y, summary, score) = rich_borders_showcase_target_scroll_y(
+        &layout_tree,
+        scroll_id,
+        runtime,
+        started_at,
+        width,
+        height,
+    );
+    let target = RichBordersShowcaseTarget {
+        width,
+        height,
+        scroll_id,
+        scroll_y,
+        summary,
+        score,
+    };
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "rich borders showcase selected target: size={}x{} scroll_y={} score={} summary={:?}",
+            target.width, target.height, target.scroll_y, target.score, target.summary
+        );
+    }
+
+    target
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_target_scroll_y(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    width: u32,
+    height: u32,
+) -> (f32, RenderSceneSummary, usize) {
+    let max_y = tree
+        .get(&scroll_id)
+        .map(|element| element.layout.scroll_y_max.max(0.0))
+        .unwrap_or(0.0);
+    let sample_count = (max_y / RICH_BORDERS_SHOWCASE_SCROLL_STEP).ceil() as usize;
+
+    (0..=sample_count)
+        .map(|sample| {
+            let scroll_y = (sample as f32 * RICH_BORDERS_SHOWCASE_SCROLL_STEP).min(max_y);
+            let summary = rich_borders_showcase_summary_at_scroll(
+                tree, scroll_id, runtime, started_at, scroll_y, width, height,
+            );
+            (
+                rich_borders_showcase_target_score(summary),
+                scroll_y,
+                summary,
+            )
+        })
+        .min_by_key(|(score, _, _)| *score)
+        .map(|(score, scroll_y, summary)| (scroll_y, summary, score))
+        .unwrap_or((0.0, RenderSceneSummary::default(), usize::MAX))
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_summary_at_scroll(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    scroll_y: f32,
+    width: u32,
+    height: u32,
+) -> RenderSceneSummary {
+    let mut frame_tree = tree.clone();
+    frame_tree.apply_scroll_y(&scroll_id, -scroll_y);
+    layout_and_refresh_default_with_animation(
+        &mut frame_tree,
+        rich_borders_showcase_constraint(width, height),
+        1.0,
+        runtime,
+        started_at,
+    )
+    .scene
+    .summary()
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_target_score(summary: RenderSceneSummary) -> usize {
+    summary.nodes.abs_diff(750)
+        + summary.primitives.abs_diff(281) * 8
+        + summary.texts.abs_diff(201) * 4
+        + summary.shadows.abs_diff(14) * 8
+        + summary.borders.abs_diff(18) * 4
+        + summary.paint_layers.abs_diff(12) * 12
+        + summary.dynamic_layers.abs_diff(3) * 12
+        + summary.moving_layers.abs_diff(7) * 6
+}
+
+#[cfg(target_os = "linux")]
+fn rich_borders_showcase_constraint(width: u32, height: u32) -> Constraint {
+    Constraint::new(width as f32, height as f32)
+}
+
+#[cfg(target_os = "linux")]
+fn assert_rich_borders_showcase_cache_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    page: &RichBordersShowcaseBenchmark,
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "rich borders showcase did not warm paint-layer payloads: \
+         scroll_y={}, summary={:?}, stats={warm_stats:?}",
+        page.scroll_y,
+        page.summary
+    );
+
+    let second_warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[1]);
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[2]);
+    assert!(
+        steady_paint_layer_coverage(steady_stats) > 0,
+        "rich borders showcase lost warmed cache-hit coverage: \
+         scroll_y={}, summary={:?}, stats={steady_stats:?}",
+        page.scroll_y,
+        page.summary
+    );
+    assert!(steady_stats.misses <= 2, "{steady_stats:?}");
+    assert!(steady_stats.stores <= 2, "{steady_stats:?}");
+    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
+
+    let mut total = Duration::ZERO;
+    let mut draw = Duration::ZERO;
+    let mut flush = Duration::ZERO;
+    let mut count = 0u32;
+    for state in page.states.iter().skip(3) {
+        let timings = {
+            let mut frame = surface.frame();
+            renderer.render(&mut frame, state)
+        };
+        let stats = timings
+            .renderer_cache
+            .as_ref()
+            .expect("steady rich borders frame should produce cache stats")
+            .paint_layer;
+        assert!(steady_paint_layer_coverage(stats) > 0, "{stats:?}");
+        assert!(stats.misses <= 2, "{stats:?}");
+        assert!(stats.stores <= 2, "{stats:?}");
+        assert_eq!(stats.evictions, 0, "{stats:?}");
+        assert_eq!(stats.stale_evictions, 0, "{stats:?}");
+        total += timings.total;
+        draw += timings.draw;
+        flush += timings.flush;
+        count += 1;
+    }
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "rich borders showcase: scroll_y={}, summary={:?}, warm={:?}, second_warm={:?}, steady={:?}, steady_total_avg={:?}, steady_draw_avg={:?}, steady_flush_avg={:?}",
+            page.scroll_y,
+            page.summary,
+            warm_stats,
+            second_warm_stats,
+            steady_stats,
+            total / count,
+            draw / count,
+            flush / count
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_bench_diagnostics_enabled() -> bool {
+    std::env::var_os("EMERGE_BENCH_DIAGNOSTICS").is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_target(
+    tree: &ElementTree,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+) -> EmergeDemoShowcaseLayoutTarget {
+    let target = EMERGE_DEMO_SHOWCASE_LAYOUT_VIEWPORTS
+        .iter()
+        .filter_map(|(width, height)| {
+            let mut layout_tree = tree.clone();
+            layout_and_refresh_default_with_animation(
+                &mut layout_tree,
+                emerge_demo_showcase_layout_constraint(*width, *height),
+                1.0,
+                runtime,
+                started_at,
+            );
+            let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
+            let (scroll_y, summary, score) = emerge_demo_showcase_layout_target_scroll_y(
+                &layout_tree,
+                scroll_id,
+                runtime,
+                started_at,
+                *width,
+                *height,
+            );
+
+            Some(EmergeDemoShowcaseLayoutTarget {
+                width: *width,
+                height: *height,
+                scroll_id,
+                scroll_y,
+                summary,
+                score,
+            })
+        })
+        .min_by_key(|target| target.score)
+        .expect("emerge_demo showcase layout page should have a vertical scroll container");
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase layout selected target: size={}x{} scroll_y={} score={} summary={:?}",
+            target.width, target.height, target.scroll_y, target.score, target.summary
+        );
+    }
+
+    target
+}
+
+#[cfg(target_os = "linux")]
+fn largest_vertical_scroll_node(tree: &ElementTree) -> Option<NodeId> {
+    tree.iter_node_pairs()
+        .filter(|(_, element)| element.layout.scroll_y_max > f32::EPSILON)
+        .max_by(|(_, left), (_, right)| {
+            left.layout
+                .scroll_y_max
+                .total_cmp(&right.layout.scroll_y_max)
+        })
+        .map(|(id, _)| id)
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_target_scroll_y(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    width: u32,
+    height: u32,
+) -> (f32, RenderSceneSummary, usize) {
+    let max_y = tree
+        .get(&scroll_id)
+        .map(|element| element.layout.scroll_y_max.max(0.0))
+        .unwrap_or(0.0);
+    let sample_count = (max_y / EMERGE_DEMO_SHOWCASE_LAYOUT_SCROLL_STEP).ceil() as usize;
+
+    let samples = (0..=sample_count)
+        .map(|sample| {
+            let scroll_y = (sample as f32 * EMERGE_DEMO_SHOWCASE_LAYOUT_SCROLL_STEP).min(max_y);
+            let summary = emerge_demo_showcase_layout_summary_at_scroll(
+                tree, scroll_id, runtime, started_at, scroll_y, width, height,
+            );
+            (
+                emerge_demo_showcase_layout_target_score(summary),
+                scroll_y,
+                summary,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    samples
+        .into_iter()
+        .min_by_key(|(score, _, _)| *score)
+        .map(|(score, scroll_y, summary)| (scroll_y, summary, score))
+        .unwrap_or((0.0, RenderSceneSummary::default(), usize::MAX))
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_summary_at_scroll(
+    tree: &ElementTree,
+    scroll_id: NodeId,
+    runtime: &AnimationRuntime,
+    started_at: Instant,
+    scroll_y: f32,
+    width: u32,
+    height: u32,
+) -> RenderSceneSummary {
+    let mut frame_tree = tree.clone();
+    frame_tree.apply_scroll_y(&scroll_id, -scroll_y);
+    layout_and_refresh_default_with_animation(
+        &mut frame_tree,
+        emerge_demo_showcase_layout_constraint(width, height),
+        1.0,
+        runtime,
+        started_at,
+    )
+    .scene
+    .summary()
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_target_score(summary: RenderSceneSummary) -> usize {
+    summary.nodes.abs_diff(684)
+        + summary.primitives.abs_diff(241) * 8
+        + summary.texts.abs_diff(150) * 4
+        + summary.transforms.abs_diff(4) * 8
+        + summary.clips.abs_diff(420)
+        + summary.rects.abs_diff(58) * 2
+        + summary.borders.abs_diff(21) * 2
+        + summary.shadows.abs_diff(11) * 2
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_layout_constraint(width: u32, height: u32) -> Constraint {
+    Constraint::new(width as f32, height as f32)
+}
+
+#[cfg(target_os = "linux")]
+fn assert_offscreen_layout_animation_steady_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    states: &[RenderState],
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "offscreen layout animation did not warm the fixed paint-layer cache: {warm_stats:?}"
+    );
+
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &states[1]);
+    assert!(
+        steady_stats.hits > 0,
+        "offscreen layout animation steady frame did not hit cache: {steady_stats:?}"
+    );
+    assert_eq!(steady_stats.misses, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.gpu_payload_stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.dirty_draw_time, std::time::Duration::ZERO);
+}
+
+#[cfg(target_os = "linux")]
+fn assert_offscreen_layout_animation_visible_frame_skip(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    states: &[RenderState],
+) -> usize {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &states[0]);
+    assert!(
+        warm_stats.stores > 0 || warm_stats.hits > 0,
+        "offscreen layout animation did not warm visible payloads: {warm_stats:?}"
+    );
+
+    states
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, state)| {
+            if renderer.can_skip_unchanged_visible_frame(state, (WIDTH, HEIGHT)) {
+                Some(index)
+            } else {
+                let _ = render_paint_layer_cache_stats(renderer, surface, state);
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "offscreen layout animation did not skip any unchanged visible frame after warmup"
+            )
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn assert_scroll_return_cache_reuses_after_clipped_frames(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    states: &[RenderState],
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "scroll return did not warm paint-layer payloads: {warm_stats:?}"
+    );
+
+    let _clipped_stats = render_paint_layer_cache_stats(renderer, surface, &states[1]);
+    let stale_window_stats = render_paint_layer_cache_stats(renderer, surface, &states[2]);
+    assert_eq!(
+        stale_window_stats.stale_evictions, 0,
+        "{stale_window_stats:?}"
+    );
+    assert_eq!(
+        stale_window_stats.current_entries,
+        warm_stats.current_entries
+    );
+
+    let return_stats = render_paint_layer_cache_stats(renderer, surface, &states[3]);
+    assert!(
+        return_stats.hits > 0,
+        "scroll return did not hit retained paint-layer payloads: {return_stats:?}"
+    );
+    assert_eq!(return_stats.misses, 0, "{return_stats:?}");
+    assert_eq!(return_stats.stores, 0, "{return_stats:?}");
+    assert_eq!(return_stats.evictions, 0, "{return_stats:?}");
+    assert_eq!(return_stats.stale_evictions, 0, "{return_stats:?}");
+    assert_eq!(return_stats.gpu_payload_stores, 0, "{return_stats:?}");
+}
+
+#[cfg(target_os = "linux")]
+fn assert_stable_descendant_layout_animation_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    states: &[RenderState],
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &states[0]);
+    assert!(
+        warm_stats.stores > 0,
+        "stable descendant layout animation did not warm payloads: {warm_stats:?}"
+    );
+
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &states[1]);
+    assert!(
+        steady_stats.hits >= 3,
+        "stable descendant layout animation did not hit stable payloads: {steady_stats:?}"
+    );
+    assert_eq!(steady_stats.misses, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.gpu_payload_stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.child_layer_time, std::time::Duration::ZERO);
+    assert_eq!(steady_stats.dirty_draw_time, std::time::Duration::ZERO);
+}
+
+#[cfg(target_os = "linux")]
+fn assert_large_simple_layer_bypasses_cache(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    state: &RenderState,
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, state);
+    assert!(
+        warm_stats.bypassed_low_value > 0,
+        "large/simple paint layer should bypass payload caching: {warm_stats:?}"
+    );
+    assert_eq!(warm_stats.stores, 0, "{warm_stats:?}");
+    assert_eq!(warm_stats.hits, 0, "{warm_stats:?}");
+
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, state);
+    assert!(
+        steady_stats.bypassed_low_value > 0,
+        "large/simple paint layer should keep using direct fallback: {steady_stats:?}"
+    );
+    assert_eq!(steady_stats.stores, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.hits, 0, "{steady_stats:?}");
+}
+
+#[cfg(target_os = "linux")]
+fn assert_text_heavy_layer_cache_hits(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    state: &RenderState,
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, state);
+    assert!(
+        warm_stats.stores > 0,
+        "text-heavy paint layer should still be admitted into cache: {warm_stats:?}"
+    );
+    assert_eq!(warm_stats.bypassed_low_value, 0, "{warm_stats:?}");
+
+    let steady_stats = render_paint_layer_cache_stats(renderer, surface, state);
+    assert!(
+        steady_stats.hits > 0,
+        "text-heavy paint layer did not hit after warmup: {steady_stats:?}"
+    );
+    assert_eq!(steady_stats.bypassed_low_value, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.misses, 0, "{steady_stats:?}");
+    assert_eq!(steady_stats.stores, 0, "{steady_stats:?}");
+}
+
+#[cfg(target_os = "linux")]
+fn large_simple_paint_layer_state() -> RenderState {
+    RenderState::new(large_simple_paint_layer_scene(), Color::WHITE, 1, false)
+}
+
+#[cfg(target_os = "linux")]
+fn large_simple_paint_layer_scene() -> RenderScene {
+    RenderScene {
+        nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+            9_100,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: WIDTH as f32,
+                height: HEIGHT as f32,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            vec![
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    0.0,
+                    WIDTH as f32,
+                    HEIGHT as f32,
+                    0xF6F8FBFF,
+                )),
+                RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                    64.0,
+                    72.0,
+                    WIDTH as f32 - 128.0,
+                    HEIGHT as f32 - 144.0,
+                    18.0,
+                    0xFFFFFFFF,
+                )),
+                RenderNode::Primitive(DrawPrimitive::Border(
+                    64.5,
+                    72.5,
+                    WIDTH as f32 - 129.0,
+                    HEIGHT as f32 - 145.0,
+                    18.0,
+                    1.0,
+                    0xD7DEE8FF,
+                    BorderStyle::Solid,
+                )),
+            ],
+        ))],
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn text_heavy_paint_layer_state() -> RenderState {
+    RenderState::new(text_heavy_paint_layer_scene(), Color::WHITE, 1, false)
+}
+
+#[cfg(target_os = "linux")]
+fn text_heavy_paint_layer_scene() -> RenderScene {
+    RenderScene {
+        nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+            9_200,
+            Rect {
+                x: 58.0,
+                y: 46.0,
+                width: WIDTH as f32 - 116.0,
+                height: HEIGHT as f32 - 92.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            std::iter::once(RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                58.0,
+                46.0,
+                WIDTH as f32 - 116.0,
+                HEIGHT as f32 - 92.0,
+                16.0,
+                0xFFFFFFFF,
+            )))
+            .chain((0..96).map(|index| {
+                let col = index % 4;
+                let row = index / 4;
+                RenderNode::Primitive(DrawPrimitive::TextWithFont(
+                    86.0 + col as f32 * 202.0,
+                    88.0 + row as f32 * 22.0,
+                    format!("Cached text group {index:03}"),
+                    14.0,
+                    0x172033FF,
+                    "default".to_string(),
+                    if index % 5 == 0 { 700 } else { 400 },
+                    false,
+                ))
+            }))
+            .collect(),
+        ))],
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -947,6 +2697,22 @@ fn animated_direct_states() -> Vec<RenderState> {
 #[cfg(target_os = "linux")]
 fn animated_paint_layer_states() -> Vec<RenderState> {
     paint_layer_cache_states(&PAINT_LAYER_ANIMATION_PHASES, animated_paint_layer_scene)
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_layout_animation_states() -> Vec<RenderState> {
+    paint_layer_cache_states(
+        &PAINT_LAYER_ANIMATION_PHASES,
+        offscreen_layout_animation_scene,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn stable_descendant_layout_animation_states() -> Vec<RenderState> {
+    paint_layer_cache_states(
+        &PAINT_LAYER_ANIMATION_PHASES,
+        stable_descendant_layout_animation_scene,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -993,20 +2759,20 @@ fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
             )),
             RenderNode::Transform {
                 transform: Affine2::translation(60.0, 54.0 - offset_y),
-                children: vec![RenderNode::PaintLayer(RenderPaintLayer {
-                    stable_id: 4_100,
-                    bounds: Rect {
+                children: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                    4_100,
+                    Rect {
                         x: 0.0,
                         y: 0.0,
                         width: 840.0,
                         height: 620.0,
                     },
-                    placement: PaintLayerPlacement::ScrollMoving,
-                    policy: PaintLayerPolicy::Cacheable,
-                    reason: PaintLayerReason::ScrollContainer,
-                    content_generation: 1,
-                    children: scrolling_paint_layer_content(),
-                })],
+                    PaintLayerPlacement::ScrollMoving,
+                    PaintLayerPolicy::Cacheable,
+                    PaintLayerReason::ScrollContainer,
+                    1,
+                    scrolling_paint_layer_content(),
+                ))],
             },
         ],
     }
@@ -1070,43 +2836,51 @@ fn animated_direct_scene(phase: usize) -> RenderScene {
 #[cfg(target_os = "linux")]
 fn animated_paint_layer_scene(phase: usize) -> RenderScene {
     RenderScene {
-        nodes: vec![RenderNode::PaintLayer(RenderPaintLayer {
-            stable_id: 5_200,
-            bounds: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: WIDTH as f32,
-                height: HEIGHT as f32,
-            },
-            placement: PaintLayerPlacement::Fixed,
-            policy: PaintLayerPolicy::Cacheable,
-            reason: PaintLayerReason::StableSubtree,
-            content_generation: 1,
-            children: animated_paint_layer_children(phase),
-        })],
+        nodes: vec![
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                5_200,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: WIDTH as f32,
+                    height: HEIGHT as f32,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::Cacheable,
+                PaintLayerReason::StableSubtree,
+                1,
+                animated_static_before(),
+            )),
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                5_201,
+                Rect {
+                    x: 286.0,
+                    y: 246.0,
+                    width: 400.0,
+                    height: 130.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                phase as u64 + 1,
+                animated_dynamic_nodes(phase),
+            )),
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                5_202,
+                Rect {
+                    x: 52.0,
+                    y: 610.0,
+                    width: 820.0,
+                    height: 90.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::Cacheable,
+                PaintLayerReason::StableSubtree,
+                1,
+                animated_static_after(),
+            )),
+        ],
     }
-}
-
-#[cfg(target_os = "linux")]
-fn animated_paint_layer_children(phase: usize) -> Vec<RenderNode> {
-    animated_static_before()
-        .into_iter()
-        .chain(std::iter::once(RenderNode::PaintLayer(RenderPaintLayer {
-            stable_id: 5_201,
-            bounds: Rect {
-                x: 286.0,
-                y: 246.0,
-                width: 400.0,
-                height: 130.0,
-            },
-            placement: PaintLayerPlacement::Fixed,
-            policy: PaintLayerPolicy::DynamicRedraw,
-            reason: PaintLayerReason::Animation,
-            content_generation: 0,
-            children: animated_dynamic_nodes(phase),
-        })))
-        .chain(animated_static_after())
-        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -1205,6 +2979,417 @@ fn animated_static_after() -> Vec<RenderNode> {
             ))
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
+    RenderScene {
+        nodes: vec![
+            RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                WIDTH as f32,
+                HEIGHT as f32,
+                0xF5F7FAFF,
+            )),
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                8_200,
+                Rect {
+                    x: 52.0,
+                    y: 44.0,
+                    width: 856.0,
+                    height: 360.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::Cacheable,
+                PaintLayerReason::ScrollContainer,
+                1,
+                offscreen_layout_animation_children(phase),
+            )),
+        ],
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_layout_animation_children(phase: usize) -> Vec<RenderNode> {
+    offscreen_visible_layout_rows()
+        .into_iter()
+        .chain(std::iter::once(RenderNode::PaintLayer(
+            RenderPaintLayer::from_children(
+                8_201,
+                Rect {
+                    x: 78.0,
+                    y: 820.0,
+                    width: 776.0,
+                    height: 88.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                phase as u64 + 1,
+                offscreen_animated_layout_row(phase),
+            ),
+        )))
+        .chain(offscreen_static_rows_after_animation(phase))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_visible_layout_rows() -> Vec<RenderNode> {
+    (0..5)
+        .map(|index| {
+            let y = 70.0 + index as f32 * 62.0;
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                8_210 + index,
+                Rect {
+                    x: 78.0,
+                    y,
+                    width: 776.0,
+                    height: 42.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::Cacheable,
+                PaintLayerReason::StableSubtree,
+                1,
+                offscreen_visible_layout_row_nodes(index, y),
+            ))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_visible_layout_row_nodes(index: u64, y: f32) -> Vec<RenderNode> {
+    let fill = if index.is_multiple_of(2) {
+        0xFFFFFFFF
+    } else {
+        0xEDF4F8FF
+    };
+    vec![
+        RenderNode::ShadowPass {
+            children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
+                78.0, y, 776.0, 42.0, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+            ))],
+        },
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(78.0, y, 776.0, 42.0, 8.0, fill)),
+        RenderNode::Primitive(DrawPrimitive::Gradient(
+            102.0,
+            y + 14.0,
+            180.0,
+            9.0,
+            0x7CB7E6FF,
+            0x3D6F96FF,
+            0.0,
+        )),
+        RenderNode::Primitive(DrawPrimitive::Border(
+            78.5,
+            y + 0.5,
+            775.0,
+            41.0,
+            8.0,
+            1.0,
+            0xC5CEDAFF,
+            BorderStyle::Solid,
+        )),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_animated_layout_row(phase: usize) -> Vec<RenderNode> {
+    let scale = [0.92, 1.04, 1.18, 1.04, 0.92, 1.04, 1.18, 1.04][phase % 8];
+    let width = 580.0 * scale;
+    let x = 176.0 + (580.0 - width) * 0.5;
+    vec![
+        RenderNode::ShadowPass {
+            children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
+                x, 828.0, width, 64.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+            ))],
+        },
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            x, 828.0, width, 64.0, 14.0, 0xD94F70FF,
+        )),
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            x + 28.0,
+            854.0,
+            190.0,
+            10.0,
+            5.0,
+            0xFFFFFFFF,
+        )),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn offscreen_static_rows_after_animation(phase: usize) -> Vec<RenderNode> {
+    let animated_width = 580.0 * [0.92, 1.04, 1.18, 1.04, 0.92, 1.04, 1.18, 1.04][phase % 8];
+    (0..4)
+        .map(|index| {
+            let row_width = if index == 0 {
+                120.0 + animated_width * 0.25
+            } else {
+                320.0
+            };
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                90.0 + (animated_width - 580.0) * 0.1,
+                938.0 + index as f32 * 20.0,
+                row_width,
+                8.0,
+                4.0,
+                0xCBD4E0FF,
+            ))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
+    RenderScene {
+        nodes: vec![
+            RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                WIDTH as f32,
+                HEIGHT as f32,
+                0xF5F7FAFF,
+            )),
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                8_400,
+                Rect {
+                    x: 52.0,
+                    y: 44.0,
+                    width: 856.0,
+                    height: 360.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::Cacheable,
+                PaintLayerReason::ScrollContainer,
+                1,
+                stable_descendant_layout_animation_children(phase),
+            )),
+        ],
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stable_descendant_layout_animation_children(phase: usize) -> Vec<RenderNode> {
+    let offscreen_shift = [0.0, 16.0, 34.0, 18.0, 0.0, 16.0, 34.0, 18.0][phase % 8];
+    vec![RenderNode::Clip {
+        clips: vec![ClipShape {
+            rect: Rect {
+                x: 52.0,
+                y: 44.0,
+                width: 856.0,
+                height: 360.0,
+            },
+            radii: None,
+        }],
+        children: vec![
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                52.0, 44.0, 856.0, 360.0, 12.0, 0xFFFFFFFF,
+            )),
+            stable_descendant_layer(8_401, 78.0, 70.0, 776.0, 58.0, 0xEEF7F5FF),
+            stable_descendant_layer(8_402, 78.0, 146.0, 776.0, 58.0, 0xF7F3FFFF),
+            stable_descendant_layer(8_403, 78.0, 222.0, 776.0, 58.0, 0xF2F6FFFF),
+            stable_descendant_layer(8_404, 108.0, 300.0, 716.0, 38.0, 0xEDF8FFFF),
+            stable_descendant_layer(8_405, 108.0, 348.0, 716.0, 38.0, 0xF7FAFCFF),
+            RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                8_406,
+                Rect {
+                    x: 108.0,
+                    y: 430.0,
+                    width: 716.0,
+                    height: 86.0 + offscreen_shift,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                phase as u64 + 1,
+                stable_descendant_animated_row(phase),
+            )),
+            stable_descendant_layer(
+                8_407,
+                78.0,
+                548.0 + offscreen_shift,
+                776.0,
+                58.0,
+                0xFFFBEBFF,
+            ),
+        ],
+    }]
+}
+
+#[cfg(target_os = "linux")]
+fn stable_descendant_layer(
+    stable_id: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    fill: u32,
+) -> RenderNode {
+    RenderNode::PaintLayer(RenderPaintLayer::from_children(
+        stable_id,
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+        PaintLayerPlacement::ScrollMoving,
+        PaintLayerPolicy::Cacheable,
+        PaintLayerReason::StableSubtree,
+        1,
+        vec![
+            RenderNode::ShadowPass {
+                children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
+                    x, y, width, height, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                ))],
+            },
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, width, height, 8.0, fill)),
+            RenderNode::Primitive(DrawPrimitive::Gradient(
+                x + 24.0,
+                y + height * 0.5 - 5.0,
+                180.0,
+                10.0,
+                0x7CB7E6FF,
+                0x3D6F96FF,
+                0.0,
+            )),
+            RenderNode::Primitive(DrawPrimitive::Border(
+                x + 0.5,
+                y + 0.5,
+                width - 1.0,
+                height - 1.0,
+                8.0,
+                1.0,
+                0xC5CEDAFF,
+                BorderStyle::Solid,
+            )),
+        ],
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn stable_descendant_animated_row(phase: usize) -> Vec<RenderNode> {
+    let width = 520.0 + [0.0, 24.0, 58.0, 28.0, 0.0, 24.0, 58.0, 28.0][phase % 8];
+    let x = 108.0 + (716.0 - width) * 0.5;
+    vec![
+        RenderNode::ShadowPass {
+            children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
+                x, 430.0, width, 70.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+            ))],
+        },
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            x, 430.0, width, 70.0, 14.0, 0xD94F70FF,
+        )),
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            x + 28.0,
+            460.0,
+            190.0,
+            10.0,
+            5.0,
+            0xFFFFFFFF,
+        )),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn scroll_return_cache_config() -> RendererCacheConfig {
+    RendererCacheConfig {
+        enabled: true,
+        paint_layer: RendererPaintLayerCacheConfig {
+            max_stale_frames: 1,
+            ..RendererPaintLayerCacheConfig::default()
+        },
+        ..RendererCacheConfig::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn small_payload_cache_config() -> RendererCacheConfig {
+    RendererCacheConfig {
+        enabled: true,
+        paint_layer: RendererPaintLayerCacheConfig {
+            max_entry_bytes: 8 * 1024 * 1024,
+            max_bytes: 128 * 1024 * 1024,
+            ..RendererPaintLayerCacheConfig::default()
+        },
+        ..RendererCacheConfig::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn scroll_return_state(scroll_y: f32) -> RenderState {
+    RenderState::new(scroll_return_scene(scroll_y), Color::WHITE, 1, false)
+}
+
+#[cfg(target_os = "linux")]
+fn scroll_return_scene(scroll_y: f32) -> RenderScene {
+    RenderScene {
+        nodes: vec![
+            RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                WIDTH as f32,
+                HEIGHT as f32,
+                0xF3F6FAFF,
+            )),
+            RenderNode::Clip {
+                clips: vec![ClipShape {
+                    rect: Rect {
+                        x: 42.0,
+                        y: 40.0,
+                        width: 340.0,
+                        height: 96.0,
+                    },
+                    radii: None,
+                }],
+                children: vec![RenderNode::Transform {
+                    transform: Affine2::translation(58.0, 58.0 - scroll_y),
+                    children: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                        8_300,
+                        Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 260.0,
+                            height: 54.0,
+                        },
+                        PaintLayerPlacement::ScrollMoving,
+                        PaintLayerPolicy::Cacheable,
+                        PaintLayerReason::StableSubtree,
+                        1,
+                        scroll_return_layer_content(),
+                    ))],
+                }],
+            },
+        ],
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn scroll_return_layer_content() -> Vec<RenderNode> {
+    vec![
+        RenderNode::ShadowPass {
+            children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
+                0.0, 0.0, 260.0, 54.0, 0.0, 5.0, 12.0, 0.0, 10.0, 0x17203321,
+            ))],
+        },
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            0.0, 0.0, 260.0, 54.0, 10.0, 0xFFFFFFFF,
+        )),
+        RenderNode::Primitive(DrawPrimitive::Gradient(
+            22.0, 21.0, 132.0, 9.0, 0x6CA9E6FF, 0x3D6F96FF, 0.0,
+        )),
+        RenderNode::Primitive(DrawPrimitive::Border(
+            0.5,
+            0.5,
+            259.0,
+            53.0,
+            10.0,
+            1.0,
+            0xC5CEDAFF,
+            BorderStyle::Solid,
+        )),
+    ]
 }
 
 fn shadow_utils_paths() -> Vec<Path> {

@@ -4,6 +4,7 @@ use crate::render_scene::{
     DrawPrimitive, PaintLayerPolicy, PaintLayerReason, RenderNode, RenderPaintLayer,
 };
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
+use crate::tree::geometry::Rect;
 
 #[test]
 fn moving_paint_layer_payload_content_generation_ignores_float_noise() {
@@ -19,8 +20,24 @@ fn moving_paint_layer_payload_content_generation_ignores_float_noise() {
     ))];
 
     assert_eq!(
-        super::super::moving_paint_layer_content_generation(&nodes_a),
-        super::super::moving_paint_layer_content_generation(&nodes_b)
+        super::super::moving_paint_layer_content_generation(
+            &nodes_a,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            }
+        ),
+        super::super::moving_paint_layer_content_generation(
+            &nodes_b,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            }
+        )
     );
 }
 
@@ -34,8 +51,55 @@ fn moving_paint_layer_payload_content_generation_preserves_real_geometry_changes
     ))];
 
     assert_ne!(
-        super::super::moving_paint_layer_content_generation(&nodes_a),
-        super::super::moving_paint_layer_content_generation(&nodes_b)
+        super::super::moving_paint_layer_content_generation(
+            &nodes_a,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            }
+        ),
+        super::super::moving_paint_layer_content_generation(
+            &nodes_b,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            }
+        )
+    );
+}
+
+#[test]
+fn moving_paint_layer_payload_content_generation_ignores_off_payload_changes() {
+    let payload_bounds = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 120.0,
+        height: 80.0,
+    };
+    let visible_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
+        0.0, 10.0, 80.0, 40.0, 0x123456FF,
+    ))];
+    let visible_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
+        0.0, 11.0, 80.0, 40.0, 0x123456FF,
+    ))];
+    let offscreen_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
+        0.0, 180.0, 80.0, 40.0, 0x123456FF,
+    ))];
+    let offscreen_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
+        0.0, 181.0, 80.0, 40.0, 0x123456FF,
+    ))];
+
+    assert_ne!(
+        super::super::moving_paint_layer_content_generation(&visible_a, payload_bounds),
+        super::super::moving_paint_layer_content_generation(&visible_b, payload_bounds)
+    );
+    assert_eq!(
+        super::super::moving_paint_layer_content_generation(&offscreen_a, payload_bounds),
+        super::super::moving_paint_layer_content_generation(&offscreen_b, payload_bounds)
     );
 }
 
@@ -285,9 +349,9 @@ fn nested_animated_shadow_inside_scroll_container_layer_emits_dirty_slot() {
     tree.clear_refresh_dirty();
 
     let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let scroll_layer = first_paint_layer(&output.scene.nodes)
-        .filter(|layer| layer.reason == PaintLayerReason::ScrollContainer)
-        .expect("scroll container should emit a paint layer");
+    let scroll_layer =
+        paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
+            .expect("scroll container should emit a paint layer");
     let dirty_ids = dynamic_paint_layer_ids(&scroll_layer.children);
 
     assert!(dirty_ids.contains(&card_id.to_wire_u64()));
@@ -342,19 +406,77 @@ fn nearby_escape_root_emits_nearby_layer_boundary_next_to_scroll_container_layer
     tree.clear_refresh_dirty();
 
     let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let scroll_container_layer =
-        first_paint_layer(&output.scene.nodes).expect("scroll container should emit a paint layer");
-    assert_eq!(
-        scroll_container_layer.reason,
-        PaintLayerReason::ScrollContainer
-    );
+    paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
+        .expect("scroll container should emit a paint layer");
 
     let nearby_layer = paint_layers(&output.scene.nodes)
         .into_iter()
         .find(|layer| layer.reason == PaintLayerReason::Nearby)
         .expect("nearby root should be isolated as an escape paint layer");
     assert_eq!(nearby_layer.stable_id, nearby_id.to_wire_u64());
-    assert_eq!(dynamic_slot_count(&output.scene.nodes), 2);
+    assert_eq!(nearby_layer.policy, PaintLayerPolicy::Cacheable);
+    assert_eq!(semantic_paint_layer_count(&output.scene.nodes), 2);
+}
+
+#[test]
+fn nearby_layer_bounds_include_transformed_overlay_content() {
+    let host_id = NodeId::from_term_bytes(vec![5]);
+    let mut tree = build_tree_with_child_frame(
+        Attrs::default(),
+        Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 220.0,
+            height: 160.0,
+            content_width: 220.0,
+            content_height: 160.0,
+        },
+        solid_fill_attrs((20, 24, 32)),
+        Frame {
+            x: 48.0,
+            y: 48.0,
+            width: 80.0,
+            height: 50.0,
+            content_width: 80.0,
+            content_height: 50.0,
+        },
+    );
+    mount_nearby(
+        &mut tree,
+        &host_id,
+        NearbySlot::InFront,
+        ElementKind::El,
+        Attrs {
+            move_x: Some(40.0),
+            rotate: Some(16.0),
+            scale: Some(1.18),
+            ..solid_fill_attrs((248, 250, 252))
+        },
+        Frame {
+            x: 48.0,
+            y: 48.0,
+            width: 80.0,
+            height: 50.0,
+            content_width: 80.0,
+            content_height: 50.0,
+        },
+        42,
+    );
+    tree.clear_refresh_dirty();
+
+    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
+    let nearby_layer = paint_layers(&output.scene.nodes)
+        .into_iter()
+        .find(|layer| layer.reason == PaintLayerReason::Nearby)
+        .expect("nearby root should be isolated as a paint layer");
+
+    assert_eq!(nearby_layer.policy, PaintLayerPolicy::Cacheable);
+    assert!(nearby_layer.bounds.y < 48.0, "{:?}", nearby_layer.bounds);
+    assert!(
+        nearby_layer.bounds.width > 120.0,
+        "{:?}",
+        nearby_layer.bounds
+    );
 }
 
 fn dynamic_paint_layer_ids(nodes: &[RenderNode]) -> Vec<u64> {
@@ -377,16 +499,13 @@ fn dynamic_paint_layer_ids(nodes: &[RenderNode]) -> Vec<u64> {
         .collect()
 }
 
-fn first_paint_layer(nodes: &[RenderNode]) -> Option<&RenderPaintLayer> {
-    nodes.iter().find_map(|node| match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => first_paint_layer(children),
-        RenderNode::PaintLayer(layer) => Some(layer),
-        RenderNode::Primitive(_) => None,
-    })
+fn paint_layer_by_reason(
+    nodes: &[RenderNode],
+    reason: PaintLayerReason,
+) -> Option<&RenderPaintLayer> {
+    paint_layers(nodes)
+        .into_iter()
+        .find(|layer| layer.reason == reason)
 }
 
 fn paint_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
@@ -421,4 +540,11 @@ fn dynamic_slot_count(nodes: &[RenderNode]) -> usize {
             RenderNode::Primitive(_) => 0,
         })
         .sum()
+}
+
+fn semantic_paint_layer_count(nodes: &[RenderNode]) -> usize {
+    paint_layers(nodes)
+        .into_iter()
+        .filter(|layer| layer.reason != PaintLayerReason::Root)
+        .count()
 }

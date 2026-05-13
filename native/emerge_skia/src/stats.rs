@@ -233,6 +233,7 @@ pub struct RendererCachePaintLayerStatsSnapshot {
     pub visible_candidates: u64,
 
     pub suppressed_by_parent: u64,
+    pub bypassed_low_value: u64,
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
@@ -250,6 +251,13 @@ pub struct RendererCachePaintLayerStatsSnapshot {
     pub stale_evicted_bytes: u64,
     pub gpu_payload_stores: u64,
     pub cpu_payload_stores: u64,
+    pub cached_image_draws: u64,
+    pub composited_payload_pixels: u64,
+    pub composited_visible_pixels: u64,
+    pub hit_payload_pixels: u64,
+    pub hit_visible_pixels: u64,
+    pub store_payload_pixels: u64,
+    pub store_visible_pixels: u64,
     pub prepare_successes: u64,
     pub prepare_failures: u64,
     pub direct_fallbacks_after_admission: u64,
@@ -272,6 +280,7 @@ impl RendererCachePaintLayerStatsSnapshot {
         self.candidates == 0
             && self.visible_candidates == 0
             && self.suppressed_by_parent == 0
+            && self.bypassed_low_value == 0
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
@@ -289,6 +298,13 @@ impl RendererCachePaintLayerStatsSnapshot {
             && self.stale_evicted_bytes == 0
             && self.gpu_payload_stores == 0
             && self.cpu_payload_stores == 0
+            && self.cached_image_draws == 0
+            && self.composited_payload_pixels == 0
+            && self.composited_visible_pixels == 0
+            && self.hit_payload_pixels == 0
+            && self.hit_visible_pixels == 0
+            && self.store_payload_pixels == 0
+            && self.store_visible_pixels == 0
             && self.prepare_successes == 0
             && self.prepare_failures == 0
             && self.direct_fallbacks_after_admission == 0
@@ -469,6 +485,7 @@ struct RendererCachePaintLayerStatsWindow {
     visible_candidates: u64,
 
     suppressed_by_parent: u64,
+    bypassed_low_value: u64,
     admitted: u64,
     hits: u64,
     misses: u64,
@@ -486,6 +503,13 @@ struct RendererCachePaintLayerStatsWindow {
     stale_evicted_bytes: u64,
     gpu_payload_stores: u64,
     cpu_payload_stores: u64,
+    cached_image_draws: u64,
+    composited_payload_pixels: u64,
+    composited_visible_pixels: u64,
+    hit_payload_pixels: u64,
+    hit_visible_pixels: u64,
+    store_payload_pixels: u64,
+    store_visible_pixels: u64,
     prepare_successes: u64,
     prepare_failures: u64,
     direct_fallbacks_after_admission: u64,
@@ -512,6 +536,9 @@ impl RendererCachePaintLayerStatsWindow {
         self.suppressed_by_parent = self
             .suppressed_by_parent
             .saturating_add(stats.suppressed_by_parent);
+        self.bypassed_low_value = self
+            .bypassed_low_value
+            .saturating_add(stats.bypassed_low_value);
         self.admitted = self.admitted.saturating_add(stats.admitted);
         self.hits = self.hits.saturating_add(stats.hits);
         self.misses = self.misses.saturating_add(stats.misses);
@@ -535,6 +562,27 @@ impl RendererCachePaintLayerStatsWindow {
         self.cpu_payload_stores = self
             .cpu_payload_stores
             .saturating_add(stats.cpu_payload_stores);
+        self.cached_image_draws = self
+            .cached_image_draws
+            .saturating_add(stats.cached_image_draws);
+        self.composited_payload_pixels = self
+            .composited_payload_pixels
+            .saturating_add(stats.composited_payload_pixels);
+        self.composited_visible_pixels = self
+            .composited_visible_pixels
+            .saturating_add(stats.composited_visible_pixels);
+        self.hit_payload_pixels = self
+            .hit_payload_pixels
+            .saturating_add(stats.hit_payload_pixels);
+        self.hit_visible_pixels = self
+            .hit_visible_pixels
+            .saturating_add(stats.hit_visible_pixels);
+        self.store_payload_pixels = self
+            .store_payload_pixels
+            .saturating_add(stats.store_payload_pixels);
+        self.store_visible_pixels = self
+            .store_visible_pixels
+            .saturating_add(stats.store_visible_pixels);
         self.prepare_successes = self
             .prepare_successes
             .saturating_add(stats.prepare_successes);
@@ -589,6 +637,7 @@ impl RendererCachePaintLayerStatsWindow {
             candidates: self.candidates,
             visible_candidates: self.visible_candidates,
             suppressed_by_parent: self.suppressed_by_parent,
+            bypassed_low_value: self.bypassed_low_value,
             admitted: self.admitted,
             hits: self.hits,
             misses: self.misses,
@@ -606,6 +655,13 @@ impl RendererCachePaintLayerStatsWindow {
             stale_evicted_bytes: self.stale_evicted_bytes,
             gpu_payload_stores: self.gpu_payload_stores,
             cpu_payload_stores: self.cpu_payload_stores,
+            cached_image_draws: self.cached_image_draws,
+            composited_payload_pixels: self.composited_payload_pixels,
+            composited_visible_pixels: self.composited_visible_pixels,
+            hit_payload_pixels: self.hit_payload_pixels,
+            hit_visible_pixels: self.hit_visible_pixels,
+            store_payload_pixels: self.store_payload_pixels,
+            store_visible_pixels: self.store_visible_pixels,
             prepare_successes: self.prepare_successes,
             prepare_failures: self.prepare_failures,
             direct_fallbacks_after_admission: self.direct_fallbacks_after_admission,
@@ -1013,12 +1069,20 @@ fn format_renderer_cache_kind_line(
             count as f64 / frame_count as f64
         }
     };
+    let ratio = |numerator: u64, denominator: u64| {
+        if denominator == 0 {
+            0.0
+        } else {
+            numerator as f64 / denominator as f64
+        }
+    };
     let mut message = format!(
-        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
+        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} bypassed_low_value={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
         label,
         stats.candidates,
         stats.visible_candidates,
         stats.suppressed_by_parent,
+        stats.bypassed_low_value,
         stats.admitted,
         stats.hits,
         stats.misses,
@@ -1038,6 +1102,7 @@ fn format_renderer_cache_kind_line(
             "      per_frame: candidates={:.2} visible={:.2} hits={:.2} misses={:.2} stores={:.2} rejected={:.2}\n",
             "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
             "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
+            "      composition: cached_image_draws={} payload_pixels={} visible_pixels={} waste={:.2} hit_payload_pixels={} hit_visible_pixels={} store_payload_pixels={} store_visible_pixels={} hit_waste={:.2} store_waste={:.2}\n",
             "      prepare: success={} failure={} avg={:.3} ms count={}\n",
             "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={} fractional_placement={} unsupported_transform={}}}\n",
             "      hit_draw: avg={:.3} ms count={}\n"
@@ -1057,6 +1122,16 @@ fn format_renderer_cache_kind_line(
         stats.cpu_payload_stores,
         stats.evicted_bytes,
         stats.stale_evicted_bytes,
+        stats.cached_image_draws,
+        stats.composited_payload_pixels,
+        stats.composited_visible_pixels,
+        ratio(stats.composited_payload_pixels, stats.composited_visible_pixels),
+        stats.hit_payload_pixels,
+        stats.hit_visible_pixels,
+        stats.store_payload_pixels,
+        stats.store_visible_pixels,
+        ratio(stats.hit_payload_pixels, stats.hit_visible_pixels),
+        ratio(stats.store_payload_pixels, stats.store_visible_pixels),
         stats.prepare_successes,
         stats.prepare_failures,
         stats.prepare.avg_ms,
@@ -1150,12 +1225,20 @@ fn format_renderer_cache_kind_frame_line(
             .current_gpu_payloads
             .saturating_add(stats.current_cpu_payloads),
     );
+    let ratio = |numerator: u64, denominator: u64| {
+        if denominator == 0 {
+            0.0
+        } else {
+            numerator as f64 / denominator as f64
+        }
+    };
     let mut message = format!(
-        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
+        "    {}\n      activity: candidates={} visible={} suppressed_by_parent={} bypassed_low_value={} admitted={} hits={} misses={} stores={} evictions={} stale_evictions={} rejected={}\n",
         label,
         stats.candidates,
         stats.visible_candidates,
         stats.suppressed_by_parent,
+        stats.bypassed_low_value,
         stats.admitted,
         stats.hits,
         stats.misses,
@@ -1174,6 +1257,7 @@ fn format_renderer_cache_kind_frame_line(
         concat!(
             "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
             "      store_payloads: gpu={} cpu={} evicted_bytes={} stale_evicted_bytes={}\n",
+            "      composition: cached_image_draws={} payload_pixels={} visible_pixels={} waste={:.2} hit_payload_pixels={} hit_visible_pixels={} store_payload_pixels={} store_visible_pixels={} hit_waste={:.2} store_waste={:.2}\n",
             "      prepare: success={} failure={} time={:.3} ms\n",
             "      fallback_after_admit={} rejections={{ineligible={} admission={} oversized={} budget={} fractional_placement={} unsupported_transform={}}}\n",
             "      hit_draw: time={:.3} ms\n"
@@ -1187,6 +1271,16 @@ fn format_renderer_cache_kind_frame_line(
         stats.cpu_payload_stores,
         stats.evicted_bytes,
         stats.stale_evicted_bytes,
+        stats.cached_image_draws,
+        stats.composited_payload_pixels,
+        stats.composited_visible_pixels,
+        ratio(stats.composited_payload_pixels, stats.composited_visible_pixels),
+        stats.hit_payload_pixels,
+        stats.hit_visible_pixels,
+        stats.store_payload_pixels,
+        stats.store_visible_pixels,
+        ratio(stats.hit_payload_pixels, stats.hit_visible_pixels),
+        ratio(stats.store_payload_pixels, stats.store_visible_pixels),
         stats.prepare_successes,
         stats.prepare_failures,
         duration_ms(stats.prepare_time),
@@ -1929,7 +2023,7 @@ mod tests {
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));
         assert!(message.contains(
-            "activity: candidates=8 visible=7 suppressed_by_parent=0 admitted=3 hits=1 misses=2 stores=2 evictions=1 stale_evictions=0 rejected=2"
+            "activity: candidates=8 visible=7 suppressed_by_parent=0 bypassed_low_value=0 admitted=3 hits=1 misses=2 stores=2 evictions=1 stale_evictions=0 rejected=2"
         ));
         assert!(!message.contains("layers: selected="));
         assert!(!message.contains("      layer_groups:\n"));
@@ -1961,7 +2055,7 @@ mod tests {
         assert!(message.contains("    paint_layer\n"));
         assert!(
             message
-                .contains("activity: candidates=0 visible=0 suppressed_by_parent=0 admitted=0 hits=0 misses=0 stores=0")
+                .contains("activity: candidates=0 visible=0 suppressed_by_parent=0 bypassed_low_value=0 admitted=0 hits=0 misses=0 stores=0")
         );
         assert!(!message.contains("    shell\n"));
         assert!(!message.contains("    moving_paint_layer\n"));
@@ -2140,7 +2234,7 @@ mod tests {
         assert!(message.contains("    paint_layer\n"));
         assert!(
             message
-                .contains("activity: candidates=1 visible=1 suppressed_by_parent=0 admitted=1 hits=1 misses=0 stores=0")
+                .contains("activity: candidates=1 visible=1 suppressed_by_parent=0 bypassed_low_value=0 admitted=1 hits=1 misses=0 stores=0")
         );
         assert!(
             message.contains("resident: entries=1 bytes=4096 payloads={gpu=1 cpu=0 unknown=0}")
