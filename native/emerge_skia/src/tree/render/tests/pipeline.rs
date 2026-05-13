@@ -1,5 +1,6 @@
 use super::common::*;
 use super::*;
+use crate::renderer::{RenderFrame, RenderState, RendererCacheConfig, SceneRenderer};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
 use crate::tree::layout::{Constraint, layout_tree_default, refresh_render_scene_for_benchmark};
 use crate::tree::transform::{Affine2, Point, element_transform};
@@ -94,7 +95,7 @@ fn build_manual_scroll_row_tree(row_count: usize) -> ElementTree {
     root.layout.scroll_y_max = 1_000.0;
     root.layout.frame = Some(Frame {
         x: 0.0,
-        y: 0.0,
+        y: 0.5,
         width: 100.0,
         height: 50.0,
         content_width: 100.0,
@@ -146,6 +147,29 @@ fn build_manual_scroll_row_tree(row_count: usize) -> ElementTree {
     tree
 }
 
+fn render_scene_with_renderer_to_pixels(
+    renderer: &mut SceneRenderer,
+    scene: crate::render_scene::RenderScene,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render test");
+    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
+    let mut frame = RenderFrame::new(&mut surface, None);
+    renderer.render(&mut frame, &state);
+
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+    pixels
+}
+
 #[test]
 fn test_scroll_viewport_culling_skips_offscreen_child_roots_before_render_visit() {
     let tree = build_manual_scroll_row_tree(120);
@@ -167,6 +191,92 @@ fn test_scroll_viewport_culling_skips_offscreen_child_roots_before_render_visit(
     assert!(
         !output.scene.nodes.is_empty(),
         "visible rows should still produce a scene"
+    );
+}
+
+#[test]
+fn test_cached_scroll_container_repaints_direct_content_when_scroll_offset_changes() {
+    let root_id = NodeId::from_u64(810_000);
+    let red_id = NodeId::from_u64(810_001);
+    let green_id = NodeId::from_u64(810_002);
+
+    let mut root_attrs = solid_fill_attrs((245, 245, 245));
+    root_attrs.scrollbar_y = Some(true);
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![red_id, green_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 50.0,
+        content_width: 100.0,
+        content_height: 100.0,
+    });
+    root.layout.scroll_y_max = 50.0;
+
+    let mut red = Element::with_attrs(
+        red_id,
+        ElementKind::Text,
+        Vec::new(),
+        solid_fill_attrs((255, 0, 0)),
+    );
+    red.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 90.0,
+        height: 50.0,
+        content_width: 90.0,
+        content_height: 50.0,
+    });
+
+    let mut green = Element::with_attrs(
+        green_id,
+        ElementKind::Text,
+        Vec::new(),
+        solid_fill_attrs((0, 255, 0)),
+    );
+    green.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 50.0,
+        width: 90.0,
+        height: 50.0,
+        content_width: 90.0,
+        content_height: 50.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(red);
+    tree.insert(green);
+
+    let first_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let mut cached_renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        ..RendererCacheConfig::default()
+    });
+    let _ = render_scene_with_renderer_to_pixels(&mut cached_renderer, first_scene, 100, 50);
+
+    assert!(tree.apply_scroll_y(&root_id, -50.0).is_dirty());
+    let scrolled_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+
+    let cached_pixels =
+        render_scene_with_renderer_to_pixels(&mut cached_renderer, scrolled_scene.clone(), 100, 50);
+    let mut direct_renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: false,
+        ..RendererCacheConfig::default()
+    });
+    let direct_pixels =
+        render_scene_with_renderer_to_pixels(&mut direct_renderer, scrolled_scene, 100, 50);
+
+    assert_eq!(
+        rgba_at(&cached_pixels, 100, 20, 25),
+        (0, 255, 0, 255),
+        "cached scroll container reused stale pre-scroll pixels"
+    );
+    assert_eq!(
+        cached_pixels, direct_pixels,
+        "cached scrolled frame must match direct rendering after scroll offset changes"
     );
 }
 
@@ -1642,6 +1752,151 @@ fn test_render_behind_inside_host_clip() {
         clip_scope_shapes(child_clip_scopes[0]).unwrap()
     );
     assert!(!same_immediate_clip_scope(&trace, behind, child));
+}
+
+#[test]
+fn test_todo_create_placeholder_behind_text_input_survives_cached_layer_composition() {
+    let host_id = NodeId::from_term_bytes(vec![220]);
+    let input_id = NodeId::from_term_bytes(vec![221]);
+    let placeholder_id = NodeId::from_term_bytes(vec![222]);
+
+    let mut host = Element::with_attrs(
+        host_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            background: Some(Background::Color(Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            })),
+            ..Attrs::default()
+        },
+    );
+    host.children = vec![input_id];
+    host.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 260.0,
+        height: 64.0,
+        content_width: 260.0,
+        content_height: 64.0,
+    });
+    host.nearby.push(NearbySlot::BehindContent, placeholder_id);
+
+    let mut input = Element::with_attrs(
+        input_id,
+        ElementKind::TextInput,
+        Vec::new(),
+        Attrs {
+            content: Some(String::new()),
+            padding: Some(Padding::Uniform(16.0)),
+            font_size: Some(24.0),
+            font_color: Some(Color::Rgb { r: 0, g: 0, b: 0 }),
+            background: Some(Background::Color(Color::Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 0,
+            })),
+            ..Attrs::default()
+        },
+    );
+    input.layout.frame = host.layout.frame;
+
+    let mut placeholder = Element::with_attrs(
+        placeholder_id,
+        ElementKind::Text,
+        Vec::new(),
+        Attrs {
+            content: Some("What needs to be done?".to_string()),
+            font_size: Some(24.0),
+            font_color: Some(Color::Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 180,
+            }),
+            font_style: Some(FontStyle("italic".to_string())),
+            ..Attrs::default()
+        },
+    );
+    placeholder.layout.frame = Some(Frame {
+        x: 16.0,
+        y: 18.5,
+        width: 230.0,
+        height: 32.0,
+        content_width: 230.0,
+        content_height: 32.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(host_id);
+    tree.insert(host);
+    tree.insert(input);
+    tree.insert(placeholder);
+
+    let output = render_output(&tree);
+    let info = skia_safe::ImageInfo::new(
+        (260, 64),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let mut direct_surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render test");
+    let mut direct_renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: false,
+        ..RendererCacheConfig::default()
+    });
+    let state = RenderState::new(
+        output.scene.clone(),
+        skia_safe::Color::TRANSPARENT,
+        1,
+        false,
+    );
+    let mut direct_frame = RenderFrame::new(&mut direct_surface, None);
+    direct_renderer.render(&mut direct_frame, &state);
+
+    let mut direct_pixels = vec![0u8; 260 * 64 * 4];
+    direct_surface.read_pixels(&info, direct_pixels.as_mut_slice(), 260 * 4, (0, 0));
+
+    let mut cached_surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render test");
+    let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        ..RendererCacheConfig::default()
+    });
+
+    for _ in 0..2 {
+        let mut frame = RenderFrame::new(&mut cached_surface, None);
+        renderer.render(&mut frame, &state);
+    }
+
+    let mut pixels = vec![0u8; 260 * 64 * 4];
+    cached_surface.read_pixels(&info, pixels.as_mut_slice(), 260 * 4, (0, 0));
+    let mismatched_bytes = pixels
+        .iter()
+        .zip(direct_pixels.iter())
+        .filter(|(cached, direct)| cached != direct)
+        .count();
+    assert_eq!(
+        mismatched_bytes, 0,
+        "cached todo placeholder rendering diverged from direct rendering by {mismatched_bytes} bytes"
+    );
+
+    let dark_placeholder_pixels = (16..230)
+        .flat_map(|x| (18..50).map(move |y| (x, y)))
+        .filter(|(x, y)| {
+            let (r, g, b, a) = rgba_at(&pixels, 260, *x, *y);
+            a > 0 && r < 235 && g < 235 && b < 235
+        })
+        .count();
+
+    assert!(
+        dark_placeholder_pixels > 40,
+        "expected cached todo placeholder text to remain visible, dark pixels={dark_placeholder_pixels}"
+    );
 }
 
 #[test]

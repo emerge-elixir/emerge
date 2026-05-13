@@ -34,7 +34,9 @@ use super::viewport_culling::{
 use crate::events::{RegistryRebuildPayload, registry_builder};
 use crate::render_scene::{
     DrawPrimitive, PaintLayerHashFloat, PaintLayerPlacement, PaintLayerPolicy, PaintLayerReason,
-    RenderNode, RenderPaintLayer, RenderScene, hash_paint_layer_render_nodes,
+    RenderNode, RenderPaintLayer, RenderPaintLayerBuildParts, RenderScene,
+    hash_paint_layer_render_nodes, paint_layer_bounds_from_visual_bounds,
+    paint_layer_own_content_visual_bounds, split_paint_layer_content_owned,
 };
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics_with_font};
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -43,9 +45,7 @@ use std::hash::Hasher;
 
 const RENDER_MOVING_PAINT_LAYER_MIN_RENDER_NODES: usize = 1;
 const RENDER_MOVING_PAINT_LAYER_MAX_RENDER_NODES: usize = 256;
-const RENDER_MOVING_PAINT_LAYER_MAX_BYTES: u64 = 4 * 1024 * 1024;
-const RENDER_MOVING_PAINT_LAYER_BYTES_PER_PIXEL: u64 = 4;
-const RENDER_MOVING_PAINT_LAYER_PAYLOAD_MAX_DEPTH: usize = 2;
+const RENDER_SCROLL_CONTENT_PAINT_LAYER_MAX_DEPTH: usize = 2;
 const RENDER_MOVING_PAINT_LAYER_PAYLOAD_CONTENT_HASH_COORD_SCALE: f64 = 1024.0;
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -239,11 +239,7 @@ impl RenderBuildContext {
 
     fn is_scroll_moving_paint_layer_context(&self) -> bool {
         self.scroll_clip_descendant_depth
-            .is_some_and(|depth| depth <= RENDER_MOVING_PAINT_LAYER_PAYLOAD_MAX_DEPTH)
-    }
-
-    fn is_direct_scroll_moving_paint_layer_context(&self) -> bool {
-        self.scroll_clip_descendant_depth == Some(0)
+            .is_some_and(|depth| depth <= RENDER_SCROLL_CONTENT_PAINT_LAYER_MAX_DEPTH)
     }
 
     fn inside_local_transform(&self) -> bool {
@@ -272,6 +268,7 @@ impl<'a> RenderOutputs<'a> {
 struct RenderTraversal<'a> {
     scene_ctx: SceneContext,
     render_ctx: &'a RenderBuildContext,
+    tree_paint_generation: u64,
     allow_moving_paint_layers: bool,
     emit_dynamic_paint_layers: bool,
     disable_viewport_culling: bool,
@@ -335,7 +332,7 @@ pub(crate) fn render_tree_scene(tree: &ElementTree) -> RenderSceneOutput {
 }
 
 pub(crate) fn render_tree_scene_with_scroll_layers(tree: &ElementTree) -> RenderSceneOutput {
-    render_tree_scene_with_paint_layer_policy(tree, tree.has_scroll_refresh_damage(), true)
+    render_tree_scene_with_paint_layer_policy(tree, true, true)
 }
 
 fn render_tree_scene_with_paint_layer_policy(
@@ -369,6 +366,7 @@ fn render_tree_scene_with_paint_layer_policy(
         RenderTraversal {
             scene_ctx: SceneContext::default(),
             render_ctx: &render_ctx,
+            tree_paint_generation: semantic_paint_generation(tree.revision()),
             allow_moving_paint_layers,
             emit_dynamic_paint_layers,
             disable_viewport_culling: false,
@@ -376,10 +374,17 @@ fn render_tree_scene_with_paint_layer_policy(
         },
     );
 
+    let mut nodes = subtree.into_nodes();
+    if allow_moving_paint_layers || emit_dynamic_paint_layers {
+        nodes = wrap_with_root_paint_layer(
+            nodes,
+            tree.get_ix(root_ix),
+            semantic_paint_generation(tree.revision()),
+        );
+    }
+
     RenderSceneOutput {
-        scene: RenderScene {
-            nodes: subtree.into_nodes(),
-        },
+        scene: RenderScene { nodes },
         text_input_focused,
         text_input_cursor_area,
     }
@@ -444,14 +449,10 @@ fn build_element_subtree(
         render_damage,
         &traversal,
     );
+    let child_allow_moving_paint_layers = traversal.allow_moving_paint_layers;
     let emit_dynamic_paint_layer = should_wrap_dynamic_paint_layer(element, attrs, &traversal);
-    let child_inside_dynamic_paint_layer = should_descend_inside_dynamic_paint_layer(
-        element,
-        render_frame,
-        transform,
-        render_damage,
-        &traversal,
-    );
+    let child_inside_dynamic_paint_layer =
+        should_descend_inside_dynamic_paint_layer(element, render_damage, &traversal);
 
     let element_context = inherited.merge_with_attrs(attrs);
     let mut local = Vec::new();
@@ -483,7 +484,8 @@ fn build_element_subtree(
         RenderTraversal {
             scene_ctx: traversal.scene_ctx.clone(),
             render_ctx: host_content_render_ctx,
-            allow_moving_paint_layers: traversal.allow_moving_paint_layers,
+            tree_paint_generation: traversal.tree_paint_generation,
+            allow_moving_paint_layers: child_allow_moving_paint_layers,
             emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
             disable_viewport_culling: traversal.disable_viewport_culling
                 || preserve_moving_paint_layer_content,
@@ -523,7 +525,9 @@ fn build_element_subtree(
         normal_nodes.extend(host_content.local);
         normal_nodes.extend(border_nodes);
 
-        let normal_nodes = if should_allow_scroll_moving_paint_layer_at_current_node(&traversal) {
+        let normal_nodes = if !emit_dynamic_paint_layer
+            && should_allow_scroll_moving_paint_layer_at_current_node(&traversal)
+        {
             wrap_with_explicit_moving_paint_layer_payload(MovingPaintLayerPayloadWrapInput {
                 nodes: normal_nodes,
                 element,
@@ -533,14 +537,19 @@ fn build_element_subtree(
                 text_input_focused: host_content.text_input_focused,
                 inside_local_transform: traversal.render_ctx.inside_local_transform(),
                 ancestor_clip_context: traversal.render_ctx,
+                tree_paint_generation: traversal.tree_paint_generation,
             })
         } else {
             wrap_with_transform(normal_nodes, transform)
         };
-        local.extend(wrap_with_paint_layer_if_scroll_container(
-            wrap_with_clips(normal_nodes, inherited_host_clips),
-            element,
-            render_frame,
+        local.extend(wrap_with_clips(
+            wrap_with_paint_layer_if_scroll_container(
+                normal_nodes,
+                element,
+                render_frame,
+                traversal.tree_paint_generation,
+            ),
+            inherited_host_clips,
         ));
     }
 
@@ -579,6 +588,7 @@ struct MovingPaintLayerPayloadWrapInput<'a> {
     text_input_focused: bool,
     inside_local_transform: bool,
     ancestor_clip_context: &'a RenderBuildContext,
+    tree_paint_generation: u64,
 }
 
 fn wrap_with_explicit_moving_paint_layer_payload(
@@ -593,6 +603,7 @@ fn wrap_with_explicit_moving_paint_layer_payload(
         text_input_focused,
         inside_local_transform,
         ancestor_clip_context,
+        tree_paint_generation,
     } = input;
 
     if render_damage {
@@ -619,18 +630,31 @@ fn wrap_with_explicit_moving_paint_layer_payload(
         placement.local_origin_x,
         placement.local_origin_y,
     );
-    let content_generation = moving_paint_layer_content_generation(&local_children);
+    #[cfg(test)]
+    let raw_children = local_children.clone();
+    #[cfg(not(test))]
+    let raw_children = Vec::new();
+    let content = split_paint_layer_content_owned(local_children);
+    let visual_bounds = paint_layer_own_content_visual_bounds(&content.own_nodes);
+    let content_generation = tree_paint_generation;
 
     wrap_with_transform(
-        vec![RenderNode::PaintLayer(RenderPaintLayer {
-            stable_id: element.id.to_wire_u64(),
-            bounds: placement.bounds,
-            placement: PaintLayerPlacement::ScrollMoving,
-            policy: PaintLayerPolicy::Cacheable,
-            reason: PaintLayerReason::StableSubtree,
-            content_generation,
-            children: local_children,
-        })],
+        vec![RenderNode::PaintLayer(
+            RenderPaintLayer::from_prepared_children(
+                RenderPaintLayerBuildParts {
+                    stable_id: element.id.to_wire_u64(),
+                    root_id: element.id.to_wire_u64(),
+                    bounds: placement.bounds,
+                    placement: PaintLayerPlacement::ScrollMoving,
+                    policy: PaintLayerPolicy::Cacheable,
+                    reason: PaintLayerReason::StableSubtree,
+                    content_generation,
+                    visual_bounds,
+                },
+                content,
+                raw_children,
+            ),
+        )],
         placement.transform,
     )
 }
@@ -651,11 +675,11 @@ fn moving_paint_layer_static_placement(
         return None;
     }
 
-    if inside_local_transform {
+    if is_scroll_container(element) {
         return None;
     }
 
-    if is_scroll_container(element) {
+    if inside_local_transform {
         return None;
     }
 
@@ -687,7 +711,7 @@ fn moving_paint_layer_static_placement(
 
 fn should_emit_moving_paint_layer(
     nodes: &[RenderNode],
-    placement: MovingPaintLayerPlacement,
+    _placement: MovingPaintLayerPlacement,
 ) -> bool {
     if nodes.is_empty() {
         return false;
@@ -698,19 +722,8 @@ fn should_emit_moving_paint_layer(
     }
 
     let node_count = render_node_count(nodes);
-    if node_count < RENDER_MOVING_PAINT_LAYER_MIN_RENDER_NODES {
-        return false;
-    }
-
-    if node_count > RENDER_MOVING_PAINT_LAYER_MAX_RENDER_NODES {
-        return false;
-    }
-
-    if moving_paint_layer_payload_bytes(placement.bounds) > RENDER_MOVING_PAINT_LAYER_MAX_BYTES {
-        return false;
-    }
-
-    true
+    (RENDER_MOVING_PAINT_LAYER_MIN_RENDER_NODES..=RENDER_MOVING_PAINT_LAYER_MAX_RENDER_NODES)
+        .contains(&node_count)
 }
 
 fn moving_paint_layer_placement_transform(render_frame: Frame, transform: Affine2) -> Affine2 {
@@ -742,14 +755,6 @@ fn moving_paint_layer_exact_placement(
     )
 }
 
-fn moving_paint_layer_payload_bytes(bounds: Rect) -> u64 {
-    let width = bounds.width.ceil().max(0.0) as u64;
-    let height = bounds.height.ceil().max(0.0) as u64;
-    width
-        .saturating_mul(height)
-        .saturating_mul(RENDER_MOVING_PAINT_LAYER_BYTES_PER_PIXEL)
-}
-
 fn should_preserve_moving_paint_layer_content(
     element: &Element,
     render_frame: Frame,
@@ -764,7 +769,7 @@ fn should_preserve_moving_paint_layer_content(
         return false;
     }
 
-    let Some(placement) = moving_paint_layer_static_placement(
+    let Some(_placement) = moving_paint_layer_static_placement(
         element,
         render_frame,
         transform,
@@ -774,16 +779,12 @@ fn should_preserve_moving_paint_layer_content(
         return false;
     };
 
-    moving_paint_layer_payload_bytes(placement.bounds) <= RENDER_MOVING_PAINT_LAYER_MAX_BYTES
+    true
 }
 
 fn should_allow_scroll_moving_paint_layer_at_current_node(traversal: &RenderTraversal<'_>) -> bool {
     traversal.allow_moving_paint_layers
-        && (traversal
-            .render_ctx
-            .is_direct_scroll_moving_paint_layer_context()
-            || (traversal.inside_dynamic_paint_layer
-                && traversal.render_ctx.is_scroll_moving_paint_layer_context()))
+        && traversal.render_ctx.is_scroll_moving_paint_layer_context()
 }
 
 fn should_emit_dynamic_paint_layer(element: &Element, traversal: &RenderTraversal<'_>) -> bool {
@@ -805,8 +806,6 @@ fn should_wrap_dynamic_paint_layer(
 
 fn should_descend_inside_dynamic_paint_layer(
     element: &Element,
-    render_frame: Frame,
-    transform: Affine2,
     render_damage: bool,
     traversal: &RenderTraversal<'_>,
 ) -> bool {
@@ -825,29 +824,7 @@ fn should_descend_inside_dynamic_paint_layer(
         return true;
     }
 
-    traversal
-        .render_ctx
-        .is_direct_scroll_moving_paint_layer_context()
-        && direct_scroll_moving_paint_layer_too_large(element, render_frame, transform, traversal)
-}
-
-fn direct_scroll_moving_paint_layer_too_large(
-    element: &Element,
-    render_frame: Frame,
-    transform: Affine2,
-    traversal: &RenderTraversal<'_>,
-) -> bool {
-    let Some(placement) = moving_paint_layer_static_placement(
-        element,
-        render_frame,
-        transform,
-        false,
-        traversal.render_ctx.inside_local_transform(),
-    ) else {
-        return false;
-    };
-
-    moving_paint_layer_payload_bytes(placement.bounds) > RENDER_MOVING_PAINT_LAYER_MAX_BYTES
+    false
 }
 
 fn moving_paint_layer_frame_has_finite_bounds(render_frame: Frame) -> bool {
@@ -868,14 +845,39 @@ fn moving_paint_layer_transform_is_translation(transform: Affine2) -> bool {
         && transform.ty.is_finite()
 }
 
-fn moving_paint_layer_content_generation(nodes: &[RenderNode]) -> u64 {
+fn semantic_paint_generation(tree_revision: u64) -> u64 {
+    tree_revision.saturating_add(1)
+}
+
+fn scroll_container_content_generation(tree_paint_generation: u64, element: &Element) -> u64 {
+    let float = PaintLayerHashFloat::Quantized {
+        scale: RENDER_MOVING_PAINT_LAYER_PAYLOAD_CONTENT_HASH_COORD_SCALE,
+    };
+    let mut hasher = MovingPaintLayerPayloadContentHasher::default();
+    hasher.write_u64(tree_paint_generation);
+    float.hash_f32(&mut hasher, element.layout.scroll_x);
+    float.hash_f32(&mut hasher, element.layout.scroll_y);
+    hasher.finish()
+}
+
+#[cfg(test)]
+fn moving_paint_layer_content_generation(nodes: &[RenderNode], payload_bounds: Rect) -> u64 {
+    let content = crate::render_scene::split_paint_layer_content(nodes);
+    moving_paint_layer_own_content_generation(&content.own_nodes, payload_bounds)
+}
+
+fn moving_paint_layer_own_content_generation(
+    own_nodes: &[RenderNode],
+    payload_bounds: Rect,
+) -> u64 {
     let mut hasher = MovingPaintLayerPayloadContentHasher::default();
     hash_paint_layer_render_nodes(
         &mut hasher,
-        nodes,
+        own_nodes,
         PaintLayerHashFloat::Quantized {
             scale: RENDER_MOVING_PAINT_LAYER_PAYLOAD_CONTENT_HASH_COORD_SCALE,
         },
+        Some(payload_bounds),
     );
     hasher.finish()
 }
@@ -1015,13 +1017,11 @@ fn strip_moving_paint_layer_payload_ancestor_clip_node(
             ),
         }],
         RenderNode::PaintLayer(layer) => {
-            vec![RenderNode::PaintLayer(RenderPaintLayer {
-                children: strip_moving_paint_layer_payload_ancestor_clips(
-                    layer.children,
-                    ancestor_clip_context,
-                ),
-                ..layer
-            })]
+            let children = strip_moving_paint_layer_payload_ancestor_clips(
+                layer.content_nodes(),
+                ancestor_clip_context,
+            );
+            vec![RenderNode::PaintLayer(layer.with_children(children))]
         }
         RenderNode::Primitive(_) => vec![node],
     }
@@ -1101,9 +1101,10 @@ fn moving_paint_layer_children_are_supported(nodes: &[RenderNode]) -> bool {
     nodes.iter().all(|node| match node {
         RenderNode::Clip { children, .. }
         | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::ShadowPass { children } => {
-            moving_paint_layer_children_are_supported(children)
-        }
+        | RenderNode::ShadowPass { children }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => moving_paint_layer_children_are_supported(children),
+        RenderNode::PaintLayer(_) => true,
         RenderNode::Primitive(primitive) => match primitive {
             DrawPrimitive::Video(..)
             | DrawPrimitive::ImageLoading(..)
@@ -1119,9 +1120,6 @@ fn moving_paint_layer_children_are_supported(nodes: &[RenderNode]) -> bool {
             | DrawPrimitive::Gradient(..)
             | DrawPrimitive::Image(..) => true,
         },
-        RenderNode::Transform { .. } | RenderNode::Alpha { .. } | RenderNode::PaintLayer(_) => {
-            false
-        }
     })
 }
 
@@ -1163,15 +1161,16 @@ fn localize_moving_paint_layer_node(node: RenderNode, origin_x: f32, origin_y: f
             alpha,
             children: localize_moving_paint_layer_nodes(children, origin_x, origin_y),
         },
-        RenderNode::PaintLayer(layer) => RenderNode::PaintLayer(RenderPaintLayer {
-            bounds: Rect {
+        RenderNode::PaintLayer(layer) => {
+            let bounds = Rect {
                 x: layer.bounds.x - origin_x,
                 y: layer.bounds.y - origin_y,
                 ..layer.bounds
-            },
-            children: localize_moving_paint_layer_nodes(layer.children, origin_x, origin_y),
-            ..layer
-        }),
+            };
+            let children =
+                localize_moving_paint_layer_nodes(layer.content_nodes(), origin_x, origin_y);
+            RenderNode::PaintLayer(layer.with_bounds_and_children(bounds, children))
+        }
     }
 }
 
@@ -1352,7 +1351,14 @@ fn render_node_count(nodes: &[RenderNode]) -> usize {
             | RenderNode::RelaxedClip { children, .. }
             | RenderNode::Transform { children, .. }
             | RenderNode::Alpha { children, .. } => 1 + render_node_count(children),
-            RenderNode::PaintLayer(layer) => 1 + render_node_count(&layer.children),
+            RenderNode::PaintLayer(layer) => {
+                1 + render_node_count(&layer.own_nodes)
+                    + layer
+                        .child_refs
+                        .iter()
+                        .map(|child| render_node_count(&child.nodes))
+                        .sum::<usize>()
+            }
             RenderNode::Primitive(_) => 1,
         })
         .sum()
@@ -1404,6 +1410,7 @@ fn build_host_content_subtree(
                 RenderTraversal {
                     scene_ctx: traversal.scene_ctx.clone(),
                     render_ctx: &child_render_ctx,
+                    tree_paint_generation: traversal.tree_paint_generation,
                     allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                     emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                     disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1425,6 +1432,7 @@ fn build_host_content_subtree(
                     RenderTraversal {
                         scene_ctx: traversal.scene_ctx.clone(),
                         render_ctx: &child_render_ctx,
+                        tree_paint_generation: traversal.tree_paint_generation,
                         allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                         emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                         disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1454,6 +1462,7 @@ fn build_host_content_subtree(
                     RenderTraversal {
                         scene_ctx: child_scene_ctx,
                         render_ctx: &child_render_ctx,
+                        tree_paint_generation: traversal.tree_paint_generation,
                         allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                         emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                         disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1488,6 +1497,7 @@ fn build_host_content_subtree(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx,
+                tree_paint_generation: traversal.tree_paint_generation,
                 allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                 emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                 disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1514,6 +1524,7 @@ fn build_host_content_subtree(
             RenderTraversal {
                 scene_ctx: traversal.scene_ctx.clone(),
                 render_ctx: &child_render_ctx.without_host_clips(),
+                tree_paint_generation: traversal.tree_paint_generation,
                 allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                 emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                 disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1546,6 +1557,7 @@ fn build_nearby_mount_subtree(
         RenderTraversal {
             scene_ctx: nearby_scene_ctx.clone(),
             render_ctx: traversal.render_ctx,
+            tree_paint_generation: traversal.tree_paint_generation,
             allow_moving_paint_layers: traversal.allow_moving_paint_layers,
             emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
             disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1555,6 +1567,7 @@ fn build_nearby_mount_subtree(
     wrap_nearby_subtree_with_nearby_layer_boundary(
         tree.get_ix(nearby_ix),
         &nearby_scene_ctx,
+        traversal.render_ctx,
         subtree,
     )
 }
@@ -1595,6 +1608,7 @@ fn build_paragraph_subtree(
                 RenderTraversal {
                     scene_ctx: child_scene_ctx.clone(),
                     render_ctx: traversal.render_ctx,
+                    tree_paint_generation: traversal.tree_paint_generation,
                     allow_moving_paint_layers: traversal.allow_moving_paint_layers,
                     emit_dynamic_paint_layers: traversal.emit_dynamic_paint_layers,
                     disable_viewport_culling: traversal.disable_viewport_culling,
@@ -1803,6 +1817,7 @@ fn wrap_with_host_clip(nodes: Vec<RenderNode>, host_clip: ClipShape) -> Vec<Rend
 fn wrap_nearby_subtree_with_nearby_layer_boundary(
     element: Option<&Element>,
     scene_ctx: &SceneContext,
+    render_ctx: &RenderBuildContext,
     mut subtree: RenderSubtree,
 ) -> RenderSubtree {
     let Some(element) = element else {
@@ -1821,14 +1836,24 @@ fn wrap_nearby_subtree_with_nearby_layer_boundary(
         y: raw_render_frame.y - scene_ctx.scroll_dy,
         ..raw_render_frame
     };
-    subtree.local = wrap_with_paint_layer(
-        subtree.local,
-        element.id.to_wire_u64(),
-        PaintLayerPlacement::Fixed,
-        PaintLayerPolicy::Cacheable,
-        PaintLayerReason::Nearby,
-        render_frame,
-        0,
+    let local = strip_moving_paint_layer_payload_ancestor_clips(
+        std::mem::take(&mut subtree.local),
+        render_ctx,
+    );
+    if local.is_empty() {
+        return subtree;
+    }
+    subtree.local = wrap_with_clips(
+        wrap_with_paint_layer(
+            local,
+            element.id.to_wire_u64(),
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::Nearby,
+            render_frame,
+            None,
+        ),
+        render_ctx.full_clip_shapes(),
     );
     subtree
 }
@@ -1837,6 +1862,7 @@ fn wrap_with_paint_layer_if_scroll_container(
     nodes: Vec<RenderNode>,
     element: &Element,
     render_frame: Frame,
+    tree_paint_generation: u64,
 ) -> Vec<RenderNode> {
     if nodes.is_empty() || !is_scroll_container(element) {
         return nodes;
@@ -1846,10 +1872,43 @@ fn wrap_with_paint_layer_if_scroll_container(
         nodes,
         element.id.to_wire_u64(),
         PaintLayerPlacement::Fixed,
-        PaintLayerPolicy::Cacheable,
+        PaintLayerPolicy::DynamicRedraw,
         PaintLayerReason::ScrollContainer,
         render_frame,
-        0,
+        Some(scroll_container_content_generation(
+            tree_paint_generation,
+            element,
+        )),
+    )
+}
+
+fn wrap_with_root_paint_layer(
+    nodes: Vec<RenderNode>,
+    root: Option<&Element>,
+    _tree_paint_generation: u64,
+) -> Vec<RenderNode> {
+    if nodes.is_empty() {
+        return nodes;
+    }
+
+    let Some(root) = root else {
+        return nodes;
+    };
+    let Some(frame) = root.layout.frame else {
+        return nodes;
+    };
+    if root.refresh.render_dirty || element_has_active_animation(root, &root.layout.effective) {
+        return nodes;
+    }
+
+    wrap_with_paint_layer(
+        nodes,
+        root.id.to_wire_u64(),
+        PaintLayerPlacement::Fixed,
+        PaintLayerPolicy::Cacheable,
+        PaintLayerReason::Root,
+        frame,
+        None,
     )
 }
 
@@ -1860,22 +1919,53 @@ fn wrap_with_paint_layer(
     policy: PaintLayerPolicy,
     reason: PaintLayerReason,
     render_frame: Frame,
-    content_generation: u64,
+    content_generation: Option<u64>,
 ) -> Vec<RenderNode> {
-    vec![RenderNode::PaintLayer(RenderPaintLayer {
-        stable_id,
-        bounds: Rect {
-            x: render_frame.x,
-            y: render_frame.y,
-            width: render_frame.width,
-            height: render_frame.height,
-        },
-        placement,
-        policy,
-        reason,
-        content_generation,
-        children: nodes,
-    })]
+    let nominal_bounds = Rect {
+        x: render_frame.x,
+        y: render_frame.y,
+        width: render_frame.width,
+        height: render_frame.height,
+    };
+    #[cfg(test)]
+    let raw_children = nodes.clone();
+    #[cfg(not(test))]
+    let raw_children = Vec::new();
+    let content = split_paint_layer_content_owned(nodes);
+    let visual_bounds = paint_layer_own_content_visual_bounds(&content.own_nodes);
+    let bounds =
+        if policy == PaintLayerPolicy::Cacheable && reason != PaintLayerReason::ScrollContainer {
+            paint_layer_bounds_from_visual_bounds(visual_bounds, nominal_bounds)
+        } else {
+            nominal_bounds
+        };
+    let content_generation = if let Some(content_generation) = content_generation {
+        content_generation
+    } else if policy == PaintLayerPolicy::Cacheable
+        || (policy == PaintLayerPolicy::DynamicRedraw
+            && reason == PaintLayerReason::ScrollContainer)
+    {
+        moving_paint_layer_own_content_generation(&content.own_nodes, bounds)
+    } else {
+        0
+    };
+
+    vec![RenderNode::PaintLayer(
+        RenderPaintLayer::from_prepared_children(
+            RenderPaintLayerBuildParts {
+                stable_id,
+                root_id: stable_id,
+                bounds,
+                placement,
+                policy,
+                reason,
+                content_generation,
+                visual_bounds,
+            },
+            content,
+            raw_children,
+        ),
+    )]
 }
 
 fn wrap_with_dynamic_paint_layer_if_dirty(
@@ -1895,7 +1985,7 @@ fn wrap_with_dynamic_paint_layer_if_dirty(
         PaintLayerPolicy::DynamicRedraw,
         PaintLayerReason::Animation,
         render_frame,
-        0,
+        None,
     )
 }
 

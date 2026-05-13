@@ -2889,6 +2889,19 @@ fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
         return false;
     }
 
+    let dirty_child_ids: Vec<NodeId> = child_ids
+        .iter()
+        .filter(|child_id| node_needs_resolve_traversal(tree, child_id))
+        .copied()
+        .collect();
+
+    if dirty_child_ids
+        .iter()
+        .any(|child_id| !node_resolve_damage_is_nearby_only(tree, child_id))
+    {
+        return false;
+    }
+
     let full_key_match = cache.key == *key;
     let (target_frame, target_render_frame) = frames_from_resolve_extent(cache.extent, x, y);
     tree.record_layout_cache_stats(|stats| stats.record_resolve_hit());
@@ -2906,11 +2919,6 @@ fn try_reuse_resolve_cache_with_dirty_descendants<M: TextMeasurer>(
     }
 
     let element_context = inherited.merge_with_attrs(&attrs);
-    let dirty_child_ids: Vec<NodeId> = child_ids
-        .iter()
-        .filter(|child_id| node_needs_resolve_traversal(tree, child_id))
-        .copied()
-        .collect();
 
     for child_id in &dirty_child_ids {
         let Some((child_key, child_x, child_y)) =
@@ -3009,6 +3017,34 @@ fn node_needs_resolve_traversal(tree: &ElementTree, id: &NodeId) -> bool {
     tree.get(id).is_some_and(|element| {
         element.layout.resolve_dirty || element.layout.resolve_descendant_dirty
     })
+}
+
+fn node_resolve_damage_is_nearby_only(tree: &ElementTree, id: &NodeId) -> bool {
+    let Some(element) = tree.get(id) else {
+        return false;
+    };
+
+    if element.layout.resolve_dirty || !element.layout.resolve_descendant_dirty {
+        return false;
+    }
+
+    let child_ids = tree.child_ids(id);
+    let dirty_children_are_nearby_only = child_ids.iter().all(|child_id| {
+        !node_needs_resolve_traversal(tree, child_id)
+            || node_resolve_damage_is_nearby_only(tree, child_id)
+    });
+    if !dirty_children_are_nearby_only {
+        return false;
+    }
+
+    let nearby_mounts = tree.nearby_mounts_for(id);
+    child_ids
+        .iter()
+        .any(|child_id| node_needs_resolve_traversal(tree, child_id))
+        || nearby_mounts
+            .iter()
+            .any(|mount| node_needs_resolve_traversal(tree, &mount.id))
+        || !nearby_mounts.is_empty()
 }
 
 fn resolve_cache_key_matches_with_nearby_boundary(

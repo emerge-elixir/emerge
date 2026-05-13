@@ -492,6 +492,89 @@ fn layout_rotate_animation_reserves_sampled_aabb() {
 }
 
 #[test]
+fn layout_transform_animation_resizes_parent_row_after_cached_initial_layout() {
+    let start = Instant::now();
+    let (mut cached, row_id, animated_id, follower_id) =
+        animated_layout_transform_row_tree("cached");
+    let (mut uncached, uncached_row_id, uncached_animated_id, uncached_follower_id) =
+        animated_layout_transform_row_tree("uncached");
+
+    let mut cached_runtime = AnimationRuntime::default();
+    cached_runtime.sync_with_tree(&cached, start);
+    let mut uncached_runtime = AnimationRuntime::default();
+    uncached_runtime.sync_with_tree(&uncached, start);
+
+    layout_or_refresh_default_with_animation(
+        &mut cached,
+        Constraint::new(600.0, 400.0),
+        1.0,
+        &cached_runtime,
+        start,
+    );
+    layout_or_refresh_default_with_animation_uncached_for_benchmark(
+        &mut uncached,
+        Constraint::new(600.0, 400.0),
+        1.0,
+        &uncached_runtime,
+        start,
+    );
+
+    let update_at = start + Duration::from_millis(50);
+    let cached_update = layout_or_refresh_default_with_animation(
+        &mut cached,
+        Constraint::new(600.0, 400.0),
+        1.0,
+        &cached_runtime,
+        update_at,
+    );
+    let uncached_update = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+        &mut uncached,
+        Constraint::new(600.0, 400.0),
+        1.0,
+        &uncached_runtime,
+        update_at,
+    );
+
+    assert!(cached_update.layout_performed);
+    assert!(uncached_update.layout_performed);
+
+    let row_frame = cached.get(&row_id).unwrap().layout.frame.unwrap();
+    let animated_frame = cached.get(&animated_id).unwrap().layout.frame.unwrap();
+    let follower_frame = cached.get(&follower_id).unwrap().layout.frame.unwrap();
+    let uncached_row_frame = uncached
+        .get(&uncached_row_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let uncached_animated_frame = uncached
+        .get(&uncached_animated_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+    let uncached_follower_frame = uncached
+        .get(&uncached_follower_id)
+        .unwrap()
+        .layout
+        .frame
+        .unwrap();
+
+    assert_approx(row_frame.height, uncached_row_frame.height);
+    assert_approx(animated_frame.width, uncached_animated_frame.width);
+    assert_approx(animated_frame.height, uncached_animated_frame.height);
+    assert_approx(follower_frame.x, uncached_follower_frame.x);
+    assert!(
+        row_frame.height > 70.0,
+        "parent row should reserve the animated card AABB, got {row_frame:?}"
+    );
+    assert!(
+        follower_frame.x > 360.0,
+        "follower should move after the animated AABB, got {follower_frame:?}"
+    );
+}
+
+#[test]
 fn root_layout_scale_nearby_exit_ghost_keeps_captured_size() {
     let mut tree = ElementTree::new();
 
@@ -660,6 +743,66 @@ fn layout_scale_animation_spec(from_scale: f64, to_scale: f64) -> AnimationSpec 
         curve: AnimationCurve::Linear,
         repeat: AnimationRepeat::Once,
     }
+}
+
+fn animated_layout_transform_row_tree(seed: &str) -> (ElementTree, NodeId, NodeId, NodeId) {
+    let mut tree = ElementTree::new();
+
+    let mut row = make_element(
+        &format!("{seed}_row"),
+        ElementKind::WrappedRow,
+        Attrs {
+            width: Some(Length::Px(600.0)),
+            spacing_x: Some(24.0),
+            spacing_y: Some(24.0),
+            ..Attrs::default()
+        },
+    );
+    let row_id = row.id;
+
+    let anchor = make_element(
+        &format!("{seed}_anchor"),
+        ElementKind::El,
+        fixed_attrs(160.0, 64.0),
+    );
+    let anchor_id = anchor.id;
+
+    let mut animated_attrs = fixed_attrs(160.0, 64.0);
+    animated_attrs.animate = Some(AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                layout_scale: Some(0.92),
+                layout_rotate: Some(-10.0),
+                ..Attrs::default()
+            },
+            Attrs {
+                layout_scale: Some(1.18),
+                layout_rotate: Some(14.0),
+                ..Attrs::default()
+            },
+        ],
+        duration_ms: 100.0,
+        curve: AnimationCurve::Linear,
+        repeat: AnimationRepeat::Once,
+    });
+    let animated = make_element(&format!("{seed}_animated"), ElementKind::El, animated_attrs);
+    let animated_id = animated.id;
+
+    let follower = make_element(
+        &format!("{seed}_follower"),
+        ElementKind::El,
+        fixed_attrs(160.0, 64.0),
+    );
+    let follower_id = follower.id;
+
+    row.children = vec![anchor_id, animated_id, follower_id];
+    tree.set_root_id(row_id);
+    tree.insert(row);
+    tree.insert(anchor);
+    tree.insert(animated);
+    tree.insert(follower);
+
+    (tree, row_id, animated_id, follower_id)
 }
 
 #[test]

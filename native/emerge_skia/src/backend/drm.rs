@@ -2136,6 +2136,16 @@ pub fn run(context: DrmRunContext, config: DrmRunConfig) {
             let primary_dirty = desired_primary_generation != committed_primary_generation;
             if in_flight.is_none()
                 && primary_dirty
+                && (hw_cursor_enabled || !cursor_visible)
+                && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
+            {
+                committed_primary_generation = desired_primary_generation;
+                render_state.pipeline_submitted_at = None;
+                render_state.pipeline_render_queued_at = None;
+            }
+            let primary_dirty = desired_primary_generation != committed_primary_generation;
+            if in_flight.is_none()
+                && primary_dirty
                 && prepared_primary.as_ref().map(|frame| frame.generation)
                     != Some(desired_primary_generation)
             {
