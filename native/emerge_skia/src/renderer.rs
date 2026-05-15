@@ -751,6 +751,13 @@ struct RenderedVectorKey {
     asset_id: String,
     width: u32,
     height: u32,
+    kind: RenderedVectorVariantKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RenderedVectorVariantKind {
+    Full,
+    CoverViewport,
 }
 
 #[derive(Clone)]
@@ -862,11 +869,17 @@ pub fn asset_kind(id: &str) -> Option<AssetKind> {
     })
 }
 
-fn rendered_vector_key(asset_id: &str, width: u32, height: u32) -> RenderedVectorKey {
+fn rendered_vector_key(
+    asset_id: &str,
+    width: u32,
+    height: u32,
+    kind: RenderedVectorVariantKind,
+) -> RenderedVectorKey {
     RenderedVectorKey {
         asset_id: asset_id.to_string(),
         width,
         height,
+        kind,
     }
 }
 
@@ -887,9 +900,14 @@ fn next_rendered_vector_access_stamp(cache: &mut RenderedVectorCache) -> u64 {
     cache.access_clock
 }
 
-fn lookup_rendered_vector_variant(asset_id: &str, width: u32, height: u32) -> Option<Image> {
+fn lookup_rendered_vector_variant(
+    asset_id: &str,
+    width: u32,
+    height: u32,
+    kind: RenderedVectorVariantKind,
+) -> Option<Image> {
     let mut cache = get_rendered_vector_cache().lock().ok()?;
-    let key = rendered_vector_key(asset_id, width, height);
+    let key = rendered_vector_key(asset_id, width, height, kind);
     let stamp = next_rendered_vector_access_stamp(&mut cache);
     let variant = cache.entries.get_mut(&key)?;
     variant.last_used = stamp;
@@ -913,7 +931,13 @@ fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
     }
 }
 
-fn store_rendered_vector_variant(asset_id: &str, width: u32, height: u32, image: &Image) {
+fn store_rendered_vector_variant(
+    asset_id: &str,
+    width: u32,
+    height: u32,
+    kind: RenderedVectorVariantKind,
+    image: &Image,
+) {
     if !should_cache_rendered_variant(width, height) {
         return;
     }
@@ -926,7 +950,7 @@ fn store_rendered_vector_variant(asset_id: &str, width: u32, height: u32, image:
         return;
     };
 
-    let key = rendered_vector_key(asset_id, width, height);
+    let key = rendered_vector_key(asset_id, width, height, kind);
     if let Some(existing) = cache.entries.remove(&key) {
         cache.total_bytes = cache.total_bytes.saturating_sub(existing.bytes);
     }
@@ -1230,6 +1254,12 @@ impl PaintLayerPayloadBounds {
 #[derive(Clone, Debug)]
 enum PaintLayerPayload {
     Image(Option<Image>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaintLayerVisibleAdmission {
+    visible_frames: u64,
+    last_visible_frame: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1706,6 +1736,8 @@ pub struct RendererCacheManager {
     enabled: bool,
     generation: u64,
     frame_index: u64,
+    min_visible_before_store: u64,
+    visible_admissions: HashMap<PaintLayerPayloadKey, PaintLayerVisibleAdmission>,
     payloads: PaintLayerPayloadCache<PaintLayerPayload>,
 }
 
@@ -1725,6 +1757,8 @@ impl RendererCacheManager {
             enabled: config.enabled,
             generation: 0,
             frame_index: 0,
+            min_visible_before_store: config.paint_layer.min_visible_before_store,
+            visible_admissions: HashMap::new(),
             payloads: PaintLayerPayloadCache::with_config(
                 renderer_paint_layer_payload_cache_config(config),
             ),
@@ -1733,6 +1767,7 @@ impl RendererCacheManager {
 
     pub fn begin_frame(&mut self) -> RendererCacheFrame {
         self.frame_index = self.frame_index.wrapping_add(1);
+        self.prune_non_consecutive_visible_admissions();
         let mut stats = RendererCacheFrameStats::default();
         for bytes in self.payloads.begin_frame(self.frame_index) {
             stats.paint_layer.record_stale_eviction(bytes);
@@ -1756,6 +1791,7 @@ impl RendererCacheManager {
 
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.visible_admissions.clear();
         self.payloads.clear();
     }
 
@@ -1787,6 +1823,59 @@ impl RendererCacheManager {
             RendererCachePayloadKind::GpuRenderTarget => PaintLayerPayloadStorage::Gpu,
             RendererCachePayloadKind::CpuRaster => PaintLayerPayloadStorage::Cpu,
         }
+    }
+
+    fn prune_non_consecutive_visible_admissions(&mut self) {
+        if self.min_visible_before_store <= 1 || self.visible_admissions.is_empty() {
+            return;
+        }
+
+        let frame_index = self.frame_index;
+        self.visible_admissions
+            .retain(|_, admission| frame_index.wrapping_sub(admission.last_visible_frame) <= 1);
+    }
+
+    fn moving_layer_visible_before_store_satisfied(
+        &mut self,
+        key: PaintLayerMovingPayloadKey,
+    ) -> bool {
+        if self.min_visible_before_store <= 1 {
+            return true;
+        }
+
+        let payload_key = Self::payload_key_for_moving_layer(key);
+        let frame_index = self.frame_index;
+        let admission = self
+            .visible_admissions
+            .entry(payload_key)
+            .and_modify(|admission| {
+                if admission.last_visible_frame == frame_index {
+                    return;
+                }
+
+                admission.visible_frames =
+                    if frame_index.wrapping_sub(admission.last_visible_frame) == 1 {
+                        admission.visible_frames.saturating_add(1)
+                    } else {
+                        1
+                    };
+                admission.last_visible_frame = frame_index;
+            })
+            .or_insert(PaintLayerVisibleAdmission {
+                visible_frames: 1,
+                last_visible_frame: frame_index,
+            });
+
+        admission.visible_frames >= self.min_visible_before_store
+    }
+
+    fn forget_visible_admission(&mut self, key: PaintLayerMovingPayloadKey) {
+        if self.visible_admissions.is_empty() {
+            return;
+        }
+
+        self.visible_admissions
+            .remove(&Self::payload_key_for_moving_layer(key));
     }
 
     fn payload_resident_stats(&self) -> (u64, u64, u64, u64) {
@@ -1863,6 +1952,7 @@ impl RendererCacheManager {
                 PaintLayerPayloadStorage::Cpu,
             )
             .map_err(Self::moving_layer_admission_rejection_from_payload_rejection)?;
+        self.forget_visible_admission(key);
         frame.record_store(bytes, RendererCachePayloadKind::CpuRaster, prepare_time);
         frame.record_store_pixels(key.pixel_len(), 0);
         frame.record_evictions(evicted);
@@ -1932,6 +2022,7 @@ impl RendererCacheManager {
             Self::payload_storage_kind(payload_kind),
         ) {
             Ok(evicted) => {
+                self.forget_visible_admission(key);
                 frame.record_store(bytes, payload_kind, prepare_time);
                 frame.record_store_pixels(key.pixel_len(), visible_pixels);
                 frame.record_evictions(evicted);
@@ -2888,6 +2979,21 @@ impl SceneRenderer {
             return;
         }
 
+        if layer.policy == PaintLayerPolicy::DynamicRedraw
+            && layer.reason == PaintLayerReason::Animation
+        {
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
         let resource_generation = moving_paint_layer_payload_resource_generation(&layer.own_nodes);
         let key = PaintLayerMovingPayloadKey::from_layer(
             layer,
@@ -3035,6 +3141,25 @@ impl SceneRenderer {
             return;
         }
 
+        if !cache_tracking
+            .renderer_cache
+            .moving_layer_visible_before_store_satisfied(key)
+        {
+            cache_tracking
+                .frame
+                .record_rejection(RendererCacheRejectionReason::AdmissionThreshold);
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+            Self::render_paint_layer_child_refs(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
         cache_tracking.frame.record_miss();
         if renderer_cache_diagnostics_enabled() {
             eprintln!(
@@ -3156,6 +3281,31 @@ impl SceneRenderer {
         }
 
         let mut mode = ChildPaintLayerRenderMode { cache_tracking };
+        Self::render_paint_layer_child_refs_in_mode(
+            canvas,
+            layer,
+            &mut mode,
+            options,
+            eligibility,
+            instrumentation,
+        );
+    }
+
+    fn render_paint_layer_child_refs_in_mode<'video, I, M>(
+        canvas: &skia_safe::Canvas,
+        layer: &RenderPaintLayer,
+        mode: &mut M,
+        options: RenderTraversalOptions<'video>,
+        eligibility: MovingLayerEligibility,
+        instrumentation: &mut I,
+    ) where
+        I: DrawInstrumentation,
+        M: RenderTraversalMode<'video>,
+    {
+        if layer.child_refs.is_empty() {
+            return;
+        }
+
         let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
         if let Some(clip) = paint_layer_child_ref_clip(layer) {
             if child_eligibility.clip_empty {
@@ -3167,7 +3317,7 @@ impl SceneRenderer {
                 Self::render_nodes_in_mode(
                     canvas,
                     &child.nodes,
-                    &mut mode,
+                    mode,
                     options,
                     child_eligibility,
                     instrumentation,
@@ -3179,13 +3329,39 @@ impl SceneRenderer {
                 Self::render_nodes_in_mode(
                     canvas,
                     &child.nodes,
-                    &mut mode,
+                    mode,
                     options,
                     child_eligibility,
                     instrumentation,
                 );
             });
         }
+    }
+
+    fn render_non_cacheable_paint_layer_with_cache_tracking<I: DrawInstrumentation>(
+        canvas: &skia_safe::Canvas,
+        layer: &RenderPaintLayer,
+        options: RenderTraversalOptions<'_>,
+        cache_tracking: &mut RenderCacheTracking<'_>,
+        eligibility: MovingLayerEligibility,
+        instrumentation: &mut I,
+    ) {
+        let own_visible_pixels =
+            paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
+                .map(PaintLayerDeviceRect::area)
+                .unwrap_or(0);
+        if own_visible_pixels > 0 {
+            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
+        }
+
+        Self::render_paint_layer_child_refs(
+            canvas,
+            layer,
+            options,
+            cache_tracking,
+            eligibility,
+            instrumentation,
+        );
     }
 
     fn prepare_moving_layer_payload(
@@ -4141,37 +4317,14 @@ impl<'video> RenderTraversalMode<'video> for DirectRenderMode {
             eligibility,
             instrumentation,
         );
-        let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
-        if let Some(clip) = paint_layer_child_ref_clip(layer) {
-            if child_eligibility.clip_empty {
-                return;
-            }
-            canvas.save();
-            apply_clip_shape(canvas, &clip);
-            layer.child_refs.iter().for_each(|child| {
-                SceneRenderer::render_nodes_in_mode(
-                    canvas,
-                    &child.nodes,
-                    self,
-                    options,
-                    child_eligibility,
-                    instrumentation,
-                );
-            });
-            canvas.restore();
-            return;
-        }
-
-        layer.child_refs.iter().for_each(|child| {
-            SceneRenderer::render_nodes_in_mode(
-                canvas,
-                &child.nodes,
-                self,
-                options,
-                child_eligibility,
-                instrumentation,
-            );
-        });
+        SceneRenderer::render_paint_layer_child_refs_in_mode(
+            canvas,
+            layer,
+            self,
+            options,
+            eligibility,
+            instrumentation,
+        );
     }
 }
 
@@ -4211,21 +4364,7 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
                 instrumentation,
             );
         } else {
-            let visible_pixels =
-                paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
-                    .map(PaintLayerDeviceRect::area)
-                    .unwrap_or(0);
-            if visible_pixels == 0 {
-                return;
-            }
-
-            SceneRenderer::render_paint_layer_own_nodes(
-                canvas,
-                &layer.own_nodes,
-                options,
-                instrumentation,
-            );
-            SceneRenderer::render_paint_layer_child_refs(
+            SceneRenderer::render_non_cacheable_paint_layer_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -4259,21 +4398,7 @@ impl<'video> RenderTraversalMode<'video> for ChildPaintLayerRenderMode<'_, '_> {
                 instrumentation,
             );
         } else {
-            let visible_pixels =
-                paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
-                    .map(PaintLayerDeviceRect::area)
-                    .unwrap_or(0);
-            if visible_pixels == 0 {
-                return;
-            }
-
-            SceneRenderer::render_paint_layer_own_nodes(
-                canvas,
-                &layer.own_nodes,
-                options,
-                instrumentation,
-            );
-            SceneRenderer::render_paint_layer_child_refs(
+            SceneRenderer::render_non_cacheable_paint_layer_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -4868,12 +4993,46 @@ fn get_or_rasterize_vector_variant(
     width: u32,
     height: u32,
 ) -> Option<Image> {
-    if let Some(image) = lookup_rendered_vector_variant(asset_id, width, height) {
+    if let Some(image) =
+        lookup_rendered_vector_variant(asset_id, width, height, RenderedVectorVariantKind::Full)
+    {
         return Some(image);
     }
 
     let image = rasterize_vector_tree(tree, width, height)?;
-    store_rendered_vector_variant(asset_id, width, height, &image);
+    store_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::Full,
+        &image,
+    );
+    Some(image)
+}
+
+fn get_or_rasterize_vector_cover_viewport_variant(
+    asset_id: &str,
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+) -> Option<Image> {
+    if let Some(image) = lookup_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::CoverViewport,
+    ) {
+        return Some(image);
+    }
+
+    let image = rasterize_vector_tree_cover_viewport(tree, width, height)?;
+    store_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::CoverViewport,
+        &image,
+    );
     Some(image)
 }
 
@@ -4885,7 +5044,8 @@ fn get_or_rasterize_vector_variant_profiled(
     profile: &mut RenderImageDrawProfile,
 ) -> Option<Image> {
     let lookup_started_at = Instant::now();
-    let cached = lookup_rendered_vector_variant(asset_id, width, height);
+    let cached =
+        lookup_rendered_vector_variant(asset_id, width, height, RenderedVectorVariantKind::Full);
     profile.vector_cache_lookup += lookup_started_at.elapsed();
 
     if let Some(image) = cached {
@@ -4900,7 +5060,52 @@ fn get_or_rasterize_vector_variant_profiled(
     let image = image?;
 
     let store_started_at = Instant::now();
-    store_rendered_vector_variant(asset_id, width, height, &image);
+    store_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::Full,
+        &image,
+    );
+    profile.vector_cache_store += store_started_at.elapsed();
+    Some(image)
+}
+
+fn get_or_rasterize_vector_cover_viewport_variant_profiled(
+    asset_id: &str,
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+    profile: &mut RenderImageDrawProfile,
+) -> Option<Image> {
+    let lookup_started_at = Instant::now();
+    let cached = lookup_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::CoverViewport,
+    );
+    profile.vector_cache_lookup += lookup_started_at.elapsed();
+
+    if let Some(image) = cached {
+        profile.vector_cache_hit = Some(true);
+        return Some(image);
+    }
+
+    profile.vector_cache_hit = Some(false);
+    let rasterize_started_at = Instant::now();
+    let image = rasterize_vector_tree_cover_viewport(tree, width, height);
+    profile.vector_rasterize += rasterize_started_at.elapsed();
+    let image = image?;
+
+    let store_started_at = Instant::now();
+    store_rendered_vector_variant(
+        asset_id,
+        width,
+        height,
+        RenderedVectorVariantKind::CoverViewport,
+        &image,
+    );
     profile.vector_cache_store += store_started_at.elapsed();
     Some(image)
 }
@@ -4917,7 +5122,42 @@ fn draw_vector_asset_with_fit(
     let RectSpec { x, y, w, h } = spec.rect;
 
     match spec.fit {
-        ImageFit::Contain | ImageFit::Cover => {
+        ImageFit::Cover => {
+            let dst_rect = maybe_expand_draw_rect(
+                canvas,
+                Rect::from_xywh(x, y, w, h),
+                image_bleed_device_outset,
+            );
+
+            let raster_width = dst_rect.width().ceil().max(1.0) as u32;
+            let raster_height = dst_rect.height().ceil().max(1.0) as u32;
+            let Some(image) = get_or_rasterize_vector_cover_viewport_variant(
+                asset_id,
+                tree,
+                raster_width,
+                raster_height,
+            ) else {
+                return;
+            };
+
+            canvas.save();
+            canvas.clip_rect(
+                Rect::from_xywh(x, y, w, h),
+                skia_safe::ClipOp::Intersect,
+                true,
+            );
+            draw_image_fill_rect_tinted(
+                canvas,
+                &image,
+                dst_rect.x(),
+                dst_rect.y(),
+                dst_rect.width(),
+                dst_rect.height(),
+                spec.svg_tint,
+            );
+            canvas.restore();
+        }
+        ImageFit::Contain => {
             let src_w = asset_width as f32;
             let src_h = asset_height as f32;
             let Some((draw_x, draw_y, draw_w, draw_h)) =
@@ -4942,11 +5182,6 @@ fn draw_vector_asset_with_fit(
                 return;
             };
 
-            canvas.save();
-            if matches!(spec.fit, ImageFit::Cover) {
-                let clip = Rect::from_xywh(x, y, w, h);
-                canvas.clip_rect(clip, skia_safe::ClipOp::Intersect, true);
-            }
             draw_image_fill_rect_tinted(
                 canvas,
                 &image,
@@ -4956,7 +5191,6 @@ fn draw_vector_asset_with_fit(
                 dst_rect.height(),
                 spec.svg_tint,
             );
-            canvas.restore();
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
             let Some(image) =
@@ -4988,7 +5222,49 @@ fn draw_vector_asset_with_fit_profiled(
     let RectSpec { x, y, w, h } = spec.rect;
 
     match spec.fit {
-        ImageFit::Contain | ImageFit::Cover => {
+        ImageFit::Cover => {
+            let fit_started_at = Instant::now();
+            let dst_rect = maybe_expand_draw_rect(
+                canvas,
+                Rect::from_xywh(x, y, w, h),
+                image_bleed_device_outset,
+            );
+            let raster_width = dst_rect.width().ceil().max(1.0) as u32;
+            let raster_height = dst_rect.height().ceil().max(1.0) as u32;
+            profile.draw_width = raster_width;
+            profile.draw_height = raster_height;
+            profile.fit_compute += fit_started_at.elapsed();
+
+            let Some(image) = get_or_rasterize_vector_cover_viewport_variant_profiled(
+                spec.image_id,
+                tree,
+                raster_width,
+                raster_height,
+                profile,
+            ) else {
+                return;
+            };
+
+            let draw_started_at = Instant::now();
+            canvas.save();
+            canvas.clip_rect(
+                Rect::from_xywh(x, y, w, h),
+                skia_safe::ClipOp::Intersect,
+                true,
+            );
+            profile.tint_layer_used |= draw_image_fill_rect_tinted(
+                canvas,
+                &image,
+                dst_rect.x(),
+                dst_rect.y(),
+                dst_rect.width(),
+                dst_rect.height(),
+                spec.svg_tint,
+            );
+            canvas.restore();
+            profile.draw += draw_started_at.elapsed();
+        }
+        ImageFit::Contain => {
             let fit_started_at = Instant::now();
             let src_w = asset_width as f32;
             let src_h = asset_height as f32;
@@ -5024,11 +5300,6 @@ fn draw_vector_asset_with_fit_profiled(
             };
 
             let draw_started_at = Instant::now();
-            canvas.save();
-            if matches!(spec.fit, ImageFit::Cover) {
-                let clip = Rect::from_xywh(x, y, w, h);
-                canvas.clip_rect(clip, skia_safe::ClipOp::Intersect, true);
-            }
             profile.tint_layer_used |= draw_image_fill_rect_tinted(
                 canvas,
                 &image,
@@ -5038,7 +5309,6 @@ fn draw_vector_asset_with_fit_profiled(
                 dst_rect.height(),
                 spec.svg_tint,
             );
-            canvas.restore();
             profile.draw += draw_started_at.elapsed();
         }
         ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
@@ -5114,8 +5384,25 @@ fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<I
         return None;
     }
 
-    #[cfg(test)]
-    VECTOR_RASTERIZATION_COUNT.fetch_add(1, Ordering::Relaxed);
+    let src_w = tree.size().width();
+    let src_h = tree.size().height();
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return None;
+    }
+
+    let transform =
+        resvg::tiny_skia::Transform::from_scale(width as f32 / src_w, height as f32 / src_h);
+    rasterize_vector_tree_with_transform(tree, width, height, transform)
+}
+
+fn rasterize_vector_tree_cover_viewport(
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+) -> Option<Image> {
+    if width == 0 || height == 0 {
+        return None;
+    }
 
     let src_w = tree.size().width();
     let src_h = tree.size().height();
@@ -5123,9 +5410,27 @@ fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<I
         return None;
     }
 
+    let scale = (width as f32 / src_w).max(height as f32 / src_h);
+    let tx = (width as f32 - src_w * scale) * 0.5;
+    let ty = (height as f32 - src_h * scale) * 0.5;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
+    rasterize_vector_tree_with_transform(tree, width, height, transform)
+}
+
+fn rasterize_vector_tree_with_transform(
+    tree: &usvg::Tree,
+    width: u32,
+    height: u32,
+    transform: resvg::tiny_skia::Transform,
+) -> Option<Image> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    #[cfg(test)]
+    VECTOR_RASTERIZATION_COUNT.fetch_add(1, Ordering::Relaxed);
+
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
-    let transform =
-        resvg::tiny_skia::Transform::from_scale(width as f32 / src_w, height as f32 / src_h);
     let mut pixmap_mut = pixmap.as_mut();
     resvg::render(tree, transform, &mut pixmap_mut);
 
@@ -6053,6 +6358,41 @@ mod tests {
     }
 
     #[test]
+    fn renderer_cache_manager_requires_consecutive_visible_frames_for_admission() {
+        let mut cache = RendererCacheManager::with_config(RendererCacheConfig {
+            enabled: true,
+            paint_layer: RendererPaintLayerCacheConfig {
+                min_visible_before_store: 2,
+                ..RendererPaintLayerCacheConfig::default()
+            },
+            ..RendererCacheConfig::default()
+        });
+        let key = PaintLayerMovingPayloadKey {
+            stable_id: 1,
+            content_generation: 1,
+            width_px: 8,
+            height_px: 4,
+            scale_bits: 1.0f32.to_bits(),
+            resource_generation: 0,
+        };
+
+        let frame = cache.begin_frame();
+        assert!(!cache.moving_layer_visible_before_store_satisfied(key));
+        cache.end_frame(frame);
+
+        let frame = cache.begin_frame();
+        cache.end_frame(frame);
+
+        let frame = cache.begin_frame();
+        assert!(!cache.moving_layer_visible_before_store_satisfied(key));
+        cache.end_frame(frame);
+
+        let frame = cache.begin_frame();
+        assert!(cache.moving_layer_visible_before_store_satisfied(key));
+        cache.end_frame(frame);
+    }
+
+    #[test]
     fn paint_layer_cache_is_disabled_for_cpu_raster_frames() {
         let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
             enabled: true,
@@ -6355,6 +6695,62 @@ mod tests {
         assert_eq!(candidate, direct);
     }
 
+    #[test]
+    fn cache_tracking_renders_child_layer_when_direct_parent_bounds_are_clipped() {
+        let child_nodes = vec![RenderNode::Primitive(DrawPrimitive::Rect(
+            4.0, 4.0, 12.0, 10.0, 0x2F80EDFF,
+        ))];
+        let child_layer = RenderPaintLayer::from_children(
+            202,
+            GeometryRect {
+                x: 4.0,
+                y: 4.0,
+                width: 12.0,
+                height: 10.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            child_nodes.clone(),
+        );
+        let parent_layer = RenderPaintLayer::from_children(
+            101,
+            GeometryRect {
+                x: 80.0,
+                y: 80.0,
+                width: 12.0,
+                height: 10.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::DirectOnly,
+            PaintLayerReason::StableSubtree,
+            0,
+            vec![RenderNode::PaintLayer(child_layer)],
+        );
+
+        let expected = render_scene_graph_to_pixels(32, 24, RenderScene { nodes: child_nodes });
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let (actual, timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            32,
+            24,
+            RenderScene {
+                nodes: vec![RenderNode::PaintLayer(parent_layer)],
+            },
+        );
+
+        assert_eq!(actual, expected);
+        let stats = timings
+            .renderer_cache
+            .expect("visible child cacheable layer should produce cache stats");
+        assert_eq!(stats.paint_layer.visible_candidates, 1);
+        assert_eq!(stats.paint_layer.stores, 1);
+    }
+
     fn moving_paint_layer_payload_test_children() -> Vec<RenderNode> {
         vec![
             RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 22.0, 16.0, 0x2F80EDFF)),
@@ -6515,6 +6911,40 @@ mod tests {
         assert_eq!(cache_stats.paint_layer.rejected, 0);
         assert_eq!(cache_stats.paint_layer.stores, 1);
         assert_eq!(cache_stats.paint_layer.current_entries, 1);
+    }
+
+    #[test]
+    fn dynamic_animation_paint_layer_draws_direct_without_payload_store() {
+        let children = moving_paint_layer_payload_test_children();
+        let transform = Affine2::translation(8.0, 5.0);
+        let direct = RenderNode::Transform {
+            transform,
+            children: children.clone(),
+        };
+        let candidate = RenderNode::Transform {
+            transform,
+            children: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                199,
+                crate::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 22.0,
+                    height: 16.0,
+                },
+                PaintLayerPlacement::ScrollMoving,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                3,
+                children,
+            ))],
+        };
+
+        let timings = assert_moving_paint_layer_fallback_matches_direct(48, 32, direct, candidate);
+
+        assert!(
+            timings.renderer_cache.is_none(),
+            "direct dynamic paint layer should not become a renderer-cache candidate"
+        );
     }
 
     #[test]
@@ -6917,6 +7347,69 @@ mod tests {
         assert_eq!(third_stats.paint_layer.stores, 0);
         assert_eq!(third_stats.paint_layer.current_entries, 1);
         assert!(third_stats.paint_layer.draw_hit_time > Duration::ZERO);
+    }
+
+    #[test]
+    fn moving_paint_layer_payload_cache_respects_min_visible_before_store() {
+        let direct = render_scene_graph_to_pixels(48, 32, translated_direct_scene());
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            paint_layer: RendererPaintLayerCacheConfig {
+                min_visible_before_store: 2,
+                ..RendererPaintLayerCacheConfig::default()
+            },
+            ..RendererCacheConfig::default()
+        });
+
+        let (first_pixels, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            translated_candidate_scene(3),
+        );
+        assert_eq!(first_pixels, direct);
+        let first_stats = first_timings
+            .renderer_cache
+            .expect("first visible frame should produce cache stats");
+        assert_eq!(first_stats.paint_layer.visible_candidates, 1);
+        assert_eq!(first_stats.paint_layer.rejected_admission, 1);
+        assert_eq!(first_stats.paint_layer.misses, 0);
+        assert_eq!(first_stats.paint_layer.stores, 0);
+        assert_eq!(first_stats.paint_layer.hits, 0);
+        assert_eq!(first_stats.paint_layer.current_entries, 0);
+
+        let (second_pixels, second_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                48,
+                32,
+                translated_candidate_scene(3),
+            );
+        assert_eq!(second_pixels, direct);
+        let second_stats = second_timings
+            .renderer_cache
+            .expect("second visible frame should store the payload");
+        assert_eq!(second_stats.paint_layer.rejected_admission, 0);
+        assert_eq!(second_stats.paint_layer.misses, 1);
+        assert_eq!(second_stats.paint_layer.stores, 1);
+        assert_eq!(second_stats.paint_layer.hits, 0);
+        assert_eq!(second_stats.paint_layer.current_entries, 1);
+
+        let (third_pixels, third_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            translated_candidate_scene(3),
+        );
+        assert_eq!(third_pixels, direct);
+        let third_stats = third_timings
+            .renderer_cache
+            .expect("third visible frame should hit the payload");
+        assert_eq!(third_stats.paint_layer.rejected_admission, 0);
+        assert_eq!(third_stats.paint_layer.misses, 0);
+        assert_eq!(third_stats.paint_layer.stores, 0);
+        assert_eq!(third_stats.paint_layer.hits, 1);
+        assert_eq!(third_stats.paint_layer.current_entries, 1);
     }
 
     #[test]
@@ -8525,6 +9018,55 @@ mod tests {
         );
 
         assert_eq!(first, second);
+        assert_eq!(vector_rasterization_count(), 1);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn test_svg_cover_fit_wide_strip_caches_visible_viewport_variant() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "test_svg_cover_fit_wide_strip_caches_visible_viewport_variant";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2">
+                <rect x="0" y="0" width="2" height="2" fill="#ffdc78"/>
+            </svg>
+        "##;
+
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 2, 2, svg);
+
+        let scene = || RenderScene {
+            nodes: vec![RenderNode::Primitive(DrawPrimitive::Image(
+                0.0,
+                0.0,
+                1405.0,
+                66.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+                None,
+            ))],
+        };
+
+        let first = render_scene_graph_profiled(1405, 66, scene());
+        let first_detail = first
+            .draw_detail
+            .expect("profiled render should include draw detail");
+        assert_eq!(first_detail.image_details.len(), 1);
+        assert_eq!(first_detail.image_details[0].draw_width, 1405);
+        assert_eq!(first_detail.image_details[0].draw_height, 66);
+        assert_eq!(first_detail.image_details[0].vector_cache_hit, Some(false));
+
+        let second = render_scene_graph_profiled(1405, 66, scene());
+        let second_detail = second
+            .draw_detail
+            .expect("profiled render should include draw detail");
+        assert_eq!(second_detail.image_details.len(), 1);
+        assert_eq!(second_detail.image_details[0].draw_width, 1405);
+        assert_eq!(second_detail.image_details[0].draw_height, 66);
+        assert_eq!(second_detail.image_details[0].vector_cache_hit, Some(true));
+
         assert_eq!(vector_rasterization_count(), 1);
         assert_eq!(rendered_vector_cache_entry_count(), 1);
 

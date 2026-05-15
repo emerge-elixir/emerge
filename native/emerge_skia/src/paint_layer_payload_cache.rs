@@ -86,6 +86,7 @@ pub struct PaintLayerPayloadCache<P> {
     entries: HashMap<PaintLayerPayloadKey, PaintLayerPayloadCacheEntry<P>>,
     total_bytes: u64,
     frame_index: u64,
+    next_stale_sweep_frame: Option<u64>,
     new_payloads_remaining: u32,
     config: PaintLayerPayloadCacheConfig,
 }
@@ -102,6 +103,7 @@ impl<P> PaintLayerPayloadCache<P> {
             entries: HashMap::new(),
             total_bytes: 0,
             frame_index: 0,
+            next_stale_sweep_frame: None,
             new_payloads_remaining: config.max_new_payloads_per_frame,
             config,
         }
@@ -110,12 +112,22 @@ impl<P> PaintLayerPayloadCache<P> {
     pub fn begin_frame(&mut self, frame_index: u64) -> Vec<u64> {
         self.frame_index = frame_index;
         self.new_payloads_remaining = self.config.max_new_payloads_per_frame;
-        Vec::new()
+        if self
+            .next_stale_sweep_frame
+            .is_none_or(|sweep_frame| frame_has_not_reached(self.frame_index, sweep_frame))
+        {
+            return Vec::new();
+        }
+
+        let evicted = self.evict_stale();
+        self.refresh_next_stale_sweep_frame();
+        evicted
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
         self.total_bytes = 0;
+        self.next_stale_sweep_frame = None;
         self.new_payloads_remaining = self.config.max_new_payloads_per_frame;
     }
 
@@ -200,7 +212,9 @@ impl<P> PaintLayerPayloadCache<P> {
             },
         );
 
-        Ok(self.evict_if_needed())
+        let evicted = self.evict_if_needed();
+        self.refresh_next_stale_sweep_frame();
+        Ok(evicted)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &PaintLayerPayloadCacheEntry<P>> {
@@ -238,6 +252,40 @@ impl<P> PaintLayerPayloadCache<P> {
             }
         }
         evicted
+    }
+
+    fn evict_stale(&mut self) -> Vec<u64> {
+        let max_stale_frames = self.config.max_stale_frames;
+        let stale_keys: Vec<PaintLayerPayloadKey> = self
+            .entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                (self.frame_index.wrapping_sub(entry.last_seen_frame) > max_stale_frames)
+                    .then_some(*key)
+            })
+            .collect();
+
+        stale_keys.into_iter().fold(Vec::new(), |mut evicted, key| {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
+                evicted.push(entry.bytes);
+            }
+            evicted
+        })
+    }
+
+    fn refresh_next_stale_sweep_frame(&mut self) {
+        if self.config.max_stale_frames == u64::MAX {
+            self.next_stale_sweep_frame = None;
+            return;
+        }
+
+        let stale_window = self.config.max_stale_frames.saturating_add(1);
+        self.next_stale_sweep_frame = self
+            .entries
+            .values()
+            .map(|entry| entry.last_seen_frame.wrapping_add(stale_window))
+            .min_by_key(|target| target.wrapping_sub(self.frame_index));
     }
 
     fn oldest_entry_key(&self) -> Option<PaintLayerPayloadKey> {
@@ -289,6 +337,10 @@ impl<P> PaintLayerPayloadCache<P> {
 
         projected_len > self.config.max_entries || projected_bytes > self.config.max_bytes
     }
+}
+
+fn frame_has_not_reached(current: u64, target: u64) -> bool {
+    current != target && current.wrapping_sub(target) >= (1u64 << 63)
 }
 
 #[cfg(test)]
@@ -428,7 +480,23 @@ mod tests {
     }
 
     #[test]
-    fn unseen_payloads_remain_until_budget_eviction() {
+    fn stale_payloads_evict_after_configured_unseen_window() {
+        let mut cache = PaintLayerPayloadCache::with_config(config());
+        let key = moving_key(3, 1);
+        cache.begin_frame(1);
+        cache
+            .try_store(key, "moving", 10, PaintLayerPayloadStorage::Gpu)
+            .expect("store should succeed");
+
+        assert_eq!(cache.begin_frame(3), Vec::<u64>::new());
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.begin_frame(4), vec![10]);
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.stats().bytes, 0);
+    }
+
+    #[test]
+    fn mark_seen_extends_stale_window() {
         let mut cache = PaintLayerPayloadCache::with_config(config());
         let key = moving_key(3, 1);
         cache.begin_frame(1);
@@ -439,7 +507,30 @@ mod tests {
         cache.mark_seen(&key);
 
         assert_eq!(cache.begin_frame(5), Vec::<u64>::new());
-        assert_eq!(cache.begin_frame(600), Vec::<u64>::new());
         assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.begin_frame(6), vec![10]);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn stale_sweep_uses_earliest_seen_entry() {
+        let mut cache = PaintLayerPayloadCache::with_config(config());
+        let first = moving_key(3, 1);
+        let second = moving_key(4, 1);
+
+        cache.begin_frame(1);
+        cache
+            .try_store(first, "first", 10, PaintLayerPayloadStorage::Gpu)
+            .expect("first store should succeed");
+        cache.begin_frame(2);
+        cache
+            .try_store(second, "second", 20, PaintLayerPayloadStorage::Gpu)
+            .expect("second store should succeed");
+
+        assert_eq!(cache.begin_frame(4), vec![10]);
+        assert!(!cache.contains_key(&first));
+        assert!(cache.contains_key(&second));
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().bytes, 20);
     }
 }
