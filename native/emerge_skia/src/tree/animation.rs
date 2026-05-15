@@ -106,6 +106,13 @@ impl AnimationOverlayResult {
 
 impl AnimationRuntime {
     pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
+        if !self.animate_entries.is_empty()
+            && self.last_seen_revision == tree.revision()
+            && !self.has_transient_entries()
+        {
+            return;
+        }
+
         self.animate_entries.retain(|id, _| {
             tree.get(id)
                 .is_some_and(|element| element.is_live() && element.spec.declared.animate.is_some())

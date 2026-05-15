@@ -190,9 +190,10 @@ mod tests {
         RenderSender,
         actors::AnimationPulseTrace,
         events::{RegistryRebuildPayload, test_support::AnimatedNearbyHitCase},
+        input::InputEvent,
         render_scene::RenderScene,
         tree::{
-            attrs::{Attrs, Length},
+            attrs::{Attrs, Background, Color, Length, MouseOverAttrs},
             element::{Element, ElementKind, NodeId},
             serialize::encode_tree,
         },
@@ -284,6 +285,22 @@ mod tests {
             ..Attrs::default()
         };
         single_node_tree(id, attrs_raw, attrs)
+    }
+
+    fn registry_matches_cursor_pos(
+        rebuild: &RegistryRebuildPayload,
+        element_id: NodeId,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        let input = InputEvent::CursorPos { x, y };
+        rebuild
+            .base_registry
+            .view()
+            .find_precedence(|listener| {
+                listener.element_id == Some(element_id) && listener.matcher.matches(&input)
+            })
+            .is_some()
     }
 
     fn rgba_background_attrs_raw(r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
@@ -429,6 +446,72 @@ mod tests {
 
         assert_eq!(second.previous_sample_time, Some(first.sample_time));
         assert_eq!(second.sample_time, first.sample_time);
+        harness.stop();
+    }
+
+    #[test]
+    fn resize_scale_relayout_rebuilds_registry_hit_regions() {
+        let root_id = NodeId::from_u64(101);
+        let harness = TreeActorHarness::new(fixed_listener_tree(root_id), 128, 64);
+
+        harness.send(TreeMsg::RebuildRegistry);
+        let initial_rebuild = harness.recv_registry_update();
+        let _ = harness.recv_scene();
+
+        assert!(registry_matches_cursor_pos(
+            &initial_rebuild,
+            root_id,
+            48.0,
+            24.0
+        ));
+        assert!(
+            !registry_matches_cursor_pos(&initial_rebuild, root_id, 100.0, 40.0),
+            "unscaled listener region should not include the post-scale point"
+        );
+
+        harness.send(TreeMsg::Resize {
+            width: 256.0,
+            height: 128.0,
+            scale: 2.0,
+        });
+        let scaled_rebuild = harness.recv_registry_update();
+        let _ = harness.recv_scene();
+
+        assert!(
+            registry_matches_cursor_pos(&scaled_rebuild, root_id, 100.0, 40.0),
+            "resize/scale relayout must publish fresh registry geometry"
+        );
+        harness.stop();
+    }
+
+    #[test]
+    fn explicit_registry_rebuild_publishes_after_local_paint_refresh() {
+        let root_id = NodeId::from_u64(102);
+        let mut tree = fixed_listener_tree(root_id);
+        let element = tree.get_mut(&root_id).expect("root should exist");
+        element.spec.declared.on_mouse_down = Some(true);
+        element.spec.declared.on_mouse_up = Some(true);
+        element.spec.declared.mouse_down = Some(MouseOverAttrs {
+            background: Some(Background::Color(Color::Rgb { r: 1, g: 2, b: 3 })),
+            ..MouseOverAttrs::default()
+        });
+        element.layout.effective = element.spec.declared.clone();
+        let harness = TreeActorHarness::new(tree, 128, 64);
+
+        harness.send(TreeMsg::RebuildRegistry);
+        let _ = harness.recv_registry_update();
+        let _ = harness.recv_scene();
+
+        harness.send(TreeMsg::Batch(vec![
+            TreeMsg::SetMouseDownActive {
+                element_id: root_id,
+                active: true,
+            },
+            TreeMsg::RebuildRegistry,
+        ]));
+
+        let _ = harness.recv_registry_update();
+        let _ = harness.recv_scene();
         harness.stop();
     }
 

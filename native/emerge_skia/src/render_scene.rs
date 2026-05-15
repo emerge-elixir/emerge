@@ -1,5 +1,6 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, Rect};
@@ -243,8 +244,8 @@ pub struct RenderPaintLayer {
     pub policy: PaintLayerPolicy,
     pub reason: PaintLayerReason,
     pub content_generation: u64,
-    pub own_nodes: Vec<RenderNode>,
-    pub child_refs: Vec<RenderPaintLayerChildRef>,
+    pub own_nodes: Arc<Vec<RenderNode>>,
+    pub child_refs: Arc<Vec<RenderPaintLayerChildRef>>,
     pub metrics: RenderPaintLayerMetrics,
     /// Compatibility view for tests that still inspect raw layer contents.
     #[cfg(test)]
@@ -304,8 +305,8 @@ impl RenderPaintLayer {
             policy: parts.policy,
             reason: parts.reason,
             content_generation: parts.content_generation,
-            own_nodes: content.own_nodes,
-            child_refs: content.child_refs,
+            own_nodes: Arc::new(content.own_nodes),
+            child_refs: Arc::new(content.child_refs),
             metrics,
             #[cfg(test)]
             children,
@@ -408,7 +409,15 @@ pub(crate) struct RenderPaintLayerContent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPaintLayerChildRef {
-    pub nodes: Vec<RenderNode>,
+    pub nodes: Arc<Vec<RenderNode>>,
+}
+
+impl RenderPaintLayerChildRef {
+    pub(crate) fn from_nodes(nodes: Vec<RenderNode>) -> Self {
+        Self {
+            nodes: Arc::new(nodes),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -674,7 +683,7 @@ fn split_paint_layer_node(node: RenderNode) -> RenderPaintLayerContent {
         }
         RenderNode::PaintLayer(_) => RenderPaintLayerContent {
             own_nodes: Vec::new(),
-            child_refs: vec![RenderPaintLayerChildRef { nodes: vec![node] }],
+            child_refs: vec![RenderPaintLayerChildRef::from_nodes(vec![node])],
         },
         RenderNode::Primitive(_) => RenderPaintLayerContent {
             own_nodes: vec![node],
@@ -693,17 +702,19 @@ fn split_scoped_paint_layer_content(
     } else {
         vec![wrap(content.own_nodes)]
     };
-    let child_ref_nodes: Vec<_> = content
+    let child_ref_nodes = content
         .child_refs
         .into_iter()
-        .flat_map(|child| child.nodes)
-        .collect();
+        .fold(Vec::new(), |mut nodes, child| {
+            nodes.extend(child.nodes.iter().cloned());
+            nodes
+        });
     let child_refs = if child_ref_nodes.is_empty() {
         Vec::new()
     } else {
-        vec![RenderPaintLayerChildRef {
-            nodes: vec![wrap(child_ref_nodes)],
-        }]
+        vec![RenderPaintLayerChildRef::from_nodes(vec![wrap(
+            child_ref_nodes,
+        )])]
     };
 
     RenderPaintLayerContent {

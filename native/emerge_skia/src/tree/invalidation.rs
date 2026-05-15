@@ -1,4 +1,4 @@
-use super::attrs::{Attrs, MouseOverAttrs};
+use super::attrs::{Attrs, Length, MouseOverAttrs};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TreeInvalidation {
@@ -134,7 +134,13 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         invalidation.add(TreeInvalidation::Paint);
     }
 
-    if before.align_x != after.align_x || before.align_y != after.align_y {
+    if before.align_x != after.align_x
+        || before.align_y != after.align_y
+        || before.slider_min != after.slider_min
+        || before.slider_max != after.slider_max
+        || before.slider_value != after.slider_value
+        || before.slider_step != after.slider_step
+    {
         invalidation.add(TreeInvalidation::Resolve);
     }
 
@@ -163,10 +169,6 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         || before.image_src != after.image_src
         || before.image_fit != after.image_fit
         || before.image_size != after.image_size
-        || before.slider_min != after.slider_min
-        || before.slider_max != after.slider_max
-        || before.slider_value != after.slider_value
-        || before.slider_step != after.slider_step
         || before.text_align != after.text_align
         || before.content != after.content
         || before.snap_layout != after.snap_layout
@@ -202,6 +204,43 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
     }
 
     invalidation
+}
+
+pub fn downgrade_content_measure_when_layout_independent(
+    before: &Attrs,
+    after: &Attrs,
+    invalidation: TreeInvalidation,
+) -> TreeInvalidation {
+    if invalidation != TreeInvalidation::Measure || before.content == after.content {
+        return invalidation;
+    }
+
+    if !content_box_is_layout_independent(before) || !content_box_is_layout_independent(after) {
+        return invalidation;
+    }
+
+    let mut before_without_content = before.clone();
+    let mut after_without_content = after.clone();
+    before_without_content.content = None;
+    after_without_content.content = None;
+    classify_attrs_change(&before_without_content, &after_without_content)
+        .join(TreeInvalidation::Paint)
+}
+
+pub fn content_box_is_layout_independent(attrs: &Attrs) -> bool {
+    !length_depends_on_content(attrs.width.as_ref())
+        && !length_depends_on_content(attrs.height.as_ref())
+}
+
+fn length_depends_on_content(length: Option<&Length>) -> bool {
+    match length {
+        None | Some(Length::Content) => true,
+        Some(Length::Fill | Length::FillWeighted(_) | Length::Px(_)) => false,
+        Some(Length::Min(left, right) | Length::Max(left, right)) => {
+            length_depends_on_content(Some(left.as_ref()))
+                || length_depends_on_content(Some(right.as_ref()))
+        }
+    }
 }
 
 pub fn attrs_change_affects_registry_refresh(before: &Attrs, after: &Attrs) -> bool {
@@ -339,6 +378,41 @@ mod tests {
             classify_attrs_change(&before, &after),
             TreeInvalidation::Measure
         );
+    }
+
+    #[test]
+    fn classify_slider_value_and_range_attrs_as_resolve() {
+        let before = Attrs {
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(25.0),
+            slider_step: Some(1.0),
+            ..Attrs::default()
+        };
+
+        for after in [
+            Attrs {
+                slider_value: Some(75.0),
+                ..before.clone()
+            },
+            Attrs {
+                slider_min: Some(-10.0),
+                ..before.clone()
+            },
+            Attrs {
+                slider_max: Some(120.0),
+                ..before.clone()
+            },
+            Attrs {
+                slider_step: Some(5.0),
+                ..before.clone()
+            },
+        ] {
+            assert_eq!(
+                classify_attrs_change(&before, &after),
+                TreeInvalidation::Resolve
+            );
+        }
     }
 
     #[test]

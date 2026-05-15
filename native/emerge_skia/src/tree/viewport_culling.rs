@@ -153,5 +153,4 @@ fn element_has_retained_registry_exception(element: &Element) -> bool {
         || attrs.on_key_down.is_some()
         || attrs.on_key_up.is_some()
         || attrs.on_key_press.is_some()
-        || attrs.virtual_key.is_some()
 }

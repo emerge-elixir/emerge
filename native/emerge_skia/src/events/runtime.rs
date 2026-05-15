@@ -477,7 +477,12 @@ impl PendingDispatchEffects {
                     return self;
                 }
 
-                if event.kind != ElementEventKind::MouseMove {
+                if !matches!(
+                    event.kind,
+                    ElementEventKind::MouseMove
+                        | ElementEventKind::MouseEnter
+                        | ElementEventKind::MouseLeave
+                ) {
                     self.elixir_event_requires_rebuild = true;
                 }
                 runtime.send_elixir_event(event);
@@ -512,7 +517,8 @@ impl PendingDispatchEffects {
             runtime.inject_synthetic_inputs(events, tree_tx, log_render);
         }
 
-        if self.elixir_event_requires_rebuild && self.tree_msgs.is_empty() {
+        let tree_msg_requires_stale = self.tree_msgs.iter().any(tree_msg_requires_listener_stale);
+        if self.elixir_event_requires_rebuild && !tree_msg_requires_stale {
             self.tree_msgs.push(TreeMsg::RebuildRegistry);
         }
 
@@ -530,10 +536,20 @@ impl PendingDispatchEffects {
             runtime.listener_lane.is_stale()
         );
 
-        if self.elixir_event_requires_rebuild || !self.tree_msgs.is_empty() {
+        if !self.tree_msgs.is_empty() {
             send_tree_messages(tree_tx, self.tree_msgs, log_render);
+        }
+        if self.elixir_event_requires_rebuild || tree_msg_requires_stale {
             runtime.listener_lane.mark_stale();
         }
+    }
+}
+
+fn tree_msg_requires_listener_stale(msg: &TreeMsg) -> bool {
+    match msg {
+        TreeMsg::SetMouseOverActive { .. } | TreeMsg::SetMouseDownActive { .. } => false,
+        TreeMsg::Batch(messages) => messages.iter().any(tree_msg_requires_listener_stale),
+        _ => true,
     }
 }
 
@@ -1588,12 +1604,14 @@ impl DirectEventRuntime {
                 matcher_kind,
                 emit_click,
                 emit_press_pointer,
+                clear_mouse_down,
             } => {
                 self.runtime_overlay.click_press = Some(registry_builder::ClickPressTracker {
                     element_id,
                     matcher_kind,
                     emit_click,
                     emit_press_pointer,
+                    clear_mouse_down,
                 });
             }
             RuntimeChange::StartVirtualKeyTracker { tracker } => {
@@ -2307,8 +2325,10 @@ fn reconcile_slider_states(
     ) -> bool {
         state.copy_rebuild_metadata_from(rebuild_state);
         state.set_value(state.value);
-        let had_patch_value = state.patch_value.take().is_some();
-        let changed_tree = had_patch_value || !f64_values_equal(state.value, rebuild_state.value);
+        let patch_value = state.patch_value.take();
+        let changed_tree = patch_value
+            .is_some_and(|patch_value| !f64_values_equal(patch_value, state.value))
+            || !f64_values_equal(state.value, rebuild_state.value);
         if changed_tree {
             send_slider_value_update(tree_tx, log_render, element_id, state.value)
         } else {
@@ -3594,11 +3614,174 @@ mod tests {
             false,
         );
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseDownActive { element_id, active }
                 if *element_id == NodeId::from_term_bytes(vec![20]) && *active
+        )));
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 80.0,
+                y: 80.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id, active }
+                if *element_id == NodeId::from_term_bytes(vec![20]) && !*active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_mouse_event_with_mouse_down_style_requests_rebuild() {
+        let element_id = NodeId::from_term_bytes(vec![23]);
+        let attrs = Attrs {
+            on_mouse_down: Some(true),
+            on_mouse_up: Some(true),
+            mouse_down: Some(MouseOverAttrs::default()),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(23, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.listener_lane.is_stale());
+        let press_msgs = drain_msgs(&tree_rx);
+        assert!(press_msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && *active
+        )));
+        assert!(
+            press_msgs
+                .iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry))
+        );
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(drain_msgs(&tree_rx).is_empty());
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(runtime.listener_lane.is_stale());
+
+        let release_msgs = drain_msgs(&tree_rx);
+        assert!(release_msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && !*active
+        )));
+        assert!(
+            release_msgs
+                .iter()
+                .any(|msg| matches!(msg, TreeMsg::RebuildRegistry))
+        );
+    }
+
+    #[test]
+    fn direct_runtime_virtual_key_release_clears_mouse_down_style() {
+        let element_id = NodeId::from_term_bytes(vec![22]);
+        let attrs = Attrs {
+            mouse_down: Some(MouseOverAttrs::default()),
+            virtual_key: Some(VirtualKeySpec {
+                tap: VirtualKeyTapAction::Text("a".to_string()),
+                hold: VirtualKeyHoldMode::None,
+                hold_ms: 350,
+                repeat_ms: 40,
+            }),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(22, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && *active
+        )));
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(!runtime.listener_lane.is_stale());
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseDownActive { element_id: msg_id, active }
+                if *msg_id == element_id && !*active
         )));
     }
 
@@ -5867,6 +6050,54 @@ mod tests {
     }
 
     #[test]
+    fn slider_tree_patch_matching_current_value_does_not_echo_back_to_tree() {
+        let slider_id = NodeId::from_term_bytes(vec![60]);
+        let rebuild_echo = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(
+                    60.0,
+                    Some(60.0),
+                    SliderValueOrigin::Event,
+                    0.0,
+                    100.0,
+                    5.0,
+                ),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime
+            .slider_states
+            .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
+        let ttl = runtime.pending_text_patch_ttl();
+        runtime.pending_slider_patches.insert(
+            slider_id,
+            VecDeque::from([PendingSliderPatch {
+                value: 60.0,
+                expires_at: Instant::now() + ttl,
+            }]),
+        );
+
+        runtime.handle_registry_update(rebuild_echo, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("slider state preserved");
+        assert!((state.value - 60.0).abs() < f64::EPSILON);
+        assert_eq!(state.patch_value, None);
+        assert!(!runtime.pending_slider_patches.contains_key(&slider_id));
+        assert!(drain_msgs(&tree_rx).is_empty());
+    }
+
+    #[test]
     fn slider_tree_patch_non_pending_value_is_accepted() {
         let slider_id = NodeId::from_term_bytes(vec![59]);
         let rebuild_remote = RegistryRebuildPayload {
@@ -6008,13 +6239,13 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_hover_leave_clears_hover_state_after_rebuild() {
-        let mut attrs = Attrs {
+    fn direct_runtime_hover_leave_clears_hover_state_without_rebuild() {
+        let attrs = Attrs {
             mouse_over: Some(MouseOverAttrs::default()),
             mouse_over_active: Some(false),
             ..Attrs::default()
         };
-        let element = with_interaction(make_element(52, ElementKind::El, attrs.clone()));
+        let element = with_interaction(make_element(52, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
@@ -6028,25 +6259,12 @@ mod tests {
         let mut runtime = DirectEventRuntime::new(false);
         runtime.handle_registry_update(rebuild, &tree_tx, false);
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == NodeId::from_term_bytes(vec![52]) && *active
         )));
-
-        attrs.mouse_over_active = Some(true);
-        let active_element = with_interaction(make_element(52, ElementKind::El, attrs));
-        let active_rebuild = RegistryRebuildPayload {
-            base_registry: registry_builder::registry_for_elements(&[active_element]),
-            text_inputs: HashMap::new(),
-            sliders: HashMap::new(),
-            scrollbars: HashMap::new(),
-            focused_id: None,
-            focus_on_mount: None,
-        };
-        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
-        assert!(!runtime.listener_lane.is_stale());
 
         runtime.handle_input_event(
             InputEvent::CursorEntered { entered: false },
@@ -6054,7 +6272,7 @@ mod tests {
             false,
         );
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
@@ -6093,7 +6311,7 @@ mod tests {
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
 
         let msgs = drain_msgs(&tree_rx);
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(parent_id));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
@@ -6143,7 +6361,7 @@ mod tests {
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
 
         let msgs = drain_msgs(&tree_rx);
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
         assert!(msgs.iter().any(|msg| matches!(
             msg,
@@ -6207,27 +6425,6 @@ mod tests {
                 if *element_id == parent_id && *active
         )));
 
-        let mut active_parent_attrs = parent_attrs;
-        active_parent_attrs.mouse_over_active = Some(true);
-        let mut active_parent =
-            with_interaction(make_element(66, ElementKind::El, active_parent_attrs));
-        active_parent.children = vec![child_id];
-        let active_child = with_interaction_rect(
-            make_element(67, ElementKind::El, child_attrs),
-            40.0,
-            0.0,
-            40.0,
-            40.0,
-        );
-        let active_rebuild = RegistryRebuildPayload {
-            base_registry: registry_builder::registry_for_elements(&[active_parent, active_child]),
-            text_inputs: HashMap::new(),
-            sliders: HashMap::new(),
-            scrollbars: HashMap::new(),
-            focused_id: None,
-            focus_on_mount: None,
-        };
-        runtime.handle_registry_update(active_rebuild, &tree_tx, false);
         assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).is_empty());
 
@@ -6240,7 +6437,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
         assert_eq!(hover_msgs, vec![(child_id, true)]);
     }
@@ -6301,7 +6498,7 @@ mod tests {
             })
             .collect();
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert_eq!(hover_stack_ids(&runtime).last().copied(), Some(child_id));
         assert_eq!(hover_msgs, vec![(child_id, true)]);
     }
@@ -6358,7 +6555,7 @@ mod tests {
 
         runtime.handle_registry_update(moved_rebuild, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id: id, active }
@@ -6612,7 +6809,7 @@ mod tests {
         runtime.handle_registry_update(rebuild, &tree_tx, false);
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id: id, active }
@@ -6658,7 +6855,7 @@ mod tests {
 
         runtime.handle_registry_update(moved_away_rebuild, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id: id, active }
@@ -6683,14 +6880,13 @@ mod tests {
 
         runtime.handle_registry_update(mid_rebuild, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == overlay_id && *active
         )));
 
-        runtime.listener_lane.stale = false;
         runtime.handle_registry_update(late_rebuild, &tree_tx, false);
         assert!(!runtime.listener_lane.is_stale());
     }
@@ -6759,8 +6955,8 @@ mod tests {
                 "probe {label} should activate hover exactly once"
             );
             assert!(
-                runtime.listener_lane.is_stale(),
-                "probe {label} should mark lane stale after activation"
+                !runtime.listener_lane.is_stale(),
+                "probe {label} should stay fresh after runtime-tracked hover activation"
             );
         }
     }
@@ -6839,7 +7035,7 @@ mod tests {
             .count();
 
         assert_eq!(clears, 1);
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
     }
 
     #[test]
@@ -6871,7 +7067,7 @@ mod tests {
         let mut runtime = DirectEventRuntime::new(false);
         runtime.handle_registry_update(rebuild, &tree_tx, false);
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         let _ = drain_msgs(&tree_rx);
 
         let mut active_attrs = attrs;
@@ -6898,7 +7094,7 @@ mod tests {
             &tree_tx,
             false,
         );
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         let _ = drain_msgs(&tree_rx);
 
         let inactive_element = with_interaction_rect(
@@ -7033,7 +7229,7 @@ mod tests {
 
         runtime.handle_registry_update(moved_rebuild.clone(), &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id: id, active }
@@ -7127,7 +7323,7 @@ mod tests {
 
         runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 50.0 }, &tree_tx, false);
 
-        assert!(runtime.listener_lane.is_stale());
+        assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
