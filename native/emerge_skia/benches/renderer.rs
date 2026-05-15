@@ -15,17 +15,20 @@ use emerge_skia::renderer::{
 };
 #[cfg(target_os = "linux")]
 use emerge_skia::tree::animation::AnimationRuntime;
-use emerge_skia::tree::attrs::{BorderStyle, ImageFit};
+use emerge_skia::tree::attrs::{Attrs, BorderStyle, ImageFit, Length, Padding};
 #[cfg(target_os = "linux")]
 use emerge_skia::tree::deserialize::decode_tree;
 #[cfg(target_os = "linux")]
-use emerge_skia::tree::element::{ElementTree, NodeId};
+use emerge_skia::tree::element::{Element, ElementKind, ElementTree, Frame, NearbySlot, NodeId};
 use emerge_skia::tree::geometry::{ClipShape, CornerRadii, Rect};
 #[cfg(target_os = "linux")]
 use emerge_skia::tree::layout::{
     Constraint, layout_and_refresh_default_with_animation,
+    layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark,
     layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark,
 };
+#[cfg(target_os = "linux")]
+use emerge_skia::tree::patch::{Patch, apply_patches};
 use emerge_skia::tree::transform::Affine2;
 #[cfg(target_os = "linux")]
 use glutin_egl_sys::egl;
@@ -635,6 +638,31 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
             let mut case = emerge_demo_showcase_borders_screenshot_refresh_benchmark();
             b.iter(|| {
                 black_box(case.refresh_next_frame());
+            });
+        },
+    );
+    group.bench_function(
+        "emerge_demo_showcase_borders/screenshot_1909x2148_scale_1_5/hover_transition_replay",
+        |b| {
+            let replay = emerge_demo_showcase_borders_screenshot_hover_replay();
+            let mut state_index = 0usize;
+            let mut surface = EglBenchSurface::new((replay.width, replay.height))
+                .expect("EGL surfaceless setup should stay available after probe");
+            let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+                enabled: true,
+                ..RendererCacheConfig::default()
+            });
+            assert_emerge_demo_showcase_borders_hover_transition_bounds(
+                &mut renderer,
+                &mut surface,
+                &replay,
+            );
+
+            b.iter(|| {
+                let state = &replay.transition_states[state_index];
+                state_index = (state_index + 1) % replay.transition_states.len();
+                let mut frame = surface.frame();
+                black_box(renderer.render(&mut frame, state));
             });
         },
     );
@@ -1626,6 +1654,207 @@ impl EmergeDemoShowcaseBordersRefreshBenchmark {
 }
 
 #[cfg(target_os = "linux")]
+struct EmergeDemoShowcaseBordersHoverReplay {
+    warm_state: RenderState,
+    transition_states: Vec<RenderState>,
+    width: u32,
+    height: u32,
+    scale: f32,
+    scroll_y: f32,
+    summary: RenderSceneSummary,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default)]
+struct EmergeDemoShowcaseBordersHoverReplayMaxFrame {
+    total: Duration,
+    draw: Duration,
+    flush: Duration,
+    gpu_flush: Duration,
+    stores: u64,
+    misses: u64,
+    prepare_successes: u64,
+    prepare_time: Duration,
+}
+
+#[cfg(target_os = "linux")]
+fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseBordersHoverReplay {
+    let started_at = Instant::now();
+    let tree = decode_tree(EMERGE_DEMO_SHOWCASE_BORDERS_EMRG)
+        .expect("emerge_demo showcase Borders fixture should decode");
+    let mut runtime = AnimationRuntime::default();
+    runtime.sync_with_tree(&tree, started_at);
+    let target = emerge_demo_showcase_borders_exact_target(
+        &tree,
+        &runtime,
+        started_at,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
+        EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE,
+    );
+
+    let constraint = emerge_demo_showcase_borders_constraint(target.width, target.height);
+    let mut tree = tree.clone();
+    let initial = layout_and_refresh_default_with_animation(
+        &mut tree,
+        constraint,
+        target.scale,
+        &runtime,
+        started_at,
+    );
+    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+    let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
+        &mut tree,
+        constraint,
+        target.scale,
+        &runtime,
+        started_at,
+        Some(&initial.event_rebuild),
+    );
+    let mut cached_rebuild = if warm.output.event_rebuild_changed {
+        warm.output.event_rebuild
+    } else {
+        initial.event_rebuild
+    };
+    let summary = warm.output.scene.summary();
+    assert!(
+        summary.nodes >= 500 && summary.texts >= 100 && summary.paint_layers >= 8,
+        "emerge_demo showcase Borders hover replay selected the wrong scene: \
+         target=({}x{} scale={} scroll_y={}), summary={summary:?}",
+        target.width,
+        target.height,
+        target.scale,
+        target.scroll_y
+    );
+
+    let hover_ids = visible_hover_targets(&tree, target.width, target.height);
+    assert!(
+        hover_ids.len() >= 3,
+        "emerge_demo showcase Borders hover replay needs several visible hover targets: \
+         target=({}x{} scale={} scroll_y={}), summary={summary:?}, hover_ids={hover_ids:?}",
+        target.width,
+        target.height,
+        target.scale,
+        target.scroll_y
+    );
+
+    let mut active_nearby_id = None;
+    let transition_states = (0..hover_ids.len().max(8))
+        .map(|index| {
+            let next_id = hover_ids[index % hover_ids.len()];
+            let subtree_seed = 920_000 + index as u64 * 100;
+            let subtree = nearby_code_block_subtree(subtree_seed);
+            let subtree_root_id = subtree
+                .root_id()
+                .expect("nearby code block subtree should have a root");
+            let mut patches = active_nearby_id
+                .map(|id| vec![Patch::Remove { id }])
+                .unwrap_or_default();
+            patches.push(Patch::InsertNearbySubtree {
+                host_id: next_id,
+                index: 0,
+                slot: NearbySlot::Above,
+                subtree,
+            });
+            let invalidation =
+                apply_patches(&mut tree, patches).expect("nearby hover transition patch applies");
+            active_nearby_id = Some(subtree_root_id);
+            let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+                &mut tree,
+                constraint,
+                target.scale,
+                &runtime,
+                started_at + Duration::from_millis((index as u64 + 1).saturating_mul(16)),
+                invalidation,
+                Some(&cached_rebuild),
+            );
+            if update.output.event_rebuild_changed {
+                cached_rebuild = update.output.event_rebuild.clone();
+            }
+            RenderState::new(update.output.scene, Color::WHITE, index as u64 + 2, false)
+        })
+        .collect();
+
+    EmergeDemoShowcaseBordersHoverReplay {
+        warm_state: RenderState::new(warm.output.scene, Color::WHITE, 1, false),
+        transition_states,
+        width: target.width,
+        height: target.height,
+        scale: target.scale,
+        scroll_y: target.scroll_y,
+        summary,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn assert_emerge_demo_showcase_borders_hover_transition_bounds(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    replay: &EmergeDemoShowcaseBordersHoverReplay,
+) {
+    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &replay.warm_state);
+    assert!(
+        warm_stats.stores > 0,
+        "emerge_demo showcase Borders hover replay did not warm payloads: \
+         scale={} scroll_y={} summary={:?} stats={warm_stats:?}",
+        replay.scale,
+        replay.scroll_y,
+        replay.summary
+    );
+    let steady_warm_stats = render_paint_layer_cache_stats(renderer, surface, &replay.warm_state);
+    assert_eq!(steady_warm_stats.misses, 0, "{steady_warm_stats:?}");
+    assert_eq!(steady_warm_stats.stores, 0, "{steady_warm_stats:?}");
+
+    let max_frame = replay.transition_states.iter().fold(
+        EmergeDemoShowcaseBordersHoverReplayMaxFrame::default(),
+        |mut max_frame, state| {
+            let timings = {
+                let mut frame = surface.frame();
+                renderer.render(&mut frame, state)
+            };
+            let stats = timings
+                .renderer_cache
+                .as_ref()
+                .expect("hover transition replay should produce cache stats")
+                .paint_layer;
+            max_frame.total = max_frame.total.max(timings.total);
+            max_frame.draw = max_frame.draw.max(timings.draw);
+            max_frame.flush = max_frame.flush.max(timings.flush);
+            max_frame.gpu_flush = max_frame.gpu_flush.max(timings.gpu_flush);
+            max_frame.stores = max_frame.stores.max(stats.stores);
+            max_frame.misses = max_frame.misses.max(stats.misses);
+            max_frame.prepare_successes = max_frame.prepare_successes.max(stats.prepare_successes);
+            max_frame.prepare_time = max_frame.prepare_time.max(stats.prepare_time);
+            max_frame
+        },
+    );
+
+    assert!(
+        max_frame.stores <= 4,
+        "emerge_demo showcase Borders hover transition burst-stored too many payloads: \
+         scale={} scroll_y={} summary={:?} max={max_frame:?}",
+        replay.scale,
+        replay.scroll_y,
+        replay.summary
+    );
+    assert!(
+        max_frame.prepare_time <= Duration::from_millis(2),
+        "emerge_demo showcase Borders hover transition spent too long preparing payloads: \
+         scale={} scroll_y={} summary={:?} max={max_frame:?}",
+        replay.scale,
+        replay.scroll_y,
+        replay.summary
+    );
+
+    if emerge_bench_diagnostics_enabled() {
+        eprintln!(
+            "emerge_demo showcase Borders hover transition replay: scale={} scroll_y={} summary={:?} warm={:?} steady_warm={:?} max={:?}",
+            replay.scale, replay.scroll_y, replay.summary, warm_stats, steady_warm_stats, max_frame
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
 -> EmergeDemoShowcaseBordersRefreshBenchmark {
     let started_at = Instant::now();
@@ -1917,6 +2146,76 @@ fn emerge_demo_showcase_borders_target_score(summary: RenderSceneSummary) -> usi
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_constraint(width: u32, height: u32) -> Constraint {
     Constraint::new(width as f32, height as f32)
+}
+
+#[cfg(target_os = "linux")]
+fn visible_hover_targets(tree: &ElementTree, width: u32, height: u32) -> Vec<NodeId> {
+    tree.iter_node_pairs()
+        .filter_map(|(id, element)| {
+            let frame = element.layout.frame?;
+            (element.layout.effective.mouse_over.is_some()
+                && frame.width > 8.0
+                && frame.height > 8.0
+                && frame_intersects_viewport(frame, width as f32, height as f32))
+            .then_some(id)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn frame_intersects_viewport(frame: Frame, width: f32, height: f32) -> bool {
+    frame.x < width
+        && frame.y < height
+        && frame.x + frame.width > 0.0
+        && frame.y + frame.height > 0.0
+}
+
+#[cfg(target_os = "linux")]
+fn nearby_code_block_subtree(seed: u64) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let root_id = NodeId::from_u64(seed);
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Px(460.0)),
+            padding: Some(Padding::Uniform(12.0)),
+            spacing: Some(4.0),
+            ..Default::default()
+        },
+    ));
+
+    let child_ids: Vec<NodeId> = [
+        "Code",
+        "el([",
+        "  Border.rounded(8),",
+        "  Border.width(2),",
+        "  Border.color(:orange),",
+        "  Border.dashed()",
+        "], text(\"Dashed medium round\"))",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, line)| {
+        let id = NodeId::from_u64(seed + 1 + index as u64);
+        tree.insert(Element::with_attrs(
+            id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs {
+                content: Some((*line).to_string()),
+                font_size: Some(if index == 0 { 11.0 } else { 12.0 }),
+                ..Default::default()
+            },
+        ));
+        id
+    })
+    .collect();
+    tree.set_children(&root_id, child_ids)
+        .expect("code lines should attach");
+    tree
 }
 
 #[cfg(target_os = "linux")]
