@@ -1,44 +1,20 @@
 # Architecture
 
-EmergeSkia is a Skia renderer for Elixir with EMRG tree integration.
+EmergeSkia is the native renderer, layout engine, event system, and backend
+runtime used by Emerge. Elixir owns application state and encodes UI trees into
+EMRG. Rust owns the decoded tree, layout, render-scene construction, event
+hit-testing metadata, assets, text editing state, and backend rendering.
 
-## Current State
+## System Shape
 
-Multi-backend Skia renderer with:
-- Draw command decoding and rendering
-- Wayland windowing
-- Raster (offscreen CPU) backend
-- Push-based input event delivery
-- EventProcessor thread for hit testing, click/scroll dispatch, and redraws
-- Rust-owned text input editing for single-line and multiline inputs
-  (`cursor`, `insert/delete/newline`, `on_change`-gated payload emission,
-  `on_focus`/`on_blur` element events, multiline hit-testing and movement)
-- Rust-owned text selection and shortcut handling (`shift+arrows`,
-  `ctrl/meta+a/c/x/v`)
-- Clipboard manager integration (OS clipboard + Linux PRIMARY with in-memory
-  fallback)
-- Wayland IME integration (`preedit` + `commit`, IME cursor area updates)
-- Scrollbar track/thumb hit testing, drag snapping, and axis-specific hover state
-- Drag-scroll support with deadzone and finger-like direction
-- Scroll state preserved across layout/patch with resize-aware clamping
-- Clip- and rounded-corner-aware hit testing
-- Declarative state styling (`mouse_over`, `focused`, `mouse_down`) with runtime active-state application for background, border, font, SVG, and transform attrs
-- Source-based image assets resolved asynchronously in Rust after tree upload/patch
-- EMRG tree deserialization and patching
-- Elixir-side tree definition + EMRG encoder
-- Three-pass layout engine (scale + measurement + resolution)
-- Scale factor support for high-DPI displays
-- Tree-to-render-scene rendering
+The runtime is split into three ownership areas:
 
-## Architecture Diagram
-
-This diagram shows the three main runtime parts and the communication contracts
-between them:
-
-- Elixir/BEAM owns app state and UI tree definition, and consumes processed events.
-- `UI Runtime (Rust)` is centered on `Tree actor`, `Event actor`, and internal `Assets actor`.
-- `Backend (Rust)` is split into `Render loop` (consumes render scenes) and `Event capture`
-  (emits standardized events to runtime).
+- Elixir/BEAM builds app state, uploads or patches EMRG trees, and receives
+  processed UI events.
+- Rust UI runtime owns `ElementTree`, layout/refresh, input registry, asset
+  resolution, text editing, and animation sampling.
+- Rust backend runtime owns window or framebuffer integration, Skia surfaces,
+  render submission, native input capture, cursors, and IME integration.
 
 ```mermaid
 flowchart TD
@@ -48,19 +24,20 @@ flowchart TD
   classDef dir3 stroke:#7c3aed,stroke-width:2.5px;
 
   subgraph ELX["Elixir / BEAM"]
-    APP["App state<br/>+ UI tree"]:::node
+    APP["App state<br/>tree builder"]:::node
+    NIF["EmergeSkia NIF API"]:::node
   end
 
-  subgraph RUST["UI Runtime (Rust)"]
+  subgraph UI["Rust UI runtime"]
     direction LR
-    TREE["Tree actor"]:::node
-    EVENT["Event actor"]:::node
-    ASSET["Assets actor<br/>(internal)"]:::node
+    TREE["Tree actor<br/>ElementTree<br/>layout + refresh"]:::node
+    EVENT["Event actor<br/>hit test + dispatch"]:::node
+    ASSET["Assets actor<br/>source resolution"]:::node
 
-    TREE e1@--> |event listeners<br/>registry| EVENT
-    EVENT e2@--> |internal events<br/>scroll/resize| TREE
+    TREE e1@--> |registry rebuild| EVENT
+    EVENT e2@--> |TreeMsg scroll/hover/text/focus| TREE
     TREE e3@--> |asset requests| ASSET
-    ASSET e4@--> |asset loaded| TREE
+    ASSET e4@--> |AssetStateChanged| TREE
 
     class e1 dir1
     class e2 dir3
@@ -68,103 +45,309 @@ flowchart TD
     class e4 dir3
   end
 
-  subgraph BACK["Backend (Rust)"]
-    EVENT_CAPTURE["Event<br/>capture"]:::node
-    RENDER_LOOP["Render<br/>loop"]:::node
+  subgraph BACK["Rust backend runtime"]
+    CAPTURE["Input capture"]:::node
+    RENDER["Render loop<br/>SceneRenderer + Skia"]:::node
   end
 
-  APP e31@--> |tree definition| TREE
-  EVENT e32@--> |processed events| APP
-  TREE e33@--> |render scene| RENDER_LOOP
-  EVENT_CAPTURE e34@--> |standardized events| EVENT
+  APP e21@--> |upload_tree / patch_tree| NIF
+  NIF e22@--> |TreeMsg| TREE
+  TREE e23@--> |RenderMsg::Scene| RENDER
+  CAPTURE e24@--> |InputEvent| EVENT
+  EVENT e25@--> |processed events| APP
+  RENDER e26@--> |frame callbacks / wake| TREE
 
-  class e31 dir1
-  class e32 dir2
-  class e33 dir1
-  class e34 dir2
+  class e21 dir1
+  class e22 dir1
+  class e23 dir1
+  class e24 dir2
+  class e25 dir2
+  class e26 dir3
 ```
 
-## Module Structure
+## Runtime Threads
 
+Windowed and DRM runs use long-lived native threads:
+
+| Thread or actor | Owns | Communicates with |
+|-----------------|------|-------------------|
+| Tree actor | `TreeUpdateEngine`, `ElementTree`, cached registry rebuild, animation runtime | Event actor, render queue, assets actor, backend wake |
+| Event actor | Event registry, hit testing, cursor decisions, scroll/text/focus dispatch | Tree actor and Elixir process |
+| Backend render loop | Skia surface/context, `SceneRenderer`, renderer paint-layer cache | Render queue and backend compositor/presenter |
+| Backend input capture | Native pointer/keyboard/touch events | Event actor |
+| Assets actor | Source path resolution and async asset state | Tree actor |
+| Heartbeat/stats | Running state and optional renderer stats logging | Runtime resource |
+
+`RenderSender` keeps only the latest pending render scene. If the bounded render
+queue is full, an older scene can be dropped and pipeline timing metadata is
+carried forward to the replacement scene.
+
+`BackendWakeHandle` lets the tree and event actors request backend work without
+knowing whether the backend is Wayland, DRM, macOS, raster, or a test no-op.
+
+## Data Ownership
+
+Elixir owns declared UI state. Rust owns runtime state derived from it.
+
+`ElementTree` stores:
+
+- stable node ids and topology
+- declared attrs from EMRG patches/uploads
+- `layout.effective`, the frame attrs used by layout and render
+- layout frames, render frames, measured frames, scroll extents, and paragraph
+  fragments
+- runtime state for hover, mouse down, focus, text input, sliders, scrollbars,
+  and nearby mounts
+- layout caches, registry caches, retained render-layer scene caches, and dirty
+  flags
+
+Render backends receive `RenderScene` values. They do not read or mutate
+`ElementTree`.
+
+## Tree Update Pipeline
+
+The Rust tree actor receives `TreeMsg` batches. `TreeUpdateEngine` flattens the
+batch, applies tree mutations, samples animations, prepares effective attrs, and
+decides the cheapest valid output action.
+
+```text
+TreeMsg batch
+  -> decode upload or patch
+  -> apply input/runtime state
+  -> join TreeInvalidation values
+  -> prepare frame attrs when needed
+  -> decide refresh action
+     -> Skip
+     -> RegistryUpdate
+     -> RefreshOnly
+     -> Recompute layout + refresh
 ```
-lib.rs (NIF entry, resources, registration)
-    │
-    ├── render_scene.rs (RenderScene, RenderNode, DrawPrimitive)
-    ├── renderer.rs (scene renderer, RenderState, font cache)
-    │
-    ├── backend/
-    │   ├── wayland.rs (windowed)
-    │   ├── drm.rs (direct KMS/DRM backend)
-    │   └── raster.rs (offscreen CPU surface)
-    │
-    ├── input.rs (InputEvent + mask filter + encoder)
-    ├── events.rs (EventProcessor, event registry, hit-test, event/scroll dispatch)
-    │   └── events/scrollbar.rs (scrollbar interaction state machine + hit helpers)
-    ├── assets.rs (AssetManager actor, async loading, source-root/runtime-path resolution)
-    │
-    └── tree/
-        ├── mod.rs (public exports)
-        ├── element.rs (Element with base_attrs/attrs, ElementTree, Frame)
-        ├── attrs.rs (Attrs, Length, Color, Background, etc.)
-        ├── deserialize.rs (EMRG binary parser)
-        ├── patch.rs (incremental tree updates)
-        ├── layout.rs (three-pass: scale → measure → resolve)
-        ├── render.rs (ElementTree → RenderScene, reads pre-scaled attrs)
-        ├── scrollbar.rs (scrollbar geometry/metrics shared by render + events)
-        └── serialize.rs (ElementTree → EMRG binary)
+
+The invalidation ladder is:
+
+```text
+None < Registry < Paint < Resolve < Measure < Structure
 ```
 
-## Actor Data Flow
+`Registry` and `Paint` can refresh without layout when a root frame exists.
+`Resolve`, `Measure`, and `Structure` require layout recomputation.
 
-- Event actor handles raw input, hit testing, and forwards tree updates (`TreeMsg`).
-- Tree actor owns tree mutation, layout, render command generation, and event registry updates.
-- Text input editing is applied in tree actor (`TreeMsg::TextInput*`), then
-  emits element change events with value payload.
-- AssetManager actor loads unresolved image sources asynchronously and notifies tree actor with
-  `TreeMsg::AssetStateChanged`.
-- Render backends consume `RenderMsg::Commands` and keep requesting redraws while
-  `render_state.animate` is true (loading placeholders).
-- Wayland backend also consumes IME metadata (`ime_enabled`,
-  `ime_cursor_area`) to drive `set_ime_allowed` and `set_ime_cursor_area`.
+The detailed traversal and cache behavior is documented in
+[Layout, Refresh, Render, and Cache Flow](layout-refresh-render-flow.md).
+
+## Layout and Refresh
+
+Layout is organized as:
+
+```text
+prepare frame attrs
+  -> measure
+  -> resolve
+  -> refresh
+```
+
+Frame attribute preparation copies declared attrs into `layout.effective`,
+applies scale, overlays animation samples, applies interaction styles, and marks
+layout/render/registry damage. Full preparation walks the flat tree; refresh-only
+runtime and `SetAttrs` updates use the same preparation code on only the touched
+ids plus active animation ids. Scroll-only refresh skips frame-attr preparation
+when no animation is active because scroll state already lives in layout state;
+with active animations it prepares only the active animation ids.
+
+The layout passes are:
+
+- Measure: bottom-up intrinsic and subtree measurement.
+- Resolve: top-down final placement, scroll extents, render frames, transformed
+  layout-aware bounds, and nearby geometry.
+
+Refresh converts the laid-out tree into:
+
+- a `RenderScene` for the renderer
+- an event registry rebuild when registry damage exists
+- IME metadata and text state
+- an animation-active flag
+
+When the cached registry rebuild is clean, refresh skips registry traversal and
+publishes only a render scene. Scroll damage rebuilds the registry because
+hit-test geometry moves, but clean neutral branches are skipped with the
+retained `registry_subtree_affects` prepass.
+
+## Render Architecture
+
+Render-scene construction is separate from Skia drawing:
+
+```text
+ElementTree
+  -> tree/render.rs builds RenderScene
+  -> backend render loop receives RenderMsg::Scene
+  -> SceneRenderer traverses RenderNode tree
+  -> Skia draw calls and paint-layer cache composition
+  -> surface flush/present
+```
+
+`RenderScene` contains `RenderNode` values:
+
+- primitive draw commands
+- clip, relaxed clip, transform, alpha, and shadow-pass scopes
+- paint layers
+
+Paint layers are semantic composition boundaries. The renderer may cache a
+paint layer payload, then compose it later with new placement or alpha if the
+contents did not change. Nested paint layers are stored as child references so
+stable children survive parent invalidation and redraw.
+
+Renderer cache behavior is backend-neutral:
+
+- GPU backends store GPU image payloads.
+- Raster paths can store CPU payloads.
+- A cache miss or bypass falls back to direct drawing without changing output.
+
+## Event Architecture
+
+Backends normalize native input into `InputEvent` values. The event actor uses
+the latest event registry to hit-test and dispatch:
+
+- pointer move, enter/leave, press, release, click, and wheel
+- scrollbar hover and drag
+- drag-scroll
+- focus and blur
+- text input editing, selection, clipboard shortcuts, and IME commits
+- slider updates
+- key events and virtual keys
+
+Event outcomes either go back to Elixir as processed UI events, to the tree
+actor as `TreeMsg` runtime changes, or to the backend as cursor updates.
+
+The event actor does not perform layout. It requests tree changes and consumes
+registry rebuilds from the tree actor.
+
+## Backends
+
+Supported backend families:
+
+| Backend | Purpose | Rendering path |
+|---------|---------|----------------|
+| Wayland | Windowed Linux runtime | EGL/Skia GPU surface and Wayland frame callbacks |
+| DRM | Direct Linux framebuffer/kiosk runtime | KMS/DRM presentation with Skia GPU surface |
+| macOS | Host runtime integration | Native host protocol and Skia rendering integration |
+| Raster | Offscreen/headless testing | CPU raster surface |
+
+Backends consume `RenderMsg::Scene`, update `RenderState`, and call
+`SceneRenderer`. They also forward native input to the event actor and expose a
+wake handle for redraws.
+
+## Assets and Fonts
+
+The asset pipeline resolves source-based images after upload or patch. Loaded
+assets are inserted into renderer-global asset caches, and the tree is notified
+with `AssetStateChanged`.
+
+Renderer-global caches include:
+
+- font typeface cache
+- image/video asset cache
+- rendered vector variant cache
+- Skia global caches
+
+Font and asset generations participate in paint-layer payload keys so cached
+payloads are invalidated when resource contents change.
+
+See [Assets and Images](assets-images.md) for source resolution, runtime path
+security, and async loading behavior.
 
 ## Scaling Architecture
 
-Each Element stores two copies of attributes:
-- `base_attrs`: Original unscaled values (as received from Elixir)
-- `attrs`: Scaled values (used by layout and render)
+Elements keep declared attrs separate from frame-effective attrs:
 
-Scale is applied as Pass 0 before measurement, copying `base_attrs` → `attrs` with scaling:
-- Width/height when using `px()` (including inside minimum/maximum)
-- Padding (uniform and per-side)
-- Spacing
-- Border radius
-- Border width
-- Font size
-- Font letter/word spacing
+- Declared attrs are stored from EMRG uploads and patches in unscaled form.
+- `layout.effective` is rebuilt for the current frame and scale.
 
-This architecture ensures:
-1. No cumulative scaling bugs (always scales from fresh `base_attrs`)
-2. Patches update `base_attrs` with unscaled values; next layout rescales correctly
-3. Render pass reads directly from pre-scaled `attrs` (no scaling logic needed)
+Scale is applied during frame attr preparation from the declared values, not by
+mutating already-scaled output. This prevents cumulative scale errors.
 
-Usage: `tree_layout(tree, width, height, scale)` where `scale > 1.0` for high-DPI.
+Scaled fields include:
 
-## EMRG Attribute Reference
+- pixel widths and heights, including min/max wrappers
+- padding
+- spacing
+- border radius and border width
+- font size
+- font letter and word spacing
+- transform/layout-scale dependent frame attrs
 
-See the [EMRG Format](emrg-format.md) guide for the full binary encoding specification.
+Render and event code read `layout.effective` and layout frames. They do not
+perform their own high-DPI scaling.
 
-## Image Asset Pipeline
+## Cache Layers
 
-See [Assets and Images](assets-images.md) for source resolution,
-runtime path security, and async Rust-side loading/caching behavior.
+The architecture has several separate caches with different owners:
 
-### Length Encoding
+| Cache | Owner | Scope |
+|-------|-------|-------|
+| Layout measure caches | `ElementTree` node layout state | Intrinsic and subtree measurement reuse |
+| Layout resolve cache | `ElementTree` node layout state | Final frame and geometry reuse |
+| Registry subtree cache | `ElementTree` node refresh state | Event registry chunk reuse |
+| Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
+| Retained render-layer scene cache | `ElementTree` node refresh state | Reuse `RenderPaintLayer` scene fragments |
+| Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU image payload reuse |
+| Asset/font/vector caches | Renderer globals | Resource reuse and resource generations |
 
-| Variant | Tag | Format |
-|---------|-----|--------|
-| fill | 0 | (no data) |
-| content | 1 | (no data) |
-| px | 2 | f64 |
-| fill (weighted) | 3 | f64 |
-| minimum | 4 | f64 + inner length |
-| maximum | 5 | f64 + inner length |
+These caches are intentionally owned by the stage that can validate them. For
+example, the tree can decide that a retained paint-layer scene fragment is still
+semantically valid, but only the renderer can decide whether a concrete GPU
+payload should be stored or reused.
+
+## Module Structure
+
+```text
+native/emerge_skia/src/
+  lib.rs                         NIF entry points, resource setup, runtime startup
+  actors.rs                      Cross-actor message enums
+  runtime/
+    tree_actor.rs                Tree actor loop and render/event publication
+    tree_update.rs               Batch processing and refresh decision
+  tree/
+    element.rs                   ElementTree, node state, dirty flags, caches
+    attrs.rs                     Decoded attrs and style state
+    deserialize.rs               EMRG decoder
+    serialize.rs                 EMRG encoder used by tests/tools
+    patch.rs                     Incremental tree patch application
+    invalidation.rs              TreeInvalidation and refresh decision helpers
+    animation.rs                 Animation runtime and frame samples
+    layout.rs                    Frame attrs, measure, resolve, refresh
+    render.rs                    ElementTree to RenderScene
+    render/text.rs               Text render helpers
+    scrollbar.rs                 Shared scrollbar geometry
+  render_scene.rs                RenderScene, RenderNode, paint layers, primitives
+  renderer.rs                    SceneRenderer, Skia drawing, renderer caches
+  paint_layer_payload_cache.rs   Payload cache storage and eviction
+  events.rs                      Event actor entry points and registry payloads
+  events/
+    registry_builder.rs          Event registry traversal and subtree cache
+    scrollbar.rs                 Scrollbar hit and drag state
+  assets.rs                      Asset actor and source resolution
+  backend/
+    wayland/                     Wayland input, EGL rendering, presentation, IME
+    drm.rs                       Direct KMS/DRM backend
+    macos/                       macOS host protocol integration
+    raster.rs                    Offscreen CPU renderer
+    wake.rs                      Backend wake abstraction
+    skia_gpu.rs                  Shared Skia GPU helpers
+```
+
+Elixir-side entry points:
+
+```text
+lib/emerge_skia.ex               Public API
+lib/emerge_skia/native.ex        Rustler NIF bindings
+```
+
+## Related Guides
+
+- [Layout, Refresh, Render, and Cache Flow](layout-refresh-render-flow.md)
+- [Tree Patching](tree-patching.md)
+- [EMRG Format](emrg-format.md)
+- [Assets and Images](assets-images.md)
+- [Events](events.md)
+- [Nearby Semantics](nearby-semantics.md)
+- [BEAM Performance Constraints](beam-performance-constraints.md)
